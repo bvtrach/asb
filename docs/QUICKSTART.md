@@ -79,7 +79,8 @@ The production-shaped workflow is deliberately explicit:
    evidence, never an offline qualification requirement.
    For a selection-driven online benchmark over one or all configured agents,
    use `asb benchmark-live EXPERIMENT.toml --provider-selection selection.json
-   --online [--sweep]`. The `--online` flag is mandatory; this route never
+   --online [--agents selected|all] [--workloads selected|all] [--sweep]`. The
+   `--online` flag is mandatory; this route never
    falls back to local/mock or replay. Human-readable output is the default;
    add the global `--json` flag for automation.
 5. To preserve a runtime-authorized exchange, use `record-live` with explicit

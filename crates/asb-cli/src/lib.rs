@@ -112,6 +112,10 @@ const MAX_POINT_ATTEMPTS: u32 = 4_096;
 const MAX_OPTIONAL_METRIC_VALUES_PER_ATTEMPT: u64 = 1_000_000;
 const PROVIDER_CATALOG_VERSION: u16 = 1;
 const MAX_SELECTED_AGENTS: usize = 9;
+/// The live matrix is deliberately no larger than the recording campaign
+/// boundary: configuration fan-out must stay bounded before it can acquire
+/// any runtime-owned provider capability.
+const MAX_LIVE_BENCHMARK_TUPLES: usize = asb_replay::MAX_RECORDING_CAMPAIGN_TUPLES;
 static RECORDING_TRANSACTION_NONCE: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(test)]
@@ -1187,33 +1191,24 @@ fn dispatch(
             stderr,
             presentation_context,
         ),
-        [command, path, selection, selection_path, online]
-            if command == "benchmark-live"
-                && selection == "--provider-selection"
-                && online == "--online" =>
+        [
+            command,
+            path,
+            selection,
+            selection_path,
+            online,
+            matrix_args @ ..,
+        ] if command == "benchmark-live"
+            && selection == "--provider-selection"
+            && online == "--online" =>
         {
-            execute_with_selection_live_provider(
+            let (sweep, agents, workloads) = parse_live_benchmark_matrix(matrix_args)?;
+            execute_live_benchmark_matrix(
                 Path::new(path),
                 Path::new(selection_path),
-                false,
-                true,
-                live_factory,
-                stdout,
-                stderr,
-                presentation_context,
-            )
-        }
-        [command, path, selection, selection_path, online, sweep]
-            if command == "benchmark-live"
-                && selection == "--provider-selection"
-                && online == "--online"
-                && sweep == "--sweep" =>
-        {
-            execute_with_selection_live_provider(
-                Path::new(path),
-                Path::new(selection_path),
-                true,
-                true,
+                sweep,
+                agents,
+                workloads,
                 live_factory,
                 stdout,
                 stderr,
@@ -2437,7 +2432,7 @@ fn command_name(args: &[OsString]) -> &'static str {
 fn write_help(output: &mut dyn Write) -> Result<(), CliError> {
     writeln!(
         output,
-        "Agent Systems Benchmark (ASB)\n\nUsage:\n  asb doctor [--json]\n  asb setup [--json|--format=json]\n  asb easy run|sweep EXPERIMENT.toml --use-config --local-mock\n  asb capabilities [--json|--format json]\n  asb project init [PATH]\n  asb catalog generate|list|show ID|select ID --kind KIND --digest-sha256 SHA256 [--project PATH]\n  asb tui [launch|status|doctor|remove|install|upgrade]\n  asb provider-catalog [--json]\n  asb adapter-catalog\n  asb provider-plan --catalog-sha256 SHA256 --provider-profile openai|openrouter --agent AGENT --credential-reference-sha256 SHA256\n  asb plan EXPERIMENT.toml --provider-selection selection.json\n  asb run EXPERIMENT.toml --local-mock\n  asb sweep EXPERIMENT.toml --local-mock\n  asb benchmark-live EXPERIMENT.toml --provider-selection selection.json --online [--sweep]\n  asb compare RUN...\n  asb report RUN...\n  asb completion bash\n  asb serve CONTROL.toml\n\nHuman-readable output is the default. Add --json for versioned machine output; --format json remains supported as a compatibility alias. Add --details for bounded diagnostic identifiers in human output. Progress is written to stderr."
+        "Agent Systems Benchmark (ASB)\n\nUsage:\n  asb doctor [--json]\n  asb setup [--json|--format=json]\n  asb easy run|sweep EXPERIMENT.toml --use-config --local-mock\n  asb capabilities [--json|--format json]\n  asb project init [PATH]\n  asb catalog generate|list|show ID|select ID --kind KIND --digest-sha256 SHA256 [--project PATH]\n  asb tui [launch|status|doctor|remove|install|upgrade]\n  asb provider-catalog [--json]\n  asb adapter-catalog\n  asb provider-plan --catalog-sha256 SHA256 --provider-profile openai|openrouter --agent AGENT --credential-reference-sha256 SHA256\n  asb plan EXPERIMENT.toml --provider-selection selection.json\n  asb run EXPERIMENT.toml --local-mock\n  asb sweep EXPERIMENT.toml --local-mock\n  asb benchmark-live EXPERIMENT.toml --provider-selection selection.json --online [--agents selected|all] [--workloads selected|all] [--sweep]\n  asb compare RUN...\n  asb report RUN...\n  asb completion bash\n  asb serve CONTROL.toml\n\nHuman-readable output is the default. Add --json for versioned machine output; --format json remains supported as a compatibility alias. Add --details for bounded diagnostic identifiers in human output. Progress is written to stderr."
     )
     .map_err(output_error)?;
     writeln!(
@@ -2463,7 +2458,7 @@ fn write_help(output: &mut dyn Write) -> Result<(), CliError> {
     writeln!(output, "  asb tui --help").map_err(output_error)?;
     writeln!(output, "  asb plan create --workload WORKLOAD --agent AGENT --agent-executable /absolute/agent --output /absolute/PLAN.toml [--use-config] [--sweep-max-concurrency N]")
         .map_err(output_error)?;
-    writeln!(output, "  asb benchmark-live EXPERIMENT.toml --provider-selection selection.json --online [--sweep]\n  asb record-live CAPTURE.json CASSETTE.json --local-mock --confirm-record\n  asb record-live REQUEST.json CASSETTE.json --openrouter --confirm-record\n  asb record-campaign MANIFEST.json --local-mock\n  asb replay-offline CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT")
+    writeln!(output, "  asb benchmark-live EXPERIMENT.toml --provider-selection selection.json --online [--agents selected|all] [--workloads selected|all] [--sweep]\n  asb record-live CAPTURE.json CASSETTE.json --local-mock --confirm-record\n  asb record-live REQUEST.json CASSETTE.json --openrouter --confirm-record\n  asb record-campaign MANIFEST.json --local-mock\n  asb replay-offline CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT")
         .map_err(output_error)
 }
 
@@ -6908,7 +6903,7 @@ fn process_limits(point: PointInput) -> Result<ProcessLimits, CliError> {
     .map_err(|_| CliError::legacy_validation("invalid process limits"))
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct AttemptSummary {
     input_id: u32,
     phase: &'static str,
@@ -6992,7 +6987,7 @@ impl Drop for PreparedGuard {
     }
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct PointOutput {
     concurrency: u32,
     decision: &'static str,
@@ -7010,7 +7005,7 @@ struct PointOutput {
     attempt_failures: Vec<AttemptFailureEvidence>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct SchedulerAttemptEvidence {
     input_id: u32,
     phase: &'static str,
@@ -7023,7 +7018,7 @@ struct SchedulerAttemptEvidence {
     miss_reason: Option<String>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct AttemptFailureEvidence {
     input_id: u32,
     phase: &'static str,
@@ -7282,6 +7277,21 @@ struct ExecuteOutput {
     provider_launch_sha256: Option<String>,
 }
 
+#[derive(Serialize)]
+struct LiveBenchmarkMatrixOutput {
+    schema_version: u16,
+    ok: bool,
+    command: &'static str,
+    run_ids: Vec<String>,
+    points: Vec<Value>,
+    highest_confirmed_capacity: Option<u32>,
+    cancelled: bool,
+    provider_selection_sha256: String,
+    provider_profile_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_launch_sha256: Option<String>,
+}
+
 fn execute(
     path: &Path,
     sweep: bool,
@@ -7392,6 +7402,276 @@ fn execute_with_selection_live_provider(
         progress,
         presentation_context,
     )
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum LiveBenchmarkScope {
+    Selected,
+    All,
+}
+
+fn parse_live_benchmark_matrix(
+    args: &[String],
+) -> Result<(bool, LiveBenchmarkScope, LiveBenchmarkScope), CliError> {
+    let mut sweep = false;
+    let mut agents = LiveBenchmarkScope::Selected;
+    let mut workloads = LiveBenchmarkScope::Selected;
+    let mut agents_seen = false;
+    let mut workloads_seen = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--sweep" if !sweep => {
+                sweep = true;
+                index += 1;
+            }
+            "--agents" | "--workloads" if index + 1 < args.len() => {
+                let scope = match args[index + 1].as_str() {
+                    "selected" => LiveBenchmarkScope::Selected,
+                    "all" => LiveBenchmarkScope::All,
+                    _ => {
+                        return Err(CliError::legacy_usage(
+                            "benchmark-live scopes must be selected or all",
+                        ));
+                    }
+                };
+                if args[index] == "--agents" {
+                    if agents_seen {
+                        return Err(CliError::legacy_usage(
+                            "benchmark-live --agents may be specified once",
+                        ));
+                    }
+                    agents = scope;
+                    agents_seen = true;
+                } else {
+                    if workloads_seen {
+                        return Err(CliError::legacy_usage(
+                            "benchmark-live --workloads may be specified once",
+                        ));
+                    }
+                    workloads = scope;
+                    workloads_seen = true;
+                }
+                index += 2;
+            }
+            _ => {
+                return Err(CliError::legacy_usage(
+                    "benchmark-live accepts [--agents selected|all] [--workloads selected|all] [--sweep]",
+                ));
+            }
+        }
+    }
+    Ok((sweep, agents, workloads))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_live_benchmark_matrix(
+    path: &Path,
+    selection_path: &Path,
+    sweep: bool,
+    agent_scope: LiveBenchmarkScope,
+    workload_scope: LiveBenchmarkScope,
+    live_factory: Option<LiveProviderAttemptFactory>,
+    output: &mut dyn Write,
+    progress: &mut dyn Write,
+    presentation_context: Option<&mut human::PresentationContext>,
+) -> Result<u8, CliError> {
+    let (plan, selection) = load_plan_and_selection(path, Some(selection_path))?;
+    let selection = selection.ok_or_else(|| {
+        CliError::legacy_validation("benchmark-live requires an explicit provider selection")
+    })?;
+    let platform = format!("linux-{}", std::env::consts::ARCH);
+    let mut agents = match agent_scope {
+        LiveBenchmarkScope::Selected => vec![plan.experiment.agent.implementation.clone()],
+        LiveBenchmarkScope::All => selection
+            .effective
+            .iter()
+            .map(|entry| entry.agent.clone())
+            .collect::<Vec<_>>(),
+    };
+    let mut workloads = match workload_scope {
+        LiveBenchmarkScope::Selected => vec![plan.workload.clone()],
+        LiveBenchmarkScope::All => workload_catalog()
+            .into_iter()
+            .filter_map(|entry| select_workload(&entry.id, &platform).ok())
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>(),
+    };
+    agents.sort();
+    agents.dedup();
+    workloads.sort();
+    workloads.dedup();
+    if agents.is_empty()
+        || workloads.is_empty()
+        || agents.len() > MAX_SELECTED_AGENTS
+        || agents.len().saturating_mul(workloads.len()) > MAX_LIVE_BENCHMARK_TUPLES
+    {
+        return Err(CliError::legacy_validation(
+            "benchmark-live matrix exceeds its reviewed bounds",
+        ));
+    }
+
+    let mut plans = Vec::with_capacity(agents.len().saturating_mul(workloads.len()));
+    let mut roots = BTreeSet::new();
+    for agent in &agents {
+        if !selection
+            .effective
+            .iter()
+            .any(|entry| entry.agent == *agent)
+        {
+            return Err(CliError::legacy_validation(
+                "benchmark-live agent is not in the provider selection",
+            ));
+        }
+        for workload in &workloads {
+            let selected = select_workload(workload, &platform).map_err(|_| {
+                CliError::legacy_validation(
+                    "benchmark-live workload is not implemented for this platform",
+                )
+            })?;
+            let manifest = describe_workload(&selected.id).map_err(|_| {
+                CliError::legacy_validation("benchmark-live workload has no executable manifest")
+            })?;
+            let mut entry = plan.clone();
+            entry.experiment.agent.implementation.clone_from(agent);
+            entry.workload = selected.id;
+            entry.experiment.workload.workload = manifest.workload_id.0;
+            entry.experiment.workload.workload_revision = manifest.version;
+            entry.experiment.workload.workload_sha256 = manifest.content_sha256;
+            entry.experiment.workload.scorer_revision = manifest.scoring_version;
+            entry.experiment.refresh_content_address().map_err(|_| {
+                CliError::legacy_validation("benchmark-live experiment identity is invalid")
+            })?;
+            let mut digest = Sha256::new();
+            digest.update(plan.run_id.as_bytes());
+            digest.update([0]);
+            digest.update(agent.as_bytes());
+            digest.update([0]);
+            digest.update(workload.as_bytes());
+            let identity = format!("{:x}", digest.finalize());
+            if agent_scope != LiveBenchmarkScope::Selected
+                || workload_scope != LiveBenchmarkScope::Selected
+            {
+                entry.run_id = format!("live-{}", &identity[..32]);
+                let parent = plan.result_root.parent().ok_or_else(|| {
+                    CliError::legacy_validation("benchmark-live result root has no parent")
+                })?;
+                entry.result_root = parent.join(format!("live-results-{}", &identity[..32]));
+                let parent = plan.work_root.parent().ok_or_else(|| {
+                    CliError::legacy_validation("benchmark-live work root has no parent")
+                })?;
+                entry.work_root = parent.join(format!("live-work-{}", &identity[..32]));
+                if entry.result_root.exists()
+                    || entry.work_root.exists()
+                    || !roots.insert(entry.result_root.clone())
+                    || !roots.insert(entry.work_root.clone())
+                {
+                    return Err(CliError::legacy_validation(
+                        "benchmark-live matrix root identity already exists",
+                    ));
+                }
+            }
+            validate_selection_binding(&entry, &selection)?;
+            validate_plan(&entry)?;
+            build_provider_launch(
+                &entry,
+                &selection,
+                &entry.run_id,
+                &format!("{}-attempt", entry.run_id),
+            )?;
+            plans.push(entry);
+        }
+    }
+
+    let mut run_ids = Vec::new();
+    let mut points = Vec::new();
+    let mut capacity = Vec::new();
+    let mut cancelled = false;
+    let mut provider_launch_sha256 = None;
+    for entry in plans {
+        let mut entry_output = Vec::new();
+        let code = execute_loaded_plan(
+            entry,
+            Some(selection.clone()),
+            sweep,
+            true,
+            live_factory.clone(),
+            false,
+            None,
+            &mut entry_output,
+            progress,
+            None,
+        )?;
+        let receipt: Value = serde_json::from_slice(&entry_output)
+            .map_err(|_| CliError::legacy_operation("benchmark-live receipt cannot be decoded"))?;
+        let receipt_run_ids = receipt["run_ids"].as_array().ok_or_else(|| {
+            CliError::legacy_operation("benchmark-live receipt run identities are invalid")
+        })?;
+        let receipt_points = receipt["points"].as_array().ok_or_else(|| {
+            CliError::legacy_operation("benchmark-live receipt points are invalid")
+        })?;
+        if receipt_run_ids.len() != receipt_points.len() {
+            return Err(CliError::legacy_operation(
+                "benchmark-live receipt cardinality is invalid",
+            ));
+        }
+        for (run_id, point) in receipt_run_ids.iter().zip(receipt_points) {
+            run_ids.push(
+                run_id
+                    .as_str()
+                    .ok_or_else(|| {
+                        CliError::legacy_operation("benchmark-live receipt run identity is invalid")
+                    })?
+                    .to_owned(),
+            );
+            points.push(point.clone());
+        }
+        cancelled |= receipt["cancelled"].as_bool().unwrap_or(false) || code == 130;
+        if provider_launch_sha256.is_none() {
+            provider_launch_sha256 = receipt["provider_launch_sha256"]
+                .as_str()
+                .map(str::to_owned);
+        }
+        if cancelled {
+            break;
+        }
+    }
+    for point in &points {
+        let decision = match point["decision"].as_str().unwrap_or("inconclusive") {
+            "pass" => CapacityDecision::Pass,
+            "fail" => CapacityDecision::Fail,
+            _ => CapacityDecision::Inconclusive,
+        };
+        capacity.push(CapacityPoint {
+            concurrency: point["concurrency"].as_u64().unwrap_or(0) as u32,
+            decision,
+        });
+    }
+    let exit_code = execution_exit_code(
+        cancelled,
+        points
+            .iter()
+            .map(|point| point["decision"].as_str().unwrap_or("inconclusive")),
+    );
+    write_json(
+        output,
+        &LiveBenchmarkMatrixOutput {
+            schema_version: OUTPUT_SCHEMA_VERSION,
+            ok: exit_code == 0,
+            command: if sweep { "sweep" } else { "run" },
+            run_ids: run_ids.clone(),
+            points,
+            highest_confirmed_capacity: highest_confirmed_capacity(&capacity),
+            cancelled,
+            provider_selection_sha256: selection.selection_sha256,
+            provider_profile_sha256: selection.provider_profile_sha256,
+            provider_launch_sha256,
+        },
+    )?;
+    if let Some(context) = presentation_context {
+        context.set_execution(run_ids);
+    }
+    Ok(exit_code)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7505,6 +7785,33 @@ fn execute_inner_from_source_with_owner_project(
     } else {
         plan
     };
+    execute_loaded_plan(
+        plan,
+        selection,
+        sweep,
+        live_provider,
+        live_factory,
+        local_mock,
+        local_mock_owner,
+        output,
+        progress,
+        presentation_context,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_loaded_plan(
+    plan: PlanFile,
+    selection: Option<ProviderPlanOutput>,
+    sweep: bool,
+    live_provider: bool,
+    live_factory: Option<LiveProviderAttemptFactory>,
+    local_mock: bool,
+    local_mock_owner: Option<Arc<Mutex<LocalMockRuntimeControlOwner>>>,
+    output: &mut dyn Write,
+    progress: &mut dyn Write,
+    presentation_context: Option<&mut human::PresentationContext>,
+) -> Result<u8, CliError> {
     if live_provider && selection.is_none() {
         return Err(CliError::legacy_validation(
             "--live-provider requires an explicit provider selection",
@@ -12400,12 +12707,235 @@ mod tests {
             serde_json::from_slice::<Value>(&output).unwrap()["ok"],
             false
         );
+    }
 
-        // The user-facing live benchmark route is explicit about both the
-        // provider selection and online mode. It must use the same live
-        // factory as the canonical run/sweep paths, never local mock or
-        // replay execution.
-        let factory = LiveProviderAttemptFactory::from_fn(|_, _| {
+    #[test]
+    fn benchmark_live_selected_and_all_matrix_reaches_only_the_runtime_factory() {
+        // A positive matrix admission deliberately uses a fail-closed local
+        // factory: it proves each selected/all route reaches the opaque
+        // runtime boundary without requiring a credential or provider call.
+        // The plan and run identities are distinct for every matrix entry so
+        // a future fan-out implementation cannot accidentally reuse evidence.
+        let scratch = Scratch::new("benchmark-live-selected-all");
+        let supported_agents = ["opencode", "opendesk", "codex"];
+        for (selection_kind, selected_agents) in
+            [("selected", None), ("all", Some(&supported_agents[..]))]
+        {
+            for agent in supported_agents {
+                let selected_agent = [agent];
+                let selection_agents = selected_agents.unwrap_or(&selected_agent);
+                let selection_name = format!("{selection_kind}-{agent}-selection.json");
+                let (selection_path, selection) = provider_selection_fixture(
+                    &scratch.0,
+                    &selection_name,
+                    "openrouter",
+                    selection_agents,
+                );
+                let run_id = format!("{selection_kind}-{agent}-live");
+                let (plan_path, mut plan) = plan_fixture(&scratch.0, &run_id);
+                bind_provider_selection(&mut plan, &selection, agent, "openrouter");
+                fs::write(&plan_path, toml::to_string(&plan).unwrap()).unwrap();
+
+                let calls = Arc::new(Mutex::new(Vec::new()));
+                let observed = Arc::clone(&calls);
+                let factory = LiveProviderAttemptFactory::from_fn(move |input_id, warmup| {
+                    observed
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push((input_id, warmup));
+                    Err(LaunchAuthorityError::InvalidLaunchInput)
+                });
+                let args = vec![
+                    "benchmark-live".into(),
+                    plan_path.as_os_str().to_owned(),
+                    "--provider-selection".into(),
+                    selection_path.as_os_str().to_owned(),
+                    "--online".into(),
+                ];
+                let mut output = Vec::new();
+                let mut diagnostic = Vec::new();
+                assert_eq!(
+                    run_with_live_provider_factory(&args, factory, &mut output, &mut diagnostic),
+                    6
+                );
+                assert_eq!(
+                    String::from_utf8(diagnostic).unwrap(),
+                    format!("[WAIT] starting {run_id}\n")
+                );
+                let result: Value = serde_json::from_slice(&output).unwrap();
+                assert_eq!(result["command"], "run");
+                assert_eq!(result["run_ids"], json!([run_id]));
+                assert_eq!(result["points"][0]["infrastructure_failures"], 1);
+                assert_eq!(
+                    result["points"][0]["attempt_failures"][0]["code"],
+                    "live_provider_attempt_unavailable"
+                );
+                assert!(!result.to_string().contains("local_mock"));
+                assert!(!result.to_string().contains("strict_replay"));
+                assert_eq!(*calls.lock().unwrap(), vec![(0, false)]);
+                assert!(
+                    scratch
+                        .0
+                        .join("results")
+                        .join("runs")
+                        .join(&run_id)
+                        .exists()
+                );
+
+                let human_run_id = format!("{run_id}-human");
+                let (human_plan_path, mut human_plan) = plan_fixture(&scratch.0, &human_run_id);
+                bind_provider_selection(&mut human_plan, &selection, agent, "openrouter");
+                fs::write(&human_plan_path, toml::to_string(&human_plan).unwrap()).unwrap();
+                let human_args = vec![
+                    "benchmark-live".into(),
+                    human_plan_path.as_os_str().to_owned(),
+                    "--provider-selection".into(),
+                    selection_path.as_os_str().to_owned(),
+                    "--online".into(),
+                ];
+                let mut human_output = Vec::new();
+                let mut human_diagnostic = Vec::new();
+                assert_eq!(
+                    run_with_live_provider_factory_default_mode(
+                        &human_args,
+                        LiveProviderAttemptFactory::from_fn(|_, _| {
+                            Err(LaunchAuthorityError::InvalidLaunchInput)
+                        }),
+                        &mut human_output,
+                        &mut human_diagnostic,
+                        true,
+                    ),
+                    6
+                );
+                let human = format!(
+                    "{}{}",
+                    String::from_utf8(human_output).unwrap(),
+                    String::from_utf8(human_diagnostic).unwrap()
+                );
+                assert!(human.contains("live_provider_attempt_unavailable"));
+                assert!(!human.contains("local mock"));
+                assert!(!human.contains("strict replay"));
+            }
+        }
+    }
+
+    #[test]
+    fn benchmark_live_fans_out_selected_and_all_agents_and_workloads() {
+        let scratch = Scratch::new("benchmark-live-real-fanout");
+        let agents = ["opencode", "opendesk", "codex"];
+        let (selection_path, selection) =
+            provider_selection_fixture(&scratch.0, "selection.json", "openrouter", &agents);
+        let workload_count = workload_catalog()
+            .into_iter()
+            .filter(|entry| {
+                select_workload(&entry.id, &format!("linux-{}", std::env::consts::ARCH)).is_ok()
+            })
+            .count();
+        for (label, agent_scope, workload_scope, expected) in [
+            ("selected", "selected", "selected", 1),
+            ("agents", "all", "selected", agents.len()),
+            ("workloads", "selected", "all", workload_count),
+            ("all", "all", "all", agents.len() * workload_count),
+        ] {
+            let (plan_path, mut plan) = plan_fixture(&scratch.0, &format!("fanout-{label}"));
+            bind_provider_selection(&mut plan, &selection, "codex", "openrouter");
+            fs::write(&plan_path, toml::to_string(&plan).unwrap()).unwrap();
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let observed = Arc::clone(&calls);
+            let factory = LiveProviderAttemptFactory::from_fn(move |input_id, warmup| {
+                observed
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push((input_id, warmup));
+                Err(LaunchAuthorityError::InvalidLaunchInput)
+            });
+            let args = vec![
+                "benchmark-live".into(),
+                plan_path.as_os_str().to_owned(),
+                "--provider-selection".into(),
+                selection_path.as_os_str().to_owned(),
+                "--online".into(),
+                "--agents".into(),
+                agent_scope.into(),
+                "--workloads".into(),
+                workload_scope.into(),
+            ];
+            let mut output = Vec::new();
+            assert_eq!(
+                run_with_live_provider_factory(&args, factory, &mut output, &mut Vec::new()),
+                6
+            );
+            let receipt: Value = serde_json::from_slice(&output).unwrap();
+            assert_eq!(receipt["run_ids"].as_array().unwrap().len(), expected);
+            assert_eq!(receipt["points"].as_array().unwrap().len(), expected);
+            assert_eq!(calls.lock().unwrap().len(), expected);
+            assert_eq!(
+                receipt["run_ids"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|run_id| run_id.as_str().unwrap())
+                    .collect::<BTreeSet<_>>()
+                    .len(),
+                expected
+            );
+            assert!(receipt["points"].as_array().unwrap().iter().all(|point| {
+                point["attempt_failures"][0]["code"] == "live_provider_attempt_unavailable"
+            }));
+        }
+    }
+
+    #[test]
+    fn benchmark_live_matrix_rejects_duplicate_scopes_before_factory_or_effect() {
+        let scratch = Scratch::new("benchmark-live-duplicate-scope");
+        let (selection_path, selection) =
+            provider_selection_fixture(&scratch.0, "selection.json", "openrouter", &["codex"]);
+        let (plan_path, mut plan) = plan_fixture(&scratch.0, "duplicate-scope");
+        bind_provider_selection(&mut plan, &selection, "codex", "openrouter");
+        fs::write(&plan_path, toml::to_string(&plan).unwrap()).unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&calls);
+        let factory = LiveProviderAttemptFactory::from_fn(move |input_id, warmup| {
+            observed.lock().unwrap().push((input_id, warmup));
+            Err(LaunchAuthorityError::InvalidLaunchInput)
+        });
+        let args = vec![
+            "benchmark-live".into(),
+            plan_path.as_os_str().to_owned(),
+            "--provider-selection".into(),
+            selection_path.as_os_str().to_owned(),
+            "--online".into(),
+            "--agents".into(),
+            "selected".into(),
+            "--agents".into(),
+            "selected".into(),
+        ];
+        let mut output = Vec::new();
+        assert_eq!(
+            run_with_live_provider_factory(&args, factory, &mut output, &mut Vec::new()),
+            2
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output).unwrap()["error"]["code"],
+            "usage"
+        );
+        assert!(calls.lock().unwrap().is_empty());
+        assert!(!scratch.0.join("results").exists());
+    }
+
+    #[test]
+    fn benchmark_live_malformed_selection_fails_before_factory_or_run_effect() {
+        let scratch = Scratch::new("benchmark-live-malformed-selection");
+        let (plan_path, _) = plan_fixture(&scratch.0, "malformed-live");
+        let selection_path = scratch.0.join("selection.json");
+        fs::write(&selection_path, b"{}").unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&calls);
+        let factory = LiveProviderAttemptFactory::from_fn(move |input_id, warmup| {
+            observed
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((input_id, warmup));
             Err(LaunchAuthorityError::InvalidLaunchInput)
         });
         let args = vec![
@@ -12416,14 +12946,17 @@ mod tests {
             "--online".into(),
         ];
         let mut output = Vec::new();
-        assert_ne!(
-            run_with_live_provider_factory(&args, factory, &mut output, &mut Vec::new()),
-            0
-        );
         assert_eq!(
-            serde_json::from_slice::<Value>(&output).unwrap()["ok"],
-            false
+            run_with_live_provider_factory(&args, factory, &mut output, &mut Vec::new()),
+            3
         );
+        let error: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(error["ok"], false);
+        assert_eq!(error["error"]["code"], "validation");
+        assert!(!error.to_string().contains("local_mock"));
+        assert!(!error.to_string().contains("strict_replay"));
+        assert!(calls.lock().unwrap().is_empty());
+        assert!(!scratch.0.join("results").exists());
     }
 
     #[test]
