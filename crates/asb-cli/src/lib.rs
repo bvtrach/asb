@@ -12400,12 +12400,131 @@ mod tests {
             serde_json::from_slice::<Value>(&output).unwrap()["ok"],
             false
         );
+    }
 
-        // The user-facing live benchmark route is explicit about both the
-        // provider selection and online mode. It must use the same live
-        // factory as the canonical run/sweep paths, never local mock or
-        // replay execution.
-        let factory = LiveProviderAttemptFactory::from_fn(|_, _| {
+    #[test]
+    fn benchmark_live_selected_and_all_matrix_reaches_only_the_runtime_factory() {
+        // A positive matrix admission deliberately uses a fail-closed local
+        // factory: it proves each selected/all route reaches the opaque
+        // runtime boundary without requiring a credential or provider call.
+        // The plan and run identities are distinct for every matrix entry so
+        // a future fan-out implementation cannot accidentally reuse evidence.
+        let scratch = Scratch::new("benchmark-live-selected-all");
+        let supported_agents = ["opencode", "opendesk", "codex"];
+        for (selection_kind, selected_agents) in
+            [("selected", None), ("all", Some(&supported_agents[..]))]
+        {
+            for agent in supported_agents {
+                let selected_agent = [agent];
+                let selection_agents = selected_agents.unwrap_or(&selected_agent);
+                let selection_name = format!("{selection_kind}-{agent}-selection.json");
+                let (selection_path, selection) = provider_selection_fixture(
+                    &scratch.0,
+                    &selection_name,
+                    "openrouter",
+                    selection_agents,
+                );
+                let run_id = format!("{selection_kind}-{agent}-live");
+                let (plan_path, mut plan) = plan_fixture(&scratch.0, &run_id);
+                bind_provider_selection(&mut plan, &selection, agent, "openrouter");
+                fs::write(&plan_path, toml::to_string(&plan).unwrap()).unwrap();
+
+                let calls = Arc::new(Mutex::new(Vec::new()));
+                let observed = Arc::clone(&calls);
+                let factory = LiveProviderAttemptFactory::from_fn(move |input_id, warmup| {
+                    observed
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push((input_id, warmup));
+                    Err(LaunchAuthorityError::InvalidLaunchInput)
+                });
+                let args = vec![
+                    "benchmark-live".into(),
+                    plan_path.as_os_str().to_owned(),
+                    "--provider-selection".into(),
+                    selection_path.as_os_str().to_owned(),
+                    "--online".into(),
+                ];
+                let mut output = Vec::new();
+                let mut diagnostic = Vec::new();
+                assert_eq!(
+                    run_with_live_provider_factory(&args, factory, &mut output, &mut diagnostic),
+                    6
+                );
+                assert_eq!(
+                    String::from_utf8(diagnostic).unwrap(),
+                    format!("[WAIT] starting {run_id}\n")
+                );
+                let result: Value = serde_json::from_slice(&output).unwrap();
+                assert_eq!(result["command"], "run");
+                assert_eq!(result["run_ids"], json!([run_id]));
+                assert_eq!(result["points"][0]["infrastructure_failures"], 1);
+                assert_eq!(
+                    result["points"][0]["attempt_failures"][0]["code"],
+                    "live_provider_attempt_unavailable"
+                );
+                assert!(!result.to_string().contains("local_mock"));
+                assert!(!result.to_string().contains("strict_replay"));
+                assert_eq!(*calls.lock().unwrap(), vec![(0, false)]);
+                assert!(
+                    scratch
+                        .0
+                        .join("results")
+                        .join("runs")
+                        .join(&run_id)
+                        .exists()
+                );
+
+                let human_run_id = format!("{run_id}-human");
+                let (human_plan_path, mut human_plan) = plan_fixture(&scratch.0, &human_run_id);
+                bind_provider_selection(&mut human_plan, &selection, agent, "openrouter");
+                fs::write(&human_plan_path, toml::to_string(&human_plan).unwrap()).unwrap();
+                let human_args = vec![
+                    "benchmark-live".into(),
+                    human_plan_path.as_os_str().to_owned(),
+                    "--provider-selection".into(),
+                    selection_path.as_os_str().to_owned(),
+                    "--online".into(),
+                ];
+                let mut human_output = Vec::new();
+                let mut human_diagnostic = Vec::new();
+                assert_eq!(
+                    run_with_live_provider_factory_default_mode(
+                        &human_args,
+                        LiveProviderAttemptFactory::from_fn(|_, _| {
+                            Err(LaunchAuthorityError::InvalidLaunchInput)
+                        }),
+                        &mut human_output,
+                        &mut human_diagnostic,
+                        true,
+                    ),
+                    6
+                );
+                let human = format!(
+                    "{}{}",
+                    String::from_utf8(human_output).unwrap(),
+                    String::from_utf8(human_diagnostic).unwrap()
+                );
+                assert!(human.contains("live_provider_attempt_unavailable"));
+                assert!(!human.contains("local mock"));
+                assert!(!human.contains("strict replay"));
+            }
+        }
+    }
+
+    #[test]
+    fn benchmark_live_malformed_selection_fails_before_factory_or_run_effect() {
+        let scratch = Scratch::new("benchmark-live-malformed-selection");
+        let (plan_path, _) = plan_fixture(&scratch.0, "malformed-live");
+        let selection_path = scratch.0.join("selection.json");
+        fs::write(&selection_path, b"{}").unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&calls);
+        let factory = LiveProviderAttemptFactory::from_fn(move |input_id, warmup| {
+            observed
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push((input_id, warmup));
             Err(LaunchAuthorityError::InvalidLaunchInput)
         });
         let args = vec![
@@ -12416,14 +12535,17 @@ mod tests {
             "--online".into(),
         ];
         let mut output = Vec::new();
-        assert_ne!(
-            run_with_live_provider_factory(&args, factory, &mut output, &mut Vec::new()),
-            0
-        );
         assert_eq!(
-            serde_json::from_slice::<Value>(&output).unwrap()["ok"],
-            false
+            run_with_live_provider_factory(&args, factory, &mut output, &mut Vec::new()),
+            3
         );
+        let error: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(error["ok"], false);
+        assert_eq!(error["error"]["code"], "validation");
+        assert!(!error.to_string().contains("local_mock"));
+        assert!(!error.to_string().contains("strict_replay"));
+        assert!(calls.lock().unwrap().is_empty());
+        assert!(!scratch.0.join("results").exists());
     }
 
     #[test]
