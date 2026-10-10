@@ -17,6 +17,7 @@ const MAX_TOOL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_VERSION_BYTES: usize = 4096;
 const MAX_CLEANUP_ENTRIES: usize = 32;
+const MAX_SPAWN_ATTEMPTS: usize = 8;
 static RUN_NONCE: AtomicU64 = AtomicU64::new(0);
 
 /// Why a diagnostic could not produce trusted evidence.
@@ -370,6 +371,25 @@ fn execute(
     arguments: &[String],
     timeout: Duration,
 ) -> Result<ProcessOutput, UnavailableReason> {
+    execute_with_spawn(
+        executable,
+        directory,
+        arguments,
+        timeout,
+        RunningProcess::spawn,
+    )
+}
+
+fn execute_with_spawn<F>(
+    executable: &Path,
+    directory: &Path,
+    arguments: &[String],
+    timeout: Duration,
+    mut spawn: F,
+) -> Result<ProcessOutput, UnavailableReason>
+where
+    F: FnMut(Command, ProcessLimits) -> Result<RunningProcess, ProcessError>,
+{
     let limits = ProcessLimits::new(
         MAX_OUTPUT_BYTES,
         MAX_OUTPUT_BYTES,
@@ -379,7 +399,7 @@ fn execute(
     )
     .map_err(|_| UnavailableReason::ProbeRejected)?;
     let mut process = None;
-    for attempt in 0..3 {
+    for attempt in 0..MAX_SPAWN_ATTEMPTS {
         let mut command = Command::new(executable);
         command
             .args(arguments)
@@ -387,15 +407,17 @@ fn execute(
             .env("LC_ALL", "C")
             .current_dir(directory)
             .stdin(Stdio::null());
-        match RunningProcess::spawn(command, limits) {
+        match spawn(command, limits) {
             Ok(value) => {
                 process = Some(value);
                 break;
             }
-            Err(ProcessError::Spawn(error))
-                if error.kind() == io::ErrorKind::WouldBlock && attempt < 2 =>
-            {
-                std::thread::sleep(Duration::from_millis(10));
+            Err(ProcessError::Spawn(error)) if should_retry_spawn(error.kind(), attempt) => {
+                // A busy parallel workspace can transiently exhaust the
+                // process admission limit. Retry with a bounded linear delay
+                // while preserving the caller's overall operation deadline.
+                let delay_ms = u64::try_from(attempt + 1).unwrap_or(u64::MAX) * 10;
+                std::thread::sleep(Duration::from_millis(delay_ms));
             }
             Err(error) => return Err(map_process(error)),
         }
@@ -405,6 +427,10 @@ fn execute(
         .wait()
         .cloned()
         .map_err(|_| UnavailableReason::ProbeRejected)
+}
+
+fn should_retry_spawn(error_kind: io::ErrorKind, attempt: usize) -> bool {
+    error_kind == io::ErrorKind::WouldBlock && attempt < MAX_SPAWN_ATTEMPTS.saturating_sub(1)
 }
 
 impl Drop for StagedTool {
@@ -604,6 +630,74 @@ mod tests {
             Some(2)
         );
         assert_eq!(parse_ebpf_features(b"unrelated\n"), None);
+    }
+
+    #[test]
+    fn spawn_retry_budget_matches_declared_bound() {
+        assert!(should_retry_spawn(io::ErrorKind::WouldBlock, 2));
+        assert!(should_retry_spawn(
+            io::ErrorKind::WouldBlock,
+            MAX_SPAWN_ATTEMPTS - 2
+        ));
+        assert!(!should_retry_spawn(
+            io::ErrorKind::WouldBlock,
+            MAX_SPAWN_ATTEMPTS - 1
+        ));
+        assert!(!should_retry_spawn(io::ErrorKind::Other, 0));
+    }
+
+    #[test]
+    fn execute_recovers_after_repeated_would_block_spawns() {
+        let root = TestRoot::new();
+        let tool = root.harness_tool();
+        let arguments = vec![
+            "run".to_owned(),
+            "fixture".to_owned(),
+            "kernel::tests::fixture_process_success".to_owned(),
+        ];
+        let mut attempts = 0;
+        let result = execute_with_spawn(
+            &tool.path,
+            &root.0,
+            &arguments,
+            Duration::from_secs(2),
+            |command, limits| {
+                attempts += 1;
+                if attempts <= 4 {
+                    Err(ProcessError::Spawn(io::Error::from(
+                        io::ErrorKind::WouldBlock,
+                    )))
+                } else {
+                    RunningProcess::spawn(command, limits)
+                }
+            },
+        );
+        assert_eq!(attempts, 5);
+        let output = result.expect("spawn must recover within the declared retry budget");
+        assert_eq!(output.exit_code, Some(0));
+        assert!(!output.stdout.truncated);
+    }
+
+    #[test]
+    fn execute_reports_typed_rejection_after_spawn_retry_exhaustion() {
+        let root = TestRoot::new();
+        let tool = root.harness_tool();
+        let arguments = vec!["run".to_owned()];
+        let mut attempts = 0;
+        let result = execute_with_spawn(
+            &tool.path,
+            &root.0,
+            &arguments,
+            Duration::from_secs(2),
+            |_command, _limits| {
+                attempts += 1;
+                Err(ProcessError::Spawn(io::Error::from(
+                    io::ErrorKind::WouldBlock,
+                )))
+            },
+        );
+        assert_eq!(attempts, MAX_SPAWN_ATTEMPTS);
+        assert_eq!(result, Err(UnavailableReason::ProbeRejected));
     }
 
     #[test]

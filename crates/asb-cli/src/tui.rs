@@ -6995,9 +6995,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn development_rustup_tools_execute_validated_objects_after_path_replacement() {
-        let root = PathBuf::from(std::env::var_os("HOME").unwrap())
-            .join(".cache")
-            .join(format!("asb-ar1726-object-binding-{}", std::process::id()));
+        // Keep this fixture distinct from every other test in this process and
+        // remove it during unwinding. A PID-only cache path can be reused after
+        // a failed run, causing a later parallel workspace run to inherit its
+        // substituted tools.
+        let scratch = Scratch::new("development-rustup-object-binding");
+        let root = scratch.0.clone();
         prepare_private_directory(&root).unwrap();
         let bin = root.join("toolchains/fixture-toolchain/bin");
         prepare_private_directory(&bin).unwrap();
@@ -7051,7 +7054,16 @@ mod tests {
         drop(rustc_file);
         assert!(!cargo_descriptor.exists());
         assert!(!rustc_descriptor.exists());
-        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn development_rustup_path_replacement_fixture_roots_are_unique() {
+        let first = Scratch::new("development-rustup-object-binding");
+        let second = Scratch::new("development-rustup-object-binding");
+        assert_ne!(first.0, second.0);
+        assert!(first.0.is_dir());
+        assert!(second.0.is_dir());
     }
 
     #[cfg(unix)]
