@@ -17,6 +17,7 @@ const MAX_TOOL_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 const MAX_VERSION_BYTES: usize = 4096;
 const MAX_CLEANUP_ENTRIES: usize = 32;
+const MAX_SPAWN_ATTEMPTS: usize = 8;
 static RUN_NONCE: AtomicU64 = AtomicU64::new(0);
 
 /// Why a diagnostic could not produce trusted evidence.
@@ -379,7 +380,7 @@ fn execute(
     )
     .map_err(|_| UnavailableReason::ProbeRejected)?;
     let mut process = None;
-    for attempt in 0..3 {
+    for attempt in 0..MAX_SPAWN_ATTEMPTS {
         let mut command = Command::new(executable);
         command
             .args(arguments)
@@ -395,7 +396,11 @@ fn execute(
             Err(ProcessError::Spawn(error))
                 if error.kind() == io::ErrorKind::WouldBlock && attempt < 2 =>
             {
-                std::thread::sleep(Duration::from_millis(10));
+                // A busy parallel workspace can transiently exhaust the
+                // process admission limit. Retry with a bounded linear delay
+                // while preserving the caller's overall operation deadline.
+                let delay_ms = u64::try_from(attempt + 1).unwrap_or(u64::MAX) * 10;
+                std::thread::sleep(Duration::from_millis(delay_ms));
             }
             Err(error) => return Err(map_process(error)),
         }
