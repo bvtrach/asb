@@ -5216,6 +5216,16 @@ mod tests {
     }
 
     #[test]
+    fn scratch_roots_are_unique_and_removed_on_drop() {
+        let path = {
+            let scratch = Scratch::new("cleanup");
+            assert!(scratch.0.is_dir());
+            scratch.0.clone()
+        };
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn development_backend_exposes_typed_read_only_capabilities() {
         let scratch = Scratch::new("development-backend");
         let backend = open_development_backend(scratch.0.clone()).expect("development backend");
@@ -7026,6 +7036,26 @@ mod tests {
         assert!(cargo_warning && rustc_warning);
         let cargo_descriptor = descriptor_path(&cargo_file);
         let rustc_descriptor = descriptor_path(&rustc_file);
+        let cargo_identity = {
+            let metadata = cargo_file.metadata().unwrap();
+            (metadata.dev(), metadata.ino())
+        };
+        let rustc_identity = {
+            let metadata = rustc_file.metadata().unwrap();
+            (metadata.dev(), metadata.ino())
+        };
+        assert_eq!(
+            fs::metadata(&cargo_descriptor)
+                .map(|metadata| (metadata.dev(), metadata.ino()))
+                .ok(),
+            Some(cargo_identity)
+        );
+        assert_eq!(
+            fs::metadata(&rustc_descriptor)
+                .map(|metadata| (metadata.dev(), metadata.ino()))
+                .ok(),
+            Some(rustc_identity)
+        );
 
         fs::rename(&cargo_path, bin.join("validated-cargo")).unwrap();
         fs::rename(&rustc_path, bin.join("validated-rustc")).unwrap();
@@ -7052,8 +7082,18 @@ mod tests {
 
         drop(cargo_file);
         drop(rustc_file);
-        assert!(!cargo_descriptor.exists());
-        assert!(!rustc_descriptor.exists());
+        assert_ne!(
+            fs::metadata(&cargo_descriptor)
+                .map(|metadata| (metadata.dev(), metadata.ino()))
+                .ok(),
+            Some(cargo_identity)
+        );
+        assert_ne!(
+            fs::metadata(&rustc_descriptor)
+                .map(|metadata| (metadata.dev(), metadata.ino()))
+                .ok(),
+            Some(rustc_identity)
+        );
     }
 
     #[cfg(unix)]
