@@ -862,7 +862,7 @@ pub(crate) struct RunnerBackend {
     runner_instance_id: String,
     catalog: Arc<Mutex<Catalog>>,
     active: Arc<Mutex<BTreeMap<String, ActiveRun>>>,
-    state_lock: Arc<fs::File>,
+    state_lock: Arc<ControlStateLock>,
     provider_capture: Arc<dyn ProviderCapture>,
     orchestration: Arc<Mutex<FrontendOrchestration>>,
     cancelled: Arc<Mutex<BTreeMap<String, Arc<AtomicBool>>>>,
@@ -1726,17 +1726,9 @@ fn open_backend_with_options(
     provider_capture: Arc<dyn ProviderCapture>,
     lifecycle_verifier: Option<VerifierConfig>,
 ) -> Result<RunnerBackend, CliError> {
-    let state_lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(state_root.join("control.lock"))
-        .map_err(|_| CliError::legacy_operation("control state lock cannot be opened"))?;
-    state_lock
-        .try_lock()
-        .map_err(|_| CliError::legacy_operation("control state root is already owned"))?;
+    let state_lock = acquire_control_state_lock(&state_root.join("control.lock"))?;
+
+    // Own the lock before any durable state is read or created.
     let mut catalog = load_or_create_catalog(&state_root)?;
     let orchestration = FrontendOrchestration::open(&state_root, &catalog.plans)?;
     reconcile_catalog(&mut catalog, &orchestration)?;
@@ -6257,6 +6249,7 @@ impl RunnerBackend {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use asb_control::{
@@ -11290,4 +11283,177 @@ printf '%s' 'not-json'
         drop(second);
         service.join().unwrap().unwrap();
     }
+
+    #[test]
+    fn state_lock_is_not_inherited_by_fixture_children() {
+        let scratch = Scratch::new();
+        let state = scratch.0.join("state");
+        prepare_root(&state).unwrap();
+        let backend = open_backend(state.clone()).unwrap();
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "sleep 5"])
+            .spawn()
+            .expect("fixture child starts");
+        drop(backend);
+        let reopened = open_backend(state);
+        let child_is_running = child.try_wait().unwrap().is_none();
+        let _ = child.kill();
+        child.wait().unwrap();
+        assert!(
+            child_is_running,
+            "fixture child exited before the lock check"
+        );
+        assert!(
+            reopened.is_ok(),
+            "a fixture child must not retain control state ownership"
+        );
+    }
+
+    #[test]
+    fn control_lock_probe_process() {
+        let Some(state) = env::var_os("ASB_CONTROL_LOCK_PROBE_STATE") else {
+            return;
+        };
+        let expected_blocked =
+            env::var_os("ASB_CONTROL_LOCK_PROBE_BLOCKED").is_some_and(|value| value == "1");
+        assert_eq!(
+            open_backend(PathBuf::from(state)).is_err(),
+            expected_blocked,
+            "cross-process control lock result disagreed with the requested probe"
+        );
+    }
+
+    fn assert_control_lock_probe(state: &Path, expected_blocked: bool) {
+        let status = Command::new(env::current_exe().expect("test executable path"))
+            .args(["--exact", "control::tests::control_lock_probe_process"])
+            .env("ASB_CONTROL_LOCK_PROBE_STATE", state)
+            .env(
+                "ASB_CONTROL_LOCK_PROBE_BLOCKED",
+                if expected_blocked { "1" } else { "0" },
+            )
+            .status()
+            .expect("cross-process control lock probe starts");
+        assert!(status.success(), "cross-process control lock probe passes");
+    }
+
+    #[test]
+    fn rejected_same_process_contender_preserves_owner_lock_for_other_processes() {
+        let scratch = Scratch::new();
+        let state = scratch.0.join("state");
+        prepare_root(&state).unwrap();
+        let backend = open_backend(state.clone()).unwrap();
+
+        assert!(open_backend(state.clone()).is_err());
+        assert_control_lock_probe(&state, true);
+
+        drop(backend);
+        assert_control_lock_probe(&state, false);
+    }
+
+    #[test]
+    fn parallel_control_state_roots_remain_independent_and_exclusive() {
+        const WORKERS: usize = 16;
+        let barrier = Arc::new(std::sync::Barrier::new(WORKERS));
+        std::thread::scope(|scope| {
+            let workers = (0..WORKERS)
+                .map(|_| {
+                    let barrier = Arc::clone(&barrier);
+                    scope.spawn(move || {
+                        let scratch = Scratch::new();
+                        let state = scratch.0.join("state");
+                        prepare_root(&state).unwrap();
+                        let backend = open_backend(state.clone()).unwrap();
+                        assert!(open_backend(state.clone()).is_err());
+                        barrier.wait();
+                        drop(backend);
+                        assert!(open_backend(state).is_ok());
+                    })
+                })
+                .collect::<Vec<_>>();
+            for worker in workers {
+                worker.join().unwrap();
+            }
+        });
+    }
+}
+
+static CONTROL_STATE_LOCK_OWNERS: std::sync::LazyLock<Mutex<BTreeSet<(u64, u64)>>> =
+    std::sync::LazyLock::new(|| Mutex::new(BTreeSet::new()));
+
+struct ControlStateLock {
+    file: fs::File,
+    identity: (u64, u64),
+}
+
+impl Drop for ControlStateLock {
+    fn drop(&mut self) {
+        let unlock = libc::flock {
+            l_type: libc::F_UNLCK as libc::c_short,
+            l_whence: libc::SEEK_SET as libc::c_short,
+            l_start: 0,
+            l_len: 0,
+            l_pid: 0,
+        };
+        let _ = nix::fcntl::fcntl(&self.file, nix::fcntl::FcntlArg::F_SETLK(&unlock));
+        let mut owners = CONTROL_STATE_LOCK_OWNERS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        owners.remove(&self.identity);
+    }
+}
+
+fn acquire_control_state_lock(path: &Path) -> Result<ControlStateLock, CliError> {
+    let known_identity = match fs::metadata(path) {
+        Ok(metadata) => Some((metadata.dev(), metadata.ino())),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(_) => {
+            return Err(CliError::legacy_operation(
+                "control state lock cannot be opened",
+            ));
+        }
+    };
+    // POSIX record locks belong to the process, not a descriptor.  In particular,
+    // closing a failed contender's descriptor would release the active owner's
+    // F_SETLK lock.  Keep the registry mutex across the identity check, open, and
+    // lock acquisition so a same-process contender is rejected before it opens.
+    let mut owners = CONTROL_STATE_LOCK_OWNERS
+        .lock()
+        .map_err(|_| CliError::legacy_operation("control state root is already owned"))?;
+    if known_identity.is_some_and(|identity| owners.contains(&identity)) {
+        return Err(CliError::legacy_operation(
+            "control state root is already owned",
+        ));
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|_| CliError::legacy_operation("control state lock cannot be opened"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| CliError::legacy_operation("control state lock cannot be opened"))?;
+    let identity = (metadata.dev(), metadata.ino());
+    if owners.contains(&identity) {
+        return Err(CliError::legacy_operation(
+            "control state root is already owned",
+        ));
+    }
+    let lock = libc::flock {
+        l_type: libc::F_WRLCK as libc::c_short,
+        l_whence: libc::SEEK_SET as libc::c_short,
+        l_start: 0,
+        l_len: 0,
+        l_pid: 0,
+    };
+    if nix::fcntl::fcntl(&file, nix::fcntl::FcntlArg::F_SETLK(&lock)).is_err() {
+        return Err(CliError::legacy_operation(
+            "control state root is already owned",
+        ));
+    }
+    owners.insert(identity);
+    drop(owners);
+    Ok(ControlStateLock { file, identity })
 }
