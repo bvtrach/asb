@@ -540,6 +540,28 @@ mod tests {
             ),
             Err(CheckoutError::Unavailable)
         );
+
+        let oversized = root.join("oversized");
+        let command = Command::new("printf");
+        let mut oversized_command = command;
+        oversized_command.args(["%0300d", "0"]);
+        assert_eq!(
+            run_bounded_capture(
+                oversized_command,
+                &oversized,
+                &request,
+                Instant::now() + Duration::from_secs(2),
+                Some(&root),
+            ),
+            Err(CheckoutError::ResourceLimit)
+        );
+
+        let mut file_limited = request.limits.clone();
+        file_limited.max_files = 1;
+        assert_eq!(
+            enforce_bounds(&root, &file_limited),
+            Err(CheckoutError::ResourceLimit)
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
