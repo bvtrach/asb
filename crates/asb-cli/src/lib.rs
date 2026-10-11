@@ -12803,10 +12803,6 @@ pub(crate) mod tests {
                 queue: 0,
                 max_failures: 0,
                 timeout_ms: 5_000,
-                // Test fixtures run concurrently with the full workspace and
-                // must not treat ordinary host scheduling as clock
-                // contamination. Production plans retain explicit poll and
-                // fail-closed stall policy.
                 poll_ms: 50,
                 seed: 7,
                 open_loop_interval_ms: None,
