@@ -4382,6 +4382,21 @@ mod workload_archive_tests {
     fn accepts_a_bounded_regular_tar() {
         validate_workload_archive(&tar_member(b"root/manifest.json", 0)).unwrap();
     }
+
+    #[test]
+    fn rejects_malformed_archive_encodings_and_boundaries() {
+        for bytes in [
+            b"no".as_slice(),
+            b"<html>bad".as_slice(),
+            b"PK\x03\x04".as_slice(),
+        ] {
+            assert!(validate_workload_archive(bytes).is_err());
+        }
+        assert!(validate_workload_archive(&[0x1f, 0x8b, 0x08, 0x00, 0x00]).is_err());
+        let mut incomplete = tar_member(b"root/file", 0);
+        incomplete[124..136].copy_from_slice(b"77777777777\0");
+        assert!(validate_workload_archive(&incomplete).is_err());
+    }
 }
 
 #[cfg(test)]
@@ -17463,6 +17478,8 @@ pub(crate) mod tests {
             vec!["install", "agentdojo"],
             vec!["install", "agentops"],
             vec!["install", "ai-agents-that-matter"],
+            vec!["update", "missing"],
+            vec!["repair", "missing"],
         ] {
             let mut command = args.into_iter().map(OsString::from).collect::<Vec<_>>();
             command.extend([
@@ -17477,6 +17494,30 @@ pub(crate) mod tests {
                 workload_with_progress(&command, &mut Vec::new(), &mut Vec::new(), false).is_err()
             );
         }
+        let mut config = load_tool_project(&project).unwrap();
+        config.workloads.insert(
+            "unavailable".into(),
+            ProjectToolRecordV1 {
+                kind: ProjectToolKind::Workload,
+                source_ref: "fixture://unavailable".into(),
+                version: "1.0.0".into(),
+                platform: platform_label(),
+                path: Some(".asb/workloads/unavailable".into()),
+                digest_sha256: None,
+                capabilities: Vec::new(),
+                status: ProjectToolStatus::Error,
+            },
+        );
+        save_tool_project(&project, &config).unwrap();
+        let mut select = vec!["select".into(), "unavailable".into()];
+        select.extend(["--project".into(), project.display().to_string()]);
+        assert!(workload_with_progress(&select, &mut Vec::new(), &mut Vec::new(), false).is_err());
+        let workload_path = project.join(".asb/workloads/unavailable");
+        fs::create_dir_all(workload_path.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(project.join(".asb"), &workload_path).unwrap();
+        let mut remove = vec!["remove".into(), "unavailable".into()];
+        remove.extend(["--project".into(), project.display().to_string()]);
+        assert!(workload_with_progress(&remove, &mut Vec::new(), &mut Vec::new(), false).is_err());
     }
 
     fn install_and_select_project_tool(project: &Path, id: &str, kind: &str) {
