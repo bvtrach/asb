@@ -742,6 +742,7 @@ const LEGACY_CLI_CATALOG: &[(&str, u32, &str, Cause)] = &[
     ("crates/asb-cli/src/lib.rs", 5572, "legacy_cli_0740", Cause::MalformedInput),
     ("crates/asb-cli/src/lib.rs", 5578, "legacy_cli_0741", Cause::StaleIdentity),
     ("crates/asb-cli/src/lib.rs", 5317, "legacy_cli_0742", Cause::StaleIdentity),
+    ("crates/asb-cli/src/lib.rs", 7609, "legacy_cli_0743", Cause::ReconciliationRequired),
 ];
 
 fn legacy_cli_catalog(file: &str, line: u32) -> Option<(&str, Cause)> {
