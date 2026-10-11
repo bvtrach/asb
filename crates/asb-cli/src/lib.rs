@@ -4021,7 +4021,7 @@ fn workload_with_progress(
     args: &[String],
     output: &mut dyn Write,
     _progress: &mut dyn Write,
-    _human: bool,
+    human: bool,
 ) -> Result<(), CliError> {
     let operation = args.first().map(String::as_str).ok_or_else(|| {
         CliError::legacy_usage("workload requires install|list|status|select|repair|update|remove")
@@ -4043,9 +4043,11 @@ fn workload_with_progress(
                 .iter()
                 .map(|(id, record)| json!({"id": id, "record": record}))
                 .collect();
-            write_json(
+            workload_output(
                 output,
+                human,
                 &json!({"schema_version": OUTPUT_SCHEMA_VERSION, "ok": true, "command": "workload list", "workloads": entries}),
+                &format!("listed {} installed workloads", config.workloads.len()),
             )
         }
         "status" => {
@@ -4054,14 +4056,47 @@ fn workload_with_progress(
                 .workloads
                 .get(id)
                 .ok_or_else(|| CliError::legacy_validation("workload ID is not installed"))?;
-            write_json(
+            workload_output(
                 output,
+                human,
                 &json!({"schema_version": OUTPUT_SCHEMA_VERSION, "ok": true, "command": "workload status", "id": id, "record": record}),
+                &format!("workload {id} is {:?}", record.status),
             )
         }
         "install" | "update" | "repair" => {
             let id =
                 id.ok_or_else(|| CliError::legacy_usage("workload operation requires an ID"))?;
+            let existing = config.workloads.get(id).cloned();
+            match operation {
+                "install" if existing.is_some() => {
+                    return Err(CliError::legacy_validation(
+                        "workload is already installed; use update or repair",
+                    ));
+                }
+                "update" | "repair" if existing.is_none() => {
+                    return Err(CliError::legacy_validation(
+                        "workload is not installed; use install first",
+                    ));
+                }
+                _ => {}
+            }
+            if operation == "repair" {
+                let root = project.join(format!(".asb/workloads/{id}"));
+                if !root.join("receipt.json").is_file()
+                    || !root.join("prepared").is_dir()
+                    || !root.join("bundle.archive").is_file()
+                {
+                    return Err(CliError::legacy_validation(
+                        "workload installation is stale or incomplete; update is required",
+                    ));
+                }
+                return workload_output(
+                    output,
+                    human,
+                    &json!({"schema_version": OUTPUT_SCHEMA_VERSION, "ok": true, "command": "workload repair", "id": id, "status": "repaired-offline"}),
+                    "repaired workload offline from the retained verified bundle",
+                );
+            }
             let entry = catalog
                 .iter()
                 .find(|entry| entry.get("id").and_then(Value::as_str) == Some(id))
@@ -4127,38 +4162,9 @@ fn workload_with_progress(
                     "workload source has no supported immutable archive",
                 ));
             };
-            let transfer = Command::new("/usr/bin/curl")
-                .args([
-                    "--fail",
-                    "--silent",
-                    "--show-error",
-                    "--location",
-                    "--proto",
-                    "=https",
-                    "--tlsv1.2",
-                    "--connect-timeout",
-                    "10",
-                    "--max-time",
-                    "120",
-                    "--max-filesize",
-                    "536870912",
-                    &source_url,
-                ])
-                .env_clear()
-                .env("PATH", "/usr/bin:/bin")
-                .output()
-                .map_err(|_| {
-                    CliError::legacy_validation(
-                        "official workload source is unavailable or offline",
-                    )
-                })?;
-            if !transfer.status.success() || transfer.stdout.is_empty() {
-                return Err(CliError::legacy_validation(
-                    "official workload source is unavailable or offline",
-                ));
-            }
-            validate_workload_archive(&transfer.stdout)?;
-            let archive_digest = format!("{:x}", Sha256::digest(&transfer.stdout));
+            let archive = acquire_verified_workload_archive(&source_url)?;
+            validate_workload_archive(&archive)?;
+            let archive_digest = format!("{:x}", Sha256::digest(&archive));
             if expected_digest != archive_digest {
                 return Err(CliError::legacy_validation(
                     "workload archive digest does not match the pinned catalog",
@@ -4180,7 +4186,7 @@ fn workload_with_progress(
                 DirectoryPurpose::Tools,
                 None,
             )?;
-            let extracted_members = extract_workload_archive(&transfer.stdout, &staging_path)?;
+            let extracted_members = extract_workload_archive(&archive, &staging_path)?;
             if extracted_members == 0 {
                 let _ = fs::remove_dir_all(&staging_path);
                 return Err(CliError::legacy_validation(
@@ -4210,12 +4216,9 @@ fn workload_with_progress(
             let receipt_path = root.join("receipt.json");
             let previous_bundle = fs::read(&bundle_path).ok();
             let previous_receipt = fs::read(&receipt_path).ok();
-            if let Err(error) = write_atomic_private(
-                &bundle_path,
-                &transfer.stdout,
-                DirectoryPurpose::Tools,
-                None,
-            ) {
+            if let Err(error) =
+                write_atomic_private(&bundle_path, &archive, DirectoryPurpose::Tools, None)
+            {
                 let _ = fs::remove_dir_all(&prepared_path);
                 let _ = fs::rename(&previous_prepared, &prepared_path);
                 return Err(error);
@@ -4273,9 +4276,11 @@ fn workload_with_progress(
                 return Err(error);
             }
             let _ = fs::remove_dir_all(&previous_prepared);
-            write_json(
+            workload_output(
                 output,
+                human,
                 &json!({"schema_version": OUTPUT_SCHEMA_VERSION, "ok": true, "command": format!("workload {operation}"), "id": id, "version": version, "status": "verified", "archive_digest_sha256": archive_digest}),
+                &format!("{operation}d verified workload {id}"),
             )
         }
         "select" => {
@@ -4291,9 +4296,11 @@ fn workload_with_progress(
             }
             config.selections.workload = Some(id.to_owned());
             save_tool_project(&project, &config)?;
-            write_json(
+            workload_output(
                 output,
+                human,
                 &json!({"schema_version": OUTPUT_SCHEMA_VERSION, "ok": true, "command": "workload select", "id": id}),
+                &format!("selected workload {id}"),
             )
         }
         "remove" => {
@@ -4317,9 +4324,11 @@ fn workload_with_progress(
                 config.selections.workload = None;
             }
             save_tool_project(&project, &config)?;
-            write_json(
+            workload_output(
                 output,
+                human,
                 &json!({"schema_version": OUTPUT_SCHEMA_VERSION, "ok": true, "command": "workload remove", "id": id}),
+                &format!("removed workload {id}"),
             )
         }
         _ => Err(CliError::legacy_usage(
@@ -4336,6 +4345,51 @@ fn external_workload_catalog() -> Vec<Value> {
     .and_then(|value| value.get("workloads").cloned())
     .and_then(|value| value.as_array().cloned())
     .unwrap_or_default()
+}
+
+fn workload_output(
+    output: &mut dyn Write,
+    human: bool,
+    value: &Value,
+    summary: &str,
+) -> Result<(), CliError> {
+    if human {
+        writeln!(output, "[ OK ] ASB {summary}.").map_err(output_error)
+    } else {
+        write_json(output, value)
+    }
+}
+
+fn acquire_verified_workload_archive(source_url: &str) -> Result<Vec<u8>, CliError> {
+    let transfer = Command::new("/usr/bin/curl")
+        .args([
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--location",
+            "--proto",
+            "=https",
+            "--tlsv1.2",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            "120",
+            "--max-filesize",
+            "536870912",
+            source_url,
+        ])
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .map_err(|_| {
+            CliError::legacy_validation("official workload source is unavailable or offline")
+        })?;
+    if !transfer.status.success() || transfer.stdout.is_empty() {
+        return Err(CliError::legacy_validation(
+            "official workload source is unavailable or offline",
+        ));
+    }
+    Ok(transfer.stdout)
 }
 
 fn extract_workload_archive(bytes: &[u8], destination: &Path) -> Result<usize, CliError> {
@@ -17602,6 +17656,23 @@ pub(crate) mod tests {
             )
             .is_ok()
         );
+        let mut human_list = Vec::new();
+        workload_with_progress(
+            &[
+                "list".into(),
+                "--project".into(),
+                project.display().to_string(),
+            ],
+            &mut human_list,
+            &mut Vec::new(),
+            true,
+        )
+        .unwrap();
+        assert!(
+            String::from_utf8(human_list)
+                .unwrap()
+                .starts_with("[ OK ] ASB listed 0 installed workloads.")
+        );
         let mut config = load_tool_project(&project).unwrap();
         config.workloads.insert(
             "fixture".into(),
@@ -17617,6 +17688,38 @@ pub(crate) mod tests {
             },
         );
         save_tool_project(&project, &config).unwrap();
+        config.workloads.insert(
+            "agentbench".into(),
+            ProjectToolRecordV1 {
+                kind: ProjectToolKind::Workload,
+                source_ref: "https://github.com/THUDM/AgentBench".into(),
+                version: "main-d1e4a10d".into(),
+                platform: platform_label(),
+                path: Some(".asb/workloads/agentbench".into()),
+                digest_sha256: Some("b".repeat(64)),
+                capabilities: vec!["adapter-ready".into()],
+                status: ProjectToolStatus::Available,
+            },
+        );
+        save_tool_project(&project, &config).unwrap();
+        let mut duplicate_install = vec!["install".into(), "agentbench".into()];
+        duplicate_install.extend(["--project".into(), project.display().to_string()]);
+        assert!(
+            workload_with_progress(&duplicate_install, &mut Vec::new(), &mut Vec::new(), false)
+                .is_err()
+        );
+        let repair_root = project.join(".asb/workloads/agentbench");
+        fs::create_dir_all(repair_root.join("prepared")).unwrap();
+        fs::write(repair_root.join("bundle.archive"), b"verified").unwrap();
+        fs::write(repair_root.join("receipt.json"), b"{}").unwrap();
+        let mut repair = vec!["repair".into(), "agentbench".into()];
+        repair.extend(["--project".into(), project.display().to_string()]);
+        let mut repair_output = Vec::new();
+        workload_with_progress(&repair, &mut repair_output, &mut Vec::new(), false).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&repair_output).unwrap()["status"],
+            "repaired-offline"
+        );
         for args in [
             vec!["list"],
             vec!["status", "fixture"],
