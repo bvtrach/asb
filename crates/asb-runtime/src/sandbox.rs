@@ -688,6 +688,12 @@ impl SandboxBackend {
             command.env("HOME", "/workspace");
             command.env("TMPDIR", "/tmp");
             command.env("ASB_SCOPE_NONCE", &nonce);
+            // Keep child coverage attribution when the test harness explicitly
+            // supplies LLVM_PROFILE_FILE, without widening the normal scrubbed
+            // environment for development or production execution.
+            if let Some(profile_file) = std::env::var_os("LLVM_PROFILE_FILE") {
+                command.env("LLVM_PROFILE_FILE", profile_file);
+            }
             for (key, value) in &spec.environment {
                 command.env(key, value);
             }

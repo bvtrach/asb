@@ -381,12 +381,18 @@ impl LocalReplayProvisioner {
 }
 
 fn allocate_development_fixture_root() -> Result<TemporaryReplayRoot, ReplayAuthoritySourceError> {
+    allocate_development_fixture_root_with_limit(MAX_DEVELOPMENT_FIXTURE_ROOT_ATTEMPTS)
+}
+
+fn allocate_development_fixture_root_with_limit(
+    max_attempts: u64,
+) -> Result<TemporaryReplayRoot, ReplayAuthoritySourceError> {
     // The sequence is process-local, so include the process identity before
     // it. Parallel cargo test binaries otherwise reuse the same first
     // `a0` root and turn an otherwise valid fixture into a collision.
     // Retrying an existing path also handles a stale tree after an
     // interrupted process without reusing another process's fixture.
-    for _ in 0..MAX_DEVELOPMENT_FIXTURE_ROOT_ATTEMPTS {
+    for _ in 0..max_attempts {
         let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let candidate = std::env::temp_dir().join(format!("a{:x}{sequence:x}", std::process::id()));
         match fs::create_dir(&candidate) {
@@ -1355,6 +1361,16 @@ mod tests {
         assert_ne!(allocated.0, stale);
         drop(allocated);
         fs::remove_dir_all(stale).unwrap();
+    }
+
+    #[test]
+    fn development_fixture_allocator_rejects_zero_retry_budget() {
+        assert!(matches!(
+            allocate_development_fixture_root_with_limit(0),
+            Err(ReplayAuthoritySourceError::Authority(
+                LaunchAuthorityError::InvalidLaunchInput
+            ))
+        ));
     }
 
     #[test]
