@@ -4413,7 +4413,10 @@ fn resolve_workload_source(entry: &Value) -> Result<WorkloadSourceIdentity, CliE
             digest.to_owned(),
         )
     };
-    if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    let reviewed_arxiv_v1 = repository == "https://arxiv.org/abs/2407.01502" && revision == "v1";
+    if !reviewed_arxiv_v1
+        && (revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
         return Err(CliError::legacy_validation(
             "workload catalog revision is not an immutable commit",
         ));
@@ -18221,11 +18224,19 @@ pub(crate) mod tests {
         assert_eq!(identity.repository, "https://github.com/exercism/cpp");
         assert_eq!(identity.revision.len(), 40);
         assert_eq!(identity.expected_digest.len(), 64);
+        let arxiv = catalog
+            .iter()
+            .find(|entry| entry.get("id").and_then(Value::as_str) == Some("ai-agents-that-matter"))
+            .unwrap();
+        let identity = super::resolve_workload_source(arxiv).unwrap();
+        assert_eq!(identity.repository, "https://arxiv.org/abs/2407.01502");
+        assert_eq!(identity.revision, "v1");
         for entry in [
             json!({"source": {"repository": "https://github.com/example/repo"}}),
             json!({"source": {"repositories": ["python-without-revision"]}}),
             json!({"source": {"repositories": ["python@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"], "archive_sha256": {}}}),
             json!({"source": {"repository": "https://github.com/example/repo", "commit": "not-a-commit", "archive_sha256": "bad"}}),
+            json!({"source": {"repository": "https://arxiv.org/abs/2407.01502", "revision": "v2", "archive_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}),
         ] {
             assert!(super::resolve_workload_source(&entry).is_err());
         }
