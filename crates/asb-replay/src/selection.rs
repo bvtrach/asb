@@ -158,7 +158,8 @@ impl RecordingIndex {
 }
 
 /// Recording index or explicit source-selection failure.
-#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[derive(Clone, Debug, Eq, Error, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SourceSelectionError {
     /// The recording index reached its public bound.
     #[error("recording index is full")]
@@ -355,6 +356,19 @@ mod tests {
                 &unbound,
             ),
             Err(SourceSelectionError::ProviderIdentityMismatch)
+        );
+        // Rejection happens before either the index or its cassette-root set is
+        // changed.  This is the mutation fence promised by the recording
+        // contract, rather than merely an error classification.
+        assert!(index.entries.is_empty());
+        assert!(index.roots.is_empty());
+        assert_eq!(
+            SourceSelectionError::ProviderIdentityMismatch.to_string(),
+            "recording provider identity does not match authenticated cassette"
+        );
+        assert_eq!(
+            serde_json::to_string(&SourceSelectionError::ProviderIdentityMismatch).unwrap(),
+            "\"provider_identity_mismatch\""
         );
     }
 

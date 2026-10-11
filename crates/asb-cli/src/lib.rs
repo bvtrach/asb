@@ -3191,9 +3191,9 @@ fn replay(
         cassette_sha256: cassette.integrity.digest.clone(),
     };
     let mut index = RecordingIndex::new();
-    index.insert(descriptor, &cassette).map_err(|_| {
-        CliError::legacy_validation("recording cassette is not compatible with this selection")
-    })?;
+    index
+        .insert(descriptor, &cassette)
+        .map_err(recording_selection_error)?;
     let source = asb_replay::choose_source(
         &index,
         provider_profile_sha256,
@@ -16921,6 +16921,23 @@ mod easy_sweep_online_default_tests {
             .expect_err("online sweep must report the missing live credential");
         assert!(error.message.contains("OPENROUTER_API_KEY"));
         assert_ne!(error.message, "local mock fallback");
+    }
+}
+
+fn recording_selection_error(error: asb_replay::SourceSelectionError) -> CliError {
+    match error {
+        asb_replay::SourceSelectionError::ProviderIdentityMismatch => CliError::validation_code(
+            "recording_provider_identity_mismatch",
+            "recording provider identity does not match authenticated cassette",
+        ),
+        asb_replay::SourceSelectionError::CassetteIdentityMismatch => CliError::validation_code(
+            "recording_cassette_identity_mismatch",
+            "recording cassette identity does not match descriptor",
+        ),
+        _ => CliError::validation_code(
+            "recording_cassette_incompatible",
+            "recording cassette is not compatible with this selection",
+        ),
     }
 }
 
