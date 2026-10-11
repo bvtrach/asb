@@ -19357,6 +19357,19 @@ mod ar1782_headroom_tests {
         archive
     }
 
+    fn tar_member_with_size(name: &[u8], kind: u8, size: usize, data: &[u8]) -> Vec<u8> {
+        let padded = size.div_ceil(512).saturating_mul(512);
+        let mut archive = vec![0u8; 512 + padded + 512];
+        let count = name.len().min(100);
+        archive[..count].copy_from_slice(&name[..count]);
+        archive[124..136].copy_from_slice(format!("{size:011o} ").as_bytes());
+        archive[156] = kind;
+        archive[257..262].copy_from_slice(b"ustar");
+        let copy = data.len().min(size);
+        archive[512..512 + copy].copy_from_slice(&data[..copy]);
+        archive
+    }
+
     fn arxiv_workload_fixture_archive(url: &str) -> Result<Vec<u8>, super::CliError> {
         assert_eq!(url, "https://arxiv.org/e-print/2407.01502v1");
         Ok(tar_member(b"fixture/manifest.json", 0))
@@ -19380,6 +19393,221 @@ mod ar1782_headroom_tests {
         let malformed = [0x1f, 0x8b, 0x08, 0x00];
         assert!(super::validate_workload_archive(&malformed).is_err());
         assert!(super::extract_workload_archive(&malformed, root.path()).is_err());
+    }
+
+    #[test]
+    fn workload_archive_rejects_encoding_and_size_boundary_failures() {
+        let root = tempfile::tempdir().unwrap();
+
+        let mut invalid_utf8 = tar_member(b"safe/manifest.json", 0);
+        invalid_utf8[0] = 0xff;
+        assert!(super::validate_workload_archive(&invalid_utf8).is_err());
+        assert!(super::extract_workload_archive(&invalid_utf8, root.path()).is_err());
+
+        let mut truncated = tar_member_with_size(b"safe/manifest.json", 0, 513, b"one");
+        truncated.truncate(1024);
+        assert!(super::validate_workload_archive(&truncated).is_err());
+        assert!(super::extract_workload_archive(&truncated, root.path()).is_err());
+
+        let empty_member = tar_member(b"safe/", b'5');
+        super::validate_workload_archive(&empty_member).unwrap();
+        assert_eq!(
+            super::extract_workload_archive(&empty_member, root.path()).unwrap(),
+            1
+        );
+
+        for (name, kind) in [
+            (b"safe//manifest".as_slice(), 0),
+            (b"safe/../manifest".as_slice(), 0),
+            (b"/manifest".as_slice(), 0),
+            (b"safe/link".as_slice(), b'1'),
+        ] {
+            assert!(super::validate_workload_archive(&tar_member(name, kind)).is_err());
+        }
+    }
+
+    #[test]
+    fn workload_catalog_and_layout_validation_reject_unsafe_metadata() {
+        assert!(
+            super::validated_workload_license(&json!({
+                "dataset": {"license": "MIT"},
+                "source": {}
+            }))
+            .is_ok()
+        );
+        for entry in [
+            json!({"source": {"license": "MIT", "license_status": "unknown"}}),
+            json!({"source": {"license": "NOASSERTION"}}),
+        ] {
+            assert!(super::validated_workload_license(&entry).is_err());
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("manifest.json"), b"{}\n").unwrap();
+        for entrypoint in [
+            "",
+            "/absolute",
+            "manifest;rm",
+            "manifest ../escape",
+            "manifest|x",
+        ] {
+            assert!(super::validate_workload_evaluator_layout(root.path(), entrypoint).is_err());
+        }
+        super::validate_workload_evaluator_layout(root.path(), "manifest.json").unwrap();
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.path().join("manifest.json"), root.path().join("link"))
+                .unwrap();
+            assert!(
+                super::validate_workload_evaluator_layout(root.path(), "manifest.json").is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn workload_dispatch_rejects_invalid_lifecycle_states_without_side_effects() {
+        let scratch = tempfile::tempdir().unwrap();
+        let project = scratch.path().join("workspace");
+        project_init_with_progress(
+            &[project.display().to_string()],
+            &mut Vec::new(),
+            &mut Vec::new(),
+            false,
+        )
+        .unwrap();
+        let project_arg = project.display().to_string();
+        let catalog = vec![json!({
+            "id": "fixture",
+            "version": "catalog-v1",
+            "source": {
+                "repository": "https://github.com/example/fixture",
+                "commit": "0123456789012345678901234567890123456789",
+                "archive_sha256": "0".repeat(64),
+                "license": "MIT"
+            },
+            "evaluator": {"entrypoint": "fixture/manifest.json"}
+        })];
+        assert!(
+            super::workload_with_progress_inner(
+                &[],
+                &mut Vec::new(),
+                &mut Vec::new(),
+                false,
+                &catalog,
+                super::acquire_verified_workload_archive,
+            )
+            .is_err()
+        );
+
+        for operation in ["unknown", "status", "select", "remove"] {
+            let args = vec![
+                operation.to_owned(),
+                "fixture".to_owned(),
+                "--project".to_owned(),
+                project_arg.clone(),
+            ];
+            assert!(
+                super::workload_with_progress_inner(
+                    &args,
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    false,
+                    &catalog,
+                    super::acquire_verified_workload_archive,
+                )
+                .is_err()
+            );
+        }
+        let list = vec!["list".to_owned(), "--project".to_owned(), project_arg];
+        super::workload_with_progress_inner(
+            &list,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            false,
+            &catalog,
+            super::acquire_verified_workload_archive,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn workload_repair_rejects_directory_only_archive_and_preparation_symlink() {
+        let scratch = tempfile::tempdir().unwrap();
+        let project = scratch.path().join("workspace");
+        let root = project.join(".asb/workloads/directory-only");
+        fs::create_dir_all(&root).unwrap();
+        let archive = tar_member(b"fixture/", b'5');
+        let digest = format!("{:x}", Sha256::digest(&archive));
+        fs::write(root.join("bundle.archive"), &archive).unwrap();
+        fs::write(
+            root.join("receipt.json"),
+            serde_json::to_vec(&json!({
+                "workload_id": "directory-only",
+                "catalog_revision": "catalog-v1",
+                "archive_digest_sha256": digest,
+                "license": "MIT",
+                "evaluator_entrypoint": "fixture/manifest.json"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            super::repair_verified_workload_offline(
+                &project,
+                "directory-only",
+                super::WorkloadRepairProof {
+                    version: "catalog-v1",
+                    expected_digest: &digest,
+                    license: "MIT",
+                    preparation: "fixture/manifest.json",
+                },
+                &mut Vec::new(),
+                false,
+            )
+            .is_err()
+        );
+
+        let symlink_root = project.join(".asb/workloads/symlink-prepared");
+        fs::create_dir_all(&symlink_root).unwrap();
+        let symlink_archive = tar_member(b"fixture/manifest.json", 0);
+        let symlink_digest = format!("{:x}", Sha256::digest(&symlink_archive));
+        fs::write(symlink_root.join("bundle.archive"), &symlink_archive).unwrap();
+        fs::write(
+            symlink_root.join("receipt.json"),
+            serde_json::to_vec(&json!({
+                "workload_id": "symlink-prepared",
+                "catalog_revision": "catalog-v1",
+                "archive_digest_sha256": symlink_digest,
+                "license": "MIT",
+                "evaluator_entrypoint": "fixture/manifest.json"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                scratch.path().join("outside"),
+                symlink_root.join("prepared"),
+            )
+            .unwrap();
+            assert!(
+                super::repair_verified_workload_offline(
+                    &project,
+                    "symlink-prepared",
+                    super::WorkloadRepairProof {
+                        version: "catalog-v1",
+                        expected_digest: &symlink_digest,
+                        license: "MIT",
+                        preparation: "fixture/manifest.json",
+                    },
+                    &mut Vec::new(),
+                    false,
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]
