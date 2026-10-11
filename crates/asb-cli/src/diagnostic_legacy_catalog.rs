@@ -675,7 +675,7 @@ const LEGACY_CLI_CATALOG: &[(&str, u32, &str, Cause)] = &[
     ("crates/asb-cli/src/project_run.rs", 132, "legacy_cli_0673", Cause::MissingInput),
     ("crates/asb-cli/src/project_run.rs", 137, "legacy_cli_0674", Cause::StaleIdentity),
     ("crates/asb-cli/src/project_run.rs", 142, "legacy_cli_0675", Cause::UnavailableCapability),
-    ("crates/asb-cli/src/lib.rs", 16921, "legacy_cli_0676", Cause::MalformedInput),
+    ("crates/asb-cli/src/lib.rs", 16958, "legacy_cli_0676", Cause::MalformedInput),
     ("crates/asb-cli/src/project_catalog.rs", 297, "legacy_cli_0677", Cause::MissingInput),
     ("crates/asb-cli/src/project_catalog.rs", 303, "legacy_cli_0678", Cause::MissingInput),
     ("crates/asb-cli/src/project_catalog.rs", 343, "legacy_cli_0679", Cause::MalformedInput),
