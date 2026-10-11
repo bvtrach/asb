@@ -445,6 +445,64 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_and_error_codes_are_explicit() {
+        let request = CheckoutRequest::for_tool(
+            &tool("https://example.invalid/repo", &"a".repeat(40)),
+            PathBuf::from("/tmp/x"),
+        )
+        .unwrap();
+        request.cancel();
+        let root = std::env::temp_dir().join(format!("asb-cancel-checkout-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut command = Command::new("sleep");
+        command.arg("1");
+        assert_eq!(
+            run_bounded_until(
+                command,
+                &request,
+                Instant::now() + Duration::from_secs(2),
+                Some(&root),
+            ),
+            Err(CheckoutError::Cancelled)
+        );
+        std::fs::remove_dir_all(root).unwrap();
+
+        let errors = [
+            CheckoutError::InvalidRequest,
+            CheckoutError::Offline,
+            CheckoutError::Unavailable,
+            CheckoutError::RepositoryIdentityMismatch,
+            CheckoutError::RevisionMismatch,
+            CheckoutError::ResourceLimit,
+            CheckoutError::Cancelled,
+            CheckoutError::CleanupFailed,
+        ];
+        assert!(errors.iter().all(|error| !error.code().is_empty()));
+    }
+
+    #[test]
+    fn acquisition_rejects_owned_staging_collision_and_cleanup_failure() {
+        let (source, revision, staging) = fixture_repository();
+        let request = CheckoutRequest::for_tool(
+            &tool(&format!("file://{}", source.display()), &revision),
+            staging.clone(),
+        )
+        .unwrap();
+        let collision = staging.join(format!("checkout-{}", std::process::id()));
+        std::fs::create_dir_all(&collision).unwrap();
+        assert_eq!(acquire(&request), Err(CheckoutError::CleanupFailed));
+        std::fs::remove_dir_all(&collision).unwrap();
+
+        let missing = SourceCheckout {
+            path: staging.join("never-created"),
+            repository_url: request.repository_url,
+            revision: request.revision,
+        };
+        assert_eq!(missing.cleanup(), Err(CheckoutError::CleanupFailed));
+        let _ = std::fs::remove_dir_all(source.parent().unwrap());
+    }
+
+    #[test]
     fn wrong_revision_and_credential_bearing_repository_fail_closed() {
         assert!(matches!(
             CheckoutRequest::for_tool(
