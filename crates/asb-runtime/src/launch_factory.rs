@@ -22,6 +22,7 @@ use std::sync::{
 use std::time::Duration;
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const MAX_DEVELOPMENT_FIXTURE_ROOT_ATTEMPTS: u64 = 64;
 
 /// A launch authority that can only be issued by the runtime factory.
 ///
@@ -217,12 +218,8 @@ impl LocalReplayProvisioner {
     ) -> Result<ReplayLaunchAuthority, ReplayAuthoritySourceError> {
         let cassette = ReplayAuthoritySource::validate_cassette_digest(cassette_sha256)
             .map_err(ReplayAuthoritySourceError::Authority)?;
-        let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("asb-dr-{sequence}"));
-        fs::create_dir(&root).map_err(|_| {
-            ReplayAuthoritySourceError::Authority(LaunchAuthorityError::InvalidLaunchInput)
-        })?;
-        let cleanup = TemporaryReplayRoot(root.clone());
+        let cleanup = allocate_development_fixture_root()?;
+        let root = cleanup.0.clone();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|_| {
             ReplayAuthoritySourceError::Authority(LaunchAuthorityError::InvalidLaunchInput)
         })?;
@@ -381,6 +378,36 @@ impl LocalReplayProvisioner {
             })?;
         ReplayAuthoritySource::issue_with_relay(input, lease, backend, cassette_sha256, relay)
     }
+}
+
+fn allocate_development_fixture_root() -> Result<TemporaryReplayRoot, ReplayAuthoritySourceError> {
+    allocate_development_fixture_root_with_limit(MAX_DEVELOPMENT_FIXTURE_ROOT_ATTEMPTS)
+}
+
+fn allocate_development_fixture_root_with_limit(
+    max_attempts: u64,
+) -> Result<TemporaryReplayRoot, ReplayAuthoritySourceError> {
+    // The sequence is process-local, so include the process identity before
+    // it. Parallel cargo test binaries otherwise reuse the same first
+    // `a0` root and turn an otherwise valid fixture into a collision.
+    // Retrying an existing path also handles a stale tree after an
+    // interrupted process without reusing another process's fixture.
+    for _ in 0..max_attempts {
+        let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let candidate = std::env::temp_dir().join(format!("a{:x}{sequence:x}", std::process::id()));
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(TemporaryReplayRoot(candidate)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => {
+                return Err(ReplayAuthoritySourceError::Authority(
+                    LaunchAuthorityError::InvalidLaunchInput,
+                ));
+            }
+        }
+    }
+    Err(ReplayAuthoritySourceError::Authority(
+        LaunchAuthorityError::InvalidLaunchInput,
+    ))
 }
 
 /// Failure while materializing runtime-owned replay authority.
@@ -1273,7 +1300,8 @@ mod tests {
             .filter_map(Result::ok)
             .filter_map(|entry| {
                 let name = entry.file_name().into_string().ok()?;
-                name.starts_with("asb-dr-").then_some(name)
+                name.starts_with(&format!("a{:x}", std::process::id()))
+                    .then_some(name)
             })
             .collect()
     }
@@ -1301,6 +1329,48 @@ mod tests {
             ))
         ));
         assert_eq!(development_fixture_roots(), before);
+    }
+
+    #[test]
+    fn development_fixture_roots_are_unique_across_parallel_calls() {
+        let _guard = DEVELOPMENT_FIXTURE_TEST_LOCK.lock().unwrap();
+        let before = development_fixture_roots();
+        let roots = std::thread::scope(|scope| {
+            (0..8)
+                .map(|_| scope.spawn(allocate_development_fixture_root))
+                .map(|handle| handle.join().unwrap().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let after = development_fixture_roots();
+        let created = after.difference(&before).collect::<Vec<_>>();
+        assert_eq!(created.len(), roots.len());
+        let prefix = format!("a{:x}", std::process::id());
+        assert!(created.iter().all(|name| name.starts_with(&prefix)));
+        drop(roots);
+        assert_eq!(development_fixture_roots(), before);
+    }
+
+    #[test]
+    fn development_fixture_allocator_skips_stale_root() {
+        let _guard = DEVELOPMENT_FIXTURE_TEST_LOCK.lock().unwrap();
+        let sequence = FIXTURE_SEQUENCE.load(Ordering::Relaxed);
+        let stale = std::env::temp_dir().join(format!("a{:x}{sequence:x}", std::process::id()));
+        let _ = fs::remove_dir_all(&stale);
+        fs::create_dir(&stale).unwrap();
+        let allocated = allocate_development_fixture_root().unwrap();
+        assert_ne!(allocated.0, stale);
+        drop(allocated);
+        fs::remove_dir_all(stale).unwrap();
+    }
+
+    #[test]
+    fn development_fixture_allocator_rejects_zero_retry_budget() {
+        assert!(matches!(
+            allocate_development_fixture_root_with_limit(0),
+            Err(ReplayAuthoritySourceError::Authority(
+                LaunchAuthorityError::InvalidLaunchInput
+            ))
+        ));
     }
 
     #[test]

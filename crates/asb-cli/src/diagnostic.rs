@@ -594,7 +594,7 @@ const fn legacy_cli_context(cause: Cause) -> Context {
     }
 }
 
-include!("diagnostic_legacy_catalog.rs");
+include!("diagnostic_legacy_catalog_compact.rs");
 
 fn classify(code: &'static str, message: &'static str) -> (Cause, Context) {
     // Stable operation codes from the provider and routed-TUI boundaries.

@@ -427,6 +427,16 @@ impl SandboxLaunchInput {
     }
 }
 
+fn development_profile_override() -> Option<(std::ffi::OsString, std::ffi::OsString)> {
+    development_profile_override_from(std::env::var_os("LLVM_PROFILE_FILE"))
+}
+
+fn development_profile_override_from(
+    profile_file: Option<std::ffi::OsString>,
+) -> Option<(std::ffi::OsString, std::ffi::OsString)> {
+    profile_file.map(|profile_file| (std::ffi::OsString::from("LLVM_PROFILE_FILE"), profile_file))
+}
+
 fn valid_key(key: &str) -> bool {
     let mut bytes = key.bytes();
     bytes
@@ -688,6 +698,12 @@ impl SandboxBackend {
             command.env("HOME", "/workspace");
             command.env("TMPDIR", "/tmp");
             command.env("ASB_SCOPE_NONCE", &nonce);
+            // Keep child coverage attribution when the test harness explicitly
+            // supplies LLVM_PROFILE_FILE, without widening the normal scrubbed
+            // environment for development or production execution.
+            if let Some((key, profile_file)) = development_profile_override() {
+                command.env(key, profile_file);
+            }
             for (key, value) in &spec.environment {
                 command.env(key, value);
             }
@@ -1430,6 +1446,15 @@ impl std::error::Error for SandboxError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn development_profile_override_is_explicit_and_bounded() {
+        assert!(development_profile_override_from(None).is_none());
+        let value = std::ffi::OsString::from("/tmp/asb-profile-%p.profraw");
+        let override_value = development_profile_override_from(Some(value.clone())).unwrap();
+        assert_eq!(override_value.0, "LLVM_PROFILE_FILE");
+        assert_eq!(override_value.1, value);
+    }
     use crate::credential_injection::{CredentialInjection, CredentialInjectionError};
     use crate::live_namespace::LiveProviderNamespaceHandoff;
     use crate::provider_egress::{ProviderEgressHandoff, ProviderEgressPolicy};

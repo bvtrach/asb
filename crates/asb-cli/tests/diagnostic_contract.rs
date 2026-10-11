@@ -481,7 +481,7 @@ fn controlled_uncatalogued_routed_producer_is_rejected() {
     let error = assert_legacy_call_sites_are_catalogued(
         "crates/asb-cli/src/lib.rs",
         trivia_after_type,
-        include_str!("../src/diagnostic_legacy_catalog.rs"),
+        include_str!("../src/diagnostic_legacy_catalog_compact.rs"),
     )
     .expect_err("the completeness gate must reject legacy type-token trivia");
     assert!(error.contains("aliases are forbidden"));
@@ -527,7 +527,7 @@ fn controlled_uncatalogued_routed_producer_is_rejected() {
 
 #[test]
 fn ordinary_cli_producers_are_mechanically_closed() {
-    let catalog = include_str!("../src/diagnostic_legacy_catalog.rs");
+    let catalog = include_str!("../src/diagnostic_legacy_catalog_compact.rs");
     for (file, source) in [
         (
             "crates/asb-cli/src/control.rs",
@@ -569,7 +569,7 @@ fn controlled_bare_and_dynamic_cli_producers_are_rejected() {
     let error = assert_legacy_call_sites_are_catalogued(
         "crates/asb-cli/src/lib.rs",
         dynamic,
-        include_str!("../src/diagnostic_legacy_catalog.rs"),
+        include_str!("../src/diagnostic_legacy_catalog_compact.rs"),
     )
     .expect_err("a dynamic legacy producer must have an exact reviewed call-site identity");
     assert!(error.contains("crates/asb-cli/src/lib.rs\", 2"));
@@ -578,7 +578,7 @@ fn controlled_bare_and_dynamic_cli_producers_are_rejected() {
     let error = assert_legacy_call_sites_are_catalogued(
         "crates/asb-cli/src/lib.rs",
         multiline_legacy,
-        include_str!("../src/diagnostic_legacy_catalog.rs"),
+        include_str!("../src/diagnostic_legacy_catalog_compact.rs"),
     )
     .expect_err("a multiline legacy producer must have an exact reviewed call-site identity");
     assert!(error.contains("crates/asb-cli/src/lib.rs\", 2"));
@@ -587,7 +587,7 @@ fn controlled_bare_and_dynamic_cli_producers_are_rejected() {
     let error = assert_legacy_call_sites_are_catalogued(
         "crates/asb-cli/src/lib.rs",
         commented_legacy,
-        include_str!("../src/diagnostic_legacy_catalog.rs"),
+        include_str!("../src/diagnostic_legacy_catalog_compact.rs"),
     )
     .expect_err("a comment-separated legacy producer must have an exact reviewed identity");
     assert!(error.contains("crates/asb-cli/src/lib.rs\", 2"));
@@ -595,7 +595,7 @@ fn controlled_bare_and_dynamic_cli_producers_are_rejected() {
     let error = assert_legacy_call_sites_are_catalogued(
         "crates/asb-cli/src/lib.rs",
         nested_legacy,
-        include_str!("../src/diagnostic_legacy_catalog.rs"),
+        include_str!("../src/diagnostic_legacy_catalog_compact.rs"),
     )
     .expect_err("a nested-comment legacy producer must have an exact reviewed identity");
     assert!(error.contains("crates/asb-cli/src/lib.rs\", 2"));
@@ -604,7 +604,7 @@ fn controlled_bare_and_dynamic_cli_producers_are_rejected() {
     let error = assert_legacy_call_sites_are_catalogued(
         "crates/asb-cli/src/lib.rs",
         function_item,
-        include_str!("../src/diagnostic_legacy_catalog.rs"),
+        include_str!("../src/diagnostic_legacy_catalog_compact.rs"),
     )
     .expect_err("the completeness gate must reject a legacy function item");
     assert!(error.contains("function item"));
@@ -613,7 +613,7 @@ fn controlled_bare_and_dynamic_cli_producers_are_rejected() {
     let error = assert_legacy_call_sites_are_catalogued(
         "crates/asb-cli/src/lib.rs",
         alias,
-        include_str!("../src/diagnostic_legacy_catalog.rs"),
+        include_str!("../src/diagnostic_legacy_catalog_compact.rs"),
     )
     .expect_err("the completeness gate must reject a legacy error-type alias");
     assert!(error.contains("aliases are forbidden"));
@@ -621,7 +621,7 @@ fn controlled_bare_and_dynamic_cli_producers_are_rejected() {
     let error = assert_legacy_call_sites_are_catalogued(
         "crates/asb-cli/src/lib.rs",
         multiline_type_alias,
-        include_str!("../src/diagnostic_legacy_catalog.rs"),
+        include_str!("../src/diagnostic_legacy_catalog_compact.rs"),
     )
     .expect_err("the completeness gate must reject a multiline legacy type alias");
     assert!(error.contains("aliases are forbidden"));
@@ -630,7 +630,7 @@ fn controlled_bare_and_dynamic_cli_producers_are_rejected() {
     let error = assert_legacy_call_sites_are_catalogued(
         "crates/asb-cli/src/lib.rs",
         type_alias,
-        include_str!("../src/diagnostic_legacy_catalog.rs"),
+        include_str!("../src/diagnostic_legacy_catalog_compact.rs"),
     )
     .expect_err("the completeness gate must reject a legacy type alias");
     assert!(error.contains("aliases are forbidden"));
@@ -638,7 +638,7 @@ fn controlled_bare_and_dynamic_cli_producers_are_rejected() {
     let error = assert_legacy_call_sites_are_catalogued(
         "crates/asb-cli/src/lib.rs",
         commented_type_alias,
-        include_str!("../src/diagnostic_legacy_catalog.rs"),
+        include_str!("../src/diagnostic_legacy_catalog_compact.rs"),
     )
     .expect_err("the completeness gate must reject a comment-separated legacy type alias");
     assert!(error.contains("aliases are forbidden"));
@@ -646,7 +646,7 @@ fn controlled_bare_and_dynamic_cli_producers_are_rejected() {
     let error = assert_legacy_call_sites_are_catalogued(
         "crates/asb-cli/src/lib.rs",
         namespaced_type_alias,
-        include_str!("../src/diagnostic_legacy_catalog.rs"),
+        include_str!("../src/diagnostic_legacy_catalog_compact.rs"),
     )
     .expect_err("the completeness gate must reject a namespaced legacy type alias");
     assert!(error.contains("aliases are forbidden"));
@@ -654,7 +654,7 @@ fn controlled_bare_and_dynamic_cli_producers_are_rejected() {
     let error = assert_legacy_call_sites_are_catalogued(
         "crates/asb-cli/src/lib.rs",
         qualified,
-        include_str!("../src/diagnostic_legacy_catalog.rs"),
+        include_str!("../src/diagnostic_legacy_catalog_compact.rs"),
     )
     .expect_err("the completeness gate must reject a qualified legacy path");
     assert!(error.contains("qualified diagnostic error paths"));
@@ -662,7 +662,7 @@ fn controlled_bare_and_dynamic_cli_producers_are_rejected() {
     let error = assert_legacy_call_sites_are_catalogued(
         "crates/asb-cli/src/lib.rs",
         commented_qualified,
-        include_str!("../src/diagnostic_legacy_catalog.rs"),
+        include_str!("../src/diagnostic_legacy_catalog_compact.rs"),
     )
     .expect_err("the completeness gate must reject a comment-separated qualified legacy path");
     assert!(error.contains("qualified diagnostic error paths"));
@@ -670,7 +670,7 @@ fn controlled_bare_and_dynamic_cli_producers_are_rejected() {
     let error = assert_legacy_call_sites_are_catalogued(
         "crates/asb-cli/src/lib.rs",
         namespaced_qualified,
-        include_str!("../src/diagnostic_legacy_catalog.rs"),
+        include_str!("../src/diagnostic_legacy_catalog_compact.rs"),
     )
     .expect_err("the completeness gate must reject a namespaced qualified legacy path");
     assert!(error.contains("qualified diagnostic error paths"));
@@ -678,7 +678,7 @@ fn controlled_bare_and_dynamic_cli_producers_are_rejected() {
     let error = assert_legacy_call_sites_are_catalogued(
         "crates/asb-cli/src/lib.rs",
         post_close_trivia,
-        include_str!("../src/diagnostic_legacy_catalog.rs"),
+        include_str!("../src/diagnostic_legacy_catalog_compact.rs"),
     )
     .expect_err("the completeness gate must reject post-close legacy trivia");
     assert!(error.contains("qualified diagnostic error paths"));
