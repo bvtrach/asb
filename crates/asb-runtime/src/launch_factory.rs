@@ -22,6 +22,7 @@ use std::sync::{
 use std::time::Duration;
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const MAX_DEVELOPMENT_FIXTURE_ROOT_ATTEMPTS: u64 = 64;
 
 /// A launch authority that can only be issued by the runtime factory.
 ///
@@ -385,7 +386,7 @@ fn allocate_development_fixture_root() -> Result<TemporaryReplayRoot, ReplayAuth
     // `asb-dr-0` root and turn an otherwise valid fixture into a collision.
     // Retrying an existing path also handles a stale tree after an
     // interrupted process without reusing another process's fixture.
-    loop {
+    for _ in 0..MAX_DEVELOPMENT_FIXTURE_ROOT_ATTEMPTS {
         let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let candidate =
             std::env::temp_dir().join(format!("asb-dr-{}-{sequence}", std::process::id()));
@@ -399,6 +400,9 @@ fn allocate_development_fixture_root() -> Result<TemporaryReplayRoot, ReplayAuth
             }
         }
     }
+    Err(ReplayAuthoritySourceError::Authority(
+        LaunchAuthorityError::InvalidLaunchInput,
+    ))
 }
 
 /// Failure while materializing runtime-owned replay authority.
@@ -1327,7 +1331,7 @@ mod tests {
         let before = development_fixture_roots();
         let roots = std::thread::scope(|scope| {
             (0..8)
-                .map(|_| scope.spawn(|| allocate_development_fixture_root()))
+                .map(|_| scope.spawn(allocate_development_fixture_root))
                 .map(|handle| handle.join().unwrap().unwrap())
                 .collect::<Vec<_>>()
         });
