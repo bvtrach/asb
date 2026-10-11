@@ -3191,9 +3191,25 @@ fn replay(
         cassette_sha256: cassette.integrity.digest.clone(),
     };
     let mut index = RecordingIndex::new();
-    index.insert(descriptor, &cassette).map_err(|_| {
-        CliError::legacy_validation("recording cassette is not compatible with this selection")
-    })?;
+    index
+        .insert(descriptor, &cassette)
+        .map_err(|error| match error {
+            asb_replay::SourceSelectionError::ProviderIdentityMismatch => {
+                CliError::validation_code(
+                    "recording_provider_identity_mismatch",
+                    "recording provider identity does not match authenticated cassette",
+                )
+            }
+            asb_replay::SourceSelectionError::CassetteIdentityMismatch => {
+                CliError::validation_code(
+                    "recording_cassette_identity_mismatch",
+                    "recording cassette identity does not match descriptor",
+                )
+            }
+            _ => CliError::legacy_validation(
+                "recording cassette is not compatible with this selection",
+            ),
+        })?;
     let source = asb_replay::choose_source(
         &index,
         provider_profile_sha256,
