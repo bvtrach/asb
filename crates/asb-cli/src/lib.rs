@@ -4026,9 +4026,13 @@ fn workload_with_progress(
     let operation = args.first().map(String::as_str).ok_or_else(|| {
         CliError::legacy_usage("workload requires install|list|status|select|repair|update|remove")
     })?;
-    let (id, rest) = args[1..]
-        .split_first()
-        .map_or((None, &args[1..]), |(id, rest)| (Some(id), rest));
+    let (id, rest) = if operation == "list" {
+        (None, &args[1..])
+    } else {
+        args[1..]
+            .split_first()
+            .map_or((None, &args[1..]), |(id, rest)| (Some(id), rest))
+    };
     let project = tool_project_path(rest, 0)?;
     let mut config = load_tool_project(&project)?;
     let catalog = external_workload_catalog();
@@ -17390,6 +17394,61 @@ pub(crate) mod tests {
         assert_eq!(result["tuple_count"], workload_ids.len());
         for workload_id in workload_ids {
             assert!(scratch.0.join(format!("{workload_id}.json")).is_file());
+        }
+    }
+
+    #[test]
+    fn workload_lifecycle_read_only_and_proof_matrix_is_bounded() {
+        let scratch = Scratch::new("workload-lifecycle-matrix");
+        let project = scratch.0.join("workspace");
+        let mut output = Vec::new();
+        assert_eq!(
+            run(
+                &[
+                    "project".into(),
+                    "init".into(),
+                    project.display().to_string().into(),
+                ],
+                &mut output,
+                &mut Vec::new(),
+            ),
+            0
+        );
+        output.clear();
+        assert!(
+            workload_with_progress(
+                &[
+                    "list".into(),
+                    "--project".into(),
+                    project.display().to_string()
+                ],
+                &mut output,
+                &mut Vec::new(),
+                false,
+            )
+            .is_ok()
+        );
+        for args in [
+            vec!["status", "missing"],
+            vec!["select", "missing"],
+            vec!["remove", "missing"],
+            vec!["install", "agentbench"],
+            vec!["install", "agentdojo"],
+            vec!["install", "agentops"],
+            vec!["install", "ai-agents-that-matter"],
+        ] {
+            let mut command = args.into_iter().map(OsString::from).collect::<Vec<_>>();
+            command.extend([
+                OsString::from("--project"),
+                project.display().to_string().into(),
+            ]);
+            let command = command
+                .into_iter()
+                .map(|value| value.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            assert!(
+                workload_with_progress(&command, &mut Vec::new(), &mut Vec::new(), false).is_err()
+            );
         }
     }
 

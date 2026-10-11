@@ -2,8 +2,8 @@
   "schema_version": 1,
   "asb_revision": "174411ff73515b3d6ae6d67eda1d902e58078ca4",
 =======
-  "cli_source_sha256": "c7f7e1398c68581275166937a9841a0ac28da1cf442a5cfc565b24813ae81713",
->>>>>>> 9f6e2142 (fix(cli): satisfy lifecycle clippy gate)
+  "cli_source_sha256": "99d1c7dc40ed0d3c4da86c7ac7c727e642ab6c4ae80d9d13da6f5ff78ab4c218",
+>>>>>>> 6fb228a2 (test(cli): cover workload lifecycle boundaries)
   "replay_fixture_sha256": "529d11312261c2daef88c9c4a25ae4d14cf520f6931b2a09fff2466ffaa37167",
   "guide_contract_sha256": "683f27aeb5143fc757200c6fb3fd65b06288069f08f83517912098c89c24ffe8",
   "transcript_sha256": "357eb762fb8d58a8d37deddfe64d2032a8f957353b5d78dec04d950e6e28ac49",
