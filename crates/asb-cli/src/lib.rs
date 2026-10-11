@@ -12803,7 +12803,7 @@ pub(crate) mod tests {
                 queue: 0,
                 max_failures: 0,
                 timeout_ms: 5_000,
-                poll_ms: 2,
+                poll_ms: 50,
                 seed: 7,
                 open_loop_interval_ms: None,
                 sweep_max_concurrency: Some(2),
@@ -17126,7 +17126,7 @@ pub(crate) mod tests {
         validate_plan(&plan).unwrap();
         let migrated = effective_measurement_selection(&plan).unwrap();
         assert_eq!(migrated.selected_ids.len(), 7);
-        assert_eq!(migrated.sample_interval_ns, Some(2_000_000));
+        assert_eq!(migrated.sample_interval_ns, Some(50_000_000));
         assert!(
             !toml::to_string(&plan)
                 .unwrap()
