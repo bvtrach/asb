@@ -1607,6 +1607,7 @@ fn unicode_args(args: &[OsString]) -> Result<Vec<String>, CliError> {
 /// Run the catalog/config-driven easy workflow through the ordinary
 /// run/sweep dispatcher. Online execution is the default; `--local-mock` is
 /// an explicit credential-free development alternative.
+/// The configured provider selection remains bound before execution.
 #[cfg(test)]
 fn guided_local(
     args: &[String],
@@ -1716,8 +1717,7 @@ fn guided_local_with_context(
         )
         .map(|()| 0);
     }
-    let local_mock = args.len() == 4 && args[2..].iter().any(|flag| flag == "--local-mock");
-    if !(args.len() == 3 || args.len() == 4) {
+    if !(3..=4).contains(&args.len()) {
         return Err(CliError::legacy_usage(
             "easy requires run|sweep PATH --use-config [--local-mock]",
         ));
@@ -1737,14 +1737,7 @@ fn guided_local_with_context(
     }
     let store = ConfigStore::from_environment()
         .map_err(|_| CliError::legacy_operation("ASB configuration location is unavailable"))?;
-    guided_local_at(
-        args,
-        &store,
-        local_mock,
-        output,
-        progress,
-        presentation_context,
-    )
+    guided_local_at(args, &store, output, progress, presentation_context)
 }
 
 fn guided_path(value: &str, label: &'static str) -> Result<PathBuf, CliError> {
@@ -2175,11 +2168,11 @@ fn guided_lifecycle_at_with_progress(
 fn guided_local_at(
     args: &[String],
     store: &ConfigStore,
-    local_mock: bool,
     output: &mut dyn Write,
     progress: &mut dyn Write,
     presentation_context: Option<&mut human::PresentationContext>,
 ) -> Result<u8, CliError> {
+    let local_mock = args.len() == 4 && args[2..].iter().any(|flag| flag == "--local-mock");
     let sweep = match args[0].as_str() {
         "run" => false,
         "sweep" => true,
@@ -11792,7 +11785,7 @@ mod tests {
         ];
         let mut output = Vec::new();
         assert_eq!(
-            guided_local_at(&args, &store, true, &mut output, &mut Vec::new(), None).unwrap(),
+            guided_local_at(&args, &store, &mut output, &mut Vec::new(), None).unwrap(),
             0
         );
         let result: Value = serde_json::from_slice(&output).unwrap();
