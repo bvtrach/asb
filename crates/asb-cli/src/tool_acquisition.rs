@@ -169,12 +169,41 @@ pub fn verify_bytes(
     } else {
         bytes
     };
+    validate_executable_bytes(&bytes)?;
     Ok(VerifiedArtifact {
         bytes,
         entry,
         alternative,
         source_ref,
     })
+}
+
+fn validate_executable_bytes(bytes: &[u8]) -> Result<(), AcquisitionError> {
+    // Prebuilt tools are executable ELF objects, never arbitrary non-empty
+    // payloads. Validate the bounded header and a nonzero entry point before
+    // persisting or activating the artifact.
+    if bytes.len() < 24 || &bytes[..4] != b"\x7fELF" {
+        return Err(AcquisitionError::UnsafeArtifact);
+    }
+    // The catalog's Linux prebuilt contract is little-endian ELF; reject
+    // big-endian or unknown encodings instead of interpreting fields loosely.
+    if !matches!(bytes[4], 1 | 2) || bytes[5] != 1 {
+        return Err(AcquisitionError::UnsafeArtifact);
+    }
+    let executable_type = u16::from_le_bytes([bytes[16], bytes[17]]);
+    let machine = u16::from_le_bytes([bytes[18], bytes[19]]);
+    if !matches!(executable_type, 2 | 3) || machine == 0 {
+        return Err(AcquisitionError::UnsafeArtifact);
+    }
+    let entrypoint_nonzero = if bytes[4] == 1 {
+        bytes.len() >= 28 && bytes[24..28].iter().any(|byte| *byte != 0)
+    } else {
+        bytes.len() >= 32 && bytes[24..32].iter().any(|byte| *byte != 0)
+    };
+    if !entrypoint_nonzero {
+        return Err(AcquisitionError::UnsafeArtifact);
+    }
+    Ok(())
 }
 
 fn extract_tar_entry(archive: &[u8], entrypoint: &str) -> Result<Vec<u8>, AcquisitionError> {
@@ -200,7 +229,7 @@ fn extract_tar_entry(archive: &[u8], entrypoint: &str) -> Result<Vec<u8>, Acquis
         )
         .map_err(|_| AcquisitionError::UnsafeArtifact)?;
         let kind = header[156];
-        if kind != 0 && kind != b'0' && (kind == b'2' || kind == b'1') {
+        if kind != 0 && kind != b'0' {
             return Err(AcquisitionError::UnsafeArtifact);
         }
         let start = offset + 512;
@@ -228,7 +257,7 @@ pub fn read_local(id: &str, path: &Path) -> Result<VerifiedArtifact, Acquisition
         return Err(AcquisitionError::UnsafeArtifact);
     }
     let bytes = fs::read(path).map_err(|_| AcquisitionError::Unavailable)?;
-    let source_ref = format!("local:{}", path.display());
+    let source_ref = format!("local:{id}");
     match verify_bytes(id, source_ref.clone(), bytes.clone()) {
         Ok(artifact) => Ok(artifact),
         Err(AcquisitionError::UnknownTool) => {
@@ -391,6 +420,13 @@ mod tests {
             extract_tar_entry(&tar_member(b"link", b"x", b'2'), "tool"),
             Err(AcquisitionError::UnsafeArtifact)
         );
+        for kind in 1..=7 {
+            assert_eq!(
+                extract_tar_entry(&tar_member(b"special", b"x", kind), "tool"),
+                Err(AcquisitionError::UnsafeArtifact),
+                "tar type {kind} must be rejected"
+            );
+        }
         assert_eq!(
             extract_tar_entry(&tar_member(b"other", b"x", 0), "tool"),
             Err(AcquisitionError::UnsafeArtifact)
@@ -469,15 +505,37 @@ mod tests {
         fs::write(temporary.path(), &fixture.bytes).unwrap();
         fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let artifact = read_local("matrix", temporary.path()).unwrap();
-        assert_eq!(
-            artifact.source_ref,
-            format!("local:{}", temporary.path().display())
-        );
+        assert_eq!(artifact.source_ref, "local:matrix");
 
         fs::write(temporary.path(), b"not the reviewed fixture").unwrap();
         assert!(matches!(
             read_local("matrix", temporary.path()),
             Err(AcquisitionError::DigestMismatch)
         ));
+    }
+
+    #[test]
+    fn executable_validation_requires_elf_entrypoint() {
+        assert_eq!(
+            validate_executable_bytes(b"arbitrary payload"),
+            Err(AcquisitionError::UnsafeArtifact)
+        );
+        let mut elf = vec![0u8; 64];
+        elf[..4].copy_from_slice(b"\x7fELF");
+        elf[4] = 2;
+        elf[5] = 1;
+        elf[16..18].copy_from_slice(&3u16.to_le_bytes());
+        elf[18..20].copy_from_slice(&62u16.to_le_bytes());
+        assert_eq!(
+            validate_executable_bytes(&elf),
+            Err(AcquisitionError::UnsafeArtifact)
+        );
+        elf[24] = 1;
+        assert!(validate_executable_bytes(&elf).is_ok());
+        elf[5] = 2;
+        assert_eq!(
+            validate_executable_bytes(&elf),
+            Err(AcquisitionError::UnsafeArtifact)
+        );
     }
 }
