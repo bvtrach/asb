@@ -217,12 +217,8 @@ impl LocalReplayProvisioner {
     ) -> Result<ReplayLaunchAuthority, ReplayAuthoritySourceError> {
         let cassette = ReplayAuthoritySource::validate_cassette_digest(cassette_sha256)
             .map_err(ReplayAuthoritySourceError::Authority)?;
-        let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!("asb-dr-{sequence}"));
-        fs::create_dir(&root).map_err(|_| {
-            ReplayAuthoritySourceError::Authority(LaunchAuthorityError::InvalidLaunchInput)
-        })?;
-        let cleanup = TemporaryReplayRoot(root.clone());
+        let cleanup = allocate_development_fixture_root()?;
+        let root = cleanup.0.clone();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|_| {
             ReplayAuthoritySourceError::Authority(LaunchAuthorityError::InvalidLaunchInput)
         })?;
@@ -380,6 +376,28 @@ impl LocalReplayProvisioner {
                 ReplayAuthoritySourceError::Authority(LaunchAuthorityError::InvalidLaunchInput)
             })?;
         ReplayAuthoritySource::issue_with_relay(input, lease, backend, cassette_sha256, relay)
+    }
+}
+
+fn allocate_development_fixture_root() -> Result<TemporaryReplayRoot, ReplayAuthoritySourceError> {
+    // The sequence is process-local, so include the process identity before
+    // it. Parallel cargo test binaries otherwise reuse the same first
+    // `asb-dr-0` root and turn an otherwise valid fixture into a collision.
+    // Retrying an existing path also handles a stale tree after an
+    // interrupted process without reusing another process's fixture.
+    loop {
+        let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let candidate =
+            std::env::temp_dir().join(format!("asb-dr-{}-{sequence}", std::process::id()));
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(TemporaryReplayRoot(candidate)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => {
+                return Err(ReplayAuthoritySourceError::Authority(
+                    LaunchAuthorityError::InvalidLaunchInput,
+                ));
+            }
+        }
     }
 }
 
@@ -1300,6 +1318,25 @@ mod tests {
                 LaunchAuthorityError::InvalidLaunchInput
             ))
         ));
+        assert_eq!(development_fixture_roots(), before);
+    }
+
+    #[test]
+    fn development_fixture_roots_are_unique_across_parallel_calls() {
+        let _guard = DEVELOPMENT_FIXTURE_TEST_LOCK.lock().unwrap();
+        let before = development_fixture_roots();
+        let roots = std::thread::scope(|scope| {
+            (0..8)
+                .map(|_| scope.spawn(|| allocate_development_fixture_root()))
+                .map(|handle| handle.join().unwrap().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let after = development_fixture_roots();
+        let created = after.difference(&before).collect::<Vec<_>>();
+        assert_eq!(created.len(), roots.len());
+        let prefix = format!("asb-dr-{}-", std::process::id());
+        assert!(created.iter().all(|name| name.starts_with(&prefix)));
+        drop(roots);
         assert_eq!(development_fixture_roots(), before);
     }
 
