@@ -1604,10 +1604,9 @@ fn unicode_args(args: &[OsString]) -> Result<Vec<String>, CliError> {
         .collect()
 }
 
-/// Run the catalog/config-driven local qualification fixture through the
-/// ordinary run/sweep dispatcher. This command deliberately has no live or
-/// endpoint option: the explicit `--local-mock --use-config` pair is the
-/// complete authority surface.
+/// Run the catalog/config-driven easy workflow through the ordinary
+/// run/sweep dispatcher. Online execution is the default; `--local-mock` is
+/// an explicit credential-free development alternative.
 #[cfg(test)]
 fn guided_local(
     args: &[String],
@@ -1717,28 +1716,39 @@ fn guided_local_with_context(
         )
         .map(|()| 0);
     }
-    if args.len() != 4 {
-        return Err(CliError::legacy_usage(
-            "easy requires run|sweep PATH --use-config --local-mock",
-        ));
-    }
+    let local_mock = match args.len() {
+        3 => false,
+        4 if args[3] == "--local-mock" => true,
+        4 if args[2] == "--local-mock" => true,
+        _ => {
+            return Err(CliError::legacy_usage(
+                "easy requires run|sweep PATH --use-config [--local-mock]",
+            ));
+        }
+    };
     if args[1].is_empty() || !args[2..].iter().any(|flag| flag == "--use-config") {
         return Err(CliError::legacy_validation(
             "easy requires an experiment path and --use-config",
         ));
     }
-    if !args[2..].iter().any(|flag| flag == "--local-mock")
-        || args[2..]
-            .iter()
-            .any(|flag| !matches!(flag.as_str(), "--use-config" | "--local-mock"))
+    if args[2..]
+        .iter()
+        .any(|flag| !matches!(flag.as_str(), "--use-config" | "--local-mock"))
     {
         return Err(CliError::legacy_usage(
-            "easy accepts only --use-config and --local-mock",
+            "easy accepts only --use-config and optional --local-mock",
         ));
     }
     let store = ConfigStore::from_environment()
         .map_err(|_| CliError::legacy_operation("ASB configuration location is unavailable"))?;
-    guided_local_at(args, &store, output, progress, presentation_context)
+    guided_local_at_with_mode(
+        args,
+        &store,
+        local_mock,
+        output,
+        progress,
+        presentation_context,
+    )
 }
 
 fn guided_path(value: &str, label: &'static str) -> Result<PathBuf, CliError> {
@@ -1834,7 +1844,7 @@ fn guided_setup_with_progress(
 fn write_easy_help(output: &mut dyn Write) -> Result<(), CliError> {
     writeln!(
         output,
-        "ASB guided local workflow\n\nUsage:\n  asb easy setup [SETUP_OPTIONS]\n  asb easy build|install|update|test|status|rollback|remove [--channel dev|stable|nightly|experimental] [--yes] [--dry-run]\n  asb easy provider-catalog\n  asb easy plan EXPERIMENT.toml --use-config\n  asb easy run|sweep EXPERIMENT.toml --use-config --local-mock\n  asb easy report RUN...\n  asb easy compare RUN RUN...\n  asb easy record CAPTURE.json CASSETTE.json --local-mock\n  asb easy record-live CAPTURE.json CASSETTE.json --local-mock --confirm-record\n  asb easy record-campaign MANIFEST.json --local-mock\n  asb easy replay CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT --local-mock\n  asb easy replay-offline CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT --local-mock\n\nLifecycle commands are provider-free. The development stable channel is a local mock;\nit is never public-release or stable-promotion evidence. Mutations require --yes or --dry-run."
+        "ASB guided workflow (online by default)\n\nUsage:\n  asb easy setup [SETUP_OPTIONS]\n  asb easy build|install|update|test|status|rollback|remove [--channel dev|stable|nightly|experimental] [--yes] [--dry-run]\n  asb easy provider-catalog\n  asb easy plan EXPERIMENT.toml --use-config\n  asb easy run|sweep EXPERIMENT.toml --use-config [--local-mock]\n  asb easy report RUN...\n  asb easy compare RUN RUN...\n  asb easy record CAPTURE.json CASSETTE.json --local-mock\n  asb easy record-live CAPTURE.json CASSETTE.json --local-mock --confirm-record\n  asb easy record-campaign MANIFEST.json --local-mock\n  asb easy replay CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT --local-mock\n  asb easy replay-offline CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT --local-mock\n\nLifecycle commands are provider-free. The development stable channel is a local mock;\nit is never public-release or stable-promotion evidence. Mutations require --yes or --dry-run."
     )
     .map_err(output_error)
 }
@@ -2173,6 +2183,25 @@ fn guided_local_at(
     progress: &mut dyn Write,
     presentation_context: Option<&mut human::PresentationContext>,
 ) -> Result<u8, CliError> {
+    let local_mock = args.iter().any(|arg| arg == "--local-mock");
+    guided_local_at_with_mode(
+        args,
+        store,
+        local_mock,
+        output,
+        progress,
+        presentation_context,
+    )
+}
+
+fn guided_local_at_with_mode(
+    args: &[String],
+    store: &ConfigStore,
+    local_mock: bool,
+    output: &mut dyn Write,
+    progress: &mut dyn Write,
+    presentation_context: Option<&mut human::PresentationContext>,
+) -> Result<u8, CliError> {
     let sweep = match args[0].as_str() {
         "run" => false,
         "sweep" => true,
@@ -2182,9 +2211,9 @@ fn guided_local_at(
         Path::new(&args[1]),
         SelectionSource::Config(store),
         sweep,
-        false,
+        !local_mock,
         None,
-        true,
+        local_mock,
         output,
         progress,
         presentation_context,
@@ -2433,6 +2462,11 @@ fn write_help(output: &mut dyn Write) -> Result<(), CliError> {
     writeln!(
         output,
         "Agent Systems Benchmark (ASB)\n\nUsage:\n  asb doctor [--json]\n  asb setup [--json|--format=json]\n  asb easy run|sweep EXPERIMENT.toml --use-config --local-mock\n  asb capabilities [--json|--format json]\n  asb project init [PATH]\n  asb catalog generate|list|show ID|select ID --kind KIND --digest-sha256 SHA256 [--project PATH]\n  asb tui [launch|status|doctor|remove|install|upgrade]\n  asb provider-catalog [--json]\n  asb adapter-catalog\n  asb provider-plan --catalog-sha256 SHA256 --provider-profile openai|openrouter --agent AGENT --credential-reference-sha256 SHA256\n  asb plan EXPERIMENT.toml --provider-selection selection.json\n  asb run EXPERIMENT.toml --local-mock\n  asb sweep EXPERIMENT.toml --local-mock\n  asb benchmark-live EXPERIMENT.toml --provider-selection selection.json --online [--agents selected|all] [--workloads selected|all] [--sweep]\n  asb compare RUN...\n  asb report RUN...\n  asb completion bash\n  asb serve CONTROL.toml\n\nHuman-readable output is the default. Add --json for versioned machine output; --format json remains supported as a compatibility alias. Add --details for bounded diagnostic identifiers in human output. Progress is written to stderr."
+    )
+    .map_err(output_error)?;
+    writeln!(
+        output,
+        "Easy run/sweep defaults to configured online execution; pass --local-mock for the explicit credential-free alternative."
     )
     .map_err(output_error)?;
     writeln!(
@@ -11574,6 +11608,13 @@ mod tests {
 
     #[test]
     fn guided_local_requires_explicit_mock_and_config_flags() {
+        let default_online = vec![
+            "run".into(),
+            "experiment.toml".into(),
+            "--use-config".into(),
+        ];
+        assert!(guided_local(&default_online, None, &mut Vec::new(), &mut Vec::new()).is_err());
+
         let missing_mock = vec![
             "run".into(),
             "experiment.toml".into(),
