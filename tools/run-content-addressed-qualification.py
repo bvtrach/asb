@@ -66,16 +66,105 @@ def sanitized_environment() -> dict[str, str]:
     return environment
 
 
-def command(binary: Sequence[str], args: Sequence[str], root: Path) -> tuple[int, Any, str]:
+def command(
+    binary: Sequence[str], args: Sequence[str], root: Path,
+    extra_environment: dict[str, str] | None = None,
+) -> tuple[int, Any, str]:
+    environment = sanitized_environment()
+    if extra_environment:
+        environment.update(extra_environment)
     result = subprocess.run(
         [*binary, *args], cwd=root, check=False, capture_output=True, text=True,
-        env=sanitized_environment(),
+        env=environment,
     )
     try:
         output = json.loads(result.stdout)
     except json.JSONDecodeError:
         output = None
     return result.returncode, output, result.stderr.strip()
+
+
+def plan_and_run_journey(
+    root: Path, binary: Sequence[str], workspace: Path,
+) -> dict[str, Any]:
+    """Create, validate, execute, report, and compare two fresh plans."""
+    user_root = workspace / "fresh-user"
+    user_root.mkdir(mode=0o700)
+    environment = {
+        "HOME": str(user_root),
+        "XDG_CONFIG_HOME": str(user_root / "config"),
+        "XDG_STATE_HOME": str(user_root / "state"),
+        "XDG_DATA_HOME": str(user_root / "data"),
+    }
+    setup_code, setup, error = command(
+        binary,
+        ["setup", "--agent", "codex", "--provider-profile", "openrouter",
+         "--model", "cohere/north-mini-code:free", "--persist", "--json"],
+        root,
+        environment,
+    )
+    if setup_code != 0 or not isinstance(setup, dict):
+        raise RuntimeError(f"fresh-user setup failed: {error or setup}")
+    agent = workspace / "offline-agent"
+    agent.write_text(
+        "#!/bin/sh\nprintf '%s\\n' 'def parse_line(line):' '    return line' > parser.py\n",
+        encoding="utf-8",
+    )
+    agent.chmod(0o700)
+    plans: list[dict[str, Any]] = []
+    reports: list[dict[str, Any]] = []
+    run_dirs: list[Path] = []
+    for index in (1, 2):
+        plan_root = workspace / f"plan-{index}"
+        plan_root.mkdir(mode=0o700)
+        result_root = plan_root / "results"
+        plan_path = plan_root / "experiment.toml"
+        create_code, created, error = command(
+            binary,
+            ["plan", "create", "--workload", "original.bug-fix", "--agent", "codex",
+             "--agent-executable", str(agent), "--run-id", "qualification",
+             "--result-root", str(result_root), "--work-root", str(plan_root / "work"),
+            "--output", str(plan_path), "--use-config", "--json"],
+            root,
+            environment,
+        )
+        if create_code != 0 or not isinstance(created, dict):
+            raise RuntimeError(f"plan create failed: {error or created}")
+        plan_code, planned, error = command(
+            binary, ["plan", str(plan_path), "--use-config", "--json"], root, environment
+        )
+        if plan_code != 0 or not isinstance(planned, dict):
+            raise RuntimeError(f"plan validation failed: {error or planned}")
+        run_code, run_output, error = command(
+            binary, ["run", str(plan_path), "--use-config", "--local-mock", "--json"], root, environment
+        )
+        if run_code != 0 or not isinstance(run_output, dict):
+            raise RuntimeError(f"local-mock run failed: {error or run_output}")
+        run_dir = result_root / "runs" / "qualification"
+        report_code, report, error = command(
+            binary, ["report", str(run_dir), "--json"], root, environment
+        )
+        if report_code != 0 or not isinstance(report, dict):
+            raise RuntimeError(f"run report failed: {error or report}")
+        plans.append({
+            "experiment_sha256": created.get("experiment_sha256"),
+            "validated": planned.get("ok") is True,
+        })
+        reports.append({
+            "run_id": "qualification",
+            "terminal_state": report.get("runs", [{}])[0].get("terminal_state"),
+        })
+        run_dirs.append(run_dir)
+    compare_code, comparison, error = command(
+        binary,
+        ["compare", *(str(path) for path in run_dirs), "--json"],
+        root,
+        environment,
+    )
+    if compare_code != 0 or not isinstance(comparison, dict) or comparison.get("comparable") is not True:
+        raise RuntimeError(f"local-mock comparison failed: {error or comparison}")
+    return {"setup": "development_only", "plans": plans, "runs": reports,
+            "comparison": {"comparable": True, "differences": comparison.get("differences", [])}}
 
 
 def fixture_capture(fixture: Path, agent: str, profile: str) -> dict[str, Any]:
@@ -227,6 +316,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     binary = [str(args.asb.resolve())]
     with tempfile.TemporaryDirectory(prefix="asb-content-addressed-") as directory:
         workspace = Path(directory)
+        journey = plan_and_run_journey(root, binary, workspace)
         campaign = run_campaign(root, binary, fixture, agents, workloads, workspace)
         negative = negative_incomplete(root, binary, fixture, agents, workloads, workspace)
     receipt = {
@@ -239,6 +329,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "fixture_sha256": digest_bytes(fixture.read_bytes()),
         "provider_profile_sha256": PROFILE,
         "selection": {"agents": agents, "workloads": workloads},
+        "plan_run_journey": journey,
         "campaign": campaign,
         "negative_incomplete_coverage": negative,
     }
