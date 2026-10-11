@@ -383,13 +383,12 @@ impl LocalReplayProvisioner {
 fn allocate_development_fixture_root() -> Result<TemporaryReplayRoot, ReplayAuthoritySourceError> {
     // The sequence is process-local, so include the process identity before
     // it. Parallel cargo test binaries otherwise reuse the same first
-    // `asb-dr-0` root and turn an otherwise valid fixture into a collision.
+    // `a0` root and turn an otherwise valid fixture into a collision.
     // Retrying an existing path also handles a stale tree after an
     // interrupted process without reusing another process's fixture.
     for _ in 0..MAX_DEVELOPMENT_FIXTURE_ROOT_ATTEMPTS {
         let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let candidate =
-            std::env::temp_dir().join(format!("asb-dr-{}-{sequence}", std::process::id()));
+        let candidate = std::env::temp_dir().join(format!("a{:x}{sequence:x}", std::process::id()));
         match fs::create_dir(&candidate) {
             Ok(()) => return Ok(TemporaryReplayRoot(candidate)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -1295,7 +1294,8 @@ mod tests {
             .filter_map(Result::ok)
             .filter_map(|entry| {
                 let name = entry.file_name().into_string().ok()?;
-                name.starts_with("asb-dr-").then_some(name)
+                name.starts_with(&format!("a{:x}", std::process::id()))
+                    .then_some(name)
             })
             .collect()
     }
@@ -1338,7 +1338,7 @@ mod tests {
         let after = development_fixture_roots();
         let created = after.difference(&before).collect::<Vec<_>>();
         assert_eq!(created.len(), roots.len());
-        let prefix = format!("asb-dr-{}-", std::process::id());
+        let prefix = format!("a{:x}", std::process::id());
         assert!(created.iter().all(|name| name.starts_with(&prefix)));
         drop(roots);
         assert_eq!(development_fixture_roots(), before);
@@ -1348,7 +1348,7 @@ mod tests {
     fn development_fixture_allocator_skips_stale_root() {
         let _guard = DEVELOPMENT_FIXTURE_TEST_LOCK.lock().unwrap();
         let sequence = FIXTURE_SEQUENCE.load(Ordering::Relaxed);
-        let stale = std::env::temp_dir().join(format!("asb-dr-{}-{sequence}", std::process::id()));
+        let stale = std::env::temp_dir().join(format!("a{:x}{sequence:x}", std::process::id()));
         let _ = fs::remove_dir_all(&stale);
         fs::create_dir(&stale).unwrap();
         let allocated = allocate_development_fixture_root().unwrap();
