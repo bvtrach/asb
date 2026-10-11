@@ -1172,6 +1172,17 @@ fn dispatch(
                 presentation_context,
             )
         }
+        [command, path, flag, local_mock]
+            if command == "run" && flag == "--use-config" && local_mock == "--local-mock" =>
+        {
+            execute_with_config_local_mock(
+                Path::new(path),
+                false,
+                stdout,
+                stderr,
+                presentation_context,
+            )
+        }
         [command, path, flag] if command == "run" && flag == "--use-config" => execute_with_config(
             Path::new(path),
             false,
@@ -1319,6 +1330,17 @@ fn dispatch(
             execute_with_selection_local_mock(
                 Path::new(path),
                 Path::new(selection),
+                true,
+                stdout,
+                stderr,
+                presentation_context,
+            )
+        }
+        [command, path, flag, local_mock]
+            if command == "sweep" && flag == "--use-config" && local_mock == "--local-mock" =>
+        {
+            execute_with_config_local_mock(
+                Path::new(path),
                 true,
                 stdout,
                 stderr,
@@ -7570,6 +7592,28 @@ fn execute_with_config(
         true,
         None,
         false,
+        output,
+        progress,
+        presentation_context,
+    )
+}
+
+fn execute_with_config_local_mock(
+    path: &Path,
+    sweep: bool,
+    output: &mut dyn Write,
+    progress: &mut dyn Write,
+    presentation_context: Option<&mut human::PresentationContext>,
+) -> Result<u8, CliError> {
+    let store = ConfigStore::from_environment()
+        .map_err(|_| CliError::legacy_operation("ASB configuration location is unavailable"))?;
+    execute_inner_from_source(
+        path,
+        SelectionSource::Config(&store),
+        sweep,
+        false,
+        None,
+        true,
         output,
         progress,
         presentation_context,
