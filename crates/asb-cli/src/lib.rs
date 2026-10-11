@@ -4165,14 +4165,12 @@ fn workload_with_progress(
             let receipt_path = root.join("receipt.json");
             let previous_bundle = fs::read(&bundle_path).ok();
             let previous_receipt = fs::read(&receipt_path).ok();
-            if let Err(error) = write_atomic_private(
+            write_atomic_private(
                 &bundle_path,
                 &transfer.stdout,
                 DirectoryPurpose::Tools,
                 None,
-            ) {
-                return Err(error);
-            }
+            )?;
             let receipt = json!({"schema_version": 1, "workload_id": id, "catalog_revision": version, "source": source_url, "revision": revision, "archive_digest_sha256": archive_digest, "license": license, "status": "verified", "preparation": "archive-retained; no installer executed", "evaluator_entrypoint": preparation});
             let receipt_bytes = serde_json::to_vec_pretty(&receipt)
                 .map_err(|_| CliError::legacy_operation("workload receipt cannot be encoded"))?;
