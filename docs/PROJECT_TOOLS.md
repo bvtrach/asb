@@ -3,7 +3,18 @@
 ASB can install a bounded external-tool artifact into a project without root,
 network access, a package manager, or a shell. The registry is stored in the
 project's `.asb/project.json`; the artifact is copied to `.asb/tools/<id>/tool`.
-Only a regular local file or a deterministic development fixture is accepted:
+Supported executable identities are defined by the immutable, checked-in
+`asb-cli/fixtures/v1/tool-acquisition-catalog.json`. The catalog records the
+official source, pinned version/revision, platform tuple, artifact digest,
+license, entrypoint, and bounded source-build recipe. A PATH or local binary
+is never trusted merely because its name matches: reuse must first verify the
+catalog identity. It covers the supported agents (`aider`, `codex`, `gemini`,
+`goose`, `mini-swe`, `opencode`, `opendesk`, `openhands`, `openjiuwen`, and
+`qwen-code`), development-only `cli2key`, and optional Linux monitoring tools
+`perf` and `bpftool`. Provider APIs are not executable tool entries.
+
+Only a regular local file or a deterministic development fixture is accepted
+by the current offline development installer:
 
 ```sh
 asb project init .
@@ -18,6 +29,10 @@ Supported kinds are `agent`, `harness`, `benchmark`, `workload`, and
 do not contact a provider or execute a command. HTTPS, shell commands,
 symlinks, directories, oversized files, and unknown options are rejected.
 Credentials and private source paths are never written to the project record.
+Production acquisition reports typed outcomes for unsupported platforms,
+missing verification, revoked identities, unavailable official sources, and
+unavailable build recipes; it never falls back to an arbitrary package
+manager or shell installer. `cli2key` is explicitly development-only.
 
 Use `--dry-run` to validate and preview an install without changing the
 project. Repeating an identical install is idempotent; a conflicting existing
