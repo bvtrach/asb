@@ -5202,7 +5202,7 @@ fn provider_plan_at_with_catalog(
         index += 2;
     }
     let config = use_config
-        .then(|| load_openrouter_plan_config_at(store))
+        .then(|| load_openrouter_plan_config_at(store, &agents))
         .transpose()?;
     let provider = provider
         .or_else(|| config.as_ref().map(|_| "openrouter"))
@@ -5221,6 +5221,14 @@ fn provider_plan_at_with_catalog(
             ));
         }
         credential_reference_sha256 = Some(config.credential_reference_sha256.as_str());
+        if let Some(requested) = catalog_sha256
+            && requested != config.catalog_sha256
+        {
+            return Err(CliError::legacy_validation(
+                "configured OpenRouter catalog does not match the requested catalog",
+            ));
+        }
+        catalog_sha256 = Some(config.catalog_sha256.as_str());
         if config.dynamic {
             if let Some(requested) = requested_model
                 && requested != config.model
@@ -5230,14 +5238,6 @@ fn provider_plan_at_with_catalog(
                 ));
             }
             requested_model = Some(config.model.as_str());
-            if let Some(requested) = catalog_sha256
-                && requested != config.catalog_sha256
-            {
-                return Err(CliError::legacy_validation(
-                    "configured OpenRouter catalog does not match the requested catalog",
-                ));
-            }
-            catalog_sha256 = Some(config.catalog_sha256.as_str());
         }
     }
     let expected_catalog = provider_catalog_digest();
@@ -5338,11 +5338,20 @@ struct OpenRouterPlanConfig {
     dynamic: bool,
 }
 
-fn load_openrouter_plan_config_at(store: &ConfigStore) -> Result<OpenRouterPlanConfig, CliError> {
+fn load_openrouter_plan_config_at(
+    store: &ConfigStore,
+    agents: &[SelectedAgent],
+) -> Result<OpenRouterPlanConfig, CliError> {
     let config = store
         .load()
         .map_err(|_| CliError::legacy_validation("ASB configuration is unavailable or malformed"))?
         .ok_or_else(|| CliError::legacy_validation("OpenRouter configuration is absent"))?;
+    // `config openrouter` predates the setup document and deliberately has no
+    // per-agent entries.  Keep that enrollment readable, but make the setup
+    // document the source of truth whenever it names configured agents.
+    if config.openrouter_free_model.is_none() && !config.agents.is_empty() {
+        return configured_openrouter_plan_config(&config, agents);
+    }
     if let Some(dynamic) = config.openrouter_dynamic_model {
         dynamic.validate().map_err(|_| {
             CliError::legacy_validation("OpenRouter dynamic configuration is invalid")
@@ -5360,6 +5369,104 @@ fn load_openrouter_plan_config_at(store: &ConfigStore) -> Result<OpenRouterPlanC
         catalog_sha256: provider_catalog_digest(),
         credential_reference_sha256: selection.credential.locator_sha256,
         dynamic: false,
+    })
+}
+
+/// Derive a provider-plan identity from the same per-agent profile records
+/// consumed by `plan --use-config` and `run --use-config`.  A selection cannot
+/// widen a setup document: every requested agent must be enabled and bound to
+/// one exact OpenRouter profile, connection, model, and credential reference.
+fn configured_openrouter_plan_config(
+    config: &Configuration,
+    agents: &[SelectedAgent],
+) -> Result<OpenRouterPlanConfig, CliError> {
+    config
+        .validate()
+        .map_err(|_| CliError::legacy_validation("ASB configuration is invalid"))?;
+    let first = agents.first().ok_or_else(|| {
+        CliError::legacy_validation("configured OpenRouter agent selection is absent")
+    })?;
+    let first_agent = agent_id(*first);
+    let configured = config
+        .agents
+        .get(first_agent)
+        .ok_or_else(|| CliError::legacy_validation("selected agent is not configured"))?;
+    if !configured.enabled {
+        return Err(CliError::legacy_validation(
+            "selected agent is disabled in setup configuration",
+        ));
+    }
+    let profile = config
+        .profiles
+        .get(&configured.profile)
+        .ok_or_else(|| CliError::legacy_validation("configured provider profile is absent"))?;
+    let credential = profile.credential.as_ref().ok_or_else(|| {
+        CliError::legacy_validation("configured provider credential reference is absent")
+    })?;
+    if profile.provider != "openrouter"
+        || profile.endpoint != asb_agents::openrouter::OPENROUTER_API_BASE
+        || credential.kind != CredentialReferenceKind::Environment
+    {
+        return Err(CliError::legacy_validation(
+            "configured provider profile is not OpenRouter",
+        ));
+    }
+    let connection = config
+        .connections
+        .get(&configured.connection)
+        .ok_or_else(|| CliError::legacy_validation("configured provider connection is absent"))?;
+    if connection.endpoint != asb_agents::openrouter::OPENROUTER_API_BASE {
+        return Err(CliError::legacy_validation(
+            "configured provider connection is not OpenRouter",
+        ));
+    }
+    for selected in agents {
+        let agent = config
+            .agents
+            .get(agent_id(*selected))
+            .ok_or_else(|| CliError::legacy_validation("selected agent is not configured"))?;
+        let selected_profile = config
+            .profiles
+            .get(&agent.profile)
+            .ok_or_else(|| CliError::legacy_validation("configured provider profile is absent"))?;
+        let selected_credential = selected_profile.credential.as_ref().ok_or_else(|| {
+            CliError::legacy_validation("configured provider credential reference is absent")
+        })?;
+        if !agent.enabled
+            || selected_profile.provider != profile.provider
+            || selected_profile.model != profile.model
+            || selected_profile.endpoint != profile.endpoint
+            || selected_credential != credential
+        {
+            return Err(CliError::legacy_validation(
+                "configured provider identity is incompatible with selected agents",
+            ));
+        }
+    }
+    if profile.model == asb_agents::openrouter::OPENROUTER_MODEL {
+        return Ok(OpenRouterPlanConfig {
+            model: profile.model.clone(),
+            catalog_sha256: provider_catalog_digest(),
+            credential_reference_sha256: credential.locator_sha256.clone(),
+            dynamic: false,
+        });
+    }
+    let dynamic = config.openrouter_dynamic_model.as_ref().ok_or_else(|| {
+        CliError::legacy_validation("configured OpenRouter model identity is stale")
+    })?;
+    dynamic
+        .validate()
+        .map_err(|_| CliError::legacy_validation("OpenRouter dynamic configuration is invalid"))?;
+    if dynamic.model != profile.model || dynamic.credential != *credential {
+        return Err(CliError::legacy_validation(
+            "configured OpenRouter model identity is stale",
+        ));
+    }
+    Ok(OpenRouterPlanConfig {
+        model: dynamic.model.clone(),
+        catalog_sha256: dynamic.catalog_sha256.clone(),
+        credential_reference_sha256: dynamic.credential.locator_sha256.clone(),
+        dynamic: true,
     })
 }
 
@@ -12035,7 +12142,7 @@ mod tests {
         ];
         setup_with_catalog(&setup_args, &mut Vec::new(), || Ok(catalog.clone())).unwrap();
 
-        let loaded = load_openrouter_plan_config_at(&store).unwrap();
+        let loaded = load_openrouter_plan_config_at(&store, &[SelectedAgent::Codex]).unwrap();
         assert!(loaded.dynamic);
         assert_eq!(loaded.model, "example/free");
         assert_eq!(loaded.catalog_sha256, catalog.digest_sha256());
@@ -12163,6 +12270,42 @@ mod tests {
         let config = ConfigStore::new(&config_path).load().unwrap().unwrap();
         let configured = provider_plan_from_configuration(&config, "opencode").unwrap();
 
+        let configured_agents = [SelectedAgent::OpenCode, SelectedAgent::OpenDesk];
+        let configured_args = vec![
+            "--use-config".into(),
+            "--agent".into(),
+            "opencode".into(),
+            "--agent".into(),
+            "opendesk".into(),
+        ];
+        let mut configured_output = Vec::new();
+        provider_plan_at(
+            &configured_args,
+            &mut configured_output,
+            &ConfigStore::new(&config_path),
+        )
+        .unwrap();
+        let configured_selection: ProviderPlanOutput =
+            serde_json::from_slice(&configured_output).unwrap();
+        assert_eq!(configured_selection.provider_profile, "openrouter");
+        assert_eq!(
+            configured_selection.effective.len(),
+            configured_agents.len()
+        );
+        assert_eq!(
+            configured_selection.provider_profile_sha256,
+            configured.provider_profile_sha256
+        );
+        let absent_agent = vec!["--use-config".into(), "--agent".into(), "codex".into()];
+        assert!(
+            provider_plan_at(
+                &absent_agent,
+                &mut Vec::new(),
+                &ConfigStore::new(&config_path)
+            )
+            .is_err()
+        );
+
         let (plan_path, mut fixture) = plan_fixture(&scratch.0, "setup-runtime");
         fixture.experiment.agent.implementation = "opencode".into();
         fixture.experiment.model.provider = "openrouter".into();
@@ -12228,6 +12371,71 @@ mod tests {
         let result: Value = serde_json::from_slice(&run_output).unwrap();
         assert_eq!(result["ok"], true);
         assert_eq!(result["points"][0]["decision"], "pass");
+
+        // The provider-plan emitted from setup must be consumable by both
+        // benchmark-live scopes in machine and human presentation modes.  The
+        // factory fails at the opaque runtime boundary, proving admission and
+        // identity binding without a credential, network request, or fallback.
+        let selection_path = scratch.0.join("setup-provider-selection.json");
+        let configured_selection_value = serde_json::to_value(&configured_selection).unwrap();
+        fs::write(
+            &selection_path,
+            serde_json::to_vec(&configured_selection_value).unwrap(),
+        )
+        .unwrap();
+        for (scope, expected_runs) in [("selected", 1_usize), ("all", 2_usize)] {
+            for human in [false, true] {
+                let suffix = if human { "human" } else { "json" };
+                let (live_plan_path, mut live_plan) =
+                    plan_fixture(&scratch.0, &format!("setup-live-{scope}-{suffix}"));
+                bind_provider_selection(
+                    &mut live_plan,
+                    &configured_selection_value,
+                    "opencode",
+                    "openrouter",
+                );
+                fs::write(&live_plan_path, toml::to_string(&live_plan).unwrap()).unwrap();
+                let args = vec![
+                    "benchmark-live".into(),
+                    live_plan_path.as_os_str().to_owned(),
+                    "--provider-selection".into(),
+                    selection_path.as_os_str().to_owned(),
+                    "--online".into(),
+                    "--agents".into(),
+                    scope.into(),
+                ];
+                let mut output = Vec::new();
+                let exit = if human {
+                    run_with_live_provider_factory_default_mode(
+                        &args,
+                        LiveProviderAttemptFactory::from_fn(|_, _| {
+                            Err(LaunchAuthorityError::InvalidLaunchInput)
+                        }),
+                        &mut output,
+                        &mut Vec::new(),
+                        true,
+                    )
+                } else {
+                    run_with_live_provider_factory(
+                        &args,
+                        LiveProviderAttemptFactory::from_fn(|_, _| {
+                            Err(LaunchAuthorityError::InvalidLaunchInput)
+                        }),
+                        &mut output,
+                        &mut Vec::new(),
+                    )
+                };
+                assert_eq!(exit, 6);
+                let rendered = String::from_utf8(output).unwrap();
+                assert!(rendered.contains("live_provider_attempt_unavailable"));
+                assert!(!rendered.contains("local_mock"));
+                assert!(!rendered.contains("strict_replay"));
+                if !human {
+                    let receipt: Value = serde_json::from_str(&rendered).unwrap();
+                    assert_eq!(receipt["run_ids"].as_array().unwrap().len(), expected_runs);
+                }
+            }
+        }
     }
 
     #[test]
