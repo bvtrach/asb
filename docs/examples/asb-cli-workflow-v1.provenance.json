@@ -2,8 +2,8 @@
   "schema_version": 1,
   "asb_revision": "174411ff73515b3d6ae6d67eda1d902e58078ca4",
 =======
-  "cli_source_sha256": "d1cf33b6570d14046b74940a85b2b1b5b3696da07ed85560cc04b9ffc3d8c384",
->>>>>>> 722b259c (test(cli): cover remaining workload branches)
+  "cli_source_sha256": "5fbd3a81a671f533da7a81531992687c1eaad5391c8f4c970e0a9ac6ed1b7dd9",
+>>>>>>> c5154b12 (fix(cli): refresh workflow provenance digest)
   "replay_fixture_sha256": "529d11312261c2daef88c9c4a25ae4d14cf520f6931b2a09fff2466ffaa37167",
   "guide_contract_sha256": "683f27aeb5143fc757200c6fb3fd65b06288069f08f83517912098c89c24ffe8",
   "transcript_sha256": "357eb762fb8d58a8d37deddfe64d2032a8f957353b5d78dec04d950e6e28ac49",
