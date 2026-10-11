@@ -4334,6 +4334,13 @@ fn workload_output(
 }
 
 fn acquire_verified_workload_archive(source_url: &str) -> Result<Vec<u8>, CliError> {
+    if std::env::var("ASB_CI_CREDENTIAL_FREE").as_deref() == Ok("1")
+        || std::env::var("ASB_NETWORK_POLICY").as_deref() == Ok("deny")
+    {
+        return Err(CliError::legacy_validation(
+            "official workload source is unavailable or offline",
+        ));
+    }
     let transfer = Command::new("/usr/bin/curl")
         .args([
             "--fail",
@@ -17896,7 +17903,8 @@ pub(crate) mod tests {
                 .map(|value| value.to_string_lossy().into_owned())
                 .collect::<Vec<_>>();
             assert!(
-                workload_with_progress(&command, &mut Vec::new(), &mut Vec::new(), false).is_err()
+                workload_with_progress(&command, &mut Vec::new(), &mut Vec::new(), false).is_err(),
+                "unexpectedly accepted credential-free matrix command: {command:?}"
             );
         }
         let mut config = load_tool_project(&project).unwrap();
