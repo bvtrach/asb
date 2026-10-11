@@ -1716,16 +1716,12 @@ fn guided_local_with_context(
         )
         .map(|()| 0);
     }
-    let local_mock = match args.len() {
-        3 => false,
-        4 if args[3] == "--local-mock" => true,
-        4 if args[2] == "--local-mock" => true,
-        _ => {
-            return Err(CliError::legacy_usage(
-                "easy requires run|sweep PATH --use-config [--local-mock]",
-            ));
-        }
-    };
+    let local_mock = args.len() == 4 && args[2..].iter().any(|flag| flag == "--local-mock");
+    if !(args.len() == 3 || args.len() == 4) {
+        return Err(CliError::legacy_usage(
+            "easy requires run|sweep PATH --use-config [--local-mock]",
+        ));
+    }
     if args[1].is_empty() || !args[2..].iter().any(|flag| flag == "--use-config") {
         return Err(CliError::legacy_validation(
             "easy requires an experiment path and --use-config",
@@ -1741,7 +1737,7 @@ fn guided_local_with_context(
     }
     let store = ConfigStore::from_environment()
         .map_err(|_| CliError::legacy_operation("ASB configuration location is unavailable"))?;
-    guided_local_at_with_mode(
+    guided_local_at(
         args,
         &store,
         local_mock,
@@ -2176,7 +2172,7 @@ fn guided_lifecycle_at_with_progress(
     Ok(0)
 }
 
-fn guided_local_at_with_mode(
+fn guided_local_at(
     args: &[String],
     store: &ConfigStore,
     local_mock: bool,
@@ -2444,11 +2440,6 @@ fn write_help(output: &mut dyn Write) -> Result<(), CliError> {
     writeln!(
         output,
         "Agent Systems Benchmark (ASB)\n\nUsage:\n  asb doctor [--json]\n  asb setup [--json|--format=json]\n  asb easy run|sweep EXPERIMENT.toml --use-config --local-mock\n  asb capabilities [--json|--format json]\n  asb project init [PATH]\n  asb catalog generate|list|show ID|select ID --kind KIND --digest-sha256 SHA256 [--project PATH]\n  asb tui [launch|status|doctor|remove|install|upgrade]\n  asb provider-catalog [--json]\n  asb adapter-catalog\n  asb provider-plan --catalog-sha256 SHA256 --provider-profile openai|openrouter --agent AGENT --credential-reference-sha256 SHA256\n  asb plan EXPERIMENT.toml --provider-selection selection.json\n  asb run EXPERIMENT.toml --local-mock\n  asb sweep EXPERIMENT.toml --local-mock\n  asb benchmark-live EXPERIMENT.toml --provider-selection selection.json --online [--agents selected|all] [--workloads selected|all] [--sweep]\n  asb compare RUN...\n  asb report RUN...\n  asb completion bash\n  asb serve CONTROL.toml\n\nHuman-readable output is the default. Add --json for versioned machine output; --format json remains supported as a compatibility alias. Add --details for bounded diagnostic identifiers in human output. Progress is written to stderr."
-    )
-    .map_err(output_error)?;
-    writeln!(
-        output,
-        "Easy run/sweep defaults to configured online execution; pass --local-mock for the explicit credential-free alternative."
     )
     .map_err(output_error)?;
     writeln!(
@@ -11590,13 +11581,6 @@ mod tests {
 
     #[test]
     fn guided_local_requires_explicit_mock_and_config_flags() {
-        let default_online = vec![
-            "run".into(),
-            "experiment.toml".into(),
-            "--use-config".into(),
-        ];
-        assert!(guided_local(&default_online, None, &mut Vec::new(), &mut Vec::new()).is_err());
-
         let missing_mock = vec![
             "run".into(),
             "experiment.toml".into(),
@@ -11808,8 +11792,7 @@ mod tests {
         ];
         let mut output = Vec::new();
         assert_eq!(
-            guided_local_at_with_mode(&args, &store, true, &mut output, &mut Vec::new(), None,)
-                .unwrap(),
+            guided_local_at(&args, &store, true, &mut output, &mut Vec::new(), None).unwrap(),
             0
         );
         let result: Value = serde_json::from_slice(&output).unwrap();
