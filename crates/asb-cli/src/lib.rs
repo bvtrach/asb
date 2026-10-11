@@ -12803,7 +12803,11 @@ pub(crate) mod tests {
                 queue: 0,
                 max_failures: 0,
                 timeout_ms: 5_000,
-                poll_ms: 2,
+                // Test fixtures run concurrently with the full workspace and
+                // must not treat ordinary host scheduling as clock
+                // contamination. Production plans retain explicit poll and
+                // fail-closed stall policy.
+                poll_ms: 50,
                 seed: 7,
                 open_loop_interval_ms: None,
                 sweep_max_concurrency: Some(2),
@@ -16933,10 +16937,6 @@ pub(crate) mod tests {
     fn plan_sweep_and_failed_run_exercise_public_outcomes() {
         let scratch = Scratch::new("commands");
         let (path, mut plan) = plan_fixture(&scratch.0, "commands");
-        // Exercise public outcomes without asserting a 10ms host scheduling
-        // budget when the full workspace is under parallel load.
-        plan.point.poll_ms = 50;
-        fs::write(&path, toml::to_string(&plan).unwrap()).unwrap();
         let mut output = Vec::new();
         let mut diagnostic = Vec::new();
         assert_eq!(
@@ -17130,7 +17130,7 @@ pub(crate) mod tests {
         validate_plan(&plan).unwrap();
         let migrated = effective_measurement_selection(&plan).unwrap();
         assert_eq!(migrated.selected_ids.len(), 7);
-        assert_eq!(migrated.sample_interval_ns, Some(2_000_000));
+        assert_eq!(migrated.sample_interval_ns, Some(50_000_000));
         assert!(
             !toml::to_string(&plan)
                 .unwrap()
