@@ -42,7 +42,7 @@
       "license": "MIT",
       "evaluator": "asb-local-fixture-agentops",
       "capability_tags": [
-        "unsupported"
+        "stateful-tool-use"
       ],
       "adaptation": "fixture-only",
       "platform": "linux-x86_64:fixture-only",
@@ -57,7 +57,7 @@
       "license": "NOASSERTION",
       "evaluator": "asb-local-fixture-ai-agents-that-matter",
       "capability_tags": [
-        "unsupported"
+        "harness-boundary"
       ],
       "adaptation": "fixture-only",
       "platform": "linux-x86_64:fixture-only",
@@ -177,7 +177,7 @@
       "license": "Apache-2.0",
       "evaluator": "asb-local-fixture-helm",
       "capability_tags": [
-        "unsupported"
+        "harness-boundary"
       ],
       "adaptation": "fixture-only",
       "platform": "linux-x86_64:fixture-only",
@@ -447,7 +447,7 @@
       "license": "MIT",
       "evaluator": "mini-swe-agent.run",
       "capability_tags": [
-        "unsupported"
+        "repository-repair"
       ],
       "adaptation": "fixture-only",
       "platform": "linux-x86_64:fixture-only",
