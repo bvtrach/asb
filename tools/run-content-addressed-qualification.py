@@ -80,6 +80,20 @@ def command(binary: Sequence[str], args: Sequence[str], root: Path) -> tuple[int
 
 def fixture_capture(fixture: Path, agent: str, profile: str) -> dict[str, Any]:
     cassette = json.loads(fixture.read_text(encoding="utf-8"))
+    contents = cassette["contents"]
+    # The checked-in Gemini cassette is already redacted for documentation,
+    # while the recording API expects an unmarked capture and applies its own
+    # redaction.  Omit the credential-bearing header in this credential-free
+    # development fixture; the strict dialect contract does not require it.
+    for interaction in contents.get("interactions", []):
+        request = interaction.get("request", {})
+        request["headers"] = [
+            header for header in request.get("headers", [])
+            if header.get("name", "").lower() not in {
+                "authorization", "cookie", "proxy-authorization", "set-cookie",
+                "x-api-key", "x-goog-api-key",
+            }
+        ]
     # The fixture is public synthetic material.  Keep its response and request
     # body intact, but bind the envelope to the selected local identity.
     return {
@@ -89,7 +103,7 @@ def fixture_capture(fixture: Path, agent: str, profile: str) -> dict[str, Any]:
         "network": "loopback_only",
         "estimated_cost_minor": 0,
         "confirmation": {"record": True, "network": True, "cost": False},
-        "contents": cassette["contents"],
+        "contents": contents,
     }
 
 
