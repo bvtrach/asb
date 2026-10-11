@@ -1065,6 +1065,44 @@ impl ProviderProfileUpsertParams {
 }
 
 impl ProviderCatalog {
+    /// Validate one generation- and digest-bound backend/model selection.
+    ///
+    /// Selection is deliberately checked against the complete catalog before
+    /// any provider-side operation.  In particular, an unavailable model is
+    /// not substituted with another model and a selection from another
+    /// provider cannot be accepted merely because its model id is known.
+    pub fn validate_selection(
+        &self,
+        expected_generation: Revision,
+        expected_catalog_sha256: &str,
+        provider_id: &str,
+        model_id: &str,
+    ) -> Result<(), ProtocolError> {
+        if expected_generation != self.generation || expected_catalog_sha256 != self.catalog_sha256
+        {
+            return Err(ProtocolError::InvalidResponse);
+        }
+        validate_catalog_string(provider_id)?;
+        validate_catalog_string(model_id)?;
+        let provider = self
+            .providers
+            .iter()
+            .find(|provider| provider.provider_id == provider_id)
+            .ok_or(ProtocolError::InvalidResponse)?;
+        if !matches!(provider.availability, ProviderAvailability::Available) {
+            return Err(ProtocolError::InvalidResponse);
+        }
+        let model = provider
+            .models
+            .iter()
+            .find(|model| model.model_id == model_id)
+            .ok_or(ProtocolError::InvalidResponse)?;
+        if !matches!(model.availability, ProviderAvailability::Available) {
+            return Err(ProtocolError::InvalidResponse);
+        }
+        Ok(())
+    }
+
     /// Return only models that may be selected for a provider.
     ///
     /// Catalogs intentionally retain unavailable models so a frontend can
@@ -1317,6 +1355,57 @@ mod tests {
             "model-1"
         );
         assert!(catalog.selectable_models("local").is_empty());
+    }
+
+    #[test]
+    fn selection_is_bound_to_catalog_generation_digest_and_backend() {
+        let mut provider = entry("openrouter");
+        provider.availability = ProviderAvailability::Available;
+        provider.models[0].availability = ProviderAvailability::Available;
+        let mut catalog = ProviderCatalog {
+            runner_instance_id: "runner-1".into(),
+            generation: Revision(3),
+            catalog_sha256: String::new(),
+            providers: vec![provider],
+            refreshed: true,
+        };
+        catalog.catalog_sha256 = catalog.computed_sha256().unwrap();
+        catalog.validate().unwrap();
+        assert!(
+            catalog
+                .validate_selection(
+                    Revision(3),
+                    &catalog.catalog_sha256,
+                    "openrouter",
+                    "model-1"
+                )
+                .is_ok()
+        );
+        assert!(
+            catalog
+                .validate_selection(
+                    Revision(2),
+                    &catalog.catalog_sha256,
+                    "openrouter",
+                    "model-1"
+                )
+                .is_err()
+        );
+        assert!(
+            catalog
+                .validate_selection(Revision(3), &"a".repeat(64), "openrouter", "model-1")
+                .is_err()
+        );
+        assert!(
+            catalog
+                .validate_selection(
+                    Revision(3),
+                    &catalog.catalog_sha256,
+                    "other-provider",
+                    "model-1"
+                )
+                .is_err()
+        );
     }
 
     #[test]
