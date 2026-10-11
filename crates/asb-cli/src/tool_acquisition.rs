@@ -5,6 +5,7 @@
 use crate::tool_catalog::{self, ArtifactAlternative, ToolEntry};
 use sha2::{Digest, Sha256};
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 
 const MAX_ARTIFACT_BYTES: usize = 128 * 1024 * 1024;
@@ -135,8 +136,8 @@ pub fn verify_bytes(
     // Compression support is deliberately not implicit: without a bounded
     // decompressor and archive validator, compressed source/prebuilt bundles
     // are not executable bytes and must fail closed.
-    if bytes.starts_with(&[0x1f, 0x8b]) || bytes.starts_with(&[0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00])
-    {
+    let gzip = bytes.starts_with(&[0x1f, 0x8b]);
+    if bytes.starts_with(&[0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]) {
         return Err(AcquisitionError::UnsafeArtifact);
     }
     let (entry, alternative) = resolve(id)?;
@@ -147,7 +148,21 @@ pub fn verify_bytes(
     // Archives are accepted only after bounded tar member validation and
     // extraction of the catalogued entrypoint.  Installer scripts and links
     // are never executed or materialized.
-    let bytes = if bytes.len() > 262 && &bytes[257..262] == b"ustar" {
+    let bytes = if gzip {
+        let decoder = flate2::read::GzDecoder::new(bytes.as_slice());
+        let mut decoded = Vec::new();
+        decoder
+            .take((MAX_ARTIFACT_BYTES + 1) as u64)
+            .read_to_end(&mut decoded)
+            .map_err(|_| AcquisitionError::UnsafeArtifact)?;
+        if decoded.len() > MAX_ARTIFACT_BYTES {
+            return Err(AcquisitionError::TooLarge);
+        }
+        if decoded.len() <= 262 || &decoded[257..262] != b"ustar" {
+            return Err(AcquisitionError::UnsafeArtifact);
+        }
+        extract_tar_entry(&decoded, &entry.entrypoint)?
+    } else if bytes.len() > 262 && &bytes[257..262] == b"ustar" {
         extract_tar_entry(&bytes, &entry.entrypoint)?
     } else if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"#!") {
         return Err(AcquisitionError::UnsafeArtifact);
@@ -240,6 +255,7 @@ use std::os::unix::fs::PermissionsExt;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::{Compression, write::GzEncoder};
     #[test]
     fn unknown_and_wrong_platform_are_typed() {
         assert_eq!(resolve("missing"), Err(AcquisitionError::UnknownTool));
@@ -261,15 +277,38 @@ mod tests {
 
     #[test]
     fn compressed_archives_fail_closed_before_digest_or_execution() {
-        for bytes in [
-            vec![0x1f, 0x8b, 0x08, 0x00],
-            vec![0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00],
-        ] {
-            assert!(matches!(
-                verify_bytes("codex", "https://example.invalid/archive".into(), bytes),
-                Err(AcquisitionError::UnsafeArtifact)
-            ));
-        }
+        assert!(matches!(
+            verify_bytes(
+                "codex",
+                "https://example.invalid/archive".into(),
+                vec![0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00]
+            ),
+            Err(AcquisitionError::UnsafeArtifact)
+        ));
+    }
+
+    #[test]
+    fn gzip_prebuilt_archive_is_bounded_and_uses_safe_tar_extraction() {
+        let archive = tar_member(b"codex", b"payload", 0);
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        std::io::Write::write_all(&mut encoder, &archive).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let mut decoder = flate2::read::GzDecoder::new(compressed.as_slice());
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded).unwrap();
+        assert_eq!(extract_tar_entry(&decoded, "codex").unwrap(), b"payload");
+
+        let mut unsafe_archive = tar_member(b"../escape", b"x", 0);
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        std::io::Write::write_all(&mut encoder, &unsafe_archive).unwrap();
+        unsafe_archive = encoder.finish().unwrap();
+        let mut decoder = flate2::read::GzDecoder::new(unsafe_archive.as_slice());
+        let mut decoded = Vec::new();
+        decoder.read_to_end(&mut decoded).unwrap();
+        assert_eq!(
+            extract_tar_entry(&decoded, "codex"),
+            Err(AcquisitionError::UnsafeArtifact)
+        );
     }
 
     #[test]
