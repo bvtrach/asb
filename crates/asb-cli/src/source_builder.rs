@@ -110,8 +110,7 @@ pub fn validate_recipe(tool: &ToolEntry, recipe: &BuildRecipe) -> Result<(), Bui
         return Err(BuildFailure::PolicyRejected);
     }
     let forbidden = [
-        "sudo", "su", "sh", "bash", "zsh", "fish", "curl", "wget", "npm", "pip", "apt", "dnf",
-        "yum", "pacman",
+        "sudo", "su", "sh", "bash", "zsh", "fish", "curl", "wget", "apt", "dnf", "yum", "pacman",
     ];
     for arg in &recipe.argv {
         if arg.is_empty()
@@ -128,6 +127,15 @@ pub fn validate_recipe(tool: &ToolEntry, recipe: &BuildRecipe) -> Result<(), Bui
         .first()
         .is_some_and(|program| forbidden.iter().any(|item| program == item))
     {
+        return Err(BuildFailure::PolicyRejected);
+    }
+    let program = recipe.argv.first().map(String::as_str).unwrap_or_default();
+    if (program == "pip" || program == "python")
+        && !recipe.argv.iter().any(|arg| arg == "--no-isolation")
+    {
+        return Err(BuildFailure::PolicyRejected);
+    }
+    if program == "npm" && !recipe.argv.iter().any(|arg| arg == "--ignore-scripts") {
         return Err(BuildFailure::PolicyRejected);
     }
     Ok(())
@@ -373,6 +381,11 @@ mod tests {
         );
         recipe.argv[0] = "true".into();
         recipe.argv.push("$(secret)".into());
+        assert_eq!(
+            validate_recipe(&tool, &recipe),
+            Err(BuildFailure::PolicyRejected)
+        );
+        recipe.argv = vec!["npm".into(), "install".into()];
         assert_eq!(
             validate_recipe(&tool, &recipe),
             Err(BuildFailure::PolicyRejected)
