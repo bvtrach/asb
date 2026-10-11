@@ -582,4 +582,57 @@ mod tests {
         assert!(result.dependencies[0].available);
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn inventory_lookup_covers_each_project_record_namespace() {
+        for (index, namespace) in ["harnesses", "benchmarks", "workloads"]
+            .into_iter()
+            .enumerate()
+        {
+            let root = std::env::temp_dir().join(format!(
+                "asb-dependency-registry-namespace-{index}-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join(".asb")).unwrap();
+            let mut config = asb_config::ProjectConfigV1::empty();
+            let record = asb_config::ProjectToolRecordV1 {
+                kind: match namespace {
+                    "harnesses" => asb_config::ProjectToolKind::Harness,
+                    "benchmarks" => asb_config::ProjectToolKind::Benchmark,
+                    "workloads" => asb_config::ProjectToolKind::Workload,
+                    _ => unreachable!(),
+                },
+                source_ref: "fixture://codex".into(),
+                version: "1.0.0".into(),
+                platform: "linux-x86_64".into(),
+                path: None,
+                digest_sha256: None,
+                capabilities: Vec::new(),
+                status: asb_config::ProjectToolStatus::Available,
+            };
+            match namespace {
+                "harnesses" => {
+                    config.harnesses.insert("codex".into(), record);
+                }
+                "benchmarks" => {
+                    config.benchmarks.insert("codex".into(), record);
+                }
+                "workloads" => {
+                    config.workloads.insert("codex".into(), record);
+                }
+                _ => unreachable!(),
+            }
+            std::fs::write(
+                root.join(".asb/project.json"),
+                serde_json::to_vec(&config).unwrap(),
+            )
+            .unwrap();
+            let result = preflight_for_selected("run", &root, Some("codex"), Some("local"))
+                .expect("project namespace should be evaluable");
+            assert!(result.ready);
+            assert!(result.dependencies[0].available);
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
 }
