@@ -5209,10 +5209,17 @@ struct ProviderPlanOutput {
     model: String,
     credential_source: String,
     credential_reference_sha256: String,
+    /// Enrollment/run generation used by the comparison identity fence.
+    #[serde(default = "default_comparison_generation")]
+    generation: u64,
     effective: Vec<EffectiveCliAgent>,
     /// Runtime-issued development-only cli2key launch binding, when selected.
     #[serde(default)]
     cli2key_launch: Option<Cli2KeyLaunch>,
+}
+
+const fn default_comparison_generation() -> u64 {
+    1
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -5415,6 +5422,7 @@ fn provider_plan_at_with_catalog(
             credential_reference_sha256: credential_reference_sha256
                 .expect("provider profile resolution validated the credential reference identity")
                 .to_owned(),
+            generation: default_comparison_generation(),
             effective,
             cli2key_launch: None,
         },
@@ -5620,6 +5628,7 @@ fn provider_plan_from_selection(
         model: model.into(),
         credential_source: "environment".into(),
         credential_reference_sha256: credential.into(),
+        generation: config.enrollment.generation,
         effective,
         cli2key_launch: None,
     };
@@ -6359,6 +6368,7 @@ fn provider_plan_from_configuration(
         model: profile.model.clone(),
         credential_source: "environment".into(),
         credential_reference_sha256: credential.locator_sha256.clone(),
+        generation: default_comparison_generation(),
         effective,
         cli2key_launch: None,
     };
@@ -9369,6 +9379,42 @@ fn compare(runs: &[String], output: &mut dyn Write) -> Result<(), CliError> {
             .iter()
             .map(|field| comparison_field_name(*field).to_owned())
             .collect::<Vec<_>>();
+        match (
+            &baseline.provider_selection,
+            &candidate.2.provider_selection,
+        ) {
+            (Some(left), Some(right)) => {
+                if left.provider_profile != right.provider_profile {
+                    pair_differences.push("provider".to_owned());
+                }
+                if left.model != right.model {
+                    pair_differences.push("model".to_owned());
+                }
+                if left.generation != right.generation {
+                    pair_differences.push("generation".to_owned());
+                }
+            }
+            _ => {}
+        }
+        match (&baseline.provider_launch, &candidate.2.provider_launch) {
+            (Some(left), Some(right)) => {
+                if left.input.settings_sha256 != right.input.settings_sha256 {
+                    pair_differences.push("model_settings".to_owned());
+                }
+                if left.input.endpoint_sha256 != right.input.endpoint_sha256 {
+                    pair_differences.push("provider_endpoint".to_owned());
+                }
+            }
+            _ if baseline.provider_selection.is_some() && candidate.2.provider_selection.is_some() => {
+                let reason = format!("{}:provider_identity_unavailable", candidate.1);
+                if !unavailable_reasons.contains(&reason) {
+                    unavailable_reasons.push(reason);
+                }
+            }
+            _ => {}
+        }
+        pair_differences.sort();
+        pair_differences.dedup();
         if baseline.execution.measurement_selection_sha256
             != candidate.2.execution.measurement_selection_sha256
             && !pair_differences
@@ -9403,6 +9449,8 @@ fn compare(runs: &[String], output: &mut dyn Write) -> Result<(), CliError> {
             right_agent: candidate.2.experiment.agent.implementation.clone(),
             comparable: baseline.provider_selection.is_some()
                 && candidate.2.provider_selection.is_some()
+                && baseline.provider_launch.is_some()
+                && candidate.2.provider_launch.is_some()
                 && pair_differences.is_empty()
                 && report.permits_unqualified_claim(),
             differences: pair_differences,
