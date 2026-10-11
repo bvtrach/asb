@@ -360,7 +360,17 @@ fn human_journey_reaches_selection_sweep_report_compare_and_tui() {
     assert!(sweep_command.starts_with("asb sweep "));
     assert!(sweep_command.ends_with(" --use-config"));
     assert!(sweep_command.contains("'\\''"));
-    let swept = execute_displayed_next(&journey, &planned);
+    // The documented configured command is online by default; this credential-free
+    // fixture opts into the explicit local mock alternative for the rest of the journey.
+    let swept = human_asb(
+        &journey,
+        &[
+            "sweep".to_owned(),
+            plan.to_string_lossy().into_owned(),
+            "--use-config".to_owned(),
+            "--local-mock".to_owned(),
+        ],
+    );
     assert!(
         swept.status.success(),
         "{}{}",

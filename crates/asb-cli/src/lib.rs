@@ -1142,7 +1142,7 @@ fn dispatch(
             Path::new(path),
             false,
             false,
-            None,
+            live_factory,
             stdout,
             stderr,
             presentation_context,
@@ -1152,6 +1152,31 @@ fn dispatch(
                 Path::new(path),
                 Path::new(selection),
                 false,
+                false,
+                stdout,
+                stderr,
+                presentation_context,
+            )
+        }
+        [command, path, flag, selection, local_mock]
+            if command == "run"
+                && flag == "--provider-selection"
+                && local_mock == "--local-mock" =>
+        {
+            execute_with_selection_local_mock(
+                Path::new(path),
+                Path::new(selection),
+                false,
+                stdout,
+                stderr,
+                presentation_context,
+            )
+        }
+        [command, path, flag, local_mock]
+            if command == "run" && flag == "--use-config" && local_mock == "--local-mock" =>
+        {
+            execute_with_config_local_mock(
+                Path::new(path),
                 false,
                 stdout,
                 stderr,
@@ -1191,6 +1216,24 @@ fn dispatch(
             stderr,
             presentation_context,
         ),
+        [command, path, selection, selection_path, matrix_args @ ..]
+            if command == "benchmark-live"
+                && selection == "--provider-selection"
+                && !matrix_args.iter().any(|arg| arg == "--online") =>
+        {
+            let (sweep, agents, workloads) = parse_live_benchmark_matrix(matrix_args)?;
+            execute_live_benchmark_matrix(
+                Path::new(path),
+                Path::new(selection_path),
+                sweep,
+                agents,
+                workloads,
+                live_factory,
+                stdout,
+                stderr,
+                presentation_context,
+            )
+        }
         [
             command,
             path,
@@ -1261,7 +1304,7 @@ fn dispatch(
             Path::new(path),
             true,
             false,
-            None,
+            live_factory,
             stdout,
             stderr,
             presentation_context,
@@ -1274,6 +1317,31 @@ fn dispatch(
                 Path::new(selection),
                 true,
                 false,
+                stdout,
+                stderr,
+                presentation_context,
+            )
+        }
+        [command, path, flag, selection, local_mock]
+            if command == "sweep"
+                && flag == "--provider-selection"
+                && local_mock == "--local-mock" =>
+        {
+            execute_with_selection_local_mock(
+                Path::new(path),
+                Path::new(selection),
+                true,
+                stdout,
+                stderr,
+                presentation_context,
+            )
+        }
+        [command, path, flag, local_mock]
+            if command == "sweep" && flag == "--use-config" && local_mock == "--local-mock" =>
+        {
+            execute_with_config_local_mock(
+                Path::new(path),
+                true,
                 stdout,
                 stderr,
                 presentation_context,
@@ -1336,6 +1404,17 @@ fn dispatch(
                 Path::new(input),
                 Path::new(output),
                 false,
+                stdout,
+                presentation_context.is_some().then_some(stderr),
+            )
+            .map(|()| 0)
+        }
+        [command, input, output, confirm]
+            if command == "record-live" && confirm == "--confirm-record" =>
+        {
+            record_openrouter_live_with_progress(
+                Path::new(input),
+                Path::new(output),
                 stdout,
                 presentation_context.is_some().then_some(stderr),
             )
@@ -1678,10 +1757,21 @@ fn guided_local_with_context(
         )
         .map(|()| 0);
     }
+    if args[0] == "record-live" && args.len() == 4 && args[3] == "--confirm-record" {
+        let input = guided_path(&args[1], "recording capture")?;
+        let destination = guided_path(&args[2], "recording cassette output")?;
+        return record_openrouter_live_with_progress(
+            &input,
+            &destination,
+            output,
+            presentation_context.is_some().then_some(progress),
+        )
+        .map(|()| 0);
+    }
     if args[0] == "record-live" && args.len() == 5 {
         if args[3] != "--local-mock" || args[4] != "--confirm-record" {
             return Err(CliError::legacy_usage(
-                "easy record-live requires --local-mock --confirm-record",
+                "easy record-live defaults online; use --local-mock --confirm-record for the explicit local mock",
             ));
         }
         let input = guided_path(&args[1], "recording capture")?;
@@ -1834,7 +1924,7 @@ fn guided_setup_with_progress(
 fn write_easy_help(output: &mut dyn Write) -> Result<(), CliError> {
     writeln!(
         output,
-        "ASB guided workflow (online by default)\n\nUsage:\n  asb easy setup [SETUP_OPTIONS]\n  asb easy build|install|update|test|status|rollback|remove [--channel dev|stable|nightly|experimental] [--yes] [--dry-run]\n  asb easy provider-catalog\n  asb easy plan EXPERIMENT.toml --use-config\n  asb easy run|sweep EXPERIMENT.toml --use-config [--local-mock]\n  asb easy report RUN...\n  asb easy compare RUN RUN...\n  asb easy record CAPTURE.json CASSETTE.json --local-mock\n  asb easy record-live CAPTURE.json CASSETTE.json --local-mock --confirm-record\n  asb easy record-campaign MANIFEST.json --local-mock\n  asb easy replay CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT --local-mock\n  asb easy replay-offline CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT --local-mock\n\nLifecycle commands are provider-free. The development stable channel is a local mock;\nit is never public-release or stable-promotion evidence. Mutations require --yes or --dry-run."
+        "ASB guided workflow (online by default)\n\nUsage:\n  asb easy setup [SETUP_OPTIONS]\n  asb easy build|install|update|test|status|rollback|remove [--channel dev|stable|nightly|experimental] [--yes] [--dry-run]\n  asb easy provider-catalog\n  asb easy plan EXPERIMENT.toml --use-config\n  asb easy run|sweep EXPERIMENT.toml --use-config [--local-mock]\n  asb easy report RUN...\n  asb easy compare RUN RUN...\n  asb easy record CAPTURE.json CASSETTE.json --local-mock\n  asb easy record-live CAPTURE.json CASSETTE.json [--local-mock] --confirm-record\n  asb easy record-campaign MANIFEST.json --local-mock\n  asb easy replay CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT --local-mock\n  asb easy replay-offline CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT --local-mock\n\nLifecycle commands are provider-free. The development stable channel is a local mock;\nit is never public-release or stable-promotion evidence. Mutations require --yes or --dry-run."
     )
     .map_err(output_error)
 }
@@ -2432,7 +2522,7 @@ fn command_name(args: &[OsString]) -> &'static str {
 fn write_help(output: &mut dyn Write) -> Result<(), CliError> {
     writeln!(
         output,
-        "Agent Systems Benchmark (ASB)\n\nUsage:\n  asb doctor [--json]\n  asb setup [--json|--format=json]\n  asb easy run|sweep EXPERIMENT.toml --use-config --local-mock\n  asb capabilities [--json|--format json]\n  asb project init [PATH]\n  asb catalog generate|list|show ID|select ID --kind KIND --digest-sha256 SHA256 [--project PATH]\n  asb tui [launch|status|doctor|remove|install|upgrade]\n  asb provider-catalog [--json]\n  asb adapter-catalog\n  asb provider-plan --catalog-sha256 SHA256 --provider-profile openai|openrouter --agent AGENT --credential-reference-sha256 SHA256\n  asb plan EXPERIMENT.toml --provider-selection selection.json\n  asb run EXPERIMENT.toml --local-mock\n  asb sweep EXPERIMENT.toml --local-mock\n  asb benchmark-live EXPERIMENT.toml --provider-selection selection.json --online [--agents selected|all] [--workloads selected|all] [--sweep]\n  asb compare RUN...\n  asb report RUN...\n  asb completion bash\n  asb serve CONTROL.toml\n\nHuman-readable output is the default. Add --json for versioned machine output; --format json remains supported as a compatibility alias. Add --details for bounded diagnostic identifiers in human output. Progress is written to stderr."
+        "Agent Systems Benchmark (ASB)\n\nUsage:\n  asb doctor [--json]\n  asb setup [--json|--format=json]\n  asb easy run|sweep EXPERIMENT.toml --use-config [--local-mock]\n  asb capabilities [--json|--format json]\n  asb project init [PATH]\n  asb catalog generate|list|show ID|select ID --kind KIND --digest-sha256 SHA256 [--project PATH]\n  asb tui [launch|status|doctor|remove|install|upgrade]\n  asb provider-catalog [--json]\n  asb adapter-catalog\n  asb provider-plan --catalog-sha256 SHA256 --provider-profile openai|openrouter --agent AGENT --credential-reference-sha256 SHA256\n  asb plan EXPERIMENT.toml --provider-selection selection.json\n  asb run|sweep EXPERIMENT.toml [--provider-selection selection.json|--use-config] [--local-mock]\n  asb benchmark-live EXPERIMENT.toml --provider-selection selection.json [--online] [--agents selected|all] [--workloads selected|all] [--sweep]\n  asb compare RUN...\n  asb report RUN...\n  asb completion bash\n  asb serve CONTROL.toml\n\nHuman-readable output is the default. Add --json for versioned machine output; --format json remains supported as a compatibility alias. Add --details for bounded diagnostic identifiers in human output. Progress is written to stderr."
     )
     .map_err(output_error)?;
     writeln!(
@@ -2458,7 +2548,7 @@ fn write_help(output: &mut dyn Write) -> Result<(), CliError> {
     writeln!(output, "  asb tui --help").map_err(output_error)?;
     writeln!(output, "  asb plan create --workload WORKLOAD --agent AGENT --agent-executable /absolute/agent --output /absolute/PLAN.toml [--use-config] [--sweep-max-concurrency N]")
         .map_err(output_error)?;
-    writeln!(output, "  asb benchmark-live EXPERIMENT.toml --provider-selection selection.json --online [--agents selected|all] [--workloads selected|all] [--sweep]\n  asb record-live CAPTURE.json CASSETTE.json --local-mock --confirm-record\n  asb record-live REQUEST.json CASSETTE.json --openrouter --confirm-record\n  asb record-campaign MANIFEST.json --local-mock\n  asb replay-offline CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT")
+    writeln!(output, "  asb benchmark-live EXPERIMENT.toml --provider-selection selection.json --online [--agents selected|all] [--workloads selected|all] [--sweep]\n  asb record-live CAPTURE.json CASSETTE.json [--local-mock] --confirm-record\n  asb record-campaign MANIFEST.json --local-mock\n  asb replay-offline CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT")
         .map_err(output_error)
 }
 
@@ -7448,7 +7538,7 @@ fn execute_with_selection(
     path: &Path,
     selection_path: &Path,
     sweep: bool,
-    live_provider: bool,
+    _live_provider: bool,
     output: &mut dyn Write,
     progress: &mut dyn Write,
     presentation_context: Option<&mut human::PresentationContext>,
@@ -7457,7 +7547,27 @@ fn execute_with_selection(
         path,
         Some(selection_path),
         sweep,
-        live_provider,
+        true,
+        None,
+        output,
+        progress,
+        presentation_context,
+    )
+}
+
+fn execute_with_selection_local_mock(
+    path: &Path,
+    selection_path: &Path,
+    sweep: bool,
+    output: &mut dyn Write,
+    progress: &mut dyn Write,
+    presentation_context: Option<&mut human::PresentationContext>,
+) -> Result<u8, CliError> {
+    execute_inner(
+        path,
+        Some(selection_path),
+        sweep,
+        false,
         None,
         output,
         progress,
@@ -7468,7 +7578,7 @@ fn execute_with_selection(
 fn execute_with_config(
     path: &Path,
     sweep: bool,
-    live_provider: bool,
+    _live_provider: bool,
     output: &mut dyn Write,
     progress: &mut dyn Write,
     presentation_context: Option<&mut human::PresentationContext>,
@@ -7479,7 +7589,29 @@ fn execute_with_config(
         path,
         SelectionSource::Config(&store),
         sweep,
-        live_provider,
+        true,
+        None,
+        false,
+        output,
+        progress,
+        presentation_context,
+    )
+}
+
+fn execute_with_config_local_mock(
+    path: &Path,
+    sweep: bool,
+    output: &mut dyn Write,
+    progress: &mut dyn Write,
+    presentation_context: Option<&mut human::PresentationContext>,
+) -> Result<u8, CliError> {
+    let store = ConfigStore::from_environment()
+        .map_err(|_| CliError::legacy_operation("ASB configuration location is unavailable"))?;
+    execute_inner_from_source(
+        path,
+        SelectionSource::Config(&store),
+        sweep,
+        false,
         None,
         true,
         output,
@@ -12462,14 +12594,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn benchmark_live_requires_explicit_online_and_selection_flags() {
+    fn benchmark_live_requires_selection_but_defaults_online() {
         let mut json_output = Vec::new();
-        let args = vec![
-            "benchmark-live".into(),
-            "experiment.toml".into(),
-            "--provider-selection".into(),
-            "selection.json".into(),
-        ];
+        let args = vec!["benchmark-live".into(), "experiment.toml".into()];
         assert_eq!(run(&args, &mut json_output, &mut Vec::new()), 2);
         let error: Value = serde_json::from_slice(&json_output).unwrap();
         assert_eq!(error["ok"], false);
@@ -14018,6 +14145,7 @@ pub(crate) mod tests {
             plan_arg,
             "--provider-selection".into(),
             selection_arg,
+            "--local-mock".into(),
         ]);
         assert_eq!(exit, 0, "run failed: {executed}");
         assert_eq!(executed["run_ids"][0], "openrouter-run");
@@ -14639,6 +14767,7 @@ pub(crate) mod tests {
             plan_arg,
             "--provider-selection".into(),
             selection_arg,
+            "--local-mock".into(),
         ]);
         assert_eq!(exit, 0);
         let first_run = plan.result_root.join("runs/provider-run");
@@ -14685,6 +14814,7 @@ pub(crate) mod tests {
                 alternate_plan_path.as_os_str().to_owned(),
                 "--provider-selection".into(),
                 alternate_path.as_os_str().to_owned(),
+                "--local-mock".into(),
             ])
             .0,
             0
@@ -14733,6 +14863,7 @@ pub(crate) mod tests {
             alternate_plan_path.as_os_str().to_owned(),
             "--provider-selection".into(),
             alternate_path.as_os_str().to_owned(),
+            "--local-mock".into(),
         ]);
         assert_eq!(exit, 0);
         assert_eq!(sweep["points"].as_array().unwrap().len(), 2);
@@ -14753,6 +14884,7 @@ pub(crate) mod tests {
                 first_path.as_os_str().to_owned(),
                 "--provider-selection".into(),
                 selection_path.as_os_str().to_owned(),
+                "--local-mock".into(),
             ])
             .0,
             0
@@ -14767,6 +14899,7 @@ pub(crate) mod tests {
                 second_path.as_os_str().to_owned(),
                 "--provider-selection".into(),
                 selection_path.as_os_str().to_owned(),
+                "--local-mock".into(),
             ])
             .0,
             0
