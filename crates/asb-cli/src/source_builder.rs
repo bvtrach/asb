@@ -106,6 +106,13 @@ pub fn validate_recipe(tool: &ToolEntry, recipe: &BuildRecipe) -> Result<(), Bui
         || recipe.max_output_bytes > MAX_OUTPUT_BYTES
         || recipe.max_artifact_bytes == 0
         || recipe.max_artifact_bytes > MAX_ARTIFACT_BYTES
+        || tool.id.is_empty()
+        || tool.id.contains(['/', '\\'])
+        || tool.entrypoint.is_empty()
+        || Path::new(&tool.entrypoint).is_absolute()
+        || Path::new(&tool.entrypoint)
+            .components()
+            .any(|component| component == std::path::Component::ParentDir)
     {
         return Err(BuildFailure::PolicyRejected);
     }
@@ -388,6 +395,13 @@ mod tests {
         recipe.argv = vec!["npm".into(), "install".into()];
         assert_eq!(
             validate_recipe(&tool, &recipe),
+            Err(BuildFailure::PolicyRejected)
+        );
+        let mut unsafe_tool = tool;
+        unsafe_tool.entrypoint = "../escape".into();
+        recipe.argv = vec!["true".into()];
+        assert_eq!(
+            validate_recipe(&unsafe_tool, &recipe),
             Err(BuildFailure::PolicyRejected)
         );
     }
