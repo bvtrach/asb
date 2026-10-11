@@ -1142,7 +1142,7 @@ fn dispatch(
             Path::new(path),
             false,
             false,
-            None,
+            live_factory,
             stdout,
             stderr,
             presentation_context,
@@ -1152,6 +1152,20 @@ fn dispatch(
                 Path::new(path),
                 Path::new(selection),
                 false,
+                false,
+                stdout,
+                stderr,
+                presentation_context,
+            )
+        }
+        [command, path, flag, selection, local_mock]
+            if command == "run"
+                && flag == "--provider-selection"
+                && local_mock == "--local-mock" =>
+        {
+            execute_with_selection_local_mock(
+                Path::new(path),
+                Path::new(selection),
                 false,
                 stdout,
                 stderr,
@@ -1191,6 +1205,24 @@ fn dispatch(
             stderr,
             presentation_context,
         ),
+        [command, path, selection, selection_path, matrix_args @ ..]
+            if command == "benchmark-live"
+                && selection == "--provider-selection"
+                && !matrix_args.iter().any(|arg| arg == "--online") =>
+        {
+            let (sweep, agents, workloads) = parse_live_benchmark_matrix(matrix_args)?;
+            execute_live_benchmark_matrix(
+                Path::new(path),
+                Path::new(selection_path),
+                sweep,
+                agents,
+                workloads,
+                live_factory,
+                stdout,
+                stderr,
+                presentation_context,
+            )
+        }
         [
             command,
             path,
@@ -1261,7 +1293,7 @@ fn dispatch(
             Path::new(path),
             true,
             false,
-            None,
+            live_factory,
             stdout,
             stderr,
             presentation_context,
@@ -1274,6 +1306,20 @@ fn dispatch(
                 Path::new(selection),
                 true,
                 false,
+                stdout,
+                stderr,
+                presentation_context,
+            )
+        }
+        [command, path, flag, selection, local_mock]
+            if command == "sweep"
+                && flag == "--provider-selection"
+                && local_mock == "--local-mock" =>
+        {
+            execute_with_selection_local_mock(
+                Path::new(path),
+                Path::new(selection),
+                true,
                 stdout,
                 stderr,
                 presentation_context,
@@ -2432,7 +2478,7 @@ fn command_name(args: &[OsString]) -> &'static str {
 fn write_help(output: &mut dyn Write) -> Result<(), CliError> {
     writeln!(
         output,
-        "Agent Systems Benchmark (ASB)\n\nUsage:\n  asb doctor [--json]\n  asb setup [--json|--format=json]\n  asb easy run|sweep EXPERIMENT.toml --use-config --local-mock\n  asb capabilities [--json|--format json]\n  asb project init [PATH]\n  asb catalog generate|list|show ID|select ID --kind KIND --digest-sha256 SHA256 [--project PATH]\n  asb tui [launch|status|doctor|remove|install|upgrade]\n  asb provider-catalog [--json]\n  asb adapter-catalog\n  asb provider-plan --catalog-sha256 SHA256 --provider-profile openai|openrouter --agent AGENT --credential-reference-sha256 SHA256\n  asb plan EXPERIMENT.toml --provider-selection selection.json\n  asb run EXPERIMENT.toml --local-mock\n  asb sweep EXPERIMENT.toml --local-mock\n  asb benchmark-live EXPERIMENT.toml --provider-selection selection.json --online [--agents selected|all] [--workloads selected|all] [--sweep]\n  asb compare RUN...\n  asb report RUN...\n  asb completion bash\n  asb serve CONTROL.toml\n\nHuman-readable output is the default. Add --json for versioned machine output; --format json remains supported as a compatibility alias. Add --details for bounded diagnostic identifiers in human output. Progress is written to stderr."
+        "Agent Systems Benchmark (ASB)\n\nUsage:\n  asb doctor [--json]\n  asb setup [--json|--format=json]\n  asb easy run|sweep EXPERIMENT.toml --use-config [--local-mock]\n  asb capabilities [--json|--format json]\n  asb project init [PATH]\n  asb catalog generate|list|show ID|select ID --kind KIND --digest-sha256 SHA256 [--project PATH]\n  asb tui [launch|status|doctor|remove|install|upgrade]\n  asb provider-catalog [--json]\n  asb adapter-catalog\n  asb provider-plan --catalog-sha256 SHA256 --provider-profile openai|openrouter --agent AGENT --credential-reference-sha256 SHA256\n  asb plan EXPERIMENT.toml --provider-selection selection.json\n  asb run|sweep EXPERIMENT.toml [--provider-selection selection.json|--use-config] [--local-mock]\n  asb benchmark-live EXPERIMENT.toml --provider-selection selection.json [--online] [--agents selected|all] [--workloads selected|all] [--sweep]\n  asb compare RUN...\n  asb report RUN...\n  asb completion bash\n  asb serve CONTROL.toml\n\nHuman-readable output is the default. Add --json for versioned machine output; --format json remains supported as a compatibility alias. Add --details for bounded diagnostic identifiers in human output. Progress is written to stderr."
     )
     .map_err(output_error)?;
     writeln!(
@@ -7448,7 +7494,7 @@ fn execute_with_selection(
     path: &Path,
     selection_path: &Path,
     sweep: bool,
-    live_provider: bool,
+    _live_provider: bool,
     output: &mut dyn Write,
     progress: &mut dyn Write,
     presentation_context: Option<&mut human::PresentationContext>,
@@ -7457,7 +7503,27 @@ fn execute_with_selection(
         path,
         Some(selection_path),
         sweep,
-        live_provider,
+        true,
+        None,
+        output,
+        progress,
+        presentation_context,
+    )
+}
+
+fn execute_with_selection_local_mock(
+    path: &Path,
+    selection_path: &Path,
+    sweep: bool,
+    output: &mut dyn Write,
+    progress: &mut dyn Write,
+    presentation_context: Option<&mut human::PresentationContext>,
+) -> Result<u8, CliError> {
+    execute_inner(
+        path,
+        Some(selection_path),
+        sweep,
+        false,
         None,
         output,
         progress,
@@ -7468,7 +7534,7 @@ fn execute_with_selection(
 fn execute_with_config(
     path: &Path,
     sweep: bool,
-    live_provider: bool,
+    _live_provider: bool,
     output: &mut dyn Write,
     progress: &mut dyn Write,
     presentation_context: Option<&mut human::PresentationContext>,
@@ -7479,9 +7545,9 @@ fn execute_with_config(
         path,
         SelectionSource::Config(&store),
         sweep,
-        live_provider,
-        None,
         true,
+        None,
+        false,
         output,
         progress,
         presentation_context,
@@ -12462,14 +12528,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn benchmark_live_requires_explicit_online_and_selection_flags() {
+    fn benchmark_live_requires_selection_but_defaults_online() {
         let mut json_output = Vec::new();
-        let args = vec![
-            "benchmark-live".into(),
-            "experiment.toml".into(),
-            "--provider-selection".into(),
-            "selection.json".into(),
-        ];
+        let args = vec!["benchmark-live".into(), "experiment.toml".into()];
         assert_eq!(run(&args, &mut json_output, &mut Vec::new()), 2);
         let error: Value = serde_json::from_slice(&json_output).unwrap();
         assert_eq!(error["ok"], false);
@@ -14018,6 +14079,7 @@ pub(crate) mod tests {
             plan_arg,
             "--provider-selection".into(),
             selection_arg,
+            "--local-mock".into(),
         ]);
         assert_eq!(exit, 0, "run failed: {executed}");
         assert_eq!(executed["run_ids"][0], "openrouter-run");
@@ -14639,6 +14701,7 @@ pub(crate) mod tests {
             plan_arg,
             "--provider-selection".into(),
             selection_arg,
+            "--local-mock".into(),
         ]);
         assert_eq!(exit, 0);
         let first_run = plan.result_root.join("runs/provider-run");
@@ -14685,6 +14748,7 @@ pub(crate) mod tests {
                 alternate_plan_path.as_os_str().to_owned(),
                 "--provider-selection".into(),
                 alternate_path.as_os_str().to_owned(),
+                "--local-mock".into(),
             ])
             .0,
             0
@@ -14733,6 +14797,7 @@ pub(crate) mod tests {
             alternate_plan_path.as_os_str().to_owned(),
             "--provider-selection".into(),
             alternate_path.as_os_str().to_owned(),
+            "--local-mock".into(),
         ]);
         assert_eq!(exit, 0);
         assert_eq!(sweep["points"].as_array().unwrap().len(), 2);
@@ -14753,6 +14818,7 @@ pub(crate) mod tests {
                 first_path.as_os_str().to_owned(),
                 "--provider-selection".into(),
                 selection_path.as_os_str().to_owned(),
+                "--local-mock".into(),
             ])
             .0,
             0
@@ -14767,6 +14833,7 @@ pub(crate) mod tests {
                 second_path.as_os_str().to_owned(),
                 "--provider-selection".into(),
                 selection_path.as_os_str().to_owned(),
+                "--local-mock".into(),
             ])
             .0,
             0
