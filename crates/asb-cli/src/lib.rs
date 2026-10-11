@@ -17428,6 +17428,33 @@ pub(crate) mod tests {
             )
             .is_ok()
         );
+        let mut config = load_tool_project(&project).unwrap();
+        config.workloads.insert(
+            "fixture".into(),
+            ProjectToolRecordV1 {
+                kind: ProjectToolKind::Workload,
+                source_ref: "fixture://workload".into(),
+                version: "1.0.0".into(),
+                platform: platform_label(),
+                path: Some(".asb/workloads/fixture".into()),
+                digest_sha256: Some("a".repeat(64)),
+                capabilities: vec!["external-workload".into()],
+                status: ProjectToolStatus::Available,
+            },
+        );
+        save_tool_project(&project, &config).unwrap();
+        for args in [
+            vec!["list"],
+            vec!["status", "fixture"],
+            vec!["select", "fixture"],
+            vec!["remove", "fixture"],
+        ] {
+            let mut command = args.into_iter().map(String::from).collect::<Vec<_>>();
+            command.extend(["--project".into(), project.display().to_string()]);
+            assert!(
+                workload_with_progress(&command, &mut Vec::new(), &mut Vec::new(), false).is_ok()
+            );
+        }
         for args in [
             vec!["status", "missing"],
             vec!["select", "missing"],
