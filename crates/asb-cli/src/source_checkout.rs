@@ -530,6 +530,37 @@ mod tests {
     }
 
     #[test]
+    fn request_bounds_reject_empty_staging_and_zero_limits() {
+        let mut request = CheckoutRequest::for_tool(
+            &tool("https://example.invalid/repo", &"a".repeat(40)),
+            PathBuf::from("/tmp/x"),
+        )
+        .unwrap();
+        request.staging_root = PathBuf::new();
+        assert_eq!(acquire(&request), Err(CheckoutError::InvalidRequest));
+        request.staging_root = PathBuf::from("/tmp/x");
+        request.limits.timeout = Duration::ZERO;
+        assert_eq!(acquire(&request), Err(CheckoutError::InvalidRequest));
+        request.limits = CheckoutLimits::default();
+        request.limits.max_bytes = 0;
+        assert_eq!(acquire(&request), Err(CheckoutError::InvalidRequest));
+    }
+
+    #[test]
+    fn acquisition_rejects_file_staging_root() {
+        let root =
+            std::env::temp_dir().join(format!("asb-file-staging-checkout-{}", std::process::id()));
+        std::fs::write(&root, b"not a directory").unwrap();
+        let request = CheckoutRequest::for_tool(
+            &tool("https://example.invalid/repo", &"a".repeat(40)),
+            root.clone(),
+        )
+        .unwrap();
+        assert_eq!(acquire(&request), Err(CheckoutError::Unavailable));
+        std::fs::remove_file(root).unwrap();
+    }
+
+    #[test]
     fn every_checkout_limit_ceiling_is_rejected() {
         let mut request = CheckoutRequest::for_tool(
             &tool("https://example.invalid/repo", &"a".repeat(40)),
