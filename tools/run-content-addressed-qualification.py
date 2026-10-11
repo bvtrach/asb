@@ -273,7 +273,17 @@ def run_campaign(
 
 def negative_incomplete(root: Path, binary: Sequence[str], fixture: Path, agents: Sequence[str], workloads: Sequence[str], workspace: Path) -> dict[str, Any]:
     # Prove the gate rejects a prefix, without publishing any cassette.
-    negative_agents = list(dict.fromkeys([*agents, "aider"]))
+    negative_agents = list(agents)
+    negative_workloads = list(workloads)
+    for candidate in ALL_AGENTS:
+        if candidate not in negative_agents:
+            negative_agents.append(candidate)
+            break
+    if len(negative_agents) == len(agents):
+        for candidate in ALL_WORKLOADS:
+            if candidate not in negative_workloads:
+                negative_workloads.append(candidate)
+                break
     capture = workspace / "negative-capture.json"
     cassette = workspace / "negative-cassette.json"
     capture.write_bytes(canonical(fixture_capture(fixture, agents[0], PROFILE)))
@@ -282,8 +292,8 @@ def negative_incomplete(root: Path, binary: Sequence[str], fixture: Path, agents
         "schema_version": WORKFLOW_SCHEMA_VERSION,
         "provider_profile_sha256": PROFILE,
         "agent_ids": negative_agents,
-        "workload_ids": list(workloads),
-        "entries": [{"workload_id": workloads[0], "capture_path": str(capture), "cassette_path": str(cassette)}],
+        "workload_ids": negative_workloads,
+        "entries": [{"workload_id": negative_workloads[0], "capture_path": str(capture), "cassette_path": str(cassette)}],
     }))
     code, output, error = command(binary, ["record-campaign", str(manifest), "--local-mock", "--json"], root)
     rejected = code == 0 and isinstance(output, dict) and output.get("complete_coverage") is False and not cassette.exists()
@@ -300,6 +310,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--agent", action="append", dest="agents")
     parser.add_argument("--workload", action="append", dest="workloads")
     parser.add_argument("--all", action="store_true", help="run every repository fixture-only local-mock tuple")
+    parser.add_argument("--tui-head", required=True, help="exact paired asb-tui main revision used for this qualification")
     parser.add_argument("--receipt", type=Path, required=True)
     args = parser.parse_args(argv)
     root = args.root.resolve()
@@ -325,6 +336,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "network": "denied",
         "credentials": "none",
         "source_revision": git_revision(root),
+        "paired_heads": {"asb": git_revision(root), "asb_tui": args.tui_head},
         "runner_sha256": digest_bytes(Path(__file__).read_bytes()),
         "fixture_sha256": digest_bytes(fixture.read_bytes()),
         "provider_profile_sha256": PROFILE,
