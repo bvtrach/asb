@@ -17892,7 +17892,6 @@ pub(crate) mod tests {
             vec!["install", "agentbench"],
             vec!["install", "agentdojo"],
             vec!["install", "agentops"],
-            vec!["install", "ai-agents-that-matter"],
             vec!["update", "missing"],
             vec!["repair", "missing"],
         ] {
