@@ -808,6 +808,49 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_invalid_bounds_and_cleanup_failures_are_typed() {
+        let mut request = CheckoutRequest::for_tool(
+            &tool("https://example.invalid/repo", &"a".repeat(40)),
+            PathBuf::from("/tmp/x"),
+        )
+        .unwrap();
+        request.limits.timeout = Duration::ZERO;
+        assert_eq!(acquire(&request), Err(CheckoutError::InvalidRequest));
+        request.limits = CheckoutLimits::default();
+        request.cancel();
+        let mut command = Command::new("sleep");
+        command.arg("1");
+        assert_eq!(
+            run_bounded_until(
+                command,
+                &request,
+                Instant::now() + Duration::from_secs(2),
+                None
+            ),
+            Err(CheckoutError::Cancelled)
+        );
+        let missing = SourceCheckout {
+            path: std::env::temp_dir().join("asb-checkout-never-created"),
+            repository_url: "https://example.invalid/repo".into(),
+            revision: "a".repeat(40),
+        };
+        assert_eq!(missing.cleanup(), Err(CheckoutError::CleanupFailed));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_staging_members_are_rejected() {
+        let root = std::env::temp_dir().join(format!("asb-source-link-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::os::unix::fs::symlink("/tmp", root.join("link")).unwrap();
+        assert_eq!(
+            enforce_bounds(&root, &CheckoutLimits::default()),
+            Err(CheckoutError::ResourceLimit)
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     #[cfg(unix)]
     fn unreadable_existing_staging_fails_closed_while_child_runs() {
         use std::os::unix::fs::PermissionsExt;
