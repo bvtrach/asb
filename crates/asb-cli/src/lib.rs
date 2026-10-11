@@ -9405,7 +9405,9 @@ fn compare(runs: &[String], output: &mut dyn Write) -> Result<(), CliError> {
                     pair_differences.push("provider_endpoint".to_owned());
                 }
             }
-            _ if baseline.provider_selection.is_some() && candidate.2.provider_selection.is_some() => {
+            _ if baseline.provider_selection.is_some()
+                && candidate.2.provider_selection.is_some() =>
+            {
                 let reason = format!("{}:provider_identity_unavailable", candidate.1);
                 if !unavailable_reasons.contains(&reason) {
                     unavailable_reasons.push(reason);
