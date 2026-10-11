@@ -11466,12 +11466,7 @@ pub(crate) mod tests {
             OsString::from("--dry-run"),
         ];
         assert_eq!(
-            run_with_default_mode(
-                &catalog_dry_run,
-                &mut Vec::new(),
-                &mut Vec::new(),
-                false
-            ),
+            run_with_default_mode(&catalog_dry_run, &mut Vec::new(), &mut Vec::new(), false),
             0
         );
 
