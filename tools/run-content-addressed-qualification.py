@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (C) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# SPDX-License-Identifier: MIT
 """Run the credential-free content-addressed ASB qualification lane.
 
 The runner is intentionally a thin coordinator around the canonical ``asb``
