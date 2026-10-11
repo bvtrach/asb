@@ -146,3 +146,13 @@ quality result for that exact main tip. These identities are evidence, not targe
 After pushing, verify the remote merge object, exact tree and parents, run every exact-main hosted
 workflow plus local policy gates, and reconcile the coordination state. Never delete or rewrite a
 published historical merge to make it satisfy current policy.
+
+## Forward repair after an invalid web merge
+
+When a protected-main merge was published by an unauthorized web committer, preserve that
+historical object and its failed receipt. The repair is a new, minimal pull request whose topic
+starts at the current protected `main` tip. Do not force-update the historical pull request or
+reuse its old-base branch. Review and qualify the new topic against the exact current base and
+tree, then publish its two-parent descendant with `tools/integration/merge_pr.py`. A passing
+repair restores a current-main evidence range; it does not retroactively validate the historical
+web merge.
