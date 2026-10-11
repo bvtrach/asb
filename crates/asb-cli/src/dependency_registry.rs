@@ -164,6 +164,12 @@ pub const DEPENDENCY_SCOPES: &[(&str, &[&str])] = &[
             "openjiuwen",
             "qwen-code",
             "cli2key",
+            "linux",
+            "cgroup-v2",
+            "user-systemd",
+            "bubblewrap",
+            "kernel-btf",
+            "kernel-pmu",
         ],
     ),
     (
@@ -180,6 +186,12 @@ pub const DEPENDENCY_SCOPES: &[(&str, &[&str])] = &[
             "openjiuwen",
             "qwen-code",
             "cli2key",
+            "linux",
+            "cgroup-v2",
+            "user-systemd",
+            "bubblewrap",
+            "kernel-btf",
+            "kernel-pmu",
         ],
     ),
     (
@@ -196,6 +208,12 @@ pub const DEPENDENCY_SCOPES: &[(&str, &[&str])] = &[
             "openjiuwen",
             "qwen-code",
             "cli2key",
+            "linux",
+            "cgroup-v2",
+            "user-systemd",
+            "bubblewrap",
+            "kernel-btf",
+            "kernel-pmu",
         ],
     ),
     (
@@ -429,8 +447,33 @@ mod tests {
     fn unknown_scope_is_rejected_and_known_scope_is_filtered() {
         assert!(preflight_for("not-a-command", Path::new("/nonexistent")).is_err());
         let result = preflight_for("run", Path::new("/nonexistent")).unwrap();
-        assert!(result.dependencies.iter().all(|d| d.id != "linux"));
+        for id in ["linux", "cgroup-v2", "user-systemd", "bubblewrap"] {
+            assert!(result.dependencies.iter().any(|d| d.id == id));
+        }
         assert!(result.dependencies.iter().any(|d| d.id == "aider"));
+    }
+
+    #[test]
+    fn live_execution_scopes_declare_all_host_runtime_capabilities() {
+        for command in ["run", "sweep", "benchmark-live"] {
+            let (_, ids) = DEPENDENCY_SCOPES
+                .iter()
+                .find(|(name, _)| *name == command)
+                .expect("live execution scope is declared");
+            for id in ["linux", "cgroup-v2", "user-systemd", "bubblewrap"] {
+                assert!(ids.contains(&id), "{command} omitted host dependency {id}");
+            }
+            let view = preflight_for_selected(
+                command,
+                Path::new("/nonexistent"),
+                Some("codex"),
+                Some("host"),
+            )
+            .expect("host live scope remains evaluable");
+            for id in ["linux", "cgroup-v2", "user-systemd", "bubblewrap"] {
+                assert!(view.dependencies.iter().any(|d| d.id == id));
+            }
+        }
     }
 
     #[test]
