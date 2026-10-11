@@ -10340,7 +10340,7 @@ fn write_json(output: &mut dyn Write, value: &impl Serialize) -> Result<(), CliE
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::ffi::OsString;
 
     fn os_args(words: &[&str]) -> Vec<OsString> {
@@ -11149,10 +11149,10 @@ mod tests {
 
     static NONCE: AtomicU64 = AtomicU64::new(0);
 
-    struct Scratch(PathBuf);
+    pub(crate) struct Scratch(pub(crate) PathBuf);
 
     impl Scratch {
-        fn new(name: &str) -> Self {
+        pub(crate) fn new(name: &str) -> Self {
             let path = std::env::temp_dir().join(format!(
                 "asb-cli-{name}-{}-{}",
                 std::process::id(),
@@ -11420,7 +11420,7 @@ mod tests {
         assert_eq!(error.message, "unknown or invalid workload");
     }
 
-    fn plan_fixture(root: &Path, run_id: &str) -> (PathBuf, PlanFile) {
+    pub(crate) fn plan_fixture(root: &Path, run_id: &str) -> (PathBuf, PlanFile) {
         let (executable, executable_sha256) = executable(root);
         let experiment = experiment(&executable_sha256);
         let measurement_selection =
@@ -16756,4 +16756,37 @@ fn default_live_provider_factory() -> Option<LiveProviderAttemptFactory> {
 #[cfg(not(test))]
 fn default_live_provider_factory() -> Option<LiveProviderAttemptFactory> {
     None
+}
+
+#[cfg(test)]
+mod easy_sweep_online_default_tests {
+    use super::*;
+
+    #[test]
+    fn guided_local_sweep_defaults_to_online_without_mock_fallback() {
+        let scratch = crate::tests::Scratch::new("guided-online-sweep");
+        let store = ConfigStore::new(scratch.0.join("config.json"));
+        configure_openrouter_at(&store, &mut Vec::new()).unwrap();
+        let (plan_path, mut fixture) =
+            crate::tests::plan_fixture(&scratch.0, "guided-online-sweep");
+        fixture.experiment.agent.implementation = "codex".into();
+        let configured = load_openrouter_config_at(&store).unwrap();
+        let configured_plan = provider_plan_from_selection(&configured, "codex").unwrap();
+        fixture.experiment.model.provider = "openrouter".into();
+        fixture.experiment.model.model = asb_agents::openrouter::OPENROUTER_MODEL.into();
+        fixture.experiment.model.settings.additional_settings_sha256 =
+            Some(configured_plan.provider_profile_sha256);
+        fixture.experiment.refresh_content_address().unwrap();
+        fs::write(&plan_path, toml::to_string(&fixture).unwrap()).unwrap();
+
+        let args = vec![
+            "sweep".into(),
+            plan_path.to_string_lossy().into_owned(),
+            "--use-config".into(),
+        ];
+        let error = guided_local_at(&args, &store, &mut Vec::new(), &mut Vec::new(), None)
+            .expect_err("online sweep must report the missing live credential");
+        assert!(error.message.contains("OPENROUTER_API_KEY"));
+        assert_ne!(error.message, "local mock fallback");
+    }
 }
