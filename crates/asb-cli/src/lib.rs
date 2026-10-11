@@ -18031,6 +18031,87 @@ pub(crate) mod tests {
         );
     }
 
+    #[test]
+    fn workload_repair_revalidates_and_rebuilds_retained_archive() {
+        let scratch = Scratch::new("workload-repair-proof-matrix");
+        let project = scratch.0.join("workspace");
+        let root = project.join(".asb/workloads/repairable");
+        fs::create_dir_all(&root).unwrap();
+        let zero_digest = "0".repeat(64);
+        let proof = super::WorkloadRepairProof {
+            version: "catalog-v1",
+            expected_digest: zero_digest.as_str(),
+            license: "MIT",
+            preparation: "adapter-entrypoint",
+        };
+        assert!(
+            super::repair_verified_workload_offline(
+                &project,
+                "repairable",
+                proof,
+                &mut Vec::new(),
+                false
+            )
+            .is_err()
+        );
+        fs::write(root.join("bundle.archive"), b"not-an-archive").unwrap();
+        fs::write(root.join("receipt.json"), b"not-json").unwrap();
+        let proof = super::WorkloadRepairProof {
+            version: "catalog-v1",
+            expected_digest: zero_digest.as_str(),
+            license: "MIT",
+            preparation: "adapter-entrypoint",
+        };
+        assert!(
+            super::repair_verified_workload_offline(
+                &project,
+                "repairable",
+                proof,
+                &mut Vec::new(),
+                false
+            )
+            .is_err()
+        );
+        let mut archive = vec![0u8; 2048];
+        archive[..15].copy_from_slice(b"root/entrypoint");
+        archive[124..136].copy_from_slice(b"00000000003\0");
+        archive[257..262].copy_from_slice(b"ustar");
+        archive[512..515].copy_from_slice(b"ok\n");
+        let digest = format!("{:x}", Sha256::digest(&archive));
+        fs::write(root.join("bundle.archive"), &archive).unwrap();
+        fs::write(
+            root.join("receipt.json"),
+            serde_json::to_vec(&json!({
+                "workload_id": "repairable",
+                "catalog_revision": "catalog-v1",
+                "archive_digest_sha256": digest,
+                "license": "MIT",
+                "evaluator_entrypoint": "adapter-entrypoint"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("prepared")).unwrap();
+        fs::write(root.join("prepared/old"), b"old").unwrap();
+        let expected = format!("{:x}", Sha256::digest(&archive));
+        let proof = super::WorkloadRepairProof {
+            version: "catalog-v1",
+            expected_digest: expected.as_str(),
+            license: "MIT",
+            preparation: "adapter-entrypoint",
+        };
+        let mut output = Vec::new();
+        super::repair_verified_workload_offline(&project, "repairable", proof, &mut output, true)
+            .unwrap();
+        assert!(root.join("prepared/root/entrypoint").is_file());
+        assert!(!root.join("prepared/old").exists());
+        assert!(
+            String::from_utf8(output)
+                .unwrap()
+                .contains("repaired workload offline")
+        );
+    }
+
     fn install_and_select_project_tool(project: &Path, id: &str, kind: &str) {
         tool(
             &[

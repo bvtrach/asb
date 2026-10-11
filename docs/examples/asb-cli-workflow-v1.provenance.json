@@ -2,8 +2,8 @@
   "schema_version": 1,
   "asb_revision": "174411ff73515b3d6ae6d67eda1d902e58078ca4",
 =======
-  "cli_source_sha256": "464cb73a75b41bb1076f14d7b931aac58000b73dc1a34336d7564ce212ad0401",
->>>>>>> e9b6ceac (fix(cli): complete verified workload lifecycle safety)
+  "cli_source_sha256": "b4322326870c63a540e874e305692ce4333c424ffe7e7712c587fbac8e4bd692",
+>>>>>>> 55d0f1dd (test(cli): add workload repair coverage margin)
   "replay_fixture_sha256": "529d11312261c2daef88c9c4a25ae4d14cf520f6931b2a09fff2466ffaa37167",
   "guide_contract_sha256": "683f27aeb5143fc757200c6fb3fd65b06288069f08f83517912098c89c24ffe8",
   "transcript_sha256": "357eb762fb8d58a8d37deddfe64d2032a8f957353b5d78dec04d950e6e28ac49",
