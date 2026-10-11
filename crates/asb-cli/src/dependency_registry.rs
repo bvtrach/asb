@@ -531,4 +531,55 @@ mod tests {
         assert!(preflight_for_selected("run", &root, None, None).is_err());
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn unavailable_project_inventory_is_not_ready_and_filters_runtime_scope() {
+        let root = project_with_agent(asb_config::ProjectToolStatus::Missing);
+        let local = preflight_for_selected("run", &root, Some("codex"), Some("local"))
+            .expect("selected local scope should remain evaluable");
+        assert!(!local.ready);
+        assert_eq!(local.dependencies.len(), 1);
+        assert!(!local.dependencies[0].available);
+
+        let host = preflight_for_selected("preflight", &root, None, Some("host"))
+            .expect("host scope should remain evaluable");
+        assert!(
+            host.dependencies
+                .iter()
+                .any(|check| check.kind == DependencyKind::Host)
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inventory_lookup_accepts_non_agent_project_records() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-dependency-registry-records-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".asb")).unwrap();
+        let mut config = asb_config::ProjectConfigV1::empty();
+        let record = asb_config::ProjectToolRecordV1 {
+            kind: asb_config::ProjectToolKind::SupportTool,
+            source_ref: "fixture://codex".into(),
+            version: "1.0.0".into(),
+            platform: "linux-x86_64".into(),
+            path: None,
+            digest_sha256: None,
+            capabilities: Vec::new(),
+            status: asb_config::ProjectToolStatus::Available,
+        };
+        config.support_tools.insert("codex".into(), record);
+        std::fs::write(
+            root.join(".asb/project.json"),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
+        let result = preflight_for_selected("run", &root, Some("codex"), Some("local"))
+            .expect("support-tool inventory should be accepted");
+        assert!(result.ready);
+        assert!(result.dependencies[0].available);
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
