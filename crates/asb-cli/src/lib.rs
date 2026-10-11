@@ -4388,7 +4388,7 @@ fn tool_install_with_progress(
     let (catalog_entry, catalog_artifact) = if fixture_source.is_some() || local_source {
         (None, None)
     } else {
-        let (entry, artifact) = tool_acquisition::resolve(id)
+        let (entry, artifact) = tool_acquisition::resolve_for_install(id)
             .map_err(|error| CliError::legacy_validation(error.message()))?;
         (Some(entry), Some(artifact))
     };
