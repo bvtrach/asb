@@ -2545,7 +2545,7 @@ fn write_help(output: &mut dyn Write) -> Result<(), CliError> {
     .map_err(output_error)?;
     writeln!(
         output,
-        "  asb tool install ID --kind agent|harness|benchmark|workload|support [--source PATH] [--version VERSION] [--project PATH] [--dry-run]\n  asb tool select ID --kind agent|harness|benchmark|workload [--project PATH]\n  asb tool list|status|remove ID [--project PATH]\n  asb run|sweep PLAN.toml --project PATH [--local-mock]\n  asb compare RUN... --project PATH\n  asb report RUN... --project PATH"
+        "  asb tool install SUPPORTED-ID [--project PATH] [--dry-run]\n  asb tool install ID --kind agent|harness|benchmark|workload|support --source PATH|fixture://ID [--version VERSION] [--project PATH]\n  asb tool repair|update SUPPORTED-ID [--project PATH]\n  asb tool select ID --kind agent|harness|benchmark|workload [--project PATH]\n  asb tool list|status|remove ID [--project PATH]\n  asb run|sweep PLAN.toml --project PATH [--local-mock]\n  asb compare RUN... --project PATH\n  asb report RUN... --project PATH"
     )
     .map_err(output_error)?;
     writeln!(
@@ -3972,13 +3972,34 @@ fn tool_with_progress(
     })?;
     match operation {
         "install" => tool_install_with_progress(&args[1..], output, progress, human),
+        "repair" | "update" => {
+            let id = args.get(1).ok_or_else(|| {
+                CliError::legacy_usage("tool repair/update requires an installed ID")
+            })?;
+            let rest = &args[2..];
+            let root = tool_project_path(rest, 0)?;
+            let config = load_tool_project(&root)?;
+            let installed = [
+                (&config.agents, ProjectToolKind::Agent),
+                (&config.harnesses, ProjectToolKind::Harness),
+                (&config.benchmarks, ProjectToolKind::Benchmark),
+                (&config.workloads, ProjectToolKind::Workload),
+                (&config.support_tools, ProjectToolKind::SupportTool),
+            ]
+            .iter()
+            .find_map(|(inventory, kind)| inventory.get(id).map(|_| *kind));
+            installed.ok_or_else(|| CliError::legacy_validation("tool ID is not installed"))?;
+            // Re-run the exact catalog selection. Publication remains
+            // transactional, so failed repair/update retains the prior record.
+            tool_install_with_progress(&args[1..], output, progress, human)
+        }
         "list" => tool_inventory(&args[1..], output),
         "discover" => tool_discovery(&args[1..], output),
         "status" => tool_status(&args[1..], output),
         "select" => tool_select(&args[1..], output),
         "remove" => tool_remove(&args[1..], output),
         _ => Err(CliError::legacy_usage(
-            "tool requires install|list|status|select|remove|discover",
+            "tool requires install|repair|update|list|status|select|remove|discover",
         )),
     }
 }
@@ -4250,6 +4271,52 @@ fn platform_label() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
+fn source_build_artifact(
+    id: &str,
+    entry: &tool_catalog::ToolEntry,
+    root: &Path,
+) -> Result<tool_acquisition::VerifiedArtifact, CliError> {
+    let recipe = entry
+        .build_recipes
+        .first()
+        .ok_or_else(|| CliError::legacy_validation("catalog source recipe missing"))?;
+    let checkout = source_checkout::acquire(
+        &source_checkout::CheckoutRequest::for_tool(entry, root.join(".asb/source-checkouts"))
+            .map_err(|error| CliError::legacy_validation(error.code()))?,
+    )
+    .map_err(|error| CliError::legacy_operation(error.code()))?;
+    let build_prefix = root.join(".asb/source-build");
+    let request = source_builder::BuildRequest {
+        source: PathBuf::new(),
+        project_prefix: build_prefix.clone(),
+        tool: entry.clone(),
+        recipe: recipe.clone(),
+        limits: source_builder::BuildLimits::default(),
+    };
+    source_builder::build_from_checkout(checkout, request)
+        .map_err(|error| CliError::legacy_operation(error.code()))?;
+    let produced = build_prefix.join(id).join(&entry.entrypoint);
+    let bytes = fs::read(&produced)
+        .map_err(|_| CliError::legacy_operation("source build output cannot be read"))?;
+    fs::remove_dir_all(&build_prefix)
+        .map_err(|_| CliError::legacy_operation("source build staging cleanup failed"))?;
+    let alternative = entry
+        .alternatives
+        .iter()
+        .find(|alternative| alternative.kind == "source")
+        .cloned()
+        .ok_or_else(|| CliError::legacy_validation("catalog source alternative missing"))?;
+    Ok(tool_acquisition::VerifiedArtifact {
+        bytes,
+        entry: entry.clone(),
+        alternative,
+        source_ref: format!(
+            "{}@{}",
+            entry.official_source.url, entry.official_source.revision
+        ),
+    })
+}
+
 fn tool_install_with_progress(
     args: &[String],
     output: &mut dyn Write,
@@ -4301,22 +4368,38 @@ fn tool_install_with_progress(
             }
         }
     }
-    let kind = kind.ok_or_else(|| CliError::legacy_usage("tool install requires --kind"))?;
     let fixture_source = source.as_deref().and_then(tool_acquisition::fixture);
+    let local_source = source
+        .as_deref()
+        .is_some_and(|value| !value.contains("://"));
+    // Supported catalog IDs are self-describing. Explicit development/import
+    // sources retain a mandatory kind so they cannot masquerade as a catalog
+    // installation.
+    if (fixture_source.is_some() || local_source) && kind.is_none() {
+        return Err(CliError::legacy_usage(
+            "development/import tool installs require --kind",
+        ));
+    }
     if fixture_source.is_some() && version.is_none() {
         return Err(CliError::legacy_usage(
             "fixture tool installs require --version",
         ));
     }
-    let local_source = source
-        .as_deref()
-        .is_some_and(|value| !value.contains("://"));
     let (catalog_entry, catalog_artifact) = if fixture_source.is_some() || local_source {
         (None, None)
     } else {
-        let (entry, artifact) = tool_acquisition::resolve(id)
+        let (entry, artifact) = tool_acquisition::resolve_for_install(id)
             .map_err(|error| CliError::legacy_validation(error.message()))?;
         (Some(entry), Some(artifact))
+    };
+    let kind = match kind {
+        Some(kind) => kind,
+        None => tool_kind(
+            &catalog_entry
+                .as_ref()
+                .expect("catalog install has an entry")
+                .kind,
+        )?,
     };
     let version = version.unwrap_or_else(|| {
         catalog_entry
@@ -4360,6 +4443,11 @@ fn tool_install_with_progress(
             output,
             &json!({"schema_version": OUTPUT_SCHEMA_VERSION, "ok": true, "command": "tool install", "id": id, "kind": kind, "version": version, "source": source_url, "platform": platform_label(), "dry_run": true}),
         );
+    } else if catalog_entry
+        .as_ref()
+        .is_some_and(|entry| !entry.build_recipes.is_empty())
+    {
+        source_build_artifact(id, catalog_entry.as_ref().expect("source entry"), &root)?
     } else {
         // curl is invoked with an argument array, strict HTTPS policy, a
         // bounded transfer and no credential-bearing environment.
@@ -4516,7 +4604,21 @@ fn tool_install_with_progress(
     }
     write_json(
         output,
-        &serde_json::json!({"schema_version": OUTPUT_SCHEMA_VERSION, "ok": true, "command": "tool install", "id": id, "kind": kind, "path": path, "digest_sha256": digest, "dry_run": false}),
+        &serde_json::json!({
+            "schema_version": OUTPUT_SCHEMA_VERSION,
+            "ok": true,
+            "command": "tool install",
+            "id": id,
+            "kind": kind,
+            "selection": if catalog_entry.is_some() { "catalog" } else { "development-import" },
+            "source": source_ref,
+            "build": if catalog_entry.as_ref().is_some_and(|entry| !entry.build_recipes.is_empty()) { "pinned-source-fallback" } else { "verified-artifact" },
+            "reused": !created_destination,
+            "path": path,
+            "digest_sha256": digest,
+            "dry_run": false,
+            "next": format!("run `asb tool status {id} --project PATH` to inspect the verified installation")
+        }),
     )
 }
 
@@ -11493,6 +11595,42 @@ pub(crate) mod tests {
         );
         assert!(!project.join(".asb/tools/matrix").exists());
 
+        // Supported IDs resolve their catalog kind automatically. Explicit
+        // development/import sources remain kinded and cannot masquerade as
+        // supported installations.
+        let supported_default = vec![
+            OsString::from("tool"),
+            OsString::from("install"),
+            OsString::from("codex"),
+            OsString::from("--project"),
+            project.clone().into_os_string(),
+            OsString::from("--dry-run"),
+        ];
+        assert_eq!(
+            run_with_default_mode(&supported_default, &mut Vec::new(), &mut Vec::new(), false),
+            0
+        );
+        let import_without_kind = vec![
+            OsString::from("tool"),
+            OsString::from("install"),
+            OsString::from("matrix"),
+            OsString::from("--source"),
+            OsString::from("fixture://matrix"),
+            OsString::from("--version"),
+            OsString::from("1"),
+            OsString::from("--project"),
+            project.clone().into_os_string(),
+        ];
+        assert_ne!(
+            run_with_default_mode(
+                &import_without_kind,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                false
+            ),
+            0
+        );
+
         let catalog_dry_run = vec![
             OsString::from("tool"),
             OsString::from("install"),
@@ -17264,6 +17402,7 @@ fn recording_selection_error(error: asb_replay::SourceSelectionError) -> CliErro
 
 pub mod dependency_registry;
 pub mod source_builder;
+pub mod source_checkout;
 mod tool_acquisition;
 pub mod tool_catalog;
 
