@@ -8,7 +8,7 @@ catalog	-	2	[ERR ] ASB could not complete the catalog: catalog requires generate
 provider-catalog	-	0	[ OK ] ASB loaded the provider catalog.	empty
 adapter-catalog	-	0	[ OK ] ASB loaded the coding-agent adapter catalog.	empty
 workload-catalog	-	0	[ OK ] ASB loaded the benchmark workload catalog.	empty
-easy	--help	0	ASB guided local workflow	empty
+easy	--help	0	ASB guided workflow (online by default)	empty
 tui	--help	0	Usage: asb tui [preflight|launch|live-provider|dynamic-catalog|status|doctor|remove|install|upgrade] [--channel dev|stable|nightly|experimental]	empty
 config	-	2	[ERR ] ASB could not complete the command: unsupported arguments; use asb --help.	human
 auth	-	2	[ERR ] ASB could not complete the authentication: auth requires enroll|status|rotate|revoke and named digest options.	human
