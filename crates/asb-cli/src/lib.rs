@@ -4022,6 +4022,25 @@ fn workload_with_progress(
     _progress: &mut dyn Write,
     human: bool,
 ) -> Result<(), CliError> {
+    let catalog = external_workload_catalog();
+    workload_with_progress_inner(
+        args,
+        output,
+        _progress,
+        human,
+        &catalog,
+        acquire_verified_workload_archive,
+    )
+}
+
+fn workload_with_progress_inner(
+    args: &[String],
+    output: &mut dyn Write,
+    _progress: &mut dyn Write,
+    human: bool,
+    catalog: &[Value],
+    acquire: fn(&str) -> Result<Vec<u8>, CliError>,
+) -> Result<(), CliError> {
     let operation = args.first().map(String::as_str).ok_or_else(|| {
         CliError::legacy_usage("workload requires install|list|status|select|repair|update|remove")
     })?;
@@ -4034,7 +4053,6 @@ fn workload_with_progress(
     };
     let project = tool_project_path(rest, 0)?;
     let mut config = load_tool_project(&project)?;
-    let catalog = external_workload_catalog();
     match operation {
         "list" => {
             let entries: Vec<Value> = config
@@ -4134,7 +4152,7 @@ fn workload_with_progress(
                     human,
                 );
             }
-            let archive = acquire_verified_workload_archive(&source_url)?;
+            let archive = acquire(&source_url)?;
             validate_workload_archive(&archive)?;
             let archive_digest = format!("{:x}", Sha256::digest(&archive));
             if expected_digest != archive_digest {
@@ -18064,6 +18082,69 @@ pub(crate) mod tests {
         assert!(
             super::acquire_verified_workload_archive("http://127.0.0.1:1/unavailable").is_err()
         );
+    }
+
+    fn verified_workload_fixture_archive(_: &str) -> Result<Vec<u8>, CliError> {
+        let mut archive = vec![0u8; 1024];
+        archive[..21].copy_from_slice(b"fixture/manifest.json");
+        archive[257..262].copy_from_slice(b"ustar");
+        Ok(archive)
+    }
+
+    #[test]
+    fn workload_install_and_update_publish_verified_receipts_atomically() {
+        let scratch = Scratch::new("workload-install-success");
+        let project = scratch.0.join("workspace");
+        project_init_with_progress(
+            &[project.display().to_string()],
+            &mut Vec::new(),
+            &mut Vec::new(),
+            false,
+        )
+        .unwrap();
+        let archive = verified_workload_fixture_archive("").unwrap();
+        let digest = format!("{:x}", Sha256::digest(&archive));
+        let catalog = vec![json!({
+            "id": "fixture-workload",
+            "version": "catalog-v1",
+            "source": {
+                "repository": "https://github.com/example/fixture",
+                "commit": "0123456789012345678901234567890123456789",
+                "archive_sha256": digest,
+                "license": "MIT"
+            },
+            "evaluator": {"entrypoint": "fixture/manifest.json"}
+        })];
+        let mut args = vec!["install".into(), "fixture-workload".into()];
+        args.extend(["--project".into(), project.display().to_string()]);
+        let mut output = Vec::new();
+        workload_with_progress_inner(
+            &args,
+            &mut output,
+            &mut Vec::new(),
+            false,
+            &catalog,
+            verified_workload_fixture_archive,
+        )
+        .unwrap();
+        let root = project.join(".asb/workloads/fixture-workload");
+        assert!(root.join("bundle.archive").is_file());
+        assert!(root.join("prepared/fixture/manifest.json").is_file());
+        let receipt: Value = serde_json::from_slice(&fs::read(root.join("receipt.json")).unwrap())
+            .unwrap();
+        assert_eq!(receipt["status"], "verified");
+        assert_eq!(receipt["preparation"], "bounded-extracted; no installer executed");
+        args[0] = "update".into();
+        workload_with_progress_inner(
+            &args,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            false,
+            &catalog,
+            verified_workload_fixture_archive,
+        )
+        .unwrap();
+        assert!(!root.join("prepared.previous").exists());
     }
 
     #[test]
