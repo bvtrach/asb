@@ -199,7 +199,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--receipt", type=Path, required=True)
     args = parser.parse_args(argv)
     root = args.root.resolve()
-    fixture = (args.fixture or root / "crates/asb-replay/fixtures/v1/buffered.json").resolve()
+    # The buffered fixture intentionally uses the ``synthetic`` dialect and is
+    # rejected by StrictReplayService.  Qualification must use a provider
+    # dialect fixture while remaining credential-free and offline.
+    fixture = (args.fixture or root / "crates/asb-replay/fixtures/v1/gemini-generate-content.json").resolve()
     if not args.asb.is_absolute() or not args.asb.is_file():
         parser.error("--asb must identify an existing exact binary")
     if not fixture.is_file():
