@@ -4333,9 +4333,13 @@ fn workload_output(
 }
 
 fn acquire_verified_workload_archive(source_url: &str) -> Result<Vec<u8>, CliError> {
-    if std::env::var("ASB_CI_CREDENTIAL_FREE").as_deref() == Ok("1")
-        || std::env::var("ASB_NETWORK_POLICY").as_deref() == Ok("deny")
-    {
+    if matches!(
+        std::env::var("ASB_CI_CREDENTIAL_FREE").ok().as_deref(),
+        Some("1" | "true" | "yes")
+    ) || matches!(
+        std::env::var("ASB_NETWORK_POLICY").ok().as_deref(),
+        Some("deny" | "offline")
+    ) {
         return Err(CliError::legacy_validation(
             "official workload source is unavailable or offline",
         ));
