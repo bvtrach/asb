@@ -365,10 +365,10 @@ fn human_journey_reaches_selection_sweep_report_compare_and_tui() {
     let swept = human_asb(
         &journey,
         &[
-            sweep.to_owned(),
+            "sweep".to_owned(),
             plan.to_string_lossy().into_owned(),
-            --use-config.to_owned(),
-            --local-mock.to_owned(),
+            "--use-config".to_owned(),
+            "--local-mock".to_owned(),
         ],
     );
     assert!(
