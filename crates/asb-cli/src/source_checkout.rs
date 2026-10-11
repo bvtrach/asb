@@ -951,4 +951,62 @@ mod tests {
             "immutable-revision\n"
         );
     }
+
+    #[test]
+    fn bounded_capture_rejects_oversized_identity_observation() {
+        let request = CheckoutRequest::for_tool(
+            &tool("https://example.invalid/repo", &"a".repeat(40)),
+            PathBuf::from("/tmp/x"),
+        )
+        .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("identity");
+        let mut command = Command::new("printf");
+        command.arg("%s").arg("x".repeat(257));
+        assert_eq!(
+            run_bounded_capture(
+                command,
+                &output,
+                &request,
+                Instant::now() + Duration::from_secs(2),
+                Some(root.path()),
+            ),
+            Err(CheckoutError::ResourceLimit)
+        );
+        assert_eq!(std::fs::metadata(output).unwrap().len(), 257);
+    }
+
+    #[test]
+    fn aggregate_deadline_and_file_count_limits_fail_closed() {
+        let request = CheckoutRequest::for_tool(
+            &tool("https://example.invalid/repo", &"a".repeat(40)),
+            PathBuf::from("/tmp/x"),
+        )
+        .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("identity");
+        let mut command = Command::new("sleep");
+        command.arg("1");
+        assert_eq!(
+            run_bounded_capture(
+                command,
+                &output,
+                &request,
+                Instant::now() + Duration::from_millis(10),
+                Some(root.path()),
+            ),
+            Err(CheckoutError::Offline)
+        );
+
+        std::fs::write(root.path().join("one"), b"1").unwrap();
+        std::fs::write(root.path().join("two"), b"2").unwrap();
+        let limits = CheckoutLimits {
+            max_files: 1,
+            ..CheckoutLimits::default()
+        };
+        assert_eq!(
+            enforce_bounds(root.path(), &limits),
+            Err(CheckoutError::ResourceLimit)
+        );
+    }
 }
