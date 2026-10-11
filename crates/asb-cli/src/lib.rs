@@ -11795,6 +11795,33 @@ mod tests {
     }
 
     #[test]
+    fn guided_local_sweep_defaults_to_online_without_mock_fallback() {
+        let scratch = Scratch::new("guided-online-sweep");
+        let store = ConfigStore::new(scratch.0.join("config.json"));
+        configure_openrouter_at(&store, &mut Vec::new()).unwrap();
+        let (plan_path, mut fixture) = plan_fixture(&scratch.0, "guided-online-sweep");
+        fixture.experiment.agent.implementation = "codex".into();
+        let configured = load_openrouter_config_at(&store).unwrap();
+        let configured_plan = provider_plan_from_selection(&configured, "codex").unwrap();
+        fixture.experiment.model.provider = "openrouter".into();
+        fixture.experiment.model.model = asb_agents::openrouter::OPENROUTER_MODEL.into();
+        fixture.experiment.model.settings.additional_settings_sha256 =
+            Some(configured_plan.provider_profile_sha256);
+        fixture.experiment.refresh_content_address().unwrap();
+        fs::write(&plan_path, toml::to_string(&fixture).unwrap()).unwrap();
+
+        let args = vec![
+            "sweep".into(),
+            plan_path.to_string_lossy().into_owned(),
+            "--use-config".into(),
+        ];
+        let error = guided_local_at(&args, &store, &mut Vec::new(), &mut Vec::new(), None)
+            .expect_err("online sweep must report the missing live credential");
+        assert!(error.message.contains("OPENROUTER_API_KEY"));
+        assert_ne!(error.message, "local mock fallback");
+    }
+
+    #[test]
     fn setup_preflight_is_machine_readable_and_side_effect_free() {
         let mut output = Vec::new();
         assert_eq!(run(&["setup".into()], &mut output, &mut Vec::new()), 0);
