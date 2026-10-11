@@ -4100,60 +4100,10 @@ fn workload_with_progress(
                 .ok_or_else(|| {
                     CliError::legacy_validation("workload catalog license metadata is missing")
                 })?;
-            let (repository, revision, expected_digest) = if let Some(repository) =
-                entry.pointer("/source/repository").and_then(Value::as_str)
-            {
-                let revision = entry
-                    .pointer("/source/commit")
-                    .or_else(|| entry.pointer("/source/revision"))
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        CliError::legacy_validation("workload catalog revision is missing")
-                    })?;
-                let digest = entry
-                    .pointer("/source/archive_sha256")
-                    .and_then(Value::as_str)
-                    .filter(|value| {
-                        value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    })
-                    .ok_or_else(|| {
-                        CliError::legacy_validation("workload catalog archive proof is missing")
-                    })?;
-                (
-                    repository.to_owned(),
-                    revision.to_owned(),
-                    digest.to_owned(),
-                )
-            } else {
-                let repository = entry
-                    .pointer("/source/repositories/0")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        CliError::legacy_validation("workload catalog source is missing")
-                    })?;
-                let (track, revision) = repository.split_once('@').ok_or_else(|| {
-                    CliError::legacy_validation("workload catalog revision is missing")
-                })?;
-                let digest = entry
-                    .pointer(&format!("/source/archive_sha256/{track}"))
-                    .and_then(Value::as_str)
-                    .filter(|value| {
-                        value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    })
-                    .ok_or_else(|| {
-                        CliError::legacy_validation("workload catalog archive proof is missing")
-                    })?;
-                (
-                    format!("https://github.com/exercism/{track}"),
-                    revision.to_owned(),
-                    digest.to_owned(),
-                )
-            };
-            if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                return Err(CliError::legacy_validation(
-                    "workload catalog revision is not an immutable commit",
-                ));
-            }
+            let source_identity = resolve_workload_source(entry)?;
+            let repository = source_identity.repository;
+            let revision = source_identity.revision;
+            let expected_digest = source_identity.expected_digest;
             let preparation = entry
                 .pointer("/evaluator/entrypoint")
                 .and_then(Value::as_str)
@@ -4415,6 +4365,66 @@ fn acquire_verified_workload_archive(source_url: &str) -> Result<Vec<u8>, CliErr
     Ok(transfer.stdout)
 }
 
+struct WorkloadSourceIdentity {
+    repository: String,
+    revision: String,
+    expected_digest: String,
+}
+
+fn resolve_workload_source(entry: &Value) -> Result<WorkloadSourceIdentity, CliError> {
+    let (repository, revision, expected_digest) = if let Some(repository) =
+        entry.pointer("/source/repository").and_then(Value::as_str)
+    {
+        let revision = entry
+            .pointer("/source/commit")
+            .or_else(|| entry.pointer("/source/revision"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| CliError::legacy_validation("workload catalog revision is missing"))?;
+        let digest = entry
+            .pointer("/source/archive_sha256")
+            .and_then(Value::as_str)
+            .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .ok_or_else(|| {
+                CliError::legacy_validation("workload catalog archive proof is missing")
+            })?;
+        (
+            repository.to_owned(),
+            revision.to_owned(),
+            digest.to_owned(),
+        )
+    } else {
+        let repository = entry
+            .pointer("/source/repositories/0")
+            .and_then(Value::as_str)
+            .ok_or_else(|| CliError::legacy_validation("workload catalog source is missing"))?;
+        let (track, revision) = repository
+            .split_once('@')
+            .ok_or_else(|| CliError::legacy_validation("workload catalog revision is missing"))?;
+        let digest = entry
+            .pointer(&format!("/source/archive_sha256/{track}"))
+            .and_then(Value::as_str)
+            .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .ok_or_else(|| {
+                CliError::legacy_validation("workload catalog archive proof is missing")
+            })?;
+        (
+            format!("https://github.com/exercism/{track}"),
+            revision.to_owned(),
+            digest.to_owned(),
+        )
+    };
+    if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(CliError::legacy_validation(
+            "workload catalog revision is not an immutable commit",
+        ));
+    }
+    Ok(WorkloadSourceIdentity {
+        repository,
+        revision,
+        expected_digest,
+    })
+}
+
 struct WorkloadRepairProof<'a> {
     version: &'a str,
     expected_digest: &'a str,
@@ -4673,6 +4683,8 @@ mod workload_archive_tests {
     fn rejects_hostile_paths_and_links() {
         for (name, kind) in [
             (b"../escape".as_slice(), 0),
+            (b"/absolute".as_slice(), 0),
+            (b"safe//escape".as_slice(), 0),
             (b"safe/link".as_slice(), b'2'),
         ] {
             let error = validate_workload_archive(&tar_member(name, kind)).unwrap_err();
@@ -4692,6 +4704,16 @@ mod workload_archive_tests {
         let archive = tar_member(b"root/manifest.json", 0);
         assert_eq!(extract_workload_archive(&archive, root.path()).unwrap(), 1);
         assert!(root.path().join("root/manifest.json").is_file());
+        let directory = tar_member(b"root/", b'5');
+        assert_eq!(
+            extract_workload_archive(&directory, root.path()).unwrap(),
+            1
+        );
+        let mut duplicate = tar_member(b"root/item", 0);
+        duplicate[124..136].copy_from_slice(b"000000000001");
+        duplicate[512] = 1;
+        duplicate.extend_from_slice(&tar_member(b"root/item", 0));
+        assert!(extract_workload_archive(&duplicate, root.path()).is_err());
     }
 
     #[test]
@@ -18110,6 +18132,103 @@ pub(crate) mod tests {
                 .unwrap()
                 .contains("repaired workload offline")
         );
+    }
+
+    #[test]
+    fn workload_repair_rejects_every_stale_proof_shape() {
+        let scratch = Scratch::new("workload-repair-stale-proof-matrix");
+        let project = scratch.0.join("workspace");
+        let root = project.join(".asb/workloads/stale");
+        fs::create_dir_all(&root).unwrap();
+        fn proof<'a>(digest: &'a str) -> super::WorkloadRepairProof<'a> {
+            super::WorkloadRepairProof {
+                version: "catalog-v1",
+                expected_digest: digest,
+                license: "MIT",
+                preparation: "adapter-entrypoint",
+            }
+        }
+        assert!(
+            super::repair_verified_workload_offline(
+                &project,
+                "stale",
+                proof(&"0".repeat(64)),
+                &mut Vec::new(),
+                false
+            )
+            .is_err()
+        );
+        fs::write(root.join("bundle.archive"), b"bad").unwrap();
+        fs::write(root.join("receipt.json"), b"{}").unwrap();
+        assert!(
+            super::repair_verified_workload_offline(
+                &project,
+                "stale",
+                proof(&"0".repeat(64)),
+                &mut Vec::new(),
+                false
+            )
+            .is_err()
+        );
+        let mut archive = vec![0u8; 1536];
+        archive[..15].copy_from_slice(b"root/entrypoint");
+        archive[257..262].copy_from_slice(b"ustar");
+        archive[124..136].copy_from_slice(b"000000000000");
+        archive.extend_from_slice(&[0; 512]);
+        let digest = format!("{:x}", Sha256::digest(&archive));
+        fs::write(root.join("bundle.archive"), &archive).unwrap();
+        for receipt in [
+            json!({"workload_id":"other","catalog_revision":"catalog-v1","archive_digest_sha256":digest,"license":"MIT","evaluator_entrypoint":"adapter-entrypoint"}),
+            json!({"workload_id":"stale","catalog_revision":"old","archive_digest_sha256":digest,"license":"MIT","evaluator_entrypoint":"adapter-entrypoint"}),
+            json!({"workload_id":"stale","catalog_revision":"catalog-v1","archive_digest_sha256":"0","license":"MIT","evaluator_entrypoint":"adapter-entrypoint"}),
+            json!({"workload_id":"stale","catalog_revision":"catalog-v1","archive_digest_sha256":digest,"license":"Apache-2.0","evaluator_entrypoint":"adapter-entrypoint"}),
+            json!({"workload_id":"stale","catalog_revision":"catalog-v1","archive_digest_sha256":digest,"license":"MIT","evaluator_entrypoint":"other"}),
+        ] {
+            fs::write(
+                root.join("receipt.json"),
+                serde_json::to_vec(&receipt).unwrap(),
+            )
+            .unwrap();
+            assert!(
+                super::repair_verified_workload_offline(
+                    &project,
+                    "stale",
+                    proof(&digest),
+                    &mut Vec::new(),
+                    false
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn workload_source_identity_resolves_all_catalog_shapes_and_rejects_drift() {
+        let catalog = super::external_workload_catalog();
+        let github = catalog
+            .iter()
+            .find(|entry| entry.get("id").and_then(Value::as_str) == Some("agentbench"))
+            .unwrap();
+        let identity = super::resolve_workload_source(github).unwrap();
+        assert!(identity.repository.starts_with("https://github.com/"));
+        assert_eq!(identity.revision.len(), 40);
+        assert_eq!(identity.expected_digest.len(), 64);
+        let exercism = catalog
+            .iter()
+            .find(|entry| entry.get("id").and_then(Value::as_str) == Some("exercism-tracks"))
+            .unwrap();
+        let identity = super::resolve_workload_source(exercism).unwrap();
+        assert_eq!(identity.repository, "https://github.com/exercism/cpp");
+        assert_eq!(identity.revision.len(), 40);
+        assert_eq!(identity.expected_digest.len(), 64);
+        for entry in [
+            json!({"source": {"repository": "https://github.com/example/repo"}}),
+            json!({"source": {"repositories": ["python-without-revision"]}}),
+            json!({"source": {"repositories": ["python@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"], "archive_sha256": {}}}),
+            json!({"source": {"repository": "https://github.com/example/repo", "commit": "not-a-commit", "archive_sha256": "bad"}}),
+        ] {
+            assert!(super::resolve_workload_source(&entry).is_err());
+        }
     }
 
     fn install_and_select_project_tool(project: &Path, id: &str, kind: &str) {
