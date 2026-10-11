@@ -487,10 +487,8 @@ mod tests {
             PathBuf::from("/tmp/x"),
         )
         .unwrap();
-        let root = std::env::temp_dir().join(format!(
-            "asb-spawn-failure-checkout-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("asb-spawn-failure-checkout-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let result = run_bounded_until(
             Command::new("asb-command-that-does-not-exist"),
