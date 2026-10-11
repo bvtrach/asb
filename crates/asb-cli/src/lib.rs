@@ -9494,12 +9494,14 @@ fn parse_run_ref(path: &Path) -> Result<(&Path, &str), CliError> {
 
 fn comparison_field_name(value: ComparisonField) -> &'static str {
     match value {
+        ComparisonField::Provider => "provider",
         ComparisonField::Agent => "agent",
         ComparisonField::Model => "model",
         ComparisonField::ModelSettings => "model_settings",
         ComparisonField::ProviderProfile => "provider_profile",
         ComparisonField::ProviderEndpoint => "provider_endpoint",
         ComparisonField::ProviderTransport => "provider_transport",
+        ComparisonField::Generation => "generation",
         ComparisonField::CredentialReference => "credential_reference",
         ComparisonField::ToolPolicy => "tool_policy",
         ComparisonField::Workload => "workload",
