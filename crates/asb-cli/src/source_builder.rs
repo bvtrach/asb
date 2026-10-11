@@ -101,7 +101,7 @@ pub fn build_from_checkout(
     checkout: SourceCheckout,
     mut request: BuildRequest,
 ) -> Result<BuildReceipt, BuildFailure> {
-    request.source = checkout.path.clone();
+    request.source = checkout.path().to_path_buf();
     let result = build(&request);
     if checkout.cleanup().is_err() {
         return Err(BuildFailure::CleanupFailed);

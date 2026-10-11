@@ -74,12 +74,16 @@ impl CheckoutRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceCheckout {
-    pub path: PathBuf,
-    pub repository_url: String,
-    pub revision: String,
+    path: PathBuf,
+    repository_url: String,
+    revision: String,
 }
 
 impl SourceCheckout {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
     /// Remove the transaction-owned checkout after the pinned builder has
     /// consumed it.  Callers must treat cleanup failure as a failed build.
     pub fn cleanup(self) -> Result<(), CheckoutError> {
@@ -542,7 +546,7 @@ mod tests {
         request.repository_url = format!("file://{}", source.display());
         let checkout = acquire(&request).unwrap();
         assert_eq!(checkout.revision, revision);
-        assert!(checkout.path.join("README").is_file());
+        assert!(checkout.path().join("README").is_file());
         checkout.cleanup().unwrap();
         let _ = std::fs::remove_dir_all(source.parent().unwrap());
     }
