@@ -481,6 +481,23 @@ mod tests {
     }
 
     #[test]
+    fn every_checkout_limit_ceiling_is_rejected() {
+        let mut request = CheckoutRequest::for_tool(
+            &tool("https://example.invalid/repo", &"a".repeat(40)),
+            PathBuf::from("/tmp/x"),
+        )
+        .unwrap();
+        request.limits.timeout = Duration::from_secs(MAX_CHECKOUT_SECONDS + 1);
+        assert_eq!(acquire(&request), Err(CheckoutError::InvalidRequest));
+        request.limits = CheckoutLimits::default();
+        request.limits.max_bytes = MAX_CHECKOUT_BYTES + 1;
+        assert_eq!(acquire(&request), Err(CheckoutError::InvalidRequest));
+        request.limits = CheckoutLimits::default();
+        request.limits.max_files = MAX_CHECKOUT_FILES + 1;
+        assert_eq!(acquire(&request), Err(CheckoutError::InvalidRequest));
+    }
+
+    #[test]
     fn acquisition_rejects_owned_staging_collision_and_cleanup_failure() {
         let (source, revision, staging) = fixture_repository();
         let request = CheckoutRequest::for_tool(
