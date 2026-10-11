@@ -926,4 +926,29 @@ mod tests {
         assert!(staging.read_dir().unwrap().next().is_none());
         let _ = std::fs::remove_dir_all(source.parent().unwrap());
     }
+
+    #[test]
+    fn bounded_capture_preserves_small_identity_observation_without_unbounded_output() {
+        let request = CheckoutRequest::for_tool(
+            &tool("https://example.invalid/repo", &"a".repeat(40)),
+            PathBuf::from("/tmp/x"),
+        )
+        .unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("identity");
+        let mut command = Command::new("printf");
+        command.arg("immutable-revision\n");
+        run_bounded_capture(
+            command,
+            &output,
+            &request,
+            Instant::now() + Duration::from_secs(2),
+            Some(root.path()),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(output).unwrap(),
+            "immutable-revision\n"
+        );
+    }
 }
