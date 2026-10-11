@@ -1072,6 +1072,13 @@ fn dispatch(
             provider_catalog(stdout, false, presentation_context).map(|()| 0)
         }
         [command] if command == "workload-catalog" => workload_catalog_output(stdout).map(|()| 0),
+        [command, workload_args @ ..] if command == "workload" => workload_with_progress(
+            workload_args,
+            stdout,
+            stderr,
+            presentation_context.is_some(),
+        )
+        .map(|()| 0),
         [command, operation] if command == "config" && operation == "openrouter" => {
             configure_openrouter_with_progress(
                 stdout,
@@ -2517,6 +2524,7 @@ fn command_name(args: &[OsString]) -> &'static str {
         Some("project") => "project",
         Some("provider-catalog") => "provider-catalog",
         Some("workload-catalog") => "workload-catalog",
+        Some("workload") => "workload",
         Some("config") => "config",
         Some("tool") => "tool",
         Some("auth") => "auth",
@@ -2546,6 +2554,7 @@ fn write_help(output: &mut dyn Write) -> Result<(), CliError> {
     writeln!(
         output,
         "  asb tool install SUPPORTED-ID [--project PATH] [--dry-run]\n  asb tool install ID --kind agent|harness|benchmark|workload|support --source PATH|fixture://ID [--version VERSION] [--project PATH]\n  asb tool repair|update SUPPORTED-ID [--project PATH]\n  asb tool select ID --kind agent|harness|benchmark|workload [--project PATH]\n  asb tool list|status|remove ID [--project PATH]\n  asb run|sweep PLAN.toml --project PATH [--local-mock]\n  asb compare RUN... --project PATH\n  asb report RUN... --project PATH"
+        "  asb tool install SUPPORTED-ID [--project PATH]\n  asb tool install ID --kind agent|harness|benchmark|workload|support --source PATH|fixture://ID [--version VERSION] [--project PATH]\n  asb tool repair|update SUPPORTED-ID [--project PATH]\n  asb tool select ID --kind agent|harness|benchmark|workload [--project PATH]\n  asb tool list|status|remove ID [--project PATH]\n  asb workload install|list|status|select|repair|update|remove ID [--project PATH]\n  asb run|sweep PLAN.toml --project PATH [--local-mock]\n  asb compare RUN... --project PATH\n  asb report RUN... --project PATH"
     )
     .map_err(output_error)?;
     writeln!(
@@ -4002,6 +4011,238 @@ fn tool_with_progress(
             "tool requires install|repair|update|list|status|select|remove|discover",
         )),
     }
+}
+
+/// Manage catalog-bound external workload bundles.  Unlike `tool`, this
+/// lifecycle never accepts an arbitrary source: IDs are resolved exclusively
+/// from the immutable AR-1781 registry and read-only operations do not touch
+/// the network.
+fn workload_with_progress(
+    args: &[String],
+    output: &mut dyn Write,
+    _progress: &mut dyn Write,
+    _human: bool,
+) -> Result<(), CliError> {
+    let operation = args.first().map(String::as_str).ok_or_else(|| {
+        CliError::legacy_usage("workload requires install|list|status|select|repair|update|remove")
+    })?;
+    let (id, rest) = args[1..]
+        .split_first()
+        .map_or((None, &args[1..]), |(id, rest)| (Some(id), rest));
+    let project = tool_project_path(rest, 0)?;
+    let mut config = load_tool_project(&project)?;
+    let catalog = external_workload_catalog();
+    match operation {
+        "list" => {
+            let entries: Vec<Value> = config
+                .workloads
+                .iter()
+                .map(|(id, record)| json!({"id": id, "record": record}))
+                .collect();
+            write_json(
+                output,
+                &json!({"schema_version": OUTPUT_SCHEMA_VERSION, "ok": true, "command": "workload list", "workloads": entries}),
+            )
+        }
+        "status" => {
+            let id = id.ok_or_else(|| CliError::legacy_usage("workload status requires an ID"))?;
+            let record = config
+                .workloads
+                .get(id)
+                .ok_or_else(|| CliError::legacy_validation("workload ID is not installed"))?;
+            write_json(
+                output,
+                &json!({"schema_version": OUTPUT_SCHEMA_VERSION, "ok": true, "command": "workload status", "id": id, "record": record}),
+            )
+        }
+        "install" | "update" | "repair" => {
+            let id =
+                id.ok_or_else(|| CliError::legacy_usage("workload operation requires an ID"))?;
+            let entry = catalog
+                .iter()
+                .find(|entry| entry.get("id").and_then(Value::as_str) == Some(id))
+                .ok_or_else(|| {
+                    CliError::legacy_validation(
+                        "workload ID is not in the pinned acquisition catalog",
+                    )
+                })?;
+            let version = entry
+                .get("version")
+                .and_then(Value::as_str)
+                .unwrap_or("catalog");
+            let source = entry
+                .pointer("/source/repository")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let repository = entry
+                .pointer("/source/repository")
+                .and_then(Value::as_str)
+                .ok_or_else(|| CliError::legacy_validation("workload catalog source is missing"))?;
+            let revision = entry
+                .pointer("/source/commit")
+                .or_else(|| entry.pointer("/source/revision"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    CliError::legacy_validation("workload catalog revision is missing")
+                })?;
+            let source_url = if let Some(repo) = repository.strip_prefix("https://github.com/") {
+                format!("https://github.com/{repo}/archive/{revision}.tar.gz")
+            } else {
+                return Err(CliError::legacy_validation(
+                    "workload source has no supported immutable archive",
+                ));
+            };
+            let transfer = Command::new("/usr/bin/curl")
+                .args([
+                    "--fail",
+                    "--silent",
+                    "--show-error",
+                    "--location",
+                    "--proto",
+                    "=https",
+                    "--tlsv1.2",
+                    "--connect-timeout",
+                    "10",
+                    "--max-time",
+                    "120",
+                    "--max-filesize",
+                    "536870912",
+                    &source_url,
+                ])
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .output()
+                .map_err(|_| {
+                    CliError::legacy_validation(
+                        "official workload source is unavailable or offline",
+                    )
+                })?;
+            if !transfer.status.success() || transfer.stdout.is_empty() {
+                return Err(CliError::legacy_validation(
+                    "official workload source is unavailable or offline",
+                ));
+            }
+            validate_workload_archive(&transfer.stdout)?;
+            let archive_digest = format!("{:x}", Sha256::digest(&transfer.stdout));
+            if let Some(expected) = entry
+                .pointer("/source/archive_sha256")
+                .and_then(Value::as_str)
+                && expected != archive_digest
+            {
+                return Err(CliError::legacy_validation(
+                    "workload archive digest does not match the pinned catalog",
+                ));
+            }
+            let path = format!(".asb/workloads/{id}");
+            let root = project.join(&path);
+            ensure_project_directory_with_progress(&root, 0o700, DirectoryPurpose::Tools, None)?;
+            write_atomic_private(
+                &root.join("bundle.archive"),
+                &transfer.stdout,
+                DirectoryPurpose::Tools,
+                None,
+            )?;
+            let receipt = json!({"schema_version": 1, "workload_id": id, "catalog_revision": version, "source": source_url, "revision": revision, "archive_digest_sha256": archive_digest, "status": "verified", "preparation": "archive-retained; no installer executed"});
+            let receipt_bytes = serde_json::to_vec_pretty(&receipt)
+                .map_err(|_| CliError::legacy_operation("workload receipt cannot be encoded"))?;
+            write_atomic_private(
+                &root.join("receipt.json"),
+                &receipt_bytes,
+                DirectoryPurpose::Tools,
+                None,
+            )?;
+            let record = ProjectToolRecordV1 {
+                kind: ProjectToolKind::Workload,
+                source_ref: source.to_owned(),
+                version: version.to_owned(),
+                platform: platform_label(),
+                path: Some(path),
+                digest_sha256: None,
+                capabilities: vec!["external-workload".into(), "verified-archive".into()],
+                status: ProjectToolStatus::Available,
+            };
+            config.workloads.insert(id.to_owned(), record);
+            save_tool_project(&project, &config)?;
+            write_json(
+                output,
+                &json!({"schema_version": OUTPUT_SCHEMA_VERSION, "ok": true, "command": format!("workload {operation}"), "id": id, "version": version, "status": "verified", "archive_digest_sha256": archive_digest}),
+            )
+        }
+        "select" => {
+            let id = id.ok_or_else(|| CliError::legacy_usage("workload select requires an ID"))?;
+            let record = config
+                .workloads
+                .get(id)
+                .ok_or_else(|| CliError::legacy_validation("selected workload is not installed"))?;
+            if record.status != ProjectToolStatus::Available {
+                return Err(CliError::legacy_validation(
+                    "selected workload is unavailable",
+                ));
+            }
+            config.selections.workload = Some(id.to_owned());
+            save_tool_project(&project, &config)?;
+            write_json(
+                output,
+                &json!({"schema_version": OUTPUT_SCHEMA_VERSION, "ok": true, "command": "workload select", "id": id}),
+            )
+        }
+        "remove" => {
+            let id = id.ok_or_else(|| CliError::legacy_usage("workload remove requires an ID"))?;
+            config
+                .workloads
+                .remove(id)
+                .ok_or_else(|| CliError::legacy_validation("workload ID is not installed"))?;
+            let path = project.join(format!(".asb/workloads/{id}"));
+            if let Ok(metadata) = fs::symlink_metadata(&path) {
+                if metadata.file_type().is_symlink() {
+                    return Err(CliError::legacy_validation(
+                        "workload installation path is a symlink",
+                    ));
+                }
+                fs::remove_dir_all(&path).map_err(|_| {
+                    CliError::legacy_operation("workload installation cannot be removed")
+                })?;
+            }
+            if config.selections.workload.as_deref() == Some(id) {
+                config.selections.workload = None;
+            }
+            save_tool_project(&project, &config)?;
+            write_json(
+                output,
+                &json!({"schema_version": OUTPUT_SCHEMA_VERSION, "ok": true, "command": "workload remove", "id": id}),
+            )
+        }
+        _ => Err(CliError::legacy_usage(
+            "workload requires install|list|status|select|repair|update|remove",
+        )),
+    }
+}
+
+fn external_workload_catalog() -> Vec<Value> {
+    serde_json::from_str::<Value>(include_str!(
+        "../../asb-workloads/registry/v1/external-workloads.json"
+    ))
+    .ok()
+    .and_then(|value| value.get("workloads").cloned())
+    .and_then(|value| value.as_array().cloned())
+    .unwrap_or_default()
+}
+
+fn validate_workload_archive(bytes: &[u8]) -> Result<(), CliError> {
+    if bytes.len() > 512 * 1024 * 1024 || bytes.len() < 4 {
+        return Err(CliError::legacy_validation(
+            "workload archive exceeds the bounded size or is empty",
+        ));
+    }
+    let archive = bytes.starts_with(&[0x1f, 0x8b])
+        || bytes.starts_with(b"PK\x03\x04")
+        || (bytes.len() >= 262 && &bytes[257..262] == b"ustar");
+    if !archive || bytes.starts_with(b"<!DOCTYPE") || bytes.starts_with(b"<html") {
+        return Err(CliError::legacy_validation(
+            "workload source is not a supported archive",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -10802,6 +11043,23 @@ fn write_json(output: &mut dyn Write, value: &impl Serialize) -> Result<(), CliE
 #[cfg(test)]
 pub(crate) mod tests {
     use std::ffi::OsString;
+
+    #[test]
+    fn external_workload_catalog_is_pinned_and_nonempty() {
+        let catalog = super::external_workload_catalog();
+        assert!(catalog.len() >= 20);
+        for entry in catalog {
+            let id = entry.get("id").and_then(serde_json::Value::as_str).unwrap();
+            assert!(super::valid_tool_id(id) || id == "ai-agents-that-matter");
+            assert!(
+                entry
+                    .get("version")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+            );
+            assert!(entry.get("source").is_some());
+        }
+    }
 
     fn os_args(words: &[&str]) -> Vec<OsString> {
         words.iter().map(OsString::from).collect()
