@@ -476,8 +476,8 @@ mod tests {
         )
         .unwrap();
         request.cancel();
-        let root = std::env::temp_dir().join(format!("asb-cancel-checkout-{}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
+        let root_guard = tempfile::tempdir().unwrap();
+        let root = root_guard.path().to_path_buf();
         let mut command = Command::new("sleep");
         command.arg("1");
         assert_eq!(
@@ -489,7 +489,6 @@ mod tests {
             ),
             Err(CheckoutError::Cancelled)
         );
-        std::fs::remove_dir_all(root).unwrap();
 
         let errors = [
             CheckoutError::InvalidRequest,
@@ -829,8 +828,9 @@ mod tests {
             ),
             Err(CheckoutError::Cancelled)
         );
+        let missing_guard = tempfile::tempdir().unwrap();
         let missing = SourceCheckout {
-            path: std::env::temp_dir().join("asb-checkout-never-created"),
+            path: missing_guard.path().join("never-created"),
             repository_url: "https://example.invalid/repo".into(),
             revision: "a".repeat(40),
         };
