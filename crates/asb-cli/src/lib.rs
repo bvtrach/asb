@@ -1604,10 +1604,10 @@ fn unicode_args(args: &[OsString]) -> Result<Vec<String>, CliError> {
         .collect()
 }
 
-/// Run the catalog/config-driven local qualification fixture through the
-/// ordinary run/sweep dispatcher. This command deliberately has no live or
-/// endpoint option: the explicit `--local-mock --use-config` pair is the
-/// complete authority surface.
+/// Run the catalog/config-driven easy workflow through the ordinary
+/// run/sweep dispatcher. Online execution is the default; `--local-mock` is
+/// an explicit credential-free development alternative.
+/// The configured provider selection remains bound before execution.
 #[cfg(test)]
 fn guided_local(
     args: &[String],
@@ -1717,9 +1717,9 @@ fn guided_local_with_context(
         )
         .map(|()| 0);
     }
-    if args.len() != 4 {
+    if !(3..=4).contains(&args.len()) {
         return Err(CliError::legacy_usage(
-            "easy requires run|sweep PATH --use-config --local-mock",
+            "easy requires run|sweep PATH --use-config [--local-mock]",
         ));
     }
     if args[1].is_empty() || !args[2..].iter().any(|flag| flag == "--use-config") {
@@ -1727,13 +1727,13 @@ fn guided_local_with_context(
             "easy requires an experiment path and --use-config",
         ));
     }
-    if !args[2..].iter().any(|flag| flag == "--local-mock")
-        || args[2..]
-            .iter()
-            .any(|flag| !matches!(flag.as_str(), "--use-config" | "--local-mock"))
+
+    if args[2..]
+        .iter()
+        .any(|flag| !matches!(flag.as_str(), "--use-config" | "--local-mock"))
     {
         return Err(CliError::legacy_usage(
-            "easy accepts only --use-config and --local-mock",
+            "easy accepts only --use-config and optional --local-mock",
         ));
     }
     let store = ConfigStore::from_environment()
@@ -1834,7 +1834,7 @@ fn guided_setup_with_progress(
 fn write_easy_help(output: &mut dyn Write) -> Result<(), CliError> {
     writeln!(
         output,
-        "ASB guided local workflow\n\nUsage:\n  asb easy setup [SETUP_OPTIONS]\n  asb easy build|install|update|test|status|rollback|remove [--channel dev|stable|nightly|experimental] [--yes] [--dry-run]\n  asb easy provider-catalog\n  asb easy plan EXPERIMENT.toml --use-config\n  asb easy run|sweep EXPERIMENT.toml --use-config --local-mock\n  asb easy report RUN...\n  asb easy compare RUN RUN...\n  asb easy record CAPTURE.json CASSETTE.json --local-mock\n  asb easy record-live CAPTURE.json CASSETTE.json --local-mock --confirm-record\n  asb easy record-campaign MANIFEST.json --local-mock\n  asb easy replay CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT --local-mock\n  asb easy replay-offline CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT --local-mock\n\nLifecycle commands are provider-free. The development stable channel is a local mock;\nit is never public-release or stable-promotion evidence. Mutations require --yes or --dry-run."
+        "ASB guided workflow (online by default)\n\nUsage:\n  asb easy setup [SETUP_OPTIONS]\n  asb easy build|install|update|test|status|rollback|remove [--channel dev|stable|nightly|experimental] [--yes] [--dry-run]\n  asb easy provider-catalog\n  asb easy plan EXPERIMENT.toml --use-config\n  asb easy run|sweep EXPERIMENT.toml --use-config [--local-mock]\n  asb easy report RUN...\n  asb easy compare RUN RUN...\n  asb easy record CAPTURE.json CASSETTE.json --local-mock\n  asb easy record-live CAPTURE.json CASSETTE.json --local-mock --confirm-record\n  asb easy record-campaign MANIFEST.json --local-mock\n  asb easy replay CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT --local-mock\n  asb easy replay-offline CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT --local-mock\n\nLifecycle commands are provider-free. The development stable channel is a local mock;\nit is never public-release or stable-promotion evidence. Mutations require --yes or --dry-run."
     )
     .map_err(output_error)
 }
@@ -2182,9 +2182,9 @@ fn guided_local_at(
         Path::new(&args[1]),
         SelectionSource::Config(store),
         sweep,
-        false,
+        !(args.len() == 4 && args[2..].iter().any(|flag| flag == "--local-mock")),
         None,
-        true,
+        args.len() == 4 && args[2..].iter().any(|flag| flag == "--local-mock"),
         output,
         progress,
         presentation_context,
@@ -11578,7 +11578,7 @@ mod tests {
             "run".into(),
             "experiment.toml".into(),
             "--use-config".into(),
-            "--live-provider".into(),
+            "--use-config".into(),
         ];
         assert!(guided_local(&missing_mock, None, &mut Vec::new(), &mut Vec::new()).is_err());
 
