@@ -431,6 +431,27 @@ mod tests {
     }
 
     #[test]
+    fn identity_rejects_malformed_revision_and_url_inputs() {
+        let revision = "a".repeat(40);
+        assert_eq!(
+            validate_identity("https://example.invalid/repo\n", &revision),
+            Err(CheckoutError::InvalidRequest)
+        );
+        assert_eq!(
+            validate_identity("https://example.invalid/repo\0", &revision),
+            Err(CheckoutError::InvalidRequest)
+        );
+        assert_eq!(
+            validate_identity(&format!("https://{}", "a".repeat(2048)), &revision),
+            Err(CheckoutError::InvalidRequest)
+        );
+        assert_eq!(
+            validate_identity("https://example.invalid/repo", &"g".repeat(40)),
+            Err(CheckoutError::InvalidRequest)
+        );
+    }
+
+    #[test]
     fn limits_and_cancel_are_typed_before_or_during_acquisition() {
         let mut request = CheckoutRequest::for_tool(
             &tool("https://example.invalid/x", &"a".repeat(40)),
@@ -521,6 +542,44 @@ mod tests {
         );
         assert_eq!(result, Err(CheckoutError::Unavailable));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn bounded_command_reports_unavailable_for_missing_watch_tree() {
+        let request = CheckoutRequest::for_tool(
+            &tool("https://example.invalid/repo", &"a".repeat(40)),
+            PathBuf::from("/tmp/x"),
+        )
+        .unwrap();
+        let missing =
+            std::env::temp_dir().join(format!("asb-missing-watch-checkout-{}", std::process::id()));
+        assert_eq!(
+            run_bounded_until(
+                Command::new("true"),
+                &request,
+                Instant::now() + Duration::from_secs(2),
+                Some(&missing),
+            ),
+            Err(CheckoutError::Unavailable)
+        );
+    }
+
+    #[test]
+    fn bounded_command_succeeds_without_watch_tree() {
+        let request = CheckoutRequest::for_tool(
+            &tool("https://example.invalid/repo", &"a".repeat(40)),
+            PathBuf::from("/tmp/x"),
+        )
+        .unwrap();
+        assert_eq!(
+            run_bounded_until(
+                Command::new("true"),
+                &request,
+                Instant::now() + Duration::from_secs(2),
+                None,
+            ),
+            Ok(())
+        );
     }
 
     #[test]
