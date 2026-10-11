@@ -4271,6 +4271,52 @@ fn platform_label() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
+fn source_build_artifact(
+    id: &str,
+    entry: &tool_catalog::ToolEntry,
+    root: &Path,
+) -> Result<tool_acquisition::VerifiedArtifact, CliError> {
+    let recipe = entry
+        .build_recipes
+        .first()
+        .ok_or_else(|| CliError::legacy_validation("catalog source recipe missing"))?;
+    let checkout = source_checkout::acquire(
+        &source_checkout::CheckoutRequest::for_tool(entry, root.join(".asb/source-checkouts"))
+            .map_err(|error| CliError::legacy_validation(error.code()))?,
+    )
+    .map_err(|error| CliError::legacy_operation(error.code()))?;
+    let build_prefix = root.join(".asb/source-build");
+    let request = source_builder::BuildRequest {
+        source: PathBuf::new(),
+        project_prefix: build_prefix.clone(),
+        tool: entry.clone(),
+        recipe: recipe.clone(),
+        limits: source_builder::BuildLimits::default(),
+    };
+    source_builder::build_from_checkout(checkout, request)
+        .map_err(|error| CliError::legacy_operation(error.code()))?;
+    let produced = build_prefix.join(id).join(&entry.entrypoint);
+    let bytes = fs::read(&produced)
+        .map_err(|_| CliError::legacy_operation("source build output cannot be read"))?;
+    fs::remove_dir_all(&build_prefix)
+        .map_err(|_| CliError::legacy_operation("source build staging cleanup failed"))?;
+    let alternative = entry
+        .alternatives
+        .iter()
+        .find(|alternative| alternative.kind == "source")
+        .cloned()
+        .ok_or_else(|| CliError::legacy_validation("catalog source alternative missing"))?;
+    Ok(tool_acquisition::VerifiedArtifact {
+        bytes,
+        entry: entry.clone(),
+        alternative,
+        source_ref: format!(
+            "{}@{}",
+            entry.official_source.url, entry.official_source.revision
+        ),
+    })
+}
+
 fn tool_install_with_progress(
     args: &[String],
     output: &mut dyn Write,
@@ -4397,6 +4443,11 @@ fn tool_install_with_progress(
             output,
             &json!({"schema_version": OUTPUT_SCHEMA_VERSION, "ok": true, "command": "tool install", "id": id, "kind": kind, "version": version, "source": source_url, "platform": platform_label(), "dry_run": true}),
         );
+    } else if catalog_entry
+        .as_ref()
+        .is_some_and(|entry| !entry.build_recipes.is_empty())
+    {
+        source_build_artifact(id, catalog_entry.as_ref().expect("source entry"), &root)?
     } else {
         // curl is invoked with an argument array, strict HTTPS policy, a
         // bounded transfer and no credential-bearing environment.
@@ -11556,12 +11607,7 @@ pub(crate) mod tests {
             OsString::from("--dry-run"),
         ];
         assert_eq!(
-            run_with_default_mode(
-                &supported_default,
-                &mut Vec::new(),
-                &mut Vec::new(),
-                false
-            ),
+            run_with_default_mode(&supported_default, &mut Vec::new(), &mut Vec::new(), false),
             0
         );
         let import_without_kind = vec![

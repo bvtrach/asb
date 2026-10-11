@@ -38,17 +38,29 @@ impl Default for CheckoutLimits {
 
 #[derive(Clone, Debug)]
 pub struct CheckoutRequest {
-    pub repository_url: String,
-    pub revision: String,
-    pub staging_root: PathBuf,
-    pub limits: CheckoutLimits,
-    pub cancel: Arc<AtomicBool>,
+    repository_url: String,
+    revision: String,
+    staging_root: PathBuf,
+    limits: CheckoutLimits,
+    cancel: Arc<AtomicBool>,
 }
 
 impl CheckoutRequest {
     pub fn for_tool(tool: &ToolEntry, staging_root: PathBuf) -> Result<Self, CheckoutError> {
         let revision = tool.official_source.revision.clone();
         let repository_url = tool.official_source.url.clone();
+        if !cfg!(test) {
+            let catalog = crate::tool_catalog::catalog();
+            crate::tool_catalog::validate(&catalog).map_err(|_| CheckoutError::InvalidRequest)?;
+            let allowed = catalog.entries.iter().any(|entry| {
+                entry.id == tool.id
+                    && entry.official_source.url == repository_url
+                    && entry.official_source.revision == revision
+            });
+            if !allowed {
+                return Err(CheckoutError::RepositoryIdentityMismatch);
+            }
+        }
         validate_identity(&repository_url, &revision)?;
         Ok(Self {
             repository_url,
@@ -72,6 +84,12 @@ impl SourceCheckout {
     /// consumed it.  Callers must treat cleanup failure as a failed build.
     pub fn cleanup(self) -> Result<(), CheckoutError> {
         fs::remove_dir_all(self.path).map_err(|_| CheckoutError::CleanupFailed)
+    }
+}
+
+impl CheckoutRequest {
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Release);
     }
 }
 
@@ -122,9 +140,17 @@ fn acquire_inner(
     staging: &Path,
 ) -> Result<SourceCheckout, CheckoutError> {
     let mut clone = command(request, "clone");
-    clone.args(["--no-checkout", "--no-tags", "--depth", "1"]);
+    clone.args([
+        "--no-checkout",
+        "--no-tags",
+        "--depth",
+        "1",
+        "--filter=blob:none",
+        "--no-local",
+    ]);
     clone.arg(&request.repository_url).arg(staging);
     run_bounded(clone, request)?;
+    enforce_bounds(staging, &request.limits)?;
 
     let remote = staging.join(".asb-remote");
     let mut remote_command = command(request, "remote");
@@ -144,6 +170,7 @@ fn acquire_inner(
         .current_dir(staging)
         .args(["--no-tags", "origin", &request.revision]);
     run_bounded(fetch, request)?;
+    enforce_bounds(staging, &request.limits)?;
 
     let mut checkout = command(request, "checkout");
     checkout
@@ -170,7 +197,10 @@ fn acquire_inner(
 
 fn validate_identity(url: &str, revision: &str) -> Result<(), CheckoutError> {
     let local_fixture = cfg!(test) && url.starts_with("file://");
-    if (!url.starts_with("https://") && !local_fixture) || url.len() > 2048 || revision.len() != 40
+    if (!url.starts_with("https://") && !local_fixture)
+        || url.len() > 2048
+        || revision.len() != 40
+        || url.contains('@')
     {
         return Err(CheckoutError::InvalidRequest);
     }
