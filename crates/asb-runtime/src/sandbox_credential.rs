@@ -229,9 +229,6 @@ mod tests {
 
     #[test]
     fn bubblewrap_receives_the_bound_target_without_argv_secret() {
-        if !Path::new("/usr/bin/bwrap").is_file() {
-            return;
-        }
         let binding = SandboxCredentialBinding::new("b".repeat(64), "OPENROUTER_API_KEY").unwrap();
         let mut channel = SandboxCredentialChannel::new(&binding).unwrap();
         channel
@@ -259,6 +256,13 @@ mod tests {
             "/usr/bin:/bin",
         ]);
         channel.append_bwrap_args(&mut command).unwrap();
+        let args: Vec<_> = command.get_args().map(|arg| arg.to_owned()).collect();
+        assert!(args.windows(2).any(|pair| {
+            pair[0] == "--args" && pair[1].to_string_lossy().parse::<i32>().is_ok()
+        }));
+        if !Path::new("/usr/bin/bwrap").is_file() {
+            return;
+        }
         command.args([
             "--",
             "/bin/sh",
