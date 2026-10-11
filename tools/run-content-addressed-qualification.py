@@ -162,7 +162,7 @@ def run_campaign(
             "agent_id": metadata["agent_id"],
             "workload_id": entry["workload_id"],
             "cassette_sha256": metadata["cassette_sha256"],
-            "result_digest": replay.get("result_digest"),
+            "result_digest": replay.get("result_digest") or replay.get("response_sha256"),
             "network": replay["network"],
         })
     return {
