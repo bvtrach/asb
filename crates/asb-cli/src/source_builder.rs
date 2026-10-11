@@ -302,9 +302,9 @@ fn resolve_output(source: &Path, pattern: &Path) -> Result<PathBuf, BuildFailure
     }
     let (parent, suffix) = text.rsplit_once('*').ok_or(BuildFailure::PolicyRejected)?;
     let directory = source.join(parent);
-    let mut matches = fs::read_dir(directory).map_err(|_| BuildFailure::OutputMismatch)?;
+    let matches = fs::read_dir(directory).map_err(|_| BuildFailure::OutputMismatch)?;
     let mut found = None;
-    while let Some(entry) = matches.next() {
+    for entry in matches {
         let entry = entry.map_err(|_| BuildFailure::OutputMismatch)?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
