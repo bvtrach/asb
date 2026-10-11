@@ -19339,3 +19339,93 @@ fn validate_workload_evaluator_layout(prepared: &Path, entrypoint: &str) -> Resu
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod ar1782_headroom_tests {
+    use super::{Sha256, Value, fs, json, project_init_with_progress};
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use sha2::Digest;
+    use std::io::Write;
+
+    fn tar_member(name: &[u8], kind: u8) -> Vec<u8> {
+        let mut archive = vec![0u8; 1024];
+        let count = name.len().min(100);
+        archive[..count].copy_from_slice(&name[..count]);
+        archive[156] = kind;
+        archive[257..262].copy_from_slice(b"ustar");
+        archive
+    }
+
+    fn arxiv_workload_fixture_archive(url: &str) -> Result<Vec<u8>, super::CliError> {
+        assert_eq!(url, "https://arxiv.org/e-print/2407.01502v1");
+        Ok(tar_member(b"fixture/manifest.json", 0))
+    }
+
+    #[test]
+    fn gzip_archives_are_validated_and_extracted_with_the_same_bounds() {
+        let root = tempfile::tempdir().unwrap();
+        let tar = tar_member(b"root/manifest.json", 0);
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&tar).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        super::validate_workload_archive(&compressed).unwrap();
+        assert_eq!(
+            super::extract_workload_archive(&compressed, root.path()).unwrap(),
+            1
+        );
+        assert!(root.path().join("root/manifest.json").is_file());
+
+        let malformed = [0x1f, 0x8b, 0x08, 0x00];
+        assert!(super::validate_workload_archive(&malformed).is_err());
+        assert!(super::extract_workload_archive(&malformed, root.path()).is_err());
+    }
+
+    #[test]
+    fn arxiv_catalog_install_uses_only_the_reviewed_v1_archive_endpoint() {
+        let scratch = tempfile::tempdir().unwrap();
+        let project = scratch.path().join("workspace");
+        project_init_with_progress(
+            &[project.display().to_string()],
+            &mut Vec::new(),
+            &mut Vec::new(),
+            false,
+        )
+        .unwrap();
+        let archive =
+            arxiv_workload_fixture_archive("https://arxiv.org/e-print/2407.01502v1").unwrap();
+        let catalog = vec![json!({
+            "id": "arxiv-fixture",
+            "version": "catalog-v1",
+            "source": {
+                "repository": "https://arxiv.org/abs/2407.01502",
+                "revision": "v1",
+                "archive_sha256": format!("{:x}", Sha256::digest(&archive)),
+                "license": "MIT"
+            },
+            "evaluator": {"entrypoint": "fixture/manifest.json"}
+        })];
+        let args = vec![
+            "install".into(),
+            "arxiv-fixture".into(),
+            "--project".into(),
+            project.display().to_string(),
+        ];
+        super::workload_with_progress_inner(
+            &args,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            false,
+            &catalog,
+            arxiv_workload_fixture_archive,
+        )
+        .unwrap();
+        let receipt: Value = serde_json::from_slice(
+            &fs::read(project.join(".asb/workloads/arxiv-fixture/receipt.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(receipt["source"], "https://arxiv.org/e-print/2407.01502v1");
+        assert_eq!(receipt["revision"], "v1");
+    }
+}
