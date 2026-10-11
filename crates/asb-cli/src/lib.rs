@@ -1387,6 +1387,17 @@ fn dispatch(
             )
             .map(|()| 0)
         }
+        [command, input, output, confirm]
+            if command == "record-live" && confirm == "--confirm-record" =>
+        {
+            record_openrouter_live_with_progress(
+                Path::new(input),
+                Path::new(output),
+                stdout,
+                presentation_context.is_some().then_some(stderr),
+            )
+            .map(|()| 0)
+        }
         [command, input, output, local, confirm]
             if command == "record-live"
                 && local == "--local-mock"
@@ -1724,10 +1735,21 @@ fn guided_local_with_context(
         )
         .map(|()| 0);
     }
+    if args[0] == "record-live" && args.len() == 4 && args[3] == "--confirm-record" {
+        let input = guided_path(&args[1], "recording capture")?;
+        let destination = guided_path(&args[2], "recording cassette output")?;
+        return record_openrouter_live_with_progress(
+            &input,
+            &destination,
+            output,
+            presentation_context.is_some().then_some(progress),
+        )
+        .map(|()| 0);
+    }
     if args[0] == "record-live" && args.len() == 5 {
         if args[3] != "--local-mock" || args[4] != "--confirm-record" {
             return Err(CliError::legacy_usage(
-                "easy record-live requires --local-mock --confirm-record",
+                "easy record-live defaults online; use --local-mock --confirm-record for the explicit local mock",
             ));
         }
         let input = guided_path(&args[1], "recording capture")?;
@@ -1880,7 +1902,7 @@ fn guided_setup_with_progress(
 fn write_easy_help(output: &mut dyn Write) -> Result<(), CliError> {
     writeln!(
         output,
-        "ASB guided workflow (online by default)\n\nUsage:\n  asb easy setup [SETUP_OPTIONS]\n  asb easy build|install|update|test|status|rollback|remove [--channel dev|stable|nightly|experimental] [--yes] [--dry-run]\n  asb easy provider-catalog\n  asb easy plan EXPERIMENT.toml --use-config\n  asb easy run|sweep EXPERIMENT.toml --use-config [--local-mock]\n  asb easy report RUN...\n  asb easy compare RUN RUN...\n  asb easy record CAPTURE.json CASSETTE.json --local-mock\n  asb easy record-live CAPTURE.json CASSETTE.json --local-mock --confirm-record\n  asb easy record-campaign MANIFEST.json --local-mock\n  asb easy replay CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT --local-mock\n  asb easy replay-offline CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT --local-mock\n\nLifecycle commands are provider-free. The development stable channel is a local mock;\nit is never public-release or stable-promotion evidence. Mutations require --yes or --dry-run."
+        "ASB guided workflow (online by default)\n\nUsage:\n  asb easy setup [SETUP_OPTIONS]\n  asb easy build|install|update|test|status|rollback|remove [--channel dev|stable|nightly|experimental] [--yes] [--dry-run]\n  asb easy provider-catalog\n  asb easy plan EXPERIMENT.toml --use-config\n  asb easy run|sweep EXPERIMENT.toml --use-config [--local-mock]\n  asb easy report RUN...\n  asb easy compare RUN RUN...\n  asb easy record CAPTURE.json CASSETTE.json --local-mock\n  asb easy record-live CAPTURE.json CASSETTE.json [--local-mock] --confirm-record\n  asb easy record-campaign MANIFEST.json --local-mock\n  asb easy replay CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT --local-mock\n  asb easy replay-offline CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT --local-mock\n\nLifecycle commands are provider-free. The development stable channel is a local mock;\nit is never public-release or stable-promotion evidence. Mutations require --yes or --dry-run."
     )
     .map_err(output_error)
 }
@@ -2504,7 +2526,7 @@ fn write_help(output: &mut dyn Write) -> Result<(), CliError> {
     writeln!(output, "  asb tui --help").map_err(output_error)?;
     writeln!(output, "  asb plan create --workload WORKLOAD --agent AGENT --agent-executable /absolute/agent --output /absolute/PLAN.toml [--use-config] [--sweep-max-concurrency N]")
         .map_err(output_error)?;
-    writeln!(output, "  asb benchmark-live EXPERIMENT.toml --provider-selection selection.json --online [--agents selected|all] [--workloads selected|all] [--sweep]\n  asb record-live CAPTURE.json CASSETTE.json --local-mock --confirm-record\n  asb record-live REQUEST.json CASSETTE.json --openrouter --confirm-record\n  asb record-campaign MANIFEST.json --local-mock\n  asb replay-offline CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT")
+    writeln!(output, "  asb benchmark-live EXPERIMENT.toml --provider-selection selection.json --online [--agents selected|all] [--workloads selected|all] [--sweep]\n  asb record-live CAPTURE.json CASSETTE.json [--local-mock] --confirm-record\n  asb record-campaign MANIFEST.json --local-mock\n  asb replay-offline CASSETTE.json PROVIDER_PROFILE_SHA256 AGENT")
         .map_err(output_error)
 }
 
