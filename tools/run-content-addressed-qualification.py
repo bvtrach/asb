@@ -184,6 +184,7 @@ def run_campaign(
 
 def negative_incomplete(root: Path, binary: Sequence[str], fixture: Path, agents: Sequence[str], workloads: Sequence[str], workspace: Path) -> dict[str, Any]:
     # Prove the gate rejects a prefix, without publishing any cassette.
+    negative_agents = list(dict.fromkeys([*agents, "aider"]))
     capture = workspace / "negative-capture.json"
     cassette = workspace / "negative-cassette.json"
     capture.write_bytes(canonical(fixture_capture(fixture, agents[0], PROFILE)))
@@ -191,7 +192,7 @@ def negative_incomplete(root: Path, binary: Sequence[str], fixture: Path, agents
     manifest.write_bytes(canonical({
         "schema_version": WORKFLOW_SCHEMA_VERSION,
         "provider_profile_sha256": PROFILE,
-        "agent_ids": list(agents),
+        "agent_ids": negative_agents,
         "workload_ids": list(workloads),
         "entries": [{"workload_id": workloads[0], "capture_path": str(capture), "cassette_path": str(cassette)}],
     }))
