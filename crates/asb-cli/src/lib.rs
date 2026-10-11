@@ -11578,7 +11578,7 @@ mod tests {
             "run".into(),
             "experiment.toml".into(),
             "--use-config".into(),
-            "--live-provider".into(),
+            "--use-config".into(),
         ];
         assert!(guided_local(&missing_mock, None, &mut Vec::new(), &mut Vec::new()).is_err());
 
