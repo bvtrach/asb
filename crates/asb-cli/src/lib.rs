@@ -4120,6 +4120,8 @@ fn workload_with_progress(
                 })?;
             let source_url = if let Some(repo) = repository.strip_prefix("https://github.com/") {
                 format!("https://github.com/{repo}/archive/{revision}.tar.gz")
+            } else if repository == "https://arxiv.org/abs/2407.01502" && revision == "v1" {
+                "https://arxiv.org/e-print/2407.01502v1".to_owned()
             } else {
                 return Err(CliError::legacy_validation(
                     "workload source has no supported immutable archive",
@@ -4165,17 +4167,60 @@ fn workload_with_progress(
             let path = format!(".asb/workloads/{id}");
             let root = project.join(&path);
             ensure_project_directory_with_progress(&root, 0o700, DirectoryPurpose::Tools, None)?;
+            let prepared_path = root.join("prepared");
+            let staging_path = root.join("prepared.staging");
+            if staging_path.exists() {
+                fs::remove_dir_all(&staging_path).map_err(|_| {
+                    CliError::legacy_operation("workload preparation staging cannot be removed")
+                })?;
+            }
+            ensure_project_directory_with_progress(
+                &staging_path,
+                0o700,
+                DirectoryPurpose::Tools,
+                None,
+            )?;
+            let extracted_members = extract_workload_archive(&transfer.stdout, &staging_path)?;
+            if extracted_members == 0 {
+                let _ = fs::remove_dir_all(&staging_path);
+                return Err(CliError::legacy_validation(
+                    "workload archive has no adapter-ready members",
+                ));
+            }
+            let previous_prepared = root.join("prepared.previous");
+            if previous_prepared.exists() {
+                fs::remove_dir_all(&previous_prepared).map_err(|_| {
+                    CliError::legacy_operation(
+                        "previous workload preparation backup cannot be removed",
+                    )
+                })?;
+            }
+            if prepared_path.exists() {
+                fs::rename(&prepared_path, &previous_prepared).map_err(|_| {
+                    CliError::legacy_operation("previous workload preparation cannot be staged")
+                })?;
+            }
+            if fs::rename(&staging_path, &prepared_path).is_err() {
+                let _ = fs::rename(&previous_prepared, &prepared_path);
+                return Err(CliError::legacy_operation(
+                    "workload preparation cannot be published",
+                ));
+            }
             let bundle_path = root.join("bundle.archive");
             let receipt_path = root.join("receipt.json");
             let previous_bundle = fs::read(&bundle_path).ok();
             let previous_receipt = fs::read(&receipt_path).ok();
-            write_atomic_private(
+            if let Err(error) = write_atomic_private(
                 &bundle_path,
                 &transfer.stdout,
                 DirectoryPurpose::Tools,
                 None,
-            )?;
-            let receipt = json!({"schema_version": 1, "workload_id": id, "catalog_revision": version, "source": source_url, "revision": revision, "archive_digest_sha256": archive_digest, "license": license, "status": "verified", "preparation": "archive-retained; no installer executed", "evaluator_entrypoint": preparation});
+            ) {
+                let _ = fs::remove_dir_all(&prepared_path);
+                let _ = fs::rename(&previous_prepared, &prepared_path);
+                return Err(error);
+            }
+            let receipt = json!({"schema_version": 1, "workload_id": id, "catalog_revision": version, "source": source_url, "revision": revision, "archive_digest_sha256": archive_digest, "license": license, "status": "verified", "preparation": "bounded-extracted; no installer executed", "evaluator_entrypoint": preparation});
             let receipt_bytes = serde_json::to_vec_pretty(&receipt)
                 .map_err(|_| CliError::legacy_operation("workload receipt cannot be encoded"))?;
             if let Err(error) =
@@ -4187,6 +4232,8 @@ fn workload_with_progress(
                 } else {
                     let _ = fs::remove_file(&bundle_path);
                 }
+                let _ = fs::remove_dir_all(&prepared_path);
+                let _ = fs::rename(&previous_prepared, &prepared_path);
                 return Err(error);
             }
             let record = ProjectToolRecordV1 {
@@ -4195,8 +4242,12 @@ fn workload_with_progress(
                 version: version.to_owned(),
                 platform: platform_label(),
                 path: Some(path),
-                digest_sha256: None,
-                capabilities: vec!["external-workload".into(), "verified-archive".into()],
+                digest_sha256: Some(archive_digest.clone()),
+                capabilities: vec![
+                    "external-workload".into(),
+                    "verified-archive".into(),
+                    "adapter-ready".into(),
+                ],
                 status: ProjectToolStatus::Available,
             };
             config.workloads.insert(id.to_owned(), record);
@@ -4217,8 +4268,11 @@ fn workload_with_progress(
                 } else {
                     let _ = fs::remove_file(&receipt_path);
                 }
+                let _ = fs::remove_dir_all(&prepared_path);
+                let _ = fs::rename(&previous_prepared, &prepared_path);
                 return Err(error);
             }
+            let _ = fs::remove_dir_all(&previous_prepared);
             write_json(
                 output,
                 &json!({"schema_version": OUTPUT_SCHEMA_VERSION, "ok": true, "command": format!("workload {operation}"), "id": id, "version": version, "status": "verified", "archive_digest_sha256": archive_digest}),
@@ -4282,6 +4336,81 @@ fn external_workload_catalog() -> Vec<Value> {
     .and_then(|value| value.get("workloads").cloned())
     .and_then(|value| value.as_array().cloned())
     .unwrap_or_default()
+}
+
+fn extract_workload_archive(bytes: &[u8], destination: &Path) -> Result<usize, CliError> {
+    let tar = if bytes.starts_with(&[0x1f, 0x8b]) {
+        let mut decoded = Vec::new();
+        flate2::read::GzDecoder::new(bytes)
+            .take((512 * 1024 * 1024 + 1) as u64)
+            .read_to_end(&mut decoded)
+            .map_err(|_| CliError::legacy_validation("workload archive compression is invalid"))?;
+        decoded
+    } else {
+        bytes.to_vec()
+    };
+    let mut offset = 0usize;
+    let mut members = BTreeSet::new();
+    let mut extracted = 0usize;
+    while offset + 512 <= tar.len() {
+        let header = &tar[offset..offset + 512];
+        if header.iter().all(|byte| *byte == 0) {
+            return Ok(extracted);
+        }
+        let name_end = header[..100]
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(100);
+        let name = std::str::from_utf8(&header[..name_end])
+            .map_err(|_| CliError::legacy_validation("workload archive member name is invalid"))?;
+        if name.starts_with('/') || name.split('/').any(|part| part == ".." || part.is_empty()) {
+            return Err(CliError::legacy_validation(
+                "workload archive contains an unsafe member path",
+            ));
+        }
+        if !members.insert(name.to_owned()) {
+            return Err(CliError::legacy_validation(
+                "workload archive contains a duplicate member",
+            ));
+        }
+        let kind = header[156];
+        let size_text = std::str::from_utf8(&header[124..136])
+            .unwrap_or("")
+            .trim_matches('\0')
+            .trim();
+        let size = usize::from_str_radix(size_text.trim_start_matches('0'), 8).unwrap_or(0);
+        let padded = size.div_ceil(512).saturating_mul(512);
+        let end = offset.saturating_add(512).saturating_add(padded);
+        if end > tar.len() {
+            return Err(CliError::legacy_validation(
+                "workload archive member exceeds archive boundary",
+            ));
+        }
+        let path = destination.join(name);
+        if kind == b'5' {
+            fs::create_dir_all(&path).map_err(|_| {
+                CliError::legacy_operation("workload preparation cannot create directory")
+            })?;
+        } else if matches!(kind, 0 | b'0') {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|_| {
+                    CliError::legacy_operation("workload preparation cannot create parent")
+                })?;
+            }
+            fs::write(&path, &tar[offset + 512..offset + 512 + size]).map_err(|_| {
+                CliError::legacy_operation("workload preparation cannot write member")
+            })?;
+        } else {
+            return Err(CliError::legacy_validation(
+                "workload archive contains a link or special member",
+            ));
+        }
+        extracted = extracted.saturating_add(1);
+        offset = end;
+    }
+    Err(CliError::legacy_validation(
+        "workload archive has an incomplete member table",
+    ))
 }
 
 fn validate_workload_archive(bytes: &[u8]) -> Result<(), CliError> {
@@ -4355,7 +4484,7 @@ fn validate_tar_members(archive: &[u8]) -> Result<(), CliError> {
 
 #[cfg(test)]
 mod workload_archive_tests {
-    use super::validate_workload_archive;
+    use super::{extract_workload_archive, validate_workload_archive};
 
     fn tar_member(name: &[u8], kind: u8) -> Vec<u8> {
         let mut archive = vec![0u8; 1024];
@@ -4381,6 +4510,14 @@ mod workload_archive_tests {
     #[test]
     fn accepts_a_bounded_regular_tar() {
         validate_workload_archive(&tar_member(b"root/manifest.json", 0)).unwrap();
+    }
+
+    #[test]
+    fn extraction_is_bounded_and_stages_regular_members_only() {
+        let root = tempfile::tempdir().unwrap();
+        let archive = tar_member(b"root/manifest.json", 0);
+        assert_eq!(extract_workload_archive(&archive, root.path()).unwrap(), 1);
+        assert!(root.path().join("root/manifest.json").is_file());
     }
 
     #[test]
@@ -17414,6 +17551,28 @@ pub(crate) mod tests {
 
     #[test]
     fn workload_lifecycle_read_only_and_proof_matrix_is_bounded() {
+        for entry in external_workload_catalog() {
+            let digest = entry
+                .pointer("/source/archive_sha256")
+                .expect("every workload has a reviewed archive digest");
+            match digest {
+                Value::String(value) => {
+                    assert!(value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                }
+                Value::Object(values) => assert!(values.values().all(|value| {
+                    value.as_str().is_some_and(|value| {
+                        value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    })
+                })),
+                _ => panic!("archive digest must be a string or per-track object"),
+            }
+            assert!(
+                entry
+                    .pointer("/evaluator/entrypoint")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty())
+            );
+        }
         let scratch = Scratch::new("workload-lifecycle-matrix");
         let project = scratch.0.join("workspace");
         let mut output = Vec::new();
