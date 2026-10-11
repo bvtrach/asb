@@ -837,6 +837,26 @@ mod tests {
         assert_eq!(missing.cleanup(), Err(CheckoutError::CleanupFailed));
     }
 
+    #[test]
+    fn checkout_failure_codes_are_stable_and_unique() {
+        let failures = [
+            CheckoutError::InvalidRequest,
+            CheckoutError::Offline,
+            CheckoutError::Unavailable,
+            CheckoutError::RepositoryIdentityMismatch,
+            CheckoutError::RevisionMismatch,
+            CheckoutError::ResourceLimit,
+            CheckoutError::Cancelled,
+            CheckoutError::CleanupFailed,
+        ];
+        let mut codes = std::collections::BTreeSet::new();
+        for failure in failures {
+            assert!(failure.code().starts_with("source_checkout_"));
+            assert!(codes.insert(failure.code()));
+        }
+        assert_eq!(codes.len(), 8);
+    }
+
     #[cfg(unix)]
     #[test]
     fn symlinked_staging_members_are_rejected() {
