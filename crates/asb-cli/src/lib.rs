@@ -4074,6 +4074,14 @@ fn workload_with_progress(
                 .pointer("/source/repository")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown");
+            let license = entry
+                .pointer("/source/license")
+                .or_else(|| entry.pointer("/dataset/license"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    CliError::legacy_validation("workload catalog license metadata is missing")
+                })?;
             let repository = entry
                 .pointer("/source/repository")
                 .and_then(Value::as_str)
@@ -4084,6 +4092,27 @@ fn workload_with_progress(
                 .and_then(Value::as_str)
                 .ok_or_else(|| {
                     CliError::legacy_validation("workload catalog revision is missing")
+                })?;
+            if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(CliError::legacy_validation(
+                    "workload catalog revision is not an immutable commit",
+                ));
+            }
+            let expected_digest = entry
+                .pointer("/source/archive_sha256")
+                .and_then(Value::as_str)
+                .filter(|value| {
+                    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+                .ok_or_else(|| {
+                    CliError::legacy_validation("workload catalog archive proof is missing")
+                })?;
+            let preparation = entry
+                .pointer("/evaluator/entrypoint")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    CliError::legacy_validation("workload catalog preparation metadata is missing")
                 })?;
             let source_url = if let Some(repo) = repository.strip_prefix("https://github.com/") {
                 format!("https://github.com/{repo}/archive/{revision}.tar.gz")
@@ -4124,11 +4153,7 @@ fn workload_with_progress(
             }
             validate_workload_archive(&transfer.stdout)?;
             let archive_digest = format!("{:x}", Sha256::digest(&transfer.stdout));
-            if let Some(expected) = entry
-                .pointer("/source/archive_sha256")
-                .and_then(Value::as_str)
-                && expected != archive_digest
-            {
+            if expected_digest != archive_digest {
                 return Err(CliError::legacy_validation(
                     "workload archive digest does not match the pinned catalog",
                 ));
@@ -4136,21 +4161,32 @@ fn workload_with_progress(
             let path = format!(".asb/workloads/{id}");
             let root = project.join(&path);
             ensure_project_directory_with_progress(&root, 0o700, DirectoryPurpose::Tools, None)?;
-            write_atomic_private(
-                &root.join("bundle.archive"),
+            let bundle_path = root.join("bundle.archive");
+            let receipt_path = root.join("receipt.json");
+            let previous_bundle = fs::read(&bundle_path).ok();
+            let previous_receipt = fs::read(&receipt_path).ok();
+            if let Err(error) = write_atomic_private(
+                &bundle_path,
                 &transfer.stdout,
                 DirectoryPurpose::Tools,
                 None,
-            )?;
-            let receipt = json!({"schema_version": 1, "workload_id": id, "catalog_revision": version, "source": source_url, "revision": revision, "archive_digest_sha256": archive_digest, "status": "verified", "preparation": "archive-retained; no installer executed"});
+            ) {
+                return Err(error);
+            }
+            let receipt = json!({"schema_version": 1, "workload_id": id, "catalog_revision": version, "source": source_url, "revision": revision, "archive_digest_sha256": archive_digest, "license": license, "status": "verified", "preparation": "archive-retained; no installer executed", "evaluator_entrypoint": preparation});
             let receipt_bytes = serde_json::to_vec_pretty(&receipt)
                 .map_err(|_| CliError::legacy_operation("workload receipt cannot be encoded"))?;
-            write_atomic_private(
-                &root.join("receipt.json"),
-                &receipt_bytes,
-                DirectoryPurpose::Tools,
-                None,
-            )?;
+            if let Err(error) =
+                write_atomic_private(&receipt_path, &receipt_bytes, DirectoryPurpose::Tools, None)
+            {
+                if let Some(previous) = previous_bundle.as_ref() {
+                    let _ =
+                        write_atomic_private(&bundle_path, previous, DirectoryPurpose::Tools, None);
+                } else {
+                    let _ = fs::remove_file(&bundle_path);
+                }
+                return Err(error);
+            }
             let record = ProjectToolRecordV1 {
                 kind: ProjectToolKind::Workload,
                 source_ref: source.to_owned(),
@@ -4162,7 +4198,25 @@ fn workload_with_progress(
                 status: ProjectToolStatus::Available,
             };
             config.workloads.insert(id.to_owned(), record);
-            save_tool_project(&project, &config)?;
+            if let Err(error) = save_tool_project(&project, &config) {
+                if let Some(previous) = previous_bundle.as_ref() {
+                    let _ =
+                        write_atomic_private(&bundle_path, previous, DirectoryPurpose::Tools, None);
+                } else {
+                    let _ = fs::remove_file(&bundle_path);
+                }
+                if let Some(previous) = previous_receipt.as_ref() {
+                    let _ = write_atomic_private(
+                        &receipt_path,
+                        previous,
+                        DirectoryPurpose::Tools,
+                        None,
+                    );
+                } else {
+                    let _ = fs::remove_file(&receipt_path);
+                }
+                return Err(error);
+            }
             write_json(
                 output,
                 &json!({"schema_version": OUTPUT_SCHEMA_VERSION, "ok": true, "command": format!("workload {operation}"), "id": id, "version": version, "status": "verified", "archive_digest_sha256": archive_digest}),
@@ -4234,15 +4288,98 @@ fn validate_workload_archive(bytes: &[u8]) -> Result<(), CliError> {
             "workload archive exceeds the bounded size or is empty",
         ));
     }
-    let archive = bytes.starts_with(&[0x1f, 0x8b])
-        || bytes.starts_with(b"PK\x03\x04")
-        || (bytes.len() >= 262 && &bytes[257..262] == b"ustar");
+    let archive =
+        bytes.starts_with(&[0x1f, 0x8b]) || (bytes.len() >= 262 && &bytes[257..262] == b"ustar");
     if !archive || bytes.starts_with(b"<!DOCTYPE") || bytes.starts_with(b"<html") {
         return Err(CliError::legacy_validation(
             "workload source is not a supported archive",
         ));
     }
+    let tar = if bytes.starts_with(&[0x1f, 0x8b]) {
+        let mut decoded = Vec::new();
+        flate2::read::GzDecoder::new(bytes)
+            .take((512 * 1024 * 1024 + 1) as u64)
+            .read_to_end(&mut decoded)
+            .map_err(|_| CliError::legacy_validation("workload archive compression is invalid"))?;
+        decoded
+    } else {
+        bytes.to_vec()
+    };
+    validate_tar_members(&tar)?;
     Ok(())
+}
+
+fn validate_tar_members(archive: &[u8]) -> Result<(), CliError> {
+    let mut offset = 0usize;
+    while offset + 512 <= archive.len() {
+        let header = &archive[offset..offset + 512];
+        if header.iter().all(|byte| *byte == 0) {
+            return Ok(());
+        }
+        let name_end = header[..100]
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(100);
+        let name = std::str::from_utf8(&header[..name_end])
+            .map_err(|_| CliError::legacy_validation("workload archive member name is invalid"))?;
+        if name.starts_with('/') || name.split('/').any(|part| part == ".." || part.is_empty()) {
+            return Err(CliError::legacy_validation(
+                "workload archive contains an unsafe member path",
+            ));
+        }
+        let kind = header[156];
+        if !matches!(kind, 0 | b'0' | b'5') {
+            return Err(CliError::legacy_validation(
+                "workload archive contains a link or special member",
+            ));
+        }
+        let size_text = std::str::from_utf8(&header[124..136])
+            .unwrap_or("")
+            .trim_matches('\0')
+            .trim();
+        let size = usize::from_str_radix(size_text.trim_start_matches('0'), 8).unwrap_or(0);
+        let padded = size.div_ceil(512).saturating_mul(512);
+        offset = offset.saturating_add(512).saturating_add(padded);
+        if offset > archive.len() {
+            return Err(CliError::legacy_validation(
+                "workload archive member exceeds archive boundary",
+            ));
+        }
+    }
+    Err(CliError::legacy_validation(
+        "workload archive has an incomplete member table",
+    ))
+}
+
+#[cfg(test)]
+mod workload_archive_tests {
+    use super::validate_workload_archive;
+
+    fn tar_member(name: &[u8], kind: u8) -> Vec<u8> {
+        let mut archive = vec![0u8; 1024];
+        let count = name.len().min(100);
+        archive[..count].copy_from_slice(&name[..count]);
+        archive[156] = kind;
+        archive[257..262].copy_from_slice(b"ustar");
+        archive[512..].fill(0);
+        archive
+    }
+
+    #[test]
+    fn rejects_hostile_paths_and_links() {
+        for (name, kind) in [
+            (b"../escape".as_slice(), 0),
+            (b"safe/link".as_slice(), b'2'),
+        ] {
+            let error = validate_workload_archive(&tar_member(name, kind)).unwrap_err();
+            assert!(error.message.contains("workload archive"));
+        }
+    }
+
+    #[test]
+    fn accepts_a_bounded_regular_tar() {
+        validate_workload_archive(&tar_member(b"root/manifest.json", 0)).unwrap();
+    }
 }
 
 #[cfg(test)]
