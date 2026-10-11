@@ -1341,6 +1341,19 @@ mod tests {
     }
 
     #[test]
+    fn development_fixture_allocator_skips_stale_root() {
+        let _guard = DEVELOPMENT_FIXTURE_TEST_LOCK.lock().unwrap();
+        let sequence = FIXTURE_SEQUENCE.load(Ordering::Relaxed);
+        let stale = std::env::temp_dir().join(format!("asb-dr-{}-{sequence}", std::process::id()));
+        let _ = fs::remove_dir_all(&stale);
+        fs::create_dir(&stale).unwrap();
+        let allocated = allocate_development_fixture_root().unwrap();
+        assert_ne!(allocated.0, stale);
+        drop(allocated);
+        fs::remove_dir_all(stale).unwrap();
+    }
+
+    #[test]
     fn temporary_replay_root_drop_removes_private_tree() {
         let root = std::env::temp_dir().join(format!(
             "asb-development-replay-guard-{}",
