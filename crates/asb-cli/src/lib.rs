@@ -18130,10 +18130,13 @@ pub(crate) mod tests {
         let root = project.join(".asb/workloads/fixture-workload");
         assert!(root.join("bundle.archive").is_file());
         assert!(root.join("prepared/fixture/manifest.json").is_file());
-        let receipt: Value = serde_json::from_slice(&fs::read(root.join("receipt.json")).unwrap())
-            .unwrap();
+        let receipt: Value =
+            serde_json::from_slice(&fs::read(root.join("receipt.json")).unwrap()).unwrap();
         assert_eq!(receipt["status"], "verified");
-        assert_eq!(receipt["preparation"], "bounded-extracted; no installer executed");
+        assert_eq!(
+            receipt["preparation"],
+            "bounded-extracted; no installer executed"
+        );
         args[0] = "update".into();
         workload_with_progress_inner(
             &args,
