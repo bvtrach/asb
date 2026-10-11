@@ -1727,6 +1727,7 @@ fn guided_local_with_context(
             "easy requires an experiment path and --use-config",
         ));
     }
+
     if args[2..]
         .iter()
         .any(|flag| !matches!(flag.as_str(), "--use-config" | "--local-mock"))
@@ -2172,7 +2173,6 @@ fn guided_local_at(
     progress: &mut dyn Write,
     presentation_context: Option<&mut human::PresentationContext>,
 ) -> Result<u8, CliError> {
-    let local_mock = args.len() == 4 && args[2..].iter().any(|flag| flag == "--local-mock");
     let sweep = match args[0].as_str() {
         "run" => false,
         "sweep" => true,
@@ -2182,9 +2182,9 @@ fn guided_local_at(
         Path::new(&args[1]),
         SelectionSource::Config(store),
         sweep,
-        !local_mock,
+        !(args.len() == 4 && args[2..].iter().any(|flag| flag == "--local-mock")),
         None,
-        local_mock,
+        args.len() == 4 && args[2..].iter().any(|flag| flag == "--local-mock"),
         output,
         progress,
         presentation_context,
