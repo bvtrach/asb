@@ -503,6 +503,47 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn hostile_output_revision_and_symlink_paths_fail_closed() {
+        use std::os::unix::fs::symlink;
+        let request = CheckoutRequest::for_tool(
+            &tool("https://example.invalid/repo", &"a".repeat(40)),
+            std::env::temp_dir().join(format!("asb-hostile-checkout-{}", std::process::id())),
+        )
+        .unwrap();
+        assert_eq!(
+            validate_identity(
+                "https://example.invalid/repo",
+                &format!("{}g", "a".repeat(39))
+            ),
+            Err(CheckoutError::InvalidRequest)
+        );
+        let root =
+            std::env::temp_dir().join(format!("asb-symlink-checkout-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        symlink("/tmp", root.join("escape")).unwrap();
+        assert_eq!(
+            enforce_bounds(&root, &request.limits),
+            Err(CheckoutError::ResourceLimit)
+        );
+        std::fs::remove_file(root.join("escape")).unwrap();
+
+        let output = root.join("output");
+        let command = Command::new("false");
+        assert_eq!(
+            run_bounded_capture(
+                command,
+                &output,
+                &request,
+                Instant::now() + Duration::from_secs(2),
+                Some(&root),
+            ),
+            Err(CheckoutError::Unavailable)
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn wrong_revision_and_credential_bearing_repository_fail_closed() {
         assert!(matches!(
             CheckoutRequest::for_tool(
