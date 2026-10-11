@@ -4051,6 +4051,9 @@ fn workload_with_progress_inner(
             .split_first()
             .map_or((None, &args[1..]), |(id, rest)| (Some(id), rest))
     };
+    if let Some(id) = id {
+        validate_workload_id(id)?;
+    }
     let project = tool_project_path(rest, 0)?;
     let mut config = load_tool_project(&project)?;
     match operation {
@@ -4109,14 +4112,7 @@ fn workload_with_progress_inner(
                 .get("version")
                 .and_then(Value::as_str)
                 .unwrap_or("catalog");
-            let license = entry
-                .pointer("/source/license")
-                .or_else(|| entry.pointer("/dataset/license"))
-                .and_then(Value::as_str)
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| {
-                    CliError::legacy_validation("workload catalog license metadata is missing")
-                })?;
+            let license = validated_workload_license(entry)?;
             let source_identity = resolve_workload_source(entry)?;
             let repository = source_identity.repository;
             let revision = source_identity.revision;
@@ -4161,10 +4157,21 @@ fn workload_with_progress_inner(
                 ));
             }
             let path = format!(".asb/workloads/{id}");
-            let root = project.join(&path);
+            let root = workload_install_root(&project, id, false)?;
             ensure_project_directory_with_progress(&root, 0o700, DirectoryPurpose::Tools, None)?;
             let prepared_path = root.join("prepared");
             let staging_path = root.join("prepared.staging");
+            let previous_prepared = root.join("prepared.previous");
+            for path in [&prepared_path, &staging_path, &previous_prepared] {
+                if fs::symlink_metadata(path)
+                    .map(|metadata| metadata.file_type().is_symlink())
+                    .unwrap_or(false)
+                {
+                    return Err(CliError::legacy_validation(
+                        "workload preparation path is a symlink",
+                    ));
+                }
+            }
             if staging_path.exists() {
                 fs::remove_dir_all(&staging_path).map_err(|_| {
                     CliError::legacy_operation("workload preparation staging cannot be removed")
@@ -4183,7 +4190,7 @@ fn workload_with_progress_inner(
                     "workload archive has no adapter-ready members",
                 ));
             }
-            let previous_prepared = root.join("prepared.previous");
+            validate_workload_evaluator_layout(&staging_path, preparation)?;
             if previous_prepared.exists() {
                 fs::remove_dir_all(&previous_prepared).map_err(|_| {
                     CliError::legacy_operation(
@@ -4299,7 +4306,7 @@ fn workload_with_progress_inner(
                 .workloads
                 .remove(id)
                 .ok_or_else(|| CliError::legacy_validation("workload ID is not installed"))?;
-            let path = project.join(format!(".asb/workloads/{id}"));
+            let path = workload_install_root(&project, id, false)?;
             if let Ok(metadata) = fs::symlink_metadata(&path) {
                 if metadata.file_type().is_symlink() {
                     return Err(CliError::legacy_validation(
@@ -4470,9 +4477,21 @@ fn repair_verified_workload_offline(
     output: &mut dyn Write,
     human: bool,
 ) -> Result<(), CliError> {
-    let root = project.join(format!(".asb/workloads/{id}"));
+    let root = workload_install_root(project, id, true)?;
     let bundle_path = root.join("bundle.archive");
     let receipt_path = root.join("receipt.json");
+    for path in [&bundle_path, &receipt_path] {
+        let metadata = fs::symlink_metadata(path).map_err(|_| {
+            CliError::legacy_validation(
+                "workload installation is stale or incomplete; update is required",
+            )
+        })?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(CliError::legacy_validation(
+                "workload installation contains an unsafe bundle or receipt",
+            ));
+        }
+    }
     let bundle = fs::read(&bundle_path).map_err(|_| {
         CliError::legacy_validation(
             "workload installation is stale or incomplete; update is required",
@@ -4509,6 +4528,17 @@ fn repair_verified_workload_offline(
     }
     let staging = root.join("prepared.repairing");
     let previous = root.join("prepared.previous-repair");
+    let prepared = root.join("prepared");
+    for path in [&staging, &previous, &prepared] {
+        if fs::symlink_metadata(path)
+            .map(|metadata| metadata.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return Err(CliError::legacy_validation(
+                "workload preparation path is a symlink",
+            ));
+        }
+    }
     let _ = fs::remove_dir_all(&staging);
     let _ = fs::remove_dir_all(&previous);
     fs::create_dir_all(&staging).map_err(|_| {
@@ -4520,7 +4550,7 @@ fn repair_verified_workload_offline(
             "workload archive contains no preparable members",
         ));
     }
-    let prepared = root.join("prepared");
+    validate_workload_evaluator_layout(&staging, proof.preparation)?;
     if prepared.exists() {
         fs::rename(&prepared, &previous).map_err(|_| {
             CliError::legacy_operation("previous workload preparation cannot be staged")
@@ -18207,6 +18237,110 @@ pub(crate) mod tests {
             )
             .is_err()
         );
+
+        for license in ["NOASSERTION", ""] {
+            let unlicensed_catalog = vec![json!({
+                "id": "unlicensed-workload",
+                "version": "catalog-v1",
+                "source": {
+                    "repository": "https://github.com/example/fixture",
+                    "commit": "0123456789012345678901234567890123456789",
+                    "archive_sha256": "0".repeat(64),
+                    "license": license
+                },
+                "evaluator": {"entrypoint": "fixture/manifest.json"}
+            })];
+            args[1] = "unlicensed-workload".into();
+            assert!(
+                workload_with_progress_inner(
+                    &args,
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    false,
+                    &unlicensed_catalog,
+                    verified_workload_fixture_archive,
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn workload_identity_and_storage_paths_are_confined() {
+        assert!(super::validate_workload_id("../escape").is_err());
+        assert!(super::validate_workload_id("UpperCase").is_err());
+        assert!(super::validate_workload_id("safe-workload").is_ok());
+
+        let scratch = Scratch::new("workload-path-confinement");
+        let project = scratch.0.join("workspace");
+        fs::create_dir_all(project.join(".asb")).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(scratch.0.join("outside"), project.join(".asb/workloads"))
+            .unwrap();
+        #[cfg(unix)]
+        assert!(super::workload_install_root(&project, "safe-workload", false).is_err());
+
+        let safe_root = scratch.0.join("safe-root");
+        fs::create_dir_all(safe_root.join(".asb/workloads/safe-workload")).unwrap();
+        #[cfg(unix)]
+        {
+            let outside_bundle = scratch.0.join("outside-bundle");
+            fs::write(&outside_bundle, b"must not be read").unwrap();
+            std::os::unix::fs::symlink(
+                &outside_bundle,
+                safe_root.join(".asb/workloads/safe-workload/bundle.archive"),
+            )
+            .unwrap();
+            fs::write(
+                safe_root.join(".asb/workloads/safe-workload/receipt.json"),
+                b"{}",
+            )
+            .unwrap();
+            let zero_digest = "0".repeat(64);
+            let proof = super::WorkloadRepairProof {
+                version: "catalog-v1",
+                expected_digest: &zero_digest,
+                license: "MIT",
+                preparation: "fixture/manifest.json",
+            };
+            assert!(
+                super::repair_verified_workload_offline(
+                    &safe_root,
+                    "safe-workload",
+                    proof,
+                    &mut Vec::new(),
+                    false,
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn evaluator_layout_and_entrypoint_are_checked_before_publication() {
+        let scratch = Scratch::new("workload-layout-validation");
+        let empty = scratch.0.join("empty");
+        fs::create_dir_all(&empty).unwrap();
+        assert!(
+            super::validate_workload_evaluator_layout(&empty, "fixture/manifest.json").is_err()
+        );
+        fs::write(empty.join("manifest.json"), b"{}\n").unwrap();
+        assert!(super::validate_workload_evaluator_layout(&empty, "").is_err());
+        assert!(super::validate_workload_evaluator_layout(&empty, "fixture/manifest.json").is_ok());
+        assert!(super::validate_workload_evaluator_layout(&empty, "fixture/../escape").is_err());
+    }
+
+    #[test]
+    fn noassertion_or_missing_license_is_not_executable() {
+        for value in [None, Some(""), Some("NOASSERTION"), Some("noassertion")] {
+            let entry = match value {
+                Some(license) => json!({"source": {"license": license}}),
+                None => json!({"source": {}}),
+            };
+            assert!(super::validated_workload_license(&entry).is_err());
+        }
+        let entry = json!({"source": {"license": "MIT"}});
+        assert_eq!(super::validated_workload_license(&entry).unwrap(), "MIT");
     }
 
     #[test]
@@ -18897,4 +19031,152 @@ fn preflight_cli(args: &[String], output: &mut dyn Write) -> Result<u8, CliError
     )
     .map_err(|_| CliError::legacy_operation("preflight could not be evaluated"))?;
     write_json(output, &view).map(|()| 0)
+}
+
+fn validate_workload_id(id: &str) -> Result<(), CliError> {
+    if !valid_tool_id(id) {
+        return Err(CliError::legacy_validation(
+            "workload ID is invalid; use lowercase letters, digits, '-' or '_' only",
+        ));
+    }
+    Ok(())
+}
+
+/// Return the project-local workload directory without ever accepting a
+/// symlinked component. The install path may be absent, but its existing
+/// parents must be real directories; repair additionally requires the bundle
+/// directory itself to exist and be a real directory.
+fn workload_install_root(
+    project: &Path,
+    id: &str,
+    require_existing: bool,
+) -> Result<PathBuf, CliError> {
+    validate_workload_id(id)?;
+    let asb = project.join(".asb");
+    let workloads = asb.join("workloads");
+    for parent in [&asb, &workloads] {
+        match fs::symlink_metadata(parent) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(CliError::legacy_validation(
+                    "workload storage path contains a symlink",
+                ));
+            }
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(CliError::legacy_validation(
+                    "workload storage path is not a directory",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => {
+                return Err(CliError::legacy_operation(
+                    "workload storage path cannot be inspected",
+                ));
+            }
+        }
+    }
+    let root = workloads.join(id);
+    match fs::symlink_metadata(&root) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(CliError::legacy_validation(
+            "workload installation path is a symlink",
+        )),
+        Ok(metadata) if !metadata.is_dir() => Err(CliError::legacy_validation(
+            "workload installation path is not a directory",
+        )),
+        Ok(_) => Ok(root),
+        Err(error) if error.kind() == io::ErrorKind::NotFound && !require_existing => Ok(root),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Err(CliError::legacy_validation(
+            "workload installation is stale or incomplete; update is required",
+        )),
+        Err(_) => Err(CliError::legacy_operation(
+            "workload installation path cannot be inspected",
+        )),
+    }
+}
+
+fn validated_workload_license(entry: &Value) -> Result<&str, CliError> {
+    let source = entry.pointer("/source");
+    let license = source
+        .and_then(|value| value.get("license"))
+        .or_else(|| entry.pointer("/dataset/license"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            CliError::legacy_validation(
+                "workload catalog license metadata is missing; execution is not permitted",
+            )
+        })?;
+    if license.eq_ignore_ascii_case("NOASSERTION") {
+        return Err(CliError::legacy_validation(
+            "workload catalog license is NOASSERTION; execution is not permitted",
+        ));
+    }
+    if source
+        .and_then(|value| value.get("license_status"))
+        .and_then(Value::as_str)
+        .is_some_and(|status| status != "verified" && status != "declared")
+    {
+        return Err(CliError::legacy_validation(
+            "workload catalog license evidence is not executable",
+        ));
+    }
+    Ok(license)
+}
+
+/// Validate the catalog evaluator declaration and the extracted tree before
+/// publishing an adapter-ready receipt. The entrypoint is metadata, never a
+/// shell command: reject shell syntax, empty tokens, and unsafe path tokens.
+/// A verified archive must also contain at least one regular file, otherwise
+/// it cannot be an adapter-ready workload regardless of its digest.
+fn validate_workload_evaluator_layout(prepared: &Path, entrypoint: &str) -> Result<(), CliError> {
+    let tokens = entrypoint.split_whitespace().collect::<Vec<_>>();
+    if tokens.is_empty()
+        || tokens.iter().any(|token| {
+            token.is_empty()
+                || token
+                    .chars()
+                    .any(|character| matches!(character, ';' | '|' | '&' | '$' | '`' | '<' | '>'))
+                || token.starts_with('/')
+                || token.split('/').any(|part| part == ".." || part.is_empty())
+        })
+    {
+        return Err(CliError::legacy_validation(
+            "workload evaluator entrypoint is empty or unsafe",
+        ));
+    }
+    let mut regular_files = 0usize;
+    let mut pending = vec![prepared.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory).map_err(|_| {
+            CliError::legacy_operation("workload adapter layout cannot be inspected")
+        })? {
+            let entry = entry.map_err(|_| {
+                CliError::legacy_operation("workload adapter layout cannot be inspected")
+            })?;
+            let metadata = fs::symlink_metadata(entry.path()).map_err(|_| {
+                CliError::legacy_operation("workload adapter layout cannot be inspected")
+            })?;
+            if metadata.file_type().is_symlink() {
+                return Err(CliError::legacy_validation(
+                    "workload adapter layout contains a symlink",
+                ));
+            }
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else if metadata.is_file() {
+                regular_files = regular_files.saturating_add(1);
+            } else {
+                return Err(CliError::legacy_validation(
+                    "workload adapter layout contains a special file",
+                ));
+            }
+        }
+    }
+    if regular_files == 0 {
+        return Err(CliError::legacy_validation(
+            "workload archive has no regular evaluator or manifest file",
+        ));
+    }
+    Ok(())
 }
