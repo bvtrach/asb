@@ -399,6 +399,17 @@ const AR1782_REVIEWED_LEGACY_CLI_CATALOG: &[(&str, u32, &str, Cause)] = &[
     ("crates/asb-cli/src/lib.rs", 18758, "legacy_cli_ar1782_reviewed_0386", Cause::MalformedInput),
     ("crates/asb-cli/src/lib.rs", 18767, "legacy_cli_ar1782_reviewed_0387", Cause::MissingInput),
     ("crates/asb-cli/src/lib.rs", 18780, "legacy_cli_ar1782_reviewed_0388", Cause::UnexpectedProductFailure),
+    ("crates/asb-cli/src/lib.rs", 18095, "legacy_cli_ar1782_reviewed_0389", Cause::UnexpectedProductFailure),
+    ("crates/asb-cli/src/lib.rs", 18734, "legacy_cli_ar1782_reviewed_0390", Cause::MissingInput),
+    ("crates/asb-cli/src/lib.rs", 18820, "legacy_cli_ar1782_reviewed_0391", Cause::MissingInput),
+    ("crates/asb-cli/src/lib.rs", 18825, "legacy_cli_ar1782_reviewed_0392", Cause::MalformedInput),
+    ("crates/asb-cli/src/lib.rs", 18834, "legacy_cli_ar1782_reviewed_0393", Cause::MissingInput),
+    ("crates/asb-cli/src/lib.rs", 18847, "legacy_cli_ar1782_reviewed_0394", Cause::UnexpectedProductFailure),
+    ("crates/asb-cli/src/lib.rs", 18785, "legacy_cli_ar1782_reviewed_0395", Cause::MissingInput),
+    ("crates/asb-cli/src/lib.rs", 18871, "legacy_cli_ar1782_reviewed_0396", Cause::MissingInput),
+    ("crates/asb-cli/src/lib.rs", 18876, "legacy_cli_ar1782_reviewed_0397", Cause::MalformedInput),
+    ("crates/asb-cli/src/lib.rs", 18885, "legacy_cli_ar1782_reviewed_0398", Cause::MissingInput),
+    ("crates/asb-cli/src/lib.rs", 18898, "legacy_cli_ar1782_reviewed_0399", Cause::UnexpectedProductFailure),
 ];
 
 fn legacy_cli_catalog(file: &str, line: u32) -> Option<(&str, Cause)> {

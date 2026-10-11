@@ -18091,6 +18091,124 @@ pub(crate) mod tests {
         Ok(archive)
     }
 
+    fn unavailable_workload_fixture_archive(_: &str) -> Result<Vec<u8>, CliError> {
+        Err(CliError::legacy_operation("fixture archive unavailable"))
+    }
+
+    fn malformed_workload_fixture_archive(_: &str) -> Result<Vec<u8>, CliError> {
+        Ok(vec![0u8; 8])
+    }
+
+    #[test]
+    fn workload_entrypoint_and_acquisition_failures_are_explicit() {
+        let scratch = Scratch::new("workload-entrypoint-failures");
+        let project = scratch.0.join("workspace");
+        project_init_with_progress(
+            &[project.display().to_string()],
+            &mut Vec::new(),
+            &mut Vec::new(),
+            false,
+        )
+        .unwrap();
+        assert!(workload_with_progress(&[], &mut Vec::new(), &mut Vec::new(), false).is_err());
+
+        let mut args = vec!["install".into(), "fixture-workload".into()];
+        args.extend(["--project".into(), project.display().to_string()]);
+        let catalog = vec![json!({
+            "id": "fixture-workload",
+            "version": "catalog-v1",
+            "source": {
+                "repository": "https://github.com/example/fixture",
+                "commit": "0123456789012345678901234567890123456789",
+                "archive_sha256": "0".repeat(64),
+                "license": "MIT"
+            },
+            "evaluator": {"entrypoint": "fixture/manifest.json"}
+        })];
+        assert!(
+            workload_with_progress_inner(
+                &args,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                false,
+                &catalog,
+                unavailable_workload_fixture_archive,
+            )
+            .is_err()
+        );
+
+        let unsupported_catalog = vec![json!({
+            "id": "unsupported-workload",
+            "version": "catalog-v1",
+            "source": {
+                "repository": "https://example.invalid/workload",
+                "commit": "0123456789012345678901234567890123456789",
+                "archive_sha256": "0".repeat(64),
+                "license": "MIT"
+            },
+            "evaluator": {"entrypoint": "fixture/manifest.json"}
+        })];
+        args[1] = "unsupported-workload".into();
+        assert!(
+            workload_with_progress_inner(
+                &args,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                false,
+                &unsupported_catalog,
+                unavailable_workload_fixture_archive,
+            )
+            .is_err()
+        );
+
+        let malformed_catalog = vec![json!({
+            "id": "malformed-workload",
+            "version": "catalog-v1",
+            "source": {
+                "repository": "https://github.com/example/fixture",
+                "commit": "0123456789012345678901234567890123456789",
+                "archive_sha256": "0".repeat(64),
+                "license": "MIT"
+            },
+            "evaluator": {"entrypoint": "fixture/manifest.json"}
+        })];
+        args[1] = "malformed-workload".into();
+        assert!(
+            workload_with_progress_inner(
+                &args,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                false,
+                &malformed_catalog,
+                malformed_workload_fixture_archive,
+            )
+            .is_err()
+        );
+
+        let missing_license_catalog = vec![json!({
+            "id": "missing-license",
+            "version": "catalog-v1",
+            "source": {
+                "repository": "https://github.com/example/fixture",
+                "commit": "0123456789012345678901234567890123456789",
+                "archive_sha256": "0".repeat(64)
+            },
+            "evaluator": {"entrypoint": "fixture/manifest.json"}
+        })];
+        args[1] = "missing-license".into();
+        assert!(
+            workload_with_progress_inner(
+                &args,
+                &mut Vec::new(),
+                &mut Vec::new(),
+                false,
+                &missing_license_catalog,
+                malformed_workload_fixture_archive,
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn workload_install_and_update_publish_verified_receipts_atomically() {
         let scratch = Scratch::new("workload-install-success");
