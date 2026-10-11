@@ -635,4 +635,23 @@ mod tests {
             let _ = std::fs::remove_dir_all(root);
         }
     }
+
+    #[test]
+    fn preflight_evaluates_every_declared_host_capability() {
+        let result = preflight_for("preflight", Path::new("/nonexistent"))
+            .expect("preflight host capability evaluation should be bounded");
+        for id in [
+            "linux",
+            "cgroup-v2",
+            "user-systemd",
+            "bubblewrap",
+            "perf",
+            "bpftool",
+            "kernel-btf",
+            "kernel-pmu",
+        ] {
+            assert!(result.dependencies.iter().any(|check| check.id == id));
+        }
+        assert!(result.dependencies.iter().any(|check| check.optional));
+    }
 }
