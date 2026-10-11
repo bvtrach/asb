@@ -137,7 +137,7 @@ def run_campaign(
     for entry, metadata in zip(entries, recordings, strict=True):
         code, replay, error = command(
             binary,
-            ["easy", "replay", entry["cassette_path"], PROFILE, next(
+            ["replay-offline", entry["cassette_path"], PROFILE, next(
                 agent for agent in agents if agent == metadata.get("agent_id")
             ), "--local-mock", "--json"],
             root,
