@@ -9379,22 +9379,19 @@ fn compare(runs: &[String], output: &mut dyn Write) -> Result<(), CliError> {
             .iter()
             .map(|field| comparison_field_name(*field).to_owned())
             .collect::<Vec<_>>();
-        match (
+        if let (Some(left), Some(right)) = (
             &baseline.provider_selection,
             &candidate.2.provider_selection,
         ) {
-            (Some(left), Some(right)) => {
-                if left.provider_profile != right.provider_profile {
-                    pair_differences.push("provider".to_owned());
-                }
-                if left.model != right.model {
-                    pair_differences.push("model".to_owned());
-                }
-                if left.generation != right.generation {
-                    pair_differences.push("generation".to_owned());
-                }
+            if left.provider_profile != right.provider_profile {
+                pair_differences.push("provider".to_owned());
             }
-            _ => {}
+            if left.model != right.model {
+                pair_differences.push("model".to_owned());
+            }
+            if left.generation != right.generation {
+                pair_differences.push("generation".to_owned());
+            }
         }
         match (&baseline.provider_launch, &candidate.2.provider_launch) {
             (Some(left), Some(right)) => {
