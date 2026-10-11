@@ -346,16 +346,19 @@ mod tests {
     use super::*;
     use crate::tool_catalog::{OfficialSource, ToolEntry};
     use std::process::Command;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::{Mutex, OnceLock};
+
+    fn fixture_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
 
     fn fixture_repository() -> (PathBuf, String, PathBuf) {
-        let root = std::env::temp_dir().join(format!(
-            "asb-source-checkout-test-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let root = tempfile::Builder::new()
+            .prefix("asb-source-checkout-test-")
+            .tempdir()
+            .unwrap()
+            .keep();
         let source = root.join("source");
         let staging = root.join("staging");
         std::fs::create_dir_all(&source).unwrap();
@@ -519,6 +522,7 @@ mod tests {
 
     #[test]
     fn acquisition_rejects_owned_staging_collision_and_cleanup_failure() {
+        let _fixture_guard = fixture_lock();
         let (source, revision, staging) = fixture_repository();
         let request = CheckoutRequest::for_tool(
             &tool(&format!("file://{}", source.display()), &revision),
@@ -695,6 +699,7 @@ mod tests {
 
     #[test]
     fn exact_fixture_checkout_is_returned_and_cleanup_is_explicit() {
+        let _fixture_guard = fixture_lock();
         let (source, revision, staging) = fixture_repository();
         let mut request = CheckoutRequest::for_tool(
             &tool(&format!("file://{}", source.display()), &revision),
