@@ -465,4 +465,70 @@ mod tests {
                 .is_err()
         );
     }
+
+    fn project_with_agent(status: asb_config::ProjectToolStatus) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "asb-dependency-registry-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".asb")).unwrap();
+        let mut config = asb_config::ProjectConfigV1::empty();
+        config.agents.insert(
+            "codex".into(),
+            asb_config::ProjectToolRecordV1 {
+                kind: asb_config::ProjectToolKind::Agent,
+                source_ref: "fixture://codex".into(),
+                version: "1.0.0".into(),
+                platform: "linux-x86_64".into(),
+                path: None,
+                digest_sha256: None,
+                capabilities: Vec::new(),
+                status,
+            },
+        );
+        std::fs::write(
+            root.join(".asb/project.json"),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
+        root
+    }
+
+    #[test]
+    fn project_inventory_and_selector_validation_are_enforced() {
+        let root = project_with_agent(asb_config::ProjectToolStatus::Available);
+        let local = preflight_for_selected("run", &root, Some("codex"), Some("local")).unwrap();
+        assert!(local.ready);
+        assert_eq!(local.dependencies.len(), 1);
+        assert!(local.dependencies[0].available);
+
+        let missing = preflight_for_selected("preflight", &root, None, Some("host")).unwrap();
+        assert!(
+            missing
+                .dependencies
+                .iter()
+                .any(|check| check.kind == DependencyKind::Host)
+        );
+        assert!(preflight_for_selected("run", &root, Some("codex"), Some("remote")).is_err());
+
+        let encoded = registry_json();
+        assert_eq!(encoded["schema_version"], VERSION);
+        assert!(encoded["dependencies"].as_array().unwrap().len() >= DEPENDENCIES.len());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn invalid_project_inventory_fails_closed_without_side_effects() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-dependency-registry-invalid-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".asb")).unwrap();
+        std::fs::write(root.join(".asb/project.json"), br#"{"unknown":true}"#).unwrap();
+        assert!(preflight_for_selected("run", &root, None, None).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
