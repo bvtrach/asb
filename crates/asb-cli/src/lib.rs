@@ -2176,24 +2176,6 @@ fn guided_lifecycle_at_with_progress(
     Ok(0)
 }
 
-fn guided_local_at(
-    args: &[String],
-    store: &ConfigStore,
-    output: &mut dyn Write,
-    progress: &mut dyn Write,
-    presentation_context: Option<&mut human::PresentationContext>,
-) -> Result<u8, CliError> {
-    let local_mock = args.iter().any(|arg| arg == "--local-mock");
-    guided_local_at_with_mode(
-        args,
-        store,
-        local_mock,
-        output,
-        progress,
-        presentation_context,
-    )
-}
-
 fn guided_local_at_with_mode(
     args: &[String],
     store: &ConfigStore,
@@ -11826,7 +11808,8 @@ mod tests {
         ];
         let mut output = Vec::new();
         assert_eq!(
-            guided_local_at(&args, &store, &mut output, &mut Vec::new(), None).unwrap(),
+            guided_local_at_with_mode(&args, &store, true, &mut output, &mut Vec::new(), None,)
+                .unwrap(),
             0
         );
         let result: Value = serde_json::from_slice(&output).unwrap();
