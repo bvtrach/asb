@@ -139,6 +139,7 @@ fn acquire_inner(
     request: &CheckoutRequest,
     staging: &Path,
 ) -> Result<SourceCheckout, CheckoutError> {
+    let deadline = Instant::now() + request.limits.timeout;
     let mut clone = command(request, "clone");
     clone.args([
         "--no-checkout",
@@ -149,7 +150,7 @@ fn acquire_inner(
         "--no-local",
     ]);
     clone.arg(&request.repository_url).arg(staging);
-    run_bounded(clone, request)?;
+    run_bounded_until(clone, request, deadline, Some(staging))?;
     enforce_bounds(staging, &request.limits)?;
 
     let remote = staging.join(".asb-remote");
@@ -157,7 +158,7 @@ fn acquire_inner(
     remote_command
         .current_dir(staging)
         .args(["get-url", "origin"]);
-    run_bounded_capture(remote_command, &remote, request)?;
+    run_bounded_capture(remote_command, &remote, request, deadline, Some(staging))?;
     let actual =
         fs::read_to_string(&remote).map_err(|_| CheckoutError::RepositoryIdentityMismatch)?;
     let _ = fs::remove_file(&remote);
@@ -169,19 +170,19 @@ fn acquire_inner(
     fetch
         .current_dir(staging)
         .args(["--no-tags", "origin", &request.revision]);
-    run_bounded(fetch, request)?;
+    run_bounded_until(fetch, request, deadline, Some(staging))?;
     enforce_bounds(staging, &request.limits)?;
 
     let mut checkout = command(request, "checkout");
     checkout
         .current_dir(staging)
         .args(["--detach", &request.revision]);
-    run_bounded(checkout, request)?;
+    run_bounded_until(checkout, request, deadline, Some(staging))?;
 
     let head_file = staging.join(".asb-head");
     let mut head = command(request, "rev-parse");
     head.current_dir(staging).args(["--verify", "HEAD"]);
-    run_bounded_capture(head, &head_file, request)?;
+    run_bounded_capture(head, &head_file, request, deadline, Some(staging))?;
     let actual = fs::read_to_string(&head_file).map_err(|_| CheckoutError::RevisionMismatch)?;
     let _ = fs::remove_file(&head_file);
     if actual.trim() != request.revision {
@@ -248,17 +249,27 @@ fn command(request: &CheckoutRequest, subcommand: &str) -> Command {
     command
 }
 
-fn run_bounded(mut command: Command, request: &CheckoutRequest) -> Result<(), CheckoutError> {
-    let started = Instant::now();
+fn run_bounded_until(
+    mut command: Command,
+    request: &CheckoutRequest,
+    deadline: Instant,
+    watch: Option<&Path>,
+) -> Result<(), CheckoutError> {
     let mut child = command.spawn().map_err(|_| CheckoutError::Unavailable)?;
     loop {
         if request.cancel.load(Ordering::Acquire) {
             terminate(&mut child);
             return Err(CheckoutError::Cancelled);
         }
-        if started.elapsed() > request.limits.timeout {
+        if Instant::now() >= deadline {
             terminate(&mut child);
             return Err(CheckoutError::Offline);
+        }
+        if let Some(root) = watch {
+            if enforce_bounds(root, &request.limits) == Err(CheckoutError::ResourceLimit) {
+                terminate(&mut child);
+                return Err(CheckoutError::ResourceLimit);
+            }
         }
         match child.try_wait() {
             Ok(Some(status)) if status.success() => return Ok(()),
@@ -276,10 +287,12 @@ fn run_bounded_capture(
     mut command: Command,
     output: &Path,
     request: &CheckoutRequest,
+    deadline: Instant,
+    watch: Option<&Path>,
 ) -> Result<(), CheckoutError> {
     let file = fs::File::create(output).map_err(|_| CheckoutError::Unavailable)?;
     command.stdout(Stdio::from(file));
-    run_bounded(command, request)?;
+    run_bounded_until(command, request, deadline, watch)?;
     let metadata = fs::metadata(output).map_err(|_| CheckoutError::Unavailable)?;
     if metadata.len() > 256 {
         return Err(CheckoutError::ResourceLimit);
@@ -417,6 +430,49 @@ mod tests {
             acquire(&request),
             Err(CheckoutError::Unavailable | CheckoutError::Cancelled)
         ));
+    }
+
+    #[test]
+    fn wrong_revision_and_credential_bearing_repository_fail_closed() {
+        assert!(matches!(
+            CheckoutRequest::for_tool(
+                &tool("https://user:pass@example.invalid/repo", &"a".repeat(40)),
+                PathBuf::from("/tmp/x")
+            ),
+            Err(CheckoutError::InvalidRequest)
+        ));
+        assert!(matches!(
+            CheckoutRequest::for_tool(
+                &tool("https://example.invalid/repo", "moving-ref"),
+                PathBuf::from("/tmp/x")
+            ),
+            Err(CheckoutError::InvalidRequest)
+        ));
+    }
+
+    #[test]
+    fn deadline_and_live_tree_limits_are_enforced() {
+        let request = CheckoutRequest::for_tool(
+            &tool("https://example.invalid/repo", &"a".repeat(40)),
+            PathBuf::from("/tmp/x"),
+        )
+        .unwrap();
+        let mut command = Command::new("sleep");
+        command.arg("1");
+        assert_eq!(
+            run_bounded_until(command, &request, Instant::now(), None),
+            Err(CheckoutError::Offline)
+        );
+        let root = std::env::temp_dir().join(format!("asb-source-limit-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("large"), vec![0_u8; 8]).unwrap();
+        let mut limited = request.limits.clone();
+        limited.max_bytes = 4;
+        assert_eq!(
+            enforce_bounds(&root, &limited),
+            Err(CheckoutError::ResourceLimit)
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
