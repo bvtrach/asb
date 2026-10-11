@@ -912,4 +912,18 @@ mod tests {
         checkout.cleanup().unwrap();
         let _ = std::fs::remove_dir_all(source.parent().unwrap());
     }
+
+    #[test]
+    fn unavailable_repository_is_transactionally_cleaned() {
+        let (source, revision, staging) = fixture_repository();
+        let missing_repo = source.parent().unwrap().join("missing-repository");
+        let request = CheckoutRequest::for_tool(
+            &tool(&format!("file://{}", missing_repo.display()), &revision),
+            staging.clone(),
+        )
+        .unwrap();
+        assert_eq!(acquire(&request), Err(CheckoutError::Unavailable));
+        assert!(staging.read_dir().unwrap().next().is_none());
+        let _ = std::fs::remove_dir_all(source.parent().unwrap());
+    }
 }
