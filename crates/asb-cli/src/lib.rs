@@ -2553,7 +2553,6 @@ fn write_help(output: &mut dyn Write) -> Result<(), CliError> {
     .map_err(output_error)?;
     writeln!(
         output,
-        "  asb tool install SUPPORTED-ID [--project PATH] [--dry-run]\n  asb tool install ID --kind agent|harness|benchmark|workload|support --source PATH|fixture://ID [--version VERSION] [--project PATH]\n  asb tool repair|update SUPPORTED-ID [--project PATH]\n  asb tool select ID --kind agent|harness|benchmark|workload [--project PATH]\n  asb tool list|status|remove ID [--project PATH]\n  asb run|sweep PLAN.toml --project PATH [--local-mock]\n  asb compare RUN... --project PATH\n  asb report RUN... --project PATH"
         "  asb tool install SUPPORTED-ID [--project PATH]\n  asb tool install ID --kind agent|harness|benchmark|workload|support --source PATH|fixture://ID [--version VERSION] [--project PATH]\n  asb tool repair|update SUPPORTED-ID [--project PATH]\n  asb tool select ID --kind agent|harness|benchmark|workload [--project PATH]\n  asb tool list|status|remove ID [--project PATH]\n  asb workload install|list|status|select|repair|update|remove ID [--project PATH]\n  asb run|sweep PLAN.toml --project PATH [--local-mock]\n  asb compare RUN... --project PATH\n  asb report RUN... --project PATH"
     )
     .map_err(output_error)?;
