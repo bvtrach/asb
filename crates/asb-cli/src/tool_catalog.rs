@@ -1,3 +1,5 @@
+// Copyright (C) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+// SPDX-License-Identifier: MIT
 //! The checked-in authority for supported executable acquisition.
 //!
 //! This catalog is intentionally data-only: it never downloads, invokes a
