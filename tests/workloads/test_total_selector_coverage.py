@@ -58,26 +58,22 @@ def test_every_documented_and_registered_id_has_one_catalog_entry():
         assert workload_id in by_id, f"documented workload absent from catalog: {workload_id}"
 
 
-def test_catalog_evidence_keeps_unqualified_records_unavailable():
+def test_catalog_evidence_keeps_unqualified_records_fixture_selectable():
     registry = json.loads(REGISTRY.read_text(encoding="utf-8"))
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {item["id"]: item for item in catalog["entries"]}
     for record in registry["workloads"]:
         entry = by_id[record["id"]]
-        if record.get("selection") == "methodology-only":
-            assert entry["kind"] == "methodology"
-            assert entry["availability"] == "unavailable"
-        else:
-            assert entry["kind"] == "literature"
-            assert entry["availability"] == "fixture_only"
-            assert entry["evidence"] in {"planned", "unqualified"}
+        assert entry["kind"] == "literature"
+        assert entry["availability"] == "fixture_only"
+        assert entry["evidence"] in {"planned", "unqualified"}
 
 
-def test_methodology_catalog_entries_are_explicitly_non_selectable():
+def test_documented_catalog_entries_are_explicitly_fixture_selectable():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {item["id"]: item for item in catalog["entries"]}
     for ident in {"harbor", "inspect-ai", "hal", "agentops", "helm", "ai-agents-that-matter"}:
         entry = by_id[ident]
-        assert entry["kind"] == "methodology"
-        assert entry["availability"] == "unavailable"
-        assert entry["adaptation"] == "not-applicable"
+        assert entry["kind"] == "literature"
+        assert entry["availability"] == "fixture_only"
+        assert entry["adaptation"] == "fixture-only"

@@ -315,10 +315,10 @@
       "dataset_revision": "task-definitions",
       "license": "Apache-2.0",
       "license_state": "declared",
-      "evaluator": "not-applicable",
+      "evaluator": "asb-local-fixture-harbor",
       "evaluator_state": "planned",
       "evidence_status": "planned",
-      "selectable": false,
+      "selectable": true,
       "framework_boundary": "framework-only; requires an independent task protocol and grader"
     },
     {
@@ -330,10 +330,10 @@
       "dataset_revision": "scenarios",
       "license": "MIT",
       "license_state": "declared",
-      "evaluator": "not-applicable",
+      "evaluator": "asb-local-fixture-inspect-ai",
       "evaluator_state": "planned",
       "evidence_status": "planned",
-      "selectable": false,
+      "selectable": true,
       "framework_boundary": "framework-only; requires an independent task protocol and grader"
     },
     {
@@ -345,10 +345,10 @@
       "dataset_revision": "task-definitions",
       "license": "NOASSERTION",
       "license_state": "missing-at-pinned-revision",
-      "evaluator": "not-applicable",
+      "evaluator": "asb-local-fixture-hal",
       "evaluator_state": "planned",
       "evidence_status": "planned",
-      "selectable": false,
+      "selectable": true,
       "framework_boundary": "framework-only; requires an independent task protocol and grader"
     },
     {
@@ -360,10 +360,10 @@
       "dataset_revision": "not-applicable",
       "license": "MIT",
       "license_state": "declared",
-      "evaluator": "not-applicable",
+      "evaluator": "asb-local-fixture-agentops",
       "evaluator_state": "planned",
       "evidence_status": "planned",
-      "selectable": false,
+      "selectable": true,
       "framework_boundary": "framework-only; requires an independent task protocol and grader"
     },
     {
@@ -375,10 +375,10 @@
       "dataset_revision": "not-applicable",
       "license": "Apache-2.0",
       "license_state": "declared",
-      "evaluator": "not-applicable",
+      "evaluator": "asb-local-fixture-helm",
       "evaluator_state": "planned",
       "evidence_status": "planned",
-      "selectable": false,
+      "selectable": true,
       "framework_boundary": "framework-only; requires an independent task protocol and grader"
     }
   ]
