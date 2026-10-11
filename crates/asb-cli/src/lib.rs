@@ -16933,6 +16933,10 @@ pub(crate) mod tests {
     fn plan_sweep_and_failed_run_exercise_public_outcomes() {
         let scratch = Scratch::new("commands");
         let (path, mut plan) = plan_fixture(&scratch.0, "commands");
+        // Exercise public outcomes without asserting a 10ms host scheduling
+        // budget when the full workspace is under parallel load.
+        plan.point.poll_ms = 50;
+        fs::write(&path, toml::to_string(&plan).unwrap()).unwrap();
         let mut output = Vec::new();
         let mut diagnostic = Vec::new();
         assert_eq!(
