@@ -35,6 +35,7 @@ DOCUMENTED_IDS = {
     "SWE-bench": "swe-bench",
     "SWE-bench Lite / Verified": "swe-bench-lite",
     "SWE-bench Pro": "swe-bench-pro",
+    "SWE-mini": "swe-mini",
     "SWE-fficiency": "swe-fficiency",
     "SWE-Lancer": "swe-lancer",
     "SWE-Perf": "swe-perf",
@@ -72,7 +73,10 @@ def test_catalog_evidence_keeps_unqualified_records_fixture_selectable():
 def test_documented_catalog_entries_are_explicitly_fixture_selectable():
     catalog = json.loads(CATALOG.read_text(encoding="utf-8"))
     by_id = {item["id"]: item for item in catalog["entries"]}
-    for ident in {"harbor", "inspect-ai", "hal", "agentops", "helm", "ai-agents-that-matter"}:
+    for ident in {
+        "harbor", "inspect-ai", "hal", "agentops", "helm",
+        "ai-agents-that-matter", "swe-mini",
+    }:
         entry = by_id[ident]
         assert entry["kind"] == "literature"
         assert entry["availability"] == "fixture_only"

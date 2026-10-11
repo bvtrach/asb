@@ -112,6 +112,21 @@
       "framework_boundary": "independent task protocol and grader required"
     },
     {
+      "name": "SWE-mini",
+      "registry_id": "swe-mini",
+      "family": "repository-repair",
+      "kind": "workload",
+      "source_revision": "a83fcae82d2a08f0ee0c688f9d137b3566c097f8",
+      "dataset_revision": "02e7a74ffd0b707aab73d203fe87bdc7c76afc8e",
+      "license": "MIT",
+      "license_state": "declared",
+      "evaluator": "mini-swe-agent.run",
+      "evaluator_state": "planned",
+      "evidence_status": "planned",
+      "selectable": true,
+      "framework_boundary": "independent task protocol and grader required"
+    },
+    {
       "name": "BigCodeBench",
       "registry_id": "bigcodebench",
       "family": "code-generation",

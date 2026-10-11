@@ -28,7 +28,7 @@ class LiteratureParityTests(unittest.TestCase):
 
     def test_every_documented_identity_has_one_canonical_registry_record(self) -> None:
         parity = MODULE.build_parity(self.registry, self.documents)
-        self.assertEqual(len(parity["entries"]), 25)
+        self.assertEqual(len(parity["entries"]), 26)
         self.assertEqual(
             {entry["registry_id"] for entry in parity["entries"]}
             - {record["id"] for record in self.registry["workloads"]},

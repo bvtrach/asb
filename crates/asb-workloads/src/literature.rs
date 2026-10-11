@@ -1504,11 +1504,15 @@ mod tests {
             "agentops",
             "ai-agents-that-matter",
             "helm",
+            "swe-mini",
         ] {
             let descriptor = LiteratureAdapter::describe(id).unwrap();
             assert_eq!(descriptor.status, AdapterStatus::FixtureOnly, "{id}");
             assert_eq!(descriptor.id, id);
-            assert!(LiteratureAdapter::prepare(id, root(&format!("framework-{id}"))).is_ok());
+            let prepared =
+                LiteratureAdapter::prepare(id, root(&format!("framework-{id}"))).unwrap();
+            assert!(prepared.run_local_mock().is_ok(), "{id}");
+            prepared.cleanup().unwrap();
         }
     }
 
@@ -1530,6 +1534,7 @@ mod tests {
             "core-bench",
             "swe-lancer",
             "swe-rebench",
+            "swe-mini",
         ] {
             let entry = select_workload(id, "linux-x86_64").unwrap();
             assert_eq!(entry.availability, "fixture_only", "{id}");
@@ -1540,6 +1545,16 @@ mod tests {
             Err(CatalogSelectionError::Unknown)
         );
         assert!(select_workload("agentops", "linux-x86_64").is_ok());
+        for id in [
+            "ai-agents-that-matter",
+            "helm",
+            "inspect-ai",
+            "harbor",
+            "hal",
+            "swe-mini",
+        ] {
+            assert!(select_workload(id, "linux-x86_64").is_ok(), "{id}");
+        }
         assert!(select_workload("swe-bench", "linux-x86_64").is_ok());
     }
 

@@ -33,6 +33,14 @@ def test_external_registry_is_pinned_and_non_vendored():
         by_id[ident]["selection"] == "executable-candidate"
         for ident in ["agentbench", "tau-bench", "agentdojo", "swe-mini"]
     )
+    fixture_candidates = {
+        "agentops", "ai-agents-that-matter", "harbor", "hal", "helm", "inspect-ai", "swe-mini"
+    }
+    assert all(
+        by_id[ident]["selection"] == "executable-candidate"
+        and by_id[ident]["attempt_budget"] == 1
+        for ident in fixture_candidates
+    )
     assert all(
         by_id[ident].get("selection") == "executable-candidate"
         for ident in by_id

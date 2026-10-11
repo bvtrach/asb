@@ -32,6 +32,7 @@ EXPECTATIONS = (
     ("Aider Polyglot", "aider-polyglot", "code-generation", "workload"),
     ("Exercism Tracks", "exercism-tracks", "code-generation", "workload"),
     ("SWE-bench Pro", "swe-bench-pro", "repository-repair", "workload"),
+    ("SWE-mini", "swe-mini", "repository-repair", "workload"),
     ("BigCodeBench", "bigcodebench", "code-generation", "workload"),
     ("HumanEval+", "evalplus", "code-generation", "workload"),
     ("MBPP+", "evalplus", "code-generation", "workload"),

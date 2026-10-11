@@ -1612,9 +1612,18 @@ mod tests {
 
     #[test]
     fn unified_dispatch_accepts_documented_development_fixtures() {
-        for id in ["agentops", "ai-agents-that-matter", "helm"] {
+        for id in [
+            "agentops",
+            "ai-agents-that-matter",
+            "helm",
+            "inspect-ai",
+            "harbor",
+            "hal",
+            "swe-mini",
+        ] {
             assert_eq!(describe_workload(id).unwrap().workload_id.0, id);
             let prepared = prepare_workload(id, root("dispatch-development-fixture")).unwrap();
+            assert!(prepared.evaluate().is_ok(), "{id}");
             prepared.cleanup().unwrap();
         }
     }

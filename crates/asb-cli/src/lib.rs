@@ -13913,7 +13913,15 @@ pub(crate) mod tests {
                 .iter()
                 .any(|entry| entry["id"] == "original.bug-fix")
         );
-        for id in ["harbor", "inspect-ai", "hal", "agentops"] {
+        for id in [
+            "harbor",
+            "inspect-ai",
+            "hal",
+            "agentops",
+            "ai-agents-that-matter",
+            "helm",
+            "swe-mini",
+        ] {
             let entry = entries.iter().find(|entry| entry["id"] == id).unwrap();
             assert_eq!(entry["kind"], "literature");
             assert_eq!(entry["availability"], "fixture_only");
@@ -13980,6 +13988,35 @@ pub(crate) mod tests {
         output.clear();
         assert_eq!(run(&supported_fixture, &mut output, &mut Vec::new()), 0);
         assert!(output_path.exists());
+        for workload in [
+            "ai-agents-that-matter",
+            "helm",
+            "inspect-ai",
+            "harbor",
+            "hal",
+            "swe-mini",
+        ] {
+            let output_path = scratch.0.join(format!("{workload}.toml"));
+            let args: Vec<OsString> = [
+                "plan",
+                "create",
+                "--workload",
+                workload,
+                "--agent-executable",
+                "/usr/bin/true",
+                "--output",
+                output_path.to_str().unwrap(),
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+            assert_eq!(
+                run(&args, &mut Vec::new(), &mut Vec::new()),
+                0,
+                "{workload}"
+            );
+            assert!(output_path.exists(), "{workload}");
+        }
     }
 
     #[test]
