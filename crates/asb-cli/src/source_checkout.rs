@@ -481,6 +481,28 @@ mod tests {
     }
 
     #[test]
+    fn acquisition_reports_unavailable_when_git_cannot_spawn() {
+        let request = CheckoutRequest::for_tool(
+            &tool("https://example.invalid/repo", &"a".repeat(40)),
+            PathBuf::from("/tmp/x"),
+        )
+        .unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "asb-spawn-failure-checkout-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let result = run_bounded_until(
+            Command::new("asb-command-that-does-not-exist"),
+            &request,
+            Instant::now() + Duration::from_secs(2),
+            Some(&root),
+        );
+        assert_eq!(result, Err(CheckoutError::Unavailable));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn every_checkout_limit_ceiling_is_rejected() {
         let mut request = CheckoutRequest::for_tool(
             &tool("https://example.invalid/repo", &"a".repeat(40)),
