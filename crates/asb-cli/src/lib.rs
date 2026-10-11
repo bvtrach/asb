@@ -18403,6 +18403,165 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn workload_inventory_selection_and_removal_are_project_bound() {
+        let scratch = Scratch::new("workload-project-lifecycle");
+        let project = scratch.0.join("workspace");
+        project_init_with_progress(
+            &[project.display().to_string()],
+            &mut Vec::new(),
+            &mut Vec::new(),
+            false,
+        )
+        .unwrap();
+        let archive = verified_workload_fixture_archive("").unwrap();
+        let digest = format!("{:x}", Sha256::digest(&archive));
+        let catalog = vec![json!({
+            "id": "fixture-workload",
+            "version": "catalog-v1",
+            "source": {
+                "repository": "https://github.com/example/fixture",
+                "commit": "0123456789012345678901234567890123456789",
+                "archive_sha256": digest,
+                "license": "MIT"
+            },
+            "evaluator": {"entrypoint": "fixture/manifest.json"}
+        })];
+        let project_arg = project.display().to_string();
+        let install = vec![
+            "install".into(),
+            "fixture-workload".into(),
+            "--project".into(),
+            project_arg.clone(),
+        ];
+        let mut human = Vec::new();
+        workload_with_progress_inner(
+            &install,
+            &mut human,
+            &mut Vec::new(),
+            true,
+            &catalog,
+            verified_workload_fixture_archive,
+        )
+        .unwrap();
+        assert!(
+            String::from_utf8(human)
+                .unwrap()
+                .contains("verified workload fixture-workload")
+        );
+
+        let list = vec!["list".into(), "--project".into(), project_arg.clone()];
+        let mut json_output = Vec::new();
+        workload_with_progress_inner(
+            &list,
+            &mut json_output,
+            &mut Vec::new(),
+            false,
+            &catalog,
+            verified_workload_fixture_archive,
+        )
+        .unwrap();
+        let listed: Value = serde_json::from_slice(&json_output).unwrap();
+        assert_eq!(listed["command"], "workload list");
+        assert_eq!(listed["workloads"][0]["id"], "fixture-workload");
+
+        let status = vec![
+            "status".into(),
+            "fixture-workload".into(),
+            "--project".into(),
+            project_arg.clone(),
+        ];
+        let mut status_output = Vec::new();
+        workload_with_progress_inner(
+            &status,
+            &mut status_output,
+            &mut Vec::new(),
+            true,
+            &catalog,
+            verified_workload_fixture_archive,
+        )
+        .unwrap();
+        assert!(
+            String::from_utf8(status_output)
+                .unwrap()
+                .contains("workload fixture-workload is Available")
+        );
+
+        let select = vec![
+            "select".into(),
+            "fixture-workload".into(),
+            "--project".into(),
+            project_arg.clone(),
+        ];
+        workload_with_progress_inner(
+            &select,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            false,
+            &catalog,
+            verified_workload_fixture_archive,
+        )
+        .unwrap();
+        assert_eq!(
+            load_tool_project(&project)
+                .unwrap()
+                .selections
+                .workload
+                .as_deref(),
+            Some("fixture-workload")
+        );
+
+        let remove = vec![
+            "remove".into(),
+            "fixture-workload".into(),
+            "--project".into(),
+            project_arg.clone(),
+        ];
+        let mut remove_output = Vec::new();
+        workload_with_progress_inner(
+            &remove,
+            &mut remove_output,
+            &mut Vec::new(),
+            true,
+            &catalog,
+            verified_workload_fixture_archive,
+        )
+        .unwrap();
+        assert!(
+            String::from_utf8(remove_output)
+                .unwrap()
+                .contains("removed workload fixture-workload")
+        );
+        assert!(!project.join(".asb/workloads/fixture-workload").exists());
+        assert!(
+            load_tool_project(&project)
+                .unwrap()
+                .selections
+                .workload
+                .is_none()
+        );
+
+        for operation in ["status", "select", "remove"] {
+            let args = vec![
+                operation.into(),
+                "fixture-workload".into(),
+                "--project".into(),
+                project_arg.clone(),
+            ];
+            assert!(
+                workload_with_progress_inner(
+                    &args,
+                    &mut Vec::new(),
+                    &mut Vec::new(),
+                    false,
+                    &catalog,
+                    verified_workload_fixture_archive,
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn workload_repair_revalidates_and_rebuilds_retained_archive() {
         let scratch = Scratch::new("workload-repair-proof-matrix");
         let project = scratch.0.join("workspace");
