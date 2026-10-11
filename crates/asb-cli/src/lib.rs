@@ -16923,3 +16923,5 @@ mod easy_sweep_online_default_tests {
         assert_ne!(error.message, "local mock fallback");
     }
 }
+
+pub mod tool_catalog;
