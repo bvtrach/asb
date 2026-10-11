@@ -140,6 +140,7 @@ fn acquire_inner(
     staging: &Path,
 ) -> Result<SourceCheckout, CheckoutError> {
     let deadline = Instant::now() + request.limits.timeout;
+    fs::create_dir_all(staging).map_err(|_| CheckoutError::Unavailable)?;
     let mut clone = command(request, "clone");
     clone.args([
         "--no-checkout",
@@ -255,6 +256,10 @@ fn run_bounded_until(
     deadline: Instant,
     watch: Option<&Path>,
 ) -> Result<(), CheckoutError> {
+    let watch_missing = watch.is_some_and(|root| !root.exists());
+    if watch_missing {
+        return Err(CheckoutError::Unavailable);
+    }
     let mut child = command.spawn().map_err(|_| CheckoutError::Unavailable)?;
     loop {
         if request.cancel.load(Ordering::Acquire) {
@@ -266,9 +271,15 @@ fn run_bounded_until(
             return Err(CheckoutError::Offline);
         }
         if let Some(root) = watch {
-            if enforce_bounds(root, &request.limits) == Err(CheckoutError::ResourceLimit) {
+            if let Err(error) = enforce_bounds(root, &request.limits) {
+                if error != CheckoutError::ResourceLimit && root.exists() {
+                    continue;
+                }
+                // A disappearing or unreadable staging tree is not a reason
+                // to continue an external transfer: fail closed while the
+                // child is still alive and let the transaction cleanup run.
                 terminate(&mut child);
-                return Err(CheckoutError::ResourceLimit);
+                return Err(error);
             }
         }
         match child.try_wait() {
@@ -473,6 +484,28 @@ mod tests {
             Err(CheckoutError::ResourceLimit)
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn inaccessible_staging_fails_closed_while_child_runs() {
+        let request = CheckoutRequest::for_tool(
+            &tool("https://example.invalid/repo", &"a".repeat(40)),
+            PathBuf::from("/tmp/x"),
+        )
+        .unwrap();
+        let mut command = Command::new("sleep");
+        command.arg("1");
+        let missing =
+            std::env::temp_dir().join(format!("asb-missing-checkout-{}", std::process::id()));
+        assert_eq!(
+            run_bounded_until(
+                command,
+                &request,
+                Instant::now() + Duration::from_secs(2),
+                Some(&missing)
+            ),
+            Err(CheckoutError::Unavailable)
+        );
     }
 
     #[test]
