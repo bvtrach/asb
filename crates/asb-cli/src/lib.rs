@@ -4612,7 +4612,7 @@ fn tool_install_with_progress(
             "kind": kind,
             "selection": if catalog_entry.is_some() { "catalog" } else { "development-import" },
             "source": source_ref,
-            "build": if catalog_entry.as_ref().is_some_and(|entry| entry.build_recipes.len() > 0) { "pinned-source-fallback" } else { "verified-artifact" },
+            "build": if catalog_entry.as_ref().is_some_and(|entry| !entry.build_recipes.is_empty()) { "pinned-source-fallback" } else { "verified-artifact" },
             "reused": !created_destination,
             "path": path,
             "digest_sha256": digest,

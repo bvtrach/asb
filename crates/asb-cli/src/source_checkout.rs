@@ -270,17 +270,14 @@ fn run_bounded_until(
             terminate(&mut child);
             return Err(CheckoutError::Offline);
         }
-        if let Some(root) = watch {
-            if let Err(error) = enforce_bounds(root, &request.limits) {
-                if error != CheckoutError::ResourceLimit && root.exists() {
-                    continue;
-                }
-                // A disappearing or unreadable staging tree is not a reason
-                // to continue an external transfer: fail closed while the
-                // child is still alive and let the transaction cleanup run.
-                terminate(&mut child);
-                return Err(error);
-            }
+        if let Some(root) = watch
+            && let Err(error) = enforce_bounds(root, &request.limits)
+        {
+            // A disappearing or unreadable staging tree is not a reason to
+            // continue an external transfer: fail closed while the child is
+            // still alive and let transaction cleanup run.
+            terminate(&mut child);
+            return Err(error);
         }
         match child.try_wait() {
             Ok(Some(status)) if status.success() => return Ok(()),
@@ -506,6 +503,32 @@ mod tests {
             ),
             Err(CheckoutError::Unavailable)
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn unreadable_existing_staging_fails_closed_while_child_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        let request = CheckoutRequest::for_tool(
+            &tool("https://example.invalid/repo", &"a".repeat(40)),
+            PathBuf::from("/tmp/x"),
+        )
+        .unwrap();
+        let unreadable =
+            std::env::temp_dir().join(format!("asb-unreadable-checkout-{}", std::process::id()));
+        std::fs::create_dir_all(&unreadable).unwrap();
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let mut command = Command::new("sleep");
+        command.arg("1");
+        let result = run_bounded_until(
+            command,
+            &request,
+            Instant::now() + Duration::from_secs(2),
+            Some(&unreadable),
+        );
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_dir_all(&unreadable).unwrap();
+        assert_eq!(result, Err(CheckoutError::Unavailable));
     }
 
     #[test]
