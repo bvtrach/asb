@@ -23,7 +23,9 @@ pub struct Guard {
 
 #[cfg(test)]
 pub fn acquire() -> Guard {
-    try_acquire(Duration::from_secs(5)).expect("process-fixture semaphore acquisition timed out")
+    // Keep the run seam bounded while allowing one long process-backed fixture
+    // to finish before a parallel caller is declared wedged.
+    try_acquire(Duration::from_secs(60)).expect("process-fixture semaphore acquisition timed out")
 }
 
 #[cfg(test)]
