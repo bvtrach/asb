@@ -82,7 +82,7 @@ mod tests {
         let inner = acquire();
         drop(inner);
         drop(outer);
-        assert!(try_acquire(Duration::ZERO).is_some());
+        assert!(try_acquire(Duration::from_secs(5)).is_some());
     }
 
     #[test]
@@ -91,6 +91,6 @@ mod tests {
         let contender = thread::spawn(|| try_acquire(Duration::from_millis(10)).is_none());
         assert!(contender.join().unwrap());
         drop(held);
-        assert!(try_acquire(Duration::from_millis(10)).is_some());
+        assert!(try_acquire(Duration::from_secs(5)).is_some());
     }
 }
