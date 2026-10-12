@@ -255,7 +255,7 @@ fn run_with_default_mode_and_stdin(
             } else {
                 stdout.write_all(&captured)
             };
-            let result = if result.is_ok() && output_mode.debug {
+            let result = if result.is_ok() && output_mode.debug && !human::is_raw(&normalized) {
                 match output_mode.human_writer {
                     ProjectOutputWriterV1::Stdout => human::render_debug(&normalized, stdout),
                     ProjectOutputWriterV1::Stderr => human::render_debug(&normalized, stderr),
@@ -11018,6 +11018,25 @@ pub(crate) mod tests {
                 assert!(serde_json::from_slice::<serde_json::Value>(&output).is_ok());
             }
         }
+    }
+
+    #[test]
+    fn debug_never_appends_to_raw_text_artifacts() {
+        let mut normal = Vec::new();
+        let mut normal_err = Vec::new();
+        let normal_exit =
+            super::run_with_default_mode(&os_args(&["--help"]), &mut normal, &mut normal_err, true);
+        let mut debug = Vec::new();
+        let mut debug_err = Vec::new();
+        let debug_exit = super::run_with_default_mode(
+            &os_args(&["--debug", "--help"]),
+            &mut debug,
+            &mut debug_err,
+            true,
+        );
+        assert_eq!(normal_exit, debug_exit);
+        assert_eq!(normal, debug);
+        assert_eq!(normal_err, debug_err);
     }
 
     #[test]

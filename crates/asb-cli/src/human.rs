@@ -1386,6 +1386,10 @@ pub(super) fn render_debug(args: &[OsString], output: &mut dyn Write) -> io::Res
     writeln!(output, "[ OK ] Debug: routed command {command}.")
 }
 
+pub(super) fn is_raw(args: &[OsString]) -> bool {
+    InvocationKind::classify_args(args).is_raw()
+}
+
 /// Project only fields covered by the invocation's typed validator. Unknown
 /// JSON remains machine-visible but cannot silently become a human claim.
 fn project_for_presentation(
