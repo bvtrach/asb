@@ -6,6 +6,9 @@
 //! The key is never an argument, environment value, log field, or receipt
 //! field.  The child is a process-group leader and is always reaped on drop.
 
+use crate::launch_factory::{
+    LaunchAuthorityError, LiveProviderAttempt, LiveProviderAttemptFactory,
+};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -15,6 +18,8 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, SystemTime};
@@ -40,6 +45,12 @@ pub enum Cli2KeyError {
     Readiness,
     /// The process could not be started or reaped.
     Process(io::ErrorKind),
+    /// The runtime receipt was malformed or did not match the pinned bridge.
+    InvalidReceipt,
+    /// The receipt was issued for a different platform.
+    InvalidPlatform,
+    /// The receipt identity did not match the pinned executable.
+    ReceiptBinding,
 }
 
 impl fmt::Display for Cli2KeyError {
@@ -51,6 +62,9 @@ impl fmt::Display for Cli2KeyError {
             Self::Staging(_) => f.write_str("cli2key private staging failed"),
             Self::Readiness => f.write_str("cli2key readiness was invalid"),
             Self::Process(_) => f.write_str("cli2key process lifecycle failed"),
+            Self::InvalidReceipt => f.write_str("cli2key runtime receipt is invalid"),
+            Self::InvalidPlatform => f.write_str("cli2key runtime receipt platform is invalid"),
+            Self::ReceiptBinding => f.write_str("cli2key runtime receipt binding mismatched"),
         }
     }
 }
@@ -75,6 +89,68 @@ pub struct Cli2KeyReceipt {
     pub key_origin: KeyOrigin,
     /// Digest of the key, not the key value.
     pub key_sha256: String,
+}
+
+/// Secret-free catalog identity required before a runtime sidecar can start.
+///
+/// This is intentionally independent of `asb-agents`: the runtime accepts
+/// only attestable identities and never receives a catalog, credential, or
+/// invocation key.  The endpoint digest identifies the adapter contract, not
+/// the ephemeral loopback port selected by the sidecar.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Cli2KeyRuntimeReceipt {
+    /// Receipt schema version.
+    pub schema_version: u16,
+    /// Monotonic development catalog generation.
+    pub catalog_generation: u64,
+    /// Exact target platform identifier.
+    pub platform: String,
+    /// Digest of the complete catalog identity.
+    pub catalog_sha256: String,
+    /// Pinned bridge source revision.
+    pub bridge_revision: String,
+    /// Digest of the pinned bridge source tree.
+    pub bridge_tree_sha256: String,
+    /// Digest of the executable bytes.
+    pub executable_sha256: String,
+    /// Digest of the adapter endpoint contract.
+    pub endpoint_sha256: String,
+    /// Digest of the credential reference, never its value.
+    pub credential_reference_sha256: String,
+}
+
+impl Cli2KeyRuntimeReceipt {
+    /// Validate the stable, secret-free receipt fields against this runtime.
+    pub fn validate(&self) -> Result<(), Cli2KeyError> {
+        if self.schema_version != 1 || self.catalog_generation == 0 {
+            return Err(Cli2KeyError::InvalidReceipt);
+        }
+        if self.platform != "linux-x86_64"
+            || std::env::consts::OS != "linux"
+            || std::env::consts::ARCH != "x86_64"
+        {
+            return Err(Cli2KeyError::InvalidPlatform);
+        }
+        if self.bridge_revision.is_empty() || self.bridge_revision.len() > 128 {
+            return Err(Cli2KeyError::InvalidReceipt);
+        }
+        for digest in [
+            &self.catalog_sha256,
+            &self.bridge_tree_sha256,
+            &self.executable_sha256,
+            &self.endpoint_sha256,
+            &self.credential_reference_sha256,
+        ] {
+            if digest.len() != 64
+                || !digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            {
+                return Err(Cli2KeyError::InvalidReceipt);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A pinned bridge launch. Arguments are copied verbatim and never augmented
@@ -122,6 +198,11 @@ impl Cli2KeyCommand {
             arguments,
             _digest: digest,
         })
+    }
+
+    /// Return the pinned executable digest without exposing launch arguments.
+    pub fn executable_sha256(&self) -> &str {
+        &self._digest
     }
 }
 
@@ -354,10 +435,94 @@ impl Cli2KeySidecar {
         self.receipt.endpoint
     }
 }
+
+/// Runtime-owned composition of a verified cli2key sidecar and opaque live
+/// attempts.  Dropping the authority tears down the sidecar; callers can only
+/// obtain an attempt through the runtime factory and cannot access key bytes,
+/// staging paths, or OAuth material.
+pub struct Cli2KeyRuntimeAuthority {
+    sidecar: Cli2KeySidecar,
+    receipt: Cli2KeyRuntimeReceipt,
+    factory: LiveProviderAttemptFactory,
+    lifecycle: Arc<AtomicBool>,
+}
+
+impl fmt::Debug for Cli2KeyRuntimeAuthority {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Cli2KeyRuntimeAuthority")
+            .field("receipt", &self.receipt)
+            .field("endpoint", &self.sidecar.endpoint())
+            .field("factory", &self.factory)
+            .finish()
+    }
+}
+
+impl Cli2KeyRuntimeAuthority {
+    /// Verify the catalog identity, pin the executable, and start the sidecar.
+    pub fn bootstrap(
+        receipt: Cli2KeyRuntimeReceipt,
+        command: &Cli2KeyCommand,
+        local_key: Option<&Path>,
+        factory: LiveProviderAttemptFactory,
+    ) -> Result<Self, Cli2KeyError> {
+        receipt.validate()?;
+        if receipt.executable_sha256 != command.executable_sha256() {
+            return Err(Cli2KeyError::ReceiptBinding);
+        }
+        let sidecar = Cli2KeySidecar::start(command, local_key)?;
+        Ok(Self {
+            sidecar,
+            receipt,
+            factory,
+            lifecycle: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    /// Issue one opaque, one-shot attempt while retaining sidecar ownership.
+    pub fn issue_attempt(
+        &self,
+        input_id: u32,
+        warmup: bool,
+    ) -> Result<LiveProviderAttempt, LaunchAuthorityError> {
+        let mut attempt = self.factory.acquire(input_id, warmup)?;
+        attempt.bind_authority_fence(Arc::clone(&self.lifecycle));
+        Ok(attempt)
+    }
+
+    /// Borrow the runtime-issued factory for CLI run or bounded sweep wiring.
+    /// The caller must retain this authority for the entire execution so the
+    /// sidecar remains alive and its teardown fence stays authoritative.
+    pub fn attempt_factory(&self) -> LiveProviderAttemptFactory {
+        let factory = self.factory.clone();
+        let lifecycle = Arc::clone(&self.lifecycle);
+        LiveProviderAttemptFactory::from_fn(move |input_id, warmup| {
+            let mut attempt = factory.acquire(input_id, warmup)?;
+            attempt.bind_authority_fence(Arc::clone(&lifecycle));
+            Ok(attempt)
+        })
+    }
+
+    /// Return the verified secret-free catalog identity.
+    pub fn receipt(&self) -> &Cli2KeyRuntimeReceipt {
+        &self.receipt
+    }
+
+    /// Return the ephemeral loopback endpoint, never the invocation key.
+    pub fn endpoint(&self) -> SocketAddr {
+        self.sidecar.endpoint()
+    }
+}
 impl Drop for Cli2KeySidecar {
     fn drop(&mut self) {
         let _ = rustix::process::kill_process_group(self.pid, rustix::process::Signal::KILL);
         let _ = self.child.wait();
+    }
+}
+
+impl Drop for Cli2KeyRuntimeAuthority {
+    fn drop(&mut self) {
+        self.lifecycle.store(true, Ordering::Release);
     }
 }
 
@@ -379,6 +544,45 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::time::UNIX_EPOCH;
+
+    fn runtime_receipt() -> Cli2KeyRuntimeReceipt {
+        Cli2KeyRuntimeReceipt {
+            schema_version: 1,
+            catalog_generation: 7,
+            platform: "linux-x86_64".into(),
+            catalog_sha256: "a".repeat(64),
+            bridge_revision: "rev-1".into(),
+            bridge_tree_sha256: "b".repeat(64),
+            executable_sha256: "c".repeat(64),
+            endpoint_sha256: "d".repeat(64),
+            credential_reference_sha256: "e".repeat(64),
+        }
+    }
+
+    fn script_command(name: &str, body: &str) -> (PathBuf, Cli2KeyCommand) {
+        let path = std::env::temp_dir().join(format!("asb-cli2key-{name}-{}", std::process::id()));
+        let _ = fs::remove_file(&path);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut digest = Sha256::new();
+        digest.update(fs::read(&path).unwrap());
+        let command =
+            Cli2KeyCommand::new(path.clone(), Vec::new(), format!("{:x}", digest.finalize()))
+                .unwrap();
+        (path, command)
+    }
+
+    fn authority_with_factory(
+        name: &str,
+        factory: LiveProviderAttemptFactory,
+    ) -> (Cli2KeyRuntimeAuthority, PathBuf) {
+        let (path, command) = script_command(name, "printf 'ASB_CLI2KEY_READY 127.0.0.1:12345\\n'");
+        let mut receipt = runtime_receipt();
+        receipt.executable_sha256 = command.executable_sha256().to_owned();
+        let authority = Cli2KeyRuntimeAuthority::bootstrap(receipt, &command, None, factory)
+            .expect("test sidecar authority must bootstrap");
+        (authority, path)
+    }
 
     #[test]
     fn key_decoder_requires_exact_256_bits() {
@@ -421,6 +625,129 @@ mod tests {
         let root = staging.root.clone();
         drop(staging);
         assert!(!root.exists());
+    }
+
+    #[test]
+    fn runtime_receipt_rejects_substitution_and_stale_identity() {
+        let mut receipt = runtime_receipt();
+        assert_eq!(receipt.validate(), Ok(()));
+        receipt.catalog_sha256.replace_range(..1, "A");
+        assert_eq!(receipt.validate(), Err(Cli2KeyError::InvalidReceipt));
+        receipt = runtime_receipt();
+        receipt.catalog_generation = 0;
+        assert_eq!(receipt.validate(), Err(Cli2KeyError::InvalidReceipt));
+        receipt = runtime_receipt();
+        receipt.platform = "linux-aarch64".into();
+        assert_eq!(receipt.validate(), Err(Cli2KeyError::InvalidPlatform));
+    }
+
+    #[test]
+    fn runtime_authority_factory_preserves_typed_acquisition_failure() {
+        let factory = LiveProviderAttemptFactory::from_fn(|_, _| {
+            Err(LaunchAuthorityError::InvalidLaunchInput)
+        });
+        // The factory remains opaque at this boundary; the authority wiring
+        // cannot turn a failed runtime acquisition into a provider fallback.
+        assert!(matches!(
+            factory.acquire(1, false),
+            Err(LaunchAuthorityError::InvalidLaunchInput)
+        ));
+    }
+
+    #[test]
+    fn runtime_authority_bootstrap_is_sidecar_owned_and_no_fallback() {
+        let (path, command) =
+            script_command("authority", "printf 'ASB_CLI2KEY_READY 127.0.0.1:12345\\n'");
+        let mut receipt = runtime_receipt();
+        receipt.executable_sha256 = command.executable_sha256().to_owned();
+        let factory = LiveProviderAttemptFactory::from_fn(|_, _| {
+            Err(LaunchAuthorityError::InvalidLaunchInput)
+        });
+        let authority =
+            Cli2KeyRuntimeAuthority::bootstrap(receipt, &command, None, factory).unwrap();
+        assert_eq!(authority.endpoint().port(), 12345);
+        assert!(matches!(
+            authority.attempt_factory().acquire(1, false),
+            Err(LaunchAuthorityError::InvalidLaunchInput)
+        ));
+        drop(authority);
+        assert!(path.exists());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn runtime_authority_fails_closed_on_crash_and_malformed_readiness() {
+        for (name, body) in [("crash", "exit 7"), ("malformed", "printf 'READY\\n'")] {
+            let (path, command) = script_command(name, body);
+            let mut receipt = runtime_receipt();
+            receipt.executable_sha256 = command.executable_sha256().to_owned();
+            let factory = LiveProviderAttemptFactory::from_fn(|_, _| {
+                Err(LaunchAuthorityError::InvalidLaunchInput)
+            });
+            assert!(matches!(
+                Cli2KeyRuntimeAuthority::bootstrap(receipt, &command, None, factory),
+                Err(Cli2KeyError::Readiness)
+            ));
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn authority_bound_attempt_cancellation_fails_closed() {
+        let factory =
+            LiveProviderAttemptFactory::from_fn(
+                |_, _| Ok(LiveProviderAttempt::test_only_unbound()),
+            );
+        let (authority, path) = authority_with_factory("cancel", factory);
+        let mut attempt = authority.attempt_factory().acquire(1, false).unwrap();
+        attempt.revoke();
+        assert!(matches!(
+            attempt.spawn(),
+            Err(crate::sandbox::SandboxError::LiveHandoff)
+        ));
+        drop(authority);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn authority_bound_attempt_timeout_after_drop_fails_closed() {
+        let factory =
+            LiveProviderAttemptFactory::from_fn(
+                |_, _| Ok(LiveProviderAttempt::test_only_unbound()),
+            );
+        let (authority, path) = authority_with_factory("timeout", factory);
+        let mut attempt = authority.attempt_factory().acquire(2, false).unwrap();
+        drop(authority);
+        assert!(matches!(
+            attempt.spawn(),
+            Err(crate::sandbox::SandboxError::LiveHandoff)
+        ));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn authority_bound_attempts_concurrent_teardown_fail_closed() {
+        let mut workers = Vec::new();
+        for worker in 0..4 {
+            workers.push(std::thread::spawn(move || {
+                let factory = LiveProviderAttemptFactory::from_fn(|_, _| {
+                    Ok(LiveProviderAttempt::test_only_unbound())
+                });
+                let (authority, path) =
+                    authority_with_factory(&format!("parallel-{worker}"), factory);
+                let mut attempt = authority.attempt_factory().acquire(worker, false).unwrap();
+                drop(authority);
+                let result = attempt.spawn();
+                fs::remove_file(path).unwrap();
+                assert!(matches!(
+                    result,
+                    Err(crate::sandbox::SandboxError::LiveHandoff)
+                ));
+            }));
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
     }
 
     #[test]

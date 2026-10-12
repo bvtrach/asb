@@ -510,6 +510,7 @@ pub struct LiveProviderAttempt {
     context: Option<LiveLaunchContext>,
     relay: Option<crate::live_relay::LiveProviderRelay>,
     fence: Arc<AtomicBool>,
+    authority_fence: Option<Arc<AtomicBool>>,
 }
 
 /// Runtime-owned source of one fresh live-provider capability per scheduler
@@ -715,6 +716,7 @@ impl LiveLaunchFactory {
             context: Some(authority.consume()),
             relay: Some(relay),
             fence,
+            authority_fence: None,
         })
     }
 }
@@ -771,13 +773,34 @@ impl LiveLaunchContext {
 }
 
 impl LiveProviderAttempt {
+    #[cfg(test)]
+    pub(crate) fn test_only_unbound() -> Self {
+        Self {
+            context: None,
+            relay: None,
+            fence: Arc::new(AtomicBool::new(false)),
+            authority_fence: None,
+        }
+    }
+
+    /// Bind this attempt to an enclosing runtime authority lifecycle.
+    pub(crate) fn bind_authority_fence(&mut self, fence: Arc<AtomicBool>) {
+        self.authority_fence = Some(fence);
+    }
+
+    fn authority_revoked(&self) -> bool {
+        self.authority_fence
+            .as_ref()
+            .is_some_and(|fence| fence.load(Ordering::Acquire))
+    }
+
     /// Start the bounded authenticated relay worker for this attempt.
     pub fn start_relay(
         &mut self,
         now_unix_ms: u64,
     ) -> Result<std::thread::JoinHandle<Result<(), crate::live_relay::LiveRelayError>>, SandboxError>
     {
-        if self.fence.load(Ordering::Acquire) {
+        if self.fence.load(Ordering::Acquire) || self.authority_revoked() {
             return Err(SandboxError::LiveHandoff);
         }
         let mut relay = self.relay.take().ok_or(SandboxError::LiveHandoff)?;
@@ -786,7 +809,7 @@ impl LiveProviderAttempt {
 
     /// Consume the runtime-issued context exactly once for spawning.
     pub fn spawn(&mut self) -> Result<crate::sandbox::SandboxProcess, SandboxError> {
-        if self.fence.load(Ordering::Acquire) {
+        if self.fence.load(Ordering::Acquire) || self.authority_revoked() {
             return Err(SandboxError::LiveHandoff);
         }
         self.context
@@ -798,6 +821,9 @@ impl LiveProviderAttempt {
     /// Relay owned by this attempt, for the runtime's authenticated accept
     /// loop.  It is never writable by the CLI.
     pub fn relay(&mut self) -> Option<&mut crate::live_relay::LiveProviderRelay> {
+        if self.fence.load(Ordering::Acquire) || self.authority_revoked() {
+            return None;
+        }
         self.relay.as_mut()
     }
 
