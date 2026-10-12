@@ -559,6 +559,19 @@ mod tests {
         }
     }
 
+    fn script_command(name: &str, body: &str) -> (PathBuf, Cli2KeyCommand) {
+        let path = std::env::temp_dir().join(format!("asb-cli2key-{name}-{}", std::process::id()));
+        let _ = fs::remove_file(&path);
+        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut digest = Sha256::new();
+        digest.update(fs::read(&path).unwrap());
+        let command =
+            Cli2KeyCommand::new(path.clone(), Vec::new(), format!("{:x}", digest.finalize()))
+                .unwrap();
+        (path, command)
+    }
+
     #[test]
     fn key_decoder_requires_exact_256_bits() {
         assert!(decode_key(b"00").is_none());
@@ -627,6 +640,27 @@ mod tests {
             factory.acquire(1, false),
             Err(LaunchAuthorityError::InvalidLaunchInput)
         ));
+    }
+
+    #[test]
+    fn runtime_authority_bootstrap_is_sidecar_owned_and_no_fallback() {
+        let (path, command) =
+            script_command("authority", "printf 'ASB_CLI2KEY_READY 127.0.0.1:12345\\n'");
+        let mut receipt = runtime_receipt();
+        receipt.executable_sha256 = command.executable_sha256().to_owned();
+        let factory = LiveProviderAttemptFactory::from_fn(|_, _| {
+            Err(LaunchAuthorityError::InvalidLaunchInput)
+        });
+        let authority =
+            Cli2KeyRuntimeAuthority::bootstrap(receipt, &command, None, factory).unwrap();
+        assert_eq!(authority.endpoint().port(), 12345);
+        assert!(matches!(
+            authority.attempt_factory().acquire(1, false),
+            Err(LaunchAuthorityError::InvalidLaunchInput)
+        ));
+        drop(authority);
+        assert!(path.exists());
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
