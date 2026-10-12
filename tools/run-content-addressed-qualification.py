@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,7 @@ DEFAULT_WORKLOADS = ("original.bug-fix",)
 # never expands this list by downloading a dataset or contacting a provider.
 ALL_WORKLOADS = ("agentbench", "original.bug-fix", "swe-bench", "terminal-bench")
 ALL_AGENTS = ("aider", "codex", "gemini", "goose", "mini_swe", "openhands", "opencode", "opendesk", "qwen_code")
+GIT_REVISION = re.compile(r"[0-9a-f]{40}")
 
 
 def canonical(value: Any) -> bytes:
@@ -324,6 +326,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--asb must identify an existing exact binary")
     if not fixture.is_file():
         parser.error("fixture does not exist")
+    if GIT_REVISION.fullmatch(args.tui_head) is None:
+        parser.error("--tui-head must be an exact lowercase 40-hex Git commit")
     agents = select(args.agents, ALL_AGENTS, DEFAULT_AGENTS, args.all)
     workloads = select(args.workloads, ALL_WORKLOADS, DEFAULT_WORKLOADS, args.all)
     binary = [str(args.asb.resolve())]
