@@ -5601,12 +5601,12 @@ fn tool_install_with_progress(
     let bytes = verified.bytes;
     let source_ref = verified.source_ref;
     let digest = format!("{:x}", Sha256::digest(&bytes));
-    if let Some(contract) = &adapter_contract {
-        if contract.launcher.relative_path != entrypoint {
-            return Err(materialization_validation(
-                tool_materialization::MaterializationError::InvalidLauncher,
-            ));
-        }
+    if let Some(contract) = &adapter_contract
+        && contract.launcher.relative_path != entrypoint
+    {
+        return Err(materialization_validation(
+            tool_materialization::MaterializationError::InvalidLauncher,
+        ));
     }
     let path = format!(".asb/tools/{id}/tool");
     let record = ProjectToolRecordV1 {
@@ -5677,16 +5677,16 @@ fn tool_install_with_progress(
             let temporary = OsString::from(format!(".tool-{}.tmp", std::process::id()));
             stage_output_at(&parent.file, &temporary, &bytes, 0o700)
                 .map_err(|_| CliError::legacy_operation("tool source cannot be staged"))?;
-            if let Some(contract) = &adapter_contract {
-                if let Err(error) = tool_materialization::inspect_entrypoint(
+            if let Some(contract) = &adapter_contract
+                && let Err(error) = tool_materialization::inspect_entrypoint(
                     &parent.path,
                     Path::new(&temporary),
                     &contract.launcher.symlink,
                     Some(&digest),
-                ) {
-                    let _ = unlinkat(&parent.file, &temporary, AtFlags::empty());
-                    return Err(materialization_operation(error));
-                }
+                )
+            {
+                let _ = unlinkat(&parent.file, &temporary, AtFlags::empty());
+                return Err(materialization_operation(error));
             }
             if renameat_with(
                 &parent.file,
