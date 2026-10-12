@@ -4134,26 +4134,5 @@ mod tests {
     }
 }
 
-/// Emit one bounded development-only router detail. Debug output deliberately
-/// identifies only the public command family; it never serializes arguments,
-/// paths, provider payloads, or credential-bearing material.
-pub(super) fn render_debug(args: &[OsString], output: &mut dyn Write) -> io::Result<()> {
-    let command = args
-        .first()
-        .and_then(|value| value.to_str())
-        .filter(|value| {
-            !value.is_empty()
-                && value.len() <= 32
-                && value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-        })
-        .unwrap_or("cli");
-    writeln!(output, "[ OK ] Debug: routed command {command}.")
-}
-
-pub(super) fn is_raw(args: &[OsString]) -> bool {
-    InvocationKind::classify_args(args).is_raw()
-}
 #[path = "step_progress.rs"]
 pub mod step_progress;

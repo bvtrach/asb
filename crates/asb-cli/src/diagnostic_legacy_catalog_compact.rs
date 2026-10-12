@@ -3,6 +3,17 @@
 // Generated reviewed identities; compact data keeps declarative evidence out of executable coverage.
 #[rustfmt::skip]
 const LEGACY_CLI_CATALOG: &[(&str, u32, &str, Cause)] = &[
+    ("crates/asb-cli/src/human.rs", 3655, "legacy_cli_ar1775_output_parent", Cause::MissingParent),
+    ("crates/asb-cli/src/human.rs", 3661, "legacy_cli_ar1775_output_not_directory", Cause::NotDirectory),
+    ("crates/asb-cli/src/human.rs", 3667, "legacy_cli_ar1775_output_symlink", Cause::UnsafeTopology),
+    ("crates/asb-cli/src/human.rs", 3689, "legacy_cli_ar1775_timeout", Cause::Timeout),
+    ("crates/asb-cli/src/human.rs", 3694, "legacy_cli_ar1775_cancelled", Cause::Cancellation),
+    ("crates/asb-cli/src/human.rs", 3733, "legacy_cli_ar1775_missing", Cause::MissingInput),
+    ("crates/asb-cli/src/human.rs", 3734, "legacy_cli_ar1775_malformed", Cause::MalformedInput),
+    ("crates/asb-cli/src/human.rs", 3735, "legacy_cli_ar1775_incompatible", Cause::IncompatibleInput),
+    ("crates/asb-cli/src/human.rs", 3736, "legacy_cli_ar1775_permission", Cause::PermissionDenied),
+    ("crates/asb-cli/src/human.rs", 3737, "legacy_cli_ar1775_provider_timeout", Cause::Timeout),
+    ("crates/asb-cli/src/human.rs", 3738, "legacy_cli_ar1775_provider_cancelled", Cause::Cancellation),
     ("crates/asb-cli/src/lib.rs", 9161, "legacy_cli_ar1812_cli2key_receipt_invalid", Cause::IncompatibleInput),
     ("crates/asb-cli/src/lib.rs", 9164, "legacy_cli_ar1812_cli2key_executable_invalid", Cause::StaleIdentity),
     ("crates/asb-cli/src/lib.rs", 9171, "legacy_cli_ar1812_cli2key_sidecar_unavailable", Cause::UnavailableCapability),
