@@ -9,6 +9,7 @@
 use crate::launch_factory::{
     LaunchAuthorityError, LiveProviderAttempt, LiveProviderAttemptFactory,
 };
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -97,10 +98,17 @@ pub struct Cli2KeyReceipt {
 /// only attestable identities and never receives a catalog, credential, or
 /// invocation key.  The endpoint digest identifies the adapter contract, not
 /// the ephemeral loopback port selected by the sidecar.
-#[derive(Clone, Debug, Eq, PartialEq)]
+pub const CLI2KEY_RUNTIME_RECEIPT_SCHEMA_VERSION: u16 = 1;
+const MAX_RUNTIME_RECEIPT_BYTES: usize = 16 * 1024;
+
+/// Secret-free identity of an installed cli2key bridge.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct Cli2KeyRuntimeReceipt {
     /// Receipt schema version.
     pub schema_version: u16,
+    /// Installer verification state.
+    pub status: String,
     /// Monotonic development catalog generation.
     pub catalog_generation: u64,
     /// Exact target platform identifier.
@@ -117,12 +125,20 @@ pub struct Cli2KeyRuntimeReceipt {
     pub endpoint_sha256: String,
     /// Digest of the credential reference, never its value.
     pub credential_reference_sha256: String,
+    /// Installed bridge entrypoint identity.
+    pub entrypoint: String,
+    /// Digest of the pinned loopback Responses protocol contract.
+    pub protocol_sha256: String,
 }
 
 impl Cli2KeyRuntimeReceipt {
     /// Validate the stable, secret-free receipt fields against this runtime.
     pub fn validate(&self) -> Result<(), Cli2KeyError> {
-        if self.schema_version != 1 || self.catalog_generation == 0 {
+        if self.schema_version != CLI2KEY_RUNTIME_RECEIPT_SCHEMA_VERSION
+            || self.catalog_generation == 0
+            || self.status != "verified"
+            || self.entrypoint != "codex-bridge"
+        {
             return Err(Cli2KeyError::InvalidReceipt);
         }
         if self.platform != "linux-x86_64"
@@ -140,6 +156,7 @@ impl Cli2KeyRuntimeReceipt {
             &self.executable_sha256,
             &self.endpoint_sha256,
             &self.credential_reference_sha256,
+            &self.protocol_sha256,
         ] {
             if digest.len() != 64
                 || !digest
@@ -150,6 +167,23 @@ impl Cli2KeyRuntimeReceipt {
             }
         }
         Ok(())
+    }
+
+    /// Parse a bounded installer-published receipt and validate its identity.
+    pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, Cli2KeyError> {
+        if bytes.len() > MAX_RUNTIME_RECEIPT_BYTES {
+            return Err(Cli2KeyError::InvalidReceipt);
+        }
+        let receipt: Self =
+            serde_json::from_slice(bytes).map_err(|_| Cli2KeyError::InvalidReceipt)?;
+        receipt.validate()?;
+        Ok(receipt)
+    }
+
+    /// Encode the non-secret receipt for an installer-owned project file.
+    pub fn to_json_bytes(&self) -> Result<Vec<u8>, Cli2KeyError> {
+        self.validate()?;
+        serde_json::to_vec(self).map_err(|_| Cli2KeyError::InvalidReceipt)
     }
 }
 
@@ -479,6 +513,19 @@ impl Cli2KeyRuntimeAuthority {
         })
     }
 
+    /// Construct an authority from an installer-published receipt.  The
+    /// caller supplies only a runtime-owned opaque attempt factory; CLI code
+    /// cannot manufacture one from an endpoint or credential.
+    pub fn bootstrap_from_receipt_bytes(
+        receipt_bytes: &[u8],
+        command: &Cli2KeyCommand,
+        local_key: Option<&Path>,
+        factory: LiveProviderAttemptFactory,
+    ) -> Result<Self, Cli2KeyError> {
+        let receipt = Cli2KeyRuntimeReceipt::from_json_bytes(receipt_bytes)?;
+        Self::bootstrap(receipt, command, local_key, factory)
+    }
+
     /// Issue one opaque, one-shot attempt while retaining sidecar ownership.
     pub fn issue_attempt(
         &self,
@@ -548,6 +595,7 @@ mod tests {
     fn runtime_receipt() -> Cli2KeyRuntimeReceipt {
         Cli2KeyRuntimeReceipt {
             schema_version: 1,
+            status: "verified".into(),
             catalog_generation: 7,
             platform: "linux-x86_64".into(),
             catalog_sha256: "a".repeat(64),
@@ -556,6 +604,8 @@ mod tests {
             executable_sha256: "c".repeat(64),
             endpoint_sha256: "d".repeat(64),
             credential_reference_sha256: "e".repeat(64),
+            entrypoint: "codex-bridge".into(),
+            protocol_sha256: "f".repeat(64),
         }
     }
 
@@ -639,6 +689,29 @@ mod tests {
         receipt = runtime_receipt();
         receipt.platform = "linux-aarch64".into();
         assert_eq!(receipt.validate(), Err(Cli2KeyError::InvalidPlatform));
+        receipt = runtime_receipt();
+        receipt.status = "pending".into();
+        assert_eq!(receipt.validate(), Err(Cli2KeyError::InvalidReceipt));
+    }
+
+    #[test]
+    fn runtime_receipt_round_trips_and_rejects_unknown_or_oversized_fields() {
+        let receipt = runtime_receipt();
+        let encoded = receipt.to_json_bytes().unwrap();
+        assert_eq!(
+            Cli2KeyRuntimeReceipt::from_json_bytes(&encoded),
+            Ok(receipt)
+        );
+        let mut unknown = serde_json::from_slice::<serde_json::Value>(&encoded).unwrap();
+        unknown["unexpected"] = serde_json::Value::Bool(true);
+        assert_eq!(
+            Cli2KeyRuntimeReceipt::from_json_bytes(&serde_json::to_vec(&unknown).unwrap()),
+            Err(Cli2KeyError::InvalidReceipt)
+        );
+        assert_eq!(
+            Cli2KeyRuntimeReceipt::from_json_bytes(&vec![b' '; MAX_RUNTIME_RECEIPT_BYTES + 1]),
+            Err(Cli2KeyError::InvalidReceipt)
+        );
     }
 
     #[test]
