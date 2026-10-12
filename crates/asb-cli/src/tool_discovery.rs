@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 pub const DISCOVERY_SCHEMA_VERSION: u16 = 1;
 const MAX_PATH_ENTRIES: usize = 128;
 const MAX_OUTPUT_BYTES: usize = 8 * 1024;
-const PROBE_TIMEOUT: Duration = Duration::from_millis(750);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy)]
 struct KnownTool {
@@ -534,6 +534,7 @@ mod tests {
 
     #[test]
     fn path_discovery_is_deterministic_and_bounded() {
+        let _fixture_guard = crate::test_fixture_semaphore::acquire();
         let dir = tempdir().unwrap();
         let cargo = dir.path().join("cargo");
         fs::write(&cargo, b"#!/bin/sh\nprintf 'cargo 1.0\\n'").unwrap();
@@ -559,9 +560,9 @@ mod tests {
             .unwrap()
         );
     }
-
     #[test]
     fn version_probe_reaps_background_processes_without_pipe_hang() {
+        let _fixture_guard = crate::test_fixture_semaphore::acquire();
         let dir = tempdir().unwrap();
         let cargo = dir.path().join("cargo");
         fs::write(&cargo, b"#!/bin/sh\nsleep 2 &\nprintf 'cargo 1.0\\n'\n").unwrap();
@@ -570,9 +571,9 @@ mod tests {
         assert_eq!(probe_version(&cargo).as_deref(), Some("cargo 1.0"));
         assert!(started.elapsed() < Duration::from_secs(1));
     }
-
     #[test]
     fn configured_missing_record_is_retained_without_mutation() {
+        let _fixture_guard = crate::test_fixture_semaphore::acquire();
         let dir = tempdir().unwrap();
         let mut config = ProjectConfigV1::empty();
         config.support_tools.insert(
@@ -592,9 +593,9 @@ mod tests {
         assert_eq!(report.tools[0].status, ProjectToolStatus::Missing);
         assert!(report.tools[0].selected);
     }
-
     #[test]
     fn stale_configured_record_keeps_typed_stale_status() {
+        let _fixture_guard = crate::test_fixture_semaphore::acquire();
         let dir = tempdir().unwrap();
         let mut config = ProjectConfigV1::empty();
         config.support_tools.insert(
@@ -617,9 +618,9 @@ mod tests {
             Some("configured_record_stale")
         );
     }
-
     #[test]
     fn project_local_symlink_escape_is_rejected() {
+        let _fixture_guard = crate::test_fixture_semaphore::acquire();
         let dir = tempdir().unwrap();
         let outside = tempdir().unwrap();
         let target = outside.path().join("cargo");
@@ -637,9 +638,9 @@ mod tests {
         assert_eq!(cargo.status, ProjectToolStatus::Error);
         assert_eq!(cargo.reason.as_deref(), Some("unsafe_path"));
     }
-
     #[test]
     fn duplicate_path_entries_have_stable_precedence() {
+        let _fixture_guard = crate::test_fixture_semaphore::acquire();
         let first = tempdir().unwrap();
         let second = tempdir().unwrap();
         for (directory, version) in [(&first, "one"), (&second, "two")] {
