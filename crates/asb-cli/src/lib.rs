@@ -5685,7 +5685,10 @@ fn tool_install_with_progress(
             if catalog_entry.is_some() {
                 let temporary = OsString::from(format!(".tool-smoke-{}", std::process::id()));
                 stage_output_at(&parent.file, &temporary, &bytes, 0o700).map_err(|_| {
-                    CliError::legacy_operation("tool smoke fixture cannot be staged")
+                    CliError::operation_code(
+                        "installation_verification_failed",
+                        "tool smoke fixture cannot be staged",
+                    )
                 })?;
                 let staged_path = parent.path.join(&temporary);
                 let result = (|| {
@@ -5716,8 +5719,12 @@ fn tool_install_with_progress(
         }
         None => {
             let temporary = OsString::from(format!(".tool-{}.tmp", std::process::id()));
-            stage_output_at(&parent.file, &temporary, &bytes, 0o700)
-                .map_err(|_| CliError::legacy_operation("tool source cannot be staged"))?;
+            stage_output_at(&parent.file, &temporary, &bytes, 0o700).map_err(|_| {
+                CliError::operation_code(
+                    "installation_verification_failed",
+                    "tool source cannot be staged",
+                )
+            })?;
             if let Some(contract) = &adapter_contract
                 && let Err(error) = tool_materialization::inspect_entrypoint(
                     &parent.path,
@@ -5757,14 +5764,16 @@ fn tool_install_with_progress(
             .is_err()
             {
                 let _ = unlinkat(&parent.file, &temporary, AtFlags::empty());
-                return Err(CliError::legacy_operation(
+                return Err(CliError::operation_code(
+                    "installation_verification_failed",
                     "tool installation failed and was rolled back",
                 ));
             }
             if fsync(&parent.file).is_err() {
                 let _ = unlinkat(&parent.file, &destination_name, AtFlags::empty());
                 let _ = fsync(&parent.file);
-                return Err(CliError::legacy_operation(
+                return Err(CliError::operation_code(
+                    "installation_verification_failed",
                     "tool installation directory cannot be synchronized; installation was rolled back",
                 ));
             }

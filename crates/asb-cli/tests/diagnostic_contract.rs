@@ -287,7 +287,9 @@ fn assert_legacy_call_sites_are_catalogued(
             // file. Keep each insertion boundary explicit: accepting an
             // arbitrary nearby line would weaken the diagnostic gate.
             let historical_offsets = [0_usize, 2, 7, 12, 13, 21, 26, 192, 198, 200, 212, 308];
-            let ar1825_offsets = [64_usize, 71, 76, 83, 103, 113, 114, 115, 118];
+            let ar1825_offsets = [
+                64_usize, 71, 76, 81, 83, 86, 93, 103, 113, 114, 115, 118, 133, 162, 168, 169, 177,
+            ];
             let shifted = file == "crates/asb-cli/src/lib.rs"
                 && (historical_offsets.iter().any(|offset| {
                     line.checked_sub(*offset).is_some_and(|old_line| {

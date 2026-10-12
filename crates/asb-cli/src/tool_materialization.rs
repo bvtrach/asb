@@ -405,6 +405,13 @@ pub fn smoke_entrypoint(
             }
         };
         if observed.is_some() {
+            #[cfg(unix)]
+            if let Some(pid) = Pid::from_raw(child.id() as i32) {
+                // The direct launcher may have exited while a descendant
+                // still owns stdout/stderr. Close the private process group
+                // before joining drainers so terminal success cannot hang.
+                let _ = kill_process_group(pid, Signal::KILL);
+            }
             break;
         }
         std::thread::sleep(Duration::from_millis(5));
@@ -693,6 +700,22 @@ mod tests {
                 Some(&digest),
             ),
             Err(MaterializationError::RuntimeMismatch)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn smoke_reaps_descendant_that_retains_output_pipes() {
+        let dir = tempfile::tempdir().unwrap();
+        let launcher = dir.path().join("launcher");
+        fs::write(&launcher, b"#!/bin/sh\n(sleep 30; printf late) &\nexit 0\n").unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            smoke_entrypoint(&launcher, 32),
+            Ok(SmokeResult {
+                passed: true,
+                output_bytes: 0,
+            })
         );
     }
 }
