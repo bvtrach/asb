@@ -5150,6 +5150,161 @@ fn source_build_artifact(
     })
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CatalogToolReceiptV1 {
+    schema_version: u16,
+    catalog_id: String,
+    catalog_revision: String,
+    source: String,
+    artifact_digest_sha256: String,
+    platform: String,
+    entrypoint: String,
+    license: String,
+}
+
+/// Reuse only a previously published catalog artifact whose complete receipt,
+/// source identity, digest, platform and entrypoint still agree.  A malformed
+/// or stale record is not trusted; the normal acquisition path will either
+/// replace it transactionally or report the conflict without claiming reuse.
+fn reusable_catalog_artifact(
+    id: &str,
+    kind: ProjectToolKind,
+    entry: &tool_catalog::ToolEntry,
+    alternative: &tool_catalog::ArtifactAlternative,
+    root: &Path,
+    config: &ProjectConfigV1,
+) -> Result<Option<tool_acquisition::VerifiedArtifact>, CliError> {
+    let Some(record) = tool_kind_map(config, kind).get(id) else {
+        return Ok(None);
+    };
+    if record.status != ProjectToolStatus::Available
+        || record.platform != platform_label()
+        || record.kind != kind
+    {
+        return Ok(None);
+    }
+    let expected_source = if alternative.kind == "source" {
+        format!(
+            "{}@{}",
+            entry.official_source.url, entry.official_source.revision
+        )
+    } else {
+        alternative.url.clone()
+    };
+    if record.source_ref != expected_source {
+        return Ok(None);
+    }
+    let Some(relative) = record.path.as_deref() else {
+        return Ok(None);
+    };
+    let path = Path::new(relative);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| component == Component::ParentDir)
+    {
+        return Ok(None);
+    }
+    let Some(expected_digest) = record.digest_sha256.as_deref() else {
+        return Ok(None);
+    };
+    let bytes = match fs::read(root.join(path)) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(None),
+    };
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    if digest != expected_digest {
+        return Ok(None);
+    }
+    let receipt_bytes = match fs::read(root.join(format!(".asb/tools/{id}/receipt.json"))) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(None),
+    };
+    let receipt: CatalogToolReceiptV1 = match serde_json::from_slice(&receipt_bytes) {
+        Ok(receipt) => receipt,
+        Err(_) => return Ok(None),
+    };
+    let expected_revision = entry.official_source.revision.as_str();
+    if receipt.schema_version != 1
+        || receipt.catalog_id != tool_catalog::CATALOG_ID
+        || receipt.catalog_revision != expected_revision
+        || receipt.source != expected_source
+        || receipt.artifact_digest_sha256 != digest
+        || receipt.platform != platform_label()
+        || receipt.entrypoint != entry.entrypoint
+        || receipt.license != entry.license
+    {
+        return Ok(None);
+    }
+    Ok(Some(tool_acquisition::VerifiedArtifact {
+        bytes,
+        entry: entry.clone(),
+        alternative: alternative.clone(),
+        source_ref: expected_source,
+    }))
+}
+
+/// Prove that a catalog-selected artifact is usable by its adapter before it
+/// becomes active project state.  The probe is deliberately argument-array
+/// only, credential-free, and bounded; it does not inherit the caller's
+/// environment or retain tool output.
+fn smoke_check_catalog_entrypoint(path: &Path) -> Result<(), CliError> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| {
+        CliError::legacy_operation("catalog tool entrypoint cannot be inspected after staging")
+    })?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(CliError::legacy_validation(
+            "catalog tool entrypoint is not a regular executable",
+        ));
+    }
+    #[cfg(unix)]
+    if metadata.permissions().mode() & 0o111 == 0 {
+        return Err(CliError::legacy_validation(
+            "catalog tool entrypoint is not executable",
+        ));
+    }
+    let mut child = Command::new(path)
+        .arg("--version")
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| {
+            CliError::legacy_operation(
+                "catalog tool entrypoint smoke check could not start; verify the selected tool supports --version",
+            )
+        })?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(_)) => {
+                return Err(CliError::legacy_operation(
+                    "catalog tool entrypoint smoke check failed; verify the selected tool supports --version",
+                ));
+            }
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(CliError::legacy_operation(
+                    "catalog tool entrypoint smoke check timed out after 5 seconds",
+                ));
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(CliError::legacy_operation(
+                    "catalog tool entrypoint smoke check could not observe the process",
+                ));
+            }
+        }
+    }
+}
+
 fn tool_install_with_progress(
     args: &[String],
     output: &mut dyn Write,
@@ -5261,7 +5416,15 @@ fn tool_install_with_progress(
             &json!({"schema_version": OUTPUT_SCHEMA_VERSION, "ok": true, "command": "tool install", "id": id, "kind": kind, "version": version, "source": source_url, "platform": platform_label(), "dry_run": true}),
         );
     }
+    let reused = match (&catalog_entry, &catalog_artifact) {
+        (Some(entry), Some(alternative)) if fixture_source.is_none() && source.is_none() => {
+            reusable_catalog_artifact(id, kind, entry, alternative, &root, &config)?
+        }
+        _ => None,
+    };
     let verified = if let Some(verified) = fixture_source {
+        verified
+    } else if let Some(verified) = reused {
         verified
     } else if let Some(source) = source {
         if source.contains("://") {
@@ -5399,6 +5562,18 @@ fn tool_install_with_progress(
             })?;
             created_destination = true;
         }
+    }
+    // Explicit fixture/local imports remain development-only and preserve
+    // their existing offline contract.  A supported catalog install is not
+    // usable merely because bytes were copied: prove the staged entrypoint
+    // can start before recording it as active.
+    if catalog_entry.is_some()
+        && let Err(error) = smoke_check_catalog_entrypoint(&destination)
+    {
+        if created_destination {
+            let _ = unlinkat(&parent.file, &destination_name, AtFlags::empty());
+        }
+        return Err(error);
     }
     let receipt = json!({
         "schema_version": 1,
@@ -12361,6 +12536,26 @@ pub(crate) mod tests {
                 .file_type()
                 .is_symlink()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_entrypoint_smoke_check_is_bounded_and_fail_closed() {
+        let scratch = Scratch::new("catalog-entrypoint-smoke");
+        let passing = scratch.0.join("passing");
+        fs::write(&passing, b"#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&passing, fs::Permissions::from_mode(0o700)).unwrap();
+        smoke_check_catalog_entrypoint(&passing).expect("a usable entrypoint must pass");
+
+        let failing = scratch.0.join("failing");
+        fs::write(&failing, b"#!/bin/sh\nexit 9\n").unwrap();
+        fs::set_permissions(&failing, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(smoke_check_catalog_entrypoint(&failing).is_err());
+
+        let non_executable = scratch.0.join("non-executable");
+        fs::write(&non_executable, b"#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&non_executable, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(smoke_check_catalog_entrypoint(&non_executable).is_err());
     }
 
     #[test]
