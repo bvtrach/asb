@@ -2903,6 +2903,28 @@ fn shell_quote(value: &str) -> String {
     }
 }
 
+/// Emit one bounded development-only router detail.  Debug output deliberately
+/// identifies only the public command family; it never serializes arguments,
+/// paths, provider payloads, or credential-bearing material.
+pub(super) fn render_debug(args: &[OsString], output: &mut dyn Write) -> io::Result<()> {
+    let command = args
+        .first()
+        .and_then(|value| value.to_str())
+        .filter(|value| {
+            !value.is_empty()
+                && value.len() <= 32
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        })
+        .unwrap_or("cli");
+    writeln!(output, "[ OK ] Debug: routed command {command}.")
+}
+
+pub(super) fn is_raw(args: &[OsString]) -> bool {
+    InvocationKind::classify_args(args).is_raw()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3617,7 +3639,7 @@ mod tests {
             let mut output = Vec::new();
             render_error(
                 &args(&["run"]),
-                &CliError::legacy_operation(message),
+                &legacy_test_state_operation(message),
                 false,
                 &mut output,
             )
@@ -3630,20 +3652,17 @@ mod tests {
     fn error_presentations_name_cause_state_and_recovery_without_private_text() {
         let cases = [
             (
-                CliError::legacy_validation("output parent is unavailable")
-                    .with_path(Path::new("/tmp/asb-results/report.json")),
+                legacy_test_output_parent(),
                 "required parent directory does not exist",
                 "Create or select the named parent directory",
             ),
             (
-                CliError::legacy_validation("output path is not a directory")
-                    .with_path(Path::new("/tmp/asb-results/report.json")),
+                legacy_test_output_not_directory(),
                 "selected path is not a directory",
                 "Inspect the named destination",
             ),
             (
-                CliError::legacy_validation("output path is a symlink")
-                    .with_path(Path::new("/tmp/asb-results/report.json")),
+                legacy_test_output_symlink(),
                 "path topology is unsafe",
                 "Inspect the named destination",
             ),
@@ -3664,12 +3683,12 @@ mod tests {
                 "Check the selected provider",
             ),
             (
-                CliError::legacy_operation("operation timed out"),
+                legacy_test_timeout(),
                 "bounded deadline expired",
                 "Inspect durable state",
             ),
             (
-                CliError::legacy_operation("operation was cancelled"),
+                legacy_test_cancelled(),
                 "operation was cancelled before completion",
                 "Inspect durable state",
             ),
@@ -3708,12 +3727,12 @@ mod tests {
     #[test]
     fn known_error_classes_have_distinct_human_explanations() {
         let errors = [
-            CliError::legacy_validation("input is missing"),
-            CliError::legacy_validation("input is malformed"),
-            CliError::legacy_validation("input is incompatible"),
-            CliError::legacy_validation("input permission denied"),
-            CliError::legacy_operation("provider request timed out"),
-            CliError::legacy_operation("provider request was cancelled"),
+            legacy_test_missing(),
+            legacy_test_malformed(),
+            legacy_test_incompatible(),
+            legacy_test_permission(),
+            legacy_test_provider_timeout(),
+            legacy_test_provider_cancelled(),
         ];
         let outputs = errors
             .iter()
@@ -4112,26 +4131,61 @@ mod tests {
     }
 }
 
-/// Emit one bounded development-only router detail. Debug output deliberately
-/// identifies only the public command family; it never serializes arguments,
-/// paths, provider payloads, or credential-bearing material.
-pub(super) fn render_debug(args: &[OsString], output: &mut dyn Write) -> io::Result<()> {
-    let command = args
-        .first()
-        .and_then(|value| value.to_str())
-        .filter(|value| {
-            !value.is_empty()
-                && value.len() <= 32
-                && value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-        })
-        .unwrap_or("cli");
-    writeln!(output, "[ OK ] Debug: routed command {command}.")
+#[cfg(test)]
+fn legacy_test_output_parent() -> CliError {
+    CliError::legacy_validation("output parent is unavailable")
+        .with_path(Path::new("/tmp/asb-results/report.json"))
 }
 
-pub(super) fn is_raw(args: &[OsString]) -> bool {
-    InvocationKind::classify_args(args).is_raw()
+#[cfg(test)]
+fn legacy_test_output_not_directory() -> CliError {
+    CliError::legacy_validation("output path is not a directory")
+        .with_path(Path::new("/tmp/asb-results/report.json"))
 }
+
+#[cfg(test)]
+fn legacy_test_output_symlink() -> CliError {
+    CliError::legacy_validation("output path is a symlink")
+        .with_path(Path::new("/tmp/asb-results/report.json"))
+}
+
+#[cfg(test)]
+fn legacy_test_state_operation(message: &'static str) -> CliError {
+    CliError::legacy_operation(message)
+}
+
+#[cfg(test)]
+fn legacy_test_missing() -> CliError {
+    CliError::legacy_validation("input is missing")
+}
+#[cfg(test)]
+fn legacy_test_malformed() -> CliError {
+    CliError::legacy_validation("input is malformed")
+}
+#[cfg(test)]
+fn legacy_test_incompatible() -> CliError {
+    CliError::legacy_validation("input is incompatible")
+}
+#[cfg(test)]
+fn legacy_test_permission() -> CliError {
+    CliError::legacy_validation("input permission denied")
+}
+#[cfg(test)]
+fn legacy_test_provider_timeout() -> CliError {
+    CliError::legacy_operation("provider request timed out")
+}
+#[cfg(test)]
+fn legacy_test_provider_cancelled() -> CliError {
+    CliError::legacy_operation("provider request was cancelled")
+}
+#[cfg(test)]
+fn legacy_test_timeout() -> CliError {
+    CliError::legacy_operation("operation timed out")
+}
+#[cfg(test)]
+fn legacy_test_cancelled() -> CliError {
+    CliError::legacy_operation("operation was cancelled")
+}
+
 #[path = "step_progress.rs"]
 pub mod step_progress;
