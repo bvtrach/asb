@@ -19982,3 +19982,136 @@ pub fn run_with_cli2key_runtime_authority(
     drop(authority);
     exit_code
 }
+
+/// Write a provider selection composed from a live runtime-owned cli2key
+/// authority.  The caller cannot supply an endpoint, credential, executable,
+/// or catalog identity: all of those values are taken from the verified
+/// receipt and the loopback sidecar owned by `authority`.
+pub fn write_cli2key_provider_selection(
+    authority: &asb_runtime::cli2key_sidecar::Cli2KeyRuntimeAuthority,
+    output: &mut dyn std::io::Write,
+) -> Result<(), String> {
+    let selection = cli2key_provider_plan(authority.receipt(), authority.endpoint())?;
+    let bytes = serde_json::to_vec(&selection)
+        .map_err(|_| "cli2key provider selection cannot be encoded")?;
+    output
+        .write_all(&bytes)
+        .and_then(|()| output.write_all(b"\n"))
+        .map_err(|_| "cli2key provider selection cannot be written".to_owned())
+}
+
+fn cli2key_provider_plan(
+    receipt: &asb_runtime::cli2key_sidecar::Cli2KeyRuntimeReceipt,
+    endpoint: std::net::SocketAddr,
+) -> Result<ProviderPlanOutput, String> {
+    receipt
+        .validate()
+        .map_err(|_| "cli2key runtime receipt is invalid".to_owned())?;
+    let (endpoint_host, endpoint_port) = match endpoint {
+        std::net::SocketAddr::V4(value) if value.ip().is_loopback() => {
+            ("127.0.0.1".to_owned(), value.port())
+        }
+        std::net::SocketAddr::V6(value) if value.ip().is_loopback() => {
+            ("::1".to_owned(), value.port())
+        }
+        _ => return Err("cli2key runtime endpoint is not loopback".to_owned()),
+    };
+    let selection = asb_agents::cli2key::Cli2KeySelection {
+        schema_version: 1,
+        provider_id: "cli2key".to_owned(),
+        catalog_generation: receipt.catalog_generation,
+        catalog_sha256: receipt.catalog_sha256.clone(),
+        model_id: "codex-local".to_owned(),
+        bridge_revision: receipt.bridge_revision.clone(),
+        bridge_tree_sha256: receipt.bridge_tree_sha256.clone(),
+        executable_sha256: receipt.executable_sha256.clone(),
+        endpoint_sha256: receipt.endpoint_sha256.clone(),
+        credential_reference_sha256: receipt.credential_reference_sha256.clone(),
+        agent_id: "codex".to_owned(),
+    };
+    let launch = Cli2KeyLaunch {
+        schema_version: 1,
+        selection,
+        api_mode: "responses".to_owned(),
+        endpoint_host,
+        endpoint_port,
+        generation: format!("catalog-{}", receipt.catalog_generation),
+    };
+    let effective = vec![EffectiveCliAgent {
+        agent: "codex".to_owned(),
+        profile_sha256: receipt.catalog_sha256.clone(),
+        api_mode: EffectiveApiMode::Responses,
+    }];
+    let selection_sha256 = format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&(receipt.catalog_sha256.as_str(), &effective, &launch))
+                .map_err(|_| "cli2key provider selection cannot be encoded")?,
+        )
+    );
+    let output = ProviderPlanOutput {
+        schema_version: OUTPUT_SCHEMA_VERSION,
+        ok: true,
+        command: "provider-plan".to_owned(),
+        dry_run: true,
+        catalog_sha256: receipt.catalog_sha256.clone(),
+        selection_sha256,
+        provider_profile: "cli2key".to_owned(),
+        provider_profile_sha256: receipt.catalog_sha256.clone(),
+        model: "codex-local".to_owned(),
+        credential_source: "environment".to_owned(),
+        credential_reference_sha256: receipt.credential_reference_sha256.clone(),
+        generation: receipt.catalog_generation,
+        effective,
+        cli2key_launch: Some(launch),
+    };
+    validate_provider_selection(&output)
+        .map_err(|_| "cli2key provider selection identity is invalid".to_owned())?;
+    Ok(output)
+}
+
+#[cfg(test)]
+mod cli2key_public_composition_tests {
+    use super::cli2key_provider_plan;
+    use asb_runtime::cli2key_sidecar::Cli2KeyRuntimeReceipt;
+
+    fn receipt() -> Cli2KeyRuntimeReceipt {
+        Cli2KeyRuntimeReceipt {
+            schema_version: 1,
+            status: "verified".to_owned(),
+            catalog_generation: 7,
+            platform: "linux-x86_64".to_owned(),
+            catalog_sha256: "a".repeat(64),
+            bridge_revision: "bridge-r1".to_owned(),
+            bridge_tree_sha256: "b".repeat(64),
+            executable_sha256: "c".repeat(64),
+            endpoint_sha256: "d".repeat(64),
+            credential_reference_sha256: "e".repeat(64),
+            entrypoint: "codex-bridge".to_owned(),
+            protocol_sha256: "f".repeat(64),
+        }
+    }
+
+    #[test]
+    fn runtime_receipt_composes_a_closed_codex_selection() {
+        let output = cli2key_provider_plan(
+            &receipt(),
+            "127.0.0.1:43123".parse().expect("loopback endpoint"),
+        )
+        .expect("valid runtime authority identity");
+        assert_eq!(output.provider_profile, "cli2key");
+        assert_eq!(output.model, "codex-local");
+        assert_eq!(output.effective[0].agent, "codex");
+        assert!(output.cli2key_launch.is_some());
+    }
+
+    #[test]
+    fn non_loopback_endpoint_is_rejected_before_serialization() {
+        let error = cli2key_provider_plan(
+            &receipt(),
+            "192.0.2.10:43123".parse().expect("test endpoint"),
+        )
+        .expect_err("remote endpoint must be rejected");
+        assert_eq!(error, "cli2key runtime endpoint is not loopback");
+    }
+}
