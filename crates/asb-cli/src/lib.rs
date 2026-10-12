@@ -17558,6 +17558,7 @@ pub(crate) mod tests {
 
     #[test]
     fn record_campaign_requires_exact_matrix_before_offline_ready() {
+        let _fixture_guard = super::test_fixture_semaphore::acquire();
         let scratch = Scratch::new("record-campaign");
         let capture_path = scratch.0.join("capture.json");
         let cassette_path = scratch.0.join("cassette.json");
@@ -17782,6 +17783,7 @@ pub(crate) mod tests {
 
     #[test]
     fn record_campaign_empty_workload_selection_expands_the_full_catalog() {
+        let _fixture_guard = super::test_fixture_semaphore::acquire();
         let scratch = Scratch::new("record-campaign-all");
         let capture_path = scratch.0.join("capture.json");
         let manifest_path = scratch.0.join("all-campaign.json");
