@@ -96,6 +96,16 @@ impl ProjectExecution {
             .workloads
             .get(workload_id)
             .ok_or_else(|| CliError::legacy_validation("selected installed workload is missing"))?;
+        // Legacy project tool fixtures remain valid workload records.  The
+        // receipt fence applies to bundles installed through `asb workload`,
+        // which are explicitly marked as external-workload.
+        if !record
+            .capabilities
+            .iter()
+            .any(|capability| capability == "external-workload")
+        {
+            return Ok(());
+        }
         if record.status != ProjectToolStatus::Available
             || record.kind != ProjectToolKind::Workload
             || record.platform != super::platform_label()
