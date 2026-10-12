@@ -652,6 +652,10 @@ mod tests {
         );
         assert_eq!(validate_runtime_compatibility("native"), Ok(()));
         assert_eq!(
+            validate_runtime_compatibility(&crate::platform_label()),
+            Ok(())
+        );
+        assert_eq!(
             MaterializationError::OutputTooLarge.code(),
             "adapter_output_too_large"
         );
@@ -680,6 +684,24 @@ mod tests {
         );
         let mut matrix = support_matrix();
         matrix.rows.pop();
+        assert_eq!(
+            validate_against_catalog(&matrix, &catalog),
+            Err(MaterializationError::MatrixInvalid)
+        );
+        let mut matrix = support_matrix();
+        matrix.rows[0].status = SupportStatus::Supported;
+        assert_eq!(
+            validate_matrix(&matrix),
+            Err(MaterializationError::MatrixInvalid)
+        );
+        let mut matrix = support_matrix();
+        matrix.rows[1].strategy = AdapterStrategy::Unsupported;
+        assert_eq!(
+            validate_matrix(&matrix),
+            Err(MaterializationError::MatrixInvalid)
+        );
+        let mut matrix = support_matrix();
+        matrix.rows[1].package_strategy = PackageStrategy::None;
         assert_eq!(
             validate_against_catalog(&matrix, &catalog),
             Err(MaterializationError::MatrixInvalid)
@@ -719,6 +741,57 @@ mod tests {
             Err(MaterializationError::RuntimeMismatch)
         );
         assert_eq!(digest.len(), 64);
+        assert_eq!(
+            inspect_entrypoint(
+                dir.path(),
+                Path::new("tool"),
+                &SymlinkPolicy::RegularOnly,
+                Some(&digest)
+            ),
+            Ok(digest)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relative_symlink_and_digest_boundaries_are_explicit() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        let link = dir.path().join("tool");
+        fs::write(&target, b"fixture").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+        std::os::unix::fs::symlink("target", &link).unwrap();
+        let digest = format!("{:x}", Sha256::digest(b"fixture"));
+        assert_eq!(
+            inspect_entrypoint(
+                dir.path(),
+                Path::new("tool"),
+                &SymlinkPolicy::RelativeWithinInstall,
+                Some(&digest)
+            ),
+            Ok(digest.clone())
+        );
+        let wrong = "0".repeat(64);
+        assert_eq!(
+            inspect_entrypoint(
+                dir.path(),
+                Path::new("tool"),
+                &SymlinkPolicy::RelativeWithinInstall,
+                Some(&wrong)
+            ),
+            Err(MaterializationError::RuntimeMismatch)
+        );
+        fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink("../target", &link).unwrap();
+        assert_eq!(
+            inspect_entrypoint(
+                dir.path(),
+                Path::new("tool"),
+                &SymlinkPolicy::RelativeWithinInstall,
+                None
+            ),
+            Err(MaterializationError::UnsafeSymlink)
+        );
     }
 
     #[test]
@@ -809,6 +882,22 @@ mod tests {
         assert_eq!(
             smoke_entrypoint(&hanging, 32),
             Err(MaterializationError::SmokeFailed)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn smoke_accepts_bounded_successful_launcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let launcher = dir.path().join("launcher");
+        fs::write(&launcher, b"#!/bin/sh\nprintf ok\nprintf err >&2\n").unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            smoke_entrypoint(&launcher, 32),
+            Ok(SmokeResult {
+                passed: true,
+                output_bytes: 5,
+            })
         );
     }
 
