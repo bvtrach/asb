@@ -18,6 +18,8 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, SystemTime};
@@ -442,6 +444,7 @@ pub struct Cli2KeyRuntimeAuthority {
     sidecar: Cli2KeySidecar,
     receipt: Cli2KeyRuntimeReceipt,
     factory: LiveProviderAttemptFactory,
+    lifecycle: Arc<AtomicBool>,
 }
 
 impl fmt::Debug for Cli2KeyRuntimeAuthority {
@@ -472,6 +475,7 @@ impl Cli2KeyRuntimeAuthority {
             sidecar,
             receipt,
             factory,
+            lifecycle: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -481,14 +485,22 @@ impl Cli2KeyRuntimeAuthority {
         input_id: u32,
         warmup: bool,
     ) -> Result<LiveProviderAttempt, LaunchAuthorityError> {
-        self.factory.acquire(input_id, warmup)
+        let mut attempt = self.factory.acquire(input_id, warmup)?;
+        attempt.bind_authority_fence(Arc::clone(&self.lifecycle));
+        Ok(attempt)
     }
 
     /// Borrow the runtime-issued factory for CLI run or bounded sweep wiring.
     /// The caller must retain this authority for the entire execution so the
     /// sidecar remains alive and its teardown fence stays authoritative.
     pub fn attempt_factory(&self) -> LiveProviderAttemptFactory {
-        self.factory.clone()
+        let factory = self.factory.clone();
+        let lifecycle = Arc::clone(&self.lifecycle);
+        LiveProviderAttemptFactory::from_fn(move |input_id, warmup| {
+            let mut attempt = factory.acquire(input_id, warmup)?;
+            attempt.bind_authority_fence(Arc::clone(&lifecycle));
+            Ok(attempt)
+        })
     }
 
     /// Return the verified secret-free catalog identity.
@@ -505,6 +517,12 @@ impl Drop for Cli2KeySidecar {
     fn drop(&mut self) {
         let _ = rustix::process::kill_process_group(self.pid, rustix::process::Signal::KILL);
         let _ = self.child.wait();
+    }
+}
+
+impl Drop for Cli2KeyRuntimeAuthority {
+    fn drop(&mut self) {
+        self.lifecycle.store(true, Ordering::Release);
     }
 }
 
@@ -596,6 +614,19 @@ mod tests {
         receipt = runtime_receipt();
         receipt.platform = "linux-aarch64".into();
         assert_eq!(receipt.validate(), Err(Cli2KeyError::InvalidPlatform));
+    }
+
+    #[test]
+    fn runtime_authority_factory_preserves_typed_acquisition_failure() {
+        let factory = LiveProviderAttemptFactory::from_fn(|_, _| {
+            Err(LaunchAuthorityError::InvalidLaunchInput)
+        });
+        // The factory remains opaque at this boundary; the authority wiring
+        // cannot turn a failed runtime acquisition into a provider fallback.
+        assert!(matches!(
+            factory.acquire(1, false),
+            Err(LaunchAuthorityError::InvalidLaunchInput)
+        ));
     }
 
     #[test]
