@@ -577,6 +577,117 @@ mod tests {
     }
 
     #[test]
+    fn validation_boundaries_reject_empty_drift_and_shell_shapes() {
+        assert_eq!(
+            validate_recipe_arguments(&[]),
+            Err(MaterializationError::UnboundedArguments)
+        );
+        assert_eq!(
+            validate_recipe_arguments(&["echo\nvalue".into()]),
+            Err(MaterializationError::UnboundedArguments)
+        );
+        assert_eq!(
+            validate_recipe_arguments(&["--offline".into(), "$(id)".into()]),
+            Err(MaterializationError::UnboundedArguments)
+        );
+        assert_eq!(
+            validate_runtime_closure(&["".into()]),
+            Err(MaterializationError::RuntimeDownloadForbidden)
+        );
+        assert_eq!(
+            validate_runtime_closure(&["python-latest".into()]),
+            Err(MaterializationError::RuntimeDownloadForbidden)
+        );
+        assert_eq!(
+            validate_runtime_closure(&["python-download".into()]),
+            Err(MaterializationError::RuntimeDownloadForbidden)
+        );
+
+        for launcher in [
+            LauncherIdentity {
+                relative_path: "".into(),
+                executable: true,
+                symlink: SymlinkPolicy::RegularOnly,
+                runtime: "native".into(),
+            },
+            LauncherIdentity {
+                relative_path: "/bin/tool".into(),
+                executable: true,
+                symlink: SymlinkPolicy::RegularOnly,
+                runtime: "native".into(),
+            },
+            LauncherIdentity {
+                relative_path: "./tool".into(),
+                executable: true,
+                symlink: SymlinkPolicy::RegularOnly,
+                runtime: "native".into(),
+            },
+            LauncherIdentity {
+                relative_path: "../tool".into(),
+                executable: true,
+                symlink: SymlinkPolicy::RegularOnly,
+                runtime: "native".into(),
+            },
+            LauncherIdentity {
+                relative_path: "tool".into(),
+                executable: false,
+                symlink: SymlinkPolicy::RegularOnly,
+                runtime: "native".into(),
+            },
+            LauncherIdentity {
+                relative_path: "tool".into(),
+                executable: true,
+                symlink: SymlinkPolicy::RegularOnly,
+                runtime: "".into(),
+            },
+        ] {
+            assert_eq!(
+                validate_launcher(&launcher),
+                Err(MaterializationError::InvalidLauncher)
+            );
+        }
+        assert_eq!(
+            validate_runtime_compatibility("linux-not-this-host"),
+            Err(MaterializationError::RuntimeMismatch)
+        );
+        assert_eq!(validate_runtime_compatibility("native"), Ok(()));
+        assert_eq!(
+            MaterializationError::OutputTooLarge.code(),
+            "adapter_output_too_large"
+        );
+    }
+
+    #[test]
+    fn matrix_and_catalog_mismatches_fail_closed() {
+        let catalog = crate::tool_catalog::catalog();
+        let mut matrix = support_matrix();
+        matrix.matrix_id = "wrong".into();
+        assert_eq!(
+            validate_matrix(&matrix),
+            Err(MaterializationError::MatrixInvalid)
+        );
+        let mut matrix = support_matrix();
+        matrix.rows[0].source_revision = "latest".into();
+        assert_eq!(
+            validate_matrix(&matrix),
+            Err(MaterializationError::MatrixInvalid)
+        );
+        let mut matrix = support_matrix();
+        matrix.rows[0].source_sha256 = "not-a-digest".into();
+        assert_eq!(
+            validate_against_catalog(&matrix, &catalog),
+            Err(MaterializationError::MatrixInvalid)
+        );
+        let mut matrix = support_matrix();
+        matrix.rows.pop();
+        assert_eq!(
+            validate_against_catalog(&matrix, &catalog),
+            Err(MaterializationError::MatrixInvalid)
+        );
+        assert_eq!(contract_for(""), Err(MaterializationError::UnknownTool));
+    }
+
+    #[test]
     fn entrypoint_requires_executable_regular_file_and_digest() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("tool");
@@ -673,6 +784,30 @@ mod tests {
         fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(
             smoke_entrypoint(&launcher, 16),
+            Err(MaterializationError::SmokeFailed)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn smoke_rejects_missing_nonzero_and_timeout_launchers() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            smoke_entrypoint(&dir.path().join("missing"), 32),
+            Err(MaterializationError::SmokeFailed)
+        );
+        let failing = dir.path().join("failing");
+        fs::write(&failing, b"#!/bin/sh\nexit 7\n").unwrap();
+        fs::set_permissions(&failing, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            smoke_entrypoint(&failing, 32),
+            Err(MaterializationError::SmokeFailed)
+        );
+        let hanging = dir.path().join("hanging");
+        fs::write(&hanging, b"#!/bin/sh\nsleep 5\n").unwrap();
+        fs::set_permissions(&hanging, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            smoke_entrypoint(&hanging, 32),
             Err(MaterializationError::SmokeFailed)
         );
     }
