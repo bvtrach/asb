@@ -125,6 +125,8 @@ impl CheckoutError {
 }
 
 pub fn acquire(request: &CheckoutRequest) -> Result<SourceCheckout, CheckoutError> {
+    #[cfg(test)]
+    let _fixture_guard = crate::test_fixture_semaphore::acquire();
     validate_request(request)?;
     fs::create_dir_all(&request.staging_root).map_err(|_| CheckoutError::Unavailable)?;
     let name = format!("checkout-{}", std::process::id());
