@@ -5,7 +5,7 @@
 pub mod capabilities;
 mod control;
 pub mod diagnostic;
-mod human;
+pub(crate) mod human;
 mod project_run;
 mod provider_launch;
 pub mod tool_discovery;
@@ -5658,14 +5658,14 @@ fn prepare_owned_directory(
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {
                         if !announced {
                             if let Some(stream) = progress.as_deref_mut() {
-                                writeln!(
+                                human::step_progress::terminal(
                                     stream,
-                                    "[WAIT] ASB will create directory {} for {}.",
-                                    display_local_path(path),
-                                    purpose.label()
+                                    "filesystem.prepare-directory",
+                                    purpose.label(),
+                                    human::step_progress::StepStatus::Success,
+                                    Some(&format!("creating {}", display_local_path(path))),
                                 )
                                 .map_err(output_error)?;
-                                stream.flush().map_err(output_error)?;
                             }
                             announced = true;
                         }
@@ -9263,8 +9263,10 @@ fn execute_loaded_plan(
         } else {
             plan.run_id.clone()
         };
-        let _ = writeln!(progress, "[WAIT] starting {run_id}");
-        let point = run_point_with_selection_with_owner(
+        let mut run_reporter = human::step_progress::StepReporter::new(&mut *progress, false, 80);
+        let run_step =
+            run_reporter.begin("benchmark.run-point", format!("starting {run_id}"), None);
+        let point_result = run_point_with_selection_with_owner(
             Arc::clone(&store),
             &plan,
             run_id.clone(),
@@ -9275,7 +9277,17 @@ fn execute_loaded_plan(
             live_factory.clone(),
             local_mock,
             local_mock_owner.clone(),
-        )?;
+        );
+        let point = match point_result {
+            Ok(point) => {
+                run_step.success();
+                point
+            }
+            Err(error) => {
+                run_step.failure("run point failed");
+                return Err(error);
+            }
+        };
         if provider_launch_sha256.is_none() {
             provider_launch_sha256 = selection.as_ref().map(|value| {
                 build_provider_launch(&plan, value, &run_id, &format!("{run_id}-attempt"))
@@ -11935,13 +11947,10 @@ pub(crate) mod tests {
             0o700
         );
         let notice = String::from_utf8(progress).unwrap();
-        assert_eq!(
-            notice,
-            format!(
-                "[WAIT] ASB will create directory {} for benchmark run results.\n",
-                display_local_path(&prepared.path)
-            )
-        );
+        assert!(notice.starts_with(
+            "[DONE] benchmark run results (filesystem.prepare-directory, 0s) creating /tmp/as"
+        ));
+        assert!(notice.ends_with('\n'));
 
         let mut reused_progress = Vec::new();
         let reused = super::prepare_owned_directory(
@@ -14366,7 +14375,7 @@ pub(crate) mod tests {
                 );
                 assert_eq!(
                     String::from_utf8(diagnostic).unwrap(),
-                    format!("[WAIT] starting {run_id}\n")
+                    format!("[DONE] starting {run_id} (benchmark.run-point, 0s)\n")
                 );
                 let result: Value = serde_json::from_slice(&output).unwrap();
                 assert_eq!(result["command"], "run");
