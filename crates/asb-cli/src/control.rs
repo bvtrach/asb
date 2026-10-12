@@ -1545,7 +1545,7 @@ fn serve_with_capture(
     )
     .map_err(|_| CliError::legacy_operation("control endpoint cannot be bound"))?;
     std::panic::set_hook(Box::new(|_| {
-        eprintln!("ASB control worker failed");
+        let _ = crate::write_router_diagnostic(&mut std::io::stderr(), "ASB control worker failed");
     }));
     server
         .serve()
