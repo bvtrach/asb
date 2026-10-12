@@ -13,8 +13,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path};
 use std::process::{Command, Stdio};
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 pub const MATRIX_SCHEMA_VERSION: u16 = 1;
@@ -353,32 +355,74 @@ pub fn smoke_entrypoint(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|_| MaterializationError::SmokeFailed)?;
+    let stdout = bounded_reader(
+        child
+            .stdout
+            .take()
+            .ok_or(MaterializationError::SmokeFailed)?,
+        max_output_bytes,
+    );
+    let stderr = bounded_reader(
+        child
+            .stderr
+            .take()
+            .ok_or(MaterializationError::SmokeFailed)?,
+        max_output_bytes,
+    );
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
+            let _ = stdout.join();
+            let _ = stderr.join();
             return Err(MaterializationError::SmokeFailed);
         }
-        if child
-            .try_wait()
-            .map_err(|_| MaterializationError::SmokeFailed)?
-            .is_some()
-        {
+        let observed = match child.try_wait() {
+            Ok(status) => status,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout.join();
+                let _ = stderr.join();
+                return Err(MaterializationError::SmokeFailed);
+            }
+        };
+        if observed.is_some() {
             break;
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    let output = child
-        .wait_with_output()
+    let status = child
+        .wait()
         .map_err(|_| MaterializationError::SmokeFailed)?;
-    let output_bytes = output.stdout.len().saturating_add(output.stderr.len()) as u64;
-    if output_bytes > max_output_bytes || !output.status.success() {
+    let output_bytes = stdout
+        .join()
+        .map_err(|_| MaterializationError::SmokeFailed)?
+        .saturating_add(
+            stderr
+                .join()
+                .map_err(|_| MaterializationError::SmokeFailed)?,
+        );
+    if output_bytes > max_output_bytes || !status.success() {
         return Err(MaterializationError::SmokeFailed);
     }
     Ok(SmokeResult {
         passed: true,
         output_bytes,
+    })
+}
+
+fn bounded_reader<R: Read + Send + 'static>(mut reader: R, max: u64) -> JoinHandle<u64> {
+    thread::spawn(move || {
+        let mut total = 0_u64;
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) | Err(_) => return total,
+                Ok(read) => total = total.saturating_add(read as u64).min(max.saturating_add(1)),
+            }
+        }
     })
 }
 
@@ -591,5 +635,48 @@ mod tests {
         );
         assert_eq!(fs::read(&good).unwrap(), before_good);
         assert_eq!(fs::read(&receipt).unwrap(), before_receipt);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn smoke_rejects_output_over_bound_without_retaining_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let launcher = dir.path().join("launcher");
+        fs::write(
+            &launcher,
+            b"#!/bin/sh\nprintf '%100s' x\nprintf '%100s' x >&2\n",
+        )
+        .unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            smoke_entrypoint(&launcher, 16),
+            Err(MaterializationError::SmokeFailed)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn final_identity_check_rejects_replacement_after_initial_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let launcher = dir.path().join("launcher");
+        fs::write(&launcher, b"known-good").unwrap();
+        fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
+        let digest = inspect_entrypoint(
+            dir.path(),
+            Path::new("launcher"),
+            &SymlinkPolicy::RegularOnly,
+            None,
+        )
+        .unwrap();
+        fs::write(&launcher, b"replacement").unwrap();
+        assert_eq!(
+            inspect_entrypoint(
+                dir.path(),
+                Path::new("launcher"),
+                &SymlinkPolicy::RegularOnly,
+                Some(&digest),
+            ),
+            Err(MaterializationError::RuntimeMismatch)
+        );
     }
 }

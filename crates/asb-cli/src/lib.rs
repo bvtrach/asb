@@ -5202,29 +5202,39 @@ fn source_build_artifact(
         recipe: recipe.clone(),
         limits: source_builder::BuildLimits::default(),
     };
-    source_builder::build_from_checkout(checkout, request).map_err(|_| {
-        CliError::operation_code("catalog_source_build_failed", "catalog source build failed")
-    })?;
+    if source_builder::build_from_checkout(checkout, request).is_err() {
+        let _ = fs::remove_dir_all(&build_prefix);
+        return Err(CliError::operation_code(
+            "catalog_source_build_failed",
+            "catalog source build failed",
+        ));
+    }
     let produced = build_prefix.join(id).join(&entry.entrypoint);
-    tool_materialization::inspect_entrypoint(
+    if let Err(error) = tool_materialization::inspect_entrypoint(
         &build_prefix,
         Path::new(id).join(&entry.entrypoint).as_path(),
         &contract.launcher.symlink,
         None,
-    )
-    .map_err(materialization_operation)?;
-    let bytes = fs::read(&produced).map_err(|_| {
-        CliError::operation_code(
-            "catalog_source_output_unreadable",
-            "source build output cannot be read",
-        )
-    })?;
-    fs::remove_dir_all(&build_prefix).map_err(|_| {
-        CliError::operation_code(
+    ) {
+        let _ = fs::remove_dir_all(&build_prefix);
+        return Err(materialization_operation(error));
+    }
+    let bytes = match fs::read(&produced) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            let _ = fs::remove_dir_all(&build_prefix);
+            return Err(CliError::operation_code(
+                "catalog_source_output_unreadable",
+                "source build output cannot be read",
+            ));
+        }
+    };
+    if fs::remove_dir_all(&build_prefix).is_err() {
+        return Err(CliError::operation_code(
             "catalog_source_cleanup_failed",
             "source build staging cleanup failed",
-        )
-    })?;
+        ));
+    }
     let alternative = entry
         .alternatives
         .iter()
@@ -5702,9 +5712,13 @@ fn tool_install_with_progress(
                     "tool installation failed and was rolled back",
                 ));
             }
-            fsync(&parent.file).map_err(|_| {
-                CliError::legacy_operation("tool installation directory cannot be synchronized")
-            })?;
+            if fsync(&parent.file).is_err() {
+                let _ = unlinkat(&parent.file, &destination_name, AtFlags::empty());
+                let _ = fsync(&parent.file);
+                return Err(CliError::legacy_operation(
+                    "tool installation directory cannot be synchronized; installation was rolled back",
+                ));
+            }
             created_destination = true;
         }
     }
@@ -5719,6 +5733,19 @@ fn tool_install_with_progress(
             let _ = unlinkat(&parent.file, &destination_name, AtFlags::empty());
         }
         return Err(error);
+    }
+    if let Some(contract) = &adapter_contract
+        && let Err(error) = tool_materialization::inspect_entrypoint(
+            &parent.path,
+            Path::new(&destination_name),
+            &contract.launcher.symlink,
+            Some(&digest),
+        )
+    {
+        if created_destination {
+            let _ = unlinkat(&parent.file, &destination_name, AtFlags::empty());
+        }
+        return Err(materialization_operation(error));
     }
     let receipt_path = root.join(format!(".asb/tools/{id}/receipt.json"));
     let previous_receipt = fs::read(&receipt_path).ok();
