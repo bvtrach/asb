@@ -231,6 +231,7 @@ fn pr214_development_bundle_is_consumed_as_an_exact_manifest_contract() {
         scratch.command_with_args(&["--json", "tui", "install", "--dry-run"], Some(&bundle));
     assert_eq!(rotated.status.code(), Some(0), "{rotated:?}");
     assert_eq!(response(&rotated)["code"], "development_bundle_verified");
+    assert_eq!(response(&rotated)["verified"], true);
 
     let status = scratch.command("status");
     assert_eq!(status.status.code(), Some(0), "{status:?}");
@@ -252,6 +253,7 @@ fn pr214_development_bundle_is_consumed_as_an_exact_manifest_contract() {
         scratch.command_with_args(&["--json", "tui", "install", "--dry-run"], Some(&bundle));
     assert_eq!(warned.status.code(), Some(0));
     assert_eq!(response(&warned)["code"], "development_bundle_verified");
+    assert_eq!(response(&warned)["verified"], false);
     assert!(
         response(&warned)["warnings"]
             .as_array()
@@ -309,6 +311,7 @@ fn pr214_development_bundle_is_consumed_as_an_exact_manifest_contract() {
         if matches!(field, "source_repository" | "source_ref") {
             assert_eq!(rejected.status.code(), Some(0));
             assert_eq!(response(&rejected)["code"], "development_bundle_verified");
+            assert_eq!(response(&rejected)["verified"], false);
         } else {
             assert_eq!(rejected.status.code(), Some(3));
             assert_eq!(response(&rejected)["code"], "development_bundle_invalid");
@@ -343,6 +346,7 @@ fn pr214_development_bundle_is_consumed_as_an_exact_manifest_contract() {
                 "field={field}: {rejected:?}"
             );
             assert_eq!(response(&rejected)["code"], "development_bundle_verified");
+            assert_eq!(response(&rejected)["verified"], false);
         } else {
             assert_eq!(
                 rejected.status.code(),
@@ -364,6 +368,7 @@ fn pr214_development_bundle_is_consumed_as_an_exact_manifest_contract() {
         scratch.command_with_args(&["--json", "tui", "install", "--dry-run"], Some(&bundle));
     assert_eq!(rejected.status.code(), Some(0));
     assert_eq!(response(&rejected)["code"], "development_bundle_verified");
+    assert_eq!(response(&rejected)["verified"], false);
 
     fs::remove_file(bundle.join("asb-tui")).unwrap();
     std::os::unix::fs::symlink("/bin/sh", bundle.join("asb-tui")).unwrap();

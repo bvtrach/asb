@@ -188,6 +188,7 @@ struct DevelopmentCargo {
 struct DevelopmentTool {
     path: PathBuf,
     bound_file: Option<File>,
+    trust_findings: bool,
 }
 
 #[derive(Debug)]
@@ -1311,7 +1312,7 @@ fn preflight_development() -> Result<RouterResponse, RouterError> {
     )?;
     let rustup_home = resolve_development_rustup_home()?;
     let cargo = resolve_development_cargo_with_rustup(rustup_home.as_deref())?;
-    let _ = resolve_development_rustc_bound(
+    let rustc = resolve_development_rustc_bound(
         &cargo,
         rustup_home.as_deref(),
         std::env::var_os(DEV_CARGO_OVERRIDE).is_some(),
@@ -1328,7 +1329,7 @@ fn preflight_development() -> Result<RouterResponse, RouterError> {
         .any(|path| development_tool_has_trust_findings(path));
     response.warnings = Some(development_warnings_with_trust(
         cargo.group_writable_rustup_paths,
-        trusted_tool_findings,
+        trusted_tool_findings || rustc.as_ref().is_some_and(|tool| tool.trust_findings),
     ));
     Ok(response)
 }
@@ -1543,7 +1544,8 @@ fn materialize_development(
     ));
     prepare_private_directory(&root)?;
     let result = (|| {
-        let mut trust_findings = trusted_tool_findings;
+        let mut trust_findings =
+            trusted_tool_findings || rustc.as_ref().is_some_and(|tool| tool.trust_findings);
         prepare_private_directory(&target)?;
         let current_asb_head = resolve_development_main_head(
             Path::new(&git),
@@ -1872,6 +1874,7 @@ fn consume_development_bundle(
             false,
             digest_mismatch || identity_mismatch,
         ));
+        response.verified = Some(!(digest_mismatch || identity_mismatch));
         return Ok(response);
     }
     publish_development_version(&paths.install_root, &executable_sha256, &bytes, &metadata)?;
@@ -1894,6 +1897,7 @@ fn consume_development_bundle(
         false,
         digest_mismatch || identity_mismatch,
     ));
+    response.verified = Some(!(digest_mismatch || identity_mismatch));
     if options.launch {
         let launched = execute_development_existing(Operation::Launch, paths)?;
         if !launched.ok {
@@ -4766,10 +4770,11 @@ fn resolve_development_rustc_bound(
             .parent()
             .ok_or_else(|| RouterError::policy("trusted_tool_invalid"))?
             .join("rustc");
-        let file = open_validated_development_rustup_tool_at(bin, "rustc")?;
+        let (file, trust_findings) = open_validated_development_rustup_tool_at(bin, "rustc")?;
         return Ok(Some(DevelopmentTool {
             path,
             bound_file: Some(file),
+            trust_findings,
         }));
     }
     let resolved = fs::canonicalize(&cargo.path)
@@ -4790,21 +4795,27 @@ fn resolve_development_rustc_bound(
         .ok_or_else(|| RouterError::policy("trusted_tool_invalid"))?;
     let rustc = bin.join("rustc");
     if let Some(rustup_home) = rustup_home {
-        let (path, file, _, _) = validate_development_rustup_tool(&rustc, rustup_home)?;
+        let (path, file, _, trust_findings) =
+            validate_development_rustup_tool(&rustc, rustup_home)?;
         Ok(Some(DevelopmentTool {
             path,
             bound_file: Some(file),
+            trust_findings,
         }))
     } else {
         let path = validate_development_tool(&rustc)?;
         Ok(Some(DevelopmentTool {
             path,
             bound_file: None,
+            trust_findings: false,
         }))
     }
 }
 
-fn open_validated_development_rustup_tool_at(bin: &File, name: &str) -> Result<File, RouterError> {
+fn open_validated_development_rustup_tool_at(
+    bin: &File,
+    name: &str,
+) -> Result<(File, bool), RouterError> {
     let file = openat(
         bin,
         name,
@@ -4824,7 +4835,9 @@ fn open_validated_development_rustup_tool_at(bin: &File, name: &str) -> Result<F
     if !metadata.is_file() {
         return Err(RouterError::policy("trusted_tool_invalid"));
     }
-    Ok(file)
+    let uid = rustix::process::geteuid().as_raw();
+    let trust_findings = metadata.uid() != uid || metadata.mode() & 0o022 != 0;
+    Ok((file, trust_findings))
 }
 
 fn descriptor_path(file: &File) -> PathBuf {
@@ -7007,6 +7020,7 @@ mod tests {
             rustc.path,
             root.join("toolchains/fixture-toolchain/bin/rustc")
         );
+        assert!(rustc.trust_findings);
 
         fs::remove_dir_all(root).unwrap();
     }
