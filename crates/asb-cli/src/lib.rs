@@ -147,7 +147,7 @@ pub fn entry(args: Vec<OsString>) -> ExitCode {
 
 /// Execute one CLI request with injected output streams.
 pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
-    crate::f!(args, stdout, stderr)
+    test_fixture_semaphore::run(args, stdout, stderr)
 }
 #[rustfmt::skip]
 fn run_with_default_mode_and_stdin(
@@ -4358,6 +4358,9 @@ fn workload_output(
 }
 
 fn acquire_verified_workload_archive(source_url: &str) -> Result<Vec<u8>, CliError> {
+    if let Ok(root) = std::env::var("ASB_WORKLOAD_FIXTURE_ROOT") {
+        return acquire_fixture_workload_archive(Path::new(&root), source_url);
+    }
     if matches!(
         std::env::var("ASB_CI_CREDENTIAL_FREE").ok().as_deref(),
         Some("1" | "true" | "yes")
@@ -4398,6 +4401,35 @@ fn acquire_verified_workload_archive(source_url: &str) -> Result<Vec<u8>, CliErr
         ));
     }
     Ok(transfer.stdout)
+}
+
+/// Read a catalog-addressed archive from a caller-provided, credential-free
+/// fixture cache. The URL digest is the cache key so a fixture cannot silently
+/// substitute a different source; normal catalog digest validation remains the
+/// authority after acquisition. Selecting this mode is fail-closed: a missing
+/// fixture never falls back to the network.
+fn acquire_fixture_workload_archive(root: &Path, source_url: &str) -> Result<Vec<u8>, CliError> {
+    if !root.is_absolute() {
+        return Err(CliError::legacy_validation(
+            "workload fixture root must be an absolute path",
+        ));
+    }
+    let key = format!("{:x}.tar.gz", Sha256::digest(source_url.as_bytes()));
+    let path = root.join(key);
+    let metadata = fs::symlink_metadata(&path)
+        .map_err(|_| CliError::legacy_validation("workload fixture archive is unavailable"))?;
+    if !metadata.file_type().is_file() {
+        return Err(CliError::legacy_validation(
+            "workload fixture archive is not a regular file",
+        ));
+    }
+    if metadata.len() > 536_870_912 {
+        return Err(CliError::legacy_validation(
+            "workload fixture archive exceeds the size bound",
+        ));
+    }
+    fs::read(path)
+        .map_err(|_| CliError::legacy_validation("workload fixture archive is unavailable"))
 }
 
 struct WorkloadSourceIdentity {
@@ -18112,6 +18144,33 @@ pub(crate) mod tests {
         assert!(
             super::acquire_verified_workload_archive("http://127.0.0.1:1/unavailable").is_err()
         );
+    }
+
+    #[test]
+    fn fixture_acquisition_is_url_bound_bounded_and_network_free() {
+        let scratch = Scratch::new("workload-fixture-acquisition");
+        let source = "https://github.com/example/workload/archive/abc.tar.gz";
+        let key = format!("{:x}.tar.gz", Sha256::digest(source.as_bytes()));
+        let archive = scratch.0.join(&key);
+        fs::write(&archive, b"fixture archive").unwrap();
+        assert_eq!(
+            super::acquire_fixture_workload_archive(&scratch.0, source).unwrap(),
+            b"fixture archive"
+        );
+        assert!(
+            super::acquire_fixture_workload_archive(
+                &scratch.0,
+                "https://github.com/example/workload/archive/other.tar.gz"
+            )
+            .is_err()
+        );
+        assert!(
+            super::acquire_fixture_workload_archive(Path::new("relative-fixture-root"), source)
+                .is_err()
+        );
+        fs::remove_file(&archive).unwrap();
+        std::os::unix::fs::symlink(scratch.0.join("elsewhere"), &archive).unwrap();
+        assert!(super::acquire_fixture_workload_archive(&scratch.0, source).is_err());
     }
 
     fn verified_workload_fixture_archive(_: &str) -> Result<Vec<u8>, CliError> {
