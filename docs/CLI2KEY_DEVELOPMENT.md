@@ -64,6 +64,13 @@ comparability. That route is prohibited by this contract.
 
 ## Evidence and failures
 
+Installed project roots may publish the bounded, secret-free runtime receipt at
+`.asb/tools/cli2key/runtime-receipt.json`. The runtime validates schema version,
+catalog/source/tree/executable/protocol/credential-reference digests, platform,
+entrypoint, and `verified` status before starting a sidecar. The receipt never
+contains a key, OAuth material, endpoint, prompt, response, or private path;
+ordinary CLI code receives only the opaque runtime-issued attempt factory.
+
 The credential-free fake and opt-in live probe live in
 [`tools/cli2key-spike`](../tools/cli2key-spike/README.md). Both prove bounded model
 discovery and one Responses exchange. The report retains only the immutable bridge
