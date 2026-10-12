@@ -664,6 +664,23 @@ mod tests {
     }
 
     #[test]
+    fn runtime_authority_fails_closed_on_crash_and_malformed_readiness() {
+        for (name, body) in [("crash", "exit 7"), ("malformed", "printf 'READY\\n'")] {
+            let (path, command) = script_command(name, body);
+            let mut receipt = runtime_receipt();
+            receipt.executable_sha256 = command.executable_sha256().to_owned();
+            let factory = LiveProviderAttemptFactory::from_fn(|_, _| {
+                Err(LaunchAuthorityError::InvalidLaunchInput)
+            });
+            assert!(matches!(
+                Cli2KeyRuntimeAuthority::bootstrap(receipt, &command, None, factory),
+                Err(Cli2KeyError::Readiness)
+            ));
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
     fn local_key_absent_malformed_stale_and_valid_are_distinct() {
         let root = std::env::temp_dir().join(format!("asb-cli2key-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
