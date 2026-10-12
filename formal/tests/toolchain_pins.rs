@@ -3,7 +3,9 @@
 //! Exact formal-toolchain and workflow pin consistency.
 
 const PINS: &str = include_str!("../toolchains.toml");
-const WORKFLOW: &str = include_str!("../../.github/workflows/formal.yml");
+const DEVELOPMENT_WORKFLOW: &str = include_str!("../../.github/workflows/formal.yml");
+const FINAL_DELIVERY_WORKFLOW: &str =
+    include_str!("../../.github/workflows/final-delivery-formal.yml");
 const MANIFEST: &str = include_str!("../Cargo.toml");
 const TEMPORAL_RUNNER: &str = include_str!("../run_temporal_models.sh");
 const TLA_SOURCE_BUILD: &str = include_str!("../tla-provenance/source-build.toml");
@@ -50,17 +52,19 @@ fn workflow_and_manifest_use_the_reviewed_exact_pins() {
         assert!(TEMPORAL_RUNNER.contains(shared), "runner lacks {shared}");
     }
     assert!(
-        WORKFLOW
+        DEVELOPMENT_WORKFLOW
             .contains("model-checking/kani-github-action@f838096619a707b0f6b2118cf435eaccfa33e51f")
     );
-    assert!(WORKFLOW.contains("kani-version: \"0.67.0\""));
-    assert!(WORKFLOW.contains(
+    assert!(DEVELOPMENT_WORKFLOW.contains("kani-version: \"0.67.0\""));
+    assert!(DEVELOPMENT_WORKFLOW.contains(
         "cargo metadata --locked --format-version 1 --manifest-path formal/Cargo.toml --no-deps >/dev/null"
     ));
-    assert!(WORKFLOW.contains("toolchain install 1.93.0"));
-    assert!(WORKFLOW.contains("runner: [ubuntu-24.04]"));
-    assert!(!WORKFLOW.contains("ubuntu-24.04-arm"));
-    assert!(WORKFLOW.contains("actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6"));
-    assert!(WORKFLOW.contains("java-version: \"17.0.20+8\""));
-    assert!(WORKFLOW.contains("formal/run_temporal_models.sh"));
+    assert!(DEVELOPMENT_WORKFLOW.contains("toolchain install 1.93.0"));
+    assert!(DEVELOPMENT_WORKFLOW.contains("runner: [ubuntu-24.04]"));
+    assert!(!DEVELOPMENT_WORKFLOW.contains("ubuntu-24.04-arm"));
+    assert!(!DEVELOPMENT_WORKFLOW.contains("formal/run_temporal_models.sh"));
+    assert!(FINAL_DELIVERY_WORKFLOW
+        .contains("actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6"));
+    assert!(FINAL_DELIVERY_WORKFLOW.contains("java-version: \"17.0.20+8\""));
+    assert!(FINAL_DELIVERY_WORKFLOW.contains("formal/run_temporal_models.sh"));
 }
