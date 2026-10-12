@@ -15,6 +15,11 @@ const AR1793_LEGACY_CLI_CATALOG: &[(&str, u32, &str, Cause)] = &[];
 // Reviewed identities for the AR-1800 credential-free workload fixture cache.
 #[rustfmt::skip]
 const AR1800_REVIEWED_LEGACY_CLI_CATALOG: &[(&str, u32, &str, Cause)] = &[
+    ("crates/asb-cli/src/tui.rs", 839, "legacy_cli_ar1800_dev_warning_0001", Cause::MalformedInput),
+    ("crates/asb-cli/src/tui.rs", 848, "legacy_cli_ar1800_dev_warning_0002", Cause::MissingInput),
+    ("crates/asb-cli/src/tui.rs", 855, "legacy_cli_ar1800_dev_warning_0003", Cause::MissingInput),
+    ("crates/asb-cli/src/tui.rs", 873, "legacy_cli_ar1800_dev_warning_0004", Cause::InvalidPath),
+    ("crates/asb-cli/src/tui.rs", 879, "legacy_cli_ar1800_dev_warning_0005", Cause::InvalidPath),
     ("crates/asb-cli/src/lib.rs", 337, "legacy_cli_ar1800_generated_336", Cause::MissingInput),
     ("crates/asb-cli/src/lib.rs", 342, "legacy_cli_ar1800_generated_341", Cause::MissingInput),
     ("crates/asb-cli/src/lib.rs", 349, "legacy_cli_ar1800_generated_348", Cause::MissingInput),
