@@ -97,47 +97,6 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use url::Url;
 
-#[cfg(test)]
-mod test_fixture_semaphore {
-    use std::cell::Cell;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
-
-    thread_local! {
-        static DEPTH: Cell<u8> = const { Cell::new(0) };
-    }
-
-    static GATE: OnceLock<Mutex<()>> = OnceLock::new();
-
-    pub struct Guard {
-        _lock: Option<MutexGuard<'static, ()>>,
-    }
-
-    pub fn acquire() -> Guard {
-        let nested = DEPTH.with(|depth| {
-            let current = depth.get();
-            depth.set(current.saturating_add(1));
-            current > 0
-        });
-        if nested {
-            Guard { _lock: None }
-        } else {
-            Guard {
-                _lock: Some(
-                    GATE.get_or_init(|| Mutex::new(()))
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
-                ),
-            }
-        }
-    }
-
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
-        }
-    }
-}
-
 const OUTPUT_SCHEMA_VERSION: u16 = 1;
 const SETUP_OUTPUT_SCHEMA_VERSION: u16 = 2;
 const LEGACY_PLAN_SCHEMA_VERSION: u16 = 1;
@@ -188,9 +147,7 @@ pub fn entry(args: Vec<OsString>) -> ExitCode {
 
 /// Execute one CLI request with injected output streams.
 pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
-    #[cfg(test)]
-    let _fixture_guard = test_fixture_semaphore::acquire();
-    run_with_default_mode_and_stdin(args, stdout, stderr, false, None)
+    crate::f!(args, stdout, stderr)
 }
 #[rustfmt::skip]
 fn run_with_default_mode_and_stdin(
@@ -19799,3 +19756,5 @@ mod output_router_tests {
         assert_eq!(normal_err, debug_err);
     }
 }
+
+mod test_fixture_semaphore;
