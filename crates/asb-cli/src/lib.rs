@@ -5682,6 +5682,37 @@ fn tool_install_with_progress(
                 )
                 .map_err(materialization_operation)?;
             }
+            if catalog_entry.is_some() {
+                let temporary = OsString::from(format!(".tool-smoke-{}", std::process::id()));
+                stage_output_at(&parent.file, &temporary, &bytes, 0o700).map_err(|_| {
+                    CliError::legacy_operation("tool smoke fixture cannot be staged")
+                })?;
+                let staged_path = parent.path.join(&temporary);
+                let result = (|| {
+                    if let Some(contract) = &adapter_contract {
+                        tool_materialization::inspect_entrypoint(
+                            &parent.path,
+                            Path::new(&temporary),
+                            &contract.launcher.symlink,
+                            Some(&digest),
+                        )
+                        .map_err(materialization_operation)?;
+                    }
+                    smoke_check_catalog_entrypoint(&staged_path)?;
+                    if let Some(contract) = &adapter_contract {
+                        tool_materialization::inspect_entrypoint(
+                            &parent.path,
+                            Path::new(&temporary),
+                            &contract.launcher.symlink,
+                            Some(&digest),
+                        )
+                        .map_err(materialization_operation)?;
+                    }
+                    Ok::<(), CliError>(())
+                })();
+                let _ = unlinkat(&parent.file, &temporary, AtFlags::empty());
+                result?;
+            }
         }
         None => {
             let temporary = OsString::from(format!(".tool-{}.tmp", std::process::id()));
@@ -5697,6 +5728,24 @@ fn tool_install_with_progress(
             {
                 let _ = unlinkat(&parent.file, &temporary, AtFlags::empty());
                 return Err(materialization_operation(error));
+            }
+            if catalog_entry.is_some() {
+                let staged_path = parent.path.join(&temporary);
+                if let Err(error) = smoke_check_catalog_entrypoint(&staged_path) {
+                    let _ = unlinkat(&parent.file, &temporary, AtFlags::empty());
+                    return Err(error);
+                }
+                if let Some(contract) = &adapter_contract
+                    && let Err(error) = tool_materialization::inspect_entrypoint(
+                        &parent.path,
+                        Path::new(&temporary),
+                        &contract.launcher.symlink,
+                        Some(&digest),
+                    )
+                {
+                    let _ = unlinkat(&parent.file, &temporary, AtFlags::empty());
+                    return Err(materialization_operation(error));
+                }
             }
             if renameat_with(
                 &parent.file,
@@ -5726,27 +5775,6 @@ fn tool_install_with_progress(
     // their existing offline contract.  A supported catalog install is not
     // usable merely because bytes were copied: prove the staged entrypoint
     // can start before recording it as active.
-    if catalog_entry.is_some()
-        && let Err(error) = smoke_check_catalog_entrypoint(&destination)
-    {
-        if created_destination {
-            let _ = unlinkat(&parent.file, &destination_name, AtFlags::empty());
-        }
-        return Err(error);
-    }
-    if let Some(contract) = &adapter_contract
-        && let Err(error) = tool_materialization::inspect_entrypoint(
-            &parent.path,
-            Path::new(&destination_name),
-            &contract.launcher.symlink,
-            Some(&digest),
-        )
-    {
-        if created_destination {
-            let _ = unlinkat(&parent.file, &destination_name, AtFlags::empty());
-        }
-        return Err(materialization_operation(error));
-    }
     let receipt_path = root.join(format!(".asb/tools/{id}/receipt.json"));
     let previous_receipt = fs::read(&receipt_path).ok();
     let receipt = json!({

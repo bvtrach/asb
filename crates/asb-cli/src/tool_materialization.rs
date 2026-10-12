@@ -9,11 +9,15 @@
 //! become a generic source build.
 #![allow(missing_docs)]
 
+#[cfg(unix)]
+use rustix::process::{Pid, Signal, kill_process_group};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Component, Path};
 use std::process::{Command, Stdio};
 use std::thread::{self, JoinHandle};
@@ -344,7 +348,8 @@ pub fn smoke_entrypoint(
     path: &Path,
     max_output_bytes: u64,
 ) -> Result<SmokeResult, MaterializationError> {
-    let mut child = Command::new(path)
+    let mut command = Command::new(path);
+    command
         .arg("--version")
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
@@ -352,7 +357,10 @@ pub fn smoke_entrypoint(
         .env("LANG", "C")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command
         .spawn()
         .map_err(|_| MaterializationError::SmokeFailed)?;
     let stdout = bounded_reader(
@@ -372,6 +380,10 @@ pub fn smoke_entrypoint(
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         if Instant::now() >= deadline {
+            #[cfg(unix)]
+            if let Some(pid) = Pid::from_raw(child.id() as i32) {
+                let _ = kill_process_group(pid, Signal::KILL);
+            }
             let _ = child.kill();
             let _ = child.wait();
             let _ = stdout.join();
@@ -381,6 +393,10 @@ pub fn smoke_entrypoint(
         let observed = match child.try_wait() {
             Ok(status) => status,
             Err(_) => {
+                #[cfg(unix)]
+                if let Some(pid) = Pid::from_raw(child.id() as i32) {
+                    let _ = kill_process_group(pid, Signal::KILL);
+                }
                 let _ = child.kill();
                 let _ = child.wait();
                 let _ = stdout.join();
