@@ -9054,7 +9054,7 @@ fn execute_inner_from_source_with_owner_project(
         }
     };
     let plan = if let Some(project) = project {
-        project.bind_plan(plan)
+        project.bind_plan(plan)?
     } else {
         plan
     };
