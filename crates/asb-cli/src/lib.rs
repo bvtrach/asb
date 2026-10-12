@@ -5109,15 +5109,27 @@ fn source_build_artifact(
     entry: &tool_catalog::ToolEntry,
     root: &Path,
 ) -> Result<tool_acquisition::VerifiedArtifact, CliError> {
-    let recipe = entry
-        .build_recipes
-        .first()
-        .ok_or_else(|| CliError::legacy_validation("catalog source recipe missing"))?;
+    let recipe = entry.build_recipes.first().ok_or_else(|| {
+        CliError::validation_code(
+            "catalog_source_recipe_missing",
+            "catalog source recipe missing",
+        )
+    })?;
     let checkout = source_checkout::acquire(
         &source_checkout::CheckoutRequest::for_tool(entry, root.join(".asb/source-checkouts"))
-            .map_err(|error| CliError::legacy_validation(error.code()))?,
+            .map_err(|_| {
+                CliError::validation_code(
+                    "catalog_source_checkout_invalid",
+                    "catalog source checkout is invalid",
+                )
+            })?,
     )
-    .map_err(|error| CliError::legacy_operation(error.code()))?;
+    .map_err(|_| {
+        CliError::operation_code(
+            "catalog_source_checkout_failed",
+            "catalog source checkout failed",
+        )
+    })?;
     let build_prefix = root.join(".asb/source-build");
     let request = source_builder::BuildRequest {
         source: PathBuf::new(),
@@ -5126,19 +5138,33 @@ fn source_build_artifact(
         recipe: recipe.clone(),
         limits: source_builder::BuildLimits::default(),
     };
-    source_builder::build_from_checkout(checkout, request)
-        .map_err(|error| CliError::legacy_operation(error.code()))?;
+    source_builder::build_from_checkout(checkout, request).map_err(|_| {
+        CliError::operation_code("catalog_source_build_failed", "catalog source build failed")
+    })?;
     let produced = build_prefix.join(id).join(&entry.entrypoint);
-    let bytes = fs::read(&produced)
-        .map_err(|_| CliError::legacy_operation("source build output cannot be read"))?;
-    fs::remove_dir_all(&build_prefix)
-        .map_err(|_| CliError::legacy_operation("source build staging cleanup failed"))?;
+    let bytes = fs::read(&produced).map_err(|_| {
+        CliError::operation_code(
+            "catalog_source_output_unreadable",
+            "source build output cannot be read",
+        )
+    })?;
+    fs::remove_dir_all(&build_prefix).map_err(|_| {
+        CliError::operation_code(
+            "catalog_source_cleanup_failed",
+            "source build staging cleanup failed",
+        )
+    })?;
     let alternative = entry
         .alternatives
         .iter()
         .find(|alternative| alternative.kind == "source")
         .cloned()
-        .ok_or_else(|| CliError::legacy_validation("catalog source alternative missing"))?;
+        .ok_or_else(|| {
+            CliError::validation_code(
+                "catalog_source_alternative_missing",
+                "catalog source alternative missing",
+            )
+        })?;
     Ok(tool_acquisition::VerifiedArtifact {
         bytes,
         entry: entry.clone(),
@@ -5158,6 +5184,7 @@ struct CatalogToolReceiptV1 {
     catalog_revision: String,
     source: String,
     artifact_digest_sha256: String,
+    verifier: String,
     platform: String,
     entrypoint: String,
     license: String,
@@ -5231,6 +5258,7 @@ fn reusable_catalog_artifact(
         || receipt.catalog_revision != expected_revision
         || receipt.source != expected_source
         || receipt.artifact_digest_sha256 != digest
+        || receipt.verifier != alternative.verifier
         || receipt.platform != platform_label()
         || receipt.entrypoint != entry.entrypoint
         || receipt.license != entry.license
@@ -5251,16 +5279,21 @@ fn reusable_catalog_artifact(
 /// environment or retain tool output.
 fn smoke_check_catalog_entrypoint(path: &Path) -> Result<(), CliError> {
     let metadata = fs::symlink_metadata(path).map_err(|_| {
-        CliError::legacy_operation("catalog tool entrypoint cannot be inspected after staging")
+        CliError::operation_code(
+            "catalog_tool_entrypoint_inspection_failed",
+            "catalog tool entrypoint cannot be inspected after staging",
+        )
     })?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err(CliError::legacy_validation(
+        return Err(CliError::validation_code(
+            "catalog_tool_entrypoint_not_executable",
             "catalog tool entrypoint is not a regular executable",
         ));
     }
     #[cfg(unix)]
     if metadata.permissions().mode() & 0o111 == 0 {
-        return Err(CliError::legacy_validation(
+        return Err(CliError::validation_code(
+            "catalog_tool_entrypoint_not_executable",
             "catalog tool entrypoint is not executable",
         ));
     }
@@ -5273,7 +5306,8 @@ fn smoke_check_catalog_entrypoint(path: &Path) -> Result<(), CliError> {
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| {
-            CliError::legacy_operation(
+            CliError::operation_code(
+                "catalog_tool_entrypoint_start_failed",
                 "catalog tool entrypoint smoke check could not start; verify the selected tool supports --version",
             )
         })?;
@@ -5282,7 +5316,8 @@ fn smoke_check_catalog_entrypoint(path: &Path) -> Result<(), CliError> {
         match child.try_wait() {
             Ok(Some(status)) if status.success() => return Ok(()),
             Ok(Some(_)) => {
-                return Err(CliError::legacy_operation(
+                return Err(CliError::operation_code(
+                    "catalog_tool_entrypoint_failed",
                     "catalog tool entrypoint smoke check failed; verify the selected tool supports --version",
                 ));
             }
@@ -5290,14 +5325,16 @@ fn smoke_check_catalog_entrypoint(path: &Path) -> Result<(), CliError> {
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(CliError::legacy_operation(
+                return Err(CliError::operation_code(
+                    "catalog_tool_entrypoint_timeout",
                     "catalog tool entrypoint smoke check timed out after 5 seconds",
                 ));
             }
             Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(CliError::legacy_operation(
+                return Err(CliError::operation_code(
+                    "catalog_tool_entrypoint_observation_failed",
                     "catalog tool entrypoint smoke check could not observe the process",
                 ));
             }
@@ -12556,6 +12593,82 @@ pub(crate) mod tests {
         fs::write(&non_executable, b"#!/bin/sh\nexit 0\n").unwrap();
         fs::set_permissions(&non_executable, fs::Permissions::from_mode(0o600)).unwrap();
         assert!(smoke_check_catalog_entrypoint(&non_executable).is_err());
+    }
+
+    #[test]
+    fn catalog_reuse_requires_receipt_verifier_and_exact_identity() {
+        let scratch = Scratch::new("catalog-reuse-receipt");
+        let root = scratch.0.clone();
+        let entry = tool_catalog::catalog()
+            .entries
+            .into_iter()
+            .find(|entry| entry.id == "codex")
+            .expect("codex catalog fixture");
+        let alternative = entry
+            .alternatives
+            .iter()
+            .find(|alternative| alternative.kind == "prebuilt")
+            .expect("codex prebuilt fixture")
+            .clone();
+        let bytes = b"verified-catalog-tool";
+        let tool_path = root.join(".asb/tools/codex/tool");
+        fs::create_dir_all(tool_path.parent().unwrap()).unwrap();
+        fs::write(&tool_path, bytes).unwrap();
+        let digest = format!("{:x}", Sha256::digest(bytes));
+        let receipt_path = root.join(".asb/tools/codex/receipt.json");
+        let receipt = json!({
+            "schema_version": 1,
+            "catalog_id": tool_catalog::CATALOG_ID,
+            "catalog_revision": entry.official_source.revision,
+            "source": alternative.url,
+            "artifact_digest_sha256": digest,
+            "verifier": alternative.verifier,
+            "platform": platform_label(),
+            "entrypoint": entry.entrypoint,
+            "license": entry.license,
+        });
+        fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        let mut config = ProjectConfigV1::empty();
+        config.agents.insert(
+            "codex".into(),
+            ProjectToolRecordV1 {
+                kind: ProjectToolKind::Agent,
+                source_ref: alternative.url.clone(),
+                version: entry.official_source.version.clone(),
+                platform: platform_label(),
+                path: Some(".asb/tools/codex/tool".into()),
+                digest_sha256: Some(digest),
+                capabilities: vec!["execute".into()],
+                status: ProjectToolStatus::Available,
+            },
+        );
+        assert!(
+            reusable_catalog_artifact(
+                "codex",
+                ProjectToolKind::Agent,
+                &entry,
+                &alternative,
+                &root,
+                &config,
+            )
+            .unwrap()
+            .is_some()
+        );
+        let mut malformed = receipt;
+        malformed["verifier"] = json!("wrong");
+        fs::write(&receipt_path, serde_json::to_vec(&malformed).unwrap()).unwrap();
+        assert!(
+            reusable_catalog_artifact(
+                "codex",
+                ProjectToolKind::Agent,
+                &entry,
+                &alternative,
+                &root,
+                &config,
+            )
+            .unwrap()
+            .is_none()
+        );
     }
 
     #[test]

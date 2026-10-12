@@ -15,6 +15,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -286,8 +288,18 @@ fn build_inner(request: &BuildRequest, staging: &Path) -> Result<BuildReceipt, B
         return Err(BuildFailure::PolicyRejected);
     }
     let produced = resolve_output(&request.source, relative)?;
-    let metadata = fs::metadata(&produced).map_err(|_| BuildFailure::OutputMismatch)?;
-    if !metadata.is_file() || metadata.len() > request.limits.max_artifact_bytes {
+    let metadata = fs::symlink_metadata(&produced).map_err(|_| BuildFailure::OutputMismatch)?;
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > request.limits.max_artifact_bytes
+    {
+        return Err(BuildFailure::OutputMismatch);
+    }
+    #[cfg(unix)]
+    if metadata.permissions().mode() & 0o111 == 0 {
+        // Package archives are not adapter entrypoints.  A source recipe must
+        // publish the executable produced by its pinned build, never the
+        // wheel/tarball used to produce it.
         return Err(BuildFailure::OutputMismatch);
     }
     let mut file = fs::File::open(&produced).map_err(|_| BuildFailure::OutputMismatch)?;
@@ -308,6 +320,9 @@ fn build_inner(request: &BuildRequest, staging: &Path) -> Result<BuildReceipt, B
     fs::create_dir_all(&destination).map_err(|_| BuildFailure::CleanupFailed)?;
     let staged_output = staging.join(&request.tool.entrypoint);
     fs::copy(&produced, &staged_output).map_err(|_| BuildFailure::OutputMismatch)?;
+    #[cfg(unix)]
+    fs::set_permissions(&staged_output, fs::Permissions::from_mode(0o700))
+        .map_err(|_| BuildFailure::OutputMismatch)?;
     let final_output = destination.join(&request.tool.entrypoint);
     if final_output.exists() {
         return Err(BuildFailure::OutputMismatch);
