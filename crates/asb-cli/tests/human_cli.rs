@@ -732,7 +732,7 @@ fn executable_public_family_golden_is_inventory_complete_and_privacy_safe() {
     }
     observed.sort_unstable();
     observed.dedup();
-    assert_eq!(observed.len(), 28);
+    assert_eq!(observed.len(), 29);
 }
 
 #[test]
