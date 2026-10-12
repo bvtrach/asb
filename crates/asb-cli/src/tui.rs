@@ -4019,16 +4019,14 @@ fn prepare_private_directory_with_notice(
         Err(_) => false,
     };
     if human && missing {
-        writeln!(
+        crate::human::step_progress::terminal(
             progress,
-            "[WAIT] ASB will create directory {} for {}.",
-            path.display(),
-            purpose
+            "tui.prepare-directory",
+            purpose,
+            crate::human::step_progress::StepStatus::Success,
+            Some(&format!("creating {}", path.display())),
         )
         .map_err(|_| RouterError::operation("output_unavailable"))?;
-        progress
-            .flush()
-            .map_err(|_| RouterError::operation("output_unavailable"))?;
     }
     prepare_private_directory(path)
 }
@@ -5106,13 +5104,11 @@ mod tests {
             true,
         )
         .expect("TUI state directory");
-        assert_eq!(
-            String::from_utf8(progress).unwrap(),
-            format!(
-                "[WAIT] ASB will create directory {} for ASB TUI lifecycle state.\n",
-                destination.display()
-            )
-        );
+        let notice = String::from_utf8(progress).unwrap();
+        assert!(notice.starts_with(
+            "[DONE] ASB TUI lifecycle state (tui.prepare-directory, 0s) creating /tmp/as"
+        ));
+        assert!(notice.ends_with('\n'));
         let mut reused_progress = Vec::new();
         prepare_private_directory_with_notice(
             &destination,

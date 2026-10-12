@@ -1596,11 +1596,13 @@ pub(super) fn render_start(args: &[OsString], output: &mut dyn Write) -> io::Res
     if !valid_shape {
         return Ok(());
     }
-    writeln!(
+    step_progress::terminal(
         output,
-        "[WAIT] ASB is attempting to start the control service from the supplied configuration."
-    )?;
-    output.flush()
+        "serve.start-control-service",
+        "control service",
+        step_progress::StepStatus::Waiting,
+        Some("starting from supplied configuration"),
+    )
 }
 
 fn present(
@@ -3448,7 +3450,7 @@ mod tests {
             if *command == "serve" {
                 assert!(
                     String::from_utf8_lossy(&diagnostic).starts_with(
-                        "[WAIT] ASB is attempting to start the control service from the supplied configuration.\n"
+                        "[WAIT] control service (serve.start-control-service, 0s) starting from supplied "
                     ),
                 );
             } else {

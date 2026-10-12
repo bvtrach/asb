@@ -43,12 +43,44 @@ impl MonotonicClock for InstantClock {
 /// Terminal outcome for a step.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StepStatus {
+    /// Work has started but has not reached a terminal outcome.
+    Waiting,
     /// Work completed successfully.
     Success,
     /// Work failed.
     Failure,
     /// Work was cancelled or interrupted.
     Cancelled,
+}
+
+/// Emit one bounded terminal status through the shared reporter.
+///
+/// This adapter is for command-owned operations that have no long-lived
+/// progress loop (for example, creating one private directory). Keeping the
+/// terminal line here prevents call sites from inventing their own protocol;
+/// callers invoke it only when human progress is enabled.
+pub fn terminal(
+    writer: &mut dyn Write,
+    id: &str,
+    label: &str,
+    status: StepStatus,
+    message: Option<&str>,
+) -> io::Result<()> {
+    let mut reporter = StepReporter::new(writer, false, 80);
+    let mut step = reporter.begin(id, label, None);
+    if let Some(message) = message {
+        step.detail(0, None, message);
+    }
+    match status {
+        StepStatus::Waiting => step.waiting(),
+        StepStatus::Success => step.success(),
+        StepStatus::Failure => step.failure(message.unwrap_or("operation failed")),
+        StepStatus::Cancelled => step.cancel(),
+    }
+    if let Some(error) = reporter.error() {
+        return Err(io::Error::new(error.kind(), error.to_string()));
+    }
+    Ok(())
 }
 
 /// A bounded human status/progress reporter.
@@ -80,6 +112,7 @@ struct ActiveStep {
     started: Duration,
     rendered: bool,
     last_refresh: Duration,
+    last_message: Option<String>,
 }
 
 /// A live step owned by a reporter.  Dropping an unfinished step finalizes it
@@ -134,6 +167,7 @@ where
             started: self.clock.now(),
             rendered: false,
             last_refresh: self.clock.now(),
+            last_message: None,
         });
         Step {
             reporter: self,
@@ -160,6 +194,9 @@ where
         if total.is_some() {
             step.total = total;
         }
+        if let Some(message) = message {
+            step.last_message = Some(message.to_owned());
+        }
         if now.saturating_sub(step.started) >= DELAY
             && now.saturating_sub(step.last_refresh) >= REFRESH
         {
@@ -175,7 +212,13 @@ where
             return;
         };
         let elapsed = self.clock.now().saturating_sub(step.started);
-        let line = render_terminal(&step, status, elapsed, self.width, message);
+        let line = render_terminal(
+            &step,
+            status,
+            elapsed,
+            self.width,
+            message.or(step.last_message.as_deref()),
+        );
         self.write_line(&line, false);
     }
 
@@ -211,6 +254,12 @@ where
     /// Complete successfully.
     pub fn success(mut self) {
         self.reporter.finish(StepStatus::Success, None);
+        self.finished = true;
+    }
+
+    /// Emit a waiting line while the owning command continues its operation.
+    pub fn waiting(mut self) {
+        self.reporter.finish(StepStatus::Waiting, None);
         self.finished = true;
     }
 
@@ -277,6 +326,7 @@ fn render_terminal(
     message: Option<&str>,
 ) -> String {
     let tag = match status {
+        StepStatus::Waiting => "WAIT",
         StepStatus::Success => "DONE",
         StepStatus::Failure => "FAIL",
         StepStatus::Cancelled => "CANCEL",
@@ -322,6 +372,23 @@ mod tests {
         let text = String::from_utf8(out).unwrap();
         assert_eq!(text.lines().count(), 1);
         assert!(text.starts_with("[DONE] quick"));
+    }
+
+    #[test]
+    fn terminal_adapter_preserves_operation_message_and_status() {
+        let mut out = Vec::new();
+        terminal(
+            &mut out,
+            "catalog.refresh",
+            "catalog",
+            StepStatus::Failure,
+            Some("catalog unavailable"),
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "[FAIL] catalog (catalog.refresh, 0s) catalog unavailable\n"
+        );
     }
 
     #[test]

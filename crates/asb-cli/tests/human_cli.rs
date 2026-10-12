@@ -215,7 +215,7 @@ fn serve_progress_is_neutral_and_does_not_leak_or_inject_the_path() {
     assert_eq!(output.status.code(), Some(3));
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(stderr.starts_with(
-        "[WAIT] ASB is attempting to start the control service from the supplied configuration.\n"
+        "[WAIT] control service (serve.start-control-service, 0s) starting from supplied "
     ));
     assert!(stderr.contains("[ERR ] ASB could not complete the control service:"));
     assert!(!stderr.contains("private"));
@@ -337,7 +337,10 @@ fn ar1769_executable_diagnostic_matrix_covers_public_failure_boundaries() {
         .output()
         .unwrap();
     assert!(directory.status.success());
-    assert!(String::from_utf8_lossy(&directory.stderr).contains("will create directory"));
+    assert!(
+        String::from_utf8_lossy(&directory.stderr)
+            .contains("[DONE] the ASB project workspace (filesystem.prepare-directory")
+    );
 
     let slow = scratch.0.join("slow-agent");
     fs::write(&slow, "#!/bin/sh\nsleep 1\n").unwrap();
@@ -538,8 +541,10 @@ fn project_init_human_output_distinguishes_initialization_from_recovery() {
         assert!(output.status.success());
         if expected_outcome.starts_with("ASB initialized") {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(stderr.contains("ASB will create directory"));
-            assert!(stderr.contains("for the ASB project workspace."));
+            assert!(
+                stderr.contains("[DONE] the ASB project workspace (filesystem.prepare-directory")
+            );
+            assert!(stderr.contains("creating "));
         } else {
             assert!(output.stderr.is_empty());
         }
@@ -767,7 +772,7 @@ fn serve_streams_startup_before_blocking_and_remains_a_raw_long_running_command(
     stderr.read_line(&mut startup).unwrap();
     assert_eq!(
         startup,
-        "[WAIT] ASB is attempting to start the control service from the supplied configuration.\n"
+        "[WAIT] control service (serve.start-control-service, 0s) starting from supplied \n"
     );
     let deadline = Instant::now() + Duration::from_secs(5);
     while !socket.exists() {
