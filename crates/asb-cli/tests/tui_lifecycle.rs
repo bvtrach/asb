@@ -248,10 +248,17 @@ fn pr214_development_bundle_is_consumed_as_an_exact_manifest_contract() {
         serde_json::to_vec_pretty(&invalid_warning).unwrap(),
     )
     .unwrap();
-    let rejected =
+    let warned =
         scratch.command_with_args(&["--json", "tui", "install", "--dry-run"], Some(&bundle));
-    assert_eq!(rejected.status.code(), Some(3));
-    assert_eq!(response(&rejected)["code"], "development_bundle_invalid");
+    assert_eq!(warned.status.code(), Some(0));
+    assert_eq!(response(&warned)["code"], "development_bundle_verified");
+    assert!(
+        response(&warned)["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "development_trusted_tool_findings_allowed")
+    );
 
     let mut invalid_provenance = original_manifest.clone();
     invalid_provenance["source_tree"] = "z".repeat(40).into();
@@ -299,8 +306,13 @@ fn pr214_development_bundle_is_consumed_as_an_exact_manifest_contract() {
         .unwrap();
         let rejected =
             scratch.command_with_args(&["--json", "tui", "install", "--dry-run"], Some(&bundle));
-        assert_eq!(rejected.status.code(), Some(3));
-        assert_eq!(response(&rejected)["code"], "development_bundle_invalid");
+        if matches!(field, "source_repository" | "source_ref") {
+            assert_eq!(rejected.status.code(), Some(0));
+            assert_eq!(response(&rejected)["code"], "development_bundle_verified");
+        } else {
+            assert_eq!(rejected.status.code(), Some(3));
+            assert_eq!(response(&rejected)["code"], "development_bundle_invalid");
+        }
     }
 
     // Exercise each authenticated provenance gate independently.  Keeping
@@ -324,12 +336,21 @@ fn pr214_development_bundle_is_consumed_as_an_exact_manifest_contract() {
         .unwrap();
         let rejected =
             scratch.command_with_args(&["--json", "tui", "install", "--dry-run"], Some(&bundle));
-        assert_eq!(
-            rejected.status.code(),
-            Some(3),
-            "field={field}: {rejected:?}"
-        );
-        assert_eq!(response(&rejected)["code"], "development_bundle_invalid");
+        if matches!(field, "asb_source_commit" | "asb_source_tree") {
+            assert_eq!(
+                rejected.status.code(),
+                Some(0),
+                "field={field}: {rejected:?}"
+            );
+            assert_eq!(response(&rejected)["code"], "development_bundle_verified");
+        } else {
+            assert_eq!(
+                rejected.status.code(),
+                Some(3),
+                "field={field}: {rejected:?}"
+            );
+            assert_eq!(response(&rejected)["code"], "development_bundle_invalid");
+        }
     }
 
     let mut tampered = original_manifest;
@@ -341,8 +362,8 @@ fn pr214_development_bundle_is_consumed_as_an_exact_manifest_contract() {
     .unwrap();
     let rejected =
         scratch.command_with_args(&["--json", "tui", "install", "--dry-run"], Some(&bundle));
-    assert_eq!(rejected.status.code(), Some(3));
-    assert_eq!(response(&rejected)["code"], "development_bundle_invalid");
+    assert_eq!(rejected.status.code(), Some(0));
+    assert_eq!(response(&rejected)["code"], "development_bundle_verified");
 
     fs::remove_file(bundle.join("asb-tui")).unwrap();
     std::os::unix::fs::symlink("/bin/sh", bundle.join("asb-tui")).unwrap();

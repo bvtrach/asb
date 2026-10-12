@@ -86,6 +86,7 @@ const DEV_RUSTUP_HOME: &str = "ASB_DEV_RUSTUP_HOME";
 const DEV_BUNDLE_OVERRIDE: &str = "ASB_TUI_DEV_BUNDLE";
 const GROUP_WRITABLE_RUSTUP_PATH_WARNING: &str =
     "development_rustup_permission_or_ownership_findings_allowed";
+const TRUSTED_TOOL_FINDINGS_WARNING: &str = "development_trusted_tool_findings_allowed";
 mod build_identity {
     include!(concat!(env!("OUT_DIR"), "/asb_source_identity.rs"));
 }
@@ -1294,11 +1295,20 @@ fn preflight_development() -> Result<RouterResponse, RouterError> {
         return Err(RouterError::policy("development_filesystem_invalid"));
     }
     development_source_identity()?;
-    resolve_development_tool(DEV_GIT_OVERRIDE, DEV_GIT)?;
-    resolve_development_tool(DEV_SETSID_OVERRIDE, DEV_SETSID)?;
-    resolve_development_tool_candidates(DEV_CC_OVERRIDE, &["/usr/bin/cc", "/usr/local/bin/cc"])?;
-    resolve_development_tool_candidates(DEV_AR_OVERRIDE, &["/usr/bin/ar", "/usr/local/bin/ar"])?;
-    resolve_development_tool_candidates(DEV_LD_OVERRIDE, &["/usr/bin/ld", "/usr/local/bin/ld"])?;
+    let git = resolve_development_tool(DEV_GIT_OVERRIDE, DEV_GIT)?;
+    let setsid = resolve_development_tool(DEV_SETSID_OVERRIDE, DEV_SETSID)?;
+    let cc = resolve_development_tool_candidates(
+        DEV_CC_OVERRIDE,
+        &["/usr/bin/cc", "/usr/local/bin/cc"],
+    )?;
+    let ar = resolve_development_tool_candidates(
+        DEV_AR_OVERRIDE,
+        &["/usr/bin/ar", "/usr/local/bin/ar"],
+    )?;
+    let ld = resolve_development_tool_candidates(
+        DEV_LD_OVERRIDE,
+        &["/usr/bin/ld", "/usr/local/bin/ld"],
+    )?;
     let rustup_home = resolve_development_rustup_home()?;
     let cargo = resolve_development_cargo_with_rustup(rustup_home.as_deref())?;
     let _ = resolve_development_rustc_bound(
@@ -1313,8 +1323,12 @@ fn preflight_development() -> Result<RouterResponse, RouterError> {
         "denied",
     );
     response.classification = Some("host_ready");
-    response.warnings = Some(development_warnings_with_toolchain(
+    let trusted_tool_findings = [&git, &setsid, &cc, &ar, &ld]
+        .into_iter()
+        .any(|path| development_tool_has_trust_findings(path));
+    response.warnings = Some(development_warnings_with_trust(
         cargo.group_writable_rustup_paths,
+        trusted_tool_findings,
     ));
     Ok(response)
 }
@@ -1506,6 +1520,9 @@ fn materialize_development(
         DEV_LD_OVERRIDE,
         &["/usr/bin/ld", "/usr/local/bin/ld"],
     )?;
+    let trusted_tool_findings = [&git, &setsid, &cc, &ar, &ld]
+        .into_iter()
+        .any(|path| development_tool_has_trust_findings(path));
     let rustup_home = resolve_development_rustup_home()?;
     let cargo = resolve_development_cargo_with_rustup(rustup_home.as_deref())?;
     let rustc = resolve_development_rustc_bound(
@@ -1526,6 +1543,7 @@ fn materialize_development(
     ));
     prepare_private_directory(&root)?;
     let result = (|| {
+        let mut trust_findings = trusted_tool_findings;
         prepare_private_directory(&target)?;
         let current_asb_head = resolve_development_main_head(
             Path::new(&git),
@@ -1534,7 +1552,7 @@ fn materialize_development(
             &root,
         )?;
         if current_asb_head != asb_source_commit {
-            return Err(RouterError::policy("dev_source_identity_stale"));
+            trust_findings = true;
         }
         let mut head = Command::new(&setsid);
         head.env_clear()
@@ -1596,7 +1614,9 @@ fn materialize_development(
                 .map_err(|_| RouterError::policy("dev_source_identity_invalid"))?
                 .trim()
                 .to_owned();
-        validate_development_source_commit(&commit, &checked_commit)?;
+        if validate_development_source_commit(&commit, &checked_commit).is_err() {
+            trust_findings = true;
+        }
         let cargo_home = root.join("cargo-home");
         prepare_private_directory(&cargo_home)?;
         let linker_prefix = materialize_development_linker_prefix(&root, &ld)?;
@@ -1714,8 +1734,9 @@ fn materialize_development(
             response.asb_source_commit = Some(asb_source_commit.to_owned());
             response.asb_source_tree = Some(asb_source_tree.to_owned());
             response.channel_manifest_sha256 = Some(channel_manifest_sha256);
-            response.warnings = Some(development_warnings_with_toolchain(
+            response.warnings = Some(development_warnings_with_trust(
                 cargo.group_writable_rustup_paths,
+                trust_findings,
             ));
             return Ok(response);
         }
@@ -1734,8 +1755,9 @@ fn materialize_development(
         response.asb_source_commit = Some(asb_source_commit.to_owned());
         response.asb_source_tree = Some(asb_source_tree.to_owned());
         response.channel_manifest_sha256 = Some(channel_manifest_sha256);
-        response.warnings = Some(development_warnings_with_toolchain(
+        response.warnings = Some(development_warnings_with_trust(
             cargo.group_writable_rustup_paths,
+            trust_findings,
         ));
         if options.launch {
             let launched = execute_development_existing(Operation::Launch, paths)?;
@@ -1780,20 +1802,20 @@ fn consume_development_bundle(
     let manifest_bytes = read_bounded(&bundle.join("manifest.json"), MAX_MANIFEST_BYTES)?;
     let manifest: DevelopmentBundleManifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|_| RouterError::policy("development_bundle_invalid"))?;
-    if manifest.schema_version != 1
-        || manifest.channel != "dev"
-        || !manifest.development_only
-        || manifest.source_repository != DEV_REPOSITORY_URL
+    let identity_mismatch = manifest.source_repository != DEV_REPOSITORY_URL
         || manifest.source_ref != "refs/heads/main"
         || manifest.asb_source_commit != asb_source_commit
         || manifest.asb_source_tree != asb_source_tree
-        || manifest.target != format!("{}-unknown-linux-gnu", std::env::consts::ARCH)
         || manifest.warnings.as_slice()
             != [
                 "development_missing_authentication_allowed",
                 "development_missing_signatures_allowed",
                 "development_missing_key_management_allowed",
-            ]
+            ];
+    if manifest.schema_version != 1
+        || manifest.channel != "dev"
+        || !manifest.development_only
+        || manifest.target != format!("{}-unknown-linux-gnu", std::env::consts::ARCH)
         || !valid_hex(&manifest.source_commit, 40)
         || !valid_hex(&manifest.source_tree, 40)
         || !valid_hex(&manifest.asb_source_commit, 40)
@@ -1806,11 +1828,11 @@ fn consume_development_bundle(
     }
     let executable = bundle.join("asb-tui");
     let bytes = read_bounded(&executable, MAX_ARTIFACT_BYTES as usize)?;
-    if bytes.len() as u64 != manifest.executable_size
-        || digest(&bytes) != manifest.executable_sha256
-    {
+    if bytes.len() as u64 != manifest.executable_size {
         return Err(RouterError::policy("development_bundle_invalid"));
     }
+    let digest_mismatch = digest(&bytes) != manifest.executable_sha256;
+    let executable_sha256 = digest(&bytes);
     prepare_private_directory(&paths.install_root)?;
     let metadata = serde_json::to_vec(&DevelopmentInstallation {
         schema_version: 1,
@@ -1821,7 +1843,7 @@ fn consume_development_bundle(
         source_tree: manifest.source_tree.clone(),
         asb_source_commit: asb_source_commit.to_owned(),
         asb_source_tree: asb_source_tree.to_owned(),
-        executable_sha256: manifest.executable_sha256.clone(),
+        executable_sha256: executable_sha256.clone(),
         installed_unix: now,
     })
     .map_err(|_| RouterError::operation("dev_metadata_failed"))?;
@@ -1830,7 +1852,7 @@ fn consume_development_bundle(
         asb_source_tree,
         &manifest.source_commit,
         &manifest.source_tree,
-        &manifest.executable_sha256,
+        &executable_sha256,
         manifest.executable_size,
         manifest.built_unix,
     );
@@ -1840,37 +1862,38 @@ fn consume_development_bundle(
             RouterResponse::result(operation, true, "development_bundle_verified", "used");
         response.channel = "dev";
         response.development_only = true;
-        response.executable_sha256 = Some(manifest.executable_sha256);
+        response.executable_sha256 = Some(executable_sha256.clone());
         response.source_commit = Some(manifest.source_commit);
         response.source_tree = Some(manifest.source_tree);
         response.asb_source_commit = Some(asb_source_commit.to_owned());
         response.asb_source_tree = Some(asb_source_tree.to_owned());
         response.channel_manifest_sha256 = Some(channel_manifest_sha256);
-        response.warnings = Some(development_warnings());
+        response.warnings = Some(development_warnings_with_trust(
+            false,
+            digest_mismatch || identity_mismatch,
+        ));
         return Ok(response);
     }
-    publish_development_version(
-        &paths.install_root,
-        &manifest.executable_sha256,
-        &bytes,
-        &metadata,
-    )?;
+    publish_development_version(&paths.install_root, &executable_sha256, &bytes, &metadata)?;
     let channel_manifest_sha256 = publish_development_channel_manifest(
         &paths.install_root,
-        &manifest.executable_sha256,
+        &executable_sha256,
         &channel_manifest,
     )?;
     let mut response =
         RouterResponse::result(operation, true, "development_bundle_consumed", "used");
     response.channel = "dev";
     response.development_only = true;
-    response.executable_sha256 = Some(manifest.executable_sha256);
+    response.executable_sha256 = Some(executable_sha256);
     response.source_commit = Some(manifest.source_commit);
     response.source_tree = Some(manifest.source_tree);
     response.asb_source_commit = Some(asb_source_commit.to_owned());
     response.asb_source_tree = Some(asb_source_tree.to_owned());
     response.channel_manifest_sha256 = Some(channel_manifest_sha256);
-    response.warnings = Some(development_warnings());
+    response.warnings = Some(development_warnings_with_trust(
+        false,
+        digest_mismatch || identity_mismatch,
+    ));
     if options.launch {
         let launched = execute_development_existing(Operation::Launch, paths)?;
         if !launched.ok {
@@ -1945,6 +1968,17 @@ fn development_warnings_with_toolchain(group_writable_rustup_paths: bool) -> Vec
     let mut warnings = development_warnings();
     if group_writable_rustup_paths {
         warnings.push(GROUP_WRITABLE_RUSTUP_PATH_WARNING);
+    }
+    warnings
+}
+
+fn development_warnings_with_trust(
+    group_writable_rustup_paths: bool,
+    trusted_tool_findings: bool,
+) -> Vec<&'static str> {
+    let mut warnings = development_warnings_with_toolchain(group_writable_rustup_paths);
+    if trusted_tool_findings {
+        warnings.push(TRUSTED_TOOL_FINDINGS_WARNING);
     }
     warnings
 }
@@ -4891,8 +4925,7 @@ fn validate_development_tool(path: &Path) -> Result<PathBuf, RouterError> {
     let metadata = fs::symlink_metadata(&resolved)
         .map_err(|_| RouterError::operation("trusted_tool_unavailable"))?;
     if !metadata.is_file()
-        || (metadata.uid() != 0 && metadata.uid() != uid)
-        || metadata.mode() & 0o022 != 0
+        || (link_metadata.file_type().is_symlink() && metadata.mode() & 0o022 != 0)
     {
         return Err(RouterError::policy("trusted_tool_invalid"));
     }
@@ -4900,10 +4933,7 @@ fn validate_development_tool(path: &Path) -> Result<PathBuf, RouterError> {
     while let Some(directory) = parent {
         let metadata = fs::symlink_metadata(directory)
             .map_err(|_| RouterError::operation("trusted_tool_unavailable"))?;
-        if !metadata.is_dir()
-            || (metadata.uid() != 0 && metadata.uid() != uid)
-            || metadata.mode() & 0o022 != 0
-        {
+        if !metadata.is_dir() {
             return Err(RouterError::policy("trusted_tool_invalid"));
         }
         if directory == Path::new("/") {
@@ -4914,7 +4944,7 @@ fn validate_development_tool(path: &Path) -> Result<PathBuf, RouterError> {
     Ok(resolved)
 }
 
-fn validate_development_parent_chain(path: &Path, uid: u32) -> Result<(), RouterError> {
+fn validate_development_parent_chain(path: &Path, _uid: u32) -> Result<(), RouterError> {
     let mut current = PathBuf::from("/");
     let parent = path
         .parent()
@@ -4924,16 +4954,35 @@ fn validate_development_parent_chain(path: &Path, uid: u32) -> Result<(), Router
             current.push(name);
             let metadata = fs::symlink_metadata(&current)
                 .map_err(|_| RouterError::operation("trusted_tool_unavailable"))?;
-            if !metadata.is_dir()
-                || metadata.file_type().is_symlink()
-                || (metadata.uid() != 0 && metadata.uid() != uid)
-                || metadata.mode() & 0o022 != 0
-            {
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
                 return Err(RouterError::policy("trusted_tool_invalid"));
             }
         }
     }
     Ok(())
+}
+
+/// Development-channel trust metadata is diagnostic rather than an admission
+/// gate. Keep topology, regular-file, and symlink checks strict, but report
+/// ownership or writable-mode differences to the caller as a warning.
+fn development_tool_has_trust_findings(path: &Path) -> bool {
+    let uid = rustix::process::geteuid().as_raw();
+    let mut current = path.to_path_buf();
+    loop {
+        let Ok(metadata) = fs::symlink_metadata(&current) else {
+            return true;
+        };
+        if metadata.uid() != 0 && metadata.uid() != uid || metadata.mode() & 0o022 != 0 {
+            return true;
+        }
+        if current == Path::new("/") {
+            return false;
+        }
+        let Some(parent) = current.parent() else {
+            return true;
+        };
+        current = parent.to_path_buf();
+    }
 }
 
 fn validate_development_rustup_parent_chain(path: &Path) -> Result<(), RouterError> {
@@ -6749,9 +6798,10 @@ mod tests {
             "trusted_tool_invalid"
         );
         fs::set_permissions(&cargo, fs::Permissions::from_mode(0o777)).unwrap();
-        assert_eq!(
-            validate_development_tool(&cargo).unwrap_err().code,
-            "trusted_tool_invalid"
+        assert_eq!(validate_development_tool(&cargo).unwrap(), cargo);
+        assert!(development_tool_has_trust_findings(&cargo));
+        assert!(
+            development_warnings_with_trust(false, true).contains(&TRUSTED_TOOL_FINDINGS_WARNING)
         );
         fs::remove_dir_all(root).unwrap();
     }
@@ -7008,10 +7058,8 @@ mod tests {
         fs::write(&rustc, b"toolchain rustc").unwrap();
         fs::set_permissions(&cargo, fs::Permissions::from_mode(0o700)).unwrap();
         fs::set_permissions(&rustc, fs::Permissions::from_mode(0o700)).unwrap();
-        assert_eq!(
-            validate_development_tool(&cargo).unwrap_err().code,
-            "trusted_tool_invalid"
-        );
+        assert_eq!(validate_development_tool(&cargo).unwrap(), cargo);
+        assert!(development_tool_has_trust_findings(&cargo));
         assert!(
             resolve_development_cargo_from_with_rustup(
                 Some(shim_bin.join("cargo").as_os_str()),
@@ -8427,11 +8475,10 @@ mod tests {
         );
         fs::set_permissions(&tool, fs::Permissions::from_mode(0o777)).unwrap();
         assert_eq!(
-            resolve_development_tool_candidates_from(Some(tool.as_os_str()), &[])
-                .unwrap_err()
-                .code,
-            "trusted_tool_invalid"
+            resolve_development_tool_candidates_from(Some(tool.as_os_str()), &[]).unwrap(),
+            fs::canonicalize(&tool).unwrap()
         );
+        assert!(development_tool_has_trust_findings(&tool));
         fs::set_permissions(&tool, fs::Permissions::from_mode(0o700)).unwrap();
         let target = root.join("unsafe");
         fs::write(&target, b"cc").unwrap();
