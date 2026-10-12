@@ -19844,3 +19844,22 @@ mod output_router_tests {
 }
 
 mod test_fixture_semaphore;
+
+/// Execute a live cli2key run or sweep from a runtime-owned sidecar authority.
+///
+/// The authority retains the verified bridge process for the entire dispatch,
+/// and only its opaque per-attempt factory crosses into the CLI. Dropping the
+/// authority after dispatch revokes outstanding attempts and tears down the
+/// sidecar; no credential, key, executable path, or provider fallback is
+/// resolved by the CLI.
+pub fn run_with_cli2key_runtime_authority(
+    args: &[std::ffi::OsString],
+    authority: asb_runtime::cli2key_sidecar::Cli2KeyRuntimeAuthority,
+    stdout: &mut dyn std::io::Write,
+    stderr: &mut dyn std::io::Write,
+) -> u8 {
+    let factory = authority.attempt_factory();
+    let exit_code = run_with_live_provider_factory(args, factory, stdout, stderr);
+    drop(authority);
+    exit_code
+}
