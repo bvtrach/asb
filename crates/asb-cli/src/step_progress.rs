@@ -163,13 +163,7 @@ where
         {
             step.rendered = true;
             step.last_refresh = now;
-            let line = render_line(
-                step,
-                now.saturating_sub(step.started),
-                self.width,
-                message,
-                self.terminal,
-            );
+            let line = render_line(step, now.saturating_sub(step.started), self.width, message);
             self.write_line(&line, self.terminal);
         }
     }
@@ -252,7 +246,6 @@ fn render_line(
     elapsed: Duration,
     width: usize,
     message: Option<&str>,
-    terminal: bool,
 ) -> String {
     let mut line = String::new();
     let _ = write!(line, "[WAIT] {} ({})", step.label, step.id);
@@ -271,8 +264,7 @@ fn render_line(
     if let Some(message) = message {
         let _ = write!(line, " {message}");
     }
-    let clipped = clip(&line, width);
-    if terminal { clipped } else { clipped }
+    clip(&line, width)
 }
 
 fn render_terminal(
