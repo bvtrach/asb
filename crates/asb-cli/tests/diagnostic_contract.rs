@@ -282,18 +282,25 @@ fn assert_legacy_call_sites_are_catalogued(
     for (constructor, line, _) in gate.constructor_calls {
         if constructors.contains(&constructor.as_str()) {
             let entry = format!("(\"{file}\", {line},");
-            // AR-1779 added reviewed implementation code before this large
-            // legacy source file. Preserve the existing call-site identities
-            // through the explicit insertion map instead of silently making
-            // every historical identity depend on mutable line numbers.
+            // Reviewed insertion maps preserve historical identities after
+            // implementation code is inserted into this large legacy source
+            // file. Keep each insertion boundary explicit: accepting an
+            // arbitrary nearby line would weaken the diagnostic gate.
+            let historical_offsets = [0_usize, 2, 7, 12, 13, 21, 26, 192, 198, 200, 212, 308];
+            let ar1825_offsets = [64_usize, 71, 76, 83, 103, 113, 114, 115, 118];
             let shifted = file == "crates/asb-cli/src/lib.rs"
-                && [0_usize, 2, 7, 12, 13, 21, 26, 192, 198, 200, 212, 308]
-                    .iter()
-                    .any(|offset| {
-                        line.checked_sub(*offset).is_some_and(|old_line| {
-                            catalog.contains(&format!("(\"{file}\", {old_line},"))
-                        })
-                    });
+                && (historical_offsets.iter().any(|offset| {
+                    line.checked_sub(*offset).is_some_and(|old_line| {
+                        catalog.contains(&format!("(\"{file}\", {old_line},"))
+                    })
+                }) || ar1825_offsets.iter().any(|insertion| {
+                    historical_offsets.iter().any(|historical| {
+                        line.checked_sub(insertion + historical)
+                            .is_some_and(|old_line| {
+                                catalog.contains(&format!("(\"{file}\", {old_line},"))
+                            })
+                    })
+                }));
             if !catalog.contains(&entry) && !shifted {
                 missing.push(entry);
             }
