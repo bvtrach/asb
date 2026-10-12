@@ -64,7 +64,7 @@ pub(crate) const PUBLIC_COMMANDS: &[&str] = &[
     "capabilities",
     "project",
     // Project tools and generated catalogs share the same presentation family.
-    "tool", "catalog",
+    "tool", "catalog", "workload",
     "provider-catalog",
     "adapter-catalog",
     "workload-catalog",
@@ -100,6 +100,7 @@ enum CommandKind {
     Capabilities,
     Project,
     Tool,
+    Workload,
     Catalog,
     ProviderCatalog,
     AdapterCatalog,
@@ -211,6 +212,7 @@ pub(super) enum InvocationKind {
     Capabilities,
     ProjectInit,
     Tool,
+    Workload,
     Catalog,
     ProviderCatalog { refresh: bool },
     AdapterCatalog,
@@ -288,6 +290,7 @@ impl InvocationKind {
             Some("capabilities") => Self::Capabilities,
             Some("project") => Self::ProjectInit,
             Some("tool") => Self::Tool,
+            Some("workload") => Self::Workload,
             Some("catalog") => Self::Catalog,
             Some("provider-catalog") => Self::ProviderCatalog {
                 refresh: words.contains(&"--refresh"),
@@ -339,6 +342,7 @@ impl InvocationKind {
             Self::Capabilities => CommandKind::Capabilities,
             Self::ProjectInit => CommandKind::Project,
             Self::Tool => CommandKind::Tool,
+            Self::Workload => CommandKind::Workload,
             Self::Catalog => CommandKind::Catalog,
             Self::ProviderCatalog { .. } | Self::Easy(EasyKind::ProviderCatalog) => {
                 CommandKind::ProviderCatalog
@@ -414,6 +418,7 @@ impl CommandKind {
             Self::Capabilities => "capabilities",
             Self::Project => "project initialization",
             Self::Tool => "tool",
+            Self::Workload => "workload",
             Self::Catalog => "catalog",
             Self::ProviderCatalog => "provider catalog",
             Self::AdapterCatalog => "adapter catalog",
@@ -1265,6 +1270,7 @@ fn validate_typed_result(
         InvocationKind::Help
         | InvocationKind::Version
         | InvocationKind::Tool
+        | InvocationKind::Workload
         | InvocationKind::Easy(EasyKind::Help)
         | InvocationKind::Completion
         | InvocationKind::Serve
@@ -1392,6 +1398,7 @@ fn project_for_presentation(
         CommandKind::Capabilities => &["protocol_version", "capabilities"],
         CommandKind::Project => &["initialized", "recovered", "config", "results", "catalogs"],
         CommandKind::Tool => &["ok", "command", "tools", "warnings"],
+        CommandKind::Workload => &["ok", "command", "workloads", "id", "status"],
         CommandKind::Catalog => &[
             "command",
             "catalogs",
@@ -1693,6 +1700,13 @@ fn present(
                     value.warning(warning_text(warning));
                 }
             }
+            value
+        }
+        CommandKind::Workload => {
+            let mut value = Presentation::new("ASB completed the workload operation.");
+            fact_count(&mut value, object, "workloads", "installed workloads");
+            fact_pair(&mut value, object, "Workload", "id");
+            fact_pair(&mut value, object, "Status", "status");
             value
         }
         CommandKind::Catalog => {
@@ -2943,6 +2957,7 @@ mod tests {
             &["capabilities"],
             &["project", "init", "/tmp/project"],
             &["tool", "discover"], &["catalog", "list"],
+            &["workload", "list"],
             &["provider-catalog"],
             &["adapter-catalog"],
             &["workload-catalog"],

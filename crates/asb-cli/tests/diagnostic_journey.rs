@@ -15,6 +15,7 @@ fn invalid_args(command: &str) -> Vec<OsString> {
             &[command, "--invalid-diagnostic-fixture"]
         }
         "project" => &["project", "unknown-subcommand"],
+        "workload" => &["workload", "unknown-subcommand"],
         "tool" => &["tool", "unknown-subcommand"],
         "catalog" => &["catalog", "unknown-subcommand"],
         "easy" => &["easy", "unknown-subcommand"],
@@ -42,6 +43,7 @@ fn every_public_command_has_a_specific_safe_negative_journey() {
         "project",
         "tool",
         "catalog",
+        "workload",
         "provider-catalog",
         "adapter-catalog",
         "workload-catalog",
