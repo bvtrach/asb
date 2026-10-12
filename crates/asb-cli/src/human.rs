@@ -576,6 +576,8 @@ enum TuiWarningView {
     KeyManagementMissing,
     #[serde(rename = "development_rustup_permission_or_ownership_findings_allowed")]
     RustupPermissions,
+    #[serde(rename = "development_trusted_tool_findings_allowed")]
+    TrustedToolFindings,
 }
 
 #[derive(Deserialize)]
@@ -2707,6 +2709,9 @@ fn warning_text(code: &str) -> &'static str {
         "development_rustup_permission_or_ownership_findings_allowed" => {
             "The development Rust toolchain contains group-writable or differently owned paths; restrict permissions and ownership before relying on it."
         }
+        "development_trusted_tool_findings_allowed" => {
+            "Development tool ownership or writable-mode checks did not match the trust contract; ASB continued without treating the tool as verified."
+        }
         "development authentication, signatures, and keys are warning-only; discovery does not require them" => {
             "Tool discovery completed without production authentication, signature, or key-management services; discovery is usable, but it does not establish production trust."
         }
@@ -3432,6 +3437,10 @@ mod tests {
             (
                 "development_rustup_permission_or_ownership_findings_allowed",
                 "permissions",
+            ),
+            (
+                "development_trusted_tool_findings_allowed",
+                "trust contract",
             ),
             ("attacker_defined_claim", "attacker-defined"),
             ("development_only", "development-only"),
