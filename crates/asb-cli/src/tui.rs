@@ -195,6 +195,7 @@ struct DevelopmentTool {
 struct DevelopmentLinkerPrefix {
     directory: File,
     linker: File,
+    trust_findings: bool,
 }
 
 #[derive(Debug)]
@@ -1183,8 +1184,6 @@ fn materialize_development_linker_prefix(
         .map_err(|_| RouterError::operation("trusted_tool_unavailable"))?;
     let uid = rustix::process::geteuid().as_raw();
     if !source_metadata.is_file()
-        || (source_metadata.uid() != 0 && source_metadata.uid() != uid)
-        || source_metadata.mode() & 0o022 != 0
         || source_metadata.mode() & 0o111 == 0
         || source_metadata.len() == 0
         || source_metadata.len() > MAX_ARTIFACT_BYTES
@@ -1193,6 +1192,8 @@ fn materialize_development_linker_prefix(
     {
         return Err(RouterError::policy("trusted_tool_invalid"));
     }
+    let trust_findings = (source_metadata.uid() != 0 && source_metadata.uid() != uid)
+        || source_metadata.mode() & 0o022 != 0;
 
     let prefix_path = root.join("linker-prefix");
     prepare_private_directory(&prefix_path)?;
@@ -1226,7 +1227,11 @@ fn materialize_development_linker_prefix(
     )
     .map(File::from)
     .map_err(|_| RouterError::operation("trusted_tool_unavailable"))?;
-    let prefix = DevelopmentLinkerPrefix { directory, linker };
+    let prefix = DevelopmentLinkerPrefix {
+        directory,
+        linker,
+        trust_findings,
+    };
     prefix.validate()?;
     Ok(prefix)
 }
@@ -1622,6 +1627,7 @@ fn materialize_development(
         let cargo_home = root.join("cargo-home");
         prepare_private_directory(&cargo_home)?;
         let linker_prefix = materialize_development_linker_prefix(&root, &ld)?;
+        trust_findings |= linker_prefix.trust_findings;
         validate_development_gcc_driver(&cc, &linker_prefix, &root)?;
         let cargo_program = cargo.execution_path();
         let rustc_program = rustc.as_ref().map(DevelopmentTool::execution_path);
@@ -8320,13 +8326,20 @@ mod tests {
 
         let writable = scratch.0.join("writable-ld");
         fs::write(&writable, b"not executable").unwrap();
-        fs::set_permissions(&writable, fs::Permissions::from_mode(0o722)).unwrap();
+        fs::set_permissions(&writable, fs::Permissions::from_mode(0o622)).unwrap();
         assert_eq!(
             materialize_development_linker_prefix(&scratch.0, &writable)
                 .unwrap_err()
                 .code,
             "trusted_tool_invalid"
         );
+
+        let permission_warning = scratch.0.join("permission-warning-ld");
+        fs::write(&permission_warning, b"fixture").unwrap();
+        fs::set_permissions(&permission_warning, fs::Permissions::from_mode(0o777)).unwrap();
+        let warning_prefix =
+            materialize_development_linker_prefix(&scratch.0, &permission_warning).unwrap();
+        assert!(warning_prefix.trust_findings);
 
         let trusted = scratch.0.join("trusted-ld");
         let substituted = scratch.0.join("substituted-ld");
