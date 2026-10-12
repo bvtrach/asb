@@ -4155,21 +4155,37 @@ fn legacy_test_state_operation(message: &'static str) -> CliError {
 }
 
 #[cfg(test)]
-fn legacy_test_missing() -> CliError { CliError::legacy_validation("input is missing") }
+fn legacy_test_missing() -> CliError {
+    CliError::legacy_validation("input is missing")
+}
 #[cfg(test)]
-fn legacy_test_malformed() -> CliError { CliError::legacy_validation("input is malformed") }
+fn legacy_test_malformed() -> CliError {
+    CliError::legacy_validation("input is malformed")
+}
 #[cfg(test)]
-fn legacy_test_incompatible() -> CliError { CliError::legacy_validation("input is incompatible") }
+fn legacy_test_incompatible() -> CliError {
+    CliError::legacy_validation("input is incompatible")
+}
 #[cfg(test)]
-fn legacy_test_permission() -> CliError { CliError::legacy_validation("input permission denied") }
+fn legacy_test_permission() -> CliError {
+    CliError::legacy_validation("input permission denied")
+}
 #[cfg(test)]
-fn legacy_test_provider_timeout() -> CliError { CliError::legacy_operation("provider request timed out") }
+fn legacy_test_provider_timeout() -> CliError {
+    CliError::legacy_operation("provider request timed out")
+}
 #[cfg(test)]
-fn legacy_test_provider_cancelled() -> CliError { CliError::legacy_operation("provider request was cancelled") }
+fn legacy_test_provider_cancelled() -> CliError {
+    CliError::legacy_operation("provider request was cancelled")
+}
 #[cfg(test)]
-fn legacy_test_timeout() -> CliError { CliError::legacy_operation("operation timed out") }
+fn legacy_test_timeout() -> CliError {
+    CliError::legacy_operation("operation timed out")
+}
 #[cfg(test)]
-fn legacy_test_cancelled() -> CliError { CliError::legacy_operation("operation was cancelled") }
+fn legacy_test_cancelled() -> CliError {
+    CliError::legacy_operation("operation was cancelled")
+}
 
 #[path = "step_progress.rs"]
 pub mod step_progress;
