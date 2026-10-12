@@ -6,6 +6,9 @@
 //! The key is never an argument, environment value, log field, or receipt
 //! field.  The child is a process-group leader and is always reaped on drop.
 
+use crate::launch_factory::{
+    LaunchAuthorityError, LiveProviderAttempt, LiveProviderAttemptFactory,
+};
 use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -40,6 +43,12 @@ pub enum Cli2KeyError {
     Readiness,
     /// The process could not be started or reaped.
     Process(io::ErrorKind),
+    /// The runtime receipt was malformed or did not match the pinned bridge.
+    InvalidReceipt,
+    /// The receipt was issued for a different platform.
+    InvalidPlatform,
+    /// The receipt identity did not match the pinned executable.
+    ReceiptBinding,
 }
 
 impl fmt::Display for Cli2KeyError {
@@ -51,6 +60,9 @@ impl fmt::Display for Cli2KeyError {
             Self::Staging(_) => f.write_str("cli2key private staging failed"),
             Self::Readiness => f.write_str("cli2key readiness was invalid"),
             Self::Process(_) => f.write_str("cli2key process lifecycle failed"),
+            Self::InvalidReceipt => f.write_str("cli2key runtime receipt is invalid"),
+            Self::InvalidPlatform => f.write_str("cli2key runtime receipt platform is invalid"),
+            Self::ReceiptBinding => f.write_str("cli2key runtime receipt binding mismatched"),
         }
     }
 }
@@ -75,6 +87,68 @@ pub struct Cli2KeyReceipt {
     pub key_origin: KeyOrigin,
     /// Digest of the key, not the key value.
     pub key_sha256: String,
+}
+
+/// Secret-free catalog identity required before a runtime sidecar can start.
+///
+/// This is intentionally independent of `asb-agents`: the runtime accepts
+/// only attestable identities and never receives a catalog, credential, or
+/// invocation key.  The endpoint digest identifies the adapter contract, not
+/// the ephemeral loopback port selected by the sidecar.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Cli2KeyRuntimeReceipt {
+    /// Receipt schema version.
+    pub schema_version: u16,
+    /// Monotonic development catalog generation.
+    pub catalog_generation: u64,
+    /// Exact target platform identifier.
+    pub platform: String,
+    /// Digest of the complete catalog identity.
+    pub catalog_sha256: String,
+    /// Pinned bridge source revision.
+    pub bridge_revision: String,
+    /// Digest of the pinned bridge source tree.
+    pub bridge_tree_sha256: String,
+    /// Digest of the executable bytes.
+    pub executable_sha256: String,
+    /// Digest of the adapter endpoint contract.
+    pub endpoint_sha256: String,
+    /// Digest of the credential reference, never its value.
+    pub credential_reference_sha256: String,
+}
+
+impl Cli2KeyRuntimeReceipt {
+    /// Validate the stable, secret-free receipt fields against this runtime.
+    pub fn validate(&self) -> Result<(), Cli2KeyError> {
+        if self.schema_version != 1 || self.catalog_generation == 0 {
+            return Err(Cli2KeyError::InvalidReceipt);
+        }
+        if self.platform != "linux-x86_64"
+            || std::env::consts::OS != "linux"
+            || std::env::consts::ARCH != "x86_64"
+        {
+            return Err(Cli2KeyError::InvalidPlatform);
+        }
+        if self.bridge_revision.is_empty() || self.bridge_revision.len() > 128 {
+            return Err(Cli2KeyError::InvalidReceipt);
+        }
+        for digest in [
+            &self.catalog_sha256,
+            &self.bridge_tree_sha256,
+            &self.executable_sha256,
+            &self.endpoint_sha256,
+            &self.credential_reference_sha256,
+        ] {
+            if digest.len() != 64
+                || !digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            {
+                return Err(Cli2KeyError::InvalidReceipt);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A pinned bridge launch. Arguments are copied verbatim and never augmented
@@ -122,6 +196,11 @@ impl Cli2KeyCommand {
             arguments,
             _digest: digest,
         })
+    }
+
+    /// Return the pinned executable digest without exposing launch arguments.
+    pub fn executable_sha256(&self) -> &str {
+        &self._digest
     }
 }
 
@@ -354,6 +433,74 @@ impl Cli2KeySidecar {
         self.receipt.endpoint
     }
 }
+
+/// Runtime-owned composition of a verified cli2key sidecar and opaque live
+/// attempts.  Dropping the authority tears down the sidecar; callers can only
+/// obtain an attempt through the runtime factory and cannot access key bytes,
+/// staging paths, or OAuth material.
+pub struct Cli2KeyRuntimeAuthority {
+    sidecar: Cli2KeySidecar,
+    receipt: Cli2KeyRuntimeReceipt,
+    factory: LiveProviderAttemptFactory,
+}
+
+impl fmt::Debug for Cli2KeyRuntimeAuthority {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Cli2KeyRuntimeAuthority")
+            .field("receipt", &self.receipt)
+            .field("endpoint", &self.sidecar.endpoint())
+            .field("factory", &self.factory)
+            .finish()
+    }
+}
+
+impl Cli2KeyRuntimeAuthority {
+    /// Verify the catalog identity, pin the executable, and start the sidecar.
+    pub fn bootstrap(
+        receipt: Cli2KeyRuntimeReceipt,
+        command: &Cli2KeyCommand,
+        local_key: Option<&Path>,
+        factory: LiveProviderAttemptFactory,
+    ) -> Result<Self, Cli2KeyError> {
+        receipt.validate()?;
+        if receipt.executable_sha256 != command.executable_sha256() {
+            return Err(Cli2KeyError::ReceiptBinding);
+        }
+        let sidecar = Cli2KeySidecar::start(command, local_key)?;
+        Ok(Self {
+            sidecar,
+            receipt,
+            factory,
+        })
+    }
+
+    /// Issue one opaque, one-shot attempt while retaining sidecar ownership.
+    pub fn issue_attempt(
+        &self,
+        input_id: u32,
+        warmup: bool,
+    ) -> Result<LiveProviderAttempt, LaunchAuthorityError> {
+        self.factory.acquire(input_id, warmup)
+    }
+
+    /// Borrow the runtime-issued factory for CLI run or bounded sweep wiring.
+    /// The caller must retain this authority for the entire execution so the
+    /// sidecar remains alive and its teardown fence stays authoritative.
+    pub fn attempt_factory(&self) -> LiveProviderAttemptFactory {
+        self.factory.clone()
+    }
+
+    /// Return the verified secret-free catalog identity.
+    pub fn receipt(&self) -> &Cli2KeyRuntimeReceipt {
+        &self.receipt
+    }
+
+    /// Return the ephemeral loopback endpoint, never the invocation key.
+    pub fn endpoint(&self) -> SocketAddr {
+        self.sidecar.endpoint()
+    }
+}
 impl Drop for Cli2KeySidecar {
     fn drop(&mut self) {
         let _ = rustix::process::kill_process_group(self.pid, rustix::process::Signal::KILL);
@@ -379,6 +526,20 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     use std::time::UNIX_EPOCH;
+
+    fn runtime_receipt() -> Cli2KeyRuntimeReceipt {
+        Cli2KeyRuntimeReceipt {
+            schema_version: 1,
+            catalog_generation: 7,
+            platform: "linux-x86_64".into(),
+            catalog_sha256: "a".repeat(64),
+            bridge_revision: "rev-1".into(),
+            bridge_tree_sha256: "b".repeat(64),
+            executable_sha256: "c".repeat(64),
+            endpoint_sha256: "d".repeat(64),
+            credential_reference_sha256: "e".repeat(64),
+        }
+    }
 
     #[test]
     fn key_decoder_requires_exact_256_bits() {
@@ -421,6 +582,20 @@ mod tests {
         let root = staging.root.clone();
         drop(staging);
         assert!(!root.exists());
+    }
+
+    #[test]
+    fn runtime_receipt_rejects_substitution_and_stale_identity() {
+        let mut receipt = runtime_receipt();
+        assert_eq!(receipt.validate(), Ok(()));
+        receipt.catalog_sha256.replace_range(..1, "A");
+        assert_eq!(receipt.validate(), Err(Cli2KeyError::InvalidReceipt));
+        receipt = runtime_receipt();
+        receipt.catalog_generation = 0;
+        assert_eq!(receipt.validate(), Err(Cli2KeyError::InvalidReceipt));
+        receipt = runtime_receipt();
+        receipt.platform = "linux-aarch64".into();
+        assert_eq!(receipt.validate(), Err(Cli2KeyError::InvalidPlatform));
     }
 
     #[test]
