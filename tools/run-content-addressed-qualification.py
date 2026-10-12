@@ -306,6 +306,65 @@ def negative_incomplete(root: Path, binary: Sequence[str], fixture: Path, agents
     return {"rejected": True, "reason": output.get("unavailable_reason", "recording-coverage-incomplete")}
 
 
+def negative_identity(root: Path, binary: Sequence[str], workspace: Path) -> dict[str, Any]:
+    """Prove stale experiment and selected identity edits fail before execution."""
+    plan_root = workspace / "identity-negative"
+    plan_root.mkdir(mode=0o700)
+    agent = plan_root / "offline-agent"
+    agent.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    agent.chmod(0o700)
+    plan = plan_root / "experiment.toml"
+    code, output, error = command(
+        binary,
+        [
+            "plan", "create", "--workload", "original.bug-fix", "--agent", "codex",
+            "--agent-executable", str(agent), "--run-id", "identity-negative",
+            "--result-root", str(plan_root / "results"), "--work-root", str(plan_root / "work"),
+            "--output", str(plan), "--json",
+        ],
+        root,
+    )
+    if code != 0 or not isinstance(output, dict):
+        raise RuntimeError(f"identity negative setup failed: {error or output}")
+    original = plan.read_text(encoding="utf-8")
+    cases = {
+        "stale_experiment": (
+            'experiment_sha256 = "',
+            'experiment_sha256 = "' + ("0" * 64),
+            "experiment identity is invalid",
+        ),
+        "executable_mismatch": (
+            'executable_sha256 = "',
+            'executable_sha256 = "' + ("f" * 64),
+            "agent executable digest does not match",
+        ),
+        "workload_mismatch": (
+            'workload = "original.bug-fix"',
+            'workload = "not-a-workload"',
+            "unknown or invalid workload",
+        ),
+    }
+    results: dict[str, Any] = {}
+    for name, (needle, replacement, expected_message) in cases.items():
+        candidate = plan_root / f"{name}.toml"
+        if needle not in original:
+            raise RuntimeError(f"identity negative fixture cannot find {name} field")
+        candidate.write_text(original.replace(needle, replacement, 1), encoding="utf-8")
+        result_code, result, result_error = command(
+            binary, ["plan", str(candidate), "--json"], root
+        )
+        body = result if isinstance(result, dict) else {}
+        message = body.get("error", {}).get("message")
+        rejected = result_code == 3 and body.get("ok") is False and message == expected_message
+        if not rejected:
+            raise RuntimeError(
+                f"{name} identity negative case did not fail closed: "
+                f"{result_error or result}"
+            )
+        results[name] = {"rejected": True, "exit_code": result_code, "message": message}
+    return results
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
@@ -336,6 +395,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         journey = plan_and_run_journey(root, binary, workspace)
         campaign = run_campaign(root, binary, fixture, agents, workloads, workspace)
         negative = negative_incomplete(root, binary, fixture, agents, workloads, workspace)
+        identity_negative = negative_identity(root, binary, workspace)
     receipt = {
         "schema_version": SCHEMA_VERSION,
         "status": "qualified",
@@ -350,6 +410,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "plan_run_journey": journey,
         "campaign": campaign,
         "negative_incomplete_coverage": negative,
+        "negative_identity": identity_negative,
     }
     receipt["receipt_sha256"] = digest_json(receipt)
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
