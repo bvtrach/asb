@@ -811,6 +811,9 @@ impl LiveProviderAttempt {
     /// Relay owned by this attempt, for the runtime's authenticated accept
     /// loop.  It is never writable by the CLI.
     pub fn relay(&mut self) -> Option<&mut crate::live_relay::LiveProviderRelay> {
+        if self.fence.load(Ordering::Acquire) || self.authority_revoked() {
+            return None;
+        }
         self.relay.as_mut()
     }
 
