@@ -3,6 +3,7 @@
 // Generated reviewed identities; compact data keeps declarative evidence out of executable coverage.
 #[rustfmt::skip]
 const LEGACY_CLI_CATALOG: &[(&str, u32, &str, Cause)] = &[
+    ("crates/asb-cli/src/human.rs", 3642, "legacy_cli_ar1775_state_operation", Cause::UnexpectedProductFailure),
     ("crates/asb-cli/src/human.rs", 3655, "legacy_cli_ar1775_output_parent", Cause::MissingParent),
     ("crates/asb-cli/src/human.rs", 3661, "legacy_cli_ar1775_output_not_directory", Cause::NotDirectory),
     ("crates/asb-cli/src/human.rs", 3667, "legacy_cli_ar1775_output_symlink", Cause::UnsafeTopology),
