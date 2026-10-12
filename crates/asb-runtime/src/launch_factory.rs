@@ -773,6 +773,16 @@ impl LiveLaunchContext {
 }
 
 impl LiveProviderAttempt {
+    #[cfg(test)]
+    pub(crate) fn test_only_unbound() -> Self {
+        Self {
+            context: None,
+            relay: None,
+            fence: Arc::new(AtomicBool::new(false)),
+            authority_fence: None,
+        }
+    }
+
     /// Bind this attempt to an enclosing runtime authority lifecycle.
     pub(crate) fn bind_authority_fence(&mut self, fence: Arc<AtomicBool>) {
         self.authority_fence = Some(fence);

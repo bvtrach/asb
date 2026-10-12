@@ -572,6 +572,18 @@ mod tests {
         (path, command)
     }
 
+    fn authority_with_factory(
+        name: &str,
+        factory: LiveProviderAttemptFactory,
+    ) -> (Cli2KeyRuntimeAuthority, PathBuf) {
+        let (path, command) = script_command(name, "printf 'ASB_CLI2KEY_READY 127.0.0.1:12345\\n'");
+        let mut receipt = runtime_receipt();
+        receipt.executable_sha256 = command.executable_sha256().to_owned();
+        let authority = Cli2KeyRuntimeAuthority::bootstrap(receipt, &command, None, factory)
+            .expect("test sidecar authority must bootstrap");
+        (authority, path)
+    }
+
     #[test]
     fn key_decoder_requires_exact_256_bits() {
         assert!(decode_key(b"00").is_none());
@@ -677,6 +689,64 @@ mod tests {
                 Err(Cli2KeyError::Readiness)
             ));
             fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn authority_bound_attempt_cancellation_fails_closed() {
+        let factory =
+            LiveProviderAttemptFactory::from_fn(
+                |_, _| Ok(LiveProviderAttempt::test_only_unbound()),
+            );
+        let (authority, path) = authority_with_factory("cancel", factory);
+        let mut attempt = authority.attempt_factory().acquire(1, false).unwrap();
+        attempt.revoke();
+        assert!(matches!(
+            attempt.spawn(),
+            Err(crate::sandbox::SandboxError::LiveHandoff)
+        ));
+        drop(authority);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn authority_bound_attempt_timeout_after_drop_fails_closed() {
+        let factory =
+            LiveProviderAttemptFactory::from_fn(
+                |_, _| Ok(LiveProviderAttempt::test_only_unbound()),
+            );
+        let (authority, path) = authority_with_factory("timeout", factory);
+        let mut attempt = authority.attempt_factory().acquire(2, false).unwrap();
+        drop(authority);
+        assert!(matches!(
+            attempt.spawn(),
+            Err(crate::sandbox::SandboxError::LiveHandoff)
+        ));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn authority_bound_attempts_concurrent_teardown_fail_closed() {
+        let mut workers = Vec::new();
+        for worker in 0..4 {
+            workers.push(std::thread::spawn(move || {
+                let factory = LiveProviderAttemptFactory::from_fn(|_, _| {
+                    Ok(LiveProviderAttempt::test_only_unbound())
+                });
+                let (authority, path) =
+                    authority_with_factory(&format!("parallel-{worker}"), factory);
+                let mut attempt = authority.attempt_factory().acquire(worker, false).unwrap();
+                drop(authority);
+                let result = attempt.spawn();
+                fs::remove_file(path).unwrap();
+                assert!(matches!(
+                    result,
+                    Err(crate::sandbox::SandboxError::LiveHandoff)
+                ));
+            }));
+        }
+        for worker in workers {
+            worker.join().unwrap();
         }
     }
 
