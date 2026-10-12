@@ -331,6 +331,13 @@ fn build_inner(request: &BuildRequest, staging: &Path) -> Result<BuildReceipt, B
     #[cfg(unix)]
     fs::set_permissions(&staged_output, fs::Permissions::from_mode(0o700))
         .map_err(|_| BuildFailure::OutputMismatch)?;
+    let staged_bytes = fs::read(&staged_output).map_err(|_| BuildFailure::OutputMismatch)?;
+    let staged_digest = Sha256::digest(&staged_bytes);
+    if staged_bytes.len() as u64 != bytes
+        || format!("{:x}", staged_digest) != format!("{:x}", digest.clone().finalize())
+    {
+        return Err(BuildFailure::OutputMismatch);
+    }
     let final_output = destination.join(&request.tool.entrypoint);
     if final_output.exists() {
         return Err(BuildFailure::OutputMismatch);

@@ -5104,11 +5104,75 @@ fn platform_label() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
 }
 
+fn materialization_validation(error: tool_materialization::MaterializationError) -> CliError {
+    let message = match error {
+        tool_materialization::MaterializationError::UnknownTool => {
+            "source adapter is not present in the reviewed support matrix"
+        }
+        tool_materialization::MaterializationError::UnsupportedStrategy => {
+            "source adapter strategy is explicitly unsupported; no generic fallback is allowed"
+        }
+        tool_materialization::MaterializationError::InvalidSourceIdentity => {
+            "source revision or artifact digest does not match the immutable catalog"
+        }
+        tool_materialization::MaterializationError::InvalidPackageStrategy => {
+            "source package strategy is not a reviewed bounded strategy"
+        }
+        tool_materialization::MaterializationError::UnboundedArguments => {
+            "source adapter arguments are unbounded or contain shell/package-manager behavior"
+        }
+        tool_materialization::MaterializationError::RuntimeDownloadForbidden => {
+            "source adapter runtime closure requests a download or floating dependency"
+        }
+        tool_materialization::MaterializationError::InvalidLauncher => {
+            "source adapter launcher identity is invalid"
+        }
+        tool_materialization::MaterializationError::MatrixInvalid => {
+            "source adapter support matrix is malformed"
+        }
+        _ => "source adapter contract rejected before materialization",
+    };
+    CliError::validation_code("dev_source_identity_invalid", message)
+}
+
+fn materialization_operation(error: tool_materialization::MaterializationError) -> CliError {
+    let message = match error {
+        tool_materialization::MaterializationError::MissingEntrypoint => {
+            "source adapter did not produce the declared launcher"
+        }
+        tool_materialization::MaterializationError::EntrypointNotExecutable => {
+            "source adapter launcher is not executable"
+        }
+        tool_materialization::MaterializationError::UnsafeSymlink => {
+            "source adapter launcher symlink escapes the installation root"
+        }
+        tool_materialization::MaterializationError::RuntimeMismatch => {
+            "source adapter launcher or runtime identity changed before activation"
+        }
+        tool_materialization::MaterializationError::OutputTooLarge => {
+            "source adapter output exceeds the bounded artifact limit"
+        }
+        _ => "source adapter materialization failed before activation",
+    };
+    CliError::operation_code("installation_verification_failed", message)
+}
+
 fn source_build_artifact(
     id: &str,
     entry: &tool_catalog::ToolEntry,
     root: &Path,
 ) -> Result<tool_acquisition::VerifiedArtifact, CliError> {
+    let contract = tool_materialization::contract_for(id).map_err(materialization_validation)?;
+    if contract.source_revision != entry.official_source.revision
+        || !matches!(
+            contract.strategy,
+            tool_materialization::AdapterStrategy::PinnedSourceBuild
+        )
+    {
+        return Err(materialization_validation(
+            tool_materialization::MaterializationError::RuntimeMismatch,
+        ));
+    }
     let recipe = entry.build_recipes.first().ok_or_else(|| {
         CliError::validation_code(
             "catalog_source_recipe_missing",
@@ -5138,22 +5202,39 @@ fn source_build_artifact(
         recipe: recipe.clone(),
         limits: source_builder::BuildLimits::default(),
     };
-    source_builder::build_from_checkout(checkout, request).map_err(|_| {
-        CliError::operation_code("catalog_source_build_failed", "catalog source build failed")
-    })?;
+    if source_builder::build_from_checkout(checkout, request).is_err() {
+        let _ = fs::remove_dir_all(&build_prefix);
+        return Err(CliError::operation_code(
+            "catalog_source_build_failed",
+            "catalog source build failed",
+        ));
+    }
     let produced = build_prefix.join(id).join(&entry.entrypoint);
-    let bytes = fs::read(&produced).map_err(|_| {
-        CliError::operation_code(
-            "catalog_source_output_unreadable",
-            "source build output cannot be read",
-        )
-    })?;
-    fs::remove_dir_all(&build_prefix).map_err(|_| {
-        CliError::operation_code(
+    if let Err(error) = tool_materialization::inspect_entrypoint(
+        &build_prefix,
+        Path::new(id).join(&entry.entrypoint).as_path(),
+        &contract.launcher.symlink,
+        None,
+    ) {
+        let _ = fs::remove_dir_all(&build_prefix);
+        return Err(materialization_operation(error));
+    }
+    let bytes = match fs::read(&produced) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            let _ = fs::remove_dir_all(&build_prefix);
+            return Err(CliError::operation_code(
+                "catalog_source_output_unreadable",
+                "source build output cannot be read",
+            ));
+        }
+    };
+    if fs::remove_dir_all(&build_prefix).is_err() {
+        return Err(CliError::operation_code(
             "catalog_source_cleanup_failed",
             "source build staging cleanup failed",
-        )
-    })?;
+        ));
+    }
     let alternative = entry
         .alternatives
         .iter()
@@ -5422,6 +5503,11 @@ fn tool_install_with_progress(
             })?;
         (Some(entry), Some(artifact))
     };
+    let adapter_contract = catalog_entry
+        .as_ref()
+        .map(|entry| tool_materialization::contract_for(&entry.id))
+        .transpose()
+        .map_err(materialization_validation)?;
     let kind = match kind {
         Some(kind) => kind,
         None => tool_kind(
@@ -5525,6 +5611,13 @@ fn tool_install_with_progress(
     let bytes = verified.bytes;
     let source_ref = verified.source_ref;
     let digest = format!("{:x}", Sha256::digest(&bytes));
+    if let Some(contract) = &adapter_contract
+        && contract.launcher.relative_path != entrypoint
+    {
+        return Err(materialization_validation(
+            tool_materialization::MaterializationError::InvalidLauncher,
+        ));
+    }
     let path = format!(".asb/tools/{id}/tool");
     let record = ProjectToolRecordV1 {
         kind,
@@ -5580,11 +5673,87 @@ fn tool_install_with_progress(
                     "tool destination already exists with a different digest",
                 ));
             }
+            if let Some(contract) = &adapter_contract {
+                tool_materialization::inspect_entrypoint(
+                    &parent.path,
+                    Path::new(&destination_name),
+                    &contract.launcher.symlink,
+                    Some(&digest),
+                )
+                .map_err(materialization_operation)?;
+            }
+            if catalog_entry.is_some() {
+                let temporary = OsString::from(format!(".tool-smoke-{}", std::process::id()));
+                stage_output_at(&parent.file, &temporary, &bytes, 0o700).map_err(|_| {
+                    CliError::operation_code(
+                        "installation_verification_failed",
+                        "tool smoke fixture cannot be staged",
+                    )
+                })?;
+                let staged_path = parent.path.join(&temporary);
+                let result = (|| {
+                    if let Some(contract) = &adapter_contract {
+                        tool_materialization::inspect_entrypoint(
+                            &parent.path,
+                            Path::new(&temporary),
+                            &contract.launcher.symlink,
+                            Some(&digest),
+                        )
+                        .map_err(materialization_operation)?;
+                    }
+                    smoke_check_catalog_entrypoint(&staged_path)?;
+                    if let Some(contract) = &adapter_contract {
+                        tool_materialization::inspect_entrypoint(
+                            &parent.path,
+                            Path::new(&temporary),
+                            &contract.launcher.symlink,
+                            Some(&digest),
+                        )
+                        .map_err(materialization_operation)?;
+                    }
+                    Ok::<(), CliError>(())
+                })();
+                let _ = unlinkat(&parent.file, &temporary, AtFlags::empty());
+                result?;
+            }
         }
         None => {
             let temporary = OsString::from(format!(".tool-{}.tmp", std::process::id()));
-            stage_output_at(&parent.file, &temporary, &bytes, 0o700)
-                .map_err(|_| CliError::legacy_operation("tool source cannot be staged"))?;
+            stage_output_at(&parent.file, &temporary, &bytes, 0o700).map_err(|_| {
+                CliError::operation_code(
+                    "installation_verification_failed",
+                    "tool source cannot be staged",
+                )
+            })?;
+            if let Some(contract) = &adapter_contract
+                && let Err(error) = tool_materialization::inspect_entrypoint(
+                    &parent.path,
+                    Path::new(&temporary),
+                    &contract.launcher.symlink,
+                    Some(&digest),
+                )
+            {
+                let _ = unlinkat(&parent.file, &temporary, AtFlags::empty());
+                return Err(materialization_operation(error));
+            }
+            if catalog_entry.is_some() {
+                let staged_path = parent.path.join(&temporary);
+                if let Err(error) = smoke_check_catalog_entrypoint(&staged_path) {
+                    let _ = unlinkat(&parent.file, &temporary, AtFlags::empty());
+                    return Err(error);
+                }
+                if let Some(contract) = &adapter_contract
+                    && let Err(error) = tool_materialization::inspect_entrypoint(
+                        &parent.path,
+                        Path::new(&temporary),
+                        &contract.launcher.symlink,
+                        Some(&digest),
+                    )
+                {
+                    let _ = unlinkat(&parent.file, &temporary, AtFlags::empty());
+                    return Err(materialization_operation(error));
+                }
+            }
             if renameat_with(
                 &parent.file,
                 &temporary,
@@ -5595,13 +5764,19 @@ fn tool_install_with_progress(
             .is_err()
             {
                 let _ = unlinkat(&parent.file, &temporary, AtFlags::empty());
-                return Err(CliError::legacy_operation(
+                return Err(CliError::operation_code(
+                    "installation_verification_failed",
                     "tool installation failed and was rolled back",
                 ));
             }
-            fsync(&parent.file).map_err(|_| {
-                CliError::legacy_operation("tool installation directory cannot be synchronized")
-            })?;
+            if fsync(&parent.file).is_err() {
+                let _ = unlinkat(&parent.file, &destination_name, AtFlags::empty());
+                let _ = fsync(&parent.file);
+                return Err(CliError::operation_code(
+                    "installation_verification_failed",
+                    "tool installation directory cannot be synchronized; installation was rolled back",
+                ));
+            }
             created_destination = true;
         }
     }
@@ -5609,14 +5784,8 @@ fn tool_install_with_progress(
     // their existing offline contract.  A supported catalog install is not
     // usable merely because bytes were copied: prove the staged entrypoint
     // can start before recording it as active.
-    if catalog_entry.is_some()
-        && let Err(error) = smoke_check_catalog_entrypoint(&destination)
-    {
-        if created_destination {
-            let _ = unlinkat(&parent.file, &destination_name, AtFlags::empty());
-        }
-        return Err(error);
-    }
+    let receipt_path = root.join(format!(".asb/tools/{id}/receipt.json"));
+    let previous_receipt = fs::read(&receipt_path).ok();
     let receipt = json!({
         "schema_version": 1,
         "catalog_id": tool_catalog::CATALOG_ID,
@@ -5627,11 +5796,19 @@ fn tool_install_with_progress(
         "platform": platform_label(),
         "entrypoint": entrypoint,
         "license": catalog_entry.as_ref().map(|entry| entry.license.as_str()).unwrap_or("NOASSERTION"),
+        "adapter": adapter_contract.as_ref().map(|contract| json!({
+            "strategy": serde_json::to_value(contract.strategy.clone()).unwrap_or(json!("unsupported")),
+            "package_strategy": contract.package_strategy.clone(),
+            "runtime_closure": contract.runtime_closure.clone(),
+            "launcher": contract.launcher.clone(),
+            "entrypoint_sha256": digest.clone(),
+            "smoke": {"passed": catalog_entry.is_some(), "mode": "version-probe"},
+            "rollback_target": previous_receipt.as_ref().map(|_| "previous-receipt"),
+            "retention": "retain-last-known-good"
+        })),
     });
     let receipt_bytes = serde_json::to_vec_pretty(&receipt)
         .map_err(|_| CliError::legacy_operation("tool acquisition receipt cannot be encoded"))?;
-    let receipt_path = root.join(format!(".asb/tools/{id}/receipt.json"));
-    let previous_receipt = fs::read(&receipt_path).ok();
     if let Err(error) =
         write_atomic_private(&receipt_path, &receipt_bytes, DirectoryPurpose::Tools, None)
     {
@@ -19670,6 +19847,7 @@ pub mod source_builder;
 pub mod source_checkout;
 mod tool_acquisition;
 pub mod tool_catalog;
+pub mod tool_materialization;
 
 fn preflight_cli(args: &[String], output: &mut dyn Write) -> Result<u8, CliError> {
     let mut project = ".";
