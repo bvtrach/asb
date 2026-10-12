@@ -48,6 +48,7 @@ use asb_replay::{
     RecordedRequest, RecordedResponse, RecordingCapture, RecordingDescriptor, RecordingIndex,
     ResponseBody, SourceChoice, TerminalEvent, seal_recording,
 };
+use asb_runtime::cli2key_sidecar::{Cli2KeyCommand, Cli2KeyError, Cli2KeyRuntimeAuthority};
 use asb_runtime::control_owner_contract::LocalMockRuntimeControlOwner;
 use asb_runtime::launch_factory::{
     LaunchAuthorityError, LiveProviderAttempt, LiveProviderAttemptFactory, LocalReplayProvisioner,
@@ -8884,6 +8885,7 @@ fn execute_live_benchmark_matrix(
             progress,
             None,
             None,
+            path.parent(),
         )?;
         let receipt: Value = serde_json::from_slice(&entry_output)
             .map_err(|_| CliError::legacy_operation("benchmark-live receipt cannot be decoded"))?;
@@ -9113,6 +9115,7 @@ fn execute_inner_from_source_with_owner_project(
         progress,
         presentation_context,
         project_root,
+        path.parent(),
     )
 }
 
@@ -9150,6 +9153,26 @@ fn ensure_execution_dependencies(
     ))
 }
 
+fn map_cli2key_bootstrap_error(error: Cli2KeyError) -> CliError {
+    match error {
+        Cli2KeyError::InvalidReceipt
+        | Cli2KeyError::InvalidPlatform
+        | Cli2KeyError::ReceiptBinding => {
+            CliError::legacy_validation("cli2key runtime receipt is invalid or stale")
+        }
+        Cli2KeyError::InvalidExecutable => {
+            CliError::legacy_validation("cli2key installed executable is invalid or stale")
+        }
+        Cli2KeyError::InvalidLocalKey
+        | Cli2KeyError::RandomUnavailable
+        | Cli2KeyError::Staging(_)
+        | Cli2KeyError::Readiness
+        | Cli2KeyError::Process(_) => {
+            CliError::legacy_operation("cli2key runtime sidecar could not be started")
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_loaded_plan(
     plan: PlanFile,
@@ -9163,6 +9186,7 @@ fn execute_loaded_plan(
     progress: &mut dyn Write,
     presentation_context: Option<&mut human::PresentationContext>,
     project_root: Option<&Path>,
+    receipt_project_root: Option<&Path>,
 ) -> Result<u8, CliError> {
     ensure_execution_dependencies(
         if sweep { "sweep" } else { "run" },
@@ -9210,6 +9234,48 @@ fn execute_loaded_plan(
                 )
             })?;
     }
+    // Ordinary cli2key dispatch is composed only after the selected project
+    // receipt and pinned executable have been validated. The runtime-issued
+    // factory is the only authority input crossing this boundary; the
+    // authority remains alive until all run/sweep points and teardown finish.
+    let mut _cli2key_authority = None;
+    let live_factory = if live_provider
+        && selection
+            .as_ref()
+            .is_some_and(|value| value.provider_profile == "cli2key")
+    {
+        let factory = live_factory.ok_or_else(|| {
+            CliError::legacy_validation(
+                "cli2key live execution requires a runtime-issued sidecar factory",
+            )
+        })?;
+        let project = receipt_project_root.unwrap_or_else(|| Path::new("."));
+        let receipt_path = project.join(".asb/tools/cli2key/runtime-receipt.json");
+        let receipt_bytes = read_bounded_json(
+            &receipt_path,
+            16 * 1024,
+            "cli2key runtime receipt is unavailable or invalid",
+        )?;
+        let receipt =
+            asb_runtime::cli2key_sidecar::Cli2KeyRuntimeReceipt::from_json_bytes(&receipt_bytes)
+                .map_err(map_cli2key_bootstrap_error)?;
+        let executable = project.join(".asb/tools/cli2key/tool");
+        let command =
+            Cli2KeyCommand::new(executable, Vec::new(), receipt.executable_sha256.clone())
+                .map_err(map_cli2key_bootstrap_error)?;
+        let authority = Cli2KeyRuntimeAuthority::bootstrap_from_receipt_bytes(
+            &receipt_bytes,
+            &command,
+            None,
+            factory,
+        )
+        .map_err(map_cli2key_bootstrap_error)?;
+        let factory = authority.attempt_factory();
+        _cli2key_authority = Some(authority);
+        Some(factory)
+    } else {
+        live_factory
+    };
     if plan.experiment.controls.replay.mode == asb_protocol::ReplayMode::Replay {
         return Err(CliError::legacy_validation(
             "run cannot use a replay plan without an explicit strict cassette execution",
@@ -14713,6 +14779,32 @@ pub(crate) mod tests {
         plan.point.warmups = 0;
         plan.experiment.refresh_content_address().unwrap();
         fs::write(&plan_path, toml::to_string(&plan).unwrap()).unwrap();
+        let bridge_root = scratch.0.join(".asb/tools/cli2key");
+        fs::create_dir_all(&bridge_root).unwrap();
+        let bridge = bridge_root.join("tool");
+        let bridge_bytes = b"#!/bin/sh\nprintf 'ASB_CLI2KEY_READY 127.0.0.1:12345\\n'\n";
+        fs::write(&bridge, bridge_bytes).unwrap();
+        fs::set_permissions(&bridge, fs::Permissions::from_mode(0o700)).unwrap();
+        let executable_sha256 = format!("{:x}", Sha256::digest(bridge_bytes));
+        fs::write(
+            bridge_root.join("runtime-receipt.json"),
+            serde_json::to_vec(&json!({
+                "schema_version": 1,
+                "status": "verified",
+                "catalog_generation": 1,
+                "platform": "linux-x86_64",
+                "catalog_sha256": "c".repeat(64),
+                "bridge_revision": "fixture",
+                "bridge_tree_sha256": "e".repeat(64),
+                "executable_sha256": executable_sha256,
+                "endpoint_sha256": "1".repeat(64),
+                "credential_reference_sha256": "b".repeat(64),
+                "entrypoint": "codex-bridge",
+                "protocol_sha256": "f".repeat(64)
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let code = run_with_live_provider_factory(
             &[
                 "run".into(),
@@ -14728,6 +14820,24 @@ pub(crate) mod tests {
             &mut Vec::new(),
         );
         assert_eq!(code, 6);
+        fs::write(bridge_root.join("runtime-receipt.json"), b"{}").unwrap();
+        let mut failure = Vec::new();
+        let failure_code = run_with_live_provider_factory(
+            &[
+                "run".into(),
+                plan_path.as_os_str().to_owned(),
+                "--provider-selection".into(),
+                selection_path.as_os_str().to_owned(),
+                "--live-provider".into(),
+            ],
+            LiveProviderAttemptFactory::from_fn(|_, _| {
+                panic!("invalid receipt must fail before factory use")
+            }),
+            &mut failure,
+            &mut Vec::new(),
+        );
+        assert_eq!(failure_code, 3);
+        assert!(String::from_utf8_lossy(&failure).contains("runtime receipt is invalid or stale"));
     }
 
     #[test]
