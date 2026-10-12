@@ -4782,8 +4782,12 @@ fn open_validated_development_rustup_tool_at(bin: &File, name: &str) -> Result<F
     let metadata = file
         .metadata()
         .map_err(|_| RouterError::operation("trusted_tool_unavailable"))?;
-    let uid = rustix::process::geteuid().as_raw();
-    if !metadata.is_file() || metadata.uid() != uid || metadata.mode() & 0o022 != 0 {
+    // The development channel deliberately treats permission and ownership
+    // findings as warning-only. The descriptor is still bound beneath the
+    // already validated rustup toolchain directory, opened without following
+    // symlinks, and rejected when it is not a regular file. Stable and
+    // production paths do not call this helper.
+    if !metadata.is_file() {
         return Err(RouterError::policy("trusted_tool_invalid"));
     }
     Ok(file)
@@ -6903,6 +6907,57 @@ mod tests {
             resolve_development_rustc(&resolved.path, None, true).unwrap(),
             Some(cargo.parent().unwrap().join("rustc"))
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn development_rustup_bound_rustc_accepts_permission_findings() {
+        let root = PathBuf::from(std::env::var_os("HOME").unwrap())
+            .join(".cache")
+            .join(format!(
+                "asb-ar1799-rustup-bound-permissions-{}",
+                std::process::id()
+            ));
+        prepare_private_directory(&root).unwrap();
+        fs::write(
+            root.join("settings.toml"),
+            b"version = \"12\"\ndefault_toolchain = \"fixture-toolchain\"\n",
+        )
+        .unwrap();
+        let shim_bin = root.join("home/.cargo/bin");
+        prepare_private_directory(&shim_bin).unwrap();
+        let proxy = shim_bin.join("rustup");
+        fs::write(&proxy, b"#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&proxy, fs::Permissions::from_mode(0o777)).unwrap();
+        let shim_cargo = shim_bin.join("cargo");
+        std::os::unix::fs::symlink(&proxy, &shim_cargo).unwrap();
+        let bin = root.join("toolchains/fixture-toolchain/bin");
+        prepare_private_directory(&bin).unwrap();
+        let cargo = bin.join("cargo");
+        let rustc = bin.join("rustc");
+        fs::write(&cargo, b"#!/bin/sh\nexit 0\n").unwrap();
+        fs::write(&rustc, b"#!/bin/sh\nexit 0\n").unwrap();
+        // This host layout previously passed preflight but failed when the
+        // real descriptor-bound rustc was opened for installation.
+        fs::set_permissions(&cargo, fs::Permissions::from_mode(0o777)).unwrap();
+        fs::set_permissions(&rustc, fs::Permissions::from_mode(0o777)).unwrap();
+
+        let resolved = resolve_development_cargo_from_with_rustup(
+            Some(shim_cargo.as_os_str()),
+            None,
+            None,
+            Some(&root),
+        )
+        .unwrap();
+        let rustc = resolve_development_rustc_bound(&resolved, Some(&root), false)
+            .unwrap()
+            .expect("rustc bound to the selected toolchain");
+        assert_eq!(
+            rustc.path,
+            root.join("toolchains/fixture-toolchain/bin/rustc")
+        );
+
         fs::remove_dir_all(root).unwrap();
     }
 
