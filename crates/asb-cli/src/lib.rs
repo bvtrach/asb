@@ -4359,6 +4359,13 @@ fn workload_output(
 
 fn acquire_verified_workload_archive(source_url: &str) -> Result<Vec<u8>, CliError> {
     if let Ok(root) = std::env::var("ASB_WORKLOAD_FIXTURE_ROOT") {
+        let credential_free = std::env::var("ASB_CI_CREDENTIAL_FREE").ok();
+        let authority = std::env::var("ASB_DEVELOPMENT_FIXTURE_AUTHORITY").ok();
+        if !fixture_authority_allows(credential_free.as_deref(), authority.as_deref()) {
+            return Err(CliError::legacy_validation(
+                "workload fixtures require explicit development authority",
+            ));
+        }
         return acquire_fixture_workload_archive(Path::new(&root), source_url);
     }
     if matches!(
@@ -4401,6 +4408,10 @@ fn acquire_verified_workload_archive(source_url: &str) -> Result<Vec<u8>, CliErr
         ));
     }
     Ok(transfer.stdout)
+}
+
+fn fixture_authority_allows(credential_free: Option<&str>, authority: Option<&str>) -> bool {
+    matches!(credential_free, Some("1" | "true" | "yes")) && matches!(authority, Some("1"))
 }
 
 /// Read a catalog-addressed archive from a caller-provided, credential-free
@@ -17547,6 +17558,7 @@ pub(crate) mod tests {
 
     #[test]
     fn record_campaign_requires_exact_matrix_before_offline_ready() {
+        let _fixture_guard = super::test_fixture_semaphore::acquire();
         let scratch = Scratch::new("record-campaign");
         let capture_path = scratch.0.join("capture.json");
         let cassette_path = scratch.0.join("cassette.json");
@@ -17771,6 +17783,7 @@ pub(crate) mod tests {
 
     #[test]
     fn record_campaign_empty_workload_selection_expands_the_full_catalog() {
+        let _fixture_guard = super::test_fixture_semaphore::acquire();
         let scratch = Scratch::new("record-campaign-all");
         let capture_path = scratch.0.join("capture.json");
         let manifest_path = scratch.0.join("all-campaign.json");
@@ -18171,6 +18184,20 @@ pub(crate) mod tests {
         fs::remove_file(&archive).unwrap();
         std::os::unix::fs::symlink(scratch.0.join("elsewhere"), &archive).unwrap();
         assert!(super::acquire_fixture_workload_archive(&scratch.0, source).is_err());
+        fs::remove_file(&archive).unwrap();
+        let oversized = fs::File::create(&archive).unwrap();
+        oversized.set_len(536_870_913).unwrap();
+        assert!(super::acquire_fixture_workload_archive(&scratch.0, source).is_err());
+    }
+
+    #[test]
+    fn fixture_authority_requires_credential_free_development_context() {
+        assert!(!super::fixture_authority_allows(None, Some("1")));
+        assert!(!super::fixture_authority_allows(Some("1"), None));
+        assert!(!super::fixture_authority_allows(Some("0"), Some("1")));
+        assert!(!super::fixture_authority_allows(Some("true"), Some("0")));
+        assert!(super::fixture_authority_allows(Some("1"), Some("1")));
+        assert!(super::fixture_authority_allows(Some("yes"), Some("1")));
     }
 
     fn verified_workload_fixture_archive(_: &str) -> Result<Vec<u8>, CliError> {

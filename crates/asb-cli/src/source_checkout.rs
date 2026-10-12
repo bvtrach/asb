@@ -659,6 +659,7 @@ mod tests {
 
     #[test]
     fn acquisition_rejects_owned_staging_collision_and_cleanup_failure() {
+        let _fixture_guard = crate::test_fixture_semaphore::acquire();
         let _fixture_guard = fixture_lock();
         let (source, revision, staging) = fixture_repository();
         let request = CheckoutRequest::for_tool(
@@ -900,6 +901,7 @@ mod tests {
 
     #[test]
     fn exact_fixture_checkout_is_returned_and_cleanup_is_explicit() {
+        let _fixture_guard = crate::test_fixture_semaphore::acquire();
         let _fixture_guard = fixture_lock();
         let (source, revision, staging) = fixture_repository();
         let mut request = CheckoutRequest::for_tool(
@@ -917,6 +919,7 @@ mod tests {
 
     #[test]
     fn unavailable_repository_is_transactionally_cleaned() {
+        let _fixture_guard = crate::test_fixture_semaphore::acquire();
         let (source, revision, staging) = fixture_repository();
         let missing_repo = source.parent().unwrap().join("missing-repository");
         let request = CheckoutRequest::for_tool(
