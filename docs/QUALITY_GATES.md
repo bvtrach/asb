@@ -91,6 +91,15 @@ known-vulnerable lockfile and an impossible coverage floor. A missing tool,
 unexpectedly permissive new release, or stale command syntax therefore fails CI
 instead of silently skipping a gate.
 
+Development PRs and ordinary pushes deliberately do not run TLC or Alloy. The
+development formal workflow retains the Kani and Loom checks, while the single
+`Final delivery formal assurance (future)` workflow is restricted to a future
+`final-delivery` PR (or an explicit dispatch) and contains the only
+`formal/run_temporal_models.sh` invocation. That lane is non-claimable during
+development and is required only when a finished product is being delivered;
+its bounded formal result never removes native, Rust, privacy, policy, fuzz,
+supply-chain or platform checks.
+
 Gitleaks scans are revision-scoped and use the repository-owned
 `.gitleaks.toml` through `tools/quality/run_gitleaks.sh`. The wrapper requires
 an explicit immutable base and head, verifies that the head descends from the

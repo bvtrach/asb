@@ -452,7 +452,6 @@ def validate_merge_integrity_tools() -> None:
         "Retained faults (ubuntu-24.04)",
         "Matcher and SLO mutation sentinels",
         "Exact TUI inherited-fd and PTY journey",
-        "TLC and Alloy recovery models",
         "Platform evidence (ubuntu-24.04)",
         "Exact Huawei 2026 and SPDX MIT headers",
         "Credential-free benchmark path",

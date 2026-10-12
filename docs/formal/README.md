@@ -1,5 +1,13 @@
 # Formal assurance model map
 
+Formal execution is split by lifecycle. Ordinary development PRs and pushes
+run the Kani and Loom checks in `Development formal assurance`, but do not
+invoke TLC or Alloy. Exactly one future, non-claimable lane—`Final delivery
+formal assurance (future)`—runs `formal/run_temporal_models.sh`, and only for
+the `final-delivery` PR branch or explicit dispatch when a finished product is
+being delivered. This separation is contractual and does not weaken any
+native, Rust, privacy, policy, fuzz, supply-chain or platform gate.
+
 ASB will follow Agent Relay's layered formal-methods pattern: readable TLA+ and
 Alloy specifications, a deterministic finite executable model, named hostile
 counterexample traces, implementation contract tests and an explicit table of
