@@ -129,11 +129,7 @@ pub fn acquire(request: &CheckoutRequest) -> Result<SourceCheckout, CheckoutErro
     let _fixture_guard = crate::test_fixture_semaphore::acquire();
     validate_request(request)?;
     fs::create_dir_all(&request.staging_root).map_err(|_| CheckoutError::Unavailable)?;
-    let name = format!("checkout-{}", std::process::id());
-    let staging = request.staging_root.join(name);
-    if staging.exists() {
-        return Err(CheckoutError::CleanupFailed);
-    }
+    let staging = reserve_staging_root(&request.staging_root)?;
     let result = acquire_inner(request, &staging);
     if result.is_err() && staging.exists() && fs::remove_dir_all(&staging).is_err() {
         return Err(CheckoutError::CleanupFailed);
@@ -141,12 +137,35 @@ pub fn acquire(request: &CheckoutRequest) -> Result<SourceCheckout, CheckoutErro
     result
 }
 
+/// Reserve a transaction directory atomically.  Process-local test locks do
+/// not protect independent cargo processes, and PID-only names can therefore
+/// collide when processes run in separate PID namespaces.  `create_dir` is
+/// the ownership claim: a pre-existing candidate is skipped, while all other
+/// filesystem failures remain fail-closed.
+fn reserve_staging_root(root: &Path) -> Result<PathBuf, CheckoutError> {
+    const MAX_ATTEMPTS: u32 = 128;
+    let pid = std::process::id();
+    for suffix in 0..MAX_ATTEMPTS {
+        let name = if suffix == 0 {
+            format!("checkout-{pid}")
+        } else {
+            format!("checkout-{pid}-{suffix}")
+        };
+        let staging = root.join(name);
+        match fs::create_dir(&staging) {
+            Ok(()) => return Ok(staging),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return Err(CheckoutError::Unavailable),
+        }
+    }
+    Err(CheckoutError::Unavailable)
+}
+
 fn acquire_inner(
     request: &CheckoutRequest,
     staging: &Path,
 ) -> Result<SourceCheckout, CheckoutError> {
     let deadline = Instant::now() + request.limits.timeout;
-    fs::create_dir_all(staging).map_err(|_| CheckoutError::Unavailable)?;
     let mut clone = command(request, "clone");
     clone.args([
         "--no-checkout",
@@ -658,9 +677,9 @@ mod tests {
     }
 
     #[test]
-    fn acquisition_rejects_owned_staging_collision_and_cleanup_failure() {
-        let _fixture_guard = crate::test_fixture_semaphore::acquire();
-        let _fixture_guard = fixture_lock();
+    fn acquisition_skips_owned_staging_collision_and_cleanup_failure_is_typed() {
+        let _semaphore_guard = crate::test_fixture_semaphore::acquire();
+        let _fixture_lock_guard = fixture_lock();
         let (source, revision, staging) = fixture_repository();
         let request = CheckoutRequest::for_tool(
             &tool(&format!("file://{}", source.display()), &revision),
@@ -669,7 +688,9 @@ mod tests {
         .unwrap();
         let collision = staging.join(format!("checkout-{}", std::process::id()));
         std::fs::create_dir_all(&collision).unwrap();
-        assert_eq!(acquire(&request), Err(CheckoutError::CleanupFailed));
+        let checkout = acquire(&request).unwrap();
+        assert_ne!(checkout.path(), collision.as_path());
+        checkout.cleanup().unwrap();
         std::fs::remove_dir_all(&collision).unwrap();
 
         let missing = SourceCheckout {
@@ -679,6 +700,43 @@ mod tests {
         };
         assert_eq!(missing.cleanup(), Err(CheckoutError::CleanupFailed));
         let _ = std::fs::remove_dir_all(source.parent().unwrap());
+    }
+
+    #[test]
+    fn staging_reservation_has_a_bounded_collision_budget() {
+        let root = tempfile::tempdir().unwrap();
+        let pid = std::process::id();
+        for suffix in 0..128_u32 {
+            let name = if suffix == 0 {
+                format!("checkout-{pid}")
+            } else {
+                format!("checkout-{pid}-{suffix}")
+            };
+            std::fs::create_dir(root.path().join(name)).unwrap();
+        }
+        assert_eq!(
+            reserve_staging_root(root.path()),
+            Err(CheckoutError::Unavailable)
+        );
+    }
+
+    #[test]
+    fn staging_reservation_is_safe_for_concurrent_owners() {
+        let root = tempfile::tempdir().unwrap();
+        let mut workers = Vec::new();
+        for _ in 0..16 {
+            let path = root.path().to_path_buf();
+            workers.push(std::thread::spawn(move || reserve_staging_root(&path)));
+        }
+        let reservations: Vec<PathBuf> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap().unwrap())
+            .collect();
+        let unique: std::collections::BTreeSet<PathBuf> = reservations.iter().cloned().collect();
+        assert_eq!(unique.len(), reservations.len());
+        for path in reservations {
+            std::fs::remove_dir(path).unwrap();
+        }
     }
 
     #[test]
@@ -901,8 +959,8 @@ mod tests {
 
     #[test]
     fn exact_fixture_checkout_is_returned_and_cleanup_is_explicit() {
-        let _fixture_guard = crate::test_fixture_semaphore::acquire();
-        let _fixture_guard = fixture_lock();
+        let _semaphore_guard = crate::test_fixture_semaphore::acquire();
+        let _fixture_lock_guard = fixture_lock();
         let (source, revision, staging) = fixture_repository();
         let mut request = CheckoutRequest::for_tool(
             &tool(&format!("file://{}", source.display()), &revision),
