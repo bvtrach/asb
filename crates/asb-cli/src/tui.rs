@@ -2274,17 +2274,7 @@ fn launch_development_broker_with_backend<B: ControlBackend + Send + Sync + 'sta
             let _ = fs::remove_dir_all(&broker_root);
             return Err(RouterError::operation("development_channel_rejected"));
         }
-        let child_deadline = Instant::now() + Duration::from_secs(15);
         loop {
-            if Instant::now() >= child_deadline {
-                terminate_development_child(&mut child);
-                drop(router);
-                if let Some(worker) = server_worker.take() {
-                    let _ = worker.join();
-                }
-                let _ = fs::remove_dir_all(&broker_root);
-                return Err(RouterError::operation("development_launch_timeout"));
-            }
             let child_status = match child.try_wait() {
                 Ok(status) => status,
                 Err(_) => {
@@ -6082,6 +6072,14 @@ mod tests {
             .position(|call| matches!(call, ControlCall::History(_)))
             .expect("history bootstrap");
         assert!(measurement < history, "bootstrap order: {observed:?}");
+        // Admission is complete, so a healthy interactive session must not be
+        // terminated by the former fixed 15-second child deadline. Keep the
+        // real PTY session idle past that boundary before sending quit input.
+        thread::sleep(Duration::from_secs(16));
+        assert!(matches!(
+            launch_result.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
         // Exercise the real TUI action path: enter Run Control, activate the
         // seeded offline campaign, select its digest-only cassette, dispatch
         // strict replay, then quit. The ASB recorder sees the typed calls.
@@ -6167,7 +6165,7 @@ mod tests {
                 master.write_all(b"q").unwrap();
             }
         });
-        let result = match launch_result.recv_timeout(Duration::from_secs(20)) {
+        let result = match launch_result.recv_timeout(Duration::from_secs(40)) {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => {
                 let calls = calls.lock().expect("call recorder lock");
