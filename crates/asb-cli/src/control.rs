@@ -2401,6 +2401,27 @@ fn validate_catalog(catalog: &Catalog) -> Result<(), CliError> {
                         && status.generation == record.generation
                         && status.status == record.status
                 }),
+                (
+                    MutationTarget::RuntimeBootstrap { provider },
+                    ControlResult::RuntimeBootstrap(response),
+                ) => catalog.runtime_bootstraps.values().any(|record| {
+                    record.provider == *provider
+                        && record.request_nonce_sha256 == response.request_nonce_sha256
+                        && record.generation == response.generation
+                        && record.control_session_sha256 == response.control_session_sha256
+                        && record.restart_binding_sha256 == response.restart_binding_sha256
+                        && record.cancellation_binding_sha256
+                            == response.cancellation_binding_sha256
+                        && record.expires_at_unix_ms == response.expires_at_unix_ms
+                        && !record.revoked
+                }),
+                (
+                    MutationTarget::RuntimeBootstrapCancel { provider },
+                    ControlResult::Acknowledged(_),
+                ) => catalog
+                    .runtime_bootstraps
+                    .values()
+                    .any(|record| record.provider == *provider && record.revoked),
                 (MutationTarget::ConfigurationApply, ControlResult::Configuration(snapshot)) => {
                     catalog.configuration.as_ref().is_some_and(|configuration| {
                         snapshot.configured
@@ -6376,6 +6397,161 @@ mod tests {
             RunnerBackend::materialize_runtime_receipt(&catalog, &request, 1),
             Err(BackendFailure::CapabilityUnavailable)
         );
+        scratch.cleanup_with_hook(|| {});
+    }
+
+    #[test]
+    fn unix_runtime_bootstrap_uses_kernel_session_and_rejects_stale_replay() {
+        let mut scratch = Scratch::new();
+        let state = scratch.0.join("state");
+        prepare_root(&state).unwrap();
+        let backend = open_backend(state.clone()).unwrap();
+        let catalog = Arc::clone(&backend.catalog);
+        let runner_instance_id = backend.runner_instance_id().to_owned();
+        let socket = scratch.0.join("runtime-control.sock");
+        let mut server = ControlServer::bind(&socket, ControlLimits::default(), backend).unwrap();
+        let service = thread::spawn(move || server.serve_connections(1));
+        let mut client = asb_control::ControlClient::connect_with_versions(
+            &socket,
+            ControlLimits::default(),
+            [asb_control::CONTROL_RUNTIME_BOOTSTRAP_V1],
+        )
+        .unwrap();
+
+        // The digest is obtained from the live client, whose peer credentials
+        // came from SO_PEERCRED. The fixture never constructs PeerIdentity or
+        // authority from caller-provided values.
+        let session = client.session_identity_sha256().unwrap();
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let now_s = now_ms / 1_000;
+        let endpoint = "b".repeat(64);
+        let credential = "c".repeat(64);
+        let chain = AuthenticatedChainEnrollmentV1 {
+            schema_version: 1,
+            chain: vec![CertificateIdentityV1 {
+                schema_version: 1,
+                subject_sha256: session.clone(),
+                issuer_sha256: "d".repeat(64),
+                certificate_sha256: "d".repeat(64),
+                trust_anchor_sha256: "a".repeat(64),
+                generation: 1,
+                not_before: now_s,
+                not_after: now_s + 600,
+                role: "operator".into(),
+                endpoint_identity_sha256: endpoint.clone(),
+            }],
+            pairing_fingerprint_sha256: session.clone(),
+            generation: 1,
+        };
+        let authority = CertificateAuthorityV1::with_trust_anchor_digest_and_endpoint(
+            "a".repeat(64),
+            1,
+            endpoint.clone(),
+        )
+        .unwrap();
+        let issued = chain.issue_chain(&authority, now_s).unwrap();
+        let record = RuntimeAuthorityRecord {
+            provider: "openrouter".into(),
+            trust_anchor_sha256: "a".repeat(64),
+            endpoint_identity_sha256: endpoint,
+            chain,
+            enrollment: RuntimeAuthorityEnrollmentV1 {
+                schema_version: 1,
+                chain_sha256: issued.chain_sha256().into(),
+                provider: "openrouter".into(),
+                credential_ref_sha256: credential.clone(),
+                target: "203.0.113.10:443".into(),
+                tool_bundle_sha256: "f".repeat(64),
+                lease_root_sha256: "1".repeat(64),
+                relay_root_sha256: "2".repeat(64),
+                generation: 1,
+                issued_at_unix_ms: now_ms,
+                expires_at_unix_ms: now_ms + 600_000,
+            },
+        };
+        {
+            let mut catalog = catalog.lock().unwrap();
+            catalog.auth.insert(
+                "openrouter".into(),
+                AuthRecord {
+                    provider: "openrouter".into(),
+                    endpoint_identity_sha256: record.endpoint_identity_sha256.clone(),
+                    credential_locator_sha256: credential,
+                    generation: 1,
+                    status: "active".into(),
+                },
+            );
+            RunnerBackend::install_runtime_authority(&mut catalog, "openrouter", record).unwrap();
+        }
+        {
+            let catalog = catalog.lock().unwrap().clone();
+            validate_catalog(&catalog).unwrap();
+            commit_catalog(&state, &catalog).unwrap();
+        }
+
+        let request = asb_control::RuntimeBootstrapRequestV1 {
+            schema_version: 1,
+            provider: "openrouter".into(),
+            generation: 1,
+            control_session_sha256: session,
+            request_nonce_sha256: "e".repeat(64),
+            restart_binding_sha256: "f".repeat(64),
+            namespace_sha256: "1".repeat(64),
+        };
+        let first = client
+            .call(ControlCall::RuntimeBootstrap(request.clone()), 5_000)
+            .unwrap_or_else(|error| panic!("bootstrap transport/protocol: {error:?}"));
+        let first_result = first
+            .result()
+            .unwrap_or_else(|| panic!("bootstrap error: {:?}", first.error()));
+        let ControlSuccess::Operation(bound) = first_result else {
+            panic!("bootstrap operation");
+        };
+        let ControlResult::RuntimeBootstrap(response) = &bound.result else {
+            panic!("bootstrap response");
+        };
+        let cancellation = response.cancellation_binding_sha256.clone();
+        let replay = client
+            .call(ControlCall::RuntimeBootstrap(request.clone()), 5_000)
+            .unwrap();
+        assert_eq!(replay.result(), first.result());
+
+        let mut stale = request.clone();
+        stale.generation = 2;
+        stale.request_nonce_sha256 = "2".repeat(64);
+        let stale = client
+            .call(ControlCall::RuntimeBootstrap(stale), 5_000)
+            .unwrap();
+        assert_eq!(
+            stale.error().unwrap().code,
+            asb_control::error_code::STALE_IDENTITY
+        );
+
+        let cancel = asb_control::RuntimeBootstrapCancelRequestV1 {
+            schema_version: 1,
+            provider: "openrouter".into(),
+            generation: 1,
+            control_session_sha256: request.control_session_sha256.clone(),
+            cancellation_binding_sha256: cancellation,
+            idempotency_key: "runtime-cancel".into(),
+        };
+        let cancelled = client
+            .call(ControlCall::RuntimeBootstrapCancel(cancel.clone()), 5_000)
+            .unwrap();
+        assert!(cancelled.result().is_some());
+        let replay_after_cancel = client
+            .call(ControlCall::RuntimeBootstrap(request), 5_000)
+            .unwrap();
+        assert_eq!(
+            replay_after_cancel.error().unwrap().code,
+            asb_control::error_code::RESOURCE_EXHAUSTED
+        );
+        drop(client);
+        service.join().unwrap().unwrap();
+        assert!(asb_control::validate_identity(&runner_instance_id).is_ok());
         scratch.cleanup_with_hook(|| {});
     }
 
