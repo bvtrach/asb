@@ -2815,7 +2815,6 @@ fn tui_failure_text(code: &str) -> &'static str {
         "trusted_tool_unavailable" | "host_capability_unavailable" => {
             "trusted tool unavailable; the required host capability is unavailable"
         }
-        "signature_verifier_unavailable" => "the signature-verifier capability is unavailable",
         "trusted_tool_invalid" => {
             "the trusted tool is invalid or does not satisfy the development trust contract"
         }
@@ -2862,13 +2861,11 @@ fn tui_failure_text(code: &str) -> &'static str {
         "release_invalid" => "the selected release is malformed or incompatible",
         "sbom_invalid" => "the software bill of materials is malformed or incompatible",
         "sbom_missing" => "the required software bill of materials is missing",
-        "signature_invalid" => "the artifact signature is invalid for the selected content",
         "state_path_invalid" => "the durable state path is invalid",
         "state_unavailable" => "the durable state is unavailable",
         "state_write_failed" => "the durable state could not be written",
         "synthetic_interruption" => "the bounded operation was interrupted before completion",
         "system_clock_invalid" => "the system clock capability is invalid",
-        "trust_anchor_invalid" => "the configured trust anchor is invalid",
         "unexpected_document" => "the received document has an unexpected shape",
         "unexpected_range" => "the requested range has an unexpected shape",
         "xdg_root_invalid" => "the configured XDG root is invalid",

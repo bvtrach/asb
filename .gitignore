@@ -3,5 +3,6 @@
 /artifacts/
 /recordings/
 /datasets/
+/.make/
 __pycache__/
 *.py[cod]

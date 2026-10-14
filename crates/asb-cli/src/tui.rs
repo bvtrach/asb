@@ -34,16 +34,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const INDEX_URL: &str =
     "https://github.com/martin-beck/asb-tui/releases/download/channel-v1/stable-index.json";
-const INDEX_SIGNATURE_URL: &str =
-    "https://github.com/martin-beck/asb-tui/releases/download/channel-v1/stable-index.json.sig";
-const CHANNEL_NAMESPACE: &str = "asb-tui-channel-v1";
-const BUNDLE_NAMESPACE: &str = "asb-tui-bundle-v1";
-const SIGNER_IDENTITY: &str = "martin.beck2@gmx.de";
-const SIGNER_FINGERPRINT: &str = "SHA256:a36V6yPvRZyxnQ2113tiA/MlHt7mPfJEXAGByBXVkuE";
-const TRUSTED_SIGNERS: &[u8] = include_bytes!("tui_allowed_signers");
 const MAX_INDEX_BYTES: usize = 128 * 1024;
 const MAX_MANIFEST_BYTES: usize = 128 * 1024;
-const MAX_SIGNATURE_BYTES: usize = 16 * 1024;
 const MAX_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_BUNDLE_BYTES: u64 = 512 * 1024 * 1024;
 const CHUNK_BYTES: usize = 1024 * 1024;
@@ -52,7 +44,6 @@ const RESPONSE_BYTES: u64 = 16 * 1024;
 const DELEGATE_TIMEOUT: Duration = Duration::from_secs(30);
 const DEV_CONTROL_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(2);
 const CURL: &str = "/usr/bin/curl";
-const SSH_KEYGEN: &str = "/usr/bin/ssh-keygen";
 const MAX_REDIRECTS: usize = 3;
 const DEV_REPOSITORY_URL: &str = "https://github.com/martin-beck/asb-tui.git";
 const ASB_REPOSITORY_URL: &str = "https://github.com/martin-beck/agent-systems-benchmark.git";
@@ -472,7 +463,6 @@ struct RouterPaths {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ChannelIndex {
     schema_version: u64,
     issued_unix: u64,
@@ -481,14 +471,12 @@ struct ChannelIndex {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ChannelRelease {
     release: String,
     target: String,
     asb_version: String,
     protocol_version: u64,
     manifest_url: String,
-    manifest_signature_url: String,
     manifest_sha256: String,
 }
 
@@ -1358,21 +1346,8 @@ fn install_or_upgrade(
         MAX_INDEX_BYTES,
         options.offline,
     )?;
-    let signature = acquire_document(
-        source,
-        &paths.cache_root.join("channel.json.sig"),
-        INDEX_SIGNATURE_URL,
-        MAX_SIGNATURE_BYTES,
-        options.offline,
-    )?;
-    verify_signature(&index_bytes, &signature, CHANNEL_NAMESPACE)?;
     if !options.offline {
         atomic_private(&paths.cache_root.join("channel.json"), &index_bytes, 0o600)?;
-        atomic_private(
-            &paths.cache_root.join("channel.json.sig"),
-            &signature,
-            0o600,
-        )?;
     }
     let selected = select_release(&index_bytes, now, target())?;
     enforce_rollback(&paths.state_root, &selected)?;
@@ -1391,22 +1366,9 @@ fn install_or_upgrade(
     if digest(&manifest_bytes) != selected.manifest_sha256 {
         return Err(RouterError::policy("manifest_digest_mismatch"));
     }
-    let manifest_signature = acquire_document(
-        source,
-        &release_cache.join("manifest.json.sig"),
-        &selected.manifest_signature_url,
-        MAX_SIGNATURE_BYTES,
-        options.offline,
-    )?;
-    verify_signature(&manifest_bytes, &manifest_signature, BUNDLE_NAMESPACE)?;
     let manifest = validate_manifest(&manifest_bytes, &selected, now)?;
     if !options.offline {
         atomic_private(&release_cache.join("manifest.json"), &manifest_bytes, 0o600)?;
-        atomic_private(
-            &release_cache.join("manifest.json.sig"),
-            &manifest_signature,
-            0o600,
-        )?;
     }
     let artifact_root = release_cache.join("artifacts");
     prepare_private_directory(&artifact_root)?;
@@ -1423,17 +1385,10 @@ fn install_or_upgrade(
         response.verified = Some(true);
         return Ok(response);
     }
-    persist_verified_promotion(
-        &paths.state_root,
-        &selected,
-        &index_bytes,
-        &signature,
-        &manifest_bytes,
-        &manifest_signature,
-    )?;
+    persist_verified_promotion(&paths.state_root, &selected, &index_bytes, &manifest_bytes)?;
     // A verified pending floor closes the crash window between candidate
     // activation and accepted-state commit. Failed/malformed candidates cannot
-    // lower this signed, parent-verified monotonic floor.
+    // lower this parent-verified monotonic floor.
     record_floor(&paths.state_root, "pending.json", &selected)?;
     prepare_private_directory(&paths.install_root)?;
     let request = serde_json::json!({
@@ -1441,7 +1396,6 @@ fn install_or_upgrade(
         "schema_version": 1,
         "install_root": paths.install_root,
         "manifest": release_cache.join("manifest.json"),
-        "signature": release_cache.join("manifest.json.sig"),
         "artifacts": artifact_root,
         "target": target(),
         "asb_version": env!("CARGO_PKG_VERSION"),
@@ -3090,7 +3044,6 @@ fn valid_manifest_urls(release: &ChannelRelease) -> bool {
         release.release
     );
     release.manifest_url == format!("{prefix}manifest.json")
-        && release.manifest_signature_url == format!("{prefix}manifest.json.sig")
 }
 
 fn validate_manifest(
@@ -3500,25 +3453,19 @@ fn persist_verified_promotion(
     state_root: &Path,
     selected: &ChannelRelease,
     channel: &[u8],
-    channel_signature: &[u8],
     manifest: &[u8],
-    signature: &[u8],
 ) -> Result<(), RouterError> {
     if digest(manifest) != selected.manifest_sha256 {
         return Err(RouterError::policy("manifest_digest_mismatch"));
     }
-    verify_signature(channel, channel_signature, CHANNEL_NAMESPACE)?;
     let stored = select_stored_release(channel, target())?;
     if stored.release != selected.release || stored.manifest_sha256 != selected.manifest_sha256 {
         return Err(RouterError::policy("channel_invalid"));
     }
-    verify_signature(manifest, signature, BUNDLE_NAMESPACE)?;
     let root = state_root.join("manifests").join(&selected.manifest_sha256);
     prepare_private_directory(&root)?;
     atomic_private(&root.join("channel.json"), channel, 0o600)?;
-    atomic_private(&root.join("channel.json.sig"), channel_signature, 0o600)?;
-    atomic_private(&root.join("manifest.json"), manifest, 0o600)?;
-    atomic_private(&root.join("manifest.json.sig"), signature, 0o600)
+    atomic_private(&root.join("manifest.json"), manifest, 0o600)
 }
 
 fn authenticated_manifest_for_active(
@@ -3545,25 +3492,16 @@ fn authenticated_manifest_for_active(
         let root = state_root.join("manifests").join(&floor.manifest_sha256);
         let channel = read_bounded(&root.join("channel.json"), MAX_INDEX_BYTES)
             .map_err(|_| RouterError::policy("installation_verification_failed"))?;
-        let channel_signature =
-            read_bounded(&root.join("channel.json.sig"), MAX_SIGNATURE_BYTES)
-                .map_err(|_| RouterError::policy("installation_verification_failed"))?;
         let manifest_bytes = read_bounded(&root.join("manifest.json"), MAX_MANIFEST_BYTES)
-            .map_err(|_| RouterError::policy("installation_verification_failed"))?;
-        let signature = read_bounded(&root.join("manifest.json.sig"), MAX_SIGNATURE_BYTES)
             .map_err(|_| RouterError::policy("installation_verification_failed"))?;
         if digest(&manifest_bytes) != floor.manifest_sha256 {
             return Err(RouterError::policy("installation_verification_failed"));
         }
-        verify_signature(&channel, &channel_signature, CHANNEL_NAMESPACE)
-            .map_err(|_| RouterError::policy("installation_verification_failed"))?;
         let promoted = select_stored_release(&channel, target())
             .map_err(|_| RouterError::policy("installation_verification_failed"))?;
         if promoted.release != floor.release || promoted.manifest_sha256 != floor.manifest_sha256 {
             return Err(RouterError::policy("installation_verification_failed"));
         }
-        verify_signature(&manifest_bytes, &signature, BUNDLE_NAMESPACE)
-            .map_err(|_| RouterError::policy("installation_verification_failed"))?;
         let selected = promoted;
         let manifest = validate_installed_manifest(&manifest_bytes, &selected)
             .map_err(|_| RouterError::policy("installation_verification_failed"))?;
@@ -3903,99 +3841,6 @@ fn valid_status_identity(response: &DelegatedResponse) -> bool {
             .source_tree
             .as_deref()
             .is_some_and(|value| valid_hex(value, 40))
-}
-
-fn verify_signature(bytes: &[u8], signature: &[u8], namespace: &str) -> Result<(), RouterError> {
-    verify_signature_with(
-        bytes,
-        signature,
-        namespace,
-        TRUSTED_SIGNERS,
-        SIGNER_FINGERPRINT,
-    )
-}
-
-fn verify_signature_with(
-    bytes: &[u8],
-    signature: &[u8],
-    namespace: &str,
-    allowed_signers: &[u8],
-    fingerprint: &str,
-) -> Result<(), RouterError> {
-    let mut anchor: File = memfd_create("asb-tui-router-signers", MemfdFlags::ALLOW_SEALING)
-        .map_err(|_| RouterError::operation("signature_verifier_unavailable"))?
-        .into();
-    anchor
-        .write_all(allowed_signers)
-        .and_then(|()| anchor.sync_all())
-        .map_err(|_| RouterError::operation("signature_verifier_unavailable"))?;
-    fcntl_add_seals(
-        &anchor,
-        SealFlags::WRITE | SealFlags::GROW | SealFlags::SHRINK | SealFlags::SEAL,
-    )
-    .map_err(|_| RouterError::operation("signature_verifier_unavailable"))?;
-    let mut signature_file: File =
-        memfd_create("asb-tui-router-signature", MemfdFlags::ALLOW_SEALING)
-            .map_err(|_| RouterError::operation("signature_verifier_unavailable"))?
-            .into();
-    signature_file
-        .write_all(signature)
-        .and_then(|()| signature_file.sync_all())
-        .map_err(|_| RouterError::operation("signature_verifier_unavailable"))?;
-    fcntl_add_seals(
-        &signature_file,
-        SealFlags::WRITE | SealFlags::GROW | SealFlags::SHRINK | SealFlags::SEAL,
-    )
-    .map_err(|_| RouterError::operation("signature_verifier_unavailable"))?;
-    let anchor_path = format!("/proc/self/fd/{}", anchor.as_raw_fd());
-    let signature_path = format!("/proc/self/fd/{}", signature_file.as_raw_fd());
-    validate_tool(SSH_KEYGEN)?;
-    let fingerprints = Command::new(SSH_KEYGEN)
-        .env_clear()
-        .env("LANG", "C.UTF-8")
-        .args(["-lf", &anchor_path])
-        .output()
-        .map_err(|_| RouterError::operation("signature_verifier_unavailable"))?;
-    let rendered_fingerprints = String::from_utf8_lossy(&fingerprints.stdout);
-    let observed: Vec<_> = rendered_fingerprints
-        .lines()
-        .filter_map(|line| line.split_whitespace().nth(1))
-        .collect();
-    if !fingerprints.status.success() || observed != [fingerprint] {
-        return Err(RouterError::policy("trust_anchor_invalid"));
-    }
-    let mut child = Command::new(SSH_KEYGEN)
-        .env_clear()
-        .env("LANG", "C.UTF-8")
-        .args([
-            "-Y",
-            "verify",
-            "-f",
-            &anchor_path,
-            "-I",
-            SIGNER_IDENTITY,
-            "-n",
-            namespace,
-            "-s",
-            &signature_path,
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| RouterError::operation("signature_verifier_unavailable"))?;
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| RouterError::operation("signature_verifier_unavailable"))?
-        .write_all(bytes)
-        .map_err(|_| RouterError::operation("signature_verifier_unavailable"))?;
-    child
-        .wait()
-        .map_err(|_| RouterError::operation("signature_verifier_unavailable"))?
-        .success()
-        .then_some(())
-        .ok_or_else(|| RouterError::policy("signature_invalid"))
 }
 
 fn enforce_rollback(root: &Path, selected: &ChannelRelease) -> Result<(), RouterError> {
@@ -6625,9 +6470,6 @@ mod tests {
             protocol_version: 1,
             manifest_url: format!(
                 "https://github.com/martin-beck/asb-tui/releases/download/{release}/manifest.json"
-            ),
-            manifest_signature_url: format!(
-                "https://github.com/martin-beck/asb-tui/releases/download/{release}/manifest.json.sig"
             ),
             manifest_sha256: manifest_sha256.into(),
         }
@@ -9403,7 +9245,6 @@ mod tests {
             "release":"v1.2.3","target":target(),"asb_version":"0.1.0",
             "protocol_version":1,
             "manifest_url":"https://github.com/martin-beck/asb-tui/releases/download/v1.2.3/manifest.json",
-            "manifest_signature_url":"https://github.com/martin-beck/asb-tui/releases/download/v1.2.3/manifest.json.sig",
             "manifest_sha256":"a".repeat(64)
         });
         let index = serde_json::json!({
@@ -9743,16 +9584,12 @@ mod tests {
     }
 
     #[test]
-    fn exact_upstream_bundle_signature_and_schema_bytes_are_pinned() {
-        let manifest = include_bytes!("../fixtures/tui/manifest.json");
-        let signature = include_bytes!("../fixtures/tui/manifest.json.sig");
-        verify_signature(manifest, signature, BUNDLE_NAMESPACE).unwrap();
-        assert!(verify_signature(b"tampered", signature, BUNDLE_NAMESPACE).is_err());
+    fn upstream_schema_bytes_are_pinned() {
         assert_eq!(
             digest(include_bytes!(
                 "../schema/tui/v1/lifecycle-request.schema.json"
             )),
-            "233a8bae0349cd4e12742005fdefc1c5da876a7826bb742418f0417e6c597730"
+            "9c53fbffb6ba7c563ce29c34f12220bdc430aba3973ab8f881258383a81511f0"
         );
         assert_eq!(
             digest(include_bytes!(
@@ -9775,86 +9612,6 @@ mod tests {
         let selected = selected("v0.0.1", &digest(bytes));
         assert!(validate_manifest(bytes, &selected, 1_800_000_000).is_err());
         assert!(validate_installed_manifest(bytes, &selected).is_ok());
-    }
-
-    #[test]
-    fn synthetic_channel_signature_namespace_and_selection_are_closed() {
-        let scratch = Scratch::new("signed-channel");
-        let key = scratch.0.join("signer");
-        assert!(
-            Command::new(SSH_KEYGEN)
-                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
-                .arg(&key)
-                .status()
-                .unwrap()
-                .success()
-        );
-        let entry = serde_json::json!({
-            "release":"v1.2.3","target":target(),"asb_version":"0.1.0",
-            "protocol_version":1,
-            "manifest_url":"https://github.com/martin-beck/asb-tui/releases/download/v1.2.3/manifest.json",
-            "manifest_signature_url":"https://github.com/martin-beck/asb-tui/releases/download/v1.2.3/manifest.json.sig",
-            "manifest_sha256":"a".repeat(64)
-        });
-        let channel = serde_json::to_vec(&serde_json::json!({
-            "schema_version":1,"issued_unix":1_799_999_000u64,
-            "expires_unix":1_800_001_000u64,"releases":[entry]
-        }))
-        .unwrap();
-        let channel_path = scratch.0.join("channel.json");
-        fs::write(&channel_path, &channel).unwrap();
-        assert!(
-            Command::new(SSH_KEYGEN)
-                .args(["-Y", "sign", "-f"])
-                .arg(&key)
-                .args(["-n", CHANNEL_NAMESPACE])
-                .arg(&channel_path)
-                .stdout(Stdio::null())
-                .status()
-                .unwrap()
-                .success()
-        );
-        let public = fs::read_to_string(key.with_extension("pub")).unwrap();
-        let mut fields = public.split_whitespace();
-        let allowed = format!(
-            "{} {} {}\n",
-            SIGNER_IDENTITY,
-            fields.next().unwrap(),
-            fields.next().unwrap()
-        );
-        let rendered = Command::new(SSH_KEYGEN)
-            .args(["-lf"])
-            .arg(key.with_extension("pub"))
-            .output()
-            .unwrap();
-        assert!(rendered.status.success());
-        let output = String::from_utf8(rendered.stdout).unwrap();
-        let fingerprint = output.split_whitespace().nth(1).unwrap();
-        let signature = fs::read(channel_path.with_extension("json.sig")).unwrap();
-        verify_signature_with(
-            &channel,
-            &signature,
-            CHANNEL_NAMESPACE,
-            allowed.as_bytes(),
-            fingerprint,
-        )
-        .unwrap();
-        assert!(
-            verify_signature_with(
-                &channel,
-                &signature,
-                BUNDLE_NAMESPACE,
-                allowed.as_bytes(),
-                fingerprint,
-            )
-            .is_err()
-        );
-        assert_eq!(
-            select_release(&channel, 1_800_000_000, target())
-                .unwrap()
-                .release,
-            "v1.2.3"
-        );
     }
 
     #[test]

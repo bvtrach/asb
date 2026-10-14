@@ -396,9 +396,7 @@ fn launch_keeps_lifecycle_json_separate_from_controlling_terminal() {
         .unwrap();
     let candidate = include_bytes!("../fixtures/tui/interactive-candidate.sh");
     let channel = include_bytes!("../fixtures/tui/authenticated-active-channel.json");
-    let channel_signature = include_bytes!("../fixtures/tui/authenticated-active-channel.json.sig");
     let manifest = include_bytes!("../fixtures/tui/authenticated-active-manifest.json");
-    let signature = include_bytes!("../fixtures/tui/authenticated-active-manifest.json.sig");
     let executable_sha256 = digest(candidate);
     let manifest_sha256 = digest(manifest);
     let executable = install
@@ -440,9 +438,7 @@ fn launch_keeps_lifecycle_json_separate_from_controlling_terminal() {
         .create(&authenticated)
         .unwrap();
     fs::write(authenticated.join("channel.json"), channel).unwrap();
-    fs::write(authenticated.join("channel.json.sig"), channel_signature).unwrap();
     fs::write(authenticated.join("manifest.json"), manifest).unwrap();
-    fs::write(authenticated.join("manifest.json.sig"), signature).unwrap();
     fs::write(
         state.join("accepted.json"),
         serde_json::to_vec(&serde_json::json!({
@@ -553,7 +549,6 @@ fn copied_lifecycle_and_channel_schemas_reject_widening() {
             "release":"v1.2.3","target":"x86_64-unknown-linux-gnu",
             "asb_version":"0.1.0","protocol_version":1,
             "manifest_url":"https://github.com/martin-beck/asb-tui/releases/download/v1.2.3/manifest.json",
-            "manifest_signature_url":"https://github.com/martin-beck/asb-tui/releases/download/v1.2.3/manifest.json.sig",
             "manifest_sha256":"a".repeat(64)
         }]
     });

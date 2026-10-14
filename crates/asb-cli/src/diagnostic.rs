@@ -925,8 +925,7 @@ fn classify(code: &'static str, message: &'static str) -> (Cause, Context) {
             );
         }
         "trusted_tool_unavailable"
-        | "host_capability_unavailable"
-        | "signature_verifier_unavailable" => {
+        | "host_capability_unavailable" => {
             return (
                 Cause::UnavailableCapability,
                 Context::new(
@@ -1372,18 +1371,6 @@ fn classify(code: &'static str, message: &'static str) -> (Cause, Context) {
                 ),
             );
         }
-        "signature_invalid" => {
-            return (
-                Cause::IncompatibleInput,
-                Context::new(
-                    Subject::Artifact,
-                    "verify_signature",
-                    Phase::Validate,
-                    StateChange::Unchanged,
-                    Remediation::CorrectInput,
-                ),
-            );
-        }
         "state_path_invalid" => {
             return (
                 Cause::InvalidPath,
@@ -1441,18 +1428,6 @@ fn classify(code: &'static str, message: &'static str) -> (Cause, Context) {
                     Phase::Inspect,
                     StateChange::NotStarted,
                     Remediation::RunDoctor,
-                ),
-            );
-        }
-        "trust_anchor_invalid" => {
-            return (
-                Cause::IncompatibleInput,
-                Context::new(
-                    Subject::CredentialReference,
-                    "validate_trust_anchor",
-                    Phase::Validate,
-                    StateChange::Unchanged,
-                    Remediation::CorrectInput,
                 ),
             );
         }
@@ -2101,10 +2076,6 @@ pub const CATALOGUED_CODES: &[(&str, Cause)] = &[
     ("provider_response_too_large", Cause::ProviderRejection),
     ("trusted_tool_unavailable", Cause::UnavailableCapability),
     ("host_capability_unavailable", Cause::UnavailableCapability),
-    (
-        "signature_verifier_unavailable",
-        Cause::UnavailableCapability,
-    ),
     ("trusted_tool_invalid", Cause::IncompatibleInput),
     (
         "catalog_tool_entrypoint_inspection_failed",
@@ -2199,13 +2170,11 @@ pub const CATALOGUED_CODES: &[(&str, Cause)] = &[
     ("release_invalid", Cause::MalformedInput),
     ("sbom_invalid", Cause::MalformedInput),
     ("sbom_missing", Cause::MalformedInput),
-    ("signature_invalid", Cause::IncompatibleInput),
     ("state_path_invalid", Cause::InvalidPath),
     ("state_unavailable", Cause::UnavailableCapability),
     ("state_write_failed", Cause::UnexpectedProductFailure),
     ("synthetic_interruption", Cause::Cancellation),
     ("system_clock_invalid", Cause::UnavailableCapability),
-    ("trust_anchor_invalid", Cause::IncompatibleInput),
     ("unexpected_document", Cause::MalformedInput),
     ("unexpected_range", Cause::MalformedInput),
     ("xdg_root_invalid", Cause::InvalidPath),
