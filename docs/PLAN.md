@@ -17,10 +17,9 @@ Unsupported and unmeasured cells remain visible. ASB must never infer native
 kernel support from a container or cross-build.
 
 The product repository contains code, protocol, tests and user documentation.
-The separate public state repository contains AR ownership, dependencies,
-leases, plans and concise durable evidence. Both are MIT licensed. Development,
-toolchains, caches, worktrees and tests remain on the configured second drive of
-the remote host. The public files contain no host alias or private absolute path.
+It is MIT licensed. Development, toolchains, caches, worktrees and tests remain
+on the configured second drive of the remote host. The public files contain no
+host alias or private absolute path.
 
 ## Design principles
 
@@ -46,11 +45,10 @@ the remote host. The public files contain no host alias or private absolute path
 
 ### Phase 0: public foundation
 
-AR-0001 publishes the two initial repositories with Rust workspace, minimal
-checked domain primitives, documentation, coordination framework and CI.
-AR-0002 hardens reused coordination behavior. AR-0003 installs complete Rust,
-workflow, documentation and supply-chain gates. These three tasks establish the
-only supported path for later parallel workers.
+The bootstrap publishes the repository with a Rust workspace, minimal checked
+domain primitives, documentation, coordination framework and CI, and installs
+complete Rust, workflow, documentation and supply-chain gates. These establish
+the only supported path for later parallel workers.
 
 Exit: both public main branches, required checks green on exact heads, live
 coordination doctor green, branch protection/configuration recorded, and no
@@ -58,14 +56,14 @@ private state or credentials in source/history/artifacts.
 
 ### Phase 1: contracts and execution substrate
 
-AR-0101 freezes protocol v1 and schemas. AR-0102 adds process groups, bounded
-I/O, deadlines and cancellation. AR-0103 adds rootless isolation, resource
-leases and cgroups. AR-0104 adds atomic run journals, artifact integrity and
-recovery. AR-1001 defines content-addressed experiment identity early so all
-later components record compatible evidence.
+The contracts phase freezes protocol v1 and schemas, adds process groups, bounded
+I/O, deadlines and cancellation, rootless isolation, resource leases and cgroups,
+and atomic run journals, artifact integrity and recovery. Content-addressed
+experiment identity is defined early so all later components record compatible
+evidence.
 
-These tasks may proceed in separate worktrees after AR-0101 stabilizes shared
-schemas. Shared Cargo/schema changes require coordinator review.
+These tasks may proceed in separate worktrees after the protocol v1 schemas
+stabilize. Shared Cargo/schema changes require coordinator review.
 
 Exit: synthetic external plugin interoperation; crash/cancel/orphan/disk-full
 negative paths; no duplicate side effects after recovery; comparable manifests
@@ -73,11 +71,11 @@ identify every required confounder.
 
 ### Phase 2: measurement and experiment engine
 
-AR-0201 implements portable process/cgroup/procfs collectors. AR-0202 adds
-optional perf/eBPF diagnostics. AR-0203 validates statistics and SLO decisions.
-AR-0204 implements closed/open-loop scheduling, warmup, repetition and adaptive
-boundary refinement. AR-1003 adds enforceable budgets; AR-1004 adds pass^k and
-mixed-workload fairness; AR-1005 exports privacy-safe causal traces.
+Portable process/cgroup/procfs collectors and optional perf/eBPF diagnostics are
+implemented, statistics and SLO decisions are validated, and closed/open-loop
+scheduling, warmup, repetition and adaptive boundary refinement are added.
+Enforceable budgets, pass^k and mixed-workload fairness, and privacy-safe causal
+trace export complete the engine.
 
 Exit: a synthetic service with known limits reproduces expected capacity and
 failure behavior; measurement overhead is bounded; missing metrics produce
@@ -86,9 +84,9 @@ match.
 
 ### Phase 3: client adapters and local workloads
 
-AR-0301 through AR-0304 implement and independently test the four real client
-adapters. AR-0401 delivers seven small offline engineering workloads through
-the public extension API. AR-1002 protects grading and enables offline rescoring.
+The four real client adapters are implemented and independently tested. Seven
+small offline engineering workloads are delivered through the public extension
+API. Grading is protected and offline rescoring is enabled.
 
 Adapter work can proceed in parallel because each adapter owns a module and uses
 one shared conformance suite. Live claims apply only to the exact pinned client
@@ -100,11 +98,11 @@ semantic failure.
 
 ### Phase 4: response record and replay
 
-AR-0501 compares buffr, mitmproxy, WireMock, VCR.py, llmtape, promptecho,
-agrepl, ACP recording and inference simulation. AR-0502 defines immutable
-redacted cassettes. AR-0503 implements strict fail-closed per-session replay.
-AR-0504 validates immediate/fixed/original/seeded pacing and service headroom.
-AR-0505 proves each real adapter through live record then network-denied replay.
+Buffr, mitmproxy, WireMock, VCR.py, llmtape, promptecho, agrepl, ACP recording
+and inference simulation are compared. Immutable redacted cassettes, strict
+fail-closed per-session replay, immediate/fixed/original/seeded pacing and
+service headroom are validated, and each real adapter is proven through live
+record then network-denied replay.
 
 Exit: provider dialect conformance for OpenAI Chat Completions, OpenAI Responses
 and Anthropic Messages as individually supported; parallel identical requests
@@ -113,13 +111,12 @@ stream/tool/cancel/error trajectories and artifact grading reproduce.
 
 ### Phase 5: platform and workload breadth
 
-AR-0701 pins current distro/image/agent availability. AR-0702 supplies required
-native x86_64 and pinned QEMU-emulated AArch64 evidence, with native ARM64 retained
-as optional future qualification and openEuler support labeled per cell. AR-0402
-and AR-0403 add
-SWE-bench, Aider Polyglot and Terminal-Bench. AR-0404 evaluates code-generation
-controls. AR-1007 maintains validity and portability. AR-0405 evaluates
-performance/reproducibility workloads and AR-0406 evolving long-horizon tasks.
+Current distro/image/agent availability is pinned and required native x86_64 and
+pinned QEMU-emulated AArch64 evidence is supplied, with native ARM64 retained as
+optional future qualification and openEuler support labeled per cell. SWE-bench,
+Aider Polyglot and Terminal-Bench are added; code-generation controls, validity
+and portability, performance/reproducibility workloads, and evolving long-horizon
+tasks are evaluated.
 
 Exit: every matrix cell says planned, build-only, simulated, native-tested or
 unsupported; reference solutions pass on every claimed native platform; adapted
@@ -127,14 +124,13 @@ tasks disclose semantic changes; speedups use paired host-local uncertainty.
 
 ### Phase 6: integrations, UX and assurance
 
-AR-0601 decides optional CSB integration using a real round trip and prohibits
-nested schedulers/double metrics. AR-0801 implements stable terminal/JSON
-commands. AR-0802 makes quickstart and extension examples executable.
-AR-0901 adds bounded Kani/Loom assurance. AR-0904 checks contract artifacts and
-AR-0905 checks run/recovery/replay temporal models with TLA+, Alloy and executable
-state exploration. AR-0902 adds fuzzing, mutation and lifecycle fault campaigns.
-AR-1006 later adds distributed workers without
-turning cross-host clocks into latency. AR-0903 qualifies the first release.
+Optional CSB integration is decided using a real round trip and prohibits nested
+schedulers/double metrics. Stable terminal/JSON commands and executable quickstart
+and extension examples are delivered. Bounded Kani/Loom assurance, contract
+artifact checks, and run/recovery/replay temporal models with TLA+, Alloy and
+executable state exploration are added, plus fuzzing, mutation and lifecycle fault
+campaigns. Distributed workers arrive later without turning cross-host clocks
+into latency, and the first release is qualified.
 
 Exit: offline quickstart runs; packaged native artifacts install cleanly; exact
 source/SBOM/provenance/checksums accompany reproducible releases; controlled
@@ -164,7 +160,7 @@ stdout with versioned schemas and meaningful exit codes.
 
 After foundation, parallel lanes are runtime/storage, metrics/statistics,
 individual adapters, workloads, replay, platforms and assurance. A worker claims
-one AR, branch and worktree. Interface freeze tasks precede fan-out. Integration
+one task, branch and worktree. Interface freeze tasks precede fan-out. Integration
 is serialized by the coordinator and gated on exact-tree CI. Workers publish
 small signed DCO commits and never merge their own unreviewed state.
 
@@ -177,10 +173,10 @@ raw prompts or secrets, become public evidence.
 
 Bootstrap: format, Clippy, tests, rustdoc, release build and CLI smoke on native
 GitHub x86_64 plus pinned QEMU-emulated AArch64; coordinator strict typing, 20 fault tests and at least 95%
-branch-aware coverage. AR-0003 adds cargo-llvm-cov with 90% overall and 95% for
-core/protocol/replay, cargo-deny/audit, actionlint/zizmor/Gitleaks, schema/docs
-checks and immutable Action pins. AR-0901/0902 later add proofs, model tests,
-fuzz/mutation and retained counterexamples. Floors may rise after stable evidence;
+branch-aware coverage. Later gates add cargo-llvm-cov with 90% overall and 95%
+for core/protocol/replay, cargo-deny/audit, actionlint/zizmor/Gitleaks, schema/docs
+checks and immutable Action pins, plus proofs, model tests, fuzz/mutation and
+retained counterexamples. Floors may rise after stable evidence;
 they do not fall to merge a feature.
 
 ## Key risks

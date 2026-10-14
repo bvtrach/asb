@@ -6,5 +6,5 @@ opaque `ResolvedCredential` is consumed only by `inject`, which validates endpoi
 checks cancellation before and after the final `HeaderSink`, and wipes its temporary buffer.
 
 The versioned JSON shape is `schema/authenticated-request-v1.schema.json`; unknown fields are
-rejected. AR-1228 consumes this seam for bounded provider transport. AR-1229 owns durable config,
+rejected. This seam is consumed for bounded provider transport and owns durable config,
 control, and CLI integration. No credential value may enter this schema, state, logs, or evidence.

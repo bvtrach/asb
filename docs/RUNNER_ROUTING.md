@@ -46,8 +46,8 @@ name and machine identity. ASB claims only that its checked-in workflow steps
 avoid explicit identity output; policy tests cannot sanitize platform-generated
 metadata.
 
-AR-0831 defines routing but does not activate ordinary push or pull-request
-jobs on this capacity. AR-0832 must qualify repeated clean runs, reset,
-isolation, and recovery before any broader activation. AR-0833 separately owns
-tokenless post-boot ephemeral registration; reboot persistence remains
+Routing is defined but does not activate ordinary push or pull-request
+jobs on this capacity. Repeated clean runs, reset,
+isolation, and recovery must be qualified before any broader activation. Tokenless
+post-boot ephemeral registration is separate; reboot persistence remains
 unsupported until that work is complete.

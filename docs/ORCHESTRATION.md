@@ -86,8 +86,8 @@ cleanup until terminal confirmation.
 The versioned request, response, and event contract is checked in at
 [`docs/orchestration-schema-v1.json`](orchestration-schema-v1.json). It fixes
 field names, closed objects, identifier patterns, mode vocabulary, idempotency
-limits, and numeric transport ceilings. AR-1452 adds Rust round-trip and hostile
-fixtures for the same immutable contract before the service is enabled. The
+limits, and numeric transport ceilings. Rust round-trip and hostile
+fixtures for the same immutable contract are added before the service is enabled. The
 design-level positive and unknown-field vectors are exercised by
 `tests/quality/test_orchestration_schema.py`.
 
@@ -122,16 +122,16 @@ and reconciliation.
 
 ## Migration
 
-1. Freeze this ownership matrix and versioned request/event schemas (AR-1451).
+1. Freeze this ownership matrix and versioned request/event schemas.
    `ReplayLaunchFactory::issue` and `LiveLaunchFactory::acquire` become
    runtime-private implementation details; `LiveProviderRuntimeService` is
    consumed only by the orchestrator's runtime adapter. Existing CLI
    `run/sweep` injection seams are marked compatibility-only and are removed
    after the service path is qualified.
 2. Implement `asb-orchestrator` and mode-specific runtime acquisition behind
-   opaque handles; local mock/replay are first (AR-1452).
+   opaque handles; local mock/replay are first.
 3. Route CLI and control dispatch through the service and retire direct
-   injection-only paths (AR-1453). `asb-control` remains the transport; it
+   injection-only paths. `asb-control` remains the transport; it
    cannot become a second run authority. The compatibility period is exactly
    one released protocol minor: old injection methods return a typed
    `CompatibilityOnly` error after the new service path is available, and are

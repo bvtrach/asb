@@ -49,7 +49,7 @@ and failure evidence without publishing task secrets or raw private transcripts.
 | [SWE-Lancer](https://github.com/openai/frontier-evals/tree/main/project/swelancer) | Long-horizon repository repair and proposal decisions | Archived source boundary; license/archive, task-image, contamination-cutoff, and native evidence remain unqualified |
 | [SWE-rebench](https://huggingface.co/datasets/nebius/SWE-rebench) | Continuously refreshed, decontaminated repository repair | Repin every evaluation window; task images, reset, grading, and native evidence remain unqualified |
 
-The AR-0404 catalogue also records four optional, provenance-only suite boundaries in
+The catalogue also records four optional, provenance-only suite boundaries in
 `crates/asb-workloads/registry/v1/external-workloads.json`: SWE-bench Pro (`main-ca10a60a`),
 BigCodeBench (`v0.2.4-9059fb84`), EvalPlus (`v0.3.1-e5d0ed0b`), and LiveCodeBench release v6
 (`release-v6-28fef95e`). Each entry pins its source archive, dataset revision, license, evaluator
@@ -83,7 +83,7 @@ task split, or evaluator produces a new identity, and comparisons across those
 identities fail closed. Validation is entirely offline and does not acquire a
 dataset or contact a provider.
 
-AR-0406 adds SWE-Lancer and SWE-rebench as explicit-download, non-vendored, provenance-only
+SWE-Lancer and SWE-rebench are added as explicit-download, non-vendored, provenance-only
 boundaries. SWE-Lancer is pinned to frontier-evals commit `51052ced` and remains unavailable for
 execution until its archived source/license and offline evaluator boundary are repinned. SWE-rebench
 is pinned to SWE-bench-fork `e4907b7a` and dataset revision `89cdfbab`; its CC-BY-4.0 dataset,

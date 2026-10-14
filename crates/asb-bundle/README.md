@@ -16,7 +16,7 @@ CycloneDX hashes, target identity, and truthful `signature_status: unsigned` met
 default `asb-bundle-verify` command rejects both profiles. Only an explicit
 `--profile unsigned-development` policy may tolerate a missing or arbitrary bounded signature
 file; `unsigned-release` remains strict and is never customer-release evidence. Formal
-qualification and AR-1307/AR-1308 runners always use the default signature-required policy and
+qualification and signed-bundle runners always use the default signature-required policy and
 reject unsigned inputs. No profile is inferred from a missing or malformed signature.
 
 The signed manifest binds the target OS, architecture, libc family/version, entrypoint, every

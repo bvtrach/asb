@@ -1,6 +1,6 @@
 # Repository quality gates
 
-AR-0003 makes the roadmap's repository checks mandatory on every pull request.
+The roadmap's repository checks are mandatory on every pull request.
 The machine-readable source of tool versions, Action commits and downloaded
 binary SHA-256 digests is [quality-tools.json](../config/quality-tools.json).
 
@@ -120,8 +120,8 @@ cancellation, and every required artifact remain fail-closed. GitHub does not
 provide a typed upload failure output, so ASB does not claim that an arbitrary
 provider failure was specifically quota exhaustion. It performs no automatic
 retry because account storage recalculation is delayed; a later workflow attempt
-is a new, bounded operator-visible observation. AR-0846 separately owns
-authorized retention cleanup and remains dependency-gated.
+is a new, bounded operator-visible observation. Authorized
+retention cleanup remains dependency-gated.
 
 Run the same checks locally on Linux:
 

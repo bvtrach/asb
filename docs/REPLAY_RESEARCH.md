@@ -1,7 +1,7 @@
 # AI response recording and replay research
 
 Research snapshot: 2026-09-06. These are source/documentation assessments,
-not successful compatibility tests. AR-0501 must pin revisions, inspect licenses
+not successful compatibility tests. The evaluation must pin revisions, inspect licenses
 and run the same conformance suite before choosing dependencies or importing code.
 
 The pinned-code and bounded-spike assessment is recorded in

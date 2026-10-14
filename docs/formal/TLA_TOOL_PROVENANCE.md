@@ -37,5 +37,5 @@ timestamp, producing identical 4,512,486-byte artifacts with SHA-256
 
 This evidence is restricted to the Linux amd64 pruned 13-input closure. It does not qualify the 18
 excluded binaries, prove their non-use by other targets, establish upstream endorsement or semantic
-correctness, demonstrate native portability, or constitute an unbounded formal result. AR-0877
-separately owns cache acquisition and workflow integration after immutable review.
+correctness, demonstrate native portability, or constitute an unbounded formal result. Cache
+acquisition and workflow integration follow after immutable review.

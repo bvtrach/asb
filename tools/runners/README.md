@@ -55,10 +55,10 @@ operator-only control root; raw names, paths and contents are never retained or 
 The boundary assumes root and the host kernel/system manager are trusted. It does not claim that a
 container defeats a hostile kernel or a workflow allowed to request host mounts. Interruption safety
 comes from the transient service control group plus the mandatory idle check before diagnostics or
-reset; reboot persistence remains outside this AR.
+reset; reboot persistence remains outside this work.
 
-AR-0830 permits only a protected manual prequalification canary. Ordinary workflow routing remains
-disabled until AR-0832 qualifies this capacity and a separately reviewed activation enables it.
+Only a protected manual prequalification canary is permitted. Ordinary workflow routing remains
+disabled until this capacity is qualified and a separately reviewed activation enables it.
 
 The lifecycle fixture in `tests/runners/test_runner_scripts.sh` is also runnable on the approved
 rootless development host. It first probes non-interactive `sudo`; when `NoNewPrivileges` correctly

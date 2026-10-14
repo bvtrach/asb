@@ -1,6 +1,6 @@
 # Development-channel qualification
 
-`current-main-dev-channel.sh` is a disposable AR-1653 consumer check. It
+`current-main-dev-channel.sh` is a disposable consumer check. It
 clones the selected ASB and `asb-tui` refs into a private temporary workspace,
 builds both release entrypoints with a bounded timeout, enforces a recursive
 workspace quota, and publishes a digest-bound `dev` release with a staged

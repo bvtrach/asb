@@ -1,7 +1,7 @@
 # Fault assurance
 
-AR-0902 adds bounded, reproducible assurance campaigns without making fuzz or
-mutation tooling a normal ASB build dependency.
+Bounded, reproducible assurance campaigns add fuzz and
+mutation tooling without making it a normal ASB build dependency.
 
 - The fuzz directory is an independent cargo-fuzz workspace pinned to
   cargo-fuzz 0.13.2, libfuzzer-sys 0.4.13, and nightly-2025-11-21. Targets cover

@@ -75,7 +75,7 @@
           "availability": "package-inspected"
         }
       ],
-      "limitations": ["Published binaries were inspected, but no agent session was executed by AR-0701."]
+      "limitations": ["Published binaries were inspected, but no agent session was executed during inspection."]
     },
     {
       "id": "opendesk",

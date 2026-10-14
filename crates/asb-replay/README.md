@@ -1,9 +1,9 @@
 # asb-replay cassette contracts
 
 `asb-replay` defines the immutable, versioned, privacy-reviewed response
-cassette boundary and a strict inbound-only replay service. AR-0503 adds
-per-session matching and immediate buffered/SSE delivery. AR-0504 adds a
-monotonic pacing and calibration boundary. Neither provides transparent
+cassette boundary and a strict inbound-only replay service. It provides
+per-session matching, immediate buffered/SSE delivery, and a monotonic pacing
+and calibration boundary. It does not provide transparent
 interception or a real-client compatibility claim.
 
 ## Version 1 invariants
@@ -126,8 +126,8 @@ and redaction policy meaning. Unknown or skipped versions fail closed.
 The trusted coordinator selects a cassette session, attempt, and provider
 dialect for each isolated listener route. Exact POST endpoints are implemented
 for Chat Completions (`/v1/chat/completions`), Responses (`/v1/responses`), and
-Messages (`/v1/messages`). These are syntax capabilities only; AR-0505 must
-test named real client versions before any compatibility claim.
+Messages (`/v1/messages`). These are syntax capabilities only; named real
+client versions must be tested before any compatibility claim.
 
 The Gemini GenerateContent syntax capability is restricted to
 `POST /v1beta/models/{model}:streamGenerateContent?alt=sse`, where `{model}` is
@@ -206,7 +206,7 @@ Direct `handle` calls consume when they return successfully. Buffered responses
 are canonical JSON. Streamed semantic events are emitted immediately as SSE in
 cassette order; Chat Completions receives a final `[DONE]` marker. Captured
 transport chunks and monotonic offsets are not reproduced. Pacing evidence is
-owned by AR-0504.
+owned by the pacing boundary.
 
 `StrictReplayService::serve_once` accepts one loopback HTTP/1.1 connection and
 never opens an outbound socket. The caller owns listener lifecycle and network

@@ -4,7 +4,7 @@
 """Build the closed, documentation-to-registry literature parity view.
 
 This check is deliberately local.  It reads only the checked-in registry and
-the four public documents named by AR-1423; it never acquires a dataset or
+the four public documents named by the parity contract; it never acquires a dataset or
 contacts a provider.  A display name is allowed to be an alias (for example,
 the Lite and Verified splits) but every alias has exactly one canonical
 registry identity and an explicit boundary.

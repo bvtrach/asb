@@ -1,6 +1,6 @@
 # Deterministic recording acceptance runner
 
-`recording-campaign-runner.py` qualifies the AR-1711/1712 recording handoff
+`recording-campaign-runner.py` qualifies the recording handoff
 without provider traffic. It creates a selected-agent × selected-workload
 matrix from the checked-in buffered cassette fixture, invokes only
 `record-campaign --local-mock`, and verifies that every sealed cassette is

@@ -6,13 +6,13 @@ ASB adopts that structure and strengthens the CI exit criteria by requiring the
 actual pinned model-checking tools to run, implementation trace conformance and
 mutation tests that prove each gate can fail.
 
-AR-0904 first makes design artifacts mechanically consistent: JSON Schemas,
+Contract consistency work first makes design artifacts mechanically consistent: JSON Schemas,
 Rust serialization, protocol examples, public API snapshots, capability output
 and generated documentation. The closed, generated
 [contract catalog](CONTRACT_CATALOG.md) identifies every enrolled v1 schema,
 positive example, Rust round-trip gate, and stateful conformance command.
-AR-0901 covers pure checked invariants and
-synchronization models. AR-0905 covers temporal run/recovery/replay models.
+Checked invariants and synchronization models are covered separately from
+temporal run/recovery/replay models.
 
 ## Checked recovery boundary
 

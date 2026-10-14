@@ -48,7 +48,6 @@ fail as a whole; per-agent overrides are deliberately a separate choice.
 - [Authenticated process-owner material](docs/PROCESS_OWNER_MATERIAL.md)
 - [Provider authentication enrollment](docs/AUTH_ENROLLMENT.md)
 - [Reproducibility guide](docs/REPRODUCIBILITY.md)
-- [Coordination tasks](https://github.com/martin-beck/agent-systems-benchmark-state)
 
 ## Build and inspect the CLI
 

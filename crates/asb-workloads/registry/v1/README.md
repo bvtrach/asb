@@ -13,7 +13,7 @@ has no repository SPDX declaration; its per-exercise licenses and attribution
 are therefore mandatory. Unsupported arm64 cells must remain explicit until
 native oracle-parity evidence exists.
 
-The AR-0404 optional-suite pins cover SWE-bench Pro, BigCodeBench, EvalPlus, and
+The optional-suite pins cover SWE-bench Pro, BigCodeBench, EvalPlus, and
 LiveCodeBench release v6. Their source archives and dataset revisions are
 content-addressed, while evaluator provenance remains planned; registry presence
 never implies executable or native support.

@@ -53,8 +53,8 @@ Native evidence is Linux glibc x86_64 only. `auto-edit` permits Qwen Code's
 write/edit tools; ASB deliberately excludes shell and remote-capable tools.
 Internal provider retries are not independently counted by this adapter.
 The archive and directly executed launcher, Node, CLI entry and primary module are pinned, but
-this AR does not prove a reproducible content manifest for every transitive file
-in the standalone runtime; AR-0316 owns that bundle-wide claim. Safe mode blocks
+this adapter does not prove a reproducible content manifest for every transitive file
+in the standalone runtime; that bundle-wide claim is covered separately. Safe mode blocks
 ambient QWEN.md, hooks, extensions, skills, MCP servers and custom subagents,
 but built-in tools and built-in agents can still appear in the content-free init
 frame. Cancellation may interrupt the final JSON frame; only prior complete

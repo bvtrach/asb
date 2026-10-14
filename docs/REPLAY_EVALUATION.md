@@ -1,6 +1,6 @@
 # Replay dependency evaluation
 
-Status: AR-0501 evidence snapshot, 2026-09-06.
+Status: evaluation evidence snapshot, 2026-09-06.
 
 This evaluation selects an implementation direction; it does not claim that
 ASB replay is implemented or that any provider dialect is supported. The
@@ -9,8 +9,8 @@ Raw model traffic and credentials were never used.
 
 ## Decision
 
-Implement a small, safe Rust provider-boundary recorder and replay service in
-AR-0502 through AR-0504. Do not add an evaluated candidate as a runtime
+Implement a small, safe Rust provider-boundary recorder and replay service.
+Do not add an evaluated candidate as a runtime
 dependency. Buffr is the closest behavioral reference and remains useful as an
 independent test oracle, but adapting it would retain global replay cursors,
 transport-chunk timing, unbounded reads, and incomplete redaction. The other
@@ -166,17 +166,13 @@ system.
 
 - Executable evidence is x86_64 Linux only; it proves no aarch64 or
   distribution support.
-- No real agent or provider was contacted. AR-0505 must validate each exact
-  client and dialect through live record then network-denied replay.
+- No real agent or provider was contacted. Live record then network-denied
+  replay must validate each exact client and dialect.
 - Loopback synthetic traffic does not validate TLS interception, certificates,
   WebSockets, HTTP/2, proxies, authentication, or provider compatibility.
 - Pacing observations are functional spikes, not load/headroom measurements.
 - No candidate was fuzzed or mutation-tested. Later replay assurance must cover
   parser limits, corrupt cassettes, decompression bombs, redaction bypasses,
   cancellation races, and cursor interleavings.
-- Earlier handoffctl bash-stdin commands share an argv-only digest and are not
-  unique provenance identifiers. Their named outcomes above and retained
-  synthetic artifacts were independently inspected; later commands avoid that
-  form.
 - External checkouts, caches, binaries, cassettes, and synthetic raw logs stayed
   outside Git. Only the reviewed fixture and this concise result enter history.
