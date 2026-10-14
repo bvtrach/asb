@@ -98,7 +98,6 @@ class SignaturePolicyTests(unittest.TestCase):
                 "classification": (
                     "valid_publication_rejected_by_pre_recovery_topic_topology_policy"
                 ),
-                "recovery_task": "AR-1043",
             },
         )
         self.assertEqual(

@@ -142,10 +142,10 @@ Use an optional subprocess adapter with a pinned compatible CSB revision and an
 explicit artifact mapping. ASB owns agent lifecycle and grading; only one framework
 owns concurrency and monitoring in a run. Avoid nested schedulers and double counting.
 No default dependency on Python, benchkit, bm-generator, syzkaller or CSB submodules
-in the Rust runtime. AR-0601 must demonstrate cancellation, timestamp alignment and
-round-trip result fidelity before calling the integration supported.
+in the Rust runtime. The integration must demonstrate cancellation, timestamp alignment and
+round-trip result fidelity before calling it supported.
 
-The [AR-0601 compatibility audit](CSB_INTEGRATION.md) rejects CSB's high-level runner at this
+The [compatibility audit](CSB_INTEGRATION.md) rejects CSB's high-level runner at this
 boundary. Only the qualified external-application subprocess surface remains eligible, and an
 engineering-workload bridge stays unavailable until its inner executable and result mapping are
 independently bound and verified.

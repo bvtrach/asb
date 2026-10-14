@@ -57,7 +57,7 @@ returned by the handoff layer. The capability has already validated the
 nonzero generation, peer, protocol, and runner identity. The method reuses the exact ordinary
 negotiation/request loop and returns its typed result; it rejects zero or
 mismatched evidence before reading the stream. This is an additive,
-development-bounded seam for the subsequent ASB launch wiring (AR-1574), not
+development-bounded seam for the subsequent ASB launch wiring, not
 an authentication or signature bypass for stable operation.
 
 Ordinary successful responses are a closed typed allowlist with validated

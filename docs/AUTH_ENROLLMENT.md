@@ -35,7 +35,7 @@ argument, control-frame or public-evidence fallback is performed.
 
 ## Runner-owned control handoff
 
-The setup wizard must not execute a helper path itself. The AR-1324 control
+The setup wizard must not execute a helper path itself. The control
 operation will accept only a typed, credential-free provider profile and an
 idempotency/generation binding. The runner resolves the provider's private
 allowlisted helper registration, invokes the sealed `HelperCredentialResolver`

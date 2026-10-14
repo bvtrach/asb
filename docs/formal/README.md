@@ -12,10 +12,10 @@ ASB will follow Agent Relay's layered formal-methods pattern: readable TLA+ and
 Alloy specifications, a deterministic finite executable model, named hostile
 counterexample traces, implementation contract tests and an explicit table of
 environmental assumptions. This directory contains the design boundary at
-bootstrap. AR-0901 provides the initial Kani/Loom checks. AR-0905 adds pinned
+bootstrap. Kani/Loom checks provide the initial assurance. Pinned
 TLC 1.8.0, Alloy 6.2.0, an independent Rust explorer, named hostile traces, and
-real AtomicStore conformance for recovery. AR-0904 owns later cross-contract
-consistency work.
+real AtomicStore conformance cover recovery. Later cross-contract consistency
+work remains.
 
 ## Model partitions
 

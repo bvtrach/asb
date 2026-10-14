@@ -129,7 +129,7 @@ serialized CLI/backend integration is a subsequent step.
 
 `CONTROL_MEASUREMENT_CATALOG_V1` (`1.2`) adds the read-only `measurement_catalog` operation. The
 runner advertises support only by selecting exact version `1.2` during negotiation and returns the
-exact AR-1013 catalog compiled from qualified built-in collectors. The publication identifies its source as
+exact catalog compiled from qualified built-in collectors. The publication identifies its source as
 `built_in_collectors` and its freshness as `content_addressed`; consumers detect change only through
 the validated `catalog_sha256`, never a wall-clock timestamp or host-local file.
 

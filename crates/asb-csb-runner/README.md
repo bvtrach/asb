@@ -10,7 +10,7 @@ identities for the executable and source tree. Negotiation uses the existing
 ASB JSON-RPC v1 framing contract. Shell commands, network access, ambient
 credentials, plugins, generators, and syzkaller coupling are rejected.
 
-Execution uses the AR-0103 sandbox and resource-lease boundary after verifying
+Execution uses the sandbox and resource-lease boundary after verifying
 the pinned executable bytes. A durable `Running` intent precedes spawn and a
 durable `Collecting` transition precedes artifact collection. If spawn,
 collection, or cleanup cannot be proved, recovery reports

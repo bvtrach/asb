@@ -17,7 +17,7 @@ on both disposable x86_64 and aarch64 workers.
 
 The upstream v1.8.0 prerelease repeatedly replaced the bytes published under its stable-looking
 download path, so ASB does not consume or repin that mutable asset. The runner instead consumes
-AR-0878's deterministic, license-complete source-build contract. Online mode retrieves only the
+a deterministic, license-complete source-build contract: online mode retrieves only the
 digest-pinned source and Ant archives, pulls the digest-pinned build image, builds with network
 disabled, and verifies the exact qualified output. Before building, the runner requires an
 owner-controlled source-cache directory and regular, single-link archive inputs, then copies and
@@ -61,7 +61,7 @@ environmental assumptions. The production trace test executes the real Linux
 runtime cancellation boundary, real cgroup collector, and real strict replay
 service. It compares their outcomes with the corresponding finite models,
 including two identical independently routed replay sessions and mismatch
-rollback. AR-0905 owns temporal crash/recovery models.
+rollback. Temporal crash/recovery models are covered separately.
 
 ## Reproduction
 

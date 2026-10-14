@@ -42,9 +42,9 @@ manifests are included in the plan schema, that executable content address is us
 fail-closed runtime identity; it must match again at snapshot/spawn time. This is an explicit
 evidence boundary, not a claim of native third-party provider-service qualification.
 
-## OpenRouter provider matrix (AR-1327)
+## OpenRouter provider matrix
 
-The OpenRouter profile (AR-1325) is pinned to `https://openrouter.ai/api/v1` with
+The OpenRouter profile is pinned to `https://openrouter.ai/api/v1` with
 `ProviderKind::OpenAiCompatible` and the dated model snapshot
 `cohere/north-mini-code:free@2026-09-25`. Every compatible adapter projection translates
 one exact profile: identical endpoint, model, API-mode, settings, and resolver identity; Gemini
@@ -71,9 +71,9 @@ launch record holds only the credential reference digest. Unsupported or unobser
 
 | Adapter | `openrouter.ai` in known-egress set | Notes |
 | --- | --- | --- |
-| aider | Yes | Listed since the AR-0315 egress audit; regression-guarded |
-| mini-SWE-agent | Yes | Listed since the AR-0315 egress audit; regression-guarded |
-| Goose | Yes (added in AR-1327) | Added explicitly, never silently |
+| aider | Yes | Listed since the initial egress audit; regression-guarded |
+| mini-SWE-agent | Yes | Listed since the initial egress audit; regression-guarded |
+| Goose | Yes (added explicitly) | Added explicitly, never silently |
 | OpenCode / Codex / OpenDesk / Qwen Code / OpenHands | No explicit deny-list | Endpoint passes the generic HTTPS validation; process egress is governed by the runtime sandbox `LoopbackOnly` policy plus the adapter `NO_PROXY` host binding |
 
 No adapter gains a silent egress fallback; every allowance is explicit and covered by a

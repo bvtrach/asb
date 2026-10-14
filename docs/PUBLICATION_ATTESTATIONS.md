@@ -17,7 +17,7 @@ either historical commit.
 The [PR #132 capability coverage attestation](attestations/capability-coverage-pr132-merge.json)
 records a separate validly signed, DCO-valid and tree-equivalent publication.
 Its exact-head checks all passed, but the first post-merge Repository quality run
-rejected the topic's synchronization topology. AR-1043 preserves that immutable
+rejected the topic's synchronization topology. The attestation preserves that immutable
 failure while adding only the bounded first-parent-spine form documented in the
 quality gates.
 

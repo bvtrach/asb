@@ -31,6 +31,5 @@
     "conclusion": "failure",
     "error": "protected-main range must contain one final two-parent merge"
   },
-  "classification": "valid_publication_rejected_by_pre_recovery_topic_topology_policy",
-  "recovery_task": "AR-1043"
+  "classification": "valid_publication_rejected_by_pre_recovery_topic_topology_policy"
 }

@@ -47,7 +47,7 @@ opening files. It rejects stable symlinks and special files, but it does not mak
 same-UID directory concurrently mutated during verification safe to execute. The installer must
 own and keep staging private, verify it while quiescent, and atomically publish it. Platform
 compatibility is exact string equality; broader libc ABI compatibility requires separate native
-qualification. Bundle creation and per-agent transitive package acquisition remain AR-0316 work.
+qualification. Bundle creation and per-agent transitive package acquisition remain later work.
 The configured ssh-keygen and allowed-signers paths are also trusted operator-owned inputs and
 must remain quiescent for the duration of verification.
 

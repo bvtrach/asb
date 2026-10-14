@@ -35,9 +35,8 @@ Ollama as local baseline; qualify llama.cpp, vLLM and LocalAI in one profile
 workstream. Add adapters only where tested protocols cannot fit the existing
 provider/profile boundary.
 
-This extends AR-0312/0313/0315 (Ollama/provider parity), AR-0501..0505 (cassette
-contract and fail-closed replay), and AR-0869..0872 (CLI/TUI selection and workflow
-docs). AR-0873/0874 retain CI-screenshot and drift-refresh ownership. Mock mode must
+This extends prior Ollama/provider parity work, the cassette
+contract and fail-closed replay, and CLI/TUI selection and workflow docs. Mock mode must
 never satisfy live requests; replay never falls back; local inference passes identity
 probes. Reports keep `synthetic`, `strict_replay`, `local_live` and `remote_live`
 separate and never pool them as one benchmark population.
@@ -122,9 +121,9 @@ may test grader protocol plumbing with public fixtures, but its score is synthet
 test evidence; a candidate local model, the same engine/model profile, or replayed
 candidate output cannot be promoted to independent model-quality evidence.
 
-AR-0892 owns the acceptance boundary: retain grader provider/model/artifact and
-evidence-class provenance, reject candidate/grader identity overlap and unavailable
-grader fallback, and publish a hostile same-profile rejection plus an independently
+The acceptance boundary retains grader provider/model/artifact and
+evidence-class provenance, rejects candidate/grader identity overlap and unavailable
+grader fallback, and publishes a hostile same-profile rejection plus an independently
 provisioned grading artifact for every quality comparison claiming independence.
 
 ## Privacy, provenance and delivery
@@ -134,19 +133,19 @@ developer paths, raw user data and unbounded bodies. Keep the existing redacted,
 bounded cassette format. Resolve tags to commits, verify licenses/digests, run
 unprivileged with bounded resources, and expose no public listener.
 
-| AR | Deliverable | Depends on |
-| --- | --- | --- |
-| AR-0879 | Research decision/task graph | Existing provider/replay/workflow work |
-| AR-0888 | OpenAI+Anthropic mock conformance | AR-0879 |
-| AR-0889 | Fixture/privacy-safe evidence contract | AR-0888 |
-| AR-0890 | Selected credential-free CI double | AR-0888, AR-0889 |
-| AR-0891 | Grouped local-inference profiles | AR-0879, AR-0312/0313/0315 |
-| AR-0892 | Mock/replay/local/live evidence | AR-0890, AR-0891 |
-| AR-0893 | CLI setup/diagnostics | AR-0890, AR-0891, AR-0892, AR-0869/0871/0872 |
-| AR-0894 | TUI parity after existing TUI/CI work | AR-0893, AR-0870, AR-0873 |
+| Deliverable | Depends on |
+| --- | --- |
+| Research decision/task graph | Existing provider/replay/workflow work |
+| OpenAI+Anthropic mock conformance | Research decision/task graph |
+| Fixture/privacy-safe evidence contract | OpenAI+Anthropic mock conformance |
+| Selected credential-free CI double | Mock conformance, fixture contract |
+| Grouped local-inference profiles | Research decision/task graph, Ollama/provider parity |
+| Mock/replay/local/live evidence | Credential-free CI double, grouped profiles |
+| CLI setup/diagnostics | Mock/replay/local/live evidence, CLI/TUI selection |
+| TUI parity after existing TUI/CI work | CLI setup/diagnostics |
 
-AR-0894 claims no screen or shortcut before implementation; CLI remains operational.
-AR-0874 refreshes docs only after owning ARs finish. Each task publishes exact pins,
+The TUI-parity task claims no screen or shortcut before implementation; CLI remains operational.
+Docs refresh only after owning work finishes. Each task publishes exact pins,
 hostile cases, labels and unsupported cases. CI denies provider networking and keeps
 no secrets. Local jobs cannot silently skip to mocks. Compatibility matrices derive
 from executable evidence, not project claims.

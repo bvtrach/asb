@@ -38,7 +38,7 @@ The following gates are required implementation work, not claimed bootstrap feat
 | UI and artifact evidence | Stable JSON/exit codes, PTY cancellation and terminal snapshots where useful |
 | Exact-tree publication | DCO trailers, SSH-signed commits, immutable-head CI and post-merge checks |
 
-AR-0003 owns pinned installation of additional analyzers and their CI enforcement.
+Pinned installation of additional analyzers and their CI enforcement is required.
 No empty test targets or placeholder always-green jobs count as implemented gates.
 Miri checks applicable pure/unsafe-dependency boundaries; it does not model a real
 kernel or substitute for native execution. Kani and Loom require separately pinned

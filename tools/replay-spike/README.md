@@ -1,7 +1,7 @@
 # Replay candidate spike fixture
 
 This standard-library-only synthetic provider supplies the same public,
-credential-free trajectories to each AR-0501 candidate: buffered JSON, paced
+credential-free trajectories to each candidate: buffered JSON, paced
 SSE text and tool events, causal response IDs, parallel session IDs, an HTTP
 error, a deliberately truncated stream, malformed input, and an unmatched
 route. It never contacts a model provider.

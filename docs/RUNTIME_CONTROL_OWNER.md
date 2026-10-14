@@ -3,7 +3,7 @@
 The runtime/control process owner is the sole owner of the authenticated
 control session, certificate-chain store, private authority resolver, opaque
 dispatch-source minting, cancellation, and teardown. The CLI receives only a
-one-shot opaque source through the AR-1480 composition seam.
+one-shot opaque source through the runtime-owned composition seam.
 
 The stable Rust contract is `asb_runtime::control_owner_contract` schema `1`.
 Its public projection contains only:
@@ -44,5 +44,5 @@ The ordinary provider-free CLI qualification entry point is
 owner object, enrolls before `run` or `sweep`, and tears the owner down before
 returning. Reuse after teardown and malformed entry shapes fail before result
 roots or execution state are created. Production/live dispatch continues to
-use the separate AR-1480 opaque source and is unavailable without an
+use the separate opaque source and is unavailable without an
 authenticated runtime source.

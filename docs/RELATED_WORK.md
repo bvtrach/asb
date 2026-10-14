@@ -22,9 +22,9 @@ reporting kernel behavior, platform identity, replay mode and measurement
 uncertainty. It should interoperate with established tasks rather than create a
 new opaque aggregate leaderboard.
 
-AR-1001 through AR-1007 turn the comparison into implementation work:
+The comparison turns into implementation work:
 comparability, verifier integrity, budgets, reliability/fairness, trace export,
-distributed workers and workload validity. AR-0405/0406 add later performance,
+distributed workers and workload validity. Later work adds performance,
 reproducibility and evolving workloads.
 
 Further candidates include [SWE-Lancer](https://openai.com/index/swe-lancer/),

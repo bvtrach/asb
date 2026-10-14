@@ -1,6 +1,6 @@
 # CLI route acceptance matrix
 
-This matrix is the AR-1770 regression surface for command-owned directory
+This matrix is the regression surface for command-owned directory
 preparation and stream separation. Every route must keep JSON stdout machine
 readable, keep human progress and recovery guidance on stderr, and fail closed
 without mutating a destination when dry-run, permission, read-only, symlink,

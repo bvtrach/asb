@@ -25,9 +25,9 @@ A partial report remains useful evidence but cannot promote a cell.
 
 All available cells below are initially `planned`. Arch aarch64 is `unsupported`
 because the official Arch Linux image index contains only amd64; Arch Linux ARM is
-a separate distribution and is not silently substituted. AR-0702 owns native
-kernel validation. Agent and workload ARs own promotion of their cross-product
-cells after exact runtime evidence exists.
+a separate distribution and is not silently substituted. Native
+kernel validation is owned separately. Agent and workload work promotes their cross-product
+cells only after exact runtime evidence exists.
 
 | Family | Pinned release/snapshot | libc baseline | amd64 image | arm64 image | Native kernel evidence |
 | --- | --- | --- | --- | --- | --- |
@@ -96,7 +96,7 @@ the image package database. npm and PyPI JSON metadata supplied package versions
 constraints and integrity, and selected npm archives were checked with `file` and
 `readelf`. No foreign-architecture binary was executed.
 
-The real external boundary exercised by AR-0701 is immutable registry and package
+The real external boundary exercised is immutable registry and package
 artifact retrieval. This establishes availability and contents only. Host cgroup
 v2 delegation, systemd, SELinux/AppArmor, perf permission, PSI, BTF, native kernel
 identity, agent startup and workload success all remain explicitly unverified.
@@ -120,7 +120,7 @@ version, substring and prefix matches are insufficient.
 
 Reports retain the kernel LSM registration list and observed SELinux mode.
 AppArmor registration is recorded as `registered-unproven`: registration alone
-does not prove enforcement, and AR-0702 has no denial oracle that would justify
+does not prove enforcement, and there is no denial oracle that would justify
 that stronger claim. SELinux is recorded as enforcing or permissive only when
 the live state is readable. Missing privilege or state makes qualification
 partial rather than silently treating policy as disabled.
@@ -158,8 +158,8 @@ functional behavior, but every report sets `performance_baseline` to false.
 Containers and QEMU, UML or Bochs emulation are rejected as native evidence.
 Performance claims require separately controlled native resources.
 
-AR-0703 tracks optional future disposable booted Debian 13 and openEuler 24.03
-LTS-SP2 native ARM64 lab cells. Their absence does not block AR-0702 or development.
+Optional future disposable booted Debian 13 and openEuler 24.03
+LTS-SP2 native ARM64 lab cells are tracked separately. Their absence does not block required native evidence or development.
 The required AArch64 portability path is the pinned QEMU lane; it does not substitute
 for native ARM64 kernel, performance, or support-cell evidence.
 
@@ -184,7 +184,7 @@ authorized existing Ubuntu x86_64 host as a bounded credential-free functional c
 sanitized evidence is separate from the distribution support matrix: it does not promote a
 platform or agent cell, establish an uncontended performance baseline, activate persistent
 runner routing, or provide native ARM64 capacity. Native ARM64 is optional future qualification;
-AR-0702 completes from required native x86_64 and applicable pinned QEMU AArch64 evidence.
+required native evidence completes from native x86_64 and applicable pinned QEMU AArch64 results.
 
 ## Emulated aarch64 portability lane
 
