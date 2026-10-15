@@ -30,7 +30,7 @@ pub fn command(name: &str, output: &mut dyn Write) -> Result<(), Error> {
             "Usage: asb sweep SWEEP.toml [--record|--replay] [--json]\n\nValidate a `configs = [...]` sweep manifest (not a normal benchmark TOML), then run each referenced benchmark sequentially. Each run gets its own `<sweep>-results/<index>-<name>/` folder containing an isolated config, workspace, log, measurements, and tape cassette. `--record` and `--replay` are mutually exclusive; replay never contacts a live provider."
         }
         "compare" => {
-            "Usage: asb compare SWEEP.toml\n\nRead completed sweep result folders, compare every numeric measurement, and write comparison.json plus SVG bar charts under `results/<sweep>-comparison/`. Collector time-series output is rendered as line charts with one series per benchmark."
+            "Usage: asb compare SWEEP.toml\n\nRead completed sweep result folders, compare every numeric measurement, and write comparison.json plus SVG bar charts under `results/<sweep>-comparison/`. Collector time-series output is rendered as line charts with one series per benchmark. Charts include numbered y-axis ticks and a metric-derived unit label."
         }
         "provider" => {
             "Usage: asb provider models [PROVIDER] [--json] [--free]\n\nAccess provider-related commands. `models` lists live provider catalogs."

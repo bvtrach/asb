@@ -9,6 +9,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
+const PLOT_TOP: f64 = 70.0;
+const PLOT_BOTTOM: f64 = 390.0;
+const PLOT_RIGHT: f64 = 880.0;
+const Y_TICKS: usize = 5;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -277,13 +281,13 @@ fn write_bar_svg(path: &Path, title: &str, values: &[(String, f64)]) -> Result<(
     let width = 900.0;
     let height = 460.0;
     let left = 70.0;
-    let bottom = 390.0;
+    let bottom = PLOT_BOTTOM;
     let bar_width = (width - left - 20.0) / values.len().max(1) as f64;
     let mut svg = svg_header(width, height, title);
-    svg.push_str(&format!("<line x1=\"{left}\" y1=\"70\" x2=\"{left}\" y2=\"{bottom}\" stroke=\"black\"/><line x1=\"{left}\" y1=\"{bottom}\" x2=\"880\" y2=\"{bottom}\" stroke=\"black\"/>"));
+    append_y_axis(&mut svg, left, PLOT_TOP, bottom, PLOT_RIGHT, max, title);
     for (index, (label, value)) in values.iter().enumerate() {
         let x = left + index as f64 * bar_width + 4.0;
-        let bar_height = value.max(0.0) / max * 320.0;
+        let bar_height = value.max(0.0) / max * (bottom - PLOT_TOP);
         let y = bottom - bar_height;
         svg.push_str(&format!("<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{:.1}\" height=\"{bar_height:.1}\" fill=\"#4472c4\"><title>{}: {value}</title></rect>", (bar_width - 8.0).max(2.0), escape(label)));
         svg.push_str(&format!("<text x=\"{:.1}\" y=\"410\" transform=\"rotate(35 {:.1} 410)\" font-size=\"11\">{}</text>", x, x, escape(label)));
@@ -300,7 +304,15 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, Vec<f64>)]) -> Re
         .fold(0.0_f64, f64::max)
         .max(1.0);
     let mut svg = svg_header(900.0, 460.0, title);
-    svg.push_str("<line x1=\"70\" y1=\"70\" x2=\"70\" y2=\"390\" stroke=\"black\"/><line x1=\"70\" y1=\"390\" x2=\"880\" y2=\"390\" stroke=\"black\"/>");
+    append_y_axis(
+        &mut svg,
+        70.0,
+        PLOT_TOP,
+        PLOT_BOTTOM,
+        PLOT_RIGHT,
+        max,
+        title,
+    );
     for (series_index, (label, points)) in values.iter().enumerate() {
         let color = ["#4472c4", "#ed7d31", "#70ad47", "#a5a5a5", "#ffc000"][series_index % 5];
         let coordinates = points
@@ -308,7 +320,7 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, Vec<f64>)]) -> Re
             .enumerate()
             .map(|(index, value)| {
                 let x = 75.0 + index as f64 / points.len().max(1) as f64 * 800.0;
-                let y = 390.0 - value.max(0.0) / max * 300.0;
+                let y = PLOT_BOTTOM - value.max(0.0) / max * (PLOT_BOTTOM - PLOT_TOP);
                 format!("{x:.1},{y:.1}")
             })
             .collect::<Vec<_>>()
@@ -318,6 +330,61 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, Vec<f64>)]) -> Re
     svg.push_str("</svg>\n");
     fs::write(path, svg)
         .map_err(|error| Error::Run(format!("cannot write {}: {error}", path.display())))
+}
+
+fn append_y_axis(
+    svg: &mut String,
+    left: f64,
+    top: f64,
+    bottom: f64,
+    right: f64,
+    max: f64,
+    title: &str,
+) {
+    svg.push_str(&format!(
+        "<line x1=\"{left}\" y1=\"{top}\" x2=\"{left}\" y2=\"{bottom}\" stroke=\"black\"/><line x1=\"{left}\" y1=\"{bottom}\" x2=\"{right}\" y2=\"{bottom}\" stroke=\"black\"/>"
+    ));
+    for tick in 0..=Y_TICKS {
+        let fraction = tick as f64 / Y_TICKS as f64;
+        let y = bottom - fraction * (bottom - top);
+        let value = max * fraction;
+        svg.push_str(&format!(
+            "<line x1=\"{left}\" y1=\"{y:.1}\" x2=\"{right}\" y2=\"{y:.1}\" stroke=\"#dddddd\"/><text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"end\" font-size=\"11\">{}</text>",
+            left - 6.0,
+            y + 4.0,
+            format_tick(value)
+        ));
+    }
+    let unit = metric_unit(title);
+    svg.push_str(&format!(
+        "<text x=\"15\" y=\"230\" text-anchor=\"middle\" transform=\"rotate(-90 15 230)\" font-size=\"12\">unit: {}</text>",
+        escape(unit)
+    ));
+}
+
+fn format_tick(value: f64) -> String {
+    if value.abs() >= 100.0 || value.fract() == 0.0 {
+        format!("{value:.0}")
+    } else {
+        format!("{value:.2}")
+    }
+}
+
+fn metric_unit(title: &str) -> &'static str {
+    let name = title.to_ascii_lowercase();
+    if name.contains("elapsed_ms") || name.ends_with("_ms") {
+        "ms"
+    } else if name.contains("elapsed_s") || name.ends_with("_seconds") {
+        "s"
+    } else if name.contains("token") {
+        "tokens"
+    } else if name.contains("success_rate") || name.ends_with("_rate") {
+        "ratio"
+    } else if name.contains("count") {
+        "count"
+    } else {
+        "value"
+    }
 }
 
 fn svg_header(width: f64, height: f64, title: &str) -> String {
@@ -392,6 +459,36 @@ mod tests {
             root.join("results/sweep-comparison/metric-elapsed_ms.svg")
                 .is_file()
         );
+        let elapsed_svg =
+            std::fs::read_to_string(root.join("results/sweep-comparison/metric-elapsed_ms.svg"))
+                .unwrap();
+        assert!(elapsed_svg.contains("text-anchor=\"end\""));
+        assert!(elapsed_svg.contains("unit: ms"));
+        assert!(elapsed_svg.contains(">0</text>"));
+        assert!(elapsed_svg.contains(">12</text>"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn line_graph_labels_token_axis_unit_and_ticks() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-compare-svg-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        super::write_line_svg(
+            &root.join("tokens.svg"),
+            "token_usage.total_tokens",
+            &[("run".into(), vec![0.0, 100.0])],
+        )
+        .unwrap();
+        let svg = std::fs::read_to_string(root.join("tokens.svg")).unwrap();
+        assert!(svg.contains("unit: tokens"));
+        assert!(svg.contains(">0</text>"));
+        assert!(svg.contains(">100</text>"));
         let _ = std::fs::remove_dir_all(root);
     }
 

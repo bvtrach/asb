@@ -125,4 +125,7 @@ added without changing `run` or the benchmark configuration format.
 
 `asb compare SWEEP.toml` reads the isolated `<sweep>-results/` directories
 created by `asb sweep`. It writes bounded `comparison.json` data and SVG charts
-to `results/<sweep>-comparison/`; no provider or agent is contacted.
+to `results/<sweep>-comparison/`; no provider or agent is contacted. Each chart
+has numbered y-axis ticks and a metric-derived unit label (for example `ms`,
+`tokens`, `ratio`, or `value`) so the plotted scale is readable without opening
+the machine-readable summary.
