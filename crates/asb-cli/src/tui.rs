@@ -318,6 +318,10 @@ fn visible_message(message: &str, until: Option<std::time::Instant>) -> &str {
     }
 }
 
+fn install_progress(started: std::time::Instant) -> u8 {
+    8_u8.saturating_add((started.elapsed().as_millis() / 200).min(87) as u8)
+}
+
 /// Launch the setup wizard and write one TOML per selected combination.
 pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
     if !args.is_empty() {
@@ -567,15 +571,36 @@ fn install_workload_selection(
         &mut app.message,
         &mut app.message_color,
         &mut app.message_until,
-        format!("Installing `{name}`..."),
+        format!("Installing `{name}` (8%)..."),
         Color::Cyan,
         false,
     );
-    terminal
-        .draw(|frame| draw_workload(frame, app))
-        .map_err(|error| Error::Io(format!("cannot draw workload install status: {error}")))?;
-    let mut output = Vec::new();
-    let result = install::workload(&[name.clone()], &mut output);
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let install_name = name.clone();
+    std::thread::spawn(move || {
+        let mut output = Vec::new();
+        let result = install::workload(&[install_name], &mut output);
+        let _ = sender.send(result);
+    });
+    let started = std::time::Instant::now();
+    let result = loop {
+        if let Ok(result) = receiver.try_recv() {
+            break result;
+        }
+        let percent = install_progress(started);
+        set_message(
+            &mut app.message,
+            &mut app.message_color,
+            &mut app.message_until,
+            format!("Installing ({percent}%)..."),
+            Color::Cyan,
+            false,
+        );
+        terminal
+            .draw(|frame| draw_workload(frame, app))
+            .map_err(|error| Error::Io(format!("cannot draw workload install status: {error}")))?;
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
     refresh_workload_availability(app);
     match result {
         Ok(()) => set_message(
@@ -986,17 +1011,41 @@ fn install_setup_selection(
         Color::Cyan,
         false,
     );
-    terminal
-        .draw(|frame| draw(frame, app))
-        .map_err(|error| Error::Io(format!("cannot draw setup install status: {error}")))?;
-    let mut output = Vec::new();
-    let result = match app.step {
-        0 | 4 => install::tool(&[label.clone()], &mut output),
-        3 => {
-            let workload = label.strip_suffix(" [trial set]").unwrap_or(&label);
-            install::workload(&[workload.to_owned()], &mut output)
+    let step = app.step;
+    let install_label = label.clone();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let mut output = Vec::new();
+        let result = match step {
+            0 | 4 => install::tool(&[install_label], &mut output),
+            3 => {
+                let workload = install_label
+                    .strip_suffix(" [trial set]")
+                    .unwrap_or(&install_label);
+                install::workload(&[workload.to_owned()], &mut output)
+            }
+            _ => unreachable!("installable setup steps were checked above"),
+        };
+        let _ = sender.send(result);
+    });
+    let started = std::time::Instant::now();
+    let result = loop {
+        if let Ok(result) = receiver.try_recv() {
+            break result;
         }
-        _ => unreachable!("installable setup steps were checked above"),
+        let percent = install_progress(started);
+        set_message(
+            &mut app.message,
+            &mut app.message_color,
+            &mut app.message_until,
+            format!("Installing ({percent}%)..."),
+            Color::Cyan,
+            false,
+        );
+        terminal
+            .draw(|frame| draw(frame, app))
+            .map_err(|error| Error::Io(format!("cannot draw setup install status: {error}")))?;
+        std::thread::sleep(std::time::Duration::from_millis(100));
     };
     app.refresh_availability();
     match result {
