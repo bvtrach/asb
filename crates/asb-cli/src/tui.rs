@@ -1246,7 +1246,7 @@ fn workload_choices(root: &Path, directory: &str) -> Vec<Choice> {
     let external_names = install::external_workload_names()
         .map(str::to_owned)
         .collect::<BTreeSet<_>>();
-    names
+    let mut choices = names
         .into_iter()
         .map(|label| {
             let name = label.strip_suffix(" [trial set]").unwrap_or(&label);
@@ -1266,7 +1266,15 @@ fn workload_choices(root: &Path, directory: &str) -> Vec<Choice> {
                 },
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    choices.sort_by_key(|choice| {
+        let name = choice
+            .label
+            .strip_suffix(" [trial set]")
+            .unwrap_or(&choice.label);
+        (external_names.contains(name), choice.label.clone())
+    });
+    choices
 }
 
 fn default_model(provider: &str) -> &'static str {
@@ -1415,9 +1423,11 @@ mod tests {
         App, Availability, Choice, Generated, Pane, default_model, generate_configs,
         generated_summary,
     };
+    use crate::install;
     use crate::project::ProjectConfig;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::style::{Color, Style};
+    use std::collections::BTreeSet;
 
     #[test]
     fn pane_filters_and_toggles_visible_choices() {
@@ -1541,6 +1551,39 @@ mod tests {
             .find(|choice| choice.label == "terminal-bench")
             .expect("catalog workload is listed");
         assert_eq!(terminal.availability, super::Availability::Missing);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn setup_workloads_group_builtins_before_sorted_external_entries() {
+        let root =
+            std::env::temp_dir().join(format!("asb-setup-workload-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let choices = super::workload_choices(&root, ".");
+        let external_names = install::external_workload_names().collect::<BTreeSet<_>>();
+        let external_start = choices
+            .iter()
+            .position(|choice| {
+                let name = choice
+                    .label
+                    .strip_suffix(" [trial set]")
+                    .unwrap_or(&choice.label);
+                external_names.contains(name)
+            })
+            .expect("external catalog is present");
+        assert!(choices[..external_start].iter().all(|choice| {
+            let name = choice
+                .label
+                .strip_suffix(" [trial set]")
+                .unwrap_or(&choice.label);
+            !external_names.contains(name)
+        }));
+        assert!(
+            choices[external_start..]
+                .windows(2)
+                .all(|window| { window[0].label <= window[1].label })
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
