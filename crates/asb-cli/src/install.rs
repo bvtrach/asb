@@ -18,6 +18,88 @@ enum Recipe {
     },
 }
 
+struct ExternalWorkload {
+    name: &'static str,
+    source: &'static str,
+}
+
+const EXTERNAL_WORKLOADS: &[ExternalWorkload] = &[
+    ExternalWorkload {
+        name: "agentbench",
+        source: "https://raw.githubusercontent.com/THUDM/AgentBench/d1e4a10db08c87075c78972e48ecc182be03e2d5/README.md",
+    },
+    ExternalWorkload {
+        name: "agentdojo",
+        source: "https://raw.githubusercontent.com/ethz-spylab/agentdojo/089ed468cf3ed0322acc66b0211f26d9d90dbf60/README.md",
+    },
+    ExternalWorkload {
+        name: "aider-polyglot",
+        source: "https://raw.githubusercontent.com/Aider-AI/aider/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/README.md",
+    },
+    ExternalWorkload {
+        name: "bigcodebench",
+        source: "https://raw.githubusercontent.com/bigcode-project/bigcodebench/9059fb84d1188c02edeac4995361656a2fdecbef/README.md",
+    },
+    ExternalWorkload {
+        name: "core-bench",
+        source: "https://raw.githubusercontent.com/siegelz/core-bench/e32a2980e72fe6eb04ee04eb749458f570625663/README.md",
+    },
+    ExternalWorkload {
+        name: "evalplus",
+        source: "https://raw.githubusercontent.com/evalplus/evalplus/e5d0ed0bab96280b60b637ec7f15b5e4841b0cb2/README.md",
+    },
+    ExternalWorkload {
+        name: "livecodebench",
+        source: "https://raw.githubusercontent.com/LiveCodeBench/LiveCodeBench/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24/README.md",
+    },
+    ExternalWorkload {
+        name: "swe-bench",
+        source: "https://raw.githubusercontent.com/SWE-bench/SWE-bench/02e7a74ffd0b707aab73d203fe87bdc7c76afc8e/README.md",
+    },
+    ExternalWorkload {
+        name: "swe-bench-lite",
+        source: "https://raw.githubusercontent.com/SWE-bench/SWE-bench/02e7a74ffd0b707aab73d203fe87bdc7c76afc8e/README.md",
+    },
+    ExternalWorkload {
+        name: "swe-bench-pro",
+        source: "https://raw.githubusercontent.com/scaleapi/SWE-bench_Pro-os/ca10a60a5fcae51e6948ffe1485d4153d421e6c5/README.md",
+    },
+    ExternalWorkload {
+        name: "swe-bench-verified",
+        source: "https://raw.githubusercontent.com/SWE-bench/SWE-bench/02e7a74ffd0b707aab73d203fe87bdc7c76afc8e/README.md",
+    },
+    ExternalWorkload {
+        name: "swe-efficiency",
+        source: "https://raw.githubusercontent.com/swefficiency/swefficiency/12d32a2d6800824a7d84bdb6797b5708e7b7957f/README.md",
+    },
+    ExternalWorkload {
+        name: "swe-lancer",
+        source: "https://raw.githubusercontent.com/openai/frontier-evals/51052cede8cc608f95bb00346635e03759013e5a/README.md",
+    },
+    ExternalWorkload {
+        name: "swe-perf",
+        source: "https://raw.githubusercontent.com/SWE-Perf/SWE-Perf/9e8fed285ed640b51baaf66b13773706dc95aa45/README.md",
+    },
+    ExternalWorkload {
+        name: "swe-rebench",
+        source: "https://raw.githubusercontent.com/SWE-rebench/SWE-bench-fork/e4907b7a90eafaa1f0a6428fd04fe31cdd8b4284/README.md",
+    },
+    ExternalWorkload {
+        name: "tau-bench",
+        source: "https://raw.githubusercontent.com/sierra-research/tau-bench/59a200c6d575d595120f1cb70fea53cef0632f6b/README.md",
+    },
+    ExternalWorkload {
+        name: "terminal-bench",
+        source: "https://raw.githubusercontent.com/harbor-framework/terminal-bench/452bf305c6daa62fc59061d22133a7cbc7c1572e/README.md",
+    },
+];
+
+fn external_workload(name: &str) -> Option<&'static ExternalWorkload> {
+    EXTERNAL_WORKLOADS
+        .iter()
+        .find(|workload| workload.name == name)
+}
+
 fn recipe(name: &str) -> Option<Recipe> {
     match name {
         "codex" => Some(Recipe::Npm {
@@ -171,6 +253,10 @@ pub fn workload_list(args: &[String], output: &mut dyn std::io::Write) -> Result
             writeln!(output, "  {name}").map_err(super::io_error)?;
         }
     }
+    writeln!(output, "Installable external workloads:").map_err(super::io_error)?;
+    for workload in EXTERNAL_WORKLOADS {
+        writeln!(output, "  {}", workload.name).map_err(super::io_error)?;
+    }
     Ok(())
 }
 
@@ -261,9 +347,12 @@ fn parse_tool(args: &[String]) -> Result<(String, Option<String>, PathBuf, bool)
 }
 
 fn parse_workload(args: &[String]) -> Result<(String, String, PathBuf), Error> {
-    let source = args.first().cloned().ok_or(Error::Usage(
+    let requested = args.first().cloned().ok_or(Error::Usage(
         "workload install requires a local path or URL",
     ))?;
+    let source = external_workload(&requested)
+        .map(|workload| workload.source.to_owned())
+        .unwrap_or_else(|| requested.clone());
     let filename = source
         .split('?')
         .next()
@@ -277,7 +366,9 @@ fn parse_workload(args: &[String]) -> Result<(String, String, PathBuf), Error> {
             "workload source must have a simple file name".into(),
         ))?
         .to_owned();
-    let mut name = default_name;
+    let mut name = external_workload(&requested)
+        .map(|workload| workload.name.to_owned())
+        .unwrap_or(default_name);
     let (project_root, project_config) = project::load(Path::new("."))?;
     let mut directory = std::env::var_os("ASB_WORKLOAD_DIR")
         .map(PathBuf::from)
@@ -442,5 +533,25 @@ mod tests {
         assert!(text.find("alpha").expect("alpha") < text.find("zeta").expect("zeta"));
         assert!(!text.contains("ignored"));
         let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn external_workload_aliases_are_short_unique_and_pinned() {
+        let mut names = std::collections::BTreeSet::new();
+        for workload in EXTERNAL_WORKLOADS {
+            assert!(valid_name(workload.name));
+            assert!(names.insert(workload.name));
+            assert!(
+                workload
+                    .source
+                    .starts_with("https://raw.githubusercontent.com/")
+            );
+            assert!(workload.source.split('/').any(|part| part.len() == 40));
+        }
+        assert_eq!(
+            external_workload("swe-bench").map(|item| item.name),
+            Some("swe-bench")
+        );
+        assert!(external_workload("methodology-only").is_none());
     }
 }

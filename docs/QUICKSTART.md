@@ -11,7 +11,7 @@ make install
 ./target/debug/asb tool list
 ./target/debug/asb tool install codex
 ./target/debug/asb workload list
-./target/debug/asb models openrouter
+./target/debug/asb provider models openrouter
 ./target/debug/asb workload install \
   https://raw.githubusercontent.com/martin-beck/asb/main/workloads/bug-fix.txt \
   --name bug-fix
@@ -27,8 +27,8 @@ make install
 Credentials come from the environment used to launch ASB. For example,
 OpenRouter agents can use `OPENROUTER_API_KEY`; cli2key integrations can use
 `CLI2KEY_API_KEY` and `CLI2KEY_BASE_URL`. ASB does not store or inspect these
-values. `asb models openrouter` uses the same environment to print the current
-catalog; `asb models --json` queries every supported provider and reports
+values. `asb provider models openrouter` uses the same environment to print the current
+catalog; `asb provider models --json` queries every supported provider and reports
 missing credentials or unavailable endpoints individually.
 
 For a local cli2key bridge, install the bridge and select `--provider cli2key`:
@@ -66,6 +66,8 @@ Install a local agent executable or external prompt with:
 ```sh
 asb tool install my-agent --source /path/to/my-agent
 asb workload install https://example.org/workloads/customer-task.txt
+# Or install a pinned external workload description by its short name:
+asb workload install swe-bench
 ```
 
 The built-in recipes install into `.asb-tools/<agent>/` and run from there.
@@ -83,7 +85,9 @@ structured result for scripts:
 
 Use `asb COMMAND --help` for concise help on every command and subcommand.
 `asb tool list` enumerates all built-in agent installers; `asb workload list`
-enumerates the prompt files available in the configured workload directory.
+enumerates local prompt files and installable external aliases. External
+aliases fetch a pinned upstream description into the configured workload
+directory; they do not vendor datasets or evaluators.
 
 The built-in recipes are:
 

@@ -9,7 +9,7 @@ asb tool list
 asb tool install AGENT
 asb workload list
 asb workload install SOURCE.txt|URL
-asb models [PROVIDER]
+asb provider models [PROVIDER]
 asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]
 asb run CONFIG [--json]
 ```
@@ -27,7 +27,7 @@ environment. It prints a concise human-readable result by default; pass
 `--json` for machine-readable output. Credentials stay outside the
 configuration.
 
-`models` queries live provider model catalogs. Pass a provider to query one,
+`provider models` queries live provider model catalogs. Pass a provider to query one,
 or omit it to query every supported provider and report unavailable providers
 without stopping the rest. Use `--json` for machine-readable output. Model
 discovery uses the provider credential and endpoint environment variables but
@@ -35,7 +35,11 @@ never writes or prints credential values.
 
 Every command and subcommand has concise help; use `asb COMMAND --help`.
 `asb tool list` shows all built-in agent installers and `asb workload list`
-shows the `.txt` prompts available in the current project.
+shows the `.txt` prompts available in the current project plus installable
+external workload aliases. Install one by its short name, for example
+`asb workload install swe-bench`; ASB fetches the pinned upstream description
+into the current project's workload directory. These aliases install a prompt
+adapter/description, not an upstream dataset or evaluator.
 
 Before a run, ASB executes a modular preparation stage. For `cli2key`, it
 starts the project-local bridge when `CLI2KEY_BASE_URL` is not supplied, reads

@@ -23,7 +23,7 @@ variables and gives the selected agent one bounded workload prompt.
 Provider credentials are never inspected by ASB: the child agent inherits the
 parent environment. Known providers document conventional credential and
 endpoint variable names, while any custom provider name is accepted unchanged.
-The `models` command is the one exception that reads the selected credential
+The `provider models` command is the one exception that reads the selected credential
 only long enough to send a catalog request; it sends it through curl's stdin
 configuration, never includes it in arguments or output, and never stores it.
 Workloads are loaded from `workloads/` beside the configuration file. Set
@@ -34,7 +34,9 @@ the catalogue.
 directory for the supported agents, or downloads/copies an executable supplied
 with `--source`. npm recipes are project-local; Python recipes use a
 project-local virtual environment. `asb workload install` downloads a prompt
-URL or copies a local prompt into the configured workloads directory. These
+URL, resolves a pinned external workload alias, or copies a local prompt into
+the configured workloads directory. External aliases install a short-name
+prompt adapter/description, not an upstream dataset or evaluator. These
 commands do not handle credentials.
 `asb tool list` and `asb workload list` expose these two catalogs without
 installing anything. Command-specific help is available with `--help`.

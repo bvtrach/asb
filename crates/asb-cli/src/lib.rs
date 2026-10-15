@@ -85,7 +85,6 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
         [command, subcommand, rest @ ..] if command == "workload" && subcommand == "install" => {
             install::workload(rest, stdout)
         }
-        [command, rest @ ..] if command == "models" => models::list(rest, stdout),
         [command, subcommand, rest @ ..] if command == "provider" && subcommand == "models" => {
             models::list(rest, stdout)
         }
@@ -161,7 +160,6 @@ mod tests {
             vec!["init", "--help"],
             vec!["setup", "--help"],
             vec!["run", "--help"],
-            vec!["models", "--help"],
             vec!["provider", "--help"],
             vec!["provider", "models", "--help"],
             vec!["tool", "--help"],
