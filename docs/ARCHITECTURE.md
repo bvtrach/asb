@@ -71,6 +71,11 @@ aliases download pinned upstream source archives into local bundle directories;
 the runner copies those sources into `external-workload/` in the workspace.
 Other aliases install pinned prompt metadata. These commands do not handle
 credentials.
+The `bpftrace` recipe copies the exact host executable into the project and
+writes `bpftrace-compatibility.json` with its version, kernel release, and
+architecture. This keeps measurement runs tied to the kernel on the machine
+where the tool was installed; rerun `asb tool install bpftrace` after changing
+kernels or moving the project to another host.
 The `pi` agent uses the pinned `@mariozechner/pi-coding-agent` npm package and
 its non-interactive print mode. For `cli2key`, the preparation layer maps Pi to
 the bridge's OpenAI-compatible endpoint without storing credentials.

@@ -22,6 +22,7 @@ enum Recipe {
     Host {
         executable: &'static str,
     },
+    Bpftrace,
     Flamegraph,
 }
 
@@ -211,9 +212,7 @@ fn recipe(name: &str) -> Option<Recipe> {
             executable: "iostat",
         }),
         "perf" => Some(Recipe::Host { executable: "perf" }),
-        "bpftrace" => Some(Recipe::Host {
-            executable: "bpftrace",
-        }),
+        "bpftrace" => Some(Recipe::Bpftrace),
         "flamegraph" => Some(Recipe::Flamegraph),
         _ => None,
     }
@@ -522,6 +521,7 @@ fn install_recipe(recipe: Recipe, root: &Path) -> Result<PathBuf, Error> {
             make_executable(&destination)?;
             return Ok(destination);
         }
+        Recipe::Bpftrace => return install_bpftrace(root),
         Recipe::Flamegraph => {
             let bin = root.join("bin");
             fs::create_dir_all(&bin)
@@ -549,6 +549,7 @@ fn install_recipe(recipe: Recipe, root: &Path) -> Result<PathBuf, Error> {
                 Recipe::Npm { .. } => "npm",
                 Recipe::Python { .. } => "python3",
                 Recipe::Host { .. } => "host measurement binary",
+                Recipe::Bpftrace => "bpftrace and uname",
                 Recipe::Flamegraph => "curl",
             };
             missing_dependency(dependency, "agent installation", error)
@@ -574,6 +575,65 @@ fn install_recipe(recipe: Recipe, root: &Path) -> Result<PathBuf, Error> {
     Ok(executable)
 }
 
+/// Copy the host bpftrace binary and persist the kernel pairing used to
+/// install it.  bpftrace is kernel-sensitive; using the exact host binary and
+/// recording `uname -r` prevents silently reusing a project tool from another
+/// machine or kernel image.
+fn install_bpftrace(root: &Path) -> Result<PathBuf, Error> {
+    let source = host_executable("bpftrace")?;
+    let version = command_output(&source, &["--version"], "bpftrace version")?;
+    let kernel = command_output(Path::new("uname"), &["-r"], "kernel release")?;
+    let machine = command_output(Path::new("uname"), &["-m"], "kernel architecture")?;
+    let bin = root.join("bin");
+    fs::create_dir_all(&bin)
+        .map_err(|error| Error::Io(format!("cannot create {}: {error}", bin.display())))?;
+    let destination = bin.join("bpftrace");
+    fs::copy(&source, &destination).map_err(|error| {
+        Error::Io(format!(
+            "cannot copy host bpftrace {} to {}: {error}",
+            source.display(),
+            destination.display()
+        ))
+    })?;
+    make_executable(&destination)?;
+    let metadata = format!(
+        "{{\n  \"schema_version\": 1,\n  \"tool\": \"bpftrace\",\n  \"version\": {},\n  \"kernel_release\": {},\n  \"kernel_architecture\": {}\n}}\n",
+        json_string(&version),
+        json_string(&kernel),
+        json_string(&machine)
+    );
+    fs::write(root.join("bpftrace-compatibility.json"), metadata).map_err(|error| {
+        Error::Io(format!(
+            "cannot write bpftrace compatibility metadata: {error}"
+        ))
+    })?;
+    Ok(destination)
+}
+
+fn command_output(program: &Path, args: &[&str], label: &str) -> Result<String, Error> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|error| Error::Io(format!("cannot inspect {label}: {error}")))?;
+    if !output.status.success() {
+        return Err(Error::Io(format!(
+            "cannot inspect {label}: command exited with {}",
+            output.status
+        )));
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if text.is_empty() {
+        return Err(Error::Io(format!(
+            "cannot inspect {label}: command returned no output"
+        )));
+    }
+    Ok(text)
+}
+
+fn json_string(value: &str) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "\"unavailable\"".into())
+}
+
 fn executable(recipe: Recipe, root: &Path) -> PathBuf {
     match recipe {
         Recipe::Npm {
@@ -583,6 +643,7 @@ fn executable(recipe: Recipe, root: &Path) -> PathBuf {
         Recipe::Npm { executable, .. } => root.join("node_modules/.bin").join(executable),
         Recipe::Python { executable, .. } => root.join("venv/bin").join(executable),
         Recipe::Host { executable } => root.join("bin").join(executable),
+        Recipe::Bpftrace => root.join("bin").join("bpftrace"),
         Recipe::Flamegraph => root.join("bin").join("flamegraph"),
     }
 }
@@ -607,6 +668,10 @@ fn describe(recipe: Recipe, root: &Path) -> String {
         Recipe::Host { executable } => {
             format!("copy host `{executable}` into {}/bin", root.display())
         }
+        Recipe::Bpftrace => format!(
+            "copy the host-compatible bpftrace into {}/bin and record uname metadata",
+            root.display()
+        ),
         Recipe::Flamegraph => format!(
             "download pinned FlameGraph scripts into {}/bin",
             root.display()
@@ -627,6 +692,7 @@ fn tool_summary(recipe: Recipe) -> String {
             ..
         } => format!("python {package} -> {executable}"),
         Recipe::Host { executable } => format!("host binary -> {executable}"),
+        Recipe::Bpftrace => "host-compatible bpftrace + kernel metadata".into(),
         Recipe::Flamegraph => "pinned FlameGraph scripts -> flamegraph".into(),
     }
 }
