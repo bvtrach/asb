@@ -65,12 +65,14 @@ The ASB source checkout is not a benchmark project: `init` rejects its
 distinctive workspace layout before creating any files.
 
 Recording and replay are implemented as a separate `tape` module behind the
-runner boundary. It starts the externally installed `llmtape` loopback proxy,
+runner boundary. It starts the project-local `llmtape` loopback proxy,
 routes provider endpoints to that proxy, and tears it down after the child
 exits. `record` writes a JSONL cassette; `replay` requires that cassette and
 never starts cli2key or a live provider. This keeps the benchmark
-configuration contract unchanged and keeps llmtape an optional development
-tool rather than a runtime dependency. Measurement collection remains
+configuration contract unchanged and keeps llmtape an optional, project-local
+development tool rather than a runtime dependency. ASB never falls back to a
+host `PATH` lookup; use `asb tool install llmtape` in the benchmark project or
+set `ASB_LLM_TAPE` explicitly. Measurement collection remains
 explicitly opt-in through `asb run --measurements DIR`; CI does not start live
 agents, llmtape, or host collectors.
 

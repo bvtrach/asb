@@ -47,10 +47,7 @@ impl Session {
             })?;
         }
         let port = free_port()?;
-        let executable = project_executable
-            .map(|path| path.to_string_lossy().into_owned())
-            .or_else(|| std::env::var("ASB_LLM_TAPE").ok())
-            .unwrap_or_else(|| "llmtape".into());
+        let executable = resolve_executable(project_executable)?;
         let mut command = Command::new(&executable);
         command
             .arg(match mode {
@@ -80,7 +77,7 @@ impl Session {
             .stderr(Stdio::null());
         let child = command.spawn().map_err(|error| {
             Error::Run(format!(
-                "cannot start llmtape (`{executable}`); run `asb tool install llmtape` or set ASB_LLM_TAPE to another executable: {error}"
+                "cannot start project llmtape (`{executable}`); run `asb tool install llmtape` in the benchmark project or set ASB_LLM_TAPE to another executable: {error}"
             ))
         })?;
         let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
@@ -113,6 +110,31 @@ impl Session {
             .map(|_| ())
             .map_err(|error| Error::Run(format!("could not stop llmtape: {error}")))
     }
+}
+
+/// Resolve llmtape without silently depending on a host-wide installation.
+///
+/// The runner passes the executable found in the benchmark project's tool
+/// directory.  `ASB_LLM_TAPE` remains an explicit escape hatch for a caller
+/// that deliberately supplies another executable; an unqualified `llmtape`
+/// lookup on `PATH` is intentionally not performed.
+fn resolve_executable(project_executable: Option<&Path>) -> Result<String, Error> {
+    resolve_executable_with_override(project_executable, std::env::var("ASB_LLM_TAPE").ok())
+}
+
+fn resolve_executable_with_override(
+    project_executable: Option<&Path>,
+    explicit_override: Option<String>,
+) -> Result<String, Error> {
+    project_executable
+        .map(|path| path.to_string_lossy().into_owned())
+        .or(explicit_override)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            Error::Run(
+                "llmtape is not installed in this benchmark project; run `asb tool install llmtape` from the project directory, or set ASB_LLM_TAPE to an explicit executable".into(),
+            )
+        })
 }
 
 impl Drop for Session {
@@ -196,7 +218,10 @@ fn free_port() -> Result<u16, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mode, configure_command, upstream};
+    use super::{
+        Mode, configure_command, resolve_executable, resolve_executable_with_override, upstream,
+    };
+    use std::path::Path;
     use std::process::Command;
 
     #[test]
@@ -236,5 +261,22 @@ mod tests {
             values.get("ASB_TAPE_MODE").map(|value| value.as_ref()),
             Some("replay")
         );
+    }
+
+    #[test]
+    fn project_tool_is_preferred_without_path_fallback() {
+        let path = Path::new(".asb-tools/llmtape/node_modules/.bin/llmtape");
+        assert_eq!(
+            resolve_executable(Some(path)).unwrap(),
+            path.display().to_string()
+        );
+    }
+
+    #[test]
+    fn missing_project_tool_explains_local_install() {
+        let error = resolve_executable_with_override(None, None)
+            .expect_err("missing llmtape should fail closed");
+        assert!(error.to_string().contains("asb tool install llmtape"));
+        assert!(error.to_string().contains("benchmark project"));
     }
 }
