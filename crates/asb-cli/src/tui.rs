@@ -1040,41 +1040,41 @@ fn render_choice_pane(
         body[0],
     );
     let visible = pane.visible();
-    let items = visible
-        .iter()
-        .enumerate()
-        .map(|(visible_position, index)| {
-            let choice = &pane.choices[*index];
-            let marker = if pane.selected[*index] { "[x]" } else { "[ ]" };
-            let selected = *index == pane.cursor;
-            let mut row = vec![Span::raw(format!("{marker} "))];
-            let section = pane.sections.get(*index).copied().flatten();
-            let previous_section = visible_position
-                .checked_sub(1)
-                .and_then(|previous| pane.sections.get(visible[previous]).copied().flatten());
-            if section.is_some() && section != previous_section {
-                row.push(Span::styled(
-                    format!("[{}] ", section.expect("section is present")),
-                    Style::default().fg(Color::DarkGray),
-                ));
+    let mut items = Vec::new();
+    let mut selected = None;
+    let mut previous_section = None;
+    for index in visible {
+        let choice = &pane.choices[index];
+        let section = pane.sections.get(index).copied().flatten();
+        if let Some(section) = section {
+            if previous_section != Some(section) {
+                items.push(ListItem::new(Line::from(Span::styled(
+                    format!("── {section} ──"),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
+                ))));
             }
-            if show_info {
-                row.push(Span::styled(
-                    INFO_GLYPH,
-                    availability_style(choice.availability),
-                ));
-                row.push(Span::raw("  ".to_owned()));
-            }
-            row.push(Span::raw(choice.label.clone()));
-            ListItem::new(Line::from(row)).style(choice_row_style(selected))
-        })
-        .collect::<Vec<_>>();
-    let selected = visible
-        .iter()
-        .position(|index| *index == pane.cursor)
-        .unwrap_or(0);
+        }
+        let is_selected = index == pane.cursor;
+        if is_selected {
+            selected = Some(items.len());
+        }
+        let marker = if pane.selected[index] { "[x]" } else { "[ ]" };
+        let mut row = vec![Span::raw(format!("{marker} "))];
+        if show_info {
+            row.push(Span::styled(
+                INFO_GLYPH,
+                availability_style(choice.availability),
+            ));
+            row.push(Span::raw("  ".to_owned()));
+        }
+        row.push(Span::raw(choice.label.clone()));
+        items.push(ListItem::new(Line::from(row)).style(choice_row_style(is_selected)));
+        previous_section = section;
+    }
     let mut state = ListState::default();
-    state.select((!visible.is_empty()).then_some(selected));
+    state.select(selected.or_else(|| (!items.is_empty()).then_some(0)));
     frame.render_stateful_widget(
         List::new(items).block(
             Block::default()
