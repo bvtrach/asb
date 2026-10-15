@@ -500,8 +500,13 @@ fn command_for(
 }
 
 fn opencode_model(config: &BenchmarkConfig) -> String {
-    if config.provider.eq_ignore_ascii_case("cli2key") && !config.model.contains('/') {
+    if config.model.contains('/') {
+        return config.model.clone();
+    }
+    if config.provider.eq_ignore_ascii_case("cli2key") {
         format!("cli2key/{}", config.model)
+    } else if config.provider.eq_ignore_ascii_case("opencode-zen") {
+        format!("opencode/{}", config.model)
     } else {
         config.model.clone()
     }
@@ -564,7 +569,7 @@ fn bounded(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{RunResult, command_for, render_human, render_json};
+    use super::{RunResult, command_for, opencode_model, render_human, render_json};
     use crate::benchmark::BenchmarkConfig;
 
     fn result<'a>() -> RunResult<'a> {
@@ -634,6 +639,19 @@ mod tests {
         assert_eq!(command.args[1], "cli2key");
         assert!(command.args.contains(&"--print".into()));
         assert!(command.append_prompt);
+    }
+
+    #[test]
+    fn opencode_zen_uses_opencode_provider_model_namespace() {
+        let config = BenchmarkConfig {
+            agent: "opencode".into(),
+            workload: "bug-fix".into(),
+            provider: "opencode-zen".into(),
+            model: "mimo-v2.6-flash-free".into(),
+            workspace: "workspace".into(),
+            measurements: None,
+        };
+        assert_eq!(opencode_model(&config), "opencode/mimo-v2.6-flash-free");
     }
 
     #[test]

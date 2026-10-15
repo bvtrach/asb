@@ -33,7 +33,7 @@ pub fn command(name: &str, output: &mut dyn Write) -> Result<(), Error> {
             "Usage: asb provider models [PROVIDER] [--json] [--free]\n\nAccess provider-related commands. `models` lists live provider catalogs."
         }
         "provider models" => {
-            "Usage: asb provider models [PROVIDER] [--json] [--free]\n\nList live tool-capable models for one provider, or all supported providers when omitted. Models without tool-calling metadata are excluded. `--free` limits discovery to OpenRouter models marked free (including zero pricing) and local Ollama models."
+            "Usage: asb provider models [PROVIDER] [--json] [--free]\n\nList live tool-capable models for one provider, or all supported providers when omitted. Models without tool-calling metadata are excluded. `--free` limits discovery to OpenRouter models marked free (including zero pricing), OpenCode Zen models ending in `-free`, and local Ollama models. OpenCode Zen's catalog is public and can be queried without an API key."
         }
         "tool" => {
             "Usage: asb tool COMMAND\n\nCommands:\n  list                 List built-in agent installers.\n  install AGENT ...    Install one agent into the project."

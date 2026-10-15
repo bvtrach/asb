@@ -68,6 +68,11 @@ const PROVIDERS: &[ProviderSpec] = &[
         endpoint: Some("OPENROUTER_BASE_URL"),
     },
     ProviderSpec {
+        name: "opencode-zen",
+        credential: Some("OPENCODE_API_KEY"),
+        endpoint: Some("OPENCODE_ZEN_BASE_URL"),
+    },
+    ProviderSpec {
         name: "anthropic",
         credential: Some("ANTHROPIC_API_KEY"),
         endpoint: Some("ANTHROPIC_BASE_URL"),
@@ -142,6 +147,7 @@ pub fn names() -> &'static [&'static str] {
     &[
         "openai",
         "openrouter",
+        "opencode-zen",
         "anthropic",
         "gemini",
         "ollama",
@@ -157,7 +163,7 @@ pub fn names() -> &'static [&'static str] {
 
 /// Providers whose model responses have an unambiguous free-of-charge meaning.
 pub fn free_names() -> &'static [&'static str] {
-    &["openrouter", "ollama"]
+    &["openrouter", "opencode-zen", "ollama"]
 }
 
 /// Return whether `--free` can classify this provider's model catalog safely.
@@ -200,6 +206,13 @@ pub fn model_spec(name: &str) -> Option<ModelSpec> {
             Some("OPENROUTER_API_KEY"),
             Some("OPENROUTER_BASE_URL"),
             Some("https://openrouter.ai/api/v1/models"),
+            ModelKind::OpenAi,
+        ),
+        "opencode-zen" => (
+            "opencode-zen",
+            Some("OPENCODE_API_KEY"),
+            Some("OPENCODE_ZEN_BASE_URL"),
+            Some("https://opencode.ai/zen/v1/models"),
             ModelKind::OpenAi,
         ),
         "anthropic" => (
@@ -362,6 +375,8 @@ mod tests {
             }
         );
         assert_eq!(spec("my-provider").name, "custom");
+        assert_eq!(spec("opencode-zen").name, "opencode-zen");
+        assert!(super::supports_free_models("opencode-zen"));
     }
 
     #[test]

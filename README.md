@@ -67,8 +67,10 @@ artifacts and should not be committed when they contain provider responses.
 `provider models` queries live provider model catalogs. Pass a provider to query one,
 or omit it to query every supported provider and report unavailable providers
 without stopping the rest. Use `--json` for machine-readable output. Add `--free`
-to list only free OpenRouter models and local Ollama models; with `--free`,
-omitting the provider queries only those two providers. Model
+to list only free OpenRouter models, OpenCode Zen models ending in `-free`,
+and local Ollama models; with `--free`, omitting the provider queries only
+those providers. OpenCode Zen model discovery is public and does not require
+an API key. Model
 discovery uses the provider credential and endpoint environment variables but
 never writes or prints credential values.
 Only models that advertise tool-calling support are enumerated. `run` and
@@ -81,6 +83,9 @@ file `$HOME/.api_key_<provider>` (for example `$HOME/.api_key_openrouter`).
 For `cli2key`, `asb tool install cli2key` refreshes the local bridge key, and
 `asb provider models cli2key` starts the project-local bridge and discovers its
 available Codex models without requiring `CLI2KEY_API_KEY`.
+`asb provider models opencode-zen --free` queries OpenCode Zen's public model
+catalog without an API key and lists its models marked with the `-free` suffix;
+an `OPENCODE_API_KEY` is required only when running a benchmark through Zen.
 
 Every command and subcommand has concise help; use `asb COMMAND --help`.
 `asb tool list` shows all built-in agent and support-tool installers and `asb workload list`

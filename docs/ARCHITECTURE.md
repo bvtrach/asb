@@ -34,6 +34,9 @@ and child launch use the environment first and then a bounded
 The `provider models` command is the one exception that reads the selected credential
 only long enough to send a catalog request; it sends it through curl's stdin
 configuration, never includes it in arguments or output, and never stores it.
+OpenCode Zen model discovery uses its public `/zen/v1/models` catalog and does
+not require `OPENCODE_API_KEY`; the key is still required for benchmark
+execution.
 Workloads are loaded from `workloads/` beside the configuration file. Set
 `ASB_WORKLOAD_DIR` to use another directory; add a new `.txt` file to extend
 the catalogue.
