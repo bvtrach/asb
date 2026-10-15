@@ -146,6 +146,8 @@ struct App {
     panes: Vec<Pane>,
     step: usize,
     message: String,
+    message_color: Color,
+    message_until: Option<std::time::Instant>,
 }
 
 impl App {
@@ -194,6 +196,8 @@ impl App {
             ],
             step: 0,
             message: "Space selects; arrows move; Tab or Enter advances; Esc cancels.".into(),
+            message_color: Color::Yellow,
+            message_until: None,
         };
         app.refresh_availability();
         app
@@ -286,6 +290,34 @@ struct Generated {
     sweep: PathBuf,
 }
 
+const TEMPORARY_MESSAGE: std::time::Duration = std::time::Duration::from_secs(4);
+
+fn is_install_key(key: &KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char('i') | KeyCode::Tab)
+}
+
+fn set_message(
+    message: &mut String,
+    color: &mut Color,
+    until: &mut Option<std::time::Instant>,
+    text: impl Into<String>,
+    status: Color,
+    temporary: bool,
+) {
+    *message = text.into();
+    *color = status;
+    *until = temporary.then(|| std::time::Instant::now() + TEMPORARY_MESSAGE);
+}
+
+fn visible_message(message: &str, until: Option<std::time::Instant>) -> &str {
+    if until.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
+        ""
+    } else {
+        message
+    }
+}
+
 /// Launch the setup wizard and write one TOML per selected combination.
 pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
     if !args.is_empty() {
@@ -337,6 +369,8 @@ pub fn workload_tui(args: &[String], output: &mut dyn Write) -> Result<(), Error
         selections: BTreeSet::new(),
         message: "Space selects; Enter opens trials/saves; Tab down; Shift-Tab up; Esc cancels."
             .into(),
+        message_color: Color::Yellow,
+        message_until: None,
     };
     refresh_workload_availability(&mut app);
     let mut terminal = start_terminal()
@@ -359,6 +393,8 @@ struct WorkloadApp {
     selected_workload: Option<String>,
     selections: BTreeSet<String>,
     message: String,
+    message_color: Color,
+    message_until: Option<std::time::Instant>,
 }
 
 fn external_workload_choices(directory: &Path) -> Vec<Choice> {
@@ -433,12 +469,8 @@ fn workload_loop(
             } if modifiers.contains(KeyModifiers::CONTROL) => {
                 return Err(Error::Usage("workload TUI cancelled"));
             }
-            KeyEvent {
-                code: KeyCode::Char('i'),
-                modifiers,
-                ..
-            } if modifiers.contains(KeyModifiers::CONTROL) => {
-                install_workload_selection(app);
+            key if is_install_key(&key) => {
+                install_workload_selection(terminal, app)?;
             }
             KeyEvent {
                 code: KeyCode::Tab,
@@ -504,24 +536,66 @@ fn workload_loop(
     }
 }
 
-fn install_workload_selection(app: &mut WorkloadApp) {
+fn install_workload_selection(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    app: &mut WorkloadApp,
+) -> Result<(), Error> {
     if app.level != 0 {
-        app.message =
-            "Trials are configured locally; return to workloads before installing.".into();
-        return;
+        set_message(
+            &mut app.message,
+            &mut app.message_color,
+            &mut app.message_until,
+            "Trials are configured locally; return to workloads before installing.",
+            Color::Red,
+            true,
+        );
+        return Ok(());
     }
     let Some(choice) = app.workloads.choices.get(app.workloads.cursor) else {
-        app.message = "Nothing is highlighted to install.".into();
-        return;
+        set_message(
+            &mut app.message,
+            &mut app.message_color,
+            &mut app.message_until,
+            "Nothing is highlighted to install.",
+            Color::Red,
+            true,
+        );
+        return Ok(());
     };
     let name = choice.label.clone();
+    set_message(
+        &mut app.message,
+        &mut app.message_color,
+        &mut app.message_until,
+        format!("Installing `{name}`..."),
+        Color::Cyan,
+        false,
+    );
+    terminal
+        .draw(|frame| draw_workload(frame, app))
+        .map_err(|error| Error::Io(format!("cannot draw workload install status: {error}")))?;
     let mut output = Vec::new();
     let result = install::workload(&[name.clone()], &mut output);
     refresh_workload_availability(app);
-    app.message = match result {
-        Ok(()) => format!("Installed or refreshed `{name}`. ⓘ status updated."),
-        Err(error) => format!("Cannot install `{name}`: {error}"),
+    match result {
+        Ok(()) => set_message(
+            &mut app.message,
+            &mut app.message_color,
+            &mut app.message_until,
+            format!("Installed or refreshed `{name}`; status is ready."),
+            Color::Green,
+            true,
+        ),
+        Err(error) => set_message(
+            &mut app.message,
+            &mut app.message_color,
+            &mut app.message_until,
+            format!("Cannot install `{name}`: {error}"),
+            Color::Red,
+            true,
+        ),
     };
+    Ok(())
 }
 
 /// Apply the shared searchable-list controls used by both terminal TUIs.
@@ -639,8 +713,12 @@ fn draw_workload(frame: &mut ratatui::Frame<'_>, app: &WorkloadApp) {
     render_choice_pane(frame, vertical[2], pane);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(app.message.clone(), Style::default().fg(Color::Yellow)),
-            Span::raw("  ⓘ green=ready red=missing yellow=unknown  Ctrl-I install  Space select  ↑/↓ move  Tab/Enter next  Shift-Tab back  Esc cancel"),
+            Span::styled("Ctrl-I install", Style::default().fg(Color::Cyan)),
+            Span::raw(" | ⓘ green=ready red=missing yellow=unknown | Space select | Tab next | "),
+            Span::styled(
+                visible_message(&app.message, app.message_until),
+                Style::default().fg(app.message_color),
+            ),
         ])),
         vertical[3],
     );
@@ -729,12 +807,8 @@ fn run_loop(
             } if modifiers.contains(KeyModifiers::CONTROL) => {
                 return Err(Error::Usage("setup TUI cancelled"));
             }
-            KeyEvent {
-                code: KeyCode::Char('i'),
-                modifiers,
-                ..
-            } if modifiers.contains(KeyModifiers::CONTROL) => {
-                install_setup_selection(app);
+            key if is_install_key(&key) => {
+                install_setup_selection(terminal, app)?;
             }
             KeyEvent {
                 code: KeyCode::Tab,
@@ -811,8 +885,12 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
     render_choice_pane(frame, vertical[2], pane);
     frame.render_widget(
         Paragraph::new(Text::from(Line::from(vec![
-            Span::styled(app.message.clone(), Style::default().fg(Color::Yellow)),
-            Span::raw("  ⓘ green=ready red=missing yellow=unknown  Ctrl-I install  Space select  ↑/↓ move  Tab/Enter next  Shift-Tab back  Esc cancel"),
+            Span::styled("Ctrl-I install", Style::default().fg(Color::Cyan)),
+            Span::raw(" | ⓘ green=ready red=missing yellow=unknown | Space select | Tab next | "),
+            Span::styled(
+                visible_message(&app.message, app.message_until),
+                Style::default().fg(app.message_color),
+            ),
         ]))),
         vertical[3],
     );
@@ -873,12 +951,44 @@ fn availability_style(availability: Availability) -> Style {
     }
 }
 
-fn install_setup_selection(app: &mut App) {
+fn install_setup_selection(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    app: &mut App,
+) -> Result<(), Error> {
     let Some(choice) = app.panes[app.step].choices.get(app.panes[app.step].cursor) else {
-        app.message = "Nothing is highlighted to install.".into();
-        return;
+        set_message(
+            &mut app.message,
+            &mut app.message_color,
+            &mut app.message_until,
+            "Nothing is highlighted to install.",
+            Color::Red,
+            true,
+        );
+        return Ok(());
     };
     let label = choice.label.clone();
+    if !matches!(app.step, 0 | 3 | 4) {
+        set_message(
+            &mut app.message,
+            &mut app.message_color,
+            &mut app.message_until,
+            "This item is discovered or configured, not installed by ASB.",
+            Color::Red,
+            true,
+        );
+        return Ok(());
+    }
+    set_message(
+        &mut app.message,
+        &mut app.message_color,
+        &mut app.message_until,
+        format!("Installing `{label}`..."),
+        Color::Cyan,
+        false,
+    );
+    terminal
+        .draw(|frame| draw(frame, app))
+        .map_err(|error| Error::Io(format!("cannot draw setup install status: {error}")))?;
     let mut output = Vec::new();
     let result = match app.step {
         0 | 4 => install::tool(&[label.clone()], &mut output),
@@ -886,16 +996,28 @@ fn install_setup_selection(app: &mut App) {
             let workload = label.strip_suffix(" [trial set]").unwrap_or(&label);
             install::workload(&[workload.to_owned()], &mut output)
         }
-        _ => {
-            app.message = "This item is discovered or configured, not installed by ASB.".into();
-            return;
-        }
+        _ => unreachable!("installable setup steps were checked above"),
     };
     app.refresh_availability();
-    app.message = match result {
-        Ok(()) => format!("Installed or refreshed `{label}`. ⓘ status updated."),
-        Err(error) => format!("Cannot install `{label}`: {error}"),
+    match result {
+        Ok(()) => set_message(
+            &mut app.message,
+            &mut app.message_color,
+            &mut app.message_until,
+            format!("Installed or refreshed `{label}`; status is ready."),
+            Color::Green,
+            true,
+        ),
+        Err(error) => set_message(
+            &mut app.message,
+            &mut app.message_color,
+            &mut app.message_until,
+            format!("Cannot install `{label}`: {error}"),
+            Color::Red,
+            true,
+        ),
     };
+    Ok(())
 }
 
 fn workload_choices(root: &Path, directory: &str) -> Vec<Choice> {
@@ -1085,6 +1207,7 @@ fn selected_trials(
 mod tests {
     use super::{App, Availability, Choice, Pane, default_model, generate_configs};
     use crate::project::ProjectConfig;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     #[test]
     fn pane_filters_and_toggles_visible_choices() {
@@ -1136,6 +1259,18 @@ mod tests {
                 .all(|choice| choice.availability == Availability::Available)
         );
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn install_shortcut_accepts_terminal_ctrl_i_encodings() {
+        assert!(super::is_install_key(&KeyEvent::new(
+            KeyCode::Char('i'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(super::is_install_key(&KeyEvent::new(
+            KeyCode::Tab,
+            KeyModifiers::CONTROL,
+        )));
     }
 
     #[test]
