@@ -34,6 +34,7 @@ fn prepare_cli2key(
         .env("CLI2KEY_MODEL", model)
         .env("OPENAI_API_KEY", key)
         .env("OPENAI_BASE_URL", base_url)
+        .env("OPENAI_API_BASE", base_url)
         .env("ANTHROPIC_API_KEY", key)
         .env("ANTHROPIC_BASE_URL", base_url.trim_end_matches("/v1"));
     if agent.eq_ignore_ascii_case("opencode") {
@@ -106,6 +107,10 @@ mod tests {
         );
         assert_eq!(
             values.get("OPENAI_BASE_URL").map(|value| value.as_ref()),
+            Some("http://127.0.0.1:3456/v1")
+        );
+        assert_eq!(
+            values.get("OPENAI_API_BASE").map(|value| value.as_ref()),
             Some("http://127.0.0.1:3456/v1")
         );
         assert_eq!(
