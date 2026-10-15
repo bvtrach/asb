@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Stdout, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 const AGENTS: &[&str] = &[
     "codex",
@@ -657,6 +657,8 @@ fn install_workload_selection(
         let result = install::workload_with_progress(&[install_name], &mut output, &mut progress);
         let _ = sender.send(result);
     });
+    let started = Instant::now();
+    let mut tick = 0_u64;
     let result = loop {
         if let Ok(result) = receiver.try_recv() {
             break result;
@@ -669,13 +671,14 @@ fn install_workload_selection(
             &mut app.message,
             &mut app.message_color,
             &mut app.message_until,
-            format!("Installing ({percent}%): {stage}"),
+            install_status_message(percent, &stage, started, tick),
             Color::Cyan,
             false,
         );
         terminal
             .draw(|frame| draw_workload(frame, app))
             .map_err(|error| Error::Io(format!("cannot draw workload install status: {error}")))?;
+        tick = tick.wrapping_add(1);
         std::thread::sleep(std::time::Duration::from_millis(100));
     };
     refresh_workload_availability(app);
@@ -1019,6 +1022,35 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
     );
 }
 
+/// Format an honest, live installer indicator. Installer subprocesses write
+/// their output to `.asb/install.log` and do not expose byte-level progress,
+/// so the fixed percentage marks the completed stage while the moving marker
+/// proves that a download or package install is still being monitored.
+fn install_status_message(percent: u8, stage: &str, started: Instant, tick: u64) -> String {
+    const WIDTH: usize = 20;
+    const FRAMES: &[char] = &['▸', '▹', '▻', '▹'];
+    let completed = (usize::from(percent).min(100) * WIDTH / 100).min(WIDTH);
+    let pulse = if completed < WIDTH {
+        tick as usize % (WIDTH - completed).max(1)
+    } else {
+        0
+    };
+    let mut bar = String::with_capacity(WIDTH);
+    for index in 0..WIDTH {
+        if index < completed {
+            bar.push('━');
+        } else if index == completed + pulse && completed < WIDTH {
+            bar.push(FRAMES[(tick as usize) % FRAMES.len()]);
+        } else {
+            bar.push('─');
+        }
+    }
+    format!(
+        "Installing [{bar}] {percent}%: {stage} ({}s)",
+        started.elapsed().as_secs()
+    )
+}
+
 /// Render the shared searchable, selectable list pane used by both TUIs.
 fn render_choice_pane(
     frame: &mut ratatui::Frame<'_>,
@@ -1167,6 +1199,8 @@ fn install_setup_selection(
         };
         let _ = sender.send(result);
     });
+    let started = Instant::now();
+    let mut tick = 0_u64;
     let result = loop {
         if let Ok(result) = receiver.try_recv() {
             break result;
@@ -1179,13 +1213,14 @@ fn install_setup_selection(
             &mut app.message,
             &mut app.message_color,
             &mut app.message_until,
-            format!("Installing ({percent}%): {stage}"),
+            install_status_message(percent, &stage, started, tick),
             Color::Cyan,
             false,
         );
         terminal
             .draw(|frame| draw(frame, app))
             .map_err(|error| Error::Io(format!("cannot draw setup install status: {error}")))?;
+        tick = tick.wrapping_add(1);
         std::thread::sleep(std::time::Duration::from_millis(100));
     };
     app.refresh_availability();
@@ -1421,13 +1456,14 @@ fn selected_trials(
 mod tests {
     use super::{
         App, Availability, Choice, Generated, Pane, default_model, generate_configs,
-        generated_summary,
+        generated_summary, install_status_message,
     };
     use crate::install;
     use crate::project::ProjectConfig;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::style::{Color, Style};
     use std::collections::BTreeSet;
+    use std::time::Instant;
 
     #[test]
     fn pane_filters_and_toggles_visible_choices() {
@@ -1531,6 +1567,19 @@ mod tests {
         assert_eq!(style.fg, Some(Color::Black));
         assert_eq!(style.bg, Some(Color::Gray));
         assert_eq!(super::choice_row_style(false), Style::default());
+    }
+
+    #[test]
+    fn install_status_message_shows_live_indeterminate_activity() {
+        let started = Instant::now();
+        let first = install_status_message(15, "installing npm package", started, 0);
+        let second = install_status_message(15, "installing npm package", started, 1);
+        assert!(first.contains("["));
+        assert!(first.contains("] 15%: installing npm package"));
+        assert_ne!(
+            first, second,
+            "the activity marker must move while a stage runs"
+        );
     }
 
     #[test]
