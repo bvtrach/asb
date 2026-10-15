@@ -35,6 +35,8 @@ with `--source`. npm recipes are project-local; Python recipes use a
 project-local virtual environment. `asb workload install` downloads a prompt
 URL or copies a local prompt into the configured workloads directory. These
 commands do not handle credentials.
+`asb tool list` and `asb workload list` expose these two catalogs without
+installing anything. Command-specific help is available with `--help`.
 
 Future features should be separate modules behind these boundaries. Recording,
 replay, measurements, tool commands, and a graphical or terminal frontend are

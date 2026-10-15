@@ -8,7 +8,9 @@ make update
 cargo build --locked
 make install
 ./target/debug/asb init
+./target/debug/asb tool list
 ./target/debug/asb tool install codex
+./target/debug/asb workload list
 ./target/debug/asb models openrouter
 ./target/debug/asb workload install \
   https://raw.githubusercontent.com/martin-beck/asb/main/workloads/bug-fix.txt \
@@ -59,6 +61,10 @@ Source-installed agents use `.asb-tools/<agent>/bin/`; workloads are stored in
 `workloads/`. These paths come from `.asb/project.toml`, so changing that file
 changes every command consistently. Add `--dir DIR` only when you need a
 one-off destination.
+
+Use `asb COMMAND --help` for concise help on every command and subcommand.
+`asb tool list` enumerates all built-in agent installers; `asb workload list`
+enumerates the prompt files available in the configured workload directory.
 
 The built-in recipes are:
 

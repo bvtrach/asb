@@ -97,6 +97,28 @@ pub fn tool(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Erro
     Ok(())
 }
 
+/// List every built-in tool recipe and its project-local executable.
+pub fn tool_list(output: &mut dyn std::io::Write) -> Result<(), Error> {
+    writeln!(output, "Available tools:").map_err(super::io_error)?;
+    for name in [
+        "codex",
+        "opencode",
+        "codeagent",
+        "workbuddy",
+        "gemini",
+        "qwen-code",
+        "aider",
+        "mini-swe",
+        "openhands",
+        "openjiuwen",
+        "cli2key",
+    ] {
+        let plan = recipe(name).expect("listed tool has a recipe");
+        writeln!(output, "  {name:<12} {}", tool_summary(plan)).map_err(super::io_error)?;
+    }
+    writeln!(output, "  custom       --source URL|PATH").map_err(super::io_error)
+}
+
 pub fn workload(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Error> {
     let (source, name, directory) = parse_workload(args)?;
     fs::create_dir_all(&directory)
@@ -109,6 +131,46 @@ pub fn workload(args: &[String], output: &mut dyn std::io::Write) -> Result<(), 
         destination.display()
     )
     .map_err(super::io_error)?;
+    Ok(())
+}
+
+/// List `.txt` workloads in the configured project directory.
+pub fn workload_list(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Error> {
+    let (project_root, project_config) = project::load(Path::new("."))?;
+    let mut directory = std::env::var_os("ASB_WORKLOAD_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir));
+    let mut index = 0;
+    while index < args.len() {
+        if args[index] != "--dir" {
+            return Err(Error::Usage("workload list accepts --dir DIR"));
+        }
+        directory = project::resolve(
+            &project_root,
+            args.get(index + 1)
+                .ok_or(Error::Usage("--dir requires a directory"))?,
+        );
+        index += 2;
+    }
+    let mut names = fs::read_dir(&directory)
+        .map_err(|error| Error::Io(format!("cannot read {}: {error}", directory.display())))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            (path.extension().and_then(|value| value.to_str()) == Some("txt"))
+                .then(|| path.file_stem()?.to_str().map(str::to_owned))
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    writeln!(output, "Available workloads in {}:", directory.display()).map_err(super::io_error)?;
+    if names.is_empty() {
+        writeln!(output, "  (none)").map_err(super::io_error)?;
+    } else {
+        for name in names {
+            writeln!(output, "  {name}").map_err(super::io_error)?;
+        }
+    }
     Ok(())
 }
 
@@ -159,6 +221,21 @@ fn describe(recipe: Recipe, root: &Path) -> String {
             "python3 -m venv {}/venv && pip install {package}",
             root.display()
         ),
+    }
+}
+
+fn tool_summary(recipe: Recipe) -> String {
+    match recipe {
+        Recipe::Npm {
+            package,
+            executable,
+            ..
+        } => format!("npm {package} -> {executable}"),
+        Recipe::Python {
+            package,
+            executable,
+            ..
+        } => format!("python {package} -> {executable}"),
     }
 }
 
@@ -334,5 +411,36 @@ mod tests {
             assert!(!describe(recipe, Path::new(".asb-tools")).is_empty());
             assert!(!executable_name(agent).is_empty());
         }
+    }
+
+    #[test]
+    fn tool_list_includes_builtins_and_source_fallback() {
+        let mut output = Vec::new();
+        tool_list(&mut output).expect("tool list succeeds");
+        let text = String::from_utf8(output).expect("utf8");
+        assert!(text.contains("codeagent"));
+        assert!(text.contains("openjiuwen"));
+        assert!(text.contains("custom"));
+    }
+
+    #[test]
+    fn workload_list_enumerates_prompt_files() {
+        let directory =
+            std::env::temp_dir().join(format!("asb-workload-list-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).expect("directory");
+        fs::write(directory.join("zeta.txt"), "z").expect("prompt");
+        fs::write(directory.join("alpha.txt"), "a").expect("prompt");
+        fs::write(directory.join("ignored.md"), "ignored").expect("other file");
+        let mut output = Vec::new();
+        workload_list(
+            &["--dir".into(), directory.to_string_lossy().into_owned()],
+            &mut output,
+        )
+        .expect("workload list succeeds");
+        let text = String::from_utf8(output).expect("utf8");
+        assert!(text.find("alpha").expect("alpha") < text.find("zeta").expect("zeta"));
+        assert!(!text.contains("ignored"));
+        let _ = fs::remove_dir_all(&directory);
     }
 }

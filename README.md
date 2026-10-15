@@ -5,7 +5,9 @@ agent/workload, create a configuration, then run it:
 
 ```text
 asb init
+asb tool list
 asb tool install AGENT
+asb workload list
 asb workload install SOURCE.txt|URL
 asb models [PROVIDER]
 asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]
@@ -23,6 +25,10 @@ or omit it to query every supported provider and report unavailable providers
 without stopping the rest. Use `--json` for machine-readable output. Model
 discovery uses the provider credential and endpoint environment variables but
 never writes or prints credential values.
+
+Every command and subcommand has concise help; use `asb COMMAND --help`.
+`asb tool list` shows all built-in agent installers and `asb workload list`
+shows the `.txt` prompts available in the current project.
 
 Before a run, ASB executes a modular preparation stage. For `cli2key`, it
 reuses `CLI2KEY_API_KEY` when supplied or creates an ephemeral process-local

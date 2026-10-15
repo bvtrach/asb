@@ -2,6 +2,7 @@
 
 mod benchmark;
 mod config;
+mod help;
 mod install;
 mod models;
 mod prepare;
@@ -40,11 +41,39 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
         [command] if command == "--version" || command == "-V" => {
             writeln!(stdout, "asb {}", env!("CARGO_PKG_VERSION")).map_err(io_error)
         }
+        [command, help_arg] if help_arg == "--help" || help_arg == "-h" => {
+            help::command(command, stdout)
+        }
+        [command] if command == "tool" || command == "workload" || command == "provider" => {
+            help::command(command, stdout)
+        }
+        [command, subcommand, help_arg]
+            if (command == "provider" && subcommand == "models")
+                && (help_arg == "--help" || help_arg == "-h") =>
+        {
+            help::command("provider models", stdout)
+        }
+        [command, subcommand, help_arg]
+            if (command == "tool" || command == "workload")
+                && (subcommand == "list" || subcommand == "install")
+                && (help_arg == "--help" || help_arg == "-h") =>
+        {
+            help::command(&format!("{command} {subcommand}"), stdout)
+        }
         [command, rest @ ..] if command == "setup" => config::setup(rest, stdout),
         [command, rest @ ..] if command == "init" => project::init(rest, stdout),
         [command, path] if command == "run" => runner::run(path, stdout),
+        [command, subcommand] if command == "tool" && subcommand == "list" => {
+            install::tool_list(stdout)
+        }
         [command, subcommand, rest @ ..] if command == "tool" && subcommand == "install" => {
             install::tool(rest, stdout)
+        }
+        [command, subcommand] if command == "workload" && subcommand == "list" => {
+            install::workload_list(&[], stdout)
+        }
+        [command, subcommand, rest @ ..] if command == "workload" && subcommand == "list" => {
+            install::workload_list(rest, stdout)
         }
         [command, subcommand, rest @ ..] if command == "workload" && subcommand == "install" => {
             install::workload(rest, stdout)
@@ -53,10 +82,7 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
         [command, subcommand, rest @ ..] if command == "provider" && subcommand == "models" => {
             models::list(rest, stdout)
         }
-        [command, help] if (command == "setup" || command == "run") && help == "--help" => {
-            write_help(stdout)
-        }
-        _ => Err(CliError::Usage("use `asb setup` or `asb run CONFIG`")),
+        _ => Err(CliError::Usage("use `asb --help` for command usage")),
     };
     match result {
         Ok(()) => 0,
@@ -65,8 +91,7 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
 }
 
 fn write_help(output: &mut dyn Write) -> Result<(), CliError> {
-    writeln!(output, "ASB\n\nUsage:\n  asb init [PROJECT_DIR]\n  asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n  asb run CONFIG\n  asb models [PROVIDER] [--json]\n  asb provider models [PROVIDER] [--json]\n  asb tool install AGENT [--source URL|PATH] [--dry-run]\n  asb workload install SOURCE.txt|URL [--name NAME]\n\ninit creates shared project configuration. models queries live provider catalogs using environment credentials. setup writes a benchmark configuration. run executes it live.")
-        .map_err(io_error)
+    help::root(output)
 }
 
 fn fail(stderr: &mut dyn Write, message: &str) -> u8 {
@@ -117,3 +142,34 @@ pub(crate) fn read_config(path: &std::path::Path) -> Result<String, CliError> {
 }
 
 pub(crate) use CliError as Error;
+
+#[cfg(test)]
+mod tests {
+    use super::run;
+    use std::ffi::OsString;
+
+    #[test]
+    fn every_command_has_concise_help() {
+        for words in [
+            vec!["init", "--help"],
+            vec!["setup", "--help"],
+            vec!["run", "--help"],
+            vec!["models", "--help"],
+            vec!["provider", "--help"],
+            vec!["provider", "models", "--help"],
+            vec!["tool", "--help"],
+            vec!["tool", "list", "--help"],
+            vec!["tool", "install", "--help"],
+            vec!["workload", "--help"],
+            vec!["workload", "list", "--help"],
+            vec!["workload", "install", "--help"],
+        ] {
+            let args = words.into_iter().map(OsString::from).collect::<Vec<_>>();
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            assert_eq!(run(&args, &mut stdout, &mut stderr), 0);
+            assert!(String::from_utf8_lossy(&stdout).starts_with("Usage:"));
+            assert!(stderr.is_empty());
+        }
+    }
+}
