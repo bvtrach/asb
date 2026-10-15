@@ -6,6 +6,7 @@ use crate::cli2key;
 use crate::prepare;
 use crate::project;
 use crate::providers;
+use crate::suggestions;
 use crate::workloads;
 use serde::Serialize;
 use std::io::Write;
@@ -14,6 +15,18 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 
 const MAX_OUTPUT: usize = 1024 * 1024;
+const BUILTIN_AGENTS: &[&str] = &[
+    "codex",
+    "opencode",
+    "codeagent",
+    "workbuddy",
+    "gemini",
+    "qwen-code",
+    "aider",
+    "mini-swe",
+    "openhands",
+    "openjiuwen",
+];
 
 #[derive(Serialize)]
 struct RunResult<'a> {
@@ -178,6 +191,20 @@ fn command_for(
     cli2key_base_url: Option<&str>,
     prompt: &str,
 ) -> Result<CommandSpec, Error> {
+    if let Some(candidate) = suggestions::closest(&config.agent, BUILTIN_AGENTS) {
+        return Err(Error::Input(format!(
+            "unknown agent `{}`; did you mean `{candidate}`?",
+            config.agent
+        )));
+    }
+    if let Some(candidates) = providers::known_models(&config.provider) {
+        if let Some(candidate) = suggestions::closest(&config.model, candidates) {
+            return Err(Error::Input(format!(
+                "unknown model `{}` for provider `{}`; did you mean `{candidate}`?",
+                config.model, config.provider
+            )));
+        }
+    }
     let spec = match config.agent.as_str() {
         "codex" => CommandSpec {
             program: "codex".into(),
@@ -397,5 +424,21 @@ mod tests {
             workspace: "workspace".into(),
         };
         assert!(command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt").is_err());
+    }
+
+    #[test]
+    fn unknown_agent_suggests_a_close_match() {
+        let config = BenchmarkConfig {
+            agent: "opencod".into(),
+            workload: "bug-fix".into(),
+            provider: "local".into(),
+            model: "test-model".into(),
+            workspace: "workspace".into(),
+        };
+        let error = match command_for(&config, None, "prompt") {
+            Ok(_) => panic!("typo rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("did you mean `opencode`?"));
     }
 }

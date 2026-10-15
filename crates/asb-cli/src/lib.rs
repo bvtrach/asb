@@ -11,11 +11,14 @@ mod prepare;
 mod project;
 mod providers;
 mod runner;
+mod suggestions;
 mod workloads;
 
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
+
+const COMMANDS: &[&str] = &["init", "setup", "run", "provider", "tool", "workload"];
 
 /// Run the process CLI.
 #[must_use]
@@ -95,7 +98,18 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
         [command, subcommand, rest @ ..] if command == "provider" && subcommand == "models" => {
             models::list(rest, stdout)
         }
-        _ => Err(CliError::Usage("use `asb --help` for command usage")),
+        [command, subcommand, ..] if command == "provider" => Err(CliError::Input(
+            suggestions::unknown("provider command", subcommand, &["models"]),
+        )),
+        [command, subcommand, ..] if command == "tool" => Err(CliError::Input(
+            suggestions::unknown("tool command", subcommand, &["list", "install"]),
+        )),
+        [command, subcommand, ..] if command == "workload" => Err(CliError::Input(
+            suggestions::unknown("workload command", subcommand, &["list", "install"]),
+        )),
+        [command, ..] => Err(CliError::Input(suggestions::unknown(
+            "command", command, COMMANDS,
+        ))),
     };
     match result {
         Ok(()) => 0,
@@ -238,5 +252,25 @@ mod tests {
         assert!(script.starts_with("#compdef asb"));
         assert!(!script.contains("completion)"));
         assert!(script.contains("cli2key"));
+    }
+
+    #[test]
+    fn unknown_commands_and_subcommands_offer_close_matches() {
+        let mut stderr = Vec::new();
+        assert_eq!(
+            run(&[OsString::from("worklod")], &mut Vec::new(), &mut stderr),
+            2
+        );
+        assert!(String::from_utf8_lossy(&stderr).contains("did you mean `workload`?"));
+        stderr.clear();
+        assert_eq!(
+            run(
+                &[OsString::from("provider"), OsString::from("modls"),],
+                &mut Vec::new(),
+                &mut stderr
+            ),
+            2
+        );
+        assert!(String::from_utf8_lossy(&stderr).contains("did you mean `models`?"));
     }
 }

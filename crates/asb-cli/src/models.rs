@@ -4,6 +4,7 @@ use crate::Error;
 use crate::cli2key;
 use crate::project;
 use crate::providers;
+use crate::suggestions;
 use serde_json::Value;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -45,8 +46,13 @@ fn parse_args(args: &[String]) -> Result<(Option<String>, bool), Error> {
 }
 
 fn discover(provider: &str) -> Result<Vec<String>, Error> {
-    let spec = providers::model_spec(provider)
-        .ok_or_else(|| Error::Input(format!("unsupported provider: {provider}")))?;
+    let spec = providers::model_spec(provider).ok_or_else(|| {
+        Error::Input(suggestions::unknown(
+            "provider",
+            provider,
+            providers::names(),
+        ))
+    })?;
     if provider.eq_ignore_ascii_case("cli2key") {
         let bridge = cli2key::Bridge::connect(local_bridge_executable().as_deref())?;
         let url = format!("{}/models", bridge.base_url().trim_end_matches('/'));
@@ -292,5 +298,11 @@ mod tests {
             .unwrap(),
             vec!["gemini-2.0"]
         );
+    }
+
+    #[test]
+    fn unsupported_provider_suggests_a_close_match() {
+        let error = discover("openruter").expect_err("typo rejected");
+        assert!(error.to_string().contains("did you mean `openrouter`?"));
     }
 }

@@ -155,6 +155,15 @@ pub fn names() -> &'static [&'static str] {
     ]
 }
 
+/// Return a finite model list only where the local bridge publishes one.
+pub fn known_models(provider: &str) -> Option<&'static [&'static str]> {
+    (provider.eq_ignore_ascii_case("cli2key")).then_some(&[
+        "gpt-6-astra",
+        "gpt-6.1-sol",
+        "gpt-6-luna",
+    ])
+}
+
 /// Validate a user-facing provider or agent identifier.
 pub fn is_valid_name(value: &str) -> bool {
     !value.is_empty()

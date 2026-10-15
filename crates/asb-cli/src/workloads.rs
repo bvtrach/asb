@@ -1,5 +1,6 @@
 //! Workload prompts loaded from the adjacent `workloads` directory.
 
+use crate::suggestions;
 use std::fs;
 use std::path::Path;
 
@@ -369,13 +370,17 @@ fn missing(name: &str, directory: &Path) -> String {
         })
         .collect::<Vec<_>>();
     available.sort();
+    let candidates = available.iter().map(String::as_str).collect::<Vec<_>>();
+    let suggestion = suggestions::closest(name, &candidates)
+        .map(|candidate| format!("; did you mean `{candidate}`?"))
+        .unwrap_or_default();
     let choices = if available.is_empty() {
         "none".to_owned()
     } else {
         available.join(", ")
     };
     format!(
-        "workload `{name}` was not found in {}; available: {choices}",
+        "workload `{name}` was not found in {}; available: {choices}{suggestion}",
         directory.display()
     )
 }
@@ -458,5 +463,17 @@ mod tests {
             "edited"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn missing_workload_suggests_a_close_local_name() {
+        let directory =
+            std::env::temp_dir().join(format!("asb-workload-suggestion-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("bug-fix.txt"), "prompt").unwrap();
+        let error = load("bug-fx", &directory).expect_err("typo rejected");
+        assert!(error.contains("did you mean `bug-fix`?"));
+        let _ = fs::remove_dir_all(directory);
     }
 }

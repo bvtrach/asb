@@ -3,6 +3,8 @@
 use super::{Error, io_error};
 use crate::benchmark::BenchmarkConfig;
 use crate::project;
+use crate::providers;
+use crate::suggestions;
 use std::io::Write;
 
 /// Parse setup flags and write a TOML benchmark configuration.
@@ -38,19 +40,62 @@ pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
             "--workspace" => workspace = Some(value.clone()),
             "--output" => destination = Some(value.clone()),
             _ => {
-                return Err(Error::Usage(
-                    "setup accepts --agent, --workload, --provider, --model, --workspace, and --output",
-                ));
+                let options = [
+                    "--agent",
+                    "--workload",
+                    "--provider",
+                    "--model",
+                    "--workspace",
+                    "--output",
+                ];
+                return Err(Error::Input(format!(
+                    "{}",
+                    suggestions::unknown("setup option", flag, &options)
+                )));
             }
         }
         index += 2;
     }
     let (_, project_config) = project::load(std::path::Path::new("."))?;
+    let agent = required(agent)?;
+    if let Some(candidate) = suggestions::closest(
+        &agent,
+        &[
+            "codex",
+            "opencode",
+            "codeagent",
+            "workbuddy",
+            "gemini",
+            "qwen-code",
+            "aider",
+            "mini-swe",
+            "openhands",
+            "openjiuwen",
+        ],
+    ) {
+        return Err(Error::Input(format!(
+            "unknown agent `{agent}`; did you mean `{candidate}`?"
+        )));
+    }
+    let provider = required(provider)?;
+    if let Some(candidate) = suggestions::closest(&provider, providers::names()) {
+        return Err(Error::Input(format!(
+            "unknown provider `{provider}`; did you mean `{candidate}`?"
+        )));
+    }
+    let model = required(model)?;
+    if let Some(candidates) = providers::known_models(&provider) {
+        if let Some(candidate) = suggestions::closest(&model, candidates) {
+            return Err(Error::Input(format!(
+                "unknown model `{model}` for provider `{provider}`; did you mean `{candidate}`?"
+            )));
+        }
+    }
     let config = BenchmarkConfig {
-        agent: required(agent)?,
+        agent,
         workload: required(workload)?,
-        provider: required(provider)?,
-        model: required(model)?,
+        provider,
+        model,
         workspace: workspace.unwrap_or(project_config.workspace_dir),
     };
     let text = toml::to_string_pretty(&config)
@@ -94,6 +139,63 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "setup option `-workload` is invalid; use `--workload` with two dashes"
+        );
+    }
+
+    #[test]
+    fn setup_suggests_close_agent_and_provider_names() {
+        let agent_error = setup(
+            &[
+                "--agent".into(),
+                "opencod".into(),
+                "--workload".into(),
+                "bug-fix".into(),
+                "--provider".into(),
+                "local".into(),
+                "--model".into(),
+                "test".into(),
+            ],
+            &mut Vec::new(),
+        )
+        .expect_err("agent typo rejected");
+        assert!(agent_error.to_string().contains("did you mean `opencode`?"));
+        let provider_error = setup(
+            &[
+                "--agent".into(),
+                "opencode".into(),
+                "--workload".into(),
+                "bug-fix".into(),
+                "--provider".into(),
+                "openruter".into(),
+                "--model".into(),
+                "test".into(),
+            ],
+            &mut Vec::new(),
+        )
+        .expect_err("provider typo rejected");
+        assert!(
+            provider_error
+                .to_string()
+                .contains("did you mean `openrouter`?")
+        );
+        let model_error = setup(
+            &[
+                "--agent".into(),
+                "opencode".into(),
+                "--workload".into(),
+                "bug-fix".into(),
+                "--provider".into(),
+                "cli2key".into(),
+                "--model".into(),
+                "gpt-6.1-sl".into(),
+            ],
+            &mut Vec::new(),
+        )
+        .expect_err("model typo rejected");
+        assert!(
+            model_error
+                .to_string()
+                .contains("did you mean `gpt-6.1-sol`?")
         );
     }
 }

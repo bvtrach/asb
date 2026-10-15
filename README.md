@@ -75,6 +75,10 @@ execution are separate modules so recording/replay, measurements, tool
 commands, and an external frontend can be added later without changing the
 setup file or command shape.
 
+Finite command, tool, workload, provider, and locally enumerated model names
+fail closed on typos and print the closest match as a question; ASB never
+silently substitutes a value.
+
 ## Build
 
 ```sh

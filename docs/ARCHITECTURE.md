@@ -54,6 +54,10 @@ Future features should be separate modules behind these boundaries. Recording,
 replay, measurements, tool commands, and a graphical or terminal frontend are
 not part of the current product.
 
+Finite human-entered names use bounded edit-distance suggestions on failure.
+The original value is never replaced automatically; provider model IDs remain
+provider-specific unless a finite local catalog is available.
+
 The preparation stage is deliberately separate from command construction. Its
 cli2key hook starts or connects to the OpenAI-compatible bridge, supplies the
 bridge endpoint and API key to the selected agent, and tears down a bridge

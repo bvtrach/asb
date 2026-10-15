@@ -2,6 +2,7 @@
 
 use crate::Error;
 use crate::project;
+use crate::suggestions;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -28,6 +29,20 @@ struct BundleSpec {
     marker: &'static str,
     prompt: &'static str,
 }
+
+const BUILTIN_AGENTS: &[&str] = &[
+    "codex",
+    "opencode",
+    "codeagent",
+    "workbuddy",
+    "gemini",
+    "qwen-code",
+    "aider",
+    "mini-swe",
+    "openhands",
+    "openjiuwen",
+    "cli2key",
+];
 
 const EXTERNAL_WORKLOADS: &[ExternalWorkload] = &[
     ExternalWorkload {
@@ -190,7 +205,15 @@ pub fn tool(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Erro
             .map_err(super::io_error)?;
         return Ok(());
     }
-    let plan = recipe(&id).ok_or(Error::Usage("unknown agent; pass --source URL or PATH"))?;
+    let plan = match recipe(&id) {
+        Some(plan) => plan,
+        None => {
+            return Err(Error::Input(format!(
+                "{}; pass --source URL or PATH",
+                suggestions::unknown("agent", &id, BUILTIN_AGENTS)
+            )));
+        }
+    };
     if dry_run {
         writeln!(output, "{}", describe(plan, &root)).map_err(super::io_error)?;
         return Ok(());
@@ -219,19 +242,7 @@ pub fn tool(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Erro
 /// List every built-in tool recipe and its project-local executable.
 pub fn tool_list(output: &mut dyn std::io::Write) -> Result<(), Error> {
     writeln!(output, "Available tools:").map_err(super::io_error)?;
-    for name in [
-        "codex",
-        "opencode",
-        "codeagent",
-        "workbuddy",
-        "gemini",
-        "qwen-code",
-        "aider",
-        "mini-swe",
-        "openhands",
-        "openjiuwen",
-        "cli2key",
-    ] {
+    for &name in BUILTIN_AGENTS {
         let plan = recipe(name).expect("listed tool has a recipe");
         writeln!(output, "  {name:<12} {}", tool_summary(plan)).map_err(super::io_error)?;
     }
@@ -515,6 +526,20 @@ fn parse_workload(args: &[String]) -> Result<(String, String, PathBuf), Error> {
     let source = external_workload(&requested)
         .map(|workload| workload.source.to_owned())
         .unwrap_or_else(|| requested.clone());
+    if external_workload(&requested).is_none()
+        && valid_name(&requested)
+        && !Path::new(&requested).is_file()
+    {
+        let aliases = EXTERNAL_WORKLOADS
+            .iter()
+            .map(|workload| workload.name)
+            .collect::<Vec<_>>();
+        if let Some(candidate) = suggestions::closest(&requested, &aliases) {
+            return Err(Error::Input(format!(
+                "workload source `{requested}` was not found; did you mean external workload `{candidate}`?"
+            )));
+        }
+    }
     let filename = source
         .split('?')
         .next()
@@ -742,5 +767,11 @@ mod tests {
             "local source"
         );
         let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn unknown_agent_install_suggests_the_closest_builtin() {
+        let error = tool(&["opencod".into()], &mut Vec::new()).expect_err("typo rejected");
+        assert!(error.to_string().contains("did you mean `opencode`?"));
     }
 }
