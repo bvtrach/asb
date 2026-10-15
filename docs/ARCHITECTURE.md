@@ -26,6 +26,11 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   records for host facts, elapsed time, success rate, and normalized input,
   output, cached, and total token usage, and
   owns optional `mpstat`, `iostat`, `perf`, BPFTrace, and FlameGraph adapters;
+  mpstat and iostat retain their bounded raw output and also expose averaged,
+  unit-named CPU, throughput, latency, queue, and utilization metrics under a
+  machine-readable `metrics` object. Comparisons consume that object rather
+  than scraping arbitrary output, so one canonical runtime result is plotted
+  instead of repeated collector samples;
   each adapter is isolated from the runner and can be extended without adding
   provider-specific fields to the benchmark configuration;
 - `workloads/`: one UTF-8 `.txt` prompt per workload name. Built-in supporting
@@ -129,6 +134,10 @@ added without changing `run` or the benchmark configuration format.
 `asb compare SWEEP.toml` reads the isolated `<sweep>-results/` directories
 created by `asb sweep`. It writes bounded `comparison.json` data and SVG charts
 to `results/<sweep>-comparison/`; no provider or agent is contacted. Each chart
-has numbered y-axis ticks and a metric-derived unit label (for example `ms`,
-`tokens`, `ratio`, or `value`) so the plotted scale is readable without opening
-the machine-readable summary.
+has numbered y-axis ticks and a metric-derived unit label (for example `%`,
+`ms`, `KiB/s`, `ops/s`, `tokens`, or `value`) so the plotted scale is readable
+without opening the machine-readable summary. Collector stdout is never
+treated as a time series; only an explicit `series` array can produce a line
+graph. When perf permissions, samples, or FlameGraph tools are unavailable,
+`flamegraph.json` records an `unavailable` status and actionable reason instead
+of silently pretending that a flamegraph exists.
