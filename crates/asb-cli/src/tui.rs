@@ -969,7 +969,7 @@ fn render_choice_pane(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rec
             ListItem::new(Line::from(vec![
                 Span::raw(format!("{marker} ")),
                 Span::styled("ℹ", availability_style(choice.availability)),
-                Span::raw(format!(" {}", choice.label)),
+                Span::raw(format!("  {}", choice.label)),
             ]))
         })
         .collect::<Vec<_>>();
@@ -986,7 +986,9 @@ fn render_choice_pane(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rec
                     .borders(Borders::ALL)
                     .title("Available choices"),
             )
-            .highlight_style(Style::default().bg(Color::Blue)),
+            // Keep each readiness glyph's green/yellow/red foreground visible
+            // while still making the cursor row stand out.
+            .highlight_style(Style::default().add_modifier(Modifier::BOLD)),
         body[1],
         &mut state,
     );
