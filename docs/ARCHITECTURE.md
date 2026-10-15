@@ -77,7 +77,11 @@ architecture. This keeps measurement runs tied to the kernel on the machine
 where the tool was installed; rerun `asb tool install bpftrace` after changing
 kernels or moving the project to another host. If no host/distribution binary
 is available, it downloads the pinned source release and builds bpftrace in the
-project directory with the local compiler and development libraries.
+project directory with the local compiler and development libraries. If the
+host binary or source build prerequisites are unavailable, the failure prints
+typical copy-paste commands for Red Hat/Fedora, Debian/Ubuntu, and openEuler
+so the user can install either the matching host tool or the needed development
+packages before retrying.
 The `pi` agent uses the pinned `@mariozechner/pi-coding-agent` npm package and
 its non-interactive print mode. For `cli2key`, the preparation layer maps Pi to
 the bridge's OpenAI-compatible endpoint without storing credentials.

@@ -148,5 +148,7 @@ project. ASB copies the host-compatible binary locally and records the current
 kernel release and architecture; reinstall it after a kernel upgrade or when
 moving the project to another machine. If the distribution has no binary,
 `asb tool install bpftrace` builds the pinned source release locally; the
-installer reports the exact compiler/development package still needed if that
-fallback cannot be configured or compiled.
+installer reports copy-paste package commands for the three supported distro
+families (Red Hat/Fedora, Debian/Ubuntu, and openEuler) if that fallback
+cannot be configured or compiled. The same commands are shown when no matching
+host `bpftrace` package is available.
