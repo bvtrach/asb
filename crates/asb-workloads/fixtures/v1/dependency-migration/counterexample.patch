@@ -1,6 +1,0 @@
-diff --git a/Cargo.toml b/Cargo.toml
---- a/Cargo.toml
-+++ b/Cargo.toml
-@@ -6 +6 @@
--textwrap = "=0.15.2"
-+textwrap = "0.16"
