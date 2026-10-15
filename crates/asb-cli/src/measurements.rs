@@ -6,6 +6,7 @@
 //! terminal output.
 
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -79,6 +80,9 @@ struct CollectorResult {
     elapsed_ms: u128,
     stdout: String,
     stderr: String,
+    /// Parsed, stable metrics. Raw stdout/stderr remain available for detail,
+    /// but comparison must consume this bounded machine-readable map instead.
+    metrics: BTreeMap<String, f64>,
 }
 
 struct Collector {
@@ -218,10 +222,20 @@ impl Session {
             let stderr = read_bounded(&collector.stderr_path);
             let _ = fs::remove_file(&collector.stdout_path);
             let _ = fs::remove_file(&collector.stderr_path);
+            let stopped_by_runner = status.code().is_none();
+            let metrics = parse_collector_metrics(&collector.name, &stdout);
             let result = CollectorResult {
                 schema_version: 1,
                 collector: collector.name.clone(),
-                status: if status.success() {
+                status: if status.success()
+                    || (stopped_by_runner && collector.name != "perf" && !stdout.is_empty())
+                    || (stopped_by_runner
+                        && collector.name == "perf"
+                        && self
+                            .perf_data
+                            .as_ref()
+                            .is_some_and(|path| path.metadata().is_ok_and(|m| m.len() > 0)))
+                {
                     "completed"
                 } else {
                     "failed"
@@ -231,6 +245,7 @@ impl Session {
                 elapsed_ms: collector.started.elapsed().as_millis(),
                 stdout,
                 stderr,
+                metrics,
             };
             write_json(&self.dir.join(format!("{}.json", collector.name)), &result)?;
         }
@@ -346,8 +361,21 @@ impl Session {
 
     fn write_flamegraph(&self) -> Result<(), String> {
         let Some(data) = self.perf_data.as_ref() else {
-            return Ok(());
+            return write_flamegraph_status(
+                &self.dir,
+                "unavailable",
+                None,
+                "perf recording did not start; check perf.json for the host error",
+            );
         };
+        if !data.is_file() || data.metadata().map_or(true, |metadata| metadata.len() == 0) {
+            return write_flamegraph_status(
+                &self.dir,
+                "unavailable",
+                None,
+                "perf produced no samples; check perf.json and host perf permissions",
+            );
+        }
         let collapse = std::env::var_os("ASB_FLAMEGRAPH_STACKCOLLAPSE").or_else(|| {
             self.tool_dir
                 .as_ref()
@@ -361,7 +389,12 @@ impl Session {
                 .filter(|path| Path::new(path).is_file())
         });
         let (Some(collapse), Some(render)) = (collapse, render) else {
-            return Ok(());
+            return write_flamegraph_status(
+                &self.dir,
+                "unavailable",
+                None,
+                "install stackcollapse-perf.pl and flamegraph in the project tool directory",
+            );
         };
         let script = self
             .command("perf")
@@ -370,7 +403,12 @@ impl Session {
             .output()
             .map_err(|e| format!("cannot run perf script for flamegraph: {e}"))?;
         if !script.status.success() {
-            return Err("perf script failed; flamegraph was not generated".into());
+            return write_flamegraph_status(
+                &self.dir,
+                "unavailable",
+                None,
+                "perf script failed; check perf.json and host perf permissions",
+            );
         }
         let collapsed = Command::new(collapse)
             .stdin(Stdio::piped())
@@ -387,7 +425,12 @@ impl Session {
             .wait_with_output()
             .map_err(|e| format!("cannot finish stack collapse script: {e}"))?;
         if !collapsed_output.status.success() {
-            return Err("flamegraph stack collapse script failed".into());
+            return write_flamegraph_status(
+                &self.dir,
+                "unavailable",
+                None,
+                "the stack collapse script failed to process perf output",
+            );
         }
         let mut render = Command::new(render);
         render.stdin(Stdio::piped()).stdout(Stdio::from(
@@ -406,22 +449,14 @@ impl Session {
             .wait()
             .map_err(|e| format!("cannot finish flamegraph renderer: {e}"))?;
         if !status.success() {
-            return Err("flamegraph renderer failed".into());
+            return write_flamegraph_status(
+                &self.dir,
+                "unavailable",
+                None,
+                "the flamegraph renderer failed",
+            );
         }
-        #[derive(Serialize)]
-        struct Flamegraph<'a> {
-            schema_version: u32,
-            status: &'a str,
-            artifact: &'a str,
-        }
-        write_json(
-            &self.dir.join("flamegraph.json"),
-            &Flamegraph {
-                schema_version: 1,
-                status: "completed",
-                artifact: "flamegraph.svg",
-            },
-        )
+        write_flamegraph_status(&self.dir, "completed", Some("flamegraph.svg"), "")
     }
 
     fn command(&self, name: &str) -> Command {
@@ -877,8 +912,205 @@ fn write_unavailable(path: &Path, collector: &str, error: String) -> Result<(), 
             elapsed_ms: 0,
             stdout: String::new(),
             stderr: error,
+            metrics: BTreeMap::new(),
         },
     )
+}
+
+#[derive(Debug, Serialize)]
+struct FlamegraphStatus<'a> {
+    schema_version: u32,
+    status: &'a str,
+    artifact: Option<&'a str>,
+    reason: Option<&'a str>,
+}
+
+fn write_flamegraph_status(
+    dir: &Path,
+    status: &'static str,
+    artifact: Option<&'static str>,
+    reason: &'static str,
+) -> Result<(), String> {
+    write_json(
+        &dir.join("flamegraph.json"),
+        &FlamegraphStatus {
+            schema_version: 1,
+            status,
+            artifact,
+            reason: (!reason.is_empty()).then_some(reason),
+        },
+    )
+}
+
+fn parse_collector_metrics(name: &str, output: &str) -> BTreeMap<String, f64> {
+    match name {
+        "mpstat" => parse_mpstat_metrics(output),
+        "iostat" => parse_iostat_metrics(output),
+        _ => BTreeMap::new(),
+    }
+}
+
+fn parse_mpstat_metrics(output: &str) -> BTreeMap<String, f64> {
+    let mut header = None;
+    let mut totals: BTreeMap<String, (f64, usize)> = BTreeMap::new();
+    for line in output.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if let Some(cpu) = fields.iter().position(|field| *field == "CPU")
+            && fields
+                .get(cpu + 1)
+                .is_some_and(|field| field.starts_with('%'))
+        {
+            header = Some((cpu, fields[cpu + 1..].to_vec()));
+            continue;
+        }
+        let Some((cpu_index, names)) = &header else {
+            continue;
+        };
+        if fields.get(*cpu_index).copied() != Some("all") {
+            continue;
+        }
+        for (index, name) in names.iter().enumerate() {
+            let Some(value) = fields
+                .get(cpu_index + 1 + index)
+                .and_then(|field| parse_float(field))
+            else {
+                continue;
+            };
+            let key = mpstat_name(name);
+            let entry = totals.entry(key).or_default();
+            entry.0 += value;
+            entry.1 += 1;
+        }
+    }
+    totals
+        .into_iter()
+        .filter_map(|(name, (sum, count))| {
+            (count > 0).then_some((format!("cpu.{name}"), sum / count as f64))
+        })
+        .collect()
+}
+
+fn mpstat_name(name: &str) -> String {
+    let mapped = match name.trim_start_matches('%') {
+        "usr" => Some("user_pct"),
+        "nice" => Some("nice_pct"),
+        "sys" => Some("system_pct"),
+        "iowait" => Some("iowait_pct"),
+        "irq" => Some("irq_pct"),
+        "soft" => Some("soft_pct"),
+        "steal" => Some("steal_pct"),
+        "guest" => Some("guest_pct"),
+        "gnice" => Some("guest_nice_pct"),
+        _ => None,
+    };
+    mapped
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{}_pct", name.trim_start_matches('%')))
+}
+
+fn parse_iostat_metrics(output: &str) -> BTreeMap<String, f64> {
+    let mut metrics = BTreeMap::new();
+    let mut lines = output.lines().peekable();
+    let mut device_totals: BTreeMap<String, (f64, usize)> = BTreeMap::new();
+    while let Some(line) = lines.next() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if line.trim_start().starts_with("avg-cpu") {
+            let headers: Vec<&str> = line
+                .split_once(':')
+                .map_or_else(Vec::new, |(_, rest)| rest.split_whitespace().collect());
+            let Some(values) = lines
+                .next()
+                .map(|line| line.split_whitespace().collect::<Vec<_>>())
+            else {
+                continue;
+            };
+            for (header, value) in headers.iter().zip(values.iter()) {
+                if let Some(value) = parse_float(value) {
+                    metrics.insert(format!("cpu.{}", iostat_name(header)), value);
+                }
+            }
+            continue;
+        }
+        if fields.first().copied() != Some("Device") || fields.len() < 2 {
+            continue;
+        }
+        let headers = fields[1..].to_vec();
+        while let Some(next) = lines.peek().copied() {
+            let values: Vec<&str> = next.split_whitespace().collect();
+            if values.is_empty() || values.first().is_some_and(|value| *value == "Device") {
+                break;
+            }
+            if values.first().is_some_and(|value| *value == "avg-cpu:") {
+                break;
+            }
+            let _ = lines.next();
+            if values.len() < headers.len() + 1 {
+                continue;
+            }
+            for (header, value) in headers.iter().zip(values[1..].iter()) {
+                let Some(value) = parse_float(value) else {
+                    continue;
+                };
+                let entry = device_totals.entry(iostat_name(header)).or_default();
+                entry.0 += value;
+                entry.1 += 1;
+            }
+        }
+    }
+    for (name, (sum, count)) in device_totals {
+        if count > 0 {
+            metrics.insert(format!("device.{name}"), sum / count as f64);
+        }
+    }
+    metrics
+}
+
+fn iostat_name(name: &str) -> String {
+    let mapped = match name {
+        "%user" => Some("user_pct"),
+        "%nice" => Some("nice_pct"),
+        "%system" => Some("system_pct"),
+        "%iowait" => Some("iowait_pct"),
+        "%steal" => Some("steal_pct"),
+        "%idle" => Some("idle_pct"),
+        "r/s" => Some("read_ops_per_s"),
+        "rkB/s" => Some("read_kib_per_s"),
+        "rrqm/s" => Some("read_merged_ops_per_s"),
+        "%rrqm" => Some("read_merged_pct"),
+        "r_await" => Some("read_await_ms"),
+        "rareq-sz" => Some("read_request_kib"),
+        "w/s" => Some("write_ops_per_s"),
+        "wkB/s" => Some("write_kib_per_s"),
+        "wrqm/s" => Some("write_merged_ops_per_s"),
+        "%wrqm" => Some("write_merged_pct"),
+        "w_await" => Some("write_await_ms"),
+        "wareq-sz" => Some("write_request_kib"),
+        "d/s" => Some("discard_ops_per_s"),
+        "dkB/s" => Some("discard_kib_per_s"),
+        "drqm/s" => Some("discard_merged_ops_per_s"),
+        "%drqm" => Some("discard_merged_pct"),
+        "d_await" => Some("discard_await_ms"),
+        "dareq-sz" => Some("discard_request_kib"),
+        "f/s" => Some("flush_ops_per_s"),
+        "f_await" => Some("flush_await_ms"),
+        "aqu-sz" => Some("queue_depth"),
+        "%util" => Some("util_pct"),
+        _ => None,
+    };
+    mapped.map(str::to_owned).unwrap_or_else(|| {
+        name.trim_matches('%')
+            .replace(['/', '-'], "_")
+            .to_lowercase()
+    })
+}
+
+fn parse_float(value: &str) -> Option<f64> {
+    value
+        .trim_matches(|character: char| {
+            !character.is_ascii_digit() && character != '.' && character != '-'
+        })
+        .parse()
+        .ok()
 }
 
 fn bounded(bytes: &[u8]) -> String {
@@ -1058,5 +1290,30 @@ mod tests {
         assert_eq!(usage.output_tokens, Some(3));
         assert_eq!(usage.total_tokens, Some(5));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn parses_mpstat_cpu_breakdown_into_averaged_metrics() {
+        let metrics = parse_mpstat_metrics(
+            "12:00:00 AM CPU %usr %nice %sys %iowait %irq %soft %steal %guest %gnice %idle\n12:00:00 AM all 1.0 2.0 3.0 4.0 5.0 6.0 7.0 8.0 9.0 55.0\n",
+        );
+        assert_eq!(metrics["cpu.user_pct"], 1.0);
+        assert_eq!(metrics["cpu.system_pct"], 3.0);
+        assert_eq!(metrics["cpu.iowait_pct"], 4.0);
+        assert_eq!(metrics["cpu.guest_nice_pct"], 9.0);
+        assert_eq!(metrics["cpu.idle_pct"], 55.0);
+    }
+
+    #[test]
+    fn parses_iostat_cpu_and_device_throughput_and_latency() {
+        let metrics = parse_iostat_metrics(
+            "avg-cpu:  %user   %nice %system %iowait  %steal   %idle\n           1.00    2.00    3.00    4.00    5.00   85.00\n\nDevice            r/s     rkB/s   r_await w/s     wkB/s   w_await aqu-sz %util\nvda              10.00   20.00   1.50    30.00   40.00   2.50    0.10   7.00\n",
+        );
+        assert_eq!(metrics["cpu.user_pct"], 1.0);
+        assert_eq!(metrics["cpu.iowait_pct"], 4.0);
+        assert_eq!(metrics["device.read_ops_per_s"], 10.0);
+        assert_eq!(metrics["device.read_await_ms"], 1.5);
+        assert_eq!(metrics["device.write_kib_per_s"], 40.0);
+        assert_eq!(metrics["device.util_pct"], 7.0);
     }
 }

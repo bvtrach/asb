@@ -110,9 +110,14 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 .file_stem()
                 .and_then(|value| value.to_str())
                 .unwrap_or("collector");
-            flatten_numbers(name, &collector, &mut metrics);
-            if let Some(stdout) = collector.get("stdout").and_then(Value::as_str) {
-                let points = numeric_series(stdout);
+            if let Some(collector_metrics) = collector.get("metrics") {
+                flatten_numbers(name, collector_metrics, &mut metrics);
+            }
+            // Collector stdout is retained for diagnosis, but is not a
+            // numerical series: scraping its last token created noisy and
+            // misleading graphs for repeated mpstat/iostat samples.
+            if let Some(collector_series) = collector.get("series") {
+                let points = series_values(collector_series);
                 if points.len() >= 2 {
                     series.insert(name.to_owned(), points);
                 }
@@ -256,19 +261,13 @@ fn flatten_numbers(prefix: &str, value: &Value, output: &mut BTreeMap<String, f6
     }
 }
 
-fn numeric_series(text: &str) -> Vec<f64> {
-    text.lines()
+fn series_values(value: &Value) -> Vec<f64> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_f64)
         .take(2_048)
-        .filter_map(|line| {
-            line.split_whitespace().rev().find_map(|token| {
-                token
-                    .trim_matches(|character: char| {
-                        !character.is_ascii_digit() && character != '.' && character != '-'
-                    })
-                    .parse()
-                    .ok()
-            })
-        })
         .collect()
 }
 
@@ -372,8 +371,20 @@ fn format_tick(value: f64) -> String {
 
 fn metric_unit(title: &str) -> &'static str {
     let name = title.to_ascii_lowercase();
-    if name.contains("elapsed_ms") || name.ends_with("_ms") {
+    if name.ends_with("_pct") {
+        "%"
+    } else if name.ends_with("_ms") || name.contains("elapsed_ms") {
         "ms"
+    } else if name.ends_with("_kib_per_s") {
+        "KiB/s"
+    } else if name.ends_with("_ops_per_s") {
+        "ops/s"
+    } else if name.ends_with("_per_s") {
+        "/s"
+    } else if name.ends_with("_kib") {
+        "KiB"
+    } else if name.ends_with("_depth") {
+        "depth"
     } else if name.contains("elapsed_s") || name.ends_with("_seconds") {
         "s"
     } else if name.contains("token") {
@@ -450,6 +461,11 @@ mod tests {
             r#"{"success_rate":1.0,"elapsed_ms":12,"token_usage":{"total_tokens":7}}"#,
         )
         .unwrap();
+        std::fs::write(
+            root.join("sweep-results/000-one/measurements/mpstat.json"),
+            r#"{"stdout":"sample 1\nsample 2\n","metrics":{"cpu.user_pct":12.5,"cpu.iowait_pct":3.0}}"#,
+        )
+        .unwrap();
         run(root.join("sweep.toml").to_str().unwrap(), &mut Vec::new()).unwrap();
         assert!(
             root.join("results/sweep-comparison/comparison.json")
@@ -466,6 +482,15 @@ mod tests {
         assert!(elapsed_svg.contains("unit: ms"));
         assert!(elapsed_svg.contains(">0</text>"));
         assert!(elapsed_svg.contains(">12</text>"));
+        assert!(
+            root.join("results/sweep-comparison/metric-mpstat.cpu.user_pct.svg")
+                .is_file()
+        );
+        assert!(
+            !root
+                .join("results/sweep-comparison/series-mpstat.svg")
+                .exists()
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
