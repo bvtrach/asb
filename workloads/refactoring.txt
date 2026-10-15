@@ -1,0 +1,1 @@
+Find one small refactoring that improves clarity without changing behavior, then implement it.

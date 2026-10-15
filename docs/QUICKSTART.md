@@ -18,3 +18,7 @@ Credentials come from the environment used to launch ASB. For example,
 OpenRouter agents can use `OPENROUTER_API_KEY`; cli2key integrations can use
 `CLI2KEY_API_KEY` and `CLI2KEY_BASE_URL`. ASB does not store or inspect these
 values.
+
+Workloads are the `.txt` files in `workloads/`. Add a file such as
+`workloads/my-task.txt`, then select it with `--workload my-task`. To keep
+workloads elsewhere, set `ASB_WORKLOAD_DIR` before `asb run`.

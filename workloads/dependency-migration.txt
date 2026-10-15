@@ -1,0 +1,1 @@
+Inspect the repository dependencies and describe a safe, focused migration opportunity.

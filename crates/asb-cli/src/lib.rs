@@ -4,6 +4,7 @@ mod benchmark;
 mod config;
 mod providers;
 mod runner;
+mod workloads;
 
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
