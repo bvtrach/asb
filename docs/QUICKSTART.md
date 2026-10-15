@@ -39,8 +39,8 @@ asb run benchmark.toml
 The pre-run hook reuses `CLI2KEY_API_KEY` when set; otherwise it creates an
 ephemeral key for the cli2key executable. ASB also provides the local Codex
 binary as `CLI2KEY_CODEX_BIN`; the generated key is never passed to Codex or
-written to disk. Install the cli2key executable with `asb tool install cli2key
---source PATH` (or provide it on `PATH`).
+written to disk. Install the cli2key executable with
+`asb tool install cli2key --source PATH` (or provide it on `PATH`).
 
 Workloads are the `.txt` files in `workloads/`. Add a file such as
 `workloads/my-task.txt`, then select it with `--workload my-task`. To keep
@@ -70,6 +70,7 @@ The built-in recipes are:
 | `aider` | pinned Python package | `aider` |
 | `mini-swe` | pinned Python package | `mini` |
 | `openhands` | pinned Python package | `openhands` |
+| `cli2key` | pinned npm bridge package | `codex-bridge` |
 
 The npm recipes require `npm`; the Python recipes require `python3` with
 virtual-environment support. `asb tool install AGENT --dry-run` prints the

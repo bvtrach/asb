@@ -130,6 +130,7 @@ fn local_agent(agent: &str, project_root: &Path, tools_dir: &str) -> Option<Stri
     let executable = match agent {
         "qwen-code" => "qwen",
         "mini-swe" => "mini",
+        "cli2key" => "codex-bridge",
         other => other,
     };
     let mut candidates = Vec::new();
@@ -155,6 +156,14 @@ fn local_agent(agent: &str, project_root: &Path, tools_dir: &str) -> Option<Stri
             .join(executable),
     );
     candidates.push(Path::new(".asb-tools/bin").join(executable));
+    if executable != agent {
+        candidates.push(
+            project::resolve(project_root, tools_dir)
+                .join(agent)
+                .join("bin")
+                .join(agent),
+        );
+    }
     candidates
         .into_iter()
         .find(|candidate| candidate.is_file())

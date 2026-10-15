@@ -31,8 +31,8 @@ model, and local Codex binary through `CLI2KEY_*` environment variables; the
 key and endpoint are never passed to Codex.
 
 Built-in tool recipes install pinned releases into the project (and do not
-modify global tools): `codex`, `opencode`, `gemini`, and `qwen-code` use npm;
-`aider`, `mini-swe`, and `openhands` use an isolated Python virtual
+modify global tools): `codex`, `opencode`, `gemini`, `qwen-code`, and `cli2key`
+use npm; `aider`, `mini-swe`, and `openhands` use an isolated Python virtual
 environment. Any other agent can be installed from a local executable or URL
 with `--source`.
 

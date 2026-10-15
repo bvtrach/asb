@@ -48,6 +48,10 @@ fn recipe(name: &str) -> Option<Recipe> {
             package: "openhands==1.16.0",
             executable: "openhands",
         }),
+        "cli2key" => Some(Recipe::Npm {
+            package: "codex-anthropic-bridge@0.1.10",
+            executable: "codex-bridge",
+        }),
         _ => None,
     }
 }
@@ -307,6 +311,7 @@ mod tests {
             "aider",
             "mini-swe",
             "openhands",
+            "cli2key",
         ] {
             let recipe = recipe(agent).expect("documented agent has a recipe");
             assert!(!describe(recipe, Path::new(".asb-tools")).is_empty());
