@@ -121,17 +121,18 @@ pub fn run(
         .measurements
         .as_ref()
         .filter(|value| value.enabled)
-        .map(|value| value.directory.as_str());
-    let measurement_dir = measurement_dir.or(configured_measurements);
+        .map(|value| project::resolve(&project_root, &value.directory));
+    let measurement_path = measurement_dir
+        .map(std::path::PathBuf::from)
+        .or(configured_measurements);
     let measurement_collectors = config
         .measurements
         .as_ref()
         .filter(|value| value.enabled)
         .map_or(&[][..], |value| value.collectors.as_slice());
-    let mut measurement_session = measurement_dir
-        .map(|dir| {
-            measurements::Session::start_with_collectors(Path::new(dir), measurement_collectors)
-        })
+    let mut measurement_session = measurement_path
+        .as_deref()
+        .map(|dir| measurements::Session::start_with_collectors(dir, measurement_collectors))
         .transpose()
         .map_err(Error::Run)?;
     let child = command
