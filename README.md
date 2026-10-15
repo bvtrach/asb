@@ -25,7 +25,9 @@ only after a selection. It writes one uniquely named test TOML per compatible
 combination and one sweep TOML referencing those files. The model step queries
 the selected provider catalogs and lists all returned tool-capable models (for
 example DeepSeek, GLM, GPT, and Fable on OpenRouter), falling back to a pinned
-local default only when discovery is unavailable. `asb workload tui` opens
+local default only when discovery is unavailable. When generation succeeds, the
+wizard prints the exact `asb sweep <generated>.toml` command to run the sweep.
+`asb workload tui` opens
 the same Ratatui interaction components in a
 two-level workload/trial tree. Select workloads and enabled trials, then it
 writes `<workload>.workload.toml` files; `setup tui` presents those trial sets
@@ -42,7 +44,8 @@ workspace directories and copies the bundled workload prompts into
 `workloads/` and seeds `.asb/fixtures/` with the source, tests, and supporting
 files for every built-in workload. `run` copies the selected fixture into the
 workspace without overwriting existing edits. `setup` writes a human-readable
-TOML configuration.
+TOML configuration; when `--output` is supplied it also prints the exact
+`asb run <file>` command for that configuration.
 Run `asb init` in a separate benchmark project directory; it intentionally
 refuses to modify the ASB source checkout.
 If the directory is already initialized, ASB warns and makes no changes;

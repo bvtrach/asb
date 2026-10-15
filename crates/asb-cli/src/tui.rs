@@ -290,6 +290,15 @@ struct Generated {
     sweep: PathBuf,
 }
 
+fn generated_summary(generated: &Generated) -> String {
+    format!(
+        "Generated {} benchmark configurations and sweep {}\nRun it with: asb sweep {}",
+        generated.tests,
+        generated.sweep.display(),
+        generated.sweep.display(),
+    )
+}
+
 const TEMPORARY_MESSAGE: std::time::Duration = std::time::Duration::from_secs(4);
 
 fn is_install_key(key: &KeyEvent) -> bool {
@@ -335,13 +344,7 @@ pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
         }
     }
     let generated = result?;
-    writeln!(
-        output,
-        "Generated {} benchmark configurations and sweep {}",
-        generated.tests,
-        generated.sweep.display()
-    )
-    .map_err(crate::io_error)?;
+    writeln!(output, "{}", generated_summary(&generated)).map_err(crate::io_error)?;
     output.flush().map_err(crate::io_error)
 }
 
@@ -1268,7 +1271,10 @@ fn selected_trials(
 
 #[cfg(test)]
 mod tests {
-    use super::{App, Availability, Choice, Pane, default_model, generate_configs};
+    use super::{
+        App, Availability, Choice, Generated, Pane, default_model, generate_configs,
+        generated_summary,
+    };
     use crate::project::ProjectConfig;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -1370,5 +1376,14 @@ mod tests {
         let sweep = std::fs::read_to_string(&generated.sweep).expect("sweep written");
         assert!(sweep.contains("asb-test-"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn setup_summary_prints_the_exact_sweep_command() {
+        let summary = generated_summary(&Generated {
+            tests: 2,
+            sweep: std::path::PathBuf::from("asb-sweep-123.toml"),
+        });
+        assert!(summary.contains("Run it with: asb sweep asb-sweep-123.toml"));
     }
 }
