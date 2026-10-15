@@ -13,13 +13,16 @@ mod project;
 mod providers;
 mod runner;
 mod suggestions;
+mod tape;
 mod workloads;
 
 use std::ffi::OsString;
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
 
-const COMMANDS: &[&str] = &["init", "setup", "run", "provider", "tool", "workload"];
+const COMMANDS: &[&str] = &[
+    "init", "setup", "run", "record", "replay", "provider", "tool", "workload",
+];
 
 /// Run the process CLI.
 #[must_use]
@@ -75,9 +78,29 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
         [command, rest @ ..] if command == "setup" => config::setup(rest, stdout),
         [command, rest @ ..] if command == "init" => project::init(rest, stdout),
         [command, rest @ ..] if command == "run" => match parse_run_args(rest) {
-            Ok((path, json, measurements)) => {
+            Ok((path, json, measurements, _cassette)) => {
                 runner::run(&path, json, measurements.as_deref(), stdout)
             }
+            Err(error) => Err(error),
+        },
+        [command, rest @ ..] if command == "record" => match parse_run_args(rest) {
+            Ok((path, json, measurements, cassette)) => runner::record(
+                &path,
+                json,
+                measurements.as_deref(),
+                cassette.as_deref(),
+                stdout,
+            ),
+            Err(error) => Err(error),
+        },
+        [command, rest @ ..] if command == "replay" => match parse_run_args(rest) {
+            Ok((path, json, measurements, cassette)) => runner::replay(
+                &path,
+                json,
+                measurements.as_deref(),
+                cassette.as_deref(),
+                stdout,
+            ),
             Err(error) => Err(error),
         },
         [command, subcommand] if command == "tool" && subcommand == "list" => {
@@ -117,10 +140,13 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
     }
 }
 
-fn parse_run_args(args: &[String]) -> Result<(String, bool, Option<String>), CliError> {
+fn parse_run_args(
+    args: &[String],
+) -> Result<(String, bool, Option<String>, Option<String>), CliError> {
     let mut path = None;
     let mut json = false;
     let mut measurements = None;
+    let mut cassette = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -131,6 +157,13 @@ fn parse_run_args(args: &[String]) -> Result<(String, bool, Option<String>), Cli
                     "Usage: asb run CONFIG [--json] [--measurements DIR]",
                 ))?;
                 measurements = Some(value.clone());
+            }
+            "--cassette" => {
+                index += 1;
+                let value = args.get(index).ok_or(CliError::Usage(
+                    "Usage: asb record|replay CONFIG [--cassette FILE] [--json] [--measurements DIR]",
+                ))?;
+                cassette = Some(value.clone());
             }
             value if value.starts_with('-') => {
                 return Err(CliError::Input(format!(
@@ -146,9 +179,9 @@ fn parse_run_args(args: &[String]) -> Result<(String, bool, Option<String>), Cli
         }
         index += 1;
     }
-    path.map(|value| (value, json, measurements))
+    path.map(|value| (value, json, measurements, cassette))
         .ok_or(CliError::Usage(
-            "Usage: asb run CONFIG [--json] [--measurements DIR]",
+            "Usage: asb run|record|replay CONFIG [--cassette FILE] [--json] [--measurements DIR]",
         ))
 }
 
@@ -216,6 +249,8 @@ mod tests {
             vec!["init", "--help"],
             vec!["setup", "--help"],
             vec!["run", "--help"],
+            vec!["record", "--help"],
+            vec!["replay", "--help"],
             vec!["provider", "--help"],
             vec!["provider", "models", "--help"],
             vec!["tool", "--help"],
@@ -267,6 +302,7 @@ mod tests {
             "--workspace",
             "--output",
             "--json",
+            "--cassette",
             "--source",
             "--dir",
             "--dry-run",
@@ -301,6 +337,7 @@ mod tests {
         assert_eq!(first.0, "benchmark.toml");
         assert!(first.1);
         assert_eq!(first.2.as_deref(), Some("measurements"));
+        assert!(first.3.is_none());
         let second = super::parse_run_args(&[
             "--measurements".into(),
             "measurements".into(),
@@ -309,6 +346,21 @@ mod tests {
         .unwrap();
         assert_eq!(second.0, "benchmark.toml");
         assert_eq!(second.2.as_deref(), Some("measurements"));
+        assert!(second.3.is_none());
+    }
+
+    #[test]
+    fn record_and_replay_accept_an_explicit_cassette() {
+        let parsed = super::parse_run_args(&[
+            "benchmark.toml".into(),
+            "--cassette".into(),
+            "cassettes/demo.jsonl".into(),
+            "--json".into(),
+        ])
+        .expect("cassette options parse");
+        assert_eq!(parsed.0, "benchmark.toml");
+        assert!(parsed.1);
+        assert_eq!(parsed.3.as_deref(), Some("cassettes/demo.jsonl"));
     }
 
     #[test]

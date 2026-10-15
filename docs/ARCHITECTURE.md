@@ -58,11 +58,15 @@ installing anything. Command-specific help is available with `--help`.
 The ASB source checkout is not a benchmark project: `init` rejects its
 distinctive workspace layout before creating any files.
 
-Future features should be separate modules behind these boundaries. Recording,
-replay, additional measurement adapters, tool commands, and a graphical or
-terminal frontend must not add runtime dependencies or change the benchmark
-configuration contract. Measurement collection is explicitly opt-in through
-`asb run --measurements DIR`; CI does not start live agents or host collectors.
+Recording and replay are implemented as a separate `tape` module behind the
+runner boundary. It starts the externally installed `llmtape` loopback proxy,
+routes provider endpoints to that proxy, and tears it down after the child
+exits. `record` writes a JSONL cassette; `replay` requires that cassette and
+never starts cli2key or a live provider. This keeps the benchmark
+configuration contract unchanged and keeps llmtape an optional development
+tool rather than a runtime dependency. Measurement collection remains
+explicitly opt-in through `asb run --measurements DIR`; CI does not start live
+agents, llmtape, or host collectors.
 
 Finite human-entered names use bounded edit-distance suggestions on failure.
 The original value is never replaced automatically; provider model IDs remain

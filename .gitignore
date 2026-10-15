@@ -2,6 +2,7 @@
 /.runtime/
 /artifacts/
 /recordings/
+/cassettes/
 /datasets/
 /.make/
 __pycache__/
