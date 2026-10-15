@@ -143,3 +143,7 @@ copy-paste repair command. npm can be installed into the user account with
 `fnm`; Python can be provisioned with `uv`; missing `curl` or `tar` gets the
 matching package-manager command. Run the printed command in the same shell,
 then retry the original `asb tool install` or workload command.
+For kernel-sensitive profiling, run `asb tool install bpftrace` in the benchmark
+project. ASB copies the host-compatible binary locally and records the current
+kernel release and architecture; reinstall it after a kernel upgrade or when
+moving the project to another machine.
