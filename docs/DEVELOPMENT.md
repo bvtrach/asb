@@ -19,3 +19,8 @@ smoke/benchmark operation.
 Workspaces, caches, and build outputs stay under `/srv/data/projects`. Do not
 put credentials, machine-specific paths, prompts, or provider responses in the
 repository. Live runs receive credentials from the agent/provider environment.
+
+Measurement smoke tests are local-only. Use `asb run CONFIG --measurements
+DIR` when a host profile is needed; keep `ASB_MEASURE_*` collectors disabled in
+CI. Measurement JSON must remain bounded and must not contain credentials,
+provider responses, or full agent transcripts.

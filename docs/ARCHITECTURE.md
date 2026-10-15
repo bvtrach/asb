@@ -14,6 +14,11 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   configured `tools_dir`, `workloads_dir`, and `workspace_dir`;
   every command resolves relative paths from this project root;
 - `runner`: configuration loading and live agent process execution;
+- `measurements`: opt-in system/runtime collection. It writes bounded JSON
+  records for host facts, elapsed time, success rate, and token usage, and
+  owns optional `mpstat`, `iostat`, `perf`, BPFTrace, and FlameGraph adapters;
+  each adapter is isolated from the runner and can be extended without adding
+  provider-specific fields to the benchmark configuration;
 - `workloads/`: one UTF-8 `.txt` prompt per workload name. Built-in supporting
   files are stored under `.asb/fixtures/<name>/` and materialized into the run
   workspace without overwriting existing edits.
@@ -51,8 +56,10 @@ The ASB source checkout is not a benchmark project: `init` rejects its
 distinctive workspace layout before creating any files.
 
 Future features should be separate modules behind these boundaries. Recording,
-replay, measurements, tool commands, and a graphical or terminal frontend are
-not part of the current product.
+replay, additional measurement adapters, tool commands, and a graphical or
+terminal frontend must not add runtime dependencies or change the benchmark
+configuration contract. Measurement collection is explicitly opt-in through
+`asb run --measurements DIR`; CI does not start live agents or host collectors.
 
 Finite human-entered names use bounded edit-distance suggestions on failure.
 The original value is never replaced automatically; provider model IDs remain

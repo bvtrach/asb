@@ -7,7 +7,7 @@ use std::io::Write;
 pub fn root(output: &mut dyn Write) -> Result<(), Error> {
     write_text(
         output,
-        "ASB\n\nUsage:\n  asb init [PROJECT_DIR] [--reset]\n  asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n  asb run CONFIG [--json]\n  asb provider models [PROVIDER] [--json]\n  asb tool list\n  asb tool install AGENT [--source URL|PATH] [--dir DIR] [--dry-run]\n  asb workload list [--dir DIR]\n  asb workload install SOURCE.txt|URL [--name NAME] [--dir DIR]\n\nUse `asb COMMAND --help` for concise help for one command.",
+        "ASB\n\nUsage:\n  asb init [PROJECT_DIR] [--reset]\n  asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n  asb run CONFIG [--json] [--measurements DIR]\n  asb provider models [PROVIDER] [--json]\n  asb tool list\n  asb tool install AGENT [--source URL|PATH] [--dir DIR] [--dry-run]\n  asb workload list [--dir DIR]\n  asb workload install SOURCE.txt|URL [--name NAME] [--dir DIR]\n\nUse `asb COMMAND --help` for concise help for one command.",
     )
 }
 
@@ -18,10 +18,10 @@ pub fn command(name: &str, output: &mut dyn Write) -> Result<(), Error> {
             "Usage: asb init [PROJECT_DIR] [--reset]\n\nCreate project state and bundled workloads. Existing projects are preserved unless --reset is supplied."
         }
         "setup" => {
-            "Usage: asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n\nWrite a benchmark TOML configuration. Credentials remain in the environment."
+            "Usage: asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n\nWrite a benchmark TOML configuration. Generated configurations enable every measurement module; credentials remain in the environment."
         }
         "run" => {
-            "Usage: asb run CONFIG [--json]\n\nRun the configured workload with the selected local agent and provider. Human-readable output is default; --json emits machine-readable output."
+            "Usage: asb run CONFIG [--json] [--measurements DIR]\n\nRun the configured workload with the selected local agent and provider. Human-readable output is default; --json emits machine-readable output. --measurements writes bounded machine-readable system, runtime, collector, token, and success-rate data. Optional collectors are enabled with ASB_MEASURE_MPSTAT, ASB_MEASURE_IOSTAT, ASB_MEASURE_PERF, and ASB_MEASURE_BPFTRACE."
         }
         "provider" => {
             "Usage: asb provider models [PROVIDER] [--json]\n\nAccess provider-related commands. `models` lists live provider catalogs."

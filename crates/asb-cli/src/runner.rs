@@ -3,6 +3,7 @@
 use super::{Error, io_error, read_config};
 use crate::benchmark::BenchmarkConfig;
 use crate::cli2key;
+use crate::measurements;
 use crate::prepare;
 use crate::project;
 use crate::providers;
@@ -42,7 +43,12 @@ struct RunResult<'a> {
 }
 
 /// Execute the selected agent with the selected workload prompt.
-pub fn run(path: &str, json: bool, output: &mut dyn Write) -> Result<(), Error> {
+pub fn run(
+    path: &str,
+    json: bool,
+    measurement_dir: Option<&str>,
+    output: &mut dyn Write,
+) -> Result<(), Error> {
     let config_path = Path::new(path);
     let text = read_config(config_path)?;
     let config: BenchmarkConfig = toml::from_str(&text)
@@ -111,9 +117,33 @@ pub fn run(path: &str, json: bool, output: &mut dyn Write) -> Result<(), Error> 
             .as_ref()
             .map(|value| (value.api_key(), value.base_url())),
     )?;
+    let configured_measurements = config
+        .measurements
+        .as_ref()
+        .filter(|value| value.enabled)
+        .map(|value| value.directory.as_str());
+    let measurement_dir = measurement_dir.or(configured_measurements);
+    let measurement_collectors = config
+        .measurements
+        .as_ref()
+        .filter(|value| value.enabled)
+        .map_or(&[][..], |value| value.collectors.as_slice());
+    let mut measurement_session = measurement_dir
+        .map(|dir| {
+            measurements::Session::start_with_collectors(Path::new(dir), measurement_collectors)
+        })
+        .transpose()
+        .map_err(Error::Run)?;
     let child = command
-        .output()
+        .spawn()
         .map_err(|error| Error::Run(format!("could not start {program}: {error}")))?;
+    if let Some(session) = measurement_session.as_mut() {
+        session.attach_pid(child.id()).map_err(Error::Run)?;
+    }
+    let child = child
+        .wait_with_output()
+        .map_err(|error| Error::Run(format!("could not wait for {program}: {error}")))?;
+    let elapsed_ms = started.elapsed().as_millis();
     let result = RunResult {
         status: if child.status.success() {
             "completed"
@@ -124,11 +154,29 @@ pub fn run(path: &str, json: bool, output: &mut dyn Write) -> Result<(), Error> 
         workload: &config.workload,
         provider: &config.provider,
         model: &config.model,
-        elapsed_ms: started.elapsed().as_millis(),
+        elapsed_ms,
         exit_code: child.status.code(),
         stdout: bounded(&child.stdout),
         stderr: bounded(&child.stderr),
     };
+    if let Some(session) = measurement_session {
+        let measured = measurements::RunMeasurement {
+            schema_version: 1,
+            run_id: format!("{}-{}", result.workload, result.elapsed_ms),
+            status: result.status,
+            success: child.status.success(),
+            success_rate: if child.status.success() { 1.0 } else { 0.0 },
+            agent: result.agent,
+            workload: result.workload,
+            provider: result.provider,
+            model: result.model,
+            elapsed_ms,
+            exit_code: result.exit_code,
+            token_usage: measurements::token_usage(),
+            started_unix_ms: session.started_unix_ms(),
+        };
+        session.finish(measured).map_err(Error::Run)?;
+    }
     if json {
         render_json(&result, output)?;
     } else {
@@ -406,6 +454,7 @@ mod tests {
             provider: "cli2key".into(),
             model: "gpt-test".into(),
             workspace: "workspace".into(),
+            measurements: None,
         };
         let command = command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt")
             .expect("known agent has a command");
@@ -422,6 +471,7 @@ mod tests {
             provider: "cli2key".into(),
             model: "gpt-test".into(),
             workspace: "workspace".into(),
+            measurements: None,
         };
         assert!(command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt").is_err());
     }
@@ -434,6 +484,7 @@ mod tests {
             provider: "local".into(),
             model: "test-model".into(),
             workspace: "workspace".into(),
+            measurements: None,
         };
         let error = match command_for(&config, None, "prompt") {
             Ok(_) => panic!("typo rejected"),
