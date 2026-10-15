@@ -2,7 +2,10 @@
 
 use crate::benchmark::{BenchmarkConfig, MeasurementConfig};
 use crate::{Error, install, measurements, models, project, providers, workloads};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
@@ -791,7 +794,19 @@ fn write_trial_sets(app: &WorkloadApp) -> Result<usize, Error> {
 fn start_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>, io::Error> {
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, crossterm::cursor::Hide)?;
+    // Ctrl-I is encoded as the same byte as Tab by legacy terminals. Request
+    // Kitty's disambiguating keyboard protocol so crossterm can preserve the
+    // control modifier and the shortcut cannot fall through to navigation.
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        crossterm::cursor::Hide,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+        )
+    )?;
     Terminal::new(CrosstermBackend::new(stdout))
 }
 
@@ -800,6 +815,7 @@ fn stop_terminal(mut terminal: Terminal<CrosstermBackend<Stdout>>) -> Result<(),
     terminal::disable_raw_mode()?;
     execute!(
         terminal.backend_mut(),
+        PopKeyboardEnhancementFlags,
         LeaveAlternateScreen,
         crossterm::cursor::Show
     )?;
@@ -1339,6 +1355,10 @@ mod tests {
         assert!(super::is_install_key(&KeyEvent::new(
             KeyCode::Tab,
             KeyModifiers::CONTROL,
+        )));
+        assert!(!super::is_install_key(&KeyEvent::new(
+            KeyCode::Tab,
+            KeyModifiers::NONE,
         )));
     }
 
