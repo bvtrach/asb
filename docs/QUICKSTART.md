@@ -130,3 +130,9 @@ The built-in recipes are:
 The npm recipes require `npm`; the Python recipes require `python3` with
 virtual-environment support. `asb tool install AGENT --dry-run` prints the
 exact local installation plan without changing the project.
+
+If a prerequisite is missing, ASB stops before changing the tool and prints a
+copy-paste repair command. npm can be installed into the user account with
+`fnm`; Python can be provisioned with `uv`; missing `curl` or `tar` gets the
+matching package-manager command. Run the printed command in the same shell,
+then retry the original `asb tool install` or workload command.

@@ -347,7 +347,7 @@ fn install_bundle(
         .args(["--directory"])
         .arg(&extract)
         .status()
-        .map_err(|error| Error::Io(format!("cannot start tar for {name}: {error}")))?;
+        .map_err(|error| missing_dependency("tar", "external workload installation", error))?;
     if !status.success() {
         return Err(Error::Io(format!(
             "could not extract external workload {name}"
@@ -455,11 +455,27 @@ fn install_recipe(recipe: Recipe, root: &Path) -> Result<PathBuf, Error> {
             .status(),
         Recipe::Python { package, .. } => {
             let venv = root.join("venv");
-            let created = Command::new("python3")
+            let created = match Command::new("python3")
                 .args(["-m", "venv"])
                 .arg(&venv)
                 .status()
-                .map_err(|error| Error::Io(format!("cannot start python3: {error}")))?;
+            {
+                Ok(status) => status,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Command::new("uv")
+                    .args(["venv", "--seed", "--python", "3.12"])
+                    .arg(&venv)
+                    .status()
+                    .map_err(|uv_error| {
+                        missing_dependency("python3", "Python agent installation", uv_error)
+                    })?,
+                Err(error) => {
+                    return Err(missing_dependency(
+                        "python3",
+                        "Python agent installation",
+                        error,
+                    ));
+                }
+            };
             if !created.success() {
                 return Err(Error::Io(
                     "python3 could not create the agent environment".into(),
@@ -470,9 +486,21 @@ fn install_recipe(recipe: Recipe, root: &Path) -> Result<PathBuf, Error> {
                 .status()
         }
     }
-    .map_err(|error| Error::Io(format!("cannot start agent installer: {error}")))?;
+    .map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            let dependency = match recipe {
+                Recipe::Npm { .. } => "npm",
+                Recipe::Python { .. } => "python3",
+            };
+            missing_dependency(dependency, "agent installation", error)
+        } else {
+            Error::Io(format!("cannot start agent installer: {error}"))
+        }
+    })?;
     if !status.success() {
-        return Err(Error::Io("agent package installation failed".into()));
+        return Err(Error::Io(
+            "agent package installation failed; verify the prerequisite tool and rerun `asb tool install`".into(),
+        ));
     }
     Ok(executable(recipe, root))
 }
@@ -619,6 +647,23 @@ fn valid_name(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
+fn missing_dependency(tool: &str, operation: &str, error: std::io::Error) -> Error {
+    let command = match tool {
+        "npm" => {
+            "curl -fsSL https://fnm.vercel.app/install | bash && eval \"$(fnm env --shell bash)\" && fnm install --lts && fnm use --lts"
+        }
+        "python3" => {
+            "curl -LsSf https://astral.sh/uv/install.sh | sh && ~/.local/bin/uv python install 3.12"
+        }
+        "curl" => "sudo apt-get update && sudo apt-get install -y curl",
+        "tar" => "sudo apt-get update && sudo apt-get install -y tar",
+        _ => "install the missing prerequisite and rerun the command",
+    };
+    Error::Io(format!(
+        "{operation} needs `{tool}`, but it could not be started: {error}. Install it, then rerun the command. Suggested command:\n  {command}"
+    ))
+}
+
 fn install_source(source: &str, destination: &Path, kind: &str) -> Result<(), Error> {
     if source.starts_with("https://") || source.starts_with("http://") {
         let status = Command::new("curl")
@@ -632,9 +677,7 @@ fn install_source(source: &str, destination: &Path, kind: &str) -> Result<(), Er
             .arg(destination)
             .arg(source)
             .status()
-            .map_err(|error| {
-                Error::Io(format!("cannot start curl for {kind} download: {error}"))
-            })?;
+            .map_err(|error| missing_dependency("curl", kind, error))?;
         if !status.success() {
             return Err(Error::Io(format!(
                 "could not download {kind} from {source}"
@@ -714,6 +757,31 @@ mod tests {
         assert!(text.contains("openjiuwen"));
         assert!(text.contains("llmtape"));
         assert!(text.contains("custom"));
+    }
+
+    #[test]
+    fn missing_prerequisite_messages_include_copyable_repair_commands() {
+        let npm = missing_dependency(
+            "npm",
+            "agent installation",
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+        )
+        .to_string();
+        assert!(npm.contains("fnm install --lts"));
+        let python = missing_dependency(
+            "python3",
+            "Python agent installation",
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+        )
+        .to_string();
+        assert!(python.contains("uv python install 3.12"));
+        let curl = missing_dependency(
+            "curl",
+            "model discovery",
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+        )
+        .to_string();
+        assert!(curl.contains("apt-get install -y curl"));
     }
 
     #[test]

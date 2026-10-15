@@ -102,6 +102,10 @@ modify global tools): `codex`, `pi`, `opencode`, `codeagent`, `workbuddy`, `gemi
 `openjiuwen` use an isolated Python virtual environment. Any other agent can
 be installed from a local executable or URL with `--source`.
 
+If npm, Python, curl, or tar is unavailable, the failed command prints a
+copy-paste repair command. The npm repair uses user-local `fnm`; the Python
+repair uses user-local `uv`; after running the printed command, retry ASB.
+
 Pi is run in non-interactive print mode. With `provider = "cli2key"`, ASB
 maps the request to Pi's OpenAI-compatible provider and supplies the bridge
 endpoint and generated API key through the child environment.
