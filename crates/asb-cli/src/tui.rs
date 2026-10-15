@@ -1012,7 +1012,11 @@ fn render_choice_pane(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rec
             )
             // Keep each readiness glyph's green/yellow/red foreground visible
             // while still making the cursor row stand out.
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD)),
+            .highlight_style(
+                Style::default()
+                    .bg(Color::Black)
+                    .add_modifier(Modifier::BOLD),
+            ),
         body[1],
         &mut state,
     );
