@@ -12,6 +12,8 @@ asb workload install SOURCE.txt|URL
 asb provider models [PROVIDER]
 asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]
 asb run CONFIG [--json] [--measurements DIR]
+asb record CONFIG [--cassette FILE] [--json] [--measurements DIR]
+asb replay CONFIG [--cassette FILE] [--json] [--measurements DIR]
 ```
 
 `init` writes `.asb/project.toml` with project-local tool, workload, and
@@ -49,6 +51,15 @@ section listing every collector module and defaulting its output directory to
 `measurements`. A hand-written configuration can omit that section to retain
 the no-collection behavior, or pass `--measurements DIR` to enable collection
 for one run.
+
+`asb record CONFIG` runs the same configuration through the local `llmtape`
+proxy and writes a JSONL cassette (by default below `cassettes/` next to the
+configuration). Install the proxy with `npm install -g llmtape`, or point ASB
+at another executable with `ASB_LLM_TAPE`. Use `--cassette FILE` to choose an
+explicit path. `asb replay CONFIG` starts llmtape's cassette server and routes
+all supported provider endpoints to it; it refuses a missing cassette and does
+not start cli2key or connect to any live provider. Cassettes are local test
+artifacts and should not be committed when they contain provider responses.
 
 `provider models` queries live provider model catalogs. Pass a provider to query one,
 or omit it to query every supported provider and report unavailable providers

@@ -8,6 +8,7 @@ use crate::prepare;
 use crate::project;
 use crate::providers;
 use crate::suggestions;
+use crate::tape;
 use crate::workloads;
 use serde::Serialize;
 use std::io::Write;
@@ -50,6 +51,50 @@ pub fn run(
     measurement_dir: Option<&str>,
     output: &mut dyn Write,
 ) -> Result<(), Error> {
+    run_mode(path, json, measurement_dir, None, output)
+}
+
+/// Record one configured benchmark through a local llmtape proxy.
+pub fn record(
+    path: &str,
+    json: bool,
+    measurement_dir: Option<&str>,
+    cassette: Option<&str>,
+    output: &mut dyn Write,
+) -> Result<(), Error> {
+    run_mode(
+        path,
+        json,
+        measurement_dir,
+        Some((tape::Mode::Record, cassette)),
+        output,
+    )
+}
+
+/// Replay one configured benchmark without starting a live provider or bridge.
+pub fn replay(
+    path: &str,
+    json: bool,
+    measurement_dir: Option<&str>,
+    cassette: Option<&str>,
+    output: &mut dyn Write,
+) -> Result<(), Error> {
+    run_mode(
+        path,
+        json,
+        measurement_dir,
+        Some((tape::Mode::Replay, cassette)),
+        output,
+    )
+}
+
+fn run_mode(
+    path: &str,
+    json: bool,
+    measurement_dir: Option<&str>,
+    tape_request: Option<(tape::Mode, Option<&str>)>,
+    output: &mut dyn Write,
+) -> Result<(), Error> {
     let config_path = Path::new(path);
     let text = read_config(config_path)?;
     let config: BenchmarkConfig = toml::from_str(&text)
@@ -88,7 +133,10 @@ pub fn run(
         )));
     }
     let codex_executable = local_agent("codex", &project_root, &project_config.tools_dir);
-    let bridge = if config.provider.eq_ignore_ascii_case("cli2key") {
+    let tape_mode = tape_request.map(|(mode, _)| mode);
+    let bridge = if config.provider.eq_ignore_ascii_case("cli2key")
+        && tape_mode != Some(tape::Mode::Replay)
+    {
         cli2key::Bridge::connect(
             local_agent("cli2key", &project_root, &project_config.tools_dir).as_deref(),
         )
@@ -96,9 +144,22 @@ pub fn run(
     } else {
         None
     };
+    let mut tape_session = if let Some((mode, requested)) = tape_request {
+        let cassette = requested
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| default_cassette(config_path, &config));
+        let upstream = tape::upstream(
+            &config.provider,
+            bridge.as_ref().map(cli2key::Bridge::base_url),
+        );
+        Some(tape::Session::start(mode, &cassette, upstream.as_deref())?)
+    } else {
+        None
+    };
+    let tape_url = tape_session.as_ref().map(|session| session.url());
     let specification = command_for(
         &config,
-        bridge.as_ref().map(cli2key::Bridge::base_url),
+        tape_url.or_else(|| bridge.as_ref().map(cli2key::Bridge::base_url)),
         &prompt,
     )?;
     let mut program = specification.program;
@@ -113,20 +174,36 @@ pub fn run(
     }
     command.current_dir(&workspace).stdin(Stdio::null());
     providers::configure(&mut command, &config.provider, &config.model);
+    let cli2key_endpoint = tape_url.or_else(|| bridge.as_ref().map(cli2key::Bridge::base_url));
     prepare::apply(
         &mut command,
         &config.agent,
         &config.provider,
         &config.model,
         codex_executable.as_deref(),
-        bridge
-            .as_ref()
-            .map(|value| (value.api_key(), value.base_url())),
+        if config.provider.eq_ignore_ascii_case("cli2key") {
+            Some((
+                bridge
+                    .as_ref()
+                    .map_or("asb-replay", cli2key::Bridge::api_key),
+                cli2key_endpoint.unwrap_or("http://127.0.0.1:0/v1"),
+            ))
+        } else {
+            None
+        },
         (config.agent.eq_ignore_ascii_case("pi")
             && config.provider.eq_ignore_ascii_case("cli2key"))
         .then(|| project::resolve(&project_root, &project_config.tools_dir).join("pi/config"))
         .as_deref(),
     )?;
+    if let Some(url) = tape_url {
+        tape::configure_command(
+            &mut command,
+            &config.provider,
+            url,
+            tape_mode.expect("tape URL implies tape mode"),
+        );
+    }
     let configured_measurements = config
         .measurements
         .as_ref()
@@ -154,6 +231,9 @@ pub fn run(
     let child = child
         .wait_with_output()
         .map_err(|error| Error::Run(format!("could not wait for {program}: {error}")))?;
+    if let Some(session) = tape_session.take() {
+        session.stop()?;
+    }
     let elapsed_ms = started.elapsed().as_millis();
     let result = RunResult {
         status: if child.status.success() {
@@ -198,6 +278,37 @@ pub fn run(
     } else {
         Err(Error::Run("agent exited unsuccessfully".into()))
     }
+}
+
+fn default_cassette(config_path: &Path, config: &BenchmarkConfig) -> std::path::PathBuf {
+    let stem = config_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("benchmark");
+    config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("cassettes")
+        .join(format!(
+            "{stem}-{}-{}-{}.jsonl",
+            safe_name(&config.agent),
+            safe_name(&config.workload),
+            safe_name(&config.model)
+        ))
+}
+
+fn safe_name(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {

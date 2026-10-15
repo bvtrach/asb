@@ -4,7 +4,9 @@ use crate::{Error, io_error};
 use std::fmt::Write as FmtWrite;
 use std::io::Write;
 
-const TOP_LEVEL: &[&str] = &["init", "setup", "run", "provider", "tool", "workload"];
+const TOP_LEVEL: &[&str] = &[
+    "init", "setup", "run", "record", "replay", "provider", "tool", "workload",
+];
 const INIT_OPTIONS: &[&str] = &["--reset"];
 const SETUP_OPTIONS: &[&str] = &[
     "--agent",
@@ -14,7 +16,8 @@ const SETUP_OPTIONS: &[&str] = &[
     "--workspace",
     "--output",
 ];
-const RUN_OPTIONS: &[&str] = &["--json"];
+const RUN_OPTIONS: &[&str] = &["--json", "--measurements"];
+const TAPE_OPTIONS: &[&str] = &["--cassette", "--json", "--measurements"];
 const PROVIDER_SUBCOMMANDS: &[&str] = &["models"];
 const PROVIDER_MODELS_OPTIONS: &[&str] = &["--json"];
 const TOOL_SUBCOMMANDS: &[&str] = &["list", "install"];
@@ -68,6 +71,8 @@ fn generate_bash() -> String {
     simple_case(&mut script, "init", INIT_OPTIONS);
     simple_case(&mut script, "setup", SETUP_OPTIONS);
     simple_case(&mut script, "run", RUN_OPTIONS);
+    simple_case(&mut script, "record", TAPE_OPTIONS);
+    simple_case(&mut script, "replay", TAPE_OPTIONS);
     nested_case(
         &mut script,
         "provider",
@@ -139,6 +144,8 @@ fn generate_zsh() -> String {
     zsh_simple_case(&mut script, "init", INIT_OPTIONS);
     zsh_simple_case(&mut script, "setup", SETUP_OPTIONS);
     zsh_simple_case(&mut script, "run", RUN_OPTIONS);
+    zsh_simple_case(&mut script, "record", TAPE_OPTIONS);
+    zsh_simple_case(&mut script, "replay", TAPE_OPTIONS);
     zsh_nested_case(
         &mut script,
         "provider",

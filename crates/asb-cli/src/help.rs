@@ -7,7 +7,7 @@ use std::io::Write;
 pub fn root(output: &mut dyn Write) -> Result<(), Error> {
     write_text(
         output,
-        "ASB\n\nUsage:\n  asb init [PROJECT_DIR] [--reset]\n  asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n  asb run CONFIG [--json] [--measurements DIR]\n  asb provider models [PROVIDER] [--json]\n  asb tool list\n  asb tool install AGENT [--source URL|PATH] [--dir DIR] [--dry-run]\n  asb workload list [--dir DIR]\n  asb workload install SOURCE.txt|URL [--name NAME] [--dir DIR]\n\nUse `asb COMMAND --help` for concise help for one command.",
+        "ASB\n\nUsage:\n  asb init [PROJECT_DIR] [--reset]\n  asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n  asb run CONFIG [--json] [--measurements DIR]\n  asb record CONFIG [--cassette FILE] [--json] [--measurements DIR]\n  asb replay CONFIG [--cassette FILE] [--json] [--measurements DIR]\n  asb provider models [PROVIDER] [--json]\n  asb tool list\n  asb tool install AGENT [--source URL|PATH] [--dir DIR] [--dry-run]\n  asb workload list [--dir DIR]\n  asb workload install SOURCE.txt|URL [--name NAME] [--dir DIR]\n\nUse `asb COMMAND --help` for concise help for one command.",
     )
 }
 
@@ -19,6 +19,12 @@ pub fn command(name: &str, output: &mut dyn Write) -> Result<(), Error> {
         }
         "setup" => {
             "Usage: asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n\nWrite a benchmark TOML configuration. Generated configurations enable every measurement module; credentials remain in the environment."
+        }
+        "record" => {
+            "Usage: asb record CONFIG [--cassette FILE] [--json] [--measurements DIR]\n\nRun the configured workload through the local llmtape proxy and save LLM requests and responses to a JSONL cassette. Install llmtape with `npm install -g llmtape`, or set ASB_LLM_TAPE to its executable. The cassette is local output and is never committed automatically."
+        }
+        "replay" => {
+            "Usage: asb replay CONFIG [--cassette FILE] [--json] [--measurements DIR]\n\nRun the configured workload against a local llmtape cassette. Replay refuses a missing cassette, does not start cli2key or any live provider, and redirects provider endpoints to the local replay server."
         }
         "run" => {
             "Usage: asb run CONFIG [--json] [--measurements DIR]\n\nRun the configured workload with the selected local agent and provider. Human-readable output is default; --json emits machine-readable output. --measurements writes bounded machine-readable system, runtime, collector, token, and success-rate data. Optional collectors are enabled with ASB_MEASURE_MPSTAT, ASB_MEASURE_IOSTAT, ASB_MEASURE_PERF, and ASB_MEASURE_BPFTRACE."
