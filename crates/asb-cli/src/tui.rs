@@ -774,7 +774,7 @@ fn draw_workload(frame: &mut ratatui::Frame<'_>, app: &WorkloadApp) {
     } else {
         &app.trials
     };
-    render_choice_pane(frame, vertical[2], pane);
+    render_choice_pane(frame, vertical[2], pane, true);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("Ctrl-I install", Style::default().fg(Color::Cyan)),
@@ -959,11 +959,19 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
         vertical[1],
     );
     let pane = &app.panes[app.step];
-    render_choice_pane(frame, vertical[2], pane);
+    render_choice_pane(frame, vertical[2], pane, app.step != 1);
     frame.render_widget(
         Paragraph::new(Text::from(Line::from(vec![
-            Span::styled("Ctrl-I install", Style::default().fg(Color::Cyan)),
-            Span::raw(" | ⓘ green=ready red=missing yellow=unknown | Tab fallback install | Enter next | "),
+            if app.step == 1 {
+                Span::styled("Provider discovery only", Style::default().fg(Color::Yellow))
+            } else {
+                Span::styled("Ctrl-I install", Style::default().fg(Color::Cyan))
+            },
+            if app.step == 1 {
+                Span::raw(" | Enter next | ")
+            } else {
+                Span::raw(" | ⓘ green=ready red=missing yellow=unknown | Tab fallback install | Enter next | ")
+            },
             Span::styled(
                 visible_message(&app.message, app.message_until),
                 Style::default().fg(app.message_color),
@@ -974,7 +982,12 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
 }
 
 /// Render the shared searchable, selectable list pane used by both TUIs.
-fn render_choice_pane(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect, pane: &Pane) {
+fn render_choice_pane(
+    frame: &mut ratatui::Frame<'_>,
+    area: ratatui::layout::Rect,
+    pane: &Pane,
+    show_info: bool,
+) {
     let body = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(3)])
@@ -995,12 +1008,16 @@ fn render_choice_pane(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rec
             let choice = &pane.choices[*index];
             let marker = if pane.selected[*index] { "[x]" } else { "[ ]" };
             let selected = *index == pane.cursor;
-            ListItem::new(Line::from(vec![
-                Span::raw(format!("{marker} ")),
-                Span::styled(INFO_GLYPH, availability_style(choice.availability)),
-                Span::raw(format!("  {}", choice.label)),
-            ]))
-            .style(choice_row_style(selected))
+            let mut row = vec![Span::raw(format!("{marker} "))];
+            if show_info {
+                row.push(Span::styled(
+                    INFO_GLYPH,
+                    availability_style(choice.availability),
+                ));
+                row.push(Span::raw("  ".to_owned()));
+            }
+            row.push(Span::raw(choice.label.clone()));
+            ListItem::new(Line::from(row)).style(choice_row_style(selected))
         })
         .collect::<Vec<_>>();
     let selected = visible
