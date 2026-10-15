@@ -4,15 +4,7 @@ use crate::{Error, io_error};
 use std::fmt::Write as FmtWrite;
 use std::io::Write;
 
-const TOP_LEVEL: &[&str] = &[
-    "init",
-    "setup",
-    "run",
-    "provider",
-    "tool",
-    "workload",
-    "completion",
-];
+const TOP_LEVEL: &[&str] = &["init", "setup", "run", "provider", "tool", "workload"];
 const INIT_OPTIONS: &[&str] = &["--reset"];
 const SETUP_OPTIONS: &[&str] = &[
     "--agent",
@@ -45,7 +37,6 @@ const TOOL_INSTALL_VALUES: &[&str] = &[
 const WORKLOAD_SUBCOMMANDS: &[&str] = &["list", "install"];
 const WORKLOAD_LIST_OPTIONS: &[&str] = &["--dir"];
 const WORKLOAD_INSTALL_OPTIONS: &[&str] = &["--name", "--dir"];
-const COMPLETION_VALUES: &[&str] = &["bash", "zsh"];
 
 /// Write a Bash completion script assembled from the CLI command catalog.
 pub(crate) fn bash(output: &mut dyn Write) -> Result<(), Error> {
@@ -97,7 +88,6 @@ fn generate_bash() -> String {
             ("install", WORKLOAD_INSTALL_OPTIONS),
         ],
     );
-    simple_case(&mut script, "completion", COMPLETION_VALUES);
     script.push_str("    esac\n}\ncomplete -F _asb asb\n");
     script
 }
@@ -169,7 +159,6 @@ fn generate_zsh() -> String {
             ("install", WORKLOAD_INSTALL_OPTIONS),
         ],
     );
-    zsh_values_case(&mut script, "completion", COMPLETION_VALUES);
     script.push_str("      esac\n      ;;\n  esac\n}\n");
     script
 }
@@ -181,12 +170,6 @@ fn zsh_simple_case(script: &mut String, command: &str, options: &[&str]) {
         let _ = write!(script, " '{option}[complete {option}]'");
     }
     script.push_str("\n          ;;\n");
-}
-
-fn zsh_values_case(script: &mut String, command: &str, values: &[&str]) {
-    let _ = writeln!(script, "        {command})");
-    let _ = writeln!(script, "          _values 'value' {}", words(values));
-    script.push_str("          ;;\n");
 }
 
 fn zsh_nested_case(

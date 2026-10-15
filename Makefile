@@ -10,8 +10,8 @@ update:
 
 build:
 	cargo build --locked
-	target/debug/asb completion bash > "$(BASH_COMPLETION)"
-	target/debug/asb completion zsh > "$(ZSH_COMPLETION)"
+	target/debug/asb --__generate-completion bash > "$(BASH_COMPLETION)"
+	target/debug/asb --__generate-completion zsh > "$(ZSH_COMPLETION)"
 
 test:
 	cargo test --locked
