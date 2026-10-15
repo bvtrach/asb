@@ -196,6 +196,22 @@ mod tests {
         assert!(script.starts_with("# bash completion for asb"));
         assert!(script.contains("completion"));
         assert!(script.contains("cli2key"));
+        for flag in [
+            "--reset",
+            "--agent",
+            "--workload",
+            "--provider",
+            "--model",
+            "--workspace",
+            "--output",
+            "--json",
+            "--source",
+            "--dir",
+            "--dry-run",
+            "--name",
+        ] {
+            assert!(script.contains(flag), "missing completion for {flag}");
+        }
         assert!(script.contains("complete -F _asb asb"));
         assert!(stderr.is_empty());
     }

@@ -24,7 +24,8 @@ make install
 ./target/debug/asb run benchmark.toml
 ```
 
-The build generates `target/asb.bash`; install also places it in
+The build regenerates `target/asb.bash` from the command and option catalog;
+install also places it in
 `~/.local/share/bash-completion/completions/asb` for the current user.
 
 Credentials normally come from the environment used to launch ASB. For example,
