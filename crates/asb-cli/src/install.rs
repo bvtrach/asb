@@ -4,13 +4,35 @@ use crate::Error;
 use crate::project;
 use crate::suggestions;
 use crate::workloads;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 
 const LLMTAPE_WRAPPER: &str = include_str!("../../../scripts/llmtape.mjs");
 const BPFTRACE_SOURCE: &str =
     "https://github.com/bpftrace/bpftrace/archive/refs/tags/v0.20.2.tar.gz";
+
+trait LoggedStatus {
+    fn logged_status(&mut self) -> io::Result<ExitStatus>;
+}
+
+impl LoggedStatus for Command {
+    fn logged_status(&mut self) -> io::Result<ExitStatus> {
+        let log_path = Path::new(".asb/install.log");
+        if let Some(parent) = log_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let stdout = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)?;
+        let stderr = stdout.try_clone()?;
+        self.stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr))
+            .status()
+    }
+}
 
 #[derive(Clone, Copy)]
 enum Recipe {
@@ -270,9 +292,7 @@ pub fn tool_with_progress(
         progress(90, "generating local API key");
         let status = Command::new(&executable)
             .args(["key", "refresh"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
+            .logged_status()
             .map_err(|error| Error::Io(format!("cannot refresh cli2key API key: {error}")))?;
         if !status.success() {
             return Err(Error::Io(
@@ -419,7 +439,7 @@ fn install_bundle(
         .arg(&archive)
         .args(["--directory"])
         .arg(&extract)
-        .status()
+        .logged_status()
         .map_err(|error| missing_dependency("tar", "external workload installation", error))?;
     if !status.success() {
         return Err(Error::Io(format!(
@@ -553,20 +573,20 @@ fn install_recipe(
             .args(["install", "--prefix"])
             .arg(root)
             .args(["--no-save", package])
-            .status()
+            .logged_status()
         }
         Recipe::Python { package, .. } => {
             let venv = root.join("venv");
             let created = match Command::new("python3")
                 .args(["-m", "venv"])
                 .arg(&venv)
-                .status()
+                .logged_status()
             {
                 Ok(status) => status,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Command::new("uv")
                     .args(["venv", "--seed", "--python", "3.12"])
                     .arg(&venv)
-                    .status()
+                    .logged_status()
                     .map_err(|uv_error| {
                         missing_dependency("python3", "Python agent installation", uv_error)
                     })?,
@@ -586,7 +606,7 @@ fn install_recipe(
             progress(35, "installing Python package");
             Command::new(venv.join("bin/python"))
                 .args(["-m", "pip", "install", package])
-                .status()
+                .logged_status()
         }
         Recipe::Host { executable } => {
             progress(55, "copying host tool");
@@ -726,7 +746,7 @@ fn build_bpftrace(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<Pat
             ])
             .arg(&archive)
             .arg(BPFTRACE_SOURCE)
-            .status()
+            .logged_status()
             .map_err(|error| bpftrace_missing_dependency("curl", error))?;
         if !status.success() {
             return Err(Error::Io(format!(
@@ -744,7 +764,7 @@ fn build_bpftrace(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<Pat
             .args(["-C"])
             .arg(&source_dir)
             .args(["--strip-components=1"])
-            .status()
+            .logged_status()
             .map_err(|error| bpftrace_missing_dependency("tar", error))?;
         if !status.success() {
             return Err(Error::Io(format!(
@@ -760,7 +780,7 @@ fn build_bpftrace(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<Pat
         .args(["-B"])
         .arg(&build_dir)
         .args(["-DBUILD_TESTING=OFF", "-DBPFTRACE_BUILD_TESTING=OFF"])
-        .status()
+        .logged_status()
         .map_err(|error| bpftrace_missing_dependency("cmake", error))?;
     if !status.success() {
         return Err(Error::Io(format!(
@@ -773,7 +793,7 @@ fn build_bpftrace(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<Pat
         .args(["--build"])
         .arg(&build_dir)
         .args(["--target", "bpftrace", "--parallel"])
-        .status()
+        .logged_status()
         .map_err(|error| bpftrace_missing_dependency("cmake", error))?;
     if !status.success() {
         return Err(Error::Io(format!(
@@ -1078,7 +1098,7 @@ fn install_source(source: &str, destination: &Path, kind: &str) -> Result<(), Er
             ])
             .arg(destination)
             .arg(source)
-            .status()
+            .logged_status()
             .map_err(|error| missing_dependency("curl", kind, error))?;
         if !status.success() {
             return Err(Error::Io(format!(
