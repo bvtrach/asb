@@ -309,6 +309,30 @@ fn is_install_key(key: &KeyEvent) -> bool {
         && matches!(key.code, KeyCode::Char('i') | KeyCode::Tab)
 }
 
+/// Legacy terminals encode Ctrl-I as an indistinguishable bare Tab byte. In
+/// that mode, use Tab as an install fallback only for an unavailable item;
+/// Enter remains the unambiguous step/navigation key.
+fn legacy_setup_install_key(key: &KeyEvent, app: &App) -> bool {
+    key.code == KeyCode::Tab
+        && key.modifiers.is_empty()
+        && matches!(app.step, 0 | 3 | 4)
+        && app.panes[app.step]
+            .choices
+            .get(app.panes[app.step].cursor)
+            .is_some_and(|choice| choice.availability != Availability::Available)
+}
+
+fn legacy_workload_install_key(key: &KeyEvent, app: &WorkloadApp) -> bool {
+    key.code == KeyCode::Tab
+        && key.modifiers.is_empty()
+        && app.level == 0
+        && app
+            .workloads
+            .choices
+            .get(app.workloads.cursor)
+            .is_some_and(|choice| choice.availability != Availability::Available)
+}
+
 fn set_message(
     message: &mut String,
     color: &mut Color,
@@ -475,7 +499,7 @@ fn workload_loop(
             } if modifiers.contains(KeyModifiers::CONTROL) => {
                 return Err(Error::Usage("workload TUI cancelled"));
             }
-            key if is_install_key(&key) => {
+            key if is_install_key(&key) || legacy_workload_install_key(&key, app) => {
                 install_workload_selection(terminal, app)?;
             }
             KeyEvent {
@@ -750,7 +774,7 @@ fn draw_workload(frame: &mut ratatui::Frame<'_>, app: &WorkloadApp) {
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("Ctrl-I install", Style::default().fg(Color::Cyan)),
-            Span::raw(" | ℹ green=ready red=missing yellow=unknown | Space select | Tab next | "),
+            Span::raw(" | ℹ green=ready red=missing yellow=unknown | Tab fallback install | Enter next | "),
             Span::styled(
                 visible_message(&app.message, app.message_until),
                 Style::default().fg(app.message_color),
@@ -856,7 +880,7 @@ fn run_loop(
             } if modifiers.contains(KeyModifiers::CONTROL) => {
                 return Err(Error::Usage("setup TUI cancelled"));
             }
-            key if is_install_key(&key) => {
+            key if is_install_key(&key) || legacy_setup_install_key(&key, app) => {
                 install_setup_selection(terminal, app)?;
             }
             KeyEvent {
@@ -935,7 +959,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
     frame.render_widget(
         Paragraph::new(Text::from(Line::from(vec![
             Span::styled("Ctrl-I install", Style::default().fg(Color::Cyan)),
-            Span::raw(" | ℹ green=ready red=missing yellow=unknown | Space select | Tab next | "),
+            Span::raw(" | ℹ green=ready red=missing yellow=unknown | Tab fallback install | Enter next | "),
             Span::styled(
                 visible_message(&app.message, app.message_until),
                 Style::default().fg(app.message_color),
@@ -1362,6 +1386,19 @@ mod tests {
             KeyCode::Tab,
             KeyModifiers::NONE,
         )));
+    }
+
+    #[test]
+    fn legacy_bare_tab_falls_back_to_install_for_unavailable_setup_items() {
+        let root = std::env::temp_dir().join(format!("asb-tui-shortcut-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let app = App::new(root.clone(), ProjectConfig::default());
+        assert!(super::legacy_setup_install_key(
+            &KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            &app
+        ));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
