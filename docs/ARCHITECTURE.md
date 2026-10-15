@@ -75,7 +75,9 @@ The `bpftrace` recipe copies the exact host executable into the project and
 writes `bpftrace-compatibility.json` with its version, kernel release, and
 architecture. This keeps measurement runs tied to the kernel on the machine
 where the tool was installed; rerun `asb tool install bpftrace` after changing
-kernels or moving the project to another host.
+kernels or moving the project to another host. If no host/distribution binary
+is available, it downloads the pinned source release and builds bpftrace in the
+project directory with the local compiler and development libraries.
 The `pi` agent uses the pinned `@mariozechner/pi-coding-agent` npm package and
 its non-interactive print mode. For `cli2key`, the preparation layer maps Pi to
 the bridge's OpenAI-compatible endpoint without storing credentials.

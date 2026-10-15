@@ -146,4 +146,7 @@ then retry the original `asb tool install` or workload command.
 For kernel-sensitive profiling, run `asb tool install bpftrace` in the benchmark
 project. ASB copies the host-compatible binary locally and records the current
 kernel release and architecture; reinstall it after a kernel upgrade or when
-moving the project to another machine.
+moving the project to another machine. If the distribution has no binary,
+`asb tool install bpftrace` builds the pinned source release locally; the
+installer reports the exact compiler/development package still needed if that
+fallback cannot be configured or compiled.
