@@ -20,6 +20,7 @@ const PROVIDER_MODELS_OPTIONS: &[&str] = &["--json"];
 const TOOL_SUBCOMMANDS: &[&str] = &["list", "install"];
 const TOOL_INSTALL_VALUES: &[&str] = &[
     "codex",
+    "pi",
     "opencode",
     "codeagent",
     "workbuddy",

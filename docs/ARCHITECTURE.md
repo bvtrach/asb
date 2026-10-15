@@ -48,6 +48,9 @@ aliases download pinned upstream source archives into local bundle directories;
 the runner copies those sources into `external-workload/` in the workspace.
 Other aliases install pinned prompt metadata. These commands do not handle
 credentials.
+The `pi` agent uses the pinned `@mariozechner/pi-coding-agent` npm package and
+its non-interactive print mode. For `cli2key`, the preparation layer maps Pi to
+the bridge's OpenAI-compatible endpoint without storing credentials.
 Installing `cli2key` also asks its bridge to refresh the local API key; model
 discovery and runs then start the bridge and use that key ephemerally.
 `asb tool list` and `asb workload list` expose these two catalogs without

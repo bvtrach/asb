@@ -63,6 +63,7 @@ pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
         &agent,
         &[
             "codex",
+            "pi",
             "opencode",
             "codeagent",
             "workbuddy",
