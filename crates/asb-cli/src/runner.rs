@@ -181,6 +181,12 @@ fn run_mode(
             && config.provider.eq_ignore_ascii_case("cli2key"))
         .then(|| project::resolve(&project_root, &project_config.tools_dir).join("pi/config"))
         .as_deref(),
+        (config.agent.eq_ignore_ascii_case("workbuddy")
+            && config.provider.eq_ignore_ascii_case("cli2key"))
+        .then(|| {
+            project::resolve(&project_root, &project_config.tools_dir).join("workbuddy/config")
+        })
+        .as_deref(),
     )?;
     if let Some(url) = tape_url {
         tape::configure_command(
@@ -241,7 +247,7 @@ fn run_mode(
         }
     }
     let elapsed_ms = started.elapsed().as_millis();
-    let success = child.status.success();
+    let success = process_successful(&child.status, &child.stdout, &child.stderr);
     let token_usage = measurements::token_usage_from_sources(
         &config.provider,
         &config.agent,
@@ -400,6 +406,28 @@ fn format_token(value: Option<u64>) -> String {
     value.map_or_else(|| "unknown".into(), |value| value.to_string())
 }
 
+fn process_successful(status: &std::process::ExitStatus, stdout: &[u8], stderr: &[u8]) -> bool {
+    if !status.success() {
+        return false;
+    }
+    let output = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(stdout),
+        String::from_utf8_lossy(stderr)
+    );
+    ![
+        "Authentication required. Please use /login command to sign in to your account",
+        "Endpoint /v1/chat/completions was not found",
+        "litellm.NotFoundError",
+        "litellm.InternalServerError",
+        "AnthropicException",
+        "unexpected keyword argument",
+        "The API provider's servers are down or overloaded",
+    ]
+    .iter()
+    .any(|marker| output.contains(marker))
+}
+
 struct CommandSpec {
     program: String,
     args: Vec<String>,
@@ -430,6 +458,11 @@ fn command_for(
             "gemini requires the Google Generative Language API and cannot use the cli2key OpenAI/Anthropic bridge; choose an OpenAI-compatible agent or configure a Google provider".into(),
         ));
     }
+    if config.provider.eq_ignore_ascii_case("cli2key") && config.agent == "aider" {
+        return Err(Error::Run(
+            "aider requires OpenAI Chat Completions, while the cli2key bridge exposes Responses and Anthropic Messages; choose an OpenAI-compatible provider for aider or use codex, opencode, qwen-code, mini-swe, openhands, openjiuwen, or workbuddy with cli2key".into(),
+        ));
+    }
     let spec = match config.agent.as_str() {
         "codex" => CommandSpec {
             program: "codex".into(),
@@ -457,6 +490,9 @@ fn command_for(
             args: vec![
                 "--model".into(),
                 config.model.clone(),
+                "--no-git".into(),
+                "--no-pretty".into(),
+                "--yes-always".into(),
                 "--message".into(),
             ],
             append_prompt: true,
@@ -739,7 +775,7 @@ mod tests {
     }
 
     #[test]
-    fn aider_cli2key_uses_the_selected_model_and_message_mode() {
+    fn aider_cli2key_reports_the_bridge_protocol_boundary() {
         let config = BenchmarkConfig {
             agent: "aider".into(),
             workload: "bug-fix".into(),
@@ -749,13 +785,34 @@ mod tests {
             log_file: "run.log".into(),
             measurements: None,
         };
-        let command = command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt")
-            .expect("aider has an OpenAI-compatible command");
-        assert_eq!(command.program, "aider");
-        assert_eq!(command.args[0], "--model");
-        assert_eq!(command.args[1], "gpt-6.1-sol");
-        assert!(command.args.contains(&"--message".into()));
-        assert!(command.append_prompt);
+        let error = match command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt") {
+            Ok(_) => panic!("bridge protocol boundary must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("OpenAI Chat Completions"));
+    }
+
+    #[test]
+    fn zero_exit_provider_errors_are_not_successes() {
+        let status = std::process::Command::new("true")
+            .status()
+            .expect("true exists");
+        assert!(!super::process_successful(
+            &status,
+            b"Authentication required. Please use /login command to sign in to your account",
+            b""
+        ));
+        assert!(!super::process_successful(
+            &status,
+            b"litellm.NotFoundError: Endpoint /v1/chat/completions was not found.",
+            b""
+        ));
+        assert!(!super::process_successful(
+            &status,
+            b"litellm.InternalServerError: AnthropicException - unexpected keyword argument 'system'",
+            b""
+        ));
+        assert!(super::process_successful(&status, b"completed", b""));
     }
 
     #[test]

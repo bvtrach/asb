@@ -13,6 +13,7 @@ pub fn apply(
     codex_executable: Option<&str>,
     cli2key: Option<(&str, &str)>,
     pi_config_dir: Option<&Path>,
+    workbuddy_config_dir: Option<&Path>,
 ) -> Result<(), Error> {
     if provider.eq_ignore_ascii_case("cli2key") {
         prepare_cli2key(
@@ -22,6 +23,7 @@ pub fn apply(
             codex_executable,
             cli2key,
             pi_config_dir,
+            workbuddy_config_dir,
         )?;
     }
     Ok(())
@@ -34,6 +36,7 @@ fn prepare_cli2key(
     codex_executable: Option<&str>,
     cli2key: Option<(&str, &str)>,
     pi_config_dir: Option<&Path>,
+    workbuddy_config_dir: Option<&Path>,
 ) -> Result<(), Error> {
     let (key, base_url) = cli2key.ok_or_else(|| {
         Error::Run(
@@ -85,6 +88,21 @@ fn prepare_cli2key(
             .env("LLM_MODEL", format!("anthropic/{model}"))
             .env("OPENHANDS_SUPPRESS_BANNER", "1");
     }
+    if agent.eq_ignore_ascii_case("workbuddy") {
+        let directory = workbuddy_config_dir.ok_or_else(|| {
+            Error::Run(
+                "cannot configure WorkBuddy cli2key provider without a project-local configuration directory".into(),
+            )
+        })?;
+        configure_workbuddy(directory, model, base_url)?;
+        command
+            .env("CODEBUDDY_API_KEY", key)
+            .env("CODEBUDDY_AUTH_TOKEN", key)
+            .env("CODEBUDDY_BASE_URL", base_url)
+            .env("CODEBUDDY_MODEL", model)
+            .env("CODEBUDDY_CONFIG_DIR", directory)
+            .env("CODEBUDDY_API_KEY_HELPER_DISABLED", "1");
+    }
     if agent.eq_ignore_ascii_case("openjiuwen") {
         command.env("OPENJIUWEN_API_KEY", key);
     }
@@ -132,6 +150,31 @@ fn configure_pi(
     Ok(())
 }
 
+fn configure_workbuddy(directory: &Path, model: &str, base_url: &str) -> Result<(), Error> {
+    std::fs::create_dir_all(directory).map_err(|error| {
+        Error::Run(format!(
+            "cannot create WorkBuddy provider configuration directory: {error}"
+        ))
+    })?;
+    let configuration = serde_json::json!([{
+        "id": model,
+        "name": model,
+        "url": base_url,
+        "api": "openai-responses"
+    }]);
+    let content = serde_json::to_vec_pretty(&configuration).map_err(|error| {
+        Error::Run(format!(
+            "cannot render WorkBuddy provider configuration: {error}"
+        ))
+    })?;
+    std::fs::write(directory.join("models.json"), content).map_err(|error| {
+        Error::Run(format!(
+            "cannot write WorkBuddy provider configuration: {error}"
+        ))
+    })?;
+    Ok(())
+}
+
 fn opencode_config(model: &str, base_url: &str) -> Result<String, Error> {
     let mut models = serde_json::Map::new();
     models.insert(model.to_owned(), serde_json::json!({"name": model}));
@@ -170,6 +213,7 @@ mod tests {
             "gpt-test",
             Some("/project/codex"),
             Some(("cb_test", "http://127.0.0.1:3456/v1")),
+            None,
             None,
         )
         .expect("preparation succeeds");
@@ -232,6 +276,7 @@ mod tests {
             None,
             Some(("cb_test", "http://127.0.0.1:3456/v1")),
             Some(&directory),
+            None,
         )
         .expect("Pi preparation succeeds");
         let config: serde_json::Value = serde_json::from_str(
@@ -243,6 +288,62 @@ mod tests {
             config["providers"]["cli2key"]["models"][0]["id"],
             "gpt-6.1-sol"
         );
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn workbuddy_cli2key_preparation_uses_project_bridge_credentials() {
+        let directory =
+            std::env::temp_dir().join(format!("asb-workbuddy-config-{}", std::process::id()));
+        let mut command = Command::new("codebuddy");
+        apply(
+            &mut command,
+            "workbuddy",
+            "cli2key",
+            "gpt-6.1-sol",
+            None,
+            Some(("cb_test", "http://127.0.0.1:3456/v1")),
+            None,
+            Some(&directory),
+        )
+        .expect("WorkBuddy preparation succeeds");
+        let values = command
+            .get_envs()
+            .filter_map(|(name, value)| {
+                value.map(|value| (name.to_string_lossy(), value.to_string_lossy()))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            values.get("CODEBUDDY_API_KEY").map(|value| value.as_ref()),
+            Some("cb_test")
+        );
+        assert_eq!(
+            values
+                .get("CODEBUDDY_AUTH_TOKEN")
+                .map(|value| value.as_ref()),
+            Some("cb_test")
+        );
+        assert_eq!(
+            values.get("CODEBUDDY_BASE_URL").map(|value| value.as_ref()),
+            Some("http://127.0.0.1:3456/v1")
+        );
+        assert_eq!(
+            values.get("CODEBUDDY_MODEL").map(|value| value.as_ref()),
+            Some("gpt-6.1-sol")
+        );
+        assert_eq!(
+            values
+                .get("CODEBUDDY_API_KEY_HELPER_DISABLED")
+                .map(|value| value.as_ref()),
+            Some("1")
+        );
+        let config: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(directory.join("models.json")).expect("models config exists"),
+        )
+        .expect("models config is JSON");
+        assert_eq!(config[0]["id"], "gpt-6.1-sol");
+        assert_eq!(config[0]["api"], "openai-responses");
+        assert_eq!(config[0]["url"], "http://127.0.0.1:3456/v1");
         let _ = std::fs::remove_dir_all(directory);
     }
 }

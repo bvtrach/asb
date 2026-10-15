@@ -71,10 +71,12 @@ already running external bridge, set both `CLI2KEY_BASE_URL` and its matching
 `gpt-6-luna`.
 
 The bundled bridge executes workloads through `codex`, `opencode`,
-`qwen-code`, `mini-swe`, `openhands`, and `openjiuwen`. `aider`, `gemini`, and
-`workbuddy` require incompatible provider protocols and are rejected before
-launch; `codeagent` is a web-server-only installer and cannot run a
-non-interactive workload.
+`qwen-code`, `mini-swe`, `openhands`, `openjiuwen`, and `workbuddy`.
+WorkBuddy receives the bridge endpoint through its project-local CodeBuddy API
+settings. Aider requires OpenAI Chat Completions and therefore needs an
+OpenAI-compatible provider. Gemini still requires its Google provider, and
+`codeagent` is a web-server-only installer that cannot run a non-interactive
+workload.
 
 `asb init` copies the bundled `.txt` workloads into `workloads/` and seeds
 `.asb/fixtures/` with the source, tests, and scripts required by every built-in
