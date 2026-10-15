@@ -5,6 +5,7 @@ configuration, then run it:
 
 ```sh
 cargo build --locked
+make install
 ./target/debug/asb init
 ./target/debug/asb tool install codex
 ./target/debug/asb models openrouter

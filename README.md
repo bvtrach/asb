@@ -48,6 +48,12 @@ cargo build --locked
 cargo test --locked
 ```
 
+Install the already-built binary into the current user's `~/.local/bin` with:
+
+```sh
+make install
+```
+
 The only workspace member is `crates/asb-cli`.
 
 ## Example
