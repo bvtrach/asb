@@ -27,6 +27,18 @@ values. `asb models openrouter` uses the same environment to print the current
 catalog; `asb models --json` queries every supported provider and reports
 missing credentials or unavailable endpoints individually.
 
+For a local cli2key bridge, select `--provider cli2key` and set its endpoint:
+
+```sh
+export CLI2KEY_BASE_URL=http://127.0.0.1:PORT/v1
+asb setup --agent codex --workload bug-fix --provider cli2key --model MODEL --output benchmark.toml
+asb run benchmark.toml
+```
+
+The pre-run hook reuses `CLI2KEY_API_KEY` when set; otherwise it creates an
+ephemeral key for the process and exposes it to Codex as `OPENAI_API_KEY`. ASB
+does not write the key or start the bridge.
+
 Workloads are the `.txt` files in `workloads/`. Add a file such as
 `workloads/my-task.txt`, then select it with `--workload my-task`. To keep
 workloads elsewhere, set `ASB_WORKLOAD_DIR` before `asb run`.

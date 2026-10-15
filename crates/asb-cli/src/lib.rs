@@ -4,6 +4,7 @@ mod benchmark;
 mod config;
 mod install;
 mod models;
+mod prepare;
 mod project;
 mod providers;
 mod runner;

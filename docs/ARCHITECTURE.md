@@ -8,6 +8,7 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
 - `providers`: a concise provider-name and environment-variable registry;
 - `models`: bounded live model-catalog discovery using provider-specific
   endpoints and response shapes;
+- `prepare`: provider-specific, pre-launch environment preparation hooks;
 - `project`: `.asb/project.toml` and shared project paths. `init` creates the
   file and its configured `tools_dir`, `workloads_dir`, and `workspace_dir`;
   every command resolves relative paths from this project root;
@@ -38,3 +39,9 @@ commands do not handle credentials.
 Future features should be separate modules behind these boundaries. Recording,
 replay, measurements, tool commands, and a graphical or terminal frontend are
 not part of the current product.
+
+The preparation stage is deliberately separate from command construction. Its
+development-only cli2key hook validates the loopback endpoint and supplies an
+ephemeral process-local key to the Codex-compatible environment without
+persisting credentials. Additional preparation operations can be added without
+changing `run` or the benchmark configuration format.

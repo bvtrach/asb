@@ -2,6 +2,7 @@
 
 use super::{Error, io_error, read_config};
 use crate::benchmark::BenchmarkConfig;
+use crate::prepare;
 use crate::project;
 use crate::providers;
 use crate::workloads;
@@ -61,6 +62,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
         .current_dir(&workspace)
         .stdin(Stdio::null());
     providers::configure(&mut command, &config.provider, &config.model);
+    prepare::apply(&mut command, &config.provider, &config.model)?;
     let child = command
         .output()
         .map_err(|error| Error::Run(format!("could not start {program}: {error}")))?;
