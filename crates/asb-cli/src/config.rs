@@ -16,6 +16,17 @@ pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
     let mut index = 0;
     while index < args.len() {
         let flag = args[index].as_str();
+        if let Some(name) = flag.strip_prefix('-').filter(|name| {
+            !name.starts_with('-')
+                && matches!(
+                    *name,
+                    "agent" | "workload" | "provider" | "model" | "workspace" | "output"
+                )
+        }) {
+            return Err(Error::Input(format!(
+                "setup option `{flag}` is invalid; use `--{name}` with two dashes"
+            )));
+        }
         let value = args
             .get(index + 1)
             .ok_or(Error::Usage("setup options require values"))?;
@@ -62,4 +73,27 @@ fn required(value: Option<String>) -> Result<String, Error> {
         return Err(Error::Input("setup values cannot be empty".into()));
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::setup;
+
+    #[test]
+    fn explains_single_dash_long_option_typo() {
+        let error = setup(
+            &[
+                "--agent".into(),
+                "opencode".into(),
+                "-workload".into(),
+                "bug-fix".into(),
+            ],
+            &mut Vec::new(),
+        )
+        .expect_err("single-dash option must be rejected");
+        assert_eq!(
+            error.to_string(),
+            "setup option `-workload` is invalid; use `--workload` with two dashes"
+        );
+    }
 }
