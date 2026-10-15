@@ -116,7 +116,15 @@ fn fetch_config(config: String, provider: &str) -> Result<Vec<u8>, Error> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|error| Error::Io(format!("cannot start curl for model discovery: {error}")))?;
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                Error::Io(format!(
+                    "model discovery needs `curl`, but it could not be started: {error}. Install it, then rerun the command. Suggested command:\n  sudo apt-get update && sudo apt-get install -y curl"
+                ))
+            } else {
+                Error::Io(format!("cannot start curl for model discovery: {error}"))
+            }
+        })?;
     child
         .stdin
         .take()
