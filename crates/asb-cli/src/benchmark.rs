@@ -11,6 +11,16 @@ pub struct BenchmarkConfig {
     pub model: String,
     #[serde(default = "default_workspace")]
     pub workspace: String,
+    #[serde(default)]
+    pub measurements: Option<MeasurementConfig>,
+}
+
+/// Measurement modules selected by generated setup files.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct MeasurementConfig {
+    pub enabled: bool,
+    pub directory: String,
+    pub collectors: Vec<String>,
 }
 
 fn default_workspace() -> String {

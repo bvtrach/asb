@@ -1,7 +1,8 @@
 //! The setup command and its small file format.
 
 use super::{Error, io_error};
-use crate::benchmark::BenchmarkConfig;
+use crate::benchmark::{BenchmarkConfig, MeasurementConfig};
+use crate::measurements;
 use crate::project;
 use crate::providers;
 use crate::suggestions;
@@ -97,6 +98,11 @@ pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
         provider,
         model,
         workspace: workspace.unwrap_or(project_config.workspace_dir),
+        measurements: Some(MeasurementConfig {
+            enabled: true,
+            directory: "measurements".into(),
+            collectors: measurements::available_collectors(),
+        }),
     };
     let text = toml::to_string_pretty(&config)
         .map_err(|error| Error::Input(format!("cannot render configuration: {error}")))?;

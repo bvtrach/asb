@@ -6,6 +6,7 @@ mod completion;
 mod config;
 mod help;
 mod install;
+mod measurements;
 mod models;
 mod prepare;
 mod project;
@@ -73,13 +74,12 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
         }
         [command, rest @ ..] if command == "setup" => config::setup(rest, stdout),
         [command, rest @ ..] if command == "init" => project::init(rest, stdout),
-        [command, path, format] if command == "run" && format == "--json" => {
-            runner::run(path, true, stdout)
-        }
-        [command, format, path] if command == "run" && format == "--json" => {
-            runner::run(path, true, stdout)
-        }
-        [command, path] if command == "run" => runner::run(path, false, stdout),
+        [command, rest @ ..] if command == "run" => match parse_run_args(rest) {
+            Ok((path, json, measurements)) => {
+                runner::run(&path, json, measurements.as_deref(), stdout)
+            }
+            Err(error) => Err(error),
+        },
         [command, subcommand] if command == "tool" && subcommand == "list" => {
             install::tool_list(stdout)
         }
@@ -115,6 +115,41 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
         Ok(()) => 0,
         Err(error) => fail(stderr, &error.to_string()),
     }
+}
+
+fn parse_run_args(args: &[String]) -> Result<(String, bool, Option<String>), CliError> {
+    let mut path = None;
+    let mut json = false;
+    let mut measurements = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => json = true,
+            "--measurements" => {
+                index += 1;
+                let value = args.get(index).ok_or(CliError::Usage(
+                    "Usage: asb run CONFIG [--json] [--measurements DIR]",
+                ))?;
+                measurements = Some(value.clone());
+            }
+            value if value.starts_with('-') => {
+                return Err(CliError::Input(format!(
+                    "unknown run option `{value}`; use `asb run --help`"
+                )));
+            }
+            value if path.is_none() => path = Some(value.to_owned()),
+            value => {
+                return Err(CliError::Input(format!(
+                    "unexpected run argument `{value}`; use `asb run --help`"
+                )));
+            }
+        }
+        index += 1;
+    }
+    path.map(|value| (value, json, measurements))
+        .ok_or(CliError::Usage(
+            "Usage: asb run CONFIG [--json] [--measurements DIR]",
+        ))
 }
 
 fn write_help(output: &mut dyn Write) -> Result<(), CliError> {
@@ -252,6 +287,28 @@ mod tests {
         assert!(script.starts_with("#compdef asb"));
         assert!(!script.contains("completion)"));
         assert!(script.contains("cli2key"));
+    }
+
+    #[test]
+    fn run_accepts_json_and_measurements_in_either_order() {
+        let first = super::parse_run_args(&[
+            "benchmark.toml".into(),
+            "--json".into(),
+            "--measurements".into(),
+            "measurements".into(),
+        ])
+        .unwrap();
+        assert_eq!(first.0, "benchmark.toml");
+        assert!(first.1);
+        assert_eq!(first.2.as_deref(), Some("measurements"));
+        let second = super::parse_run_args(&[
+            "--measurements".into(),
+            "measurements".into(),
+            "benchmark.toml".into(),
+        ])
+        .unwrap();
+        assert_eq!(second.0, "benchmark.toml");
+        assert_eq!(second.2.as_deref(), Some("measurements"));
     }
 
     #[test]
