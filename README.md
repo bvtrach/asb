@@ -87,6 +87,10 @@ Install the already-built binary into the current user's `~/.local/bin` with:
 make install
 ```
 
+`make build` also generates `target/asb.bash`. `make install` installs that
+completion script for the current user at
+`~/.local/share/bash-completion/completions/asb` alongside the binary.
+
 The only workspace member is `crates/asb-cli`.
 
 Update a checkout to the current `main` branch with:

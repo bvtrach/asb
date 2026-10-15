@@ -24,6 +24,9 @@ make install
 ./target/debug/asb run benchmark.toml
 ```
 
+The build generates `target/asb.bash`; install also places it in
+`~/.local/share/bash-completion/completions/asb` for the current user.
+
 Credentials normally come from the environment used to launch ASB. For example,
 OpenRouter agents can use `OPENROUTER_API_KEY`; cli2key integrations can use
 `CLI2KEY_API_KEY` and `CLI2KEY_BASE_URL`. ASB does not store or inspect these

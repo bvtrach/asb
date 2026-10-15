@@ -2,6 +2,7 @@
 
 mod benchmark;
 mod cli2key;
+mod completion;
 mod config;
 mod help;
 mod install;
@@ -48,6 +49,7 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
         [command] if command == "tool" || command == "workload" || command == "provider" => {
             help::command(command, stdout)
         }
+        [command] if command == "completion" => help::command(command, stdout),
         [command, subcommand, help_arg]
             if (command == "provider" && subcommand == "models")
                 && (help_arg == "--help" || help_arg == "-h") =>
@@ -61,6 +63,7 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
         {
             help::command(&format!("{command} {subcommand}"), stdout)
         }
+        [command, shell] if command == "completion" && shell == "bash" => completion::bash(stdout),
         [command, rest @ ..] if command == "setup" => config::setup(rest, stdout),
         [command, rest @ ..] if command == "init" => project::init(rest, stdout),
         [command, path, format] if command == "run" && format == "--json" => {
@@ -168,6 +171,7 @@ mod tests {
             vec!["workload", "--help"],
             vec!["workload", "list", "--help"],
             vec!["workload", "install", "--help"],
+            vec!["completion", "--help"],
         ] {
             let is_tool_install_help = words == ["tool", "install", "--help"];
             let args = words.into_iter().map(OsString::from).collect::<Vec<_>>();
@@ -180,5 +184,19 @@ mod tests {
             }
             assert!(stderr.is_empty());
         }
+    }
+
+    #[test]
+    fn bash_completion_contains_public_commands() {
+        let args = [OsString::from("completion"), OsString::from("bash")];
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(run(&args, &mut stdout, &mut stderr), 0);
+        let script = String::from_utf8(stdout).unwrap();
+        assert!(script.starts_with("# bash completion for asb"));
+        assert!(script.contains("completion"));
+        assert!(script.contains("cli2key"));
+        assert!(script.contains("complete -F _asb asb"));
+        assert!(stderr.is_empty());
     }
 }
