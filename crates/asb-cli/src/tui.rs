@@ -43,6 +43,10 @@ const DESCRIPTIONS: &[&str] = &[
     "Choose the measurement collectors; host tools are installed project-locally when possible.",
 ];
 
+// U+2139 is commonly rendered as a blue/white emoji. Use the text-style
+// circled glyph so the terminal honors the readiness foreground color.
+const INFO_GLYPH: &str = "ⓘ";
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Availability {
     Available,
@@ -774,7 +778,7 @@ fn draw_workload(frame: &mut ratatui::Frame<'_>, app: &WorkloadApp) {
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("Ctrl-I install", Style::default().fg(Color::Cyan)),
-            Span::raw(" | ℹ green=ready red=missing yellow=unknown | Tab fallback install | Enter next | "),
+            Span::raw(" | ⓘ green=ready red=missing yellow=unknown | Tab fallback install | Enter next | "),
             Span::styled(
                 visible_message(&app.message, app.message_until),
                 Style::default().fg(app.message_color),
@@ -959,7 +963,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
     frame.render_widget(
         Paragraph::new(Text::from(Line::from(vec![
             Span::styled("Ctrl-I install", Style::default().fg(Color::Cyan)),
-            Span::raw(" | ℹ green=ready red=missing yellow=unknown | Tab fallback install | Enter next | "),
+            Span::raw(" | ⓘ green=ready red=missing yellow=unknown | Tab fallback install | Enter next | "),
             Span::styled(
                 visible_message(&app.message, app.message_until),
                 Style::default().fg(app.message_color),
@@ -993,7 +997,7 @@ fn render_choice_pane(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rec
             let selected = *index == pane.cursor;
             ListItem::new(Line::from(vec![
                 Span::raw(format!("{marker} ")),
-                Span::styled("ℹ", availability_style(choice.availability)),
+                Span::styled(INFO_GLYPH, availability_style(choice.availability)),
                 Span::raw(format!("  {}", choice.label)),
             ]))
             .style(choice_row_style(selected))
@@ -1420,6 +1424,12 @@ mod tests {
         assert_eq!(style.fg, Some(Color::Black));
         assert_eq!(style.bg, Some(Color::Gray));
         assert_eq!(super::choice_row_style(false), Style::default());
+    }
+
+    #[test]
+    fn readiness_indicator_uses_text_glyph_not_emoji_glyph() {
+        assert_eq!(super::INFO_GLYPH, "ⓘ");
+        assert_ne!(super::INFO_GLYPH, "ℹ");
     }
 
     #[test]
