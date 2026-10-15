@@ -29,7 +29,7 @@ impl Bridge {
             });
         }
         let executable = executable.ok_or(Error::Run(
-            "cli2key provider requires an installed cli2key bridge or CLI2KEY_BASE_URL".into(),
+            "cli2key provider needs a local bridge; run `asb tool install cli2key` in the initialized project, or set CLI2KEY_BASE_URL and CLI2KEY_API_KEY for an external bridge".into(),
         ))?;
         let host = std::env::var("CODEX_BRIDGE_HOST").unwrap_or_else(|_| "127.0.0.1".into());
         let port = std::env::var("CODEX_BRIDGE_PORT").unwrap_or_else(|_| "3456".into());
@@ -150,7 +150,7 @@ fn required_key() -> Result<String, Error> {
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| {
             Error::Run(
-                "CLI2KEY_BASE_URL is set; provide the matching CLI2KEY_API_KEY for the cli2key API"
+                "CLI2KEY_BASE_URL is set but CLI2KEY_API_KEY is missing; provide the matching key or unset CLI2KEY_BASE_URL and run `asb tool install cli2key`"
                     .into(),
             )
         })

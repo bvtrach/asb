@@ -26,7 +26,9 @@ fn prepare_cli2key(
     cli2key: Option<(&str, &str)>,
 ) -> Result<(), Error> {
     let (key, base_url) = cli2key.ok_or_else(|| {
-        Error::Run("cli2key provider was selected without an API endpoint".into())
+        Error::Run(
+            "cli2key provider has no API endpoint; run `asb tool install cli2key` or set CLI2KEY_BASE_URL and CLI2KEY_API_KEY".into(),
+        )
     })?;
     command
         .env("CLI2KEY_API_KEY", key)
