@@ -7,7 +7,7 @@ use std::io::Write;
 pub fn root(output: &mut dyn Write) -> Result<(), Error> {
     write_text(
         output,
-        "ASB\n\nUsage:\n  asb init [PROJECT_DIR] [--reset]\n  asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n  asb run CONFIG [--json] [--measurements DIR]\n  asb record CONFIG [--cassette FILE] [--json] [--measurements DIR]\n  asb replay CONFIG [--cassette FILE] [--json] [--measurements DIR]\n  asb provider models [PROVIDER] [--json]\n  asb tool list\n  asb tool install AGENT [--source URL|PATH] [--dir DIR] [--dry-run]\n  asb workload list [--dir DIR]\n  asb workload install SOURCE.txt|URL [--name NAME] [--dir DIR]\n\nUse `asb COMMAND --help` for concise help for one command.",
+        "ASB\n\nUsage:\n  asb init [PROJECT_DIR] [--reset]\n  asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n  asb run CONFIG [--json] [--measurements DIR]\n  asb record CONFIG [--cassette FILE] [--json] [--measurements DIR]\n  asb replay CONFIG [--cassette FILE] [--json] [--measurements DIR]\n  asb provider models [PROVIDER] [--json] [--free]\n  asb tool list\n  asb tool install AGENT [--source URL|PATH] [--dir DIR] [--dry-run]\n  asb workload list [--dir DIR]\n  asb workload install SOURCE.txt|URL [--name NAME] [--dir DIR]\n\nUse `asb COMMAND --help` for concise help for one command.",
     )
 }
 
@@ -30,10 +30,10 @@ pub fn command(name: &str, output: &mut dyn Write) -> Result<(), Error> {
             "Usage: asb run CONFIG [--json] [--measurements DIR]\n\nRun the configured workload with the selected local agent and provider. Human-readable output is default; --json emits machine-readable output. --measurements writes bounded machine-readable system, runtime, collector, token, and success-rate data. Optional collectors are enabled with ASB_MEASURE_MPSTAT, ASB_MEASURE_IOSTAT, ASB_MEASURE_PERF, and ASB_MEASURE_BPFTRACE."
         }
         "provider" => {
-            "Usage: asb provider models [PROVIDER] [--json]\n\nAccess provider-related commands. `models` lists live provider catalogs."
+            "Usage: asb provider models [PROVIDER] [--json] [--free]\n\nAccess provider-related commands. `models` lists live provider catalogs."
         }
         "provider models" => {
-            "Usage: asb provider models [PROVIDER] [--json]\n\nList live tool-capable models for one provider, or all supported providers when omitted. Models without tool-calling metadata are excluded."
+            "Usage: asb provider models [PROVIDER] [--json] [--free]\n\nList live tool-capable models for one provider, or all supported providers when omitted. Models without tool-calling metadata are excluded. `--free` limits discovery to OpenRouter models marked free (including zero pricing) and local Ollama models."
         }
         "tool" => {
             "Usage: asb tool COMMAND\n\nCommands:\n  list                 List built-in agent installers.\n  install AGENT ...    Install one agent into the project."

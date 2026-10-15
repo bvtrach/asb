@@ -19,7 +19,7 @@ const SETUP_OPTIONS: &[&str] = &[
 const RUN_OPTIONS: &[&str] = &["--json", "--measurements"];
 const TAPE_OPTIONS: &[&str] = &["--cassette", "--json", "--measurements"];
 const PROVIDER_SUBCOMMANDS: &[&str] = &["models"];
-const PROVIDER_MODELS_OPTIONS: &[&str] = &["--json"];
+const PROVIDER_MODELS_OPTIONS: &[&str] = &["--json", "--free"];
 const TOOL_SUBCOMMANDS: &[&str] = &["list", "install"];
 const TOOL_INSTALL_VALUES: &[&str] = &[
     "codex",

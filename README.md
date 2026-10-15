@@ -10,7 +10,7 @@ asb tool install AGENT
 asb tool install llmtape
 asb workload list
 asb workload install SOURCE.txt|URL
-asb provider models [PROVIDER]
+asb provider models [PROVIDER] [--free]
 asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]
 asb run CONFIG [--json] [--measurements DIR]
 asb record CONFIG [--cassette FILE] [--json] [--measurements DIR]
@@ -66,7 +66,9 @@ artifacts and should not be committed when they contain provider responses.
 
 `provider models` queries live provider model catalogs. Pass a provider to query one,
 or omit it to query every supported provider and report unavailable providers
-without stopping the rest. Use `--json` for machine-readable output. Model
+without stopping the rest. Use `--json` for machine-readable output. Add `--free`
+to list only free OpenRouter models and local Ollama models; with `--free`,
+omitting the provider queries only those two providers. Model
 discovery uses the provider credential and endpoint environment variables but
 never writes or prints credential values.
 Only models that advertise tool-calling support are enumerated. `run` and
