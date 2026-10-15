@@ -21,14 +21,24 @@ struct ModelInfo {
 
 /// List models for one provider, or all providers when no name is supplied.
 pub fn list(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
-    let (provider, json) = parse_args(args)?;
+    let (provider, json, free_only) = parse_args(args)?;
     if let Some(provider) = provider {
-        let result = discover(&provider)?;
+        if free_only && !providers::supports_free_models(&provider) {
+            return Err(Error::Input(
+                "`--free` is supported for `openrouter` and `ollama`; query one of those providers or omit `--free`".into(),
+            ));
+        }
+        let result = discover(&provider, free_only)?;
         render_one(output, &provider, result, json)
     } else {
         let mut all = Vec::new();
-        for name in providers::names() {
-            match discover(name) {
+        let names = if free_only {
+            providers::free_names()
+        } else {
+            providers::names()
+        };
+        for name in names {
+            match discover(name, free_only) {
                 Ok(models) => all.push(((*name).to_owned(), Ok(models))),
                 Err(error) => all.push(((*name).to_owned(), Err(error))),
             }
@@ -37,22 +47,27 @@ pub fn list(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
     }
 }
 
-fn parse_args(args: &[String]) -> Result<(Option<String>, bool), Error> {
+fn parse_args(args: &[String]) -> Result<(Option<String>, bool, bool), Error> {
     let mut provider = None;
     let mut json = false;
+    let mut free_only = false;
     for arg in args {
         if arg == "--json" {
             json = true;
+        } else if arg == "--free" {
+            free_only = true;
         } else if provider.is_none() && providers::is_valid_name(arg) {
             provider = Some(arg.clone());
         } else {
-            return Err(Error::Usage("provider models accepts PROVIDER and --json"));
+            return Err(Error::Usage(
+                "provider models accepts PROVIDER, --json, and --free",
+            ));
         }
     }
-    Ok((provider, json))
+    Ok((provider, json, free_only))
 }
 
-fn discover(provider: &str) -> Result<Vec<ModelInfo>, Error> {
+fn discover(provider: &str, free_only: bool) -> Result<Vec<ModelInfo>, Error> {
     let spec = providers::model_spec(provider).ok_or_else(|| {
         Error::Input(suggestions::unknown(
             "provider",
@@ -64,7 +79,7 @@ fn discover(provider: &str) -> Result<Vec<ModelInfo>, Error> {
         let bridge = cli2key::Bridge::connect(local_bridge_executable().as_deref())?;
         let url = format!("{}/models", bridge.base_url().trim_end_matches('/'));
         let body = fetch_authenticated(spec, &url, bridge.api_key())?;
-        return parse_models(&body, spec.kind, provider);
+        return parse_models(&body, spec.kind, provider, free_only);
     }
     if let Some(credential) = spec.credential {
         if providers::credential(provider).is_none() {
@@ -79,7 +94,7 @@ fn discover(provider: &str) -> Result<Vec<ModelInfo>, Error> {
         return Err(Error::Input(format!("missing {endpoint}")));
     }
     let body = fetch(spec)?;
-    parse_models(&body, spec.kind, provider)
+    parse_models(&body, spec.kind, provider, free_only)
 }
 
 /// Require a model to be advertised as tool-capable before execution.
@@ -92,7 +107,7 @@ pub fn ensure_tool_capable(provider: &str, model: &str) -> Result<(), Error> {
             "model `{model}` for provider `{provider}` is not in the tool-capable catalog; run `asb provider models {provider}` and choose one of the listed models"
         )));
     }
-    let models = discover(provider)?;
+    let models = discover(provider, false)?;
     match models.into_iter().find(|candidate| candidate.id == model) {
         Some(candidate) if candidate.tool_calling => Ok(()),
         Some(_) => Err(Error::Input(format!(
@@ -288,10 +303,14 @@ fn parse_models(
     body: &[u8],
     kind: providers::ModelKind,
     provider: &str,
+    free_only: bool,
 ) -> Result<Vec<ModelInfo>, Error> {
     let value: Value = serde_json::from_slice(body)
         .map_err(|_| Error::Input("provider returned invalid model JSON".into()))?;
-    let key = if matches!(kind, providers::ModelKind::Gemini) {
+    let key = if matches!(
+        kind,
+        providers::ModelKind::Gemini | providers::ModelKind::Ollama
+    ) {
         "models"
     } else {
         "data"
@@ -316,16 +335,48 @@ fn parse_models(
                         .unwrap_or("")
                 })
                 .to_owned();
-            Some(ModelInfo {
-                tool_calling: supports_tools(entry, kind, provider),
-                id,
-            })
+            let tool_calling = supports_tools(entry, kind, provider);
+            (tool_calling && (!free_only || is_free_model_entry(entry, &id, provider, kind)))
+                .then_some(ModelInfo { tool_calling, id })
         })
-        .filter(|model| model.tool_calling)
         .collect::<Vec<_>>();
     models.sort_unstable_by(|left, right| left.id.cmp(&right.id));
     models.dedup_by(|left, right| left.id == right.id);
     Ok(models)
+}
+
+fn is_free_model_entry(
+    entry: &Value,
+    model_id: &str,
+    provider: &str,
+    kind: providers::ModelKind,
+) -> bool {
+    if provider.eq_ignore_ascii_case("ollama") && matches!(kind, providers::ModelKind::Ollama) {
+        return true;
+    }
+    if !provider.eq_ignore_ascii_case("openrouter") {
+        return false;
+    }
+    model_id.ends_with(":free")
+        || entry
+            .get("pricing")
+            .and_then(Value::as_object)
+            .is_some_and(|pricing| {
+                is_zero_price(pricing.get("prompt")) && is_zero_price(pricing.get("completion"))
+            })
+}
+
+fn is_zero_price(value: Option<&Value>) -> bool {
+    value.is_some_and(|value| {
+        value
+            .as_f64()
+            .or_else(|| {
+                value
+                    .as_str()
+                    .and_then(|text| text.trim().parse::<f64>().ok())
+            })
+            .is_some_and(|number| number == 0.0)
+    })
 }
 
 fn supports_tools(entry: &Value, kind: providers::ModelKind, provider: &str) -> bool {
@@ -443,7 +494,8 @@ mod tests {
             parse_models(
                 br#"{"data":[{"id":"z","supported_parameters":["tools"]},{"id":"a","supported_parameters":["tools"]},{"id":"a","supported_parameters":["tools"]}]}"#,
                 providers::ModelKind::OpenAi,
-                "openai"
+                "openai",
+                false,
             )
             .unwrap()
             .iter()
@@ -455,7 +507,8 @@ mod tests {
             parse_models(
                 br#"{"models":[{"name":"models/gemini-2.0","capabilities":{"tools":true}}]}"#,
                 providers::ModelKind::Gemini,
-                "gemini"
+                "gemini",
+                false,
             )
             .unwrap()
             .iter()
@@ -471,9 +524,54 @@ mod tests {
             br#"{"data":[{"id":"plain"},{"id":"tools","supported_parameters":["tools"]},{"id":"flag","capabilities":{"tools":true}}]}"#,
             providers::ModelKind::OpenAi,
             "openrouter",
+            false,
         )
         .expect("model response parses");
         assert_eq!(model_ids(&models), vec!["flag", "tools"]);
+    }
+
+    #[test]
+    fn free_filter_accepts_openrouter_free_models_only() {
+        let models = parse_models(
+            br#"{"data":[
+                {"id":"paid","supported_parameters":["tools"],"pricing":{"prompt":"0.000001","completion":"0.000002"}},
+                {"id":"suffix:free","supported_parameters":["tools"],"pricing":{"prompt":"0","completion":"0"}},
+                {"id":"zero-pricing","supported_parameters":["tools"],"pricing":{"prompt":"0","completion":"0"}},
+                {"id":"no-tools:free","pricing":{"prompt":"0","completion":"0"}}
+            ]}"#,
+            providers::ModelKind::OpenAi,
+            "openrouter",
+            true,
+        )
+        .expect("model response parses");
+        assert_eq!(model_ids(&models), vec!["suffix:free", "zero-pricing"]);
+    }
+
+    #[test]
+    fn free_filter_treats_ollama_models_as_local() {
+        let models = parse_models(
+            br#"{"models":[{"name":"local-a","capabilities":{"tools":true}},{"name":"local-b","capabilities":{"tools":true}}]}"#,
+            providers::ModelKind::Ollama,
+            "ollama",
+            true,
+        )
+        .expect("model response parses");
+        assert_eq!(model_ids(&models), vec!["local-a", "local-b"]);
+    }
+
+    #[test]
+    fn free_flag_parses_with_json_and_provider_in_any_order() {
+        assert_eq!(
+            parse_args(&["--free".into(), "openrouter".into(), "--json".into()]).unwrap(),
+            (Some("openrouter".into()), true, true)
+        );
+    }
+
+    #[test]
+    fn free_flag_rejects_providers_without_free_catalog_metadata() {
+        let error = list(&["openai".into(), "--free".into()], &mut Vec::new())
+            .expect_err("paid provider cannot be classified as free");
+        assert!(error.to_string().contains("openrouter` and `ollama"));
     }
 
     #[test]
@@ -494,7 +592,7 @@ mod tests {
 
     #[test]
     fn unsupported_provider_suggests_a_close_match() {
-        let error = discover("openruter").expect_err("typo rejected");
+        let error = discover("openruter", false).expect_err("typo rejected");
         assert!(error.to_string().contains("did you mean `openrouter`?"));
     }
 }

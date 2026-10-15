@@ -155,6 +155,18 @@ pub fn names() -> &'static [&'static str] {
     ]
 }
 
+/// Providers whose model responses have an unambiguous free-of-charge meaning.
+pub fn free_names() -> &'static [&'static str] {
+    &["openrouter", "ollama"]
+}
+
+/// Return whether `--free` can classify this provider's model catalog safely.
+pub fn supports_free_models(name: &str) -> bool {
+    free_names()
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(name))
+}
+
 /// Return a finite model list only where the local bridge publishes one.
 pub fn known_models(provider: &str) -> Option<&'static [&'static str]> {
     (provider.eq_ignore_ascii_case("cli2key")).then_some(&[

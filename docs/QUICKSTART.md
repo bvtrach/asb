@@ -36,7 +36,9 @@ values. If the environment variable is absent, ASB checks the bounded local
 file `$HOME/.api_key_<provider>` (such as `$HOME/.api_key_openrouter`) without
 printing it. `asb provider models openrouter` uses the same credential lookup to print the current
 catalog; `asb provider models --json` queries every supported provider and reports
-missing credentials or unavailable endpoints individually.
+missing credentials or unavailable endpoints individually. Add `--free` to list
+only OpenRouter models marked free and models served by local Ollama; for example,
+`asb provider models openrouter --free`.
 The catalog includes only models whose provider metadata advertises tool
 calling. ASB repeats this check before live execution, while replay requires a
 matching tool-calling request in the cassette.
