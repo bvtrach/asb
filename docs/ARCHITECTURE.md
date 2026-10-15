@@ -57,6 +57,10 @@ Installing `cli2key` also asks its bridge to refresh the local API key; model
 discovery and runs then start the bridge and use that key ephemerally.
 `asb tool list` and `asb workload list` expose these two catalogs without
 installing anything. Command-specific help is available with `--help`.
+Model discovery is fail-closed for tool use: provider metadata must advertise
+`tools`, `tool_choice`, function calling, or an equivalent capability before a
+model is listed. Execution repeats that validation; offline replay uses the
+cassette's recorded tool request instead of contacting the provider.
 The ASB source checkout is not a benchmark project: `init` rejects its
 distinctive workspace layout before creating any files.
 

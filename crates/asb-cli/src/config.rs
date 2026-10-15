@@ -87,9 +87,14 @@ pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
     }
     let model = required(model)?;
     if let Some(candidates) = providers::known_models(&provider) {
-        if let Some(candidate) = suggestions::closest(&model, candidates) {
+        if !candidates.iter().any(|candidate| *candidate == model) {
+            if let Some(candidate) = suggestions::closest(&model, candidates) {
+                return Err(Error::Input(format!(
+                    "model `{model}` for provider `{provider}` is not tool-capable; did you mean `{candidate}`?"
+                )));
+            }
             return Err(Error::Input(format!(
-                "unknown model `{model}` for provider `{provider}`; did you mean `{candidate}`?"
+                "model `{model}` for provider `{provider}` is not in the tool-capable catalog; run `asb provider models {provider}`"
             )));
         }
     }

@@ -37,6 +37,9 @@ file `$HOME/.api_key_<provider>` (such as `$HOME/.api_key_openrouter`) without
 printing it. `asb provider models openrouter` uses the same credential lookup to print the current
 catalog; `asb provider models --json` queries every supported provider and reports
 missing credentials or unavailable endpoints individually.
+The catalog includes only models whose provider metadata advertises tool
+calling. ASB repeats this check before live execution, while replay requires a
+matching tool-calling request in the cassette.
 
 For cli2key model discovery, install the bridge once and query it directly:
 
