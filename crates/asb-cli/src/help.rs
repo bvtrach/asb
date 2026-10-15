@@ -7,7 +7,7 @@ use std::io::Write;
 pub fn root(output: &mut dyn Write) -> Result<(), Error> {
     write_text(
         output,
-        "ASB\n\nUsage:\n  asb init [PROJECT_DIR] [--reset]\n  asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n  asb run CONFIG\n  asb models [PROVIDER] [--json]\n  asb provider models [PROVIDER] [--json]\n  asb tool list\n  asb tool install AGENT [--source URL|PATH] [--dir DIR] [--dry-run]\n  asb workload list [--dir DIR]\n  asb workload install SOURCE.txt|URL [--name NAME] [--dir DIR]\n\nUse `asb COMMAND --help` for concise help for one command.",
+        "ASB\n\nUsage:\n  asb init [PROJECT_DIR] [--reset]\n  asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n  asb run CONFIG [--json]\n  asb models [PROVIDER] [--json]\n  asb provider models [PROVIDER] [--json]\n  asb tool list\n  asb tool install AGENT [--source URL|PATH] [--dir DIR] [--dry-run]\n  asb workload list [--dir DIR]\n  asb workload install SOURCE.txt|URL [--name NAME] [--dir DIR]\n\nUse `asb COMMAND --help` for concise help for one command.",
     )
 }
 
@@ -21,7 +21,7 @@ pub fn command(name: &str, output: &mut dyn Write) -> Result<(), Error> {
             "Usage: asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n\nWrite a benchmark TOML configuration. Credentials remain in the environment."
         }
         "run" => {
-            "Usage: asb run CONFIG\n\nRun the configured workload with the selected local agent and provider."
+            "Usage: asb run CONFIG [--json]\n\nRun the configured workload with the selected local agent and provider. Human-readable output is default; --json emits machine-readable output."
         }
         "models" => {
             "Usage: asb models [PROVIDER] [--json]\n\nList live models for one provider, or all supported providers when omitted."

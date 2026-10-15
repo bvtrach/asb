@@ -62,7 +62,13 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
         }
         [command, rest @ ..] if command == "setup" => config::setup(rest, stdout),
         [command, rest @ ..] if command == "init" => project::init(rest, stdout),
-        [command, path] if command == "run" => runner::run(path, stdout),
+        [command, path, format] if command == "run" && format == "--json" => {
+            runner::run(path, true, stdout)
+        }
+        [command, format, path] if command == "run" && format == "--json" => {
+            runner::run(path, true, stdout)
+        }
+        [command, path] if command == "run" => runner::run(path, false, stdout),
         [command, subcommand] if command == "tool" && subcommand == "list" => {
             install::tool_list(stdout)
         }

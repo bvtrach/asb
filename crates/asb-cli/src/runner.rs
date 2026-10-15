@@ -28,7 +28,7 @@ struct RunResult<'a> {
 }
 
 /// Execute the selected agent with the selected workload prompt.
-pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
+pub fn run(path: &str, json: bool, output: &mut dyn Write) -> Result<(), Error> {
     let config_path = Path::new(path);
     let text = read_config(config_path)?;
     let config: BenchmarkConfig = toml::from_str(&text)
@@ -95,13 +95,54 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
         stdout: bounded(&child.stdout),
         stderr: bounded(&child.stderr),
     };
-    serde_json::to_writer_pretty(&mut *output, &result)
-        .map_err(|error| Error::Io(error.to_string()))?;
-    writeln!(output).map_err(io_error)?;
+    if json {
+        render_json(&result, output)?;
+    } else {
+        render_human(&result, output)?;
+    }
     if child.status.success() {
         Ok(())
     } else {
         Err(Error::Run("agent exited unsuccessfully".into()))
+    }
+}
+
+fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
+    serde_json::to_writer_pretty(&mut *output, result)
+        .map_err(|error| Error::Io(error.to_string()))?;
+    writeln!(output).map_err(io_error)
+}
+
+fn render_human(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
+    writeln!(
+        output,
+        "{} benchmark: agent={} workload={} provider={} model={} elapsed={}ms exit={}",
+        result.status,
+        result.agent,
+        result.workload,
+        result.provider,
+        result.model,
+        result.elapsed_ms,
+        result
+            .exit_code
+            .map_or_else(|| "unknown".to_owned(), |code| code.to_string())
+    )
+    .map_err(io_error)?;
+    if !result.stdout.trim().is_empty() {
+        writeln!(output, "output:\n{}", excerpt(&result.stdout)).map_err(io_error)?;
+    }
+    if !result.stderr.trim().is_empty() {
+        writeln!(output, "stderr:\n{}", excerpt(&result.stderr)).map_err(io_error)?;
+    }
+    Ok(())
+}
+
+fn excerpt(value: &str) -> &str {
+    const MAX_HUMAN_OUTPUT: usize = 8 * 1024;
+    if value.len() <= MAX_HUMAN_OUTPUT {
+        value
+    } else {
+        &value[..value.floor_char_boundary(MAX_HUMAN_OUTPUT)]
     }
 }
 
@@ -175,4 +216,42 @@ fn local_agent(agent: &str, project_root: &Path, tools_dir: &str) -> Option<Stri
 
 fn bounded(bytes: &[u8]) -> String {
     String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_OUTPUT)]).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RunResult, render_human, render_json};
+
+    fn result<'a>() -> RunResult<'a> {
+        RunResult {
+            status: "completed",
+            agent: "codex",
+            workload: "bug-fix",
+            provider: "openrouter",
+            model: "test-model",
+            elapsed_ms: 12,
+            exit_code: Some(0),
+            stdout: "done".into(),
+            stderr: String::new(),
+        }
+    }
+
+    #[test]
+    fn human_output_is_concise_and_not_json() {
+        let mut output = Vec::new();
+        render_human(&result(), &mut output).expect("human rendering succeeds");
+        let text = String::from_utf8(output).expect("utf8");
+        assert!(text.starts_with("completed benchmark:"));
+        assert!(text.contains("output:\ndone"));
+        assert!(!text.starts_with('{'));
+    }
+
+    #[test]
+    fn json_output_remains_machine_readable() {
+        let mut output = Vec::new();
+        render_json(&result(), &mut output).expect("json rendering succeeds");
+        let value: serde_json::Value = serde_json::from_slice(&output).expect("valid json");
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["stdout"], "done");
+    }
 }

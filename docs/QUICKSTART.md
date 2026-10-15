@@ -67,6 +67,13 @@ Source-installed agents use `.asb-tools/<agent>/bin/`; workloads are stored in
 changes every command consistently. Add `--dir DIR` only when you need a
 one-off destination.
 
+Run output is concise and human-readable by default. Add `--json` to emit the
+structured result for scripts:
+
+```sh
+./target/debug/asb run benchmark.toml --json
+```
+
 Use `asb COMMAND --help` for concise help on every command and subcommand.
 `asb tool list` enumerates all built-in agent installers; `asb workload list`
 enumerates the prompt files available in the configured workload directory.
