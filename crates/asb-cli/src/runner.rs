@@ -50,8 +50,17 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir));
     let prompt = workloads::load(&config.workload, &workload_directory).map_err(Error::Input)?;
+    let codex_executable = local_agent("codex", &project_root, &project_config.tools_dir);
     let (mut program, args) = command_for(&config);
-    if let Some(local) = local_agent(&config.agent, &project_root, &project_config.tools_dir) {
+    let cli2key_agent = config.provider.eq_ignore_ascii_case("cli2key")
+        && config.agent.eq_ignore_ascii_case("codex");
+    if cli2key_agent {
+        program = "cli2key".into();
+        if let Some(local) = local_agent("cli2key", &project_root, &project_config.tools_dir) {
+            program = local;
+        }
+    } else if let Some(local) = local_agent(&config.agent, &project_root, &project_config.tools_dir)
+    {
         program = local;
     }
     let started = Instant::now();
@@ -62,7 +71,12 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
         .current_dir(&workspace)
         .stdin(Stdio::null());
     providers::configure(&mut command, &config.provider, &config.model);
-    prepare::apply(&mut command, &config.provider, &config.model)?;
+    prepare::apply(
+        &mut command,
+        &config.provider,
+        &config.model,
+        codex_executable.as_deref(),
+    )?;
     let child = command
         .output()
         .map_err(|error| Error::Run(format!("could not start {program}: {error}")))?;
@@ -92,6 +106,10 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
 }
 
 fn command_for(config: &BenchmarkConfig) -> (String, Vec<String>) {
+    if config.provider.eq_ignore_ascii_case("cli2key") && config.agent.eq_ignore_ascii_case("codex")
+    {
+        return ("cli2key".into(), Vec::new());
+    }
     match config.agent.as_str() {
         "codex" => (
             "codex".into(),

@@ -25,10 +25,10 @@ discovery uses the provider credential and endpoint environment variables but
 never writes or prints credential values.
 
 Before a run, ASB executes a modular preparation stage. For `cli2key`, it
-requires `CLI2KEY_BASE_URL`, reuses `CLI2KEY_API_KEY` when supplied, or creates
-an ephemeral process-local key and projects it to Codex's
-`OPENAI_API_KEY`/`OPENAI_BASE_URL` variables. The cli2key bridge itself must
-already be running at that endpoint.
+reuses `CLI2KEY_API_KEY` when supplied or creates an ephemeral process-local
+key for the cli2key executable. ASB passes that executable the key, selected
+model, and local Codex binary through `CLI2KEY_*` environment variables; the
+key and endpoint are never passed to Codex.
 
 Built-in tool recipes install pinned releases into the project (and do not
 modify global tools): `codex`, `opencode`, `gemini`, and `qwen-code` use npm;

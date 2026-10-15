@@ -41,7 +41,7 @@ replay, measurements, tool commands, and a graphical or terminal frontend are
 not part of the current product.
 
 The preparation stage is deliberately separate from command construction. Its
-development-only cli2key hook validates the loopback endpoint and supplies an
-ephemeral process-local key to the Codex-compatible environment without
-persisting credentials. Additional preparation operations can be added without
+development-only cli2key hook validates an optional endpoint and supplies an
+ephemeral process-local key to the cli2key executable without passing it to
+Codex or persisting credentials. Additional preparation operations can be added without
 changing `run` or the benchmark configuration format.
