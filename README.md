@@ -56,7 +56,8 @@ for one run.
 `asb record CONFIG` runs the same configuration through the local `llmtape`
 proxy and writes a JSONL cassette (by default below `cassettes/` next to the
 configuration). Install the proxy into the current benchmark project with
-`asb tool install llmtape`; no global llmtape installation is required. ASB
+`asb tool install llmtape`; this installs the pinned npm library plus ASB's
+project-local `llmtape` proxy wrapper. No global llmtape installation is required. ASB
 does not search the host `PATH` implicitly. To deliberately use another
 executable, set `ASB_LLM_TAPE`. Use `--cassette FILE` to choose an explicit
 path. `asb replay CONFIG` starts llmtape's cassette server and routes

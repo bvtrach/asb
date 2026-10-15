@@ -7,6 +7,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+const LLMTAPE_WRAPPER: &str = include_str!("../../../scripts/llmtape.mjs");
+
 #[derive(Clone, Copy)]
 enum Recipe {
     Npm {
@@ -502,14 +504,38 @@ fn install_recipe(recipe: Recipe, root: &Path) -> Result<PathBuf, Error> {
             "agent package installation failed; verify the prerequisite tool and rerun `asb tool install`".into(),
         ));
     }
-    Ok(executable(recipe, root))
+    let executable = executable(recipe, root);
+    if is_llmtape(recipe) {
+        fs::create_dir_all(executable.parent().expect("llmtape wrapper parent")).map_err(
+            |error| Error::Io(format!("cannot create llmtape wrapper directory: {error}")),
+        )?;
+        fs::write(&executable, LLMTAPE_WRAPPER).map_err(|error| {
+            Error::Io(format!("cannot write {}: {error}", executable.display()))
+        })?;
+        make_executable(&executable)?;
+    }
+    Ok(executable)
 }
 
 fn executable(recipe: Recipe, root: &Path) -> PathBuf {
     match recipe {
+        Recipe::Npm {
+            package,
+            executable,
+        } if package == "llmtape@1.2.0" => root.join("bin").join(executable),
         Recipe::Npm { executable, .. } => root.join("node_modules/.bin").join(executable),
         Recipe::Python { executable, .. } => root.join("venv/bin").join(executable),
     }
+}
+
+fn is_llmtape(recipe: Recipe) -> bool {
+    matches!(
+        recipe,
+        Recipe::Npm {
+            package: "llmtape@1.2.0",
+            ..
+        }
+    )
 }
 
 fn describe(recipe: Recipe, root: &Path) -> String {
@@ -745,6 +771,18 @@ mod tests {
             assert!(!describe(recipe, Path::new(".asb-tools")).is_empty());
             assert!(!executable_name(agent).is_empty());
         }
+    }
+
+    #[test]
+    fn llmtape_recipe_materializes_a_project_local_wrapper() {
+        let recipe = recipe("llmtape").expect("llmtape recipe");
+        assert!(is_llmtape(recipe));
+        assert_eq!(
+            executable(recipe, Path::new(".asb-tools/llmtape")),
+            Path::new(".asb-tools/llmtape/bin/llmtape")
+        );
+        assert!(LLMTAPE_WRAPPER.contains("llmtape record"));
+        assert!(LLMTAPE_WRAPPER.contains("llmtape replay"));
     }
 
     #[test]
