@@ -1,0 +1,1 @@
+Find a small reproducible bug in the repository, explain it, and propose a focused fix.

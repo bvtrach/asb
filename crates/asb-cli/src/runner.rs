@@ -1,8 +1,9 @@
 //! Live execution of one configured benchmark.
 
 use super::{Error, io_error, read_config};
-use crate::benchmark::{BenchmarkConfig, prompt_for};
+use crate::benchmark::BenchmarkConfig;
 use crate::providers;
+use crate::workloads;
 use serde::Serialize;
 use std::io::Write;
 use std::path::Path;
@@ -44,7 +45,20 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             workspace.display()
         ))
     })?;
-    let prompt = prompt_for(&config.workload);
+    let workload_directory = std::env::var_os("ASB_WORKLOAD_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            let adjacent = config_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("workloads");
+            if adjacent.is_dir() {
+                adjacent
+            } else {
+                Path::new("workloads").to_path_buf()
+            }
+        });
+    let prompt = workloads::load(&config.workload, &workload_directory).map_err(Error::Input)?;
     let (program, args) = command_for(&config);
     let started = Instant::now();
     let mut command = Command::new(&program);
