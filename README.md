@@ -121,10 +121,12 @@ external bridge endpoint is supplied, `CLI2KEY_API_KEY` must contain its
 matching key.
 
 The bundled cli2key bridge executes workloads through `codex`, `opencode`,
-`qwen-code`, `mini-swe`, `openhands`, and `openjiuwen`. `aider`, `gemini`, and
-`workbuddy` require wire protocols the bridge does not expose, so ASB rejects
-those combinations before launch. `codeagent` is a web-server-only binary and
-has no non-interactive workload command.
+`qwen-code`, `mini-swe`, `openhands`, `openjiuwen`, and `workbuddy`.
+WorkBuddy uses project-local CodeBuddy model settings configured for the
+bridge's Responses API. Aider requires OpenAI Chat Completions and therefore
+needs an OpenAI-compatible provider; Gemini still requires its Google provider.
+`codeagent` is a web-server-only binary and has no non-interactive workload
+command.
 
 Built-in tool recipes install pinned releases into the project (and do not
 modify global tools): `codex`, `pi`, `opencode`, `codeagent`, `workbuddy`, `gemini`,
