@@ -23,6 +23,12 @@ struct ExternalWorkload {
     source: &'static str,
 }
 
+struct BundleSpec {
+    archive: &'static str,
+    marker: &'static str,
+    prompt: &'static str,
+}
+
 const EXTERNAL_WORKLOADS: &[ExternalWorkload] = &[
     ExternalWorkload {
         name: "agentbench",
@@ -98,6 +104,22 @@ fn external_workload(name: &str) -> Option<&'static ExternalWorkload> {
     EXTERNAL_WORKLOADS
         .iter()
         .find(|workload| workload.name == name)
+}
+
+fn bundle_spec(name: &str) -> Option<BundleSpec> {
+    match name {
+        "swe-bench" => Some(BundleSpec {
+            archive: "https://github.com/SWE-bench/SWE-bench/archive/02e7a74ffd0b707aab73d203fe87bdc7c76afc8e.tar.gz",
+            marker: "swe-bench/SWE-bench@02e7a74ffd0b707aab73d203fe87bdc7c76afc8e",
+            prompt: "Use the upstream SWE-bench source in `external-workload/source`. Inspect its README and package metadata, select a concrete SWE-bench task or dataset-backed command available in this checkout, make the requested change, and run the narrowest applicable tests. Keep all changes inside this local checkout and do not download additional data during the run.\n",
+        }),
+        "terminal-bench" => Some(BundleSpec {
+            archive: "https://github.com/harbor-framework/terminal-bench/archive/452bf305c6daa62fc59061d22133a7cbc7c1572e.tar.gz",
+            marker: "terminal-bench/terminal-bench@452bf305c6daa62fc59061d22133a7cbc7c1572e",
+            prompt: "Use the upstream Terminal-Bench source in `external-workload/source`. Inspect its README, task definitions, and local runner instructions, then execute or improve a concrete terminal task using only the installed checkout and run its focused tests. Do not download additional data during the run.\n",
+        }),
+        _ => None,
+    }
 }
 
 fn recipe(name: &str) -> Option<Recipe> {
@@ -220,6 +242,10 @@ pub fn workload(args: &[String], output: &mut dyn std::io::Write) -> Result<(), 
     let (source, name, directory) = parse_workload(args)?;
     fs::create_dir_all(&directory)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", directory.display())))?;
+    if let Some(bundle) = bundle_spec(&name) {
+        install_bundle(&name, bundle, &directory, output)?;
+        return Ok(());
+    }
     let destination = directory.join(format!("{name}.txt"));
     install_source(&source, &destination, "workload")?;
     writeln!(
@@ -229,6 +255,127 @@ pub fn workload(args: &[String], output: &mut dyn std::io::Write) -> Result<(), 
     )
     .map_err(super::io_error)?;
     Ok(())
+}
+
+fn install_bundle(
+    name: &str,
+    bundle: BundleSpec,
+    directory: &Path,
+    output: &mut dyn std::io::Write,
+) -> Result<(), Error> {
+    let bundle_dir = directory.join(name);
+    let source_dir = bundle_dir.join("source");
+    let marker = bundle_dir.join("ASB-BUNDLE");
+    if marker.is_file() && source_dir.is_dir() {
+        let installed = fs::read_to_string(&marker).map_err(|error| {
+            Error::Io(format!(
+                "cannot read external workload marker {}: {error}",
+                marker.display()
+            ))
+        })?;
+        if installed.trim() != bundle.marker {
+            return Err(Error::Io(format!(
+                "external workload {name} is installed at a different pinned revision; remove {} and retry",
+                bundle_dir.display()
+            )));
+        }
+        let prompt = directory.join(format!("{name}.txt"));
+        if !prompt.exists() {
+            fs::write(&prompt, bundle.prompt).map_err(|error| {
+                Error::Io(format!(
+                    "cannot write external workload prompt {}: {error}",
+                    prompt.display()
+                ))
+            })?;
+        }
+        writeln!(
+            output,
+            "External workload {name} already installed at {}",
+            bundle_dir.display()
+        )
+        .map_err(super::io_error)?;
+        return Ok(());
+    }
+    if bundle_dir.exists() {
+        return Err(Error::Io(format!(
+            "external workload {name} has an incomplete local bundle at {}; remove that directory and retry",
+            bundle_dir.display()
+        )));
+    }
+    let archive = directory.join(format!(".{name}.tar.gz"));
+    let extract = directory.join(format!(".{name}.extract"));
+    if extract.exists() {
+        fs::remove_dir_all(&extract).map_err(|error| {
+            Error::Io(format!(
+                "cannot clear stale extraction {}: {error}",
+                extract.display()
+            ))
+        })?;
+    }
+    fs::create_dir_all(&extract).map_err(|error| {
+        Error::Io(format!(
+            "cannot create extraction directory {}: {error}",
+            extract.display()
+        ))
+    })?;
+    install_source(bundle.archive, &archive, "external workload bundle")?;
+    let status = Command::new("tar")
+        .args(["--extract", "--gzip", "--file"])
+        .arg(&archive)
+        .args(["--directory"])
+        .arg(&extract)
+        .status()
+        .map_err(|error| Error::Io(format!("cannot start tar for {name}: {error}")))?;
+    if !status.success() {
+        return Err(Error::Io(format!(
+            "could not extract external workload {name}"
+        )));
+    }
+    let top = fs::read_dir(&extract)
+        .map_err(|error| Error::Io(format!("cannot inspect extracted {name}: {error}")))?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.is_dir())
+        .ok_or_else(|| {
+            Error::Io(format!(
+                "external workload {name} archive has no source directory"
+            ))
+        })?;
+    fs::create_dir_all(&bundle_dir).map_err(|error| {
+        Error::Io(format!(
+            "cannot create external workload {}: {error}",
+            bundle_dir.display()
+        ))
+    })?;
+    fs::rename(&top, &source_dir).map_err(|error| {
+        Error::Io(format!(
+            "cannot place external workload source {}: {error}",
+            source_dir.display()
+        ))
+    })?;
+    fs::write(&marker, bundle.marker).map_err(|error| {
+        Error::Io(format!(
+            "cannot write external workload marker {}: {error}",
+            marker.display()
+        ))
+    })?;
+    let prompt = directory.join(format!("{name}.txt"));
+    if !prompt.exists() {
+        fs::write(&prompt, bundle.prompt).map_err(|error| {
+            Error::Io(format!(
+                "cannot write external workload prompt {}: {error}",
+                prompt.display()
+            ))
+        })?;
+    }
+    let _ = fs::remove_file(&archive);
+    let _ = fs::remove_dir_all(&extract);
+    writeln!(
+        output,
+        "Installed external workload {name} at {} with local source and prompt",
+        bundle_dir.display()
+    )
+    .map_err(super::io_error)
 }
 
 /// List `.txt` workloads in the configured project directory.
@@ -567,6 +714,33 @@ mod tests {
             external_workload("swe-bench").map(|item| item.name),
             Some("swe-bench")
         );
+        assert!(bundle_spec("swe-bench").is_some());
+        assert!(bundle_spec("terminal-bench").is_some());
         assert!(external_workload("methodology-only").is_none());
+    }
+
+    #[test]
+    fn complete_external_bundle_is_reused_when_already_installed() {
+        let directory =
+            std::env::temp_dir().join(format!("asb-external-bundle-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        let bundle_dir = directory.join("swe-bench");
+        fs::create_dir_all(bundle_dir.join("source")).unwrap();
+        fs::write(bundle_dir.join("source/README.md"), "local source").unwrap();
+        let spec = bundle_spec("swe-bench").unwrap();
+        fs::write(bundle_dir.join("ASB-BUNDLE"), spec.marker).unwrap();
+        let mut output = Vec::new();
+        install_bundle("swe-bench", spec, &directory, &mut output)
+            .expect("existing bundle is reused");
+        assert!(
+            String::from_utf8(output)
+                .unwrap()
+                .contains("already installed")
+        );
+        assert_eq!(
+            fs::read_to_string(bundle_dir.join("source/README.md")).unwrap(),
+            "local source"
+        );
+        let _ = fs::remove_dir_all(directory);
     }
 }

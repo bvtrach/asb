@@ -240,6 +240,58 @@ pub(crate) fn prepare_fixture(name: &str, directory: &Path) -> Result<usize, Str
     Ok(added)
 }
 
+/// Copy an installed external workload source into the run workspace.
+pub(crate) fn prepare_external(
+    name: &str,
+    workload_directory: &Path,
+    workspace: &Path,
+) -> Result<usize, String> {
+    let source = workload_directory.join(name).join("source");
+    if !source.is_dir() {
+        return Ok(0);
+    }
+    copy_tree(&source, &workspace.join("external-workload"))
+}
+
+fn copy_tree(source: &Path, destination: &Path) -> Result<usize, String> {
+    fs::create_dir_all(destination).map_err(|error| {
+        format!(
+            "cannot create external workload directory {}: {error}",
+            destination.display()
+        )
+    })?;
+    let mut added = 0;
+    for entry in fs::read_dir(source).map_err(|error| {
+        format!(
+            "cannot read external workload source {}: {error}",
+            source.display()
+        )
+    })? {
+        let entry =
+            entry.map_err(|error| format!("cannot inspect external workload source: {error}"))?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let kind = entry.file_type().map_err(|error| {
+            format!(
+                "cannot inspect external workload entry {}: {error}",
+                source_path.display()
+            )
+        })?;
+        if kind.is_dir() {
+            added += copy_tree(&source_path, &destination_path)?;
+        } else if kind.is_file() && !destination_path.exists() {
+            fs::copy(&source_path, &destination_path).map_err(|error| {
+                format!(
+                    "cannot copy external workload file {}: {error}",
+                    source_path.display()
+                )
+            })?;
+            added += 1;
+        }
+    }
+    Ok(added)
+}
+
 fn set_executable(path: &Path) -> Result<(), String> {
     #[cfg(unix)]
     {
@@ -330,7 +382,7 @@ fn missing(name: &str, directory: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{load, populate, prepare_fixture};
+    use super::{load, populate, prepare_external, prepare_fixture};
     use std::fs;
 
     #[test]
@@ -385,5 +437,26 @@ mod tests {
         }
         assert!(directory.join("build-repair/build.sh").is_file());
         let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn installed_external_source_is_copied_without_overwriting_workspace_edits() {
+        let root = std::env::temp_dir().join(format!("asb-external-copy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let source = root.join("workloads/swe-bench/source");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("README.md"), "upstream").unwrap();
+        fs::create_dir_all(workspace.join("external-workload")).unwrap();
+        fs::write(workspace.join("external-workload/README.md"), "edited").unwrap();
+        assert_eq!(
+            prepare_external("swe-bench", &root.join("workloads"), &workspace).unwrap(),
+            0
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.join("external-workload/README.md")).unwrap(),
+            "edited"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }

@@ -85,7 +85,7 @@ Install a local agent executable or external prompt with:
 ```sh
 asb tool install my-agent --source /path/to/my-agent
 asb workload install https://example.org/workloads/customer-task.txt
-# Or install a pinned external workload description by its short name:
+# Or install a complete pinned external workload bundle by its short name:
 asb workload install swe-bench
 ```
 
@@ -104,9 +104,10 @@ structured result for scripts:
 
 Use `asb COMMAND --help` for concise help on every command and subcommand.
 `asb tool list` enumerates all built-in agent installers; `asb workload list`
-enumerates local prompt files and installable external aliases. External
-aliases fetch a pinned upstream description into the configured workload
-directory; they do not vendor datasets or evaluators.
+enumerates local prompt files and installable external aliases. The
+`swe-bench` and `terminal-bench` aliases fetch pinned upstream source archives
+into the configured workload directory and copy them into
+`external-workload/` for runs. Other aliases fetch pinned prompt metadata.
 
 The built-in recipes are:
 

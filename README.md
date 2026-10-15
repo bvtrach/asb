@@ -45,9 +45,10 @@ Every command and subcommand has concise help; use `asb COMMAND --help`.
 `asb tool list` shows all built-in agent installers and `asb workload list`
 shows the `.txt` prompts available in the current project plus installable
 external workload aliases. Install one by its short name, for example
-`asb workload install swe-bench`; ASB fetches the pinned upstream description
-into the current project's workload directory. These aliases install a prompt
-adapter/description, not an upstream dataset or evaluator.
+`asb workload install swe-bench`; ASB fetches the pinned upstream source into
+the current project's workload directory. `swe-bench` and `terminal-bench`
+install complete local source bundles and materialize them into the run
+workspace; the other aliases install their pinned upstream prompt metadata.
 
 Before a run, ASB executes a modular preparation stage. For `cli2key`, it
 starts the project-local bridge when `CLI2KEY_BASE_URL` is not supplied, reads

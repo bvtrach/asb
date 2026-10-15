@@ -38,9 +38,11 @@ directory for the supported agents, or downloads/copies an executable supplied
 with `--source`. npm recipes are project-local; Python recipes use a
 project-local virtual environment. `asb workload install` downloads a prompt
 URL, resolves a pinned external workload alias, or copies a local prompt into
-the configured workloads directory. External aliases install a short-name
-prompt adapter/description, not an upstream dataset or evaluator. These
-commands do not handle credentials.
+the configured workloads directory. The `swe-bench` and `terminal-bench`
+aliases download pinned upstream source archives into local bundle directories;
+the runner copies those sources into `external-workload/` in the workspace.
+Other aliases install pinned prompt metadata. These commands do not handle
+credentials.
 Installing `cli2key` also asks its bridge to refresh the local API key; model
 discovery and runs then start the bridge and use that key ephemerally.
 `asb tool list` and `asb workload list` expose these two catalogs without
