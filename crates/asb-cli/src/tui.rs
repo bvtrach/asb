@@ -990,11 +990,13 @@ fn render_choice_pane(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rec
         .map(|index| {
             let choice = &pane.choices[*index];
             let marker = if pane.selected[*index] { "[x]" } else { "[ ]" };
+            let selected = *index == pane.cursor;
             ListItem::new(Line::from(vec![
                 Span::raw(format!("{marker} ")),
                 Span::styled("ℹ", availability_style(choice.availability)),
                 Span::raw(format!("  {}", choice.label)),
             ]))
+            .style(choice_row_style(selected))
         })
         .collect::<Vec<_>>();
     let selected = visible
@@ -1004,22 +1006,28 @@ fn render_choice_pane(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rec
     let mut state = ListState::default();
     state.select((!visible.is_empty()).then_some(selected));
     frame.render_stateful_widget(
-        List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("Available choices"),
-            )
-            // Keep each readiness glyph's green/yellow/red foreground visible
-            // while still making the cursor row stand out.
-            .highlight_style(
-                Style::default()
-                    .bg(Color::Black)
-                    .add_modifier(Modifier::BOLD),
-            ),
+        List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Available choices"),
+        ),
         body[1],
         &mut state,
     );
+}
+
+fn choice_row_style(selected: bool) -> Style {
+    if selected {
+        // Style the row itself instead of List::highlight_style: Ratatui's
+        // list highlight layer overrides child spans and would turn the
+        // readiness glyph white/blue. The glyph span remains green/yellow/red.
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Gray)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    }
 }
 
 fn availability_style(availability: Availability) -> Style {
@@ -1323,6 +1331,7 @@ mod tests {
     };
     use crate::project::ProjectConfig;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::style::{Color, Style};
 
     #[test]
     fn pane_filters_and_toggles_visible_choices() {
@@ -1403,6 +1412,14 @@ mod tests {
             &app
         ));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn selected_row_style_is_visible_without_overriding_status_foreground() {
+        let style = super::choice_row_style(true);
+        assert_eq!(style.fg, Some(Color::Black));
+        assert_eq!(style.bg, Some(Color::Gray));
+        assert_eq!(super::choice_row_style(false), Style::default());
     }
 
     #[test]
