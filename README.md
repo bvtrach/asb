@@ -89,7 +89,10 @@ section listing every collector module and defaulting its output directory to
 the no-collection behavior, or pass `--measurements DIR` to enable collection
 for one run.
 
-`asb compare SWEEP.toml` creates `results/<sweep>-comparison/report.html` in
+`asb sweep` automatically runs the same comparison after all benchmark entries
+finish, including partial sweeps so failed or missing entries remain visible.
+`asb compare SWEEP.toml` can be run at any time to regenerate
+`results/<sweep>-comparison/report.html` in
 addition to `comparison.json` and SVG charts. Open the report locally for a
 professional, offline overview: every benchmark row shows its agent, provider,
 model, workload, all numeric measurements, and links to raw run/collector/log
