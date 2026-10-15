@@ -5,6 +5,11 @@ use std::path::Path;
 
 const MAX_PROMPT_BYTES: u64 = 64 * 1024;
 
+struct Fixture {
+    name: &'static str,
+    files: &'static [(&'static str, &'static str)],
+}
+
 const BUILTIN: &[(&str, &str)] = &[
     ("bug-fix", include_str!("../../../workloads/bug-fix.txt")),
     (
@@ -33,6 +38,146 @@ const BUILTIN: &[(&str, &str)] = &[
     ),
 ];
 
+const FIXTURES: &[Fixture] = &[
+    Fixture {
+        name: "bug-fix",
+        files: &[
+            (
+                "README.md",
+                include_str!("../../../workloads/fixtures/bug-fix/README.md"),
+            ),
+            (
+                "src/parser.py",
+                include_str!("../../../workloads/fixtures/bug-fix/src/parser.py"),
+            ),
+            (
+                "tests/test_parser.py",
+                include_str!("../../../workloads/fixtures/bug-fix/tests/test_parser.py"),
+            ),
+        ],
+    },
+    Fixture {
+        name: "build-repair",
+        files: &[
+            (
+                "README.md",
+                include_str!("../../../workloads/fixtures/build-repair/README.md"),
+            ),
+            (
+                "src/app.py",
+                include_str!("../../../workloads/fixtures/build-repair/src/app.py"),
+            ),
+            (
+                "tests/test_app.py",
+                include_str!("../../../workloads/fixtures/build-repair/tests/test_app.py"),
+            ),
+            (
+                "build.sh",
+                include_str!("../../../workloads/fixtures/build-repair/build.sh"),
+            ),
+        ],
+    },
+    Fixture {
+        name: "dependency-migration",
+        files: &[
+            (
+                "README.md",
+                include_str!("../../../workloads/fixtures/dependency-migration/README.md"),
+            ),
+            (
+                "requirements.txt",
+                include_str!("../../../workloads/fixtures/dependency-migration/requirements.txt"),
+            ),
+            (
+                "src/client.py",
+                include_str!("../../../workloads/fixtures/dependency-migration/src/client.py"),
+            ),
+            (
+                "tests/test_client.py",
+                include_str!(
+                    "../../../workloads/fixtures/dependency-migration/tests/test_client.py"
+                ),
+            ),
+        ],
+    },
+    Fixture {
+        name: "feature-addition",
+        files: &[
+            (
+                "README.md",
+                include_str!("../../../workloads/fixtures/feature-addition/README.md"),
+            ),
+            (
+                "src/formatter.py",
+                include_str!("../../../workloads/fixtures/feature-addition/src/formatter.py"),
+            ),
+            (
+                "tests/test_formatter.py",
+                include_str!(
+                    "../../../workloads/fixtures/feature-addition/tests/test_formatter.py"
+                ),
+            ),
+        ],
+    },
+    Fixture {
+        name: "refactoring",
+        files: &[
+            (
+                "README.md",
+                include_str!("../../../workloads/fixtures/refactoring/README.md"),
+            ),
+            (
+                "src/labels.py",
+                include_str!("../../../workloads/fixtures/refactoring/src/labels.py"),
+            ),
+            (
+                "tests/test_labels.py",
+                include_str!("../../../workloads/fixtures/refactoring/tests/test_labels.py"),
+            ),
+        ],
+    },
+    Fixture {
+        name: "repository-navigation",
+        files: &[
+            (
+                "README.md",
+                include_str!("../../../workloads/fixtures/repository-navigation/README.md"),
+            ),
+            (
+                "src/cli.py",
+                include_str!("../../../workloads/fixtures/repository-navigation/src/cli.py"),
+            ),
+            (
+                "src/registry.py",
+                include_str!("../../../workloads/fixtures/repository-navigation/src/registry.py"),
+            ),
+            (
+                "tests/test_cli.py",
+                include_str!("../../../workloads/fixtures/repository-navigation/tests/test_cli.py"),
+            ),
+        ],
+    },
+    Fixture {
+        name: "test-generation",
+        files: &[
+            (
+                "README.md",
+                include_str!("../../../workloads/fixtures/test-generation/README.md"),
+            ),
+            (
+                "src/temperature.py",
+                include_str!("../../../workloads/fixtures/test-generation/src/temperature.py"),
+            ),
+            (
+                "tests/test_temperature.py",
+                include_str!(
+                    "../../../workloads/fixtures/test-generation/tests/test_temperature.py"
+                ),
+            ),
+        ],
+    },
+];
+
 /// Populate a new project with the prompts shipped in the ASB binary.
 pub(crate) fn populate(directory: &Path) -> Result<usize, std::io::Error> {
     let mut added = 0;
@@ -44,6 +189,85 @@ pub(crate) fn populate(directory: &Path) -> Result<usize, std::io::Error> {
         }
     }
     Ok(added)
+}
+
+/// Copy all bundled fixture templates into a project's managed fixture area.
+pub(crate) fn populate_fixtures(directory: &Path) -> Result<usize, std::io::Error> {
+    let mut added = 0;
+    for fixture in FIXTURES {
+        for (relative, contents) in fixture.files {
+            let path = directory.join(fixture.name).join(relative);
+            if !path.exists() {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&path, contents)?;
+                if relative.ends_with(".sh") {
+                    set_executable_io(&path)?;
+                }
+                added += 1;
+            }
+        }
+    }
+    Ok(added)
+}
+
+/// Materialize the selected fixture into the run workspace without overwriting edits.
+pub(crate) fn prepare_fixture(name: &str, directory: &Path) -> Result<usize, String> {
+    let Some(fixture) = FIXTURES.iter().find(|fixture| fixture.name == name) else {
+        return Ok(0);
+    };
+    let mut added = 0;
+    for (relative, contents) in fixture.files {
+        let path = directory.join(relative);
+        if !path.exists() {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|error| {
+                    format!(
+                        "cannot create fixture directory {}: {error}",
+                        parent.display()
+                    )
+                })?;
+            }
+            fs::write(&path, contents)
+                .map_err(|error| format!("cannot write fixture {}: {error}", path.display()))?;
+            if relative.ends_with(".sh") {
+                set_executable(&path)?;
+            }
+            added += 1;
+        }
+    }
+    Ok(added)
+}
+
+fn set_executable(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(path)
+            .map_err(|error| format!("cannot inspect fixture {}: {error}", path.display()))?
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).map_err(|error| {
+            format!("cannot make fixture {} executable: {error}", path.display())
+        })?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
+fn set_executable_io(path: &Path) -> Result<(), std::io::Error> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions)?;
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
 }
 
 /// Load one workload prompt by name and report the available file names on a miss.
@@ -106,7 +330,7 @@ fn missing(name: &str, directory: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{load, populate};
+    use super::{load, populate, prepare_fixture};
     use std::fs;
 
     #[test]
@@ -138,6 +362,28 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn every_builtin_fixture_materializes_supporting_files() {
+        let directory = std::env::temp_dir().join(format!("asb-fixtures-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        for name in [
+            "bug-fix",
+            "build-repair",
+            "dependency-migration",
+            "feature-addition",
+            "refactoring",
+            "repository-navigation",
+            "test-generation",
+        ] {
+            let fixture_dir = directory.join(name);
+            assert!(prepare_fixture(name, &fixture_dir).unwrap() > 0, "{name}");
+            assert!(fixture_dir.join("README.md").is_file(), "{name} README");
+            assert!(fixture_dir.join("tests").is_dir(), "{name} tests");
+        }
+        assert!(directory.join("build-repair/build.sh").is_file());
         let _ = fs::remove_dir_all(directory);
     }
 }

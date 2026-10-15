@@ -10,11 +10,13 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   endpoints and response shapes;
 - `prepare`: provider-specific, pre-launch environment preparation hooks;
 - `project`: `.asb/project.toml` and shared project paths. `init` creates the
-  file, copies the bundled workload prompts, and creates its configured
-  `tools_dir`, `workloads_dir`, and `workspace_dir`;
+  file, copies the bundled workload prompts and fixture trees, and creates its
+  configured `tools_dir`, `workloads_dir`, and `workspace_dir`;
   every command resolves relative paths from this project root;
 - `runner`: configuration loading and live agent process execution;
-- `workloads/`: one UTF-8 `.txt` prompt per workload name.
+- `workloads/`: one UTF-8 `.txt` prompt per workload name. Built-in supporting
+  files are stored under `.asb/fixtures/<name>/` and materialized into the run
+  workspace without overwriting existing edits.
 
 The CLI is the stable user boundary. A benchmark configuration names an agent,
 workload, provider, model, and workspace. Provider credentials are never stored

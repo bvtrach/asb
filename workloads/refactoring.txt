@@ -1,1 +1,2 @@
-Find one small refactoring that improves clarity without changing behavior, then implement it.
+Refactor `src/labels.py` as described in its README without changing behavior,
+then run the tests and explain the resulting clarity improvement.

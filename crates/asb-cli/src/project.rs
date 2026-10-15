@@ -58,12 +58,14 @@ pub fn init(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Erro
         .map_err(|error| Error::Io(format!("cannot install bundled workloads: {error}")))?;
     fs::create_dir_all(resolve(&root, &config.workspace_dir))
         .map_err(|error| Error::Io(format!("cannot create workspace directory: {error}")))?;
+    let fixtures = crate::workloads::populate_fixtures(&root.join(CONFIG_DIR).join("fixtures"))
+        .map_err(|error| Error::Io(format!("cannot install workload fixtures: {error}")))?;
     let text = toml::to_string_pretty(&config).map_err(|error| Error::Input(error.to_string()))?;
     fs::write(&path, text)
         .map_err(|error| Error::Io(format!("cannot write {}: {error}", path.display())))?;
     writeln!(
         output,
-        "Initialized ASB project at {}\nBundled workloads available: {bundled}",
+        "Initialized ASB project at {}\nBundled workloads available: {bundled}\nFixture files available: {fixtures}",
         path.display()
     )
     .map_err(super::io_error)
@@ -192,6 +194,11 @@ mod tests {
         assert!(resolve(&root, &config.workloads_dir).is_dir());
         assert!(resolve(&root, &config.workspace_dir).is_dir());
         assert!(root.join("workloads/bug-fix.txt").is_file());
+        assert!(root.join(".asb/fixtures/bug-fix/src/parser.py").is_file());
+        assert!(
+            root.join(".asb/fixtures/test-generation/tests/test_temperature.py")
+                .is_file()
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

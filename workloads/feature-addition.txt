@@ -1,1 +1,2 @@
-Identify a small useful feature for the repository and implement it with a concise explanation.
+Implement the small formatter feature described in `README.md`, preserve the
+existing default behavior, and run the tests. Explain the change concisely.

@@ -51,6 +51,7 @@ pub fn run(path: &str, json: bool, output: &mut dyn Write) -> Result<(), Error> 
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir));
     let prompt = workloads::load(&config.workload, &workload_directory).map_err(Error::Input)?;
+    workloads::prepare_fixture(&config.workload, &workspace).map_err(Error::Run)?;
     if config.provider.eq_ignore_ascii_case("cli2key")
         && matches!(config.agent.as_str(), "aider" | "gemini" | "workbuddy")
     {

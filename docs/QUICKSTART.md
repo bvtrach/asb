@@ -64,8 +64,11 @@ The bundled bridge executes workloads through `codex`, `opencode`,
 launch; `codeagent` is a web-server-only installer and cannot run a
 non-interactive workload.
 
-`asb init` copies the bundled `.txt` workloads into `workloads/`, so they are
-available immediately after initialization. Add a file such as
+`asb init` copies the bundled `.txt` workloads into `workloads/` and seeds
+`.asb/fixtures/` with the source, tests, and scripts required by every built-in
+task, so they are available immediately after initialization. Before each run,
+the selected fixture is copied into the workspace without overwriting edits.
+Add a file such as
 `workloads/my-task.txt`, then select it with `--workload my-task`. To keep
 workloads elsewhere, set `ASB_WORKLOAD_DIR` before `asb run`.
 Initialize a separate benchmark directory, not the ASB source checkout;

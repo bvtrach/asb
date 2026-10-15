@@ -16,7 +16,10 @@ asb run CONFIG [--json]
 
 `init` writes `.asb/project.toml` with project-local tool, workload, and
 workspace directories and copies the bundled workload prompts into
-`workloads/`. `setup` writes a human-readable TOML configuration.
+`workloads/` and seeds `.asb/fixtures/` with the source, tests, and supporting
+files for every built-in workload. `run` copies the selected fixture into the
+workspace without overwriting existing edits. `setup` writes a human-readable
+TOML configuration.
 Run `asb init` in a separate benchmark project directory; it intentionally
 refuses to modify the ASB source checkout.
 If the directory is already initialized, ASB warns and makes no changes;
