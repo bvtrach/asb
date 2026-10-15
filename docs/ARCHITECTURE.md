@@ -73,7 +73,9 @@ routes provider endpoints to that proxy, and tears it down after the child
 exits. `record` writes a JSONL cassette; `replay` requires that cassette and
 never starts cli2key or a live provider. This keeps the benchmark
 configuration contract unchanged and keeps llmtape an optional, project-local
-development tool rather than a runtime dependency. ASB never falls back to a
+development tool rather than a runtime dependency. Installation includes the
+llmtape npm library and a small project-local proxy wrapper because the npm
+package itself does not publish a CLI. ASB never falls back to a
 host `PATH` lookup; use `asb tool install llmtape` in the benchmark project or
 set `ASB_LLM_TAPE` explicitly. Measurement collection remains
 explicitly opt-in through `asb run --measurements DIR`; CI does not start live
