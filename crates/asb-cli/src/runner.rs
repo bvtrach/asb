@@ -2,6 +2,7 @@
 
 use super::{Error, io_error, read_config};
 use crate::benchmark::BenchmarkConfig;
+use crate::project;
 use crate::providers;
 use crate::workloads;
 use serde::Serialize;
@@ -31,14 +32,13 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
     let text = read_config(config_path)?;
     let config: BenchmarkConfig = toml::from_str(&text)
         .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
-    let workspace = if Path::new(&config.workspace).is_absolute() {
-        Path::new(&config.workspace).to_path_buf()
+    let (project_root, project_config) = project::load(config_path)?;
+    let workspace_name = if config.workspace == "asb-workspace" {
+        &project_config.workspace_dir
     } else {
-        config_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(&config.workspace)
+        &config.workspace
     };
+    let workspace = project::resolve(&project_root, workspace_name);
     std::fs::create_dir_all(&workspace).map_err(|error| {
         Error::Run(format!(
             "cannot create workspace {}: {error}",
@@ -47,20 +47,10 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
     })?;
     let workload_directory = std::env::var_os("ASB_WORKLOAD_DIR")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            let adjacent = config_path
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join("workloads");
-            if adjacent.is_dir() {
-                adjacent
-            } else {
-                Path::new("workloads").to_path_buf()
-            }
-        });
+        .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir));
     let prompt = workloads::load(&config.workload, &workload_directory).map_err(Error::Input)?;
     let (mut program, args) = command_for(&config);
-    if let Some(local) = local_agent(&config.agent, config_path) {
+    if let Some(local) = local_agent(&config.agent, &project_root, &project_config.tools_dir) {
         program = local;
     }
     let started = Instant::now();
@@ -110,23 +100,41 @@ fn command_for(config: &BenchmarkConfig) -> (String, Vec<String>) {
             "opencode".into(),
             vec!["run".into(), "--model".into(), config.model.clone()],
         ),
+        "qwen-code" => ("qwen".into(), Vec::new()),
+        "mini-swe" => ("mini".into(), Vec::new()),
         other => (other.into(), Vec::new()),
     }
 }
 
-fn local_agent(agent: &str, config_path: &Path) -> Option<String> {
+fn local_agent(agent: &str, project_root: &Path, tools_dir: &str) -> Option<String> {
+    let executable = match agent {
+        "qwen-code" => "qwen",
+        "mini-swe" => "mini",
+        other => other,
+    };
     let mut candidates = Vec::new();
     if let Some(directory) = std::env::var_os("ASB_TOOL_DIR") {
-        candidates.push(std::path::PathBuf::from(directory).join(agent));
+        candidates.push(std::path::PathBuf::from(directory).join(executable));
     }
     candidates.push(
-        config_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join(".asb-tools/bin")
-            .join(agent),
+        project::resolve(project_root, tools_dir)
+            .join(agent)
+            .join("bin")
+            .join(executable),
     );
-    candidates.push(Path::new(".asb-tools/bin").join(agent));
+    candidates.push(
+        project::resolve(project_root, tools_dir)
+            .join(agent)
+            .join("node_modules/.bin")
+            .join(executable),
+    );
+    candidates.push(
+        project::resolve(project_root, tools_dir)
+            .join(agent)
+            .join("venv/bin")
+            .join(executable),
+    );
+    candidates.push(Path::new(".asb-tools/bin").join(executable));
     candidates
         .into_iter()
         .find(|candidate| candidate.is_file())

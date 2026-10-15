@@ -6,7 +6,10 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
 - `config`: the `setup` command and TOML writer;
 - `install`: local copying of agent executables and workload prompt files;
 - `providers`: a concise provider-name and environment-variable registry;
-- `runner`: configuration loading and live agent process execution.
+- `project`: `.asb/project.toml` and shared project paths. `init` creates the
+  file and its configured `tools_dir`, `workloads_dir`, and `workspace_dir`;
+  every command resolves relative paths from this project root;
+- `runner`: configuration loading and live agent process execution;
 - `workloads/`: one UTF-8 `.txt` prompt per workload name.
 
 The CLI is the stable user boundary. A benchmark configuration names an agent,
@@ -20,11 +23,12 @@ Workloads are loaded from `workloads/` beside the configuration file. Set
 `ASB_WORKLOAD_DIR` to use another directory; add a new `.txt` file to extend
 the catalogue.
 
-`asb tool install` downloads an agent executable from a URL supplied with
-`--source` into `.asb-tools/bin` (or `ASB_TOOL_DIR`). `asb workload install`
-downloads a prompt URL into `ASB_WORKLOAD_DIR` or `workloads/`. Local source
-paths are also accepted for offline development. These commands do not handle
-credentials.
+`asb tool install` installs a pinned package recipe into the configured tools
+directory for the supported agents, or downloads/copies an executable supplied
+with `--source`. npm recipes are project-local; Python recipes use a
+project-local virtual environment. `asb workload install` downloads a prompt
+URL or copies a local prompt into the configured workloads directory. These
+commands do not handle credentials.
 
 Future features should be separate modules behind these boundaries. Recording,
 replay, measurements, tool commands, and a graphical or terminal frontend are

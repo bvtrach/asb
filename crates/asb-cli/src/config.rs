@@ -2,6 +2,7 @@
 
 use super::{Error, io_error};
 use crate::benchmark::BenchmarkConfig;
+use crate::project;
 use std::io::Write;
 
 /// Parse setup flags and write a TOML benchmark configuration.
@@ -33,12 +34,13 @@ pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
         }
         index += 2;
     }
+    let (_, project_config) = project::load(std::path::Path::new("."))?;
     let config = BenchmarkConfig {
         agent: required(agent)?,
         workload: required(workload)?,
         provider: required(provider)?,
         model: required(model)?,
-        workspace: workspace.unwrap_or_else(|| "./asb-workspace".into()),
+        workspace: workspace.unwrap_or(project_config.workspace_dir),
     };
     let text = toml::to_string_pretty(&config)
         .map_err(|error| Error::Input(format!("cannot render configuration: {error}")))?;

@@ -3,6 +3,7 @@
 mod benchmark;
 mod config;
 mod install;
+mod project;
 mod providers;
 mod runner;
 mod workloads;
@@ -38,6 +39,7 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
             writeln!(stdout, "asb {}", env!("CARGO_PKG_VERSION")).map_err(io_error)
         }
         [command, rest @ ..] if command == "setup" => config::setup(rest, stdout),
+        [command, rest @ ..] if command == "init" => project::init(rest, stdout),
         [command, path] if command == "run" => runner::run(path, stdout),
         [command, subcommand, rest @ ..] if command == "tool" && subcommand == "install" => {
             install::tool(rest, stdout)
@@ -57,7 +59,7 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
 }
 
 fn write_help(output: &mut dyn Write) -> Result<(), CliError> {
-    writeln!(output, "ASB\n\nUsage:\n  asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n  asb run CONFIG\n  asb tool install AGENT [--source PATH] [--dir DIR]\n  asb workload install SOURCE.txt [--name NAME] [--dir DIR]\n\nsetup writes a benchmark configuration. run executes it live. install adds local agents or workload prompts.")
+    writeln!(output, "ASB\n\nUsage:\n  asb init [PROJECT_DIR]\n  asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n  asb run CONFIG\n  asb tool install AGENT [--source URL|PATH] [--dry-run]\n  asb workload install SOURCE.txt|URL [--name NAME]\n\ninit creates shared project configuration. setup writes a benchmark configuration. run executes it live.")
         .map_err(io_error)
 }
 

@@ -1,17 +1,27 @@
 # Agent Systems Benchmark
 
-ASB is a small command-line benchmark runner. The current product has two
-commands:
+ASB is a small command-line benchmark runner. Initialize a project, install an
+agent/workload, create a configuration, then run it:
 
 ```text
+asb init
+asb tool install AGENT
+asb workload install SOURCE.txt|URL
 asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]
 asb run CONFIG
 ```
 
-`setup` writes a human-readable TOML configuration. `run` loads that file,
-creates its workspace, selects the workload prompt, and starts the configured
-agent with the provider and model in the environment. Credentials stay outside
-the configuration and are supplied by the selected agent/provider installation.
+`init` writes `.asb/project.toml` with project-local tool, workload, and
+workspace directories. `setup` writes a human-readable TOML configuration.
+`run` loads the project and benchmark configuration, selects the workload
+prompt, and starts the configured agent with the provider and model in the
+environment. Credentials stay outside the configuration.
+
+Built-in tool recipes install pinned releases into the project (and do not
+modify global tools): `codex`, `opencode`, `gemini`, and `qwen-code` use npm;
+`aider`, `mini-swe`, and `openhands` use an isolated Python virtual
+environment. Any other agent can be installed from a local executable or URL
+with `--source`.
 
 The CLI is intentionally modular. Configuration, workload prompts, and process
 execution are separate modules so recording/replay, measurements, tool
