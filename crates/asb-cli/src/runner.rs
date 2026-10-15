@@ -111,14 +111,6 @@ fn run_mode(
     workloads::prepare_fixture(&config.workload, &workspace).map_err(Error::Run)?;
     workloads::prepare_external(&config.workload, &workload_directory, &workspace)
         .map_err(Error::Run)?;
-    if config.provider.eq_ignore_ascii_case("cli2key")
-        && matches!(config.agent.as_str(), "aider" | "gemini" | "workbuddy")
-    {
-        return Err(Error::Run(format!(
-            "cli2key cannot run agent {}: the local bridge exposes Anthropic Messages and OpenAI Responses, while this agent requires a different provider protocol; use codex, opencode, qwen-code, mini-swe, openhands, or openjiuwen",
-            config.agent
-        )));
-    }
     let codex_executable = local_agent("codex", &project_root, &project_config.tools_dir);
     let tape_mode = tape_request.map(|(mode, _)| mode);
     let bridge = if config.provider.eq_ignore_ascii_case("cli2key")
@@ -433,6 +425,11 @@ fn command_for(
             )));
         }
     }
+    if config.provider.eq_ignore_ascii_case("cli2key") && config.agent == "gemini" {
+        return Err(Error::Run(
+            "gemini requires the Google Generative Language API and cannot use the cli2key OpenAI/Anthropic bridge; choose an OpenAI-compatible agent or configure a Google provider".into(),
+        ));
+    }
     let spec = match config.agent.as_str() {
         "codex" => CommandSpec {
             program: "codex".into(),
@@ -457,7 +454,11 @@ fn command_for(
         },
         "aider" => CommandSpec {
             program: "aider".into(),
-            args: vec!["--message".into()],
+            args: vec![
+                "--model".into(),
+                config.model.clone(),
+                "--message".into(),
+            ],
             append_prompt: true,
         },
         "opencode" => CommandSpec {
@@ -734,6 +735,26 @@ mod tests {
         assert_eq!(command.args[0], "--provider");
         assert_eq!(command.args[1], "cli2key");
         assert!(command.args.contains(&"--print".into()));
+        assert!(command.append_prompt);
+    }
+
+    #[test]
+    fn aider_cli2key_uses_the_selected_model_and_message_mode() {
+        let config = BenchmarkConfig {
+            agent: "aider".into(),
+            workload: "bug-fix".into(),
+            provider: "cli2key".into(),
+            model: "gpt-6.1-sol".into(),
+            workspace: "workspace".into(),
+            log_file: "run.log".into(),
+            measurements: None,
+        };
+        let command = command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt")
+            .expect("aider has an OpenAI-compatible command");
+        assert_eq!(command.program, "aider");
+        assert_eq!(command.args[0], "--model");
+        assert_eq!(command.args[1], "gpt-6.1-sol");
+        assert!(command.args.contains(&"--message".into()));
         assert!(command.append_prompt);
     }
 

@@ -348,10 +348,19 @@ impl Session {
         let Some(data) = self.perf_data.as_ref() else {
             return Ok(());
         };
-        let Some(collapse) = std::env::var_os("ASB_FLAMEGRAPH_STACKCOLLAPSE") else {
-            return Ok(());
-        };
-        let Some(render) = std::env::var_os("ASB_FLAMEGRAPH_RENDER") else {
+        let collapse = std::env::var_os("ASB_FLAMEGRAPH_STACKCOLLAPSE").or_else(|| {
+            self.tool_dir
+                .as_ref()
+                .map(|dir| dir.join("bin/stackcollapse-perf.pl").into_os_string())
+                .filter(|path| Path::new(path).is_file())
+        });
+        let render = std::env::var_os("ASB_FLAMEGRAPH_RENDER").or_else(|| {
+            self.tool_dir
+                .as_ref()
+                .map(|dir| dir.join("bin/flamegraph").into_os_string())
+                .filter(|path| Path::new(path).is_file())
+        });
+        let (Some(collapse), Some(render)) = (collapse, render) else {
             return Ok(());
         };
         let script = self
@@ -566,9 +575,19 @@ fn usage_from_text(text: &str) -> TokenUsage {
     {
         usage = usage.add(usage_from_json(&value));
     }
-    for line in text.lines() {
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
             usage = usage.add(usage_from_json(&value));
+            continue;
+        }
+        if line.to_ascii_lowercase().contains("tokens used")
+            && let Some(value) = lines
+                .peek()
+                .and_then(|next| next.trim().replace(',', "").parse::<u64>().ok())
+        {
+            usage.total_tokens = Some(value);
+            let _ = lines.next();
             continue;
         }
         usage = usage.add(usage_from_key_values(line));
@@ -850,6 +869,13 @@ mod tests {
         assert_eq!(usage.output_tokens, Some(5));
         assert_eq!(usage.cached_tokens, Some(2));
         assert_eq!(usage.total_tokens, Some(13));
+        assert_eq!(usage.source.as_deref(), Some("agent-output"));
+    }
+
+    #[test]
+    fn parses_human_agent_token_summary() {
+        let usage = token_usage_from_sources("cli2key", "codex", "tokens used\n42,567\n", "", None);
+        assert_eq!(usage.total_tokens, Some(42_567));
         assert_eq!(usage.source.as_deref(), Some("agent-output"));
     }
 

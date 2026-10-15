@@ -22,6 +22,7 @@ enum Recipe {
     Host {
         executable: &'static str,
     },
+    Flamegraph,
 }
 
 struct ExternalWorkload {
@@ -213,9 +214,7 @@ fn recipe(name: &str) -> Option<Recipe> {
         "bpftrace" => Some(Recipe::Host {
             executable: "bpftrace",
         }),
-        "flamegraph" => Some(Recipe::Host {
-            executable: "flamegraph",
-        }),
+        "flamegraph" => Some(Recipe::Flamegraph),
         _ => None,
     }
 }
@@ -523,6 +522,26 @@ fn install_recipe(recipe: Recipe, root: &Path) -> Result<PathBuf, Error> {
             make_executable(&destination)?;
             return Ok(destination);
         }
+        Recipe::Flamegraph => {
+            let bin = root.join("bin");
+            fs::create_dir_all(&bin)
+                .map_err(|error| Error::Io(format!("cannot create {}: {error}", bin.display())))?;
+            for (name, url) in [
+                (
+                    "stackcollapse-perf.pl",
+                    "https://raw.githubusercontent.com/brendangregg/FlameGraph/41fee1f99f9276008b7cd112fca19dc3ea84ac32/stackcollapse-perf.pl",
+                ),
+                (
+                    "flamegraph",
+                    "https://raw.githubusercontent.com/brendangregg/FlameGraph/41fee1f99f9276008b7cd112fca19dc3ea84ac32/flamegraph.pl",
+                ),
+            ] {
+                let destination = bin.join(name);
+                install_source(url, &destination, "flamegraph tool")?;
+                make_executable(&destination)?;
+            }
+            return Ok(bin.join("flamegraph"));
+        }
     }
     .map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -530,6 +549,7 @@ fn install_recipe(recipe: Recipe, root: &Path) -> Result<PathBuf, Error> {
                 Recipe::Npm { .. } => "npm",
                 Recipe::Python { .. } => "python3",
                 Recipe::Host { .. } => "host measurement binary",
+                Recipe::Flamegraph => "curl",
             };
             missing_dependency(dependency, "agent installation", error)
         } else {
@@ -563,6 +583,7 @@ fn executable(recipe: Recipe, root: &Path) -> PathBuf {
         Recipe::Npm { executable, .. } => root.join("node_modules/.bin").join(executable),
         Recipe::Python { executable, .. } => root.join("venv/bin").join(executable),
         Recipe::Host { executable } => root.join("bin").join(executable),
+        Recipe::Flamegraph => root.join("bin").join("flamegraph"),
     }
 }
 
@@ -586,6 +607,10 @@ fn describe(recipe: Recipe, root: &Path) -> String {
         Recipe::Host { executable } => {
             format!("copy host `{executable}` into {}/bin", root.display())
         }
+        Recipe::Flamegraph => format!(
+            "download pinned FlameGraph scripts into {}/bin",
+            root.display()
+        ),
     }
 }
 
@@ -602,6 +627,7 @@ fn tool_summary(recipe: Recipe) -> String {
             ..
         } => format!("python {package} -> {executable}"),
         Recipe::Host { executable } => format!("host binary -> {executable}"),
+        Recipe::Flamegraph => "pinned FlameGraph scripts -> flamegraph".into(),
     }
 }
 

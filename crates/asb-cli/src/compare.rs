@@ -59,13 +59,34 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
         let measurement_dir = result_dir.join("measurements");
         let run_path = measurement_dir.join("run.json");
         if !run_path.is_file() {
-            return Err(Error::Input(format!(
-                "missing measurements for {}: expected {} (run the sweep first with measurements enabled)",
-                config.display(),
-                run_path.display()
-            )));
+            benchmark_data.push((
+                format!("{index:03}-{}", safe_name(&config)),
+                result_dir,
+                BTreeMap::new(),
+                BTreeMap::new(),
+                Some(format!(
+                    "missing measurements: expected {} (run entry failed before writing measurements)",
+                    run_path.display()
+                )),
+            ));
+            continue;
         }
         let run_value = read_json(&run_path)?;
+        let run_status = if run_value.get("success") == Some(&Value::Bool(false)) {
+            Some(format!(
+                "benchmark run failed (status={}, exit_code={})",
+                run_value
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown"),
+                run_value
+                    .get("exit_code")
+                    .map(Value::to_string)
+                    .unwrap_or_else(|| "null".into())
+            ))
+        } else {
+            None
+        };
         let mut metrics = BTreeMap::new();
         flatten_numbers("", &run_value, &mut metrics);
         let mut series = BTreeMap::new();
@@ -98,12 +119,13 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             result_dir,
             metrics,
             series,
+            run_status,
         ));
     }
 
     let mut metric_values: BTreeMap<String, Vec<(String, f64)>> = BTreeMap::new();
     let mut series_values: BTreeMap<String, Vec<(String, Vec<f64>)>> = BTreeMap::new();
-    for (label, _, metrics, series) in &benchmark_data {
+    for (label, _, metrics, series, _) in &benchmark_data {
         for (name, value) in metrics {
             metric_values
                 .entry(name.clone())
@@ -133,8 +155,8 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
         "sweep": sweep_path,
         "results_directory": sweep_results,
         "comparison_directory": comparison_dir,
-        "benchmarks": benchmark_data.iter().map(|(label, directory, metrics, series)| json!({
-            "name": label, "directory": directory, "metrics": metrics, "series": series
+        "benchmarks": benchmark_data.iter().map(|(label, directory, metrics, series, status)| json!({
+            "name": label, "directory": directory, "metrics": metrics, "series": series, "status": status
         })).collect::<Vec<_>>(),
         "graphs": graphs,
     });
@@ -374,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_measurements() {
+    fn records_missing_measurements_without_discarding_sweep_results() {
         let root = std::env::temp_dir().join(format!(
             "asb-compare-missing-{}",
             SystemTime::now()
@@ -389,8 +411,10 @@ mod tests {
         )
         .unwrap();
         std::fs::write(root.join("sweep.toml"), "configs=[\"one.toml\"]\n").unwrap();
-        let error = run(root.join("sweep.toml").to_str().unwrap(), &mut Vec::new()).unwrap_err();
-        assert!(error.to_string().contains("missing measurements"));
+        run(root.join("sweep.toml").to_str().unwrap(), &mut Vec::new()).unwrap();
+        let summary =
+            std::fs::read_to_string(root.join("results/sweep-comparison/comparison.json")).unwrap();
+        assert!(summary.contains("missing measurements"));
         let _ = std::fs::remove_dir_all(root);
     }
 }

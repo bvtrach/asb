@@ -96,7 +96,18 @@ pub fn run(
             ))
         })?;
         let isolated = isolated_config(&config, &result_dir);
-        let isolated_path = result_dir.join("benchmark.toml");
+        // Pass an absolute path to the runner.  Relative paths inside a sweep
+        // result directory can make project discovery resolve against the
+        // result path rather than the owning benchmark project.
+        let isolated_path = result_dir
+            .canonicalize()
+            .map_err(|error| {
+                Error::Run(format!(
+                    "cannot resolve isolated benchmark {}: {error}",
+                    result_dir.display()
+                ))
+            })?
+            .join("benchmark.toml");
         let serialized = toml::to_string_pretty(&isolated)
             .map_err(|error| Error::Run(format!("cannot render sweep benchmark: {error}")))?;
         std::fs::write(&isolated_path, serialized).map_err(|error| {
