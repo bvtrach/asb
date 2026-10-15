@@ -2,6 +2,7 @@
 
 mod benchmark;
 mod config;
+mod providers;
 mod runner;
 
 use std::ffi::OsString;

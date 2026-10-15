@@ -14,3 +14,7 @@ cargo build --locked
 ```
 
 The agent executable must already be installed and available on `PATH`.
+Credentials come from the environment used to launch ASB. For example,
+OpenRouter agents can use `OPENROUTER_API_KEY`; cli2key integrations can use
+`CLI2KEY_API_KEY` and `CLI2KEY_BASE_URL`. ASB does not store or inspect these
+values.

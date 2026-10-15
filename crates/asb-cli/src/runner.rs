@@ -2,6 +2,7 @@
 
 use super::{Error, io_error, read_config};
 use crate::benchmark::{BenchmarkConfig, prompt_for};
+use crate::providers;
 use serde::Serialize;
 use std::io::Write;
 use std::path::Path;
@@ -46,14 +47,14 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
     let prompt = prompt_for(&config.workload);
     let (program, args) = command_for(&config);
     let started = Instant::now();
-    let child = Command::new(&program)
+    let mut command = Command::new(&program);
+    command
         .args(args)
         .arg(prompt)
         .current_dir(&workspace)
-        .env("ASB_PROVIDER", &config.provider)
-        .env("ASB_MODEL", &config.model)
-        .env("OPENROUTER_MODEL", &config.model)
-        .stdin(Stdio::null())
+        .stdin(Stdio::null());
+    providers::configure(&mut command, &config.provider, &config.model);
+    let child = command
         .output()
         .map_err(|error| Error::Run(format!("could not start {program}: {error}")))?;
     let result = RunResult {
