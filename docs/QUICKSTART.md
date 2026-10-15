@@ -66,11 +66,14 @@ The built-in recipes are:
 | --- | --- | --- |
 | `codex` | pinned npm package | `codex` |
 | `opencode` | pinned npm package | `opencode` |
+| `codeagent` | pinned npm package | `code-agent` |
+| `workbuddy` | pinned npm package | `codebuddy` |
 | `gemini` | pinned npm package | `gemini` |
 | `qwen-code` | pinned npm package | `qwen` |
 | `aider` | pinned Python package | `aider` |
 | `mini-swe` | pinned Python package | `mini` |
 | `openhands` | pinned Python package | `openhands` |
+| `openjiuwen` | pinned Python package | `openjiuwen` |
 | `cli2key` | pinned npm bridge package | `codex-bridge` |
 
 The npm recipes require `npm`; the Python recipes require `python3` with

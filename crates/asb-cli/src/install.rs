@@ -28,6 +28,14 @@ fn recipe(name: &str) -> Option<Recipe> {
             package: "opencode-ai@1.19.0",
             executable: "opencode",
         }),
+        "codeagent" => Some(Recipe::Npm {
+            package: "@bryanhu/code-agent@1.14.1",
+            executable: "code-agent",
+        }),
+        "workbuddy" => Some(Recipe::Npm {
+            package: "@tencent-ai/codebuddy-code@2.167.0",
+            executable: "codebuddy",
+        }),
         "gemini" => Some(Recipe::Npm {
             package: "@google/gemini-cli@0.64.0",
             executable: "gemini",
@@ -47,6 +55,10 @@ fn recipe(name: &str) -> Option<Recipe> {
         "openhands" => Some(Recipe::Python {
             package: "openhands==1.16.0",
             executable: "openhands",
+        }),
+        "openjiuwen" => Some(Recipe::Python {
+            package: "openjiuwen[cli]==0.1.19.post2",
+            executable: "openjiuwen",
         }),
         "cli2key" => Some(Recipe::Npm {
             package: "codex-anthropic-bridge@0.1.10",
@@ -205,6 +217,8 @@ fn parse_workload(args: &[String]) -> Result<(String, String, PathBuf), Error> {
 
 fn executable_name(agent: &str) -> &str {
     match agent {
+        "codeagent" => "code-agent",
+        "workbuddy" => "codebuddy",
         "qwen-code" => "qwen",
         "mini-swe" => "mini",
         other => other,
@@ -306,11 +320,14 @@ mod tests {
         for agent in [
             "codex",
             "opencode",
+            "codeagent",
+            "workbuddy",
             "gemini",
             "qwen-code",
             "aider",
             "mini-swe",
             "openhands",
+            "openjiuwen",
             "cli2key",
         ] {
             let recipe = recipe(agent).expect("documented agent has a recipe");

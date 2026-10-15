@@ -131,6 +131,8 @@ fn local_agent(agent: &str, project_root: &Path, tools_dir: &str) -> Option<Stri
         "qwen-code" => "qwen",
         "mini-swe" => "mini",
         "cli2key" => "codex-bridge",
+        "codeagent" => "code-agent",
+        "workbuddy" => "codebuddy",
         other => other,
     };
     let mut candidates = Vec::new();
