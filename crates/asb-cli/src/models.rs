@@ -54,8 +54,11 @@ fn discover(provider: &str) -> Result<Vec<String>, Error> {
         return parse_models(&body, spec.kind);
     }
     if let Some(credential) = spec.credential {
-        if std::env::var_os(credential).is_none() {
-            return Err(Error::Input(format!("missing {credential}")));
+        if providers::credential(provider).is_none() {
+            return Err(Error::Input(format!(
+                "missing {credential} or ~/.api_key_{}",
+                spec.name
+            )));
         }
     }
     if spec.url().is_none() {
@@ -142,8 +145,9 @@ fn curl_config(
     if let Some(credential) = spec.credential {
         let key = match key_override {
             Some(value) => value.to_owned(),
-            None => std::env::var(credential)
-                .map_err(|_| Error::Input(format!("missing {credential}")))?,
+            None => providers::credential(spec.name).ok_or_else(|| {
+                Error::Input(format!("missing {credential} or ~/.api_key_{}", spec.name))
+            })?,
         };
         if key.contains('\n') || key.contains('\r') {
             return Err(Error::Input(format!(

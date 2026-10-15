@@ -24,10 +24,12 @@ make install
 ./target/debug/asb run benchmark.toml
 ```
 
-Credentials come from the environment used to launch ASB. For example,
+Credentials normally come from the environment used to launch ASB. For example,
 OpenRouter agents can use `OPENROUTER_API_KEY`; cli2key integrations can use
 `CLI2KEY_API_KEY` and `CLI2KEY_BASE_URL`. ASB does not store or inspect these
-values. `asb provider models openrouter` uses the same environment to print the current
+values. If the environment variable is absent, ASB checks the bounded local
+file `$HOME/.api_key_<provider>` (such as `$HOME/.api_key_openrouter`) without
+printing it. `asb provider models openrouter` uses the same credential lookup to print the current
 catalog; `asb provider models --json` queries every supported provider and reports
 missing credentials or unavailable endpoints individually.
 

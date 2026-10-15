@@ -32,6 +32,8 @@ or omit it to query every supported provider and report unavailable providers
 without stopping the rest. Use `--json` for machine-readable output. Model
 discovery uses the provider credential and endpoint environment variables but
 never writes or prints credential values.
+When an environment credential is absent, ASB also checks the bounded local
+file `$HOME/.api_key_<provider>` (for example `$HOME/.api_key_openrouter`).
 For `cli2key`, `asb tool install cli2key` refreshes the local bridge key, and
 `asb provider models cli2key` starts the project-local bridge and discovers its
 available Codex models without requiring `CLI2KEY_API_KEY`.

@@ -1,5 +1,10 @@
 //! Small provider registry for environment-driven integrations.
 
+use std::fs;
+use std::path::{Path, PathBuf};
+
+const MAX_KEY_FILE_BYTES: u64 = 4096;
+
 /// One provider's conventional environment names.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProviderSpec {
@@ -257,12 +262,43 @@ pub fn model_spec(name: &str) -> Option<ModelSpec> {
     })
 }
 
+/// Resolve a provider credential from the environment or the user's local key file.
+///
+/// Environment variables take precedence. Key files are bounded and never printed;
+/// they are intended only as a convenience for local development.
+pub fn credential(name: &str) -> Option<String> {
+    let spec = model_spec(name)?;
+    let variable = spec.credential?;
+    if let Some(value) = std::env::var_os(variable) {
+        let value = value.to_string_lossy().trim().to_owned();
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    let home = std::env::var_os("HOME")?;
+    read_key_file(Path::new(&home).join(format!(".api_key_{}", spec.name)))
+}
+
+fn read_key_file(path: PathBuf) -> Option<String> {
+    let metadata = fs::metadata(path.as_path()).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_KEY_FILE_BYTES {
+        return None;
+    }
+    let value = fs::read_to_string(path).ok()?.trim().to_owned();
+    (!value.is_empty() && !value.contains(['\r', '\n'])).then_some(value)
+}
+
 /// Add provider-neutral and provider-specific selection variables to a child.
 ///
-/// The child inherits the complete parent environment, so credential values
-/// are never read or copied by ASB. Only non-secret selection metadata is set.
+/// The child inherits the parent environment. If a local key file is used,
+/// its bounded credential is injected into the child without being printed.
 pub fn configure(command: &mut std::process::Command, provider: &str, model: &str) {
     let selected = spec(provider);
+    if let Some(variable) = selected.credential {
+        if let Some(value) = credential(provider) {
+            command.env(variable, value);
+        }
+    }
     command
         .env("ASB_PROVIDER", provider)
         .env("ASB_MODEL", model);
@@ -291,7 +327,8 @@ pub fn configure(command: &mut std::process::Command, provider: &str, model: &st
 
 #[cfg(test)]
 mod tests {
-    use super::{ProviderSpec, spec};
+    use super::{ProviderSpec, read_key_file, spec};
+    use std::fs;
 
     #[test]
     fn known_and_custom_providers_are_configurable() {
@@ -304,5 +341,15 @@ mod tests {
             }
         );
         assert_eq!(spec("my-provider").name, "custom");
+    }
+
+    #[test]
+    fn key_file_reader_trims_bounded_single_line_keys() {
+        let path = std::env::temp_dir().join(format!("asb-provider-key-{}", std::process::id()));
+        fs::write(&path, "  test-key\n").expect("key file writes");
+        assert_eq!(read_key_file(path.clone()).as_deref(), Some("test-key"));
+        fs::write(&path, "first\nsecond").expect("invalid key writes");
+        assert!(read_key_file(path.clone()).is_none());
+        let _ = fs::remove_file(path);
     }
 }

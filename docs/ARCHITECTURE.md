@@ -20,9 +20,10 @@ The CLI is the stable user boundary. A benchmark configuration names an agent,
 workload, provider, model, and workspace. Provider credentials are never stored
 in that file. The runner passes provider/model selection through environment
 variables and gives the selected agent one bounded workload prompt.
-Provider credentials are never inspected by ASB: the child agent inherits the
-parent environment. Known providers document conventional credential and
-endpoint variable names, while any custom provider name is accepted unchanged.
+Provider credentials are not stored in benchmark configuration. Known providers
+document conventional credential and endpoint variable names; model discovery
+and child launch use the environment first and then a bounded
+`$HOME/.api_key_<provider>` file. Any custom provider name is accepted unchanged.
 The `provider models` command is the one exception that reads the selected credential
 only long enough to send a catalog request; it sends it through curl's stdin
 configuration, never includes it in arguments or output, and never stores it.
