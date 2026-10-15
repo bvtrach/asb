@@ -1,6 +1,7 @@
 //! Pre-run environment preparation hooks.
 
 use crate::Error;
+use std::path::Path;
 use std::process::Command;
 
 /// Apply provider-specific preparation immediately before launching an agent.
@@ -11,9 +12,17 @@ pub fn apply(
     model: &str,
     codex_executable: Option<&str>,
     cli2key: Option<(&str, &str)>,
+    pi_config_dir: Option<&Path>,
 ) -> Result<(), Error> {
     if provider.eq_ignore_ascii_case("cli2key") {
-        prepare_cli2key(command, agent, model, codex_executable, cli2key)?;
+        prepare_cli2key(
+            command,
+            agent,
+            model,
+            codex_executable,
+            cli2key,
+            pi_config_dir,
+        )?;
     }
     Ok(())
 }
@@ -24,6 +33,7 @@ fn prepare_cli2key(
     model: &str,
     codex_executable: Option<&str>,
     cli2key: Option<(&str, &str)>,
+    pi_config_dir: Option<&Path>,
 ) -> Result<(), Error> {
     let (key, base_url) = cli2key.ok_or_else(|| {
         Error::Run(
@@ -44,6 +54,15 @@ fn prepare_cli2key(
         .env("ANTHROPIC_BASE_URL", base_url.trim_end_matches("/v1"));
     if agent.eq_ignore_ascii_case("opencode") {
         command.env("OPENCODE_CONFIG_CONTENT", opencode_config(model, base_url)?);
+    }
+    if agent.eq_ignore_ascii_case("pi") {
+        let directory = pi_config_dir.ok_or_else(|| {
+            Error::Run(
+                "cannot configure Pi cli2key provider without a project-local Pi config directory"
+                    .into(),
+            )
+        })?;
+        configure_pi(command, directory, model, base_url)?;
     }
     if agent.eq_ignore_ascii_case("qwen-code") {
         command
@@ -72,6 +91,44 @@ fn prepare_cli2key(
     if let Some(executable) = codex_executable {
         command.env("CLI2KEY_CODEX_BIN", executable);
     }
+    Ok(())
+}
+
+fn configure_pi(
+    command: &mut Command,
+    directory: &Path,
+    model: &str,
+    base_url: &str,
+) -> Result<(), Error> {
+    std::fs::create_dir_all(directory).map_err(|error| {
+        Error::Run(format!(
+            "cannot create Pi provider configuration directory: {error}"
+        ))
+    })?;
+    let configuration = serde_json::json!({
+        "providers": {
+            "cli2key": {
+                "baseUrl": base_url,
+                "api": "openai-responses",
+                "apiKey": "CLI2KEY_API_KEY",
+                "models": [{
+                    "id": model,
+                    "name": model,
+                    "reasoning": true,
+                    "input": ["text"],
+                    "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                    "contextWindow": 128000,
+                    "maxTokens": 16384
+                }]
+            }
+        }
+    });
+    let path = directory.join("models.json");
+    let content = serde_json::to_vec_pretty(&configuration)
+        .map_err(|error| Error::Run(format!("cannot render Pi provider configuration: {error}")))?;
+    std::fs::write(&path, content)
+        .map_err(|error| Error::Run(format!("cannot write {}: {error}", path.display())))?;
+    command.env("PI_CODING_AGENT_DIR", directory);
     Ok(())
 }
 
@@ -113,6 +170,7 @@ mod tests {
             "gpt-test",
             Some("/project/codex"),
             Some(("cb_test", "http://127.0.0.1:3456/v1")),
+            None,
         )
         .expect("preparation succeeds");
         let values = command
@@ -160,5 +218,31 @@ mod tests {
             config["provider"]["cli2key"]["options"]["apiKey"],
             "{env:CLI2KEY_API_KEY}"
         );
+    }
+
+    #[test]
+    fn pi_cli2key_preparation_writes_project_local_provider_config() {
+        let directory = std::env::temp_dir().join(format!("asb-pi-config-{}", std::process::id()));
+        let mut command = Command::new("pi");
+        apply(
+            &mut command,
+            "pi",
+            "cli2key",
+            "gpt-6.1-sol",
+            None,
+            Some(("cb_test", "http://127.0.0.1:3456/v1")),
+            Some(&directory),
+        )
+        .expect("Pi preparation succeeds");
+        let config: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(directory.join("models.json")).expect("Pi config exists"),
+        )
+        .expect("Pi config is JSON");
+        assert_eq!(config["providers"]["cli2key"]["api"], "openai-responses");
+        assert_eq!(
+            config["providers"]["cli2key"]["models"][0]["id"],
+            "gpt-6.1-sol"
+        );
+        let _ = std::fs::remove_dir_all(directory);
     }
 }

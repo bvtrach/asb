@@ -85,10 +85,14 @@ those combinations before launch. `codeagent` is a web-server-only binary and
 has no non-interactive workload command.
 
 Built-in tool recipes install pinned releases into the project (and do not
-modify global tools): `codex`, `opencode`, `codeagent`, `workbuddy`, `gemini`,
+modify global tools): `codex`, `pi`, `opencode`, `codeagent`, `workbuddy`, `gemini`,
 `qwen-code`, and `cli2key` use npm; `aider`, `mini-swe`, `openhands`, and
 `openjiuwen` use an isolated Python virtual environment. Any other agent can
 be installed from a local executable or URL with `--source`.
+
+Pi is run in non-interactive print mode. With `provider = "cli2key"`, ASB
+maps the request to Pi's OpenAI-compatible provider and supplies the bridge
+endpoint and generated API key through the child environment.
 
 The CLI is intentionally modular. Configuration, workload prompts, process
 execution, and optional measurements are separate modules so recording/replay,

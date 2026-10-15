@@ -147,6 +147,7 @@ pub fn load(start: &Path) -> Result<(PathBuf, ProjectConfig), Error> {
     } else {
         start
             .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf()
     };

@@ -18,6 +18,7 @@ use std::time::Instant;
 const MAX_OUTPUT: usize = 1024 * 1024;
 const BUILTIN_AGENTS: &[&str] = &[
     "codex",
+    "pi",
     "opencode",
     "codeagent",
     "workbuddy",
@@ -54,6 +55,11 @@ pub fn run(
     let config: BenchmarkConfig = toml::from_str(&text)
         .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
     let (project_root, project_config) = project::load(config_path)?;
+    let project_root = project_root.canonicalize().map_err(|error| {
+        Error::Input(format!(
+            "cannot resolve benchmark project directory: {error}"
+        ))
+    })?;
     let workspace_name = if config.workspace == "asb-workspace" {
         &project_config.workspace_dir
     } else {
@@ -116,6 +122,10 @@ pub fn run(
         bridge
             .as_ref()
             .map(|value| (value.api_key(), value.base_url())),
+        (config.agent.eq_ignore_ascii_case("pi")
+            && config.provider.eq_ignore_ascii_case("cli2key"))
+        .then(|| project::resolve(&project_root, &project_config.tools_dir).join("pi/config"))
+        .as_deref(),
     )?;
     let configured_measurements = config
         .measurements
@@ -265,6 +275,17 @@ fn command_for(
             ],
             append_prompt: true,
         },
+        "pi" => CommandSpec {
+            program: "pi".into(),
+            args: vec![
+                "--provider".into(),
+                pi_provider(config),
+                "--model".into(),
+                config.model.clone(),
+                "--print".into(),
+            ],
+            append_prompt: true,
+        },
         "aider" => CommandSpec {
             program: "aider".into(),
             args: vec!["--message".into()],
@@ -356,6 +377,10 @@ fn opencode_model(config: &BenchmarkConfig) -> String {
     } else {
         config.model.clone()
     }
+}
+
+fn pi_provider(config: &BenchmarkConfig) -> String {
+    config.provider.clone()
 }
 
 fn local_agent(agent: &str, project_root: &Path, tools_dir: &str) -> Option<String> {
@@ -462,6 +487,25 @@ mod tests {
         assert_eq!(command.program, "openhands");
         assert!(!command.append_prompt);
         assert_eq!(command.args.last().map(String::as_str), Some("prompt"));
+    }
+
+    #[test]
+    fn pi_cli2key_uses_openai_bridge_and_print_mode() {
+        let config = BenchmarkConfig {
+            agent: "pi".into(),
+            workload: "bug-fix".into(),
+            provider: "cli2key".into(),
+            model: "gpt-6.1-sol".into(),
+            workspace: "workspace".into(),
+            measurements: None,
+        };
+        let command = command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt")
+            .expect("pi has a command");
+        assert_eq!(command.program, "pi");
+        assert_eq!(command.args[0], "--provider");
+        assert_eq!(command.args[1], "cli2key");
+        assert!(command.args.contains(&"--print".into()));
+        assert!(command.append_prompt);
     }
 
     #[test]

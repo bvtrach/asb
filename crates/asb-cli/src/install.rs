@@ -32,6 +32,7 @@ struct BundleSpec {
 
 const BUILTIN_AGENTS: &[&str] = &[
     "codex",
+    "pi",
     "opencode",
     "codeagent",
     "workbuddy",
@@ -142,6 +143,10 @@ fn recipe(name: &str) -> Option<Recipe> {
         "codex" => Some(Recipe::Npm {
             package: "@openai/codex@0.162.1",
             executable: "codex",
+        }),
+        "pi" => Some(Recipe::Npm {
+            package: "@mariozechner/pi-coding-agent@0.73.1",
+            executable: "pi",
         }),
         "opencode" => Some(Recipe::Npm {
             package: "opencode-ai@1.19.0",
@@ -674,6 +679,7 @@ mod tests {
     fn built_in_recipes_cover_all_documented_agents() {
         for agent in [
             "codex",
+            "pi",
             "opencode",
             "codeagent",
             "workbuddy",
@@ -697,6 +703,7 @@ mod tests {
         tool_list(&mut output).expect("tool list succeeds");
         let text = String::from_utf8(output).expect("utf8");
         assert!(text.contains("codeagent"));
+        assert!(text.contains("pi"));
         assert!(text.contains("openjiuwen"));
         assert!(text.contains("custom"));
     }
