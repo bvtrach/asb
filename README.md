@@ -7,6 +7,7 @@ agent/workload, create a configuration, then run it:
 asb init [PROJECT_DIR] [--reset]
 asb tool list
 asb tool install AGENT
+asb tool install llmtape
 asb workload list
 asb workload install SOURCE.txt|URL
 asb provider models [PROVIDER]
@@ -54,8 +55,8 @@ for one run.
 
 `asb record CONFIG` runs the same configuration through the local `llmtape`
 proxy and writes a JSONL cassette (by default below `cassettes/` next to the
-configuration). Install the proxy with `npm install -g llmtape`, or point ASB
-at another executable with `ASB_LLM_TAPE`. Use `--cassette FILE` to choose an
+configuration). Install the proxy project-locally with `asb tool install llmtape`,
+or point ASB at another executable with `ASB_LLM_TAPE`. Use `--cassette FILE` to choose an
 explicit path. `asb replay CONFIG` starts llmtape's cassette server and routes
 all supported provider endpoints to it; it refuses a missing cassette and does
 not start cli2key or connect to any live provider. Cassettes are local test
@@ -73,7 +74,7 @@ For `cli2key`, `asb tool install cli2key` refreshes the local bridge key, and
 available Codex models without requiring `CLI2KEY_API_KEY`.
 
 Every command and subcommand has concise help; use `asb COMMAND --help`.
-`asb tool list` shows all built-in agent installers and `asb workload list`
+`asb tool list` shows all built-in agent and support-tool installers and `asb workload list`
 shows the `.txt` prompts available in the current project plus installable
 external workload aliases. Install one by its short name, for example
 `asb workload install swe-bench`; ASB fetches the pinned upstream source into

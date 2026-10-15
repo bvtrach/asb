@@ -152,7 +152,13 @@ fn run_mode(
             &config.provider,
             bridge.as_ref().map(cli2key::Bridge::base_url),
         );
-        Some(tape::Session::start(mode, &cassette, upstream.as_deref())?)
+        let tape_executable = local_agent("llmtape", &project_root, &project_config.tools_dir);
+        Some(tape::Session::start(
+            mode,
+            &cassette,
+            upstream.as_deref(),
+            tape_executable.as_deref().map(Path::new),
+        )?)
     } else {
         None
     };

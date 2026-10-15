@@ -34,6 +34,7 @@ const TOOL_INSTALL_VALUES: &[&str] = &[
     "openhands",
     "openjiuwen",
     "cli2key",
+    "llmtape",
     "--source",
     "--dir",
     "--dry-run",

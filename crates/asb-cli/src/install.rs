@@ -30,7 +30,7 @@ struct BundleSpec {
     prompt: &'static str,
 }
 
-const BUILTIN_AGENTS: &[&str] = &[
+const BUILTIN_TOOLS: &[&str] = &[
     "codex",
     "pi",
     "opencode",
@@ -43,6 +43,7 @@ const BUILTIN_AGENTS: &[&str] = &[
     "openhands",
     "openjiuwen",
     "cli2key",
+    "llmtape",
 ];
 
 const EXTERNAL_WORKLOADS: &[ExternalWorkload] = &[
@@ -188,6 +189,10 @@ fn recipe(name: &str) -> Option<Recipe> {
             package: "codex-anthropic-bridge@0.1.10",
             executable: "codex-bridge",
         }),
+        "llmtape" => Some(Recipe::Npm {
+            package: "llmtape@1.2.0",
+            executable: "llmtape",
+        }),
         _ => None,
     }
 }
@@ -204,9 +209,9 @@ pub fn tool(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Erro
         }
         fs::create_dir_all(destination.parent().expect("bin parent"))
             .map_err(|error| Error::Io(format!("cannot create {}: {error}", root.display())))?;
-        install_source(&source, &destination, "agent")?;
+        install_source(&source, &destination, "tool")?;
         make_executable(&destination)?;
-        writeln!(output, "Installed agent {id} at {}", destination.display())
+        writeln!(output, "Installed tool {id} at {}", destination.display())
             .map_err(super::io_error)?;
         return Ok(());
     }
@@ -215,7 +220,7 @@ pub fn tool(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Erro
         None => {
             return Err(Error::Input(format!(
                 "{}; pass --source URL or PATH",
-                suggestions::unknown("agent", &id, BUILTIN_AGENTS)
+                suggestions::unknown("tool", &id, BUILTIN_TOOLS)
             )));
         }
     };
@@ -239,7 +244,8 @@ pub fn tool(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Erro
         writeln!(output, "Generated a local cli2key API key for project runs")
             .map_err(super::io_error)?;
     }
-    writeln!(output, "Installed agent {id} at {}", executable.display())
+    let kind = if id == "llmtape" { "tool" } else { "agent" };
+    writeln!(output, "Installed {kind} {id} at {}", executable.display())
         .map_err(super::io_error)?;
     Ok(())
 }
@@ -247,7 +253,7 @@ pub fn tool(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Erro
 /// List every built-in tool recipe and its project-local executable.
 pub fn tool_list(output: &mut dyn std::io::Write) -> Result<(), Error> {
     writeln!(output, "Available tools:").map_err(super::io_error)?;
-    for &name in BUILTIN_AGENTS {
+    for &name in BUILTIN_TOOLS {
         let plan = recipe(name).expect("listed tool has a recipe");
         writeln!(output, "  {name:<12} {}", tool_summary(plan)).map_err(super::io_error)?;
     }
@@ -508,7 +514,7 @@ fn parse_tool(args: &[String]) -> Result<(String, Option<String>, PathBuf, bool)
         .first()
         .filter(|value| valid_name(value))
         .cloned()
-        .ok_or(Error::Usage("tool install requires an agent name"))?;
+        .ok_or(Error::Usage("tool install requires a tool name"))?;
     let mut source = None;
     let (project_root, project_config) = project::load(Path::new("."))?;
     let mut root = project::resolve(&project_root, &project_config.tools_dir);
@@ -690,6 +696,7 @@ mod tests {
             "openhands",
             "openjiuwen",
             "cli2key",
+            "llmtape",
         ] {
             let recipe = recipe(agent).expect("documented agent has a recipe");
             assert!(!describe(recipe, Path::new(".asb-tools")).is_empty());
@@ -705,6 +712,7 @@ mod tests {
         assert!(text.contains("codeagent"));
         assert!(text.contains("pi"));
         assert!(text.contains("openjiuwen"));
+        assert!(text.contains("llmtape"));
         assert!(text.contains("custom"));
     }
 
