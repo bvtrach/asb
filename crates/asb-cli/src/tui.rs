@@ -225,7 +225,9 @@ impl App {
                 .label
                 .strip_suffix(" [trial set]")
                 .unwrap_or(&choice.label);
-            choice.availability = if workloads::load(name, &workloads).is_ok() {
+            choice.availability = if install::workload_available(name, &workloads)
+                || workloads::load(name, &workloads).is_ok()
+            {
                 Availability::Available
             } else {
                 Availability::Missing
@@ -1171,7 +1173,7 @@ fn install_setup_selection(
 
 fn workload_choices(root: &Path, directory: &str) -> Vec<Choice> {
     let path = project::resolve(root, directory);
-    let mut names = fs::read_dir(path)
+    let mut names = fs::read_dir(&path)
         .ok()
         .into_iter()
         .flat_map(|entries| entries.filter_map(Result::ok))
@@ -1201,13 +1203,29 @@ fn workload_choices(root: &Path, directory: &str) -> Vec<Choice> {
             .map(str::to_owned),
         );
     }
+    names.extend(install::external_workload_names().map(str::to_owned));
+    let external_names = install::external_workload_names()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
     names
         .into_iter()
-        .map(|label| Choice {
-            label,
-            provider: None,
-            model: None,
-            availability: Availability::Available,
+        .map(|label| {
+            let name = label.strip_suffix(" [trial set]").unwrap_or(&label);
+            let availability = if external_names.contains(name) {
+                install::workload_available(name, &path)
+            } else {
+                workloads::load(name, &path).is_ok()
+            };
+            Choice {
+                label,
+                provider: None,
+                model: None,
+                availability: if availability {
+                    Availability::Available
+                } else {
+                    Availability::Missing
+                },
+            }
         })
         .collect()
 }
@@ -1411,6 +1429,21 @@ mod tests {
                 ))
                 .all(|choice| choice.availability == Availability::Available)
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn setup_tui_lists_uninstalled_external_workloads() {
+        let root = std::env::temp_dir().join(format!("asb-setup-workloads-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let app = App::new(root.clone(), ProjectConfig::default());
+        let workload = app.panes[3]
+            .choices
+            .iter()
+            .find(|choice| choice.label == "terminal-bench")
+            .expect("external workload catalog entry");
+        assert_eq!(workload.availability, Availability::Missing);
         let _ = std::fs::remove_dir_all(root);
     }
 
