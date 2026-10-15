@@ -36,7 +36,7 @@ pub fn command(name: &str, output: &mut dyn Write) -> Result<(), Error> {
             "Usage: asb tool list\n\nList every built-in agent installer and its local executable."
         }
         "tool install" => {
-            "Usage: asb tool install AGENT [--source URL|PATH] [--dir DIR] [--dry-run]\n\nInstall a pinned built-in agent, or copy/download an executable with --source."
+            "Usage: asb tool install NAME [--source URL|PATH] [--dir DIR] [--dry-run]\n\nInstall a pinned built-in agent, or copy/download an executable with --source.\nThe special `cli2key` name installs the local provider bridge; it is not an agent."
         }
         "workload" => {
             "Usage: asb workload COMMAND\n\nCommands:\n  list                 List workload files in the project.\n  install SOURCE ...   Copy or download a workload prompt."

@@ -169,11 +169,15 @@ mod tests {
             vec!["workload", "list", "--help"],
             vec!["workload", "install", "--help"],
         ] {
+            let is_tool_install_help = words == ["tool", "install", "--help"];
             let args = words.into_iter().map(OsString::from).collect::<Vec<_>>();
             let mut stdout = Vec::new();
             let mut stderr = Vec::new();
             assert_eq!(run(&args, &mut stdout, &mut stderr), 0);
             assert!(String::from_utf8_lossy(&stdout).starts_with("Usage:"));
+            if is_tool_install_help {
+                assert!(String::from_utf8_lossy(&stdout).contains("provider bridge"));
+            }
             assert!(stderr.is_empty());
         }
     }
