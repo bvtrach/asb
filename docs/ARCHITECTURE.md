@@ -144,4 +144,9 @@ without opening the machine-readable summary. Collector stdout is never
 treated as a time series; only an explicit `series` array can produce a line
 graph. When perf permissions, samples, or FlameGraph tools are unavailable,
 `flamegraph.json` records an `unavailable` status and actionable reason instead
-of silently pretending that a flamegraph exists.
+of silently pretending that a flamegraph exists. Before the agent starts,
+perf and configured BPFTrace collectors run a bounded direct capability probe;
+only a collector whose probe needs elevation is retried with `sudo -n`. If
+that non-interactive authorization is unavailable, preparation stops and
+prints a scoped sudoers repair command rather than prompting or starting a
+partial benchmark.

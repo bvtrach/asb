@@ -6,7 +6,7 @@
 //! terminal output.
 
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -101,6 +101,7 @@ pub struct Session {
     collectors: Vec<Collector>,
     perf_data: Option<PathBuf>,
     perf_enabled: bool,
+    sudo_collectors: BTreeSet<String>,
 }
 
 impl Session {
@@ -117,6 +118,7 @@ impl Session {
         selected: &[String],
         tool_dir: Option<&Path>,
     ) -> Result<Self, String> {
+        let sudo_collectors = preflight_collectors(selected, tool_dir)?;
         fs::create_dir_all(dir)
             .map_err(|e| format!("cannot create measurements directory: {e}"))?;
         let started_unix_ms = unix_ms();
@@ -139,6 +141,7 @@ impl Session {
             collectors: Vec::new(),
             perf_data: None,
             perf_enabled: selected_or_env("perf", "ASB_MEASURE_PERF", selected),
+            sudo_collectors,
         };
         session.start_snapshot(
             "mpstat",
@@ -460,13 +463,23 @@ impl Session {
     }
 
     fn command(&self, name: &str) -> Command {
+        let executable = self.executable(name);
+        if self.sudo_collectors.contains(name) {
+            let mut command = Command::new("sudo");
+            command.args(["-n", "--"]).arg(executable);
+            return command;
+        }
+        Command::new(executable)
+    }
+
+    fn executable(&self, name: &str) -> PathBuf {
         if let Some(tool_dir) = &self.tool_dir {
             let local = tool_dir.join("bin").join(name);
             if local.is_file() {
-                return Command::new(local);
+                return local;
             }
         }
-        Command::new(name)
+        PathBuf::from(name)
     }
 }
 
@@ -1133,6 +1146,103 @@ fn env_true(name: &str) -> bool {
         Ok("1") | Ok("true") | Ok("yes")
     )
 }
+
+/// Probe privileged collectors before the benchmark starts. A direct probe is
+/// preferred; only collectors that actually fail the probe are retried with
+/// non-interactive sudo. This prevents a password prompt or a half-collected
+/// run from occurring after an agent has already started.
+fn preflight_collectors(
+    selected: &[String],
+    tool_dir: Option<&Path>,
+) -> Result<BTreeSet<String>, String> {
+    let mut sudo_collectors = BTreeSet::new();
+    let bpftrace_selected = selected_or_env("bpftrace", "ASB_MEASURE_BPFTRACE", selected)
+        && std::env::var_os("ASB_BPFTRACE_PROGRAMS").is_some();
+    let probes = [
+        (
+            "perf",
+            selected_or_env("perf", "ASB_MEASURE_PERF", selected),
+            vec!["stat", "-e", "task-clock", "--", "sleep", "0.01"],
+        ),
+        (
+            "bpftrace",
+            bpftrace_selected,
+            vec!["-e", "BEGIN { exit(); }"],
+        ),
+    ];
+    for (name, enabled, args) in probes {
+        if !enabled {
+            continue;
+        }
+        let executable = resolve_executable(tool_dir, name);
+        let direct = Command::new(&executable)
+            .args(&args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        match direct {
+            Ok(status) if status.success() => continue,
+            Ok(_) => {
+                let sudo = Command::new("sudo")
+                    .args(["-n", "--"])
+                    .arg(&executable)
+                    .args(&args)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                if sudo.is_ok_and(|status| status.success()) {
+                    sudo_collectors.insert(name.to_owned());
+                    continue;
+                }
+                return Err(passwordless_sudo_error(name, &executable));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(format!("cannot probe {name} collector: {error}"));
+            }
+        }
+    }
+    Ok(sudo_collectors)
+}
+
+fn resolve_executable(tool_dir: Option<&Path>, name: &str) -> PathBuf {
+    if let Some(tool_dir) = tool_dir {
+        let local = tool_dir.join("bin").join(name);
+        if local.is_file() {
+            return local;
+        }
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        for directory in std::env::split_paths(&path) {
+            let candidate = directory.join(name);
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+    }
+    PathBuf::from(name)
+}
+
+fn passwordless_sudo_error(name: &str, executable: &Path) -> String {
+    let command = sudoers_repair_command(name, executable);
+    format!(
+        "{name} collector needs elevated access, but its direct probe failed and passwordless sudo is unavailable.\nWhat to do: grant only this executable passwordless sudo, then rerun:\n  {command}\nThe generated rule should authorize `{}` for the current user; ASB never prompts for a sudo password.",
+        executable.display()
+    )
+}
+
+fn sudoers_repair_command(name: &str, executable: &Path) -> String {
+    let path = shell_quote(&executable.to_string_lossy());
+    let file = format!("/etc/sudoers.d/asb-{name}");
+    format!(
+        "sudo sh -c 'printf \"%s ALL=(root) NOPASSWD: {path}\\n\" \"$USER\" > {file} && chmod 440 {file} && visudo -cf {file}'"
+    )
+}
+
+fn shell_quote(value: &str) -> String {
+    value.replace('\'', "'\\''")
+}
+
 fn selected_or_env(name: &str, variable: &str, selected: &[String]) -> bool {
     selected.iter().any(|value| value == name) || env_true(variable)
 }
@@ -1290,6 +1400,16 @@ mod tests {
         assert_eq!(usage.output_tokens, Some(3));
         assert_eq!(usage.total_tokens, Some(5));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn passwordless_sudo_error_contains_a_scoped_repair_command() {
+        let message = passwordless_sudo_error("perf", Path::new("/usr/bin/perf"));
+        assert!(message.contains("passwordless sudo is unavailable"));
+        assert!(message.contains("sudo sh -c"));
+        assert!(message.contains("/etc/sudoers.d/asb-perf"));
+        assert!(message.contains("visudo -cf"));
+        assert!(message.contains("/usr/bin/perf"));
     }
 
     #[test]
