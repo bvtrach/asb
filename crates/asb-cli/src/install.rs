@@ -4,7 +4,7 @@ use crate::Error;
 use crate::project;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 #[derive(Clone, Copy)]
 enum Recipe {
@@ -174,6 +174,21 @@ pub fn tool(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Erro
         return Ok(());
     }
     let executable = install_recipe(plan, &root)?;
+    if id == "cli2key" {
+        let status = Command::new(&executable)
+            .args(["key", "refresh"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|error| Error::Io(format!("cannot refresh cli2key API key: {error}")))?;
+        if !status.success() {
+            return Err(Error::Io(
+                "cli2key was installed, but its local API key could not be generated".into(),
+            ));
+        }
+        writeln!(output, "Generated a local cli2key API key for project runs")
+            .map_err(super::io_error)?;
+    }
     writeln!(output, "Installed agent {id} at {}", executable.display())
         .map_err(super::io_error)?;
     Ok(())

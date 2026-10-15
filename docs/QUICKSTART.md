@@ -31,6 +31,16 @@ values. `asb provider models openrouter` uses the same environment to print the 
 catalog; `asb provider models --json` queries every supported provider and reports
 missing credentials or unavailable endpoints individually.
 
+For cli2key model discovery, install the bridge once and query it directly:
+
+```sh
+asb tool install cli2key
+asb provider models cli2key
+```
+
+The install refreshes the local bridge key. The query starts the project-local
+bridge, uses that key without printing it, and stops the bridge afterward.
+
 For a local cli2key bridge, install the bridge and select `--provider cli2key`:
 
 ```sh

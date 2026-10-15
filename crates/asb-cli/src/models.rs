@@ -1,9 +1,12 @@
 //! Live model discovery through provider model-list endpoints.
 
 use crate::Error;
+use crate::cli2key;
+use crate::project;
 use crate::providers;
 use serde_json::Value;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const MAX_RESPONSE: usize = 1024 * 1024;
@@ -35,7 +38,7 @@ fn parse_args(args: &[String]) -> Result<(Option<String>, bool), Error> {
         } else if provider.is_none() && providers::is_valid_name(arg) {
             provider = Some(arg.clone());
         } else {
-            return Err(Error::Usage("models accepts PROVIDER and --json"));
+            return Err(Error::Usage("provider models accepts PROVIDER and --json"));
         }
     }
     Ok((provider, json))
@@ -44,6 +47,12 @@ fn parse_args(args: &[String]) -> Result<(Option<String>, bool), Error> {
 fn discover(provider: &str) -> Result<Vec<String>, Error> {
     let spec = providers::model_spec(provider)
         .ok_or_else(|| Error::Input(format!("unsupported provider: {provider}")))?;
+    if provider.eq_ignore_ascii_case("cli2key") {
+        let bridge = cli2key::Bridge::connect(local_bridge_executable().as_deref())?;
+        let url = format!("{}/models", bridge.base_url().trim_end_matches('/'));
+        let body = fetch_authenticated(spec, &url, bridge.api_key())?;
+        return parse_models(&body, spec.kind);
+    }
     if let Some(credential) = spec.credential {
         if std::env::var_os(credential).is_none() {
             return Err(Error::Input(format!("missing {credential}")));
@@ -58,7 +67,24 @@ fn discover(provider: &str) -> Result<Vec<String>, Error> {
 }
 
 fn fetch(spec: providers::ModelSpec) -> Result<Vec<u8>, Error> {
-    let config = curl_config(spec)?;
+    let url = spec
+        .url()
+        .ok_or_else(|| Error::Input("provider model endpoint is not configured".into()))?;
+    let config = curl_config(spec, &url, None)?;
+    fetch_config(config, spec.name)
+}
+
+fn fetch_authenticated(spec: providers::ModelSpec, url: &str, key: &str) -> Result<Vec<u8>, Error> {
+    if url.contains(['\n', '\r']) || key.contains(['\n', '\r']) {
+        return Err(Error::Input(
+            "cli2key endpoint or key contains a newline".into(),
+        ));
+    }
+    let config = curl_config(spec, url, Some(key))?;
+    fetch_config(config, spec.name)
+}
+
+fn fetch_config(config: String, provider: &str) -> Result<Vec<u8>, Error> {
     let mut command = Command::new("curl");
     command.args([
         "--config",
@@ -93,8 +119,7 @@ fn fetch(spec: providers::ModelSpec) -> Result<Vec<u8>, Error> {
         .map_err(|error| Error::Io(format!("cannot finish model discovery request: {error}")))?;
     if !output.status.success() {
         return Err(Error::Input(format!(
-            "model discovery request failed for {}",
-            spec.name
+            "model discovery request failed for {provider}"
         )));
     }
     if output.stdout.len() > MAX_RESPONSE {
@@ -103,10 +128,11 @@ fn fetch(spec: providers::ModelSpec) -> Result<Vec<u8>, Error> {
     Ok(output.stdout)
 }
 
-fn curl_config(spec: providers::ModelSpec) -> Result<String, Error> {
-    let url = spec
-        .url()
-        .ok_or_else(|| Error::Input("provider model endpoint is not configured".into()))?;
+fn curl_config(
+    spec: providers::ModelSpec,
+    url: &str,
+    key_override: Option<&str>,
+) -> Result<String, Error> {
     if url.contains('\n') || url.contains('\r') {
         return Err(Error::Input(
             "provider endpoint contains invalid newline characters".into(),
@@ -114,8 +140,11 @@ fn curl_config(spec: providers::ModelSpec) -> Result<String, Error> {
     }
     let mut config = format!("url = \"{}\"\n", escape_config(&url));
     if let Some(credential) = spec.credential {
-        let key =
-            std::env::var(credential).map_err(|_| Error::Input(format!("missing {credential}")))?;
+        let key = match key_override {
+            Some(value) => value.to_owned(),
+            None => std::env::var(credential)
+                .map_err(|_| Error::Input(format!("missing {credential}")))?,
+        };
         if key.contains('\n') || key.contains('\r') {
             return Err(Error::Input(format!(
                 "{credential} contains invalid newline characters"
@@ -132,6 +161,22 @@ fn curl_config(spec: providers::ModelSpec) -> Result<String, Error> {
         config.push_str("header = \"anthropic-version: 2023-06-01\"\n");
     }
     Ok(config)
+}
+
+fn local_bridge_executable() -> Option<String> {
+    let (root, config) = project::load(Path::new(".")).ok()?;
+    let mut candidates = Vec::<PathBuf>::new();
+    if let Some(directory) = std::env::var_os("ASB_TOOL_DIR") {
+        candidates.push(PathBuf::from(directory).join("codex-bridge"));
+    }
+    candidates.push(
+        project::resolve(&root, &config.tools_dir).join("cli2key/node_modules/.bin/codex-bridge"),
+    );
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .and_then(|candidate| candidate.canonicalize().ok())
+        .map(|candidate| candidate.to_string_lossy().into_owned())
 }
 
 fn escape_config(value: &str) -> String {

@@ -38,6 +38,8 @@ URL, resolves a pinned external workload alias, or copies a local prompt into
 the configured workloads directory. External aliases install a short-name
 prompt adapter/description, not an upstream dataset or evaluator. These
 commands do not handle credentials.
+Installing `cli2key` also asks its bridge to refresh the local API key; model
+discovery and runs then start the bridge and use that key ephemerally.
 `asb tool list` and `asb workload list` expose these two catalogs without
 installing anything. Command-specific help is available with `--help`.
 The ASB source checkout is not a benchmark project: `init` rejects its

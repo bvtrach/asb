@@ -32,6 +32,9 @@ or omit it to query every supported provider and report unavailable providers
 without stopping the rest. Use `--json` for machine-readable output. Model
 discovery uses the provider credential and endpoint environment variables but
 never writes or prints credential values.
+For `cli2key`, `asb tool install cli2key` refreshes the local bridge key, and
+`asb provider models cli2key` starts the project-local bridge and discovers its
+available Codex models without requiring `CLI2KEY_API_KEY`.
 
 Every command and subcommand has concise help; use `asb COMMAND --help`.
 `asb tool list` shows all built-in agent installers and `asb workload list`
