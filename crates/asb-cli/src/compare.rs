@@ -20,6 +20,20 @@ struct SweepFile {
     configs: Vec<String>,
 }
 
+#[derive(Debug)]
+struct BenchmarkData {
+    label: String,
+    directory: PathBuf,
+    agent: String,
+    workload: String,
+    provider: String,
+    model: String,
+    metrics: BTreeMap<String, f64>,
+    series: BTreeMap<String, Vec<f64>>,
+    status: Option<String>,
+    artifacts: Vec<String>,
+}
+
 /// Compare all completed benchmark measurements referenced by a sweep.
 pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
     let sweep_path = Path::new(path);
@@ -62,17 +76,24 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
         let result_dir = sweep_results.join(format!("{index:03}-{}", safe_name(&config)));
         let measurement_dir = result_dir.join("measurements");
         let run_path = measurement_dir.join("run.json");
+        let (agent, workload, provider, model) = benchmark_identity(&config)?;
+        let artifacts = artifact_links(parent, &result_dir);
         if !run_path.is_file() {
-            benchmark_data.push((
-                format!("{index:03}-{}", safe_name(&config)),
-                result_dir,
-                BTreeMap::new(),
-                BTreeMap::new(),
-                Some(format!(
+            benchmark_data.push(BenchmarkData {
+                label: format!("{index:03}-{}", safe_name(&config)),
+                directory: result_dir,
+                agent,
+                workload,
+                provider,
+                model,
+                metrics: BTreeMap::new(),
+                series: BTreeMap::new(),
+                status: Some(format!(
                     "missing measurements: expected {} (run entry failed before writing measurements)",
                     run_path.display()
                 )),
-            ));
+                artifacts,
+            });
             continue;
         }
         let run_value = read_json(&run_path)?;
@@ -123,29 +144,34 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 }
             }
         }
-        benchmark_data.push((
-            format!("{index:03}-{}", safe_name(&config)),
-            result_dir,
+        benchmark_data.push(BenchmarkData {
+            label: format!("{index:03}-{}", safe_name(&config)),
+            directory: result_dir,
+            agent,
+            workload,
+            provider,
+            model,
             metrics,
             series,
-            run_status,
-        ));
+            status: run_status,
+            artifacts,
+        });
     }
 
     let mut metric_values: BTreeMap<String, Vec<(String, f64)>> = BTreeMap::new();
     let mut series_values: BTreeMap<String, Vec<(String, Vec<f64>)>> = BTreeMap::new();
-    for (label, _, metrics, series, _) in &benchmark_data {
-        for (name, value) in metrics {
+    for benchmark in &benchmark_data {
+        for (name, value) in &benchmark.metrics {
             metric_values
                 .entry(name.clone())
                 .or_default()
-                .push((label.clone(), *value));
+                .push((benchmark.label.clone(), *value));
         }
-        for (name, values) in series {
+        for (name, values) in &benchmark.series {
             series_values
                 .entry(name.clone())
                 .or_default()
-                .push((label.clone(), values.clone()));
+                .push((benchmark.label.clone(), values.clone()));
         }
     }
     let mut graphs = Vec::new();
@@ -164,8 +190,18 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
         "sweep": sweep_path,
         "results_directory": sweep_results,
         "comparison_directory": comparison_dir,
-        "benchmarks": benchmark_data.iter().map(|(label, directory, metrics, series, status)| json!({
-            "name": label, "directory": directory, "metrics": metrics, "series": series, "status": status
+        "report": "report.html",
+        "benchmarks": benchmark_data.iter().map(|benchmark| json!({
+            "name": benchmark.label,
+            "directory": benchmark.directory,
+            "agent": benchmark.agent,
+            "workload": benchmark.workload,
+            "provider": benchmark.provider,
+            "model": benchmark.model,
+            "metrics": benchmark.metrics,
+            "series": benchmark.series,
+            "status": benchmark.status,
+            "artifacts": benchmark.artifacts,
         })).collect::<Vec<_>>(),
         "graphs": graphs,
     });
@@ -176,15 +212,207 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
     serde_json::to_writer_pretty(&mut file, &summary)
         .map_err(|error| Error::Run(format!("cannot write {}: {error}", summary_path.display())))?;
     writeln!(file).map_err(|error| Error::Run(error.to_string()))?;
+    write_html_report(&comparison_dir, &benchmark_data, &graphs)?;
     writeln!(
         output,
-        "Compared {} benchmarks; wrote {} graphs and {}",
+        "Compared {} benchmarks; wrote {} graphs, report.html, and {}",
         benchmark_data.len(),
         graphs.len(),
         comparison_dir.display()
     )
     .map_err(|error| Error::Io(error.to_string()))
 }
+
+fn benchmark_identity(path: &Path) -> Result<(String, String, String, String), Error> {
+    let text = read_config(path)?;
+    let value: toml::Value = toml::from_str(&text).map_err(|error| {
+        Error::Input(format!(
+            "cannot parse benchmark {}: {error}",
+            path.display()
+        ))
+    })?;
+    let table = value
+        .as_table()
+        .ok_or_else(|| Error::Input(format!("benchmark {} is not a TOML table", path.display())))?;
+    let field = |name: &str| {
+        table
+            .get(name)
+            .and_then(toml::Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                Error::Input(format!(
+                    "benchmark {} is missing string field `{name}`",
+                    path.display()
+                ))
+            })
+    };
+    Ok((
+        field("agent")?,
+        field("workload")?,
+        field("provider")?,
+        field("model")?,
+    ))
+}
+
+fn artifact_links(sweep_parent: &Path, result_dir: &Path) -> Vec<String> {
+    let mut files = Vec::new();
+    collect_artifacts(result_dir, 0, &mut files);
+    files.sort();
+    files
+        .into_iter()
+        .filter_map(|path| path.strip_prefix(sweep_parent).ok().map(PathBuf::from))
+        .map(|path| format!("../../{}", path.to_string_lossy().replace('\\', "/")))
+        .collect()
+}
+
+fn collect_artifacts(path: &Path, depth: usize, output: &mut Vec<PathBuf>) {
+    if depth > 4 || output.len() >= 256 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(path) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let child = entry.path();
+        if child.is_file() {
+            output.push(child);
+        } else if child.is_dir() {
+            collect_artifacts(&child, depth + 1, output);
+        }
+        if output.len() >= 256 {
+            return;
+        }
+    }
+}
+
+fn write_html_report(
+    comparison_dir: &Path,
+    benchmarks: &[BenchmarkData],
+    graphs: &[String],
+) -> Result<(), Error> {
+    let mut dimensions: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    dimensions.insert(
+        "benchmark",
+        benchmarks.iter().map(|item| item.label.clone()).collect(),
+    );
+    dimensions.insert(
+        "agent",
+        benchmarks.iter().map(|item| item.agent.clone()).collect(),
+    );
+    dimensions.insert(
+        "provider",
+        benchmarks
+            .iter()
+            .map(|item| item.provider.clone())
+            .collect(),
+    );
+    dimensions.insert(
+        "model",
+        benchmarks.iter().map(|item| item.model.clone()).collect(),
+    );
+    dimensions.insert(
+        "workload",
+        benchmarks
+            .iter()
+            .map(|item| item.workload.clone())
+            .collect(),
+    );
+    for values in dimensions.values_mut() {
+        values.sort();
+        values.dedup();
+    }
+
+    let mut html = String::from(HTML_HEAD);
+    html.push_str("<main class=\"shell\">");
+    html.push_str("<header class=\"hero\"><p class=\"eyebrow\">ASB BENCHMARK REPORT</p><h1>Sweep comparison</h1><p>Explore benchmark results, measurements, and artifacts from this sweep. Use the filters to focus the report without rerunning anything.</p></header>");
+    html.push_str("<section class=\"explain\"><strong>How to read this report</strong><p>Each row is one agent/provider/model/workload combination. Runtime, success rate, token usage, and structured system measurements are linked to their raw JSON evidence. SVG charts summarize the complete sweep; filters control the result table and report cards.</p></section>");
+    html.push_str("<section class=\"filters\"><div class=\"section-title\"><h2>Filter results</h2><div><button type=\"button\" data-action=\"all\">Select all</button><button type=\"button\" data-action=\"none\">Clear all</button></div></div><div class=\"filter-grid\">");
+    for (group, values) in &dimensions {
+        html.push_str(&format!("<fieldset><legend>{}</legend>", title_case(group)));
+        for value in values {
+            let escaped = escape(value);
+            html.push_str(&format!("<label><input type=\"checkbox\" data-group=\"{group}\" value=\"{escaped}\" checked><span>{escaped}</span></label>"));
+        }
+        html.push_str("</fieldset>");
+    }
+    html.push_str("</div><p class=\"filter-count\" id=\"filter-count\"></p></section>");
+    html.push_str("<section><div class=\"section-title\"><h2>Benchmark results</h2><a class=\"text-link\" href=\"comparison.json\">Download comparison.json</a></div><div class=\"table-wrap\"><table><thead><tr><th>Benchmark</th><th>Agent</th><th>Provider</th><th>Model</th><th>Workload</th><th>Runtime</th><th>Success</th><th>Tokens</th><th>Evidence</th></tr></thead><tbody id=\"results\">");
+    for benchmark in benchmarks {
+        let runtime = benchmark
+            .metrics
+            .get("elapsed_ms")
+            .map_or_else(|| "—".into(), |value| format!("{value:.0} ms"));
+        let success = benchmark
+            .metrics
+            .get("success_rate")
+            .map_or_else(|| "—".into(), |value| format!("{:.1}%", value * 100.0));
+        let tokens = benchmark
+            .metrics
+            .get("token_usage.total_tokens")
+            .map_or_else(|| "—".into(), |value| format!("{value:.0}"));
+        let metrics_details = if benchmark.metrics.is_empty() {
+            "<p class=\"muted\">No numeric measurements were written.</p>".to_owned()
+        } else {
+            let items = benchmark
+                .metrics
+                .iter()
+                .map(|(name, value)| format!("<dt>{}</dt><dd>{value:.4}</dd>", escape(name)))
+                .collect::<String>();
+            format!("<details><summary>All metrics</summary><dl>{items}</dl></details>")
+        };
+        let artifact_details = if benchmark.artifacts.is_empty() {
+            String::new()
+        } else {
+            benchmark
+                .artifacts
+                .iter()
+                .map(|link| {
+                    format!(
+                        "<a href=\"{}\">{}</a> ",
+                        escape(link),
+                        escape(&artifact_label(link))
+                    )
+                })
+                .collect()
+        };
+        html.push_str(&format!("<tr data-dimension-benchmark=\"{}\" data-dimension-agent=\"{}\" data-dimension-provider=\"{}\" data-dimension-model=\"{}\" data-dimension-workload=\"{}\"><td><strong>{}</strong></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"links\">{}{}{}</td></tr>",
+            escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
+            escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
+            runtime, success, tokens,
+            metrics_details,
+            artifact_details,
+            benchmark.status.as_ref().map_or(String::new(), |status| format!("<span class=\"status\">{}</span>", escape(status))),
+            ));
+    }
+    html.push_str("</tbody></table></div></section><section><div class=\"section-title\"><h2>Charts</h2><p class=\"muted\">SVG files are linked below and remain available for download.</p></div><div class=\"charts\">");
+    for graph in graphs {
+        html.push_str(&format!("<figure><a href=\"{}\"><img src=\"{}\" loading=\"lazy\" alt=\"{}\"></a><figcaption><a href=\"{}\">{}</a></figcaption></figure>", escape(graph), escape(graph), escape(graph), escape(graph), escape(graph)));
+    }
+    html.push_str("</div></section><footer>Generated locally by <code>asb compare</code>. No provider or agent was contacted.</footer></main>");
+    html.push_str(HTML_SCRIPT);
+    fs::write(comparison_dir.join("report.html"), html)
+        .map_err(|error| Error::Run(format!("cannot write HTML report: {error}")))
+}
+
+fn title_case(value: &str) -> String {
+    let mut chars = value.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().collect::<String>() + chars.as_str()
+    })
+}
+
+fn artifact_label(link: &str) -> String {
+    link.rsplit('/').next().unwrap_or(link).to_owned()
+}
+
+const HTML_HEAD: &str = r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ASB sweep report</title><style>
+:root{color-scheme:light;--ink:#18212b;--muted:#61707f;--line:#dce4ec;--panel:#fff;--accent:#1769aa;--accent-soft:#e8f2fa;--bg:#f4f7fa}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.shell{max-width:1500px;margin:auto;padding:36px 28px 56px}.hero{background:linear-gradient(135deg,#12344d,#1769aa);color:#fff;border-radius:18px;padding:42px 46px;box-shadow:0 14px 32px #12344d33}.hero h1{font-size:clamp(2rem,4vw,3.4rem);line-height:1.05;margin:4px 0 14px;letter-spacing:-.04em}.hero p{max-width:760px;margin:0;color:#e5f2fb;font-size:16px}.eyebrow{font-size:11px!important;letter-spacing:.16em;font-weight:700}.explain,.filters,section{background:var(--panel);border:1px solid var(--line);border-radius:14px;margin-top:20px;padding:24px;box-shadow:0 4px 14px #17324d0b}.explain{border-left:4px solid var(--accent)}h2{font-size:19px;margin:0}.section-title{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}.filter-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px}fieldset{border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:0}legend{font-weight:700;color:var(--accent);padding:0 5px}label{display:flex;gap:8px;align-items:flex-start;margin:6px 0;color:var(--muted);overflow-wrap:anywhere}input{accent-color:var(--accent);margin-top:4px}.filter-count,.muted{color:var(--muted);margin:14px 0 0}.text-link,a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}button{background:#fff;border:1px solid #b9c9d8;border-radius:7px;color:var(--accent);cursor:pointer;padding:7px 11px;margin-left:6px}button:hover{background:var(--accent-soft)}.table-wrap{overflow:auto}table{border-collapse:collapse;min-width:100%;white-space:nowrap}th{text-align:left;background:#eef4f8;color:#405466;font-size:12px;letter-spacing:.04em;text-transform:uppercase}th,td{border-bottom:1px solid var(--line);padding:12px 10px;vertical-align:top}.links{white-space:normal;min-width:170px}.links a{display:inline-block;margin:0 8px 5px 0;font-size:12px}.status{display:block;color:#9a4b00;background:#fff4e5;border-radius:5px;font-size:11px;padding:3px 6px;margin-top:4px;max-width:260px;white-space:normal}.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px}.charts figure{margin:0;border:1px solid var(--line);border-radius:10px;padding:10px;background:#fbfdff}.charts img{width:100%;height:auto;display:block}.charts figcaption{padding:8px 2px 2px;font-size:12px;overflow-wrap:anywhere}footer{color:var(--muted);text-align:center;padding:28px 0 0}code{background:#e9eef3;border-radius:4px;padding:2px 5px}@media(max-width:700px){.shell{padding:18px 12px}.hero{padding:30px 24px}.section-title{align-items:flex-start;flex-direction:column}.section-title button{margin:0 6px 0 0}}
+</style></head><body>"#;
+
+const HTML_SCRIPT: &str = r#"<script>
+const groups=[...document.querySelectorAll('input[data-group]')];const rows=[...document.querySelectorAll('#results tr')];const count=document.querySelector('#filter-count');
+function selected(group){return new Set(groups.filter(i=>i.dataset.group===group&&i.checked).map(i=>i.value))}function update(){const sets=Object.fromEntries(['benchmark','agent','provider','model','workload'].map(g=>[g,selected(g)]));let visible=0;rows.forEach(row=>{const show=Object.entries(sets).every(([g,set])=>set.has(row.dataset['dimension'+g[0].toUpperCase()+g.slice(1)]));row.hidden=!show;if(show)visible++});count.textContent=`Showing ${visible} of ${rows.length} benchmarks. Charts above summarize the complete sweep.`}groups.forEach(i=>i.addEventListener('change',update));document.querySelectorAll('button[data-action]').forEach(button=>button.addEventListener('click',()=>{groups.forEach(i=>i.checked=button.dataset.action==='all');update()}));update();
+</script></body></html>"#;
 
 fn checked_reference(parent: &Path, reference: &str, sweep: &str) -> Result<PathBuf, Error> {
     let path = Path::new(reference);
@@ -491,6 +719,12 @@ mod tests {
                 .join("results/sweep-comparison/series-mpstat.svg")
                 .exists()
         );
+        let report =
+            std::fs::read_to_string(root.join("results/sweep-comparison/report.html")).unwrap();
+        assert!(report.contains("Filter results"));
+        assert!(report.contains("data-group=\"agent\""));
+        assert!(report.contains("run.json"));
+        assert!(report.contains("Select all"));
         let _ = std::fs::remove_dir_all(root);
     }
 

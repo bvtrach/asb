@@ -74,6 +74,14 @@ section listing every collector module and defaulting its output directory to
 the no-collection behavior, or pass `--measurements DIR` to enable collection
 for one run.
 
+`asb compare SWEEP.toml` creates `results/<sweep>-comparison/report.html` in
+addition to `comparison.json` and SVG charts. Open the report locally for a
+professional, offline overview: every benchmark row shows its agent, provider,
+model, workload, all numeric measurements, and links to raw run/collector/log
+artifacts. Checkbox filters can enable or disable individual benchmarks,
+agents, providers, models, and workloads without contacting a provider or
+rerunning the sweep.
+
 `asb run CONFIG --record` runs the same configuration through the local `llmtape`
 proxy and writes a JSONL cassette (by default below `cassettes/` next to the
 configuration). Install the proxy into the current benchmark project with
