@@ -26,9 +26,10 @@ workloads elsewhere, set `ASB_WORKLOAD_DIR` before `asb run`.
 Install a local agent executable or external prompt with:
 
 ```sh
-asb tool install codex
-asb workload install /path/to/customer-task.txt
+asb tool install codex --source https://example.org/tools/codex
+asb workload install https://example.org/workloads/customer-task.txt
 ```
 
-The agent command is copied from `PATH` into `~/.local/bin` by default. Add
-`--source PATH` or `--dir DIR` only when you need a different source or target.
+The agent is downloaded into `.asb-tools/bin` and runs from there. Workloads
+are downloaded into `workloads/`. Add `--dir DIR` only when you need a
+different target.

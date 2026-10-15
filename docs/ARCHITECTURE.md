@@ -20,10 +20,11 @@ Workloads are loaded from `workloads/` beside the configuration file. Set
 `ASB_WORKLOAD_DIR` to use another directory; add a new `.txt` file to extend
 the catalogue.
 
-`asb tool install` copies an agent executable from `--source` (or from `PATH`)
-into `ASB_TOOL_DIR` or `~/.local/bin`. `asb workload install` copies a local
-`.txt` prompt into `ASB_WORKLOAD_DIR` or `workloads/`. These commands do not
-download packages or handle credentials.
+`asb tool install` downloads an agent executable from a URL supplied with
+`--source` into `.asb-tools/bin` (or `ASB_TOOL_DIR`). `asb workload install`
+downloads a prompt URL into `ASB_WORKLOAD_DIR` or `workloads/`. Local source
+paths are also accepted for offline development. These commands do not handle
+credentials.
 
 Future features should be separate modules behind these boundaries. Recording,
 replay, measurements, tool commands, and a graphical or terminal frontend are

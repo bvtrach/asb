@@ -4,66 +4,29 @@ use crate::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Install an agent executable copied from an explicit source or the current PATH.
+/// Install an agent executable from a URL or local source.
 pub fn tool(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Error> {
     let (id, source, directory) = parse_tool(args)?;
-    let source = source.or_else(|| find_on_path(&id));
-    let source = source.ok_or_else(|| {
-        Error::Input(format!(
-            "agent {id} was not found; install it first or pass --source PATH"
-        ))
-    })?;
-    let metadata = fs::metadata(&source).map_err(|error| {
-        Error::Input(format!(
-            "cannot read agent source {}: {error}",
-            source.display()
-        ))
-    })?;
-    if !metadata.is_file() {
-        return Err(Error::Input(format!(
-            "agent source is not a file: {}",
-            source.display()
-        )));
-    }
+    let source = source.ok_or(Error::Usage(
+        "tool install requires --source URL (or a local executable path)",
+    ))?;
     fs::create_dir_all(&directory)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", directory.display())))?;
     let destination = directory.join(&id);
-    fs::copy(&source, &destination).map_err(|error| {
-        Error::Io(format!(
-            "cannot install agent {id} to {}: {error}",
-            destination.display()
-        ))
-    })?;
+    install_source(&source, &destination, "agent")?;
     make_executable(&destination)?;
     writeln!(output, "Installed agent {id} at {}", destination.display())
         .map_err(super::io_error)?;
     Ok(())
 }
 
-/// Install one external workload prompt file into a workload directory.
+/// Install one external workload prompt file from a URL or local source.
 pub fn workload(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Error> {
     let (source, name, directory) = parse_workload(args)?;
-    let source_metadata = fs::metadata(&source).map_err(|error| {
-        Error::Input(format!(
-            "cannot read workload source {}: {error}",
-            source.display()
-        ))
-    })?;
-    if !source_metadata.is_file() {
-        return Err(Error::Input(format!(
-            "workload source is not a file: {}",
-            source.display()
-        )));
-    }
     fs::create_dir_all(&directory)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", directory.display())))?;
     let destination = directory.join(format!("{name}.txt"));
-    fs::copy(&source, &destination).map_err(|error| {
-        Error::Io(format!(
-            "cannot install workload {name} to {}: {error}",
-            destination.display()
-        ))
-    })?;
+    install_source(&source, &destination, "workload")?;
     writeln!(
         output,
         "Installed workload {name} at {}",
@@ -73,7 +36,7 @@ pub fn workload(args: &[String], output: &mut dyn std::io::Write) -> Result<(), 
     Ok(())
 }
 
-fn parse_tool(args: &[String]) -> Result<(String, Option<PathBuf>, PathBuf), Error> {
+fn parse_tool(args: &[String]) -> Result<(String, Option<String>, PathBuf), Error> {
     let id = args
         .first()
         .filter(|value| valid_name(value))
@@ -82,7 +45,7 @@ fn parse_tool(args: &[String]) -> Result<(String, Option<PathBuf>, PathBuf), Err
     let mut source = None;
     let mut directory = default_tool_directory();
     parse_options(&args[1..], |flag, value| match flag {
-        "--source" => Ok(source = Some(PathBuf::from(value))),
+        "--source" => Ok(source = Some(value.to_owned())),
         "--dir" => Ok(directory = PathBuf::from(value)),
         _ => {
             return Err(Error::Usage(
@@ -93,12 +56,23 @@ fn parse_tool(args: &[String]) -> Result<(String, Option<PathBuf>, PathBuf), Err
     Ok((id, source, directory))
 }
 
-fn parse_workload(args: &[String]) -> Result<(PathBuf, String, PathBuf), Error> {
-    let source = args
-        .first()
-        .map(PathBuf::from)
-        .ok_or(Error::Usage("workload install requires a source .txt file"))?;
+fn parse_workload(args: &[String]) -> Result<(String, String, PathBuf), Error> {
+    let source = args.first().cloned().ok_or(Error::Usage(
+        "workload install requires a local path or URL",
+    ))?;
     let default_name = source
+        .rsplit('/')
+        .next()
+        .unwrap_or(&source)
+        .split('?')
+        .next()
+        .unwrap_or(&source)
+        .strip_suffix(".txt")
+        .unwrap_or_else(|| source.rsplit('/').next().unwrap_or(&source))
+        .strip_suffix(".md")
+        .unwrap_or_else(|| source.rsplit('/').next().unwrap_or(&source))
+        .to_owned();
+    let default_name = Path::new(&default_name)
         .file_stem()
         .and_then(|value| value.to_str())
         .filter(|value| valid_name(value))
@@ -153,17 +127,47 @@ fn valid_name(value: &str) -> bool {
 fn default_tool_directory() -> PathBuf {
     std::env::var_os("ASB_TOOL_DIR")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/bin")))
         .unwrap_or_else(|| PathBuf::from(".asb-tools/bin"))
 }
 
-fn find_on_path(id: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH")?
-        .to_string_lossy()
-        .split(':')
-        .map(Path::new)
-        .map(|directory| directory.join(id))
-        .find(|candidate| candidate.is_file())
+fn install_source(source: &str, destination: &Path, kind: &str) -> Result<(), Error> {
+    if source.starts_with("https://") || source.starts_with("http://") {
+        let status = std::process::Command::new("curl")
+            .args([
+                "--fail",
+                "--location",
+                "--silent",
+                "--show-error",
+                "--output",
+            ])
+            .arg(destination)
+            .arg(source)
+            .status()
+            .map_err(|error| {
+                Error::Io(format!("cannot start curl for {kind} download: {error}"))
+            })?;
+        if !status.success() {
+            return Err(Error::Io(format!(
+                "could not download {kind} from {source}"
+            )));
+        }
+        return Ok(());
+    }
+    let source_path = Path::new(source);
+    let metadata = fs::metadata(source_path)
+        .map_err(|error| Error::Input(format!("cannot read {kind} source {source}: {error}")))?;
+    if !metadata.is_file() {
+        return Err(Error::Input(format!(
+            "{kind} source is not a file: {source}"
+        )));
+    }
+    fs::copy(source_path, destination).map_err(|error| {
+        Error::Io(format!(
+            "cannot install {kind} at {}: {error}",
+            destination.display()
+        ))
+    })?;
+    Ok(())
 }
 
 fn make_executable(path: &Path) -> Result<(), Error> {

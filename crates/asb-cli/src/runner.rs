@@ -59,7 +59,10 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             }
         });
     let prompt = workloads::load(&config.workload, &workload_directory).map_err(Error::Input)?;
-    let (program, args) = command_for(&config);
+    let (mut program, args) = command_for(&config);
+    if let Some(local) = local_agent(&config.agent, config_path) {
+        program = local;
+    }
     let started = Instant::now();
     let mut command = Command::new(&program);
     command
@@ -109,6 +112,26 @@ fn command_for(config: &BenchmarkConfig) -> (String, Vec<String>) {
         ),
         other => (other.into(), Vec::new()),
     }
+}
+
+fn local_agent(agent: &str, config_path: &Path) -> Option<String> {
+    let mut candidates = Vec::new();
+    if let Some(directory) = std::env::var_os("ASB_TOOL_DIR") {
+        candidates.push(std::path::PathBuf::from(directory).join(agent));
+    }
+    candidates.push(
+        config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(".asb-tools/bin")
+            .join(agent),
+    );
+    candidates.push(Path::new(".asb-tools/bin").join(agent));
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .and_then(|candidate| candidate.canonicalize().ok())
+        .map(|candidate| candidate.to_string_lossy().into_owned())
 }
 
 fn bounded(bytes: &[u8]) -> String {
