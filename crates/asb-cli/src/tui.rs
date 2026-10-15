@@ -959,15 +959,15 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
         vertical[1],
     );
     let pane = &app.panes[app.step];
-    render_choice_pane(frame, vertical[2], pane, app.step != 1);
+    render_choice_pane(frame, vertical[2], pane, !matches!(app.step, 1 | 2));
     frame.render_widget(
         Paragraph::new(Text::from(Line::from(vec![
-            if app.step == 1 {
-                Span::styled("Provider discovery only", Style::default().fg(Color::Yellow))
+            if matches!(app.step, 1 | 2) {
+                Span::styled("Discovery only", Style::default().fg(Color::Yellow))
             } else {
                 Span::styled("Ctrl-I install", Style::default().fg(Color::Cyan))
             },
-            if app.step == 1 {
+            if matches!(app.step, 1 | 2) {
                 Span::raw(" | Enter next | ")
             } else {
                 Span::raw(" | ⓘ green=ready red=missing yellow=unknown | Tab fallback install | Enter next | ")
