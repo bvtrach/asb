@@ -25,7 +25,7 @@ pub fn list(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
     if let Some(provider) = provider {
         if free_only && !providers::supports_free_models(&provider) {
             return Err(Error::Input(
-                "`--free` is supported for `openrouter` and `ollama`; query one of those providers or omit `--free`".into(),
+                "`--free` is supported for `openrouter`, `opencode-zen`, and `ollama`; query one of those providers or omit `--free`".into(),
             ));
         }
         let result = discover(&provider, free_only)?;
@@ -81,8 +81,9 @@ fn discover(provider: &str, free_only: bool) -> Result<Vec<ModelInfo>, Error> {
         let body = fetch_authenticated(spec, &url, bridge.api_key())?;
         return parse_models(&body, spec.kind, provider, free_only);
     }
+    let public_catalog = provider.eq_ignore_ascii_case("opencode-zen");
     if let Some(credential) = spec.credential {
-        if providers::credential(provider).is_none() {
+        if !public_catalog && providers::credential(provider).is_none() {
             return Err(Error::Input(format!(
                 "missing {credential} or ~/.api_key_{}",
                 spec.name
@@ -93,7 +94,11 @@ fn discover(provider: &str, free_only: bool) -> Result<Vec<ModelInfo>, Error> {
         let endpoint = spec.endpoint.unwrap_or("provider endpoint variable");
         return Err(Error::Input(format!("missing {endpoint}")));
     }
-    let body = fetch(spec)?;
+    let body = if public_catalog {
+        fetch_public(spec)?
+    } else {
+        fetch(spec)?
+    };
     parse_models(&body, spec.kind, provider, free_only)
 }
 
@@ -178,6 +183,18 @@ fn fetch(spec: providers::ModelSpec) -> Result<Vec<u8>, Error> {
         .url()
         .ok_or_else(|| Error::Input("provider model endpoint is not configured".into()))?;
     let config = curl_config(spec, &url, None)?;
+    fetch_config(config, spec.name)
+}
+
+fn fetch_public(spec: providers::ModelSpec) -> Result<Vec<u8>, Error> {
+    let url = spec
+        .url()
+        .ok_or_else(|| Error::Input("provider model endpoint is not configured".into()))?;
+    let public_spec = providers::ModelSpec {
+        credential: None,
+        ..spec
+    };
+    let config = curl_config(public_spec, &url, None)?;
     fetch_config(config, spec.name)
 }
 
@@ -354,6 +371,9 @@ fn is_free_model_entry(
     if provider.eq_ignore_ascii_case("ollama") && matches!(kind, providers::ModelKind::Ollama) {
         return true;
     }
+    if provider.eq_ignore_ascii_case("opencode-zen") {
+        return model_id.ends_with("-free");
+    }
     if !provider.eq_ignore_ascii_case("openrouter") {
         return false;
     }
@@ -380,7 +400,10 @@ fn is_zero_price(value: Option<&Value>) -> bool {
 }
 
 fn supports_tools(entry: &Value, kind: providers::ModelKind, provider: &str) -> bool {
-    if provider.eq_ignore_ascii_case("cli2key") || matches!(kind, providers::ModelKind::Anthropic) {
+    if provider.eq_ignore_ascii_case("cli2key")
+        || provider.eq_ignore_ascii_case("opencode-zen")
+        || matches!(kind, providers::ModelKind::Anthropic)
+    {
         return true;
     }
     for key in ["tool_calling", "tool_calls", "supports_tool_calls"] {
@@ -560,6 +583,24 @@ mod tests {
     }
 
     #[test]
+    fn opencode_zen_catalog_is_public_and_free_models_are_suffix_marked() {
+        let models = parse_models(
+            br#"{"data":[{"id":"paid-model"},{"id":"free-model-free"}]}"#,
+            providers::ModelKind::OpenAi,
+            "opencode-zen",
+            true,
+        )
+        .expect("model response parses");
+        assert_eq!(model_ids(&models), vec!["free-model-free"]);
+        assert!(
+            providers::model_spec("opencode-zen")
+                .unwrap()
+                .credential
+                .is_some()
+        );
+    }
+
+    #[test]
     fn free_flag_parses_with_json_and_provider_in_any_order() {
         assert_eq!(
             parse_args(&["--free".into(), "openrouter".into(), "--json".into()]).unwrap(),
@@ -571,7 +612,7 @@ mod tests {
     fn free_flag_rejects_providers_without_free_catalog_metadata() {
         let error = list(&["openai".into(), "--free".into()], &mut Vec::new())
             .expect_err("paid provider cannot be classified as free");
-        assert!(error.to_string().contains("openrouter` and `ollama"));
+        assert!(error.to_string().contains("openrouter`"));
     }
 
     #[test]
