@@ -469,6 +469,7 @@ fn command_for(
             args: vec![
                 "exec".into(),
                 "--skip-git-repo-check".into(),
+                "--json".into(),
                 "--model".into(),
                 config.model.clone(),
             ],
@@ -481,6 +482,8 @@ fn command_for(
                 pi_provider(config),
                 "--model".into(),
                 config.model.clone(),
+                "--mode".into(),
+                "json".into(),
                 "--print".into(),
             ],
             append_prompt: true,
@@ -510,7 +513,13 @@ fn command_for(
         },
         "qwen-code" => CommandSpec {
             program: "qwen".into(),
-            args: vec!["--model".into(), config.model.clone(), "--yolo".into()],
+            args: vec![
+                "--model".into(),
+                config.model.clone(),
+                "--output-format".into(),
+                "json".into(),
+                "--yolo".into(),
+            ],
             append_prompt: true,
         },
         "mini-swe" => CommandSpec {
@@ -560,13 +569,22 @@ fn command_for(
                 prompt.into(),
                 "-m".into(),
                 config.model.clone(),
+                "--output-format".into(),
+                "json".into(),
                 "--yolo".into(),
             ],
             append_prompt: false,
         },
         "workbuddy" => CommandSpec {
             program: "codebuddy".into(),
-            args: vec!["--print".into(), "--model".into(), config.model.clone(), "-y".into()],
+            args: vec![
+                "--print".into(),
+                "--output-format".into(),
+                "json".into(),
+                "--model".into(),
+                config.model.clone(),
+                "-y".into(),
+            ],
             append_prompt: true,
         },
         "codeagent" => {
@@ -771,6 +789,8 @@ mod tests {
         assert_eq!(command.args[0], "--provider");
         assert_eq!(command.args[1], "cli2key");
         assert!(command.args.contains(&"--print".into()));
+        assert!(command.args.contains(&"--mode".into()));
+        assert!(command.args.contains(&"json".into()));
         assert!(command.append_prompt);
     }
 
