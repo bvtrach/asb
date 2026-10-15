@@ -67,6 +67,11 @@ or omit it to query every supported provider and report unavailable providers
 without stopping the rest. Use `--json` for machine-readable output. Model
 discovery uses the provider credential and endpoint environment variables but
 never writes or prints credential values.
+Only models that advertise tool-calling support are enumerated. `run` and
+`record` revalidate the selected model before launch; `replay` validates that
+the cassette contains a tool-calling request for the configured model. Models
+without tool support are rejected because the bundled workloads depend on
+agent tools.
 When an environment credential is absent, ASB also checks the bounded local
 file `$HOME/.api_key_<provider>` (for example `$HOME/.api_key_openrouter`).
 For `cli2key`, `asb tool install cli2key` refreshes the local bridge key, and

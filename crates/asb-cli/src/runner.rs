@@ -4,6 +4,7 @@ use super::{Error, io_error, read_config};
 use crate::benchmark::BenchmarkConfig;
 use crate::cli2key;
 use crate::measurements;
+use crate::models;
 use crate::prepare;
 use crate::project;
 use crate::providers;
@@ -99,6 +100,19 @@ fn run_mode(
     let text = read_config(config_path)?;
     let config: BenchmarkConfig = toml::from_str(&text)
         .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
+    let tape_cassette = tape_request.map(|(mode, requested)| {
+        (
+            mode,
+            requested
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| default_cassette(config_path, &config)),
+        )
+    });
+    if let Some((tape::Mode::Replay, cassette)) = tape_cassette.as_ref() {
+        models::ensure_replay_tool_capable(cassette, &config.model)?;
+    } else {
+        models::ensure_tool_capable(&config.provider, &config.model)?;
+    }
     let (project_root, project_config) = project::load(config_path)?;
     let project_root = project_root.canonicalize().map_err(|error| {
         Error::Input(format!(
@@ -144,18 +158,15 @@ fn run_mode(
     } else {
         None
     };
-    let mut tape_session = if let Some((mode, requested)) = tape_request {
-        let cassette = requested
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| default_cassette(config_path, &config));
+    let mut tape_session = if let Some((mode, cassette)) = tape_cassette.as_ref() {
         let upstream = tape::upstream(
             &config.provider,
             bridge.as_ref().map(cli2key::Bridge::base_url),
         );
         let tape_executable = local_agent("llmtape", &project_root, &project_config.tools_dir);
         Some(tape::Session::start(
-            mode,
-            &cassette,
+            *mode,
+            cassette,
             upstream.as_deref(),
             tape_executable.as_deref().map(Path::new),
         )?)
