@@ -87,9 +87,10 @@ Install the already-built binary into the current user's `~/.local/bin` with:
 make install
 ```
 
-`make build` regenerates `target/asb.bash` from ASB's command and option
-catalog. `make install` installs that completion script for the current user at
-`~/.local/share/bash-completion/completions/asb` alongside the binary.
+`make build` regenerates `target/asb.bash` and `target/_asb` from ASB's command
+and option catalog. `make install` installs Bash completion at
+`~/.local/share/bash-completion/completions/asb` and Zsh completion at
+`~/.local/share/zsh/site-functions/_asb`, alongside the binary.
 
 The only workspace member is `crates/asb-cli`.
 

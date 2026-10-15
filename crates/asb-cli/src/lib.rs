@@ -64,6 +64,7 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
             help::command(&format!("{command} {subcommand}"), stdout)
         }
         [command, shell] if command == "completion" && shell == "bash" => completion::bash(stdout),
+        [command, shell] if command == "completion" && shell == "zsh" => completion::zsh(stdout),
         [command, rest @ ..] if command == "setup" => config::setup(rest, stdout),
         [command, rest @ ..] if command == "init" => project::init(rest, stdout),
         [command, path, format] if command == "run" && format == "--json" => {
@@ -214,5 +215,13 @@ mod tests {
         }
         assert!(script.contains("complete -F _asb asb"));
         assert!(stderr.is_empty());
+
+        let args = [OsString::from("completion"), OsString::from("zsh")];
+        let mut stdout = Vec::new();
+        assert_eq!(run(&args, &mut stdout, &mut Vec::new()), 0);
+        let script = String::from_utf8(stdout).unwrap();
+        assert!(script.starts_with("#compdef asb"));
+        assert!(script.contains("_values 'value' bash zsh"));
+        assert!(script.contains("cli2key"));
     }
 }
