@@ -156,7 +156,7 @@ impl Session {
         let stdout_path = self.dir.join("perf.stdout");
         let stdout = File::create(&stdout_path)
             .map_err(|e| format!("cannot create perf standard output: {e}"))?;
-        let child = Command::new("perf")
+        let child = match Command::new("perf")
             .args(["record", "-g", "-p"])
             .arg(pid.to_string())
             .args(["-o"])
@@ -164,7 +164,18 @@ impl Session {
             .stderr(Stdio::from(output))
             .stdout(Stdio::from(stdout))
             .spawn()
-            .map_err(|e| format!("cannot start perf (disable with ASB_MEASURE_PERF=0): {e}"))?;
+        {
+            Ok(child) => child,
+            Err(error) if !env_true("ASB_MEASURE_PERF") => {
+                write_unavailable(&self.dir.join("perf.json"), "perf", error.to_string())?;
+                return Ok(());
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot start perf (disable with ASB_MEASURE_PERF=0): {error}"
+                ));
+            }
+        };
         self.perf_data = Some(data);
         self.collectors.push(Collector {
             name: "perf".into(),
@@ -232,7 +243,7 @@ impl Session {
         }
         let stdout_path = self.dir.join(format!("{name}.stdout"));
         let stderr_path = self.dir.join(format!("{name}.stderr"));
-        let child = Command::new(name)
+        let child = match Command::new(name)
             .args(args)
             .stdout(Stdio::from(
                 File::create(&stdout_path)
@@ -242,7 +253,22 @@ impl Session {
                 format!("cannot create {name} error output: {e}")
             })?))
             .spawn()
-            .map_err(|e| format!("cannot start {name}; install it or disable {variable}=1: {e}"))?;
+        {
+            Ok(child) => child,
+            Err(error) if !env_true(variable) => {
+                write_unavailable(
+                    &self.dir.join(format!("{name}.json")),
+                    name,
+                    error.to_string(),
+                )?;
+                return Ok(());
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot start {name}; install it or disable {variable}=1: {error}"
+                ));
+            }
+        };
         self.collectors.push(Collector {
             name: name.into(),
             child,
@@ -275,7 +301,7 @@ impl Session {
             }
             let stdout_path = self.dir.join(format!("bpftrace-{index}.stdout"));
             let stderr_path = self.dir.join(format!("bpftrace-{index}.stderr"));
-            let child = command
+            let child = match command
                 .stdout(Stdio::from(
                     File::create(&stdout_path)
                         .map_err(|e| format!("cannot create bpftrace output: {e}"))?,
@@ -284,7 +310,20 @@ impl Session {
                     format!("cannot create bpftrace error output: {e}")
                 })?))
                 .spawn()
-                .map_err(|e| format!("cannot start bpftrace program {program}: {e}"))?;
+            {
+                Ok(child) => child,
+                Err(error) if !env_true("ASB_MEASURE_BPFTRACE") => {
+                    write_unavailable(
+                        &self.dir.join(format!("bpftrace-{index}.json")),
+                        &format!("bpftrace-{index}"),
+                        error.to_string(),
+                    )?;
+                    continue;
+                }
+                Err(error) => {
+                    return Err(format!("cannot start bpftrace program {program}: {error}"));
+                }
+            };
             self.collectors.push(Collector {
                 name: format!("bpftrace-{index}"),
                 child,
@@ -412,6 +451,20 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     let file = File::create(path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
     serde_json::to_writer_pretty(file, value)
         .map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+fn write_unavailable(path: &Path, collector: &str, error: String) -> Result<(), String> {
+    write_json(
+        path,
+        &CollectorResult {
+            schema_version: 1,
+            collector: collector.into(),
+            status: "unavailable".into(),
+            exit_code: None,
+            elapsed_ms: 0,
+            stdout: String::new(),
+            stderr: error,
+        },
+    )
 }
 
 fn bounded(bytes: &[u8]) -> String {
