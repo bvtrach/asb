@@ -68,12 +68,14 @@ struct Pane {
     selected: Vec<bool>,
     cursor: usize,
     search: String,
+    sections: Vec<Option<&'static str>>,
 }
 
 impl Pane {
     fn new(choices: Vec<Choice>) -> Self {
         Self {
             selected: vec![false; choices.len()],
+            sections: vec![None; choices.len()],
             choices,
             cursor: 0,
             search: String::new(),
@@ -180,6 +182,21 @@ impl App {
             })
             .collect();
         let workloads = workload_choices(&root, &project.workloads_dir);
+        let mut workload_pane = Pane::new(workloads);
+        let external_names = install::external_workload_names()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
+        for (index, choice) in workload_pane.choices.iter().enumerate() {
+            let name = choice
+                .label
+                .strip_suffix(" [trial set]")
+                .unwrap_or(&choice.label);
+            workload_pane.sections[index] = Some(if external_names.contains(name) {
+                "External workloads"
+            } else {
+                "Built-in workloads"
+            });
+        }
         let measures = measurements::available_collectors()
             .into_iter()
             .map(|name| Choice {
@@ -198,7 +215,7 @@ impl App {
                 Pane::new(agents),
                 Pane::new(provider_choices),
                 Pane::new(Vec::new()),
-                Pane::new(workloads),
+                workload_pane,
                 measure_pane,
             ],
             step: 0,
@@ -449,7 +466,10 @@ fn external_workload_choices(directory: &Path) -> Vec<Choice> {
                     .flatten()
             }),
     );
-    names
+    let external_names = install::external_workload_names()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    let mut choices = names
         .into_iter()
         .map(|label| {
             let availability = if install::workload_available(&label, directory) {
@@ -464,7 +484,15 @@ fn external_workload_choices(directory: &Path) -> Vec<Choice> {
                 availability,
             }
         })
-        .collect()
+        .collect::<Vec<_>>();
+    choices.sort_by_key(|choice| {
+        let name = choice
+            .label
+            .strip_suffix(" [trial set]")
+            .unwrap_or(&choice.label);
+        (!external_names.contains(name), choice.label.clone())
+    });
+    choices
 }
 
 fn refresh_workload_availability(app: &mut WorkloadApp) {
@@ -1014,11 +1042,22 @@ fn render_choice_pane(
     let visible = pane.visible();
     let items = visible
         .iter()
-        .map(|index| {
+        .enumerate()
+        .map(|(visible_position, index)| {
             let choice = &pane.choices[*index];
             let marker = if pane.selected[*index] { "[x]" } else { "[ ]" };
             let selected = *index == pane.cursor;
             let mut row = vec![Span::raw(format!("{marker} "))];
+            let section = pane.sections.get(*index).copied().flatten();
+            let previous_section = visible_position
+                .checked_sub(1)
+                .and_then(|previous| pane.sections.get(visible[previous]).copied().flatten());
+            if section.is_some() && section != previous_section {
+                row.push(Span::styled(
+                    format!("[{}] ", section.expect("section is present")),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
             if show_info {
                 row.push(Span::styled(
                     INFO_GLYPH,
