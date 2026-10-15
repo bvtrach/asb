@@ -750,7 +750,7 @@ fn draw_workload(frame: &mut ratatui::Frame<'_>, app: &WorkloadApp) {
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("Ctrl-I install", Style::default().fg(Color::Cyan)),
-            Span::raw(" | ⓘ green=ready red=missing yellow=unknown | Space select | Tab next | "),
+            Span::raw(" | ℹ green=ready red=missing yellow=unknown | Space select | Tab next | "),
             Span::styled(
                 visible_message(&app.message, app.message_until),
                 Style::default().fg(app.message_color),
@@ -935,7 +935,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
     frame.render_widget(
         Paragraph::new(Text::from(Line::from(vec![
             Span::styled("Ctrl-I install", Style::default().fg(Color::Cyan)),
-            Span::raw(" | ⓘ green=ready red=missing yellow=unknown | Space select | Tab next | "),
+            Span::raw(" | ℹ green=ready red=missing yellow=unknown | Space select | Tab next | "),
             Span::styled(
                 visible_message(&app.message, app.message_until),
                 Style::default().fg(app.message_color),
@@ -968,7 +968,7 @@ fn render_choice_pane(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rec
             let marker = if pane.selected[*index] { "[x]" } else { "[ ]" };
             ListItem::new(Line::from(vec![
                 Span::raw(format!("{marker} ")),
-                Span::styled("ⓘ", availability_style(choice.availability)),
+                Span::styled("ℹ", availability_style(choice.availability)),
                 Span::raw(format!(" {}", choice.label)),
             ]))
         })
