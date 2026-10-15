@@ -53,11 +53,14 @@ the catalogue.
 `run` (optionally with `--record` or `--replay`) appends one bounded JSON record per execution to
 the configured `log_file`, including the captured agent output and error text.
 Token usage is collected from generic/provider/agent environment variables,
-structured agent JSON events, and recorded cassette responses, then normalized
-without inferring counts from text size. OpenCode is launched in JSON event
-mode so its provider-reported usage can be read for OpenRouter and cli2key.
-Their terminal output is intentionally limited to success rate, elapsed time,
-and token usage; `--json` changes only the representation of those metrics.
+structured agent JSON events (including JSON embedded in human-readable agent
+output), and recorded cassette responses, then normalized without inferring
+counts from text size. The parser accepts usage shapes emitted by every
+supported agent family and maps provider aliases such as `prompt_tokens`,
+`inputTokens`, `cacheRead`, and `total` to the stable input, output, cached,
+and total fields. Their terminal output is intentionally limited to success
+rate, elapsed time, and token usage; `--json` changes only the representation
+of those metrics.
 An agent is not considered successful solely because its process exits with
 status zero: known authentication, unsupported-endpoint, and provider-error
 messages are treated as failures so sweeps cannot report a false success.

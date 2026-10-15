@@ -46,9 +46,11 @@ normalized into input, output, cached, and total tokens. ASB reads generic
 `ASB_*_TOKENS` variables, provider/agent-prefixed equivalents such as
 `OPENROUTER_PROMPT_TOKENS` and `CLI2KEY_COMPLETION_TOKENS`, structured JSON
 usage emitted by agents, and recorded response usage in llmtape cassettes.
-OpenCode runs use its JSON event format so OpenRouter and cli2key usage details
-are captured when the provider reports them. A missing usage field remains
-`null`; ASB never guesses token counts from text length.
+All supported agent families' usage events are normalized, including JSON
+embedded in human-readable output, so OpenRouter and cli2key runs report the
+same input, output, cached, and total fields whenever the provider reports
+them. A missing usage field remains `null`; ASB never guesses token counts from
+text length.
 
 Measurement collectors are opt-in environment switches so normal and CI runs
 remain deterministic: `ASB_MEASURE_MPSTAT=1`, `ASB_MEASURE_IOSTAT=1`, and
