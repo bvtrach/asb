@@ -39,7 +39,8 @@ workload, or collector, `Ctrl-I` invokes the bounded project-local installer
 when one exists and refreshes the status; providers and models remain
 discovery-only. While an installer runs, the footer is refreshed live as
 `Installing (XX%)`; completion is shown in green and failure/unavailability in
-red. `init` writes `.asb/project.toml` with project-local tool, workload, and
+red. Installer subprocess output is appended to `.asb/install.log` instead of
+overwriting the TUI. `init` writes `.asb/project.toml` with project-local tool, workload, and
 workspace directories and copies the bundled workload prompts into
 `workloads/` and seeds `.asb/fixtures/` with the source, tests, and supporting
 files for every built-in workload. `run` copies the selected fixture into the
