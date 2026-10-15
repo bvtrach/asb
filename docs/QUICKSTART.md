@@ -51,6 +51,8 @@ available immediately after initialization. Add a file such as
 workloads elsewhere, set `ASB_WORKLOAD_DIR` before `asb run`.
 Initialize a separate benchmark directory, not the ASB source checkout;
 `asb init` rejects the source checkout to avoid polluting it with project data.
+Running `asb init` again warns without changing anything. Use
+`asb init --reset` only when you want managed project state removed and rebuilt.
 
 Install a local agent executable or external prompt with:
 

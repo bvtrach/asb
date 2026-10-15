@@ -4,7 +4,7 @@ ASB is a small command-line benchmark runner. Initialize a project, install an
 agent/workload, create a configuration, then run it:
 
 ```text
-asb init
+asb init [PROJECT_DIR] [--reset]
 asb tool list
 asb tool install AGENT
 asb workload list
@@ -19,6 +19,8 @@ workspace directories and copies the bundled workload prompts into
 `workloads/`. `setup` writes a human-readable TOML configuration.
 Run `asb init` in a separate benchmark project directory; it intentionally
 refuses to modify the ASB source checkout.
+If the directory is already initialized, ASB warns and makes no changes;
+rerun with `--reset` to remove managed state and create a fresh project.
 `run` loads the project and benchmark configuration, selects the workload
 prompt, and starts the configured agent with the provider and model in the
 environment. Credentials stay outside the configuration.
