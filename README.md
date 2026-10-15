@@ -55,9 +55,11 @@ for one run.
 
 `asb record CONFIG` runs the same configuration through the local `llmtape`
 proxy and writes a JSONL cassette (by default below `cassettes/` next to the
-configuration). Install the proxy project-locally with `asb tool install llmtape`,
-or point ASB at another executable with `ASB_LLM_TAPE`. Use `--cassette FILE` to choose an
-explicit path. `asb replay CONFIG` starts llmtape's cassette server and routes
+configuration). Install the proxy into the current benchmark project with
+`asb tool install llmtape`; no global llmtape installation is required. ASB
+does not search the host `PATH` implicitly. To deliberately use another
+executable, set `ASB_LLM_TAPE`. Use `--cassette FILE` to choose an explicit
+path. `asb replay CONFIG` starts llmtape's cassette server and routes
 all supported provider endpoints to it; it refuses a missing cassette and does
 not start cli2key or connect to any live provider. Cassettes are local test
 artifacts and should not be committed when they contain provider responses.
