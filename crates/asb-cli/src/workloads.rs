@@ -5,6 +5,47 @@ use std::path::Path;
 
 const MAX_PROMPT_BYTES: u64 = 64 * 1024;
 
+const BUILTIN: &[(&str, &str)] = &[
+    ("bug-fix", include_str!("../../../workloads/bug-fix.txt")),
+    (
+        "build-repair",
+        include_str!("../../../workloads/build-repair.txt"),
+    ),
+    (
+        "dependency-migration",
+        include_str!("../../../workloads/dependency-migration.txt"),
+    ),
+    (
+        "feature-addition",
+        include_str!("../../../workloads/feature-addition.txt"),
+    ),
+    (
+        "refactoring",
+        include_str!("../../../workloads/refactoring.txt"),
+    ),
+    (
+        "repository-navigation",
+        include_str!("../../../workloads/repository-navigation.txt"),
+    ),
+    (
+        "test-generation",
+        include_str!("../../../workloads/test-generation.txt"),
+    ),
+];
+
+/// Populate a new project with the prompts shipped in the ASB binary.
+pub(crate) fn populate(directory: &Path) -> Result<usize, std::io::Error> {
+    let mut added = 0;
+    for (name, prompt) in BUILTIN {
+        let path = directory.join(format!("{name}.txt"));
+        if !path.exists() {
+            fs::write(path, prompt)?;
+            added += 1;
+        }
+    }
+    Ok(added)
+}
+
 /// Load one workload prompt by name and report the available file names on a miss.
 pub fn load(name: &str, directory: &Path) -> Result<String, String> {
     let id = name.strip_prefix("original.").unwrap_or(name);
@@ -65,7 +106,7 @@ fn missing(name: &str, directory: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::load;
+    use super::{load, populate};
     use std::fs;
 
     #[test]
@@ -77,5 +118,26 @@ mod tests {
         assert!(load("../secret", &directory).is_err());
         let _ = fs::remove_file(directory.join("demo.txt"));
         let _ = fs::remove_dir(directory);
+    }
+
+    #[test]
+    fn populate_copies_bundled_prompts_without_overwriting_custom_files() {
+        let directory =
+            std::env::temp_dir().join(format!("asb-bundled-workloads-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("bug-fix.txt"), "custom").unwrap();
+        let added = populate(&directory).expect("populate succeeds");
+        assert_eq!(added, 6);
+        assert_eq!(
+            fs::read_to_string(directory.join("bug-fix.txt")).unwrap(),
+            "custom"
+        );
+        assert!(
+            !fs::read_to_string(directory.join("repository-navigation.txt"))
+                .unwrap()
+                .is_empty()
+        );
+        let _ = fs::remove_dir_all(directory);
     }
 }

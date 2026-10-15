@@ -45,7 +45,8 @@ binary as `CLI2KEY_CODEX_BIN`; the generated key is never passed to Codex or
 written to disk. Install the cli2key executable with
 `asb tool install cli2key --source PATH` (or provide it on `PATH`).
 
-Workloads are the `.txt` files in `workloads/`. Add a file such as
+`asb init` copies the bundled `.txt` workloads into `workloads/`, so they are
+available immediately after initialization. Add a file such as
 `workloads/my-task.txt`, then select it with `--workload my-task`. To keep
 workloads elsewhere, set `ASB_WORKLOAD_DIR` before `asb run`.
 

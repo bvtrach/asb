@@ -15,7 +15,8 @@ asb run CONFIG
 ```
 
 `init` writes `.asb/project.toml` with project-local tool, workload, and
-workspace directories. `setup` writes a human-readable TOML configuration.
+workspace directories and copies the bundled workload prompts into
+`workloads/`. `setup` writes a human-readable TOML configuration.
 `run` loads the project and benchmark configuration, selects the workload
 prompt, and starts the configured agent with the provider and model in the
 environment. Credentials stay outside the configuration.
