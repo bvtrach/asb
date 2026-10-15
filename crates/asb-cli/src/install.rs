@@ -582,13 +582,18 @@ fn install_recipe(recipe: Recipe, root: &Path) -> Result<PathBuf, Error> {
 /// recording `uname -r` prevents silently reusing a project tool from another
 /// machine or kernel image.
 fn install_bpftrace(root: &Path) -> Result<PathBuf, Error> {
-    let source = host_executable("bpftrace").or_else(|error| {
-        if matches!(error, Error::Io(_)) {
-            build_bpftrace(root)
-        } else {
-            Err(error)
-        }
-    })?;
+    let source = match host_executable("bpftrace") {
+        Ok(source) => source,
+        Err(host_error) => match build_bpftrace(root) {
+            Ok(source) => source,
+            Err(build_error) => {
+                return Err(Error::Io(format!(
+                    "could not install bpftrace: {host_error}\n\n{build_error}\n\nTo install a matching host tool instead, run one of these commands:\n{}",
+                    bpftrace_host_commands()
+                )));
+            }
+        },
+    };
     let version = command_output(&source, &["--version"], "bpftrace version")?;
     let kernel = command_output(Path::new("uname"), &["-r"], "kernel release")?;
     let machine = command_output(Path::new("uname"), &["-m"], "kernel architecture")?;
@@ -636,10 +641,11 @@ fn build_bpftrace(root: &Path) -> Result<PathBuf, Error> {
             .arg(&archive)
             .arg(BPFTRACE_SOURCE)
             .status()
-            .map_err(|error| missing_dependency("curl", "bpftrace source build", error))?;
+            .map_err(|error| bpftrace_missing_dependency("curl", error))?;
         if !status.success() {
             return Err(Error::Io(format!(
-                "could not download pinned bpftrace source from {BPFTRACE_SOURCE}"
+                "could not download pinned bpftrace source from {BPFTRACE_SOURCE}; verify network access and retry\n\n{}",
+                bpftrace_source_commands()
             )));
         }
         fs::create_dir_all(&source_dir).map_err(|error| {
@@ -652,11 +658,12 @@ fn build_bpftrace(root: &Path) -> Result<PathBuf, Error> {
             .arg(&source_dir)
             .args(["--strip-components=1"])
             .status()
-            .map_err(|error| missing_dependency("tar", "bpftrace source build", error))?;
+            .map_err(|error| bpftrace_missing_dependency("tar", error))?;
         if !status.success() {
-            return Err(Error::Io(
-                "could not extract the pinned bpftrace source".into(),
-            ));
+            return Err(Error::Io(format!(
+                "could not extract the pinned bpftrace source; install tar and retry\n\n{}",
+                bpftrace_dependency_commands("tar")
+            )));
         }
     }
     let status = Command::new("cmake")
@@ -666,22 +673,24 @@ fn build_bpftrace(root: &Path) -> Result<PathBuf, Error> {
         .arg(&build_dir)
         .args(["-DBUILD_TESTING=OFF", "-DBPFTRACE_BUILD_TESTING=OFF"])
         .status()
-        .map_err(|error| missing_dependency("cmake", "bpftrace source build", error))?;
+        .map_err(|error| bpftrace_missing_dependency("cmake", error))?;
     if !status.success() {
-        return Err(Error::Io(
-            "cmake could not configure bpftrace; install its development dependencies and rerun `asb tool install bpftrace`".into(),
-        ));
+        return Err(Error::Io(format!(
+            "cmake could not configure bpftrace; the BCC, libbpf, libclang, compiler, or CMake development packages are missing. Install them and rerun `asb tool install bpftrace`:\n\n{}",
+            bpftrace_source_commands()
+        )));
     }
     let status = Command::new("cmake")
         .args(["--build"])
         .arg(&build_dir)
         .args(["--target", "bpftrace", "--parallel"])
         .status()
-        .map_err(|error| missing_dependency("cmake", "bpftrace source build", error))?;
+        .map_err(|error| bpftrace_missing_dependency("cmake", error))?;
     if !status.success() {
-        return Err(Error::Io(
-            "bpftrace source compilation failed; install the compiler and libbpf/libclang development packages, then rerun `asb tool install bpftrace`".into(),
-        ));
+        return Err(Error::Io(format!(
+            "bpftrace source compilation failed; install the compiler and BCC/libbpf/libclang development packages, then rerun `asb tool install bpftrace`:\n\n{}",
+            bpftrace_source_commands()
+        )));
     }
     find_built_bpftrace(&build_dir).ok_or_else(|| {
         Error::Io(format!(
@@ -706,6 +715,36 @@ fn find_built_bpftrace(directory: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn bpftrace_host_commands() -> &'static str {
+    "Red Hat/Fedora:\n  sudo dnf install -y bpftrace\nDebian/Ubuntu:\n  sudo apt-get update && sudo apt-get install -y bpftrace\nopenEuler:\n  sudo dnf install -y bpftrace"
+}
+
+fn bpftrace_source_commands() -> &'static str {
+    "Red Hat/Fedora:\n  sudo dnf install -y bcc-devel libbpf-devel libclang-devel clang llvm cmake make gcc-c++ curl tar\nDebian/Ubuntu:\n  sudo apt-get update && sudo apt-get install -y libbpfcc-dev libbpf-dev libclang-dev clang llvm cmake build-essential curl tar\nopenEuler:\n  sudo dnf install -y bcc-devel libbpf-devel clang llvm cmake make gcc-c++ curl tar"
+}
+
+fn bpftrace_dependency_commands(dependency: &str) -> &'static str {
+    match dependency {
+        "curl" => {
+            "Red Hat/Fedora:\n  sudo dnf install -y curl\nDebian/Ubuntu:\n  sudo apt-get update && sudo apt-get install -y curl\nopenEuler:\n  sudo dnf install -y curl"
+        }
+        "tar" => {
+            "Red Hat/Fedora:\n  sudo dnf install -y tar\nDebian/Ubuntu:\n  sudo apt-get update && sudo apt-get install -y tar\nopenEuler:\n  sudo dnf install -y tar"
+        }
+        "cmake" => {
+            "Red Hat/Fedora:\n  sudo dnf install -y cmake make gcc-c++\nDebian/Ubuntu:\n  sudo apt-get update && sudo apt-get install -y cmake build-essential\nopenEuler:\n  sudo dnf install -y cmake make gcc-c++"
+        }
+        _ => bpftrace_source_commands(),
+    }
+}
+
+fn bpftrace_missing_dependency(dependency: &str, error: std::io::Error) -> Error {
+    Error::Io(format!(
+        "bpftrace source build needs `{dependency}`, but it could not be started: {error}. Install it, then rerun `asb tool install bpftrace`:\n\n{}",
+        bpftrace_dependency_commands(dependency)
+    ))
 }
 
 fn command_output(program: &Path, args: &[&str], label: &str) -> Result<String, Error> {
@@ -1074,6 +1113,32 @@ mod tests {
         )
         .to_string();
         assert!(curl.contains("apt-get install -y curl"));
+    }
+
+    #[test]
+    fn bpftrace_repair_messages_cover_supported_distributions() {
+        let host = bpftrace_host_commands();
+        assert!(host.contains("Red Hat/Fedora:"));
+        assert!(host.contains("sudo dnf install -y bpftrace"));
+        assert!(host.contains("sudo apt-get update && sudo apt-get install -y bpftrace"));
+        assert!(host.contains("openEuler:"));
+
+        let source = bpftrace_source_commands();
+        assert!(source.contains("bcc-devel"));
+        assert!(source.contains("libbpfcc-dev"));
+        assert!(source.contains("libbpf-dev"));
+        assert!(source.contains("cmake"));
+        assert!(source.contains("gcc-c++"));
+
+        let cmake = bpftrace_missing_dependency(
+            "cmake",
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+        )
+        .to_string();
+        assert!(cmake.contains("Red Hat/Fedora:"));
+        assert!(cmake.contains("Debian/Ubuntu:"));
+        assert!(cmake.contains("openEuler:"));
+        assert!(cmake.contains("rerun `asb tool install bpftrace`"));
     }
 
     #[test]
