@@ -38,6 +38,8 @@ URL or copies a local prompt into the configured workloads directory. These
 commands do not handle credentials.
 `asb tool list` and `asb workload list` expose these two catalogs without
 installing anything. Command-specific help is available with `--help`.
+The ASB source checkout is not a benchmark project: `init` rejects its
+distinctive workspace layout before creating any files.
 
 Future features should be separate modules behind these boundaries. Recording,
 replay, measurements, tool commands, and a graphical or terminal frontend are

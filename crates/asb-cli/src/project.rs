@@ -33,6 +33,11 @@ pub fn init(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Erro
         .first()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
+    if is_asb_source_checkout(&root) {
+        return Err(Error::Usage(
+            "refusing to initialize the ASB source checkout; choose a separate benchmark project directory",
+        ));
+    }
     let path = root.join(CONFIG_DIR).join(CONFIG_FILE);
     fs::create_dir_all(path.parent().expect("config parent"))
         .map_err(|error| Error::Io(format!("cannot create project configuration: {error}")))?;
@@ -54,6 +59,12 @@ pub fn init(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Erro
         path.display()
     )
     .map_err(super::io_error)
+}
+
+fn is_asb_source_checkout(root: &Path) -> bool {
+    root.join("Cargo.toml").is_file()
+        && root.join("crates/asb-cli/Cargo.toml").is_file()
+        && root.join("workloads").is_dir()
 }
 
 pub fn load(start: &Path) -> Result<(PathBuf, ProjectConfig), Error> {
@@ -110,5 +121,20 @@ mod tests {
         assert!(resolve(&root, &config.workspace_dir).is_dir());
         assert!(root.join("workloads/bug-fix.txt").is_file());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn init_rejects_the_asb_source_checkout_layout() {
+        let root = std::env::temp_dir().join(format!("asb-source-checkout-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("crates/asb-cli")).unwrap();
+        fs::create_dir_all(root.join("workloads")).unwrap();
+        fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        fs::write(root.join("crates/asb-cli/Cargo.toml"), "[package]\n").unwrap();
+        let error = init(&[root.to_string_lossy().into_owned()], &mut Vec::new())
+            .expect_err("source checkout must be rejected");
+        assert!(error.to_string().contains("source checkout"));
+        assert!(!root.join(".asb").exists());
+        let _ = fs::remove_dir_all(root);
     }
 }

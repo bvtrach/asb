@@ -49,6 +49,8 @@ written to disk. Install the cli2key executable with
 available immediately after initialization. Add a file such as
 `workloads/my-task.txt`, then select it with `--workload my-task`. To keep
 workloads elsewhere, set `ASB_WORKLOAD_DIR` before `asb run`.
+Initialize a separate benchmark directory, not the ASB source checkout;
+`asb init` rejects the source checkout to avoid polluting it with project data.
 
 Install a local agent executable or external prompt with:
 
