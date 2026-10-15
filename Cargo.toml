@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/asb-core", "crates/asb-protocol", "crates/asb-replay", "crates/asb-runtime", "crates/asb-store", "crates/asb-analysis", "crates/asb-metrics", "crates/asb-agents", "crates/asb-workloads", "crates/asb-control", "crates/asb-orchestrator", "crates/asb-cli", "crates/asb-csb-runner", "crates/asb-bundle", "crates/asb-config"]
+members = ["crates/asb-cli"]
 resolver = "3"
 
 [workspace.package]
@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.93"
 license = "MIT"
-repository = "https://github.com/martin-beck/agent-systems-benchmark"
+repository = "https://github.com/martin-beck/asb"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
