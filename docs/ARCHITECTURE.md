@@ -6,6 +6,8 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
 - `config`: the `setup` command and TOML writer;
 - `install`: local copying of agent executables and workload prompt files;
 - `providers`: a concise provider-name and environment-variable registry;
+- `models`: bounded live model-catalog discovery using provider-specific
+  endpoints and response shapes;
 - `project`: `.asb/project.toml` and shared project paths. `init` creates the
   file and its configured `tools_dir`, `workloads_dir`, and `workspace_dir`;
   every command resolves relative paths from this project root;
@@ -19,6 +21,9 @@ variables and gives the selected agent one bounded workload prompt.
 Provider credentials are never inspected by ASB: the child agent inherits the
 parent environment. Known providers document conventional credential and
 endpoint variable names, while any custom provider name is accepted unchanged.
+The `models` command is the one exception that reads the selected credential
+only long enough to send a catalog request; it sends it through curl's stdin
+configuration, never includes it in arguments or output, and never stores it.
 Workloads are loaded from `workloads/` beside the configuration file. Set
 `ASB_WORKLOAD_DIR` to use another directory; add a new `.txt` file to extend
 the catalogue.

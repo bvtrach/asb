@@ -3,6 +3,7 @@
 mod benchmark;
 mod config;
 mod install;
+mod models;
 mod project;
 mod providers;
 mod runner;
@@ -47,6 +48,10 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
         [command, subcommand, rest @ ..] if command == "workload" && subcommand == "install" => {
             install::workload(rest, stdout)
         }
+        [command, rest @ ..] if command == "models" => models::list(rest, stdout),
+        [command, subcommand, rest @ ..] if command == "provider" && subcommand == "models" => {
+            models::list(rest, stdout)
+        }
         [command, help] if (command == "setup" || command == "run") && help == "--help" => {
             write_help(stdout)
         }
@@ -59,7 +64,7 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
 }
 
 fn write_help(output: &mut dyn Write) -> Result<(), CliError> {
-    writeln!(output, "ASB\n\nUsage:\n  asb init [PROJECT_DIR]\n  asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n  asb run CONFIG\n  asb tool install AGENT [--source URL|PATH] [--dry-run]\n  asb workload install SOURCE.txt|URL [--name NAME]\n\ninit creates shared project configuration. setup writes a benchmark configuration. run executes it live.")
+    writeln!(output, "ASB\n\nUsage:\n  asb init [PROJECT_DIR]\n  asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n  asb run CONFIG\n  asb models [PROVIDER] [--json]\n  asb provider models [PROVIDER] [--json]\n  asb tool install AGENT [--source URL|PATH] [--dry-run]\n  asb workload install SOURCE.txt|URL [--name NAME]\n\ninit creates shared project configuration. models queries live provider catalogs using environment credentials. setup writes a benchmark configuration. run executes it live.")
         .map_err(io_error)
 }
 

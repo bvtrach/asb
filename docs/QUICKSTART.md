@@ -7,6 +7,7 @@ configuration, then run it:
 cargo build --locked
 ./target/debug/asb init
 ./target/debug/asb tool install codex
+./target/debug/asb models openrouter
 ./target/debug/asb workload install \
   https://raw.githubusercontent.com/martin-beck/asb/main/workloads/bug-fix.txt \
   --name bug-fix
@@ -22,7 +23,9 @@ cargo build --locked
 Credentials come from the environment used to launch ASB. For example,
 OpenRouter agents can use `OPENROUTER_API_KEY`; cli2key integrations can use
 `CLI2KEY_API_KEY` and `CLI2KEY_BASE_URL`. ASB does not store or inspect these
-values.
+values. `asb models openrouter` uses the same environment to print the current
+catalog; `asb models --json` queries every supported provider and reports
+missing credentials or unavailable endpoints individually.
 
 Workloads are the `.txt` files in `workloads/`. Add a file such as
 `workloads/my-task.txt`, then select it with `--workload my-task`. To keep

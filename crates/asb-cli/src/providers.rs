@@ -11,6 +11,46 @@ pub struct ProviderSpec {
     pub endpoint: Option<&'static str>,
 }
 
+/// Response shape used by a provider's model-list endpoint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ModelKind {
+    OpenAi,
+    Gemini,
+    Anthropic,
+    Ollama,
+}
+
+/// Live model discovery details for a supported provider.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ModelSpec {
+    pub name: &'static str,
+    pub credential: Option<&'static str>,
+    pub endpoint: Option<&'static str>,
+    pub default_url: Option<&'static str>,
+    pub kind: ModelKind,
+}
+
+impl ModelSpec {
+    /// Resolve an endpoint override or the provider's documented default.
+    pub fn url(self) -> Option<String> {
+        let base = self
+            .endpoint
+            .and_then(std::env::var_os)
+            .map(|value| value.to_string_lossy().into_owned())
+            .or_else(|| self.default_url.map(str::to_owned))?;
+        let trimmed = base.trim_end_matches('/');
+        if trimmed.ends_with("/models") || trimmed.ends_with("/tags") {
+            return Some(trimmed.to_owned());
+        }
+        let suffix = match self.kind {
+            ModelKind::Gemini => "/v1beta/models",
+            ModelKind::Ollama => "/api/tags",
+            ModelKind::OpenAi | ModelKind::Anthropic => "/models",
+        };
+        Some(format!("{trimmed}{suffix}"))
+    }
+}
+
 const PROVIDERS: &[ProviderSpec] = &[
     ProviderSpec {
         name: "openai",
@@ -90,6 +130,131 @@ pub fn spec(name: &str) -> ProviderSpec {
             credential: None,
             endpoint: None,
         })
+}
+
+/// Names of providers for which ASB can attempt live model discovery.
+pub fn names() -> &'static [&'static str] {
+    &[
+        "openai",
+        "openrouter",
+        "anthropic",
+        "gemini",
+        "ollama",
+        "groq",
+        "mistral",
+        "deepseek",
+        "xai",
+        "together",
+        "fireworks",
+        "cli2key",
+    ]
+}
+
+/// Validate a user-facing provider or agent identifier.
+pub fn is_valid_name(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+/// Return the endpoint and credential information for live discovery.
+pub fn model_spec(name: &str) -> Option<ModelSpec> {
+    let lower = name.to_ascii_lowercase();
+    let (name, credential, endpoint, default_url, kind) = match lower.as_str() {
+        "openai" => (
+            "openai",
+            Some("OPENAI_API_KEY"),
+            Some("OPENAI_BASE_URL"),
+            Some("https://api.openai.com/v1/models"),
+            ModelKind::OpenAi,
+        ),
+        "openrouter" => (
+            "openrouter",
+            Some("OPENROUTER_API_KEY"),
+            Some("OPENROUTER_BASE_URL"),
+            Some("https://openrouter.ai/api/v1/models"),
+            ModelKind::OpenAi,
+        ),
+        "anthropic" => (
+            "anthropic",
+            Some("ANTHROPIC_API_KEY"),
+            Some("ANTHROPIC_BASE_URL"),
+            Some("https://api.anthropic.com/v1/models"),
+            ModelKind::Anthropic,
+        ),
+        "gemini" => (
+            "gemini",
+            Some("GEMINI_API_KEY"),
+            Some("GOOGLE_GEMINI_BASE_URL"),
+            Some("https://generativelanguage.googleapis.com/v1beta/models"),
+            ModelKind::Gemini,
+        ),
+        "ollama" => (
+            "ollama",
+            None,
+            Some("OLLAMA_HOST"),
+            Some("http://localhost:11434/api/tags"),
+            ModelKind::Ollama,
+        ),
+        "groq" => (
+            "groq",
+            Some("GROQ_API_KEY"),
+            Some("GROQ_BASE_URL"),
+            Some("https://api.groq.com/openai/v1/models"),
+            ModelKind::OpenAi,
+        ),
+        "mistral" => (
+            "mistral",
+            Some("MISTRAL_API_KEY"),
+            Some("MISTRAL_BASE_URL"),
+            Some("https://api.mistral.ai/v1/models"),
+            ModelKind::OpenAi,
+        ),
+        "deepseek" => (
+            "deepseek",
+            Some("DEEPSEEK_API_KEY"),
+            Some("DEEPSEEK_BASE_URL"),
+            Some("https://api.deepseek.com/models"),
+            ModelKind::OpenAi,
+        ),
+        "xai" => (
+            "xai",
+            Some("XAI_API_KEY"),
+            Some("XAI_BASE_URL"),
+            Some("https://api.x.ai/v1/models"),
+            ModelKind::OpenAi,
+        ),
+        "together" => (
+            "together",
+            Some("TOGETHER_API_KEY"),
+            Some("TOGETHER_BASE_URL"),
+            Some("https://api.together.xyz/v1/models"),
+            ModelKind::OpenAi,
+        ),
+        "fireworks" => (
+            "fireworks",
+            Some("FIREWORKS_API_KEY"),
+            Some("FIREWORKS_BASE_URL"),
+            Some("https://api.fireworks.ai/inference/v1/models"),
+            ModelKind::OpenAi,
+        ),
+        "cli2key" => (
+            "cli2key",
+            Some("CLI2KEY_API_KEY"),
+            Some("CLI2KEY_BASE_URL"),
+            None,
+            ModelKind::OpenAi,
+        ),
+        _ => return None,
+    };
+    Some(ModelSpec {
+        name,
+        credential,
+        endpoint,
+        default_url,
+        kind,
+    })
 }
 
 /// Add provider-neutral and provider-specific selection variables to a child.
