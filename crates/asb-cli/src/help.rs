@@ -7,7 +7,7 @@ use std::io::Write;
 pub fn root(output: &mut dyn Write) -> Result<(), Error> {
     write_text(
         output,
-        "ASB\n\nUsage:\n  asb init [PROJECT_DIR] [--reset]\n  asb setup tui\n  asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n  asb run CONFIG [--record|--replay] [--cassette FILE] [--json] [--measurements DIR]\n  asb sweep SWEEP.toml [--record|--replay] [--json]\n  asb compare SWEEP.toml\n  asb provider models [PROVIDER] [--json] [--free]\n  asb tool list\n  asb tool install AGENT [--source URL|PATH] [--dir DIR] [--dry-run]\n  asb workload list [--dir DIR]\n  asb workload install SOURCE.txt|URL [--name NAME] [--dir DIR]\n\nUse `asb COMMAND --help` for concise help for one command.",
+        "ASB\n\nUsage:\n  asb init [PROJECT_DIR] [--reset]\n  asb setup tui\n  asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n  asb run CONFIG [--record|--replay] [--cassette FILE] [--json] [--measurements DIR]\n  asb sweep SWEEP.toml [--record|--replay] [--json]\n  asb compare SWEEP.toml\n  asb provider models [PROVIDER] [--json] [--free]\n  asb tool list\n  asb tool install AGENT [--source URL|PATH] [--dir DIR] [--dry-run]\n  asb workload list [--dir DIR]\n  asb workload install SOURCE.txt|URL [--name NAME] [--dir DIR]\n  asb workload tui\n\nUse `asb COMMAND --help` for concise help for one command.",
     )
 }
 
@@ -18,16 +18,16 @@ pub fn command(name: &str, output: &mut dyn Write) -> Result<(), Error> {
             "Usage: asb init [PROJECT_DIR] [--reset]\n\nCreate project state and bundled workloads. Existing projects are preserved unless --reset is supplied."
         }
         "setup" => {
-            "Usage: asb setup tui | asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n\n`setup tui` opens the modular keyboard-driven wizard and writes one TOML per selected combination plus a sweep TOML. The non-interactive form writes one configuration. Generated configurations enable every measurement module; credentials remain in the environment."
+            "Usage: asb setup tui | asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n\n`setup tui` opens the modular keyboard-driven wizard and writes one TOML per selected combination plus a sweep TOML, then prints the exact `asb sweep ...` command to run it. The non-interactive form writes one configuration and, when `--output` is used, prints the exact `asb run ...` command. Generated configurations enable every measurement module; credentials remain in the environment."
         }
         "setup tui" => {
-            "Usage: asb setup tui\n\nOpen the modular terminal wizard. Select agents, providers, models, workloads, and measurements with Space; navigate with arrows and Tab or Enter. The wizard writes one uniquely named TOML per compatible combination and one sweep TOML."
+            "Usage: asb setup tui\n\nOpen the modular terminal wizard. Select agents, providers, models, workloads, and measurements with Space; navigate with arrows and Tab or Enter. Each item has a colored ⓘ readiness marker. On agents, workloads, and collectors, Ctrl-I runs the project-local installer when supported. The wizard writes one uniquely named TOML per compatible combination and one sweep TOML, then prints the exact `asb sweep ...` command to run the generated sweep."
         }
         "run" => {
             "Usage: asb run CONFIG [--record|--replay] [--cassette FILE] [--json] [--measurements DIR]\n\nRun one configured workload. `--record` routes the provider through project-local llmtape and writes a cassette; `--replay` uses that cassette without a live provider. The flags are mutually exclusive. Full agent output is logged; terminal output is limited to success rate, elapsed time, and token usage. Install llmtape with `asb tool install llmtape`."
         }
         "sweep" => {
-            "Usage: asb sweep SWEEP.toml [--record|--replay] [--json]\n\nValidate a `configs = [...]` sweep manifest (not a normal benchmark TOML), then run each referenced benchmark sequentially. Each run gets its own `<sweep>-results/<index>-<name>/` folder containing an isolated config, workspace, log, measurements, and tape cassette. `--record` and `--replay` are mutually exclusive; replay never contacts a live provider."
+            "Usage: asb sweep SWEEP.toml [--record|--replay] [--json]\n\nValidate a `configs = [...]` sweep manifest (not a normal benchmark TOML), then run each referenced benchmark sequentially. Each run gets its own `<sweep>-results/<index>-<name>/` folder containing an isolated config, workspace, log, measurements, and tape cassette. After the run, ASB automatically regenerates the comparison JSON, SVG charts, and HTML report; `asb compare SWEEP.toml` remains available for manual regeneration. `--record` and `--replay` are mutually exclusive; replay never contacts a live provider."
         }
         "compare" => {
             "Usage: asb compare SWEEP.toml\n\nRead completed sweep result folders, compare every numeric measurement, and write comparison.json, report.html, and SVG charts under `results/<sweep>-comparison/`. Open report.html for linked evidence, explanations, charts, and offline filters for benchmark, agent, provider, model, and workload."
@@ -48,13 +48,16 @@ pub fn command(name: &str, output: &mut dyn Write) -> Result<(), Error> {
             "Usage: asb tool install NAME [--source URL|PATH] [--dir DIR] [--dry-run]\n\nInstall a pinned built-in agent or support tool, or copy/download an executable with --source. `cli2key` installs the local provider bridge; `llmtape` installs the local record/replay proxy. If npm or Python is missing, ASB prints a copy-paste user-local repair command."
         }
         "workload" => {
-            "Usage: asb workload COMMAND\n\nCommands:\n  list                 List workload files in the project.\n  install SOURCE ...   Copy or download a workload prompt."
+            "Usage: asb workload COMMAND\n\nCommands:\n  list                 List workload files in the project.\n  install SOURCE ...   Copy or download a workload prompt.\n  tui                  Select trials and write workload trial-set TOML."
         }
         "workload list" => {
             "Usage: asb workload list [--dir DIR]\n\nList installable .txt workloads in the configured directory."
         }
         "workload install" => {
             "Usage: asb workload install SOURCE.txt|URL [--name NAME] [--dir DIR]\n\nCopy or download one prompt into the project workload directory."
+        }
+        "workload tui" => {
+            "Usage: asb workload tui\n\nOpen the shared keyboard-driven workload trial wizard. Select installed external workloads, then their trials with Space; use arrows, Tab, Enter, Shift-Tab, and substring search. Each workload has a colored ⓘ readiness marker; Ctrl-I installs the highlighted external workload when supported. The wizard writes one <workload>.workload.toml trial-set file per selected workload."
         }
         _ => return root(output),
     };

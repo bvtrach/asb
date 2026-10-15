@@ -1,10 +1,26 @@
 //! Workload prompts loaded from the adjacent `workloads` directory.
 
 use crate::suggestions;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
 const MAX_PROMPT_BYTES: u64 = 64 * 1024;
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrialSet {
+    pub workload: String,
+    pub trials: Vec<Trial>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Trial {
+    pub id: String,
+    #[serde(default)]
+    pub description: String,
+}
 
 struct Fixture {
     name: &'static str,
@@ -356,6 +372,147 @@ pub fn load(name: &str, directory: &Path) -> Result<String, String> {
     Ok(prompt)
 }
 
+pub fn load_trial(
+    name: &str,
+    trial: Option<&str>,
+    trial_set: Option<&str>,
+    directory: &Path,
+) -> Result<String, String> {
+    let prompt = load(name, directory)?;
+    let Some(trial) = trial else {
+        return Ok(prompt);
+    };
+    let set_name = trial_set.ok_or_else(|| {
+        format!(
+            "workload `{name}` selected trial `{trial}` without a trial-set TOML; run `asb workload tui`"
+        )
+    })?;
+    if Path::new(set_name).is_absolute()
+        || Path::new(set_name)
+            .components()
+            .any(|component| component == std::path::Component::ParentDir)
+    {
+        return Err(format!("invalid workload trial-set path `{set_name}`"));
+    }
+    let config_path = directory.join(set_name);
+    let config = read_trial_set(&config_path)?;
+    if config.workload != name {
+        return Err(format!(
+            "trial set {} belongs to `{}`, not `{name}`",
+            config_path.display(),
+            config.workload
+        ));
+    }
+    let selected = config
+        .trials
+        .iter()
+        .find(|candidate| candidate.id == trial)
+        .ok_or_else(|| {
+            format!(
+                "trial `{trial}` is not enabled in {}",
+                config_path.display()
+            )
+        })?;
+    let trial_prompt = directory
+        .join(name)
+        .join("trials")
+        .join(format!("{}.txt", selected.id));
+    if trial_prompt.is_file() {
+        return load_prompt_file(&trial_prompt, name);
+    }
+    Ok(format!(
+        "{prompt}\n\nSelected external workload trial: {}\n{}\n",
+        selected.id, selected.description
+    ))
+}
+
+pub fn read_trial_set(path: &Path) -> Result<TrialSet, String> {
+    let text = fs::read_to_string(path)
+        .map_err(|error| format!("cannot read trial set {}: {error}", path.display()))?;
+    let config: TrialSet = toml::from_str(&text)
+        .map_err(|error| format!("invalid trial set {}: {error}", path.display()))?;
+    if config.workload.trim().is_empty() || config.trials.is_empty() {
+        return Err(format!(
+            "trial set {} must contain a workload and at least one trial",
+            path.display()
+        ));
+    }
+    Ok(config)
+}
+
+pub fn trial_ids(name: &str) -> Vec<Trial> {
+    let ids: &[(&str, &str)] = match name {
+        "terminal-bench" => &[
+            (
+                "smoke",
+                "Short terminal task suitable for a local smoke run.",
+            ),
+            (
+                "shell",
+                "Shell and filesystem task from the local Terminal-Bench checkout.",
+            ),
+            (
+                "debug",
+                "Debugging task from the local Terminal-Bench checkout.",
+            ),
+        ],
+        name if name.starts_with("swe-bench") => &[
+            ("bug-fix", "One repository bug-fix trial."),
+            ("regression", "Regression-focused repository repair trial."),
+            ("tests", "Test-focused repository repair trial."),
+        ],
+        _ => &[
+            ("smoke", "Small local smoke trial."),
+            ("standard", "Standard workload trial."),
+            ("extended", "Extended workload trial."),
+        ],
+    };
+    ids.iter()
+        .map(|(id, description)| Trial {
+            id: (*id).into(),
+            description: (*description).into(),
+        })
+        .collect()
+}
+
+pub fn write_default_trial_set(name: &str, directory: &Path) -> Result<(), std::io::Error> {
+    let path = directory.join(format!("{name}.workload.toml"));
+    if path.exists() {
+        return Ok(());
+    }
+    let config = TrialSet {
+        workload: name.into(),
+        trials: trial_ids(name),
+    };
+    let text = toml::to_string_pretty(&config).map_err(std::io::Error::other)?;
+    fs::write(path, text)
+}
+
+fn load_prompt_file(path: &Path, name: &str) -> Result<String, String> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        format!(
+            "cannot inspect trial `{name}` at {}: {error}",
+            path.display()
+        )
+    })?;
+    if metadata.len() > MAX_PROMPT_BYTES {
+        return Err(format!(
+            "trial `{name}` exceeds 64 KiB in {}",
+            path.display()
+        ));
+    }
+    let prompt = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "cannot read trial `{name}` from {}: {error}",
+            path.display()
+        )
+    })?;
+    if prompt.trim().is_empty() {
+        return Err(format!("trial `{name}` is empty: {}", path.display()));
+    }
+    Ok(prompt)
+}
+
 fn missing(name: &str, directory: &Path) -> String {
     let mut available = fs::read_dir(directory)
         .ok()
@@ -387,7 +544,9 @@ fn missing(name: &str, directory: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{load, populate, prepare_external, prepare_fixture};
+    use super::{
+        load, load_trial, populate, prepare_external, prepare_fixture, write_default_trial_set,
+    };
     use std::fs;
 
     #[test]
@@ -474,6 +633,38 @@ mod tests {
         fs::write(directory.join("bug-fix.txt"), "prompt").unwrap();
         let error = load("bug-fx", &directory).expect_err("typo rejected");
         assert!(error.contains("did you mean `bug-fix`?"));
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn trial_sets_round_trip_and_select_a_configured_prompt() {
+        let directory = std::env::temp_dir().join(format!("asb-trials-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(directory.join("terminal-bench/trials")).unwrap();
+        fs::write(directory.join("terminal-bench.txt"), "base prompt").unwrap();
+        write_default_trial_set("terminal-bench", &directory).unwrap();
+        fs::write(
+            directory.join("terminal-bench/trials/debug.txt"),
+            "debug task",
+        )
+        .unwrap();
+        let prompt = load_trial(
+            "terminal-bench",
+            Some("debug"),
+            Some("terminal-bench.workload.toml"),
+            &directory,
+        )
+        .unwrap();
+        assert_eq!(prompt, "debug task");
+        assert!(
+            load_trial(
+                "terminal-bench",
+                Some("unknown"),
+                Some("terminal-bench.workload.toml"),
+                &directory,
+            )
+            .is_err()
+        );
         let _ = fs::remove_dir_all(directory);
     }
 }

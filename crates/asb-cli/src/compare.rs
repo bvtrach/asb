@@ -617,6 +617,8 @@ fn metric_unit(title: &str) -> &'static str {
         "s"
     } else if name.contains("token") {
         "tokens"
+    } else if name == "steps" || name.ends_with("_steps") {
+        "steps"
     } else if name.contains("success_rate") || name.ends_with("_rate") {
         "ratio"
     } else if name.contains("count") {

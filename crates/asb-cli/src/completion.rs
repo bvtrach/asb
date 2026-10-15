@@ -45,7 +45,7 @@ const TOOL_INSTALL_VALUES: &[&str] = &[
     "--dir",
     "--dry-run",
 ];
-const WORKLOAD_SUBCOMMANDS: &[&str] = &["list", "install"];
+const WORKLOAD_SUBCOMMANDS: &[&str] = &["list", "install", "tui"];
 const WORKLOAD_LIST_OPTIONS: &[&str] = &["--dir"];
 const WORKLOAD_INSTALL_OPTIONS: &[&str] = &["--name", "--dir"];
 

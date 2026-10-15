@@ -2,7 +2,7 @@
 
 use crate::benchmark::BenchmarkConfig;
 use crate::runner;
-use crate::{Error, read_config};
+use crate::{Error, compare, read_config};
 use serde::Deserialize;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -125,14 +125,22 @@ pub fn run(
             failures.push(format!("{}: {error}", config_path.display()));
         }
     }
+    // Always regenerate the comparison artifacts after the execution loop,
+    // including partial sweeps. The comparison report records missing or
+    // failed benchmark entries instead of hiding useful completed results.
+    let comparison_error = compare::run(path, output).err();
     if failures.is_empty() {
-        Ok(())
+        comparison_error.map_or(Ok(()), Err)
     } else {
-        Err(Error::Run(format!(
+        let mut details = format!(
             "sweep completed with {} failed benchmark(s): {}",
             failures.len(),
             failures.join("; ")
-        )))
+        );
+        if let Some(error) = comparison_error {
+            details.push_str(&format!("; comparison failed: {error}"));
+        }
+        Err(Error::Run(details))
     }
 }
 
@@ -235,5 +243,24 @@ mod tests {
         let error = run(path.to_str().expect("path"), false, None, &mut Vec::new())
             .expect_err("parent traversal must be rejected");
         assert!(error.to_string().contains("unsafe benchmark path"));
+    }
+
+    #[test]
+    fn regenerates_comparison_after_a_partial_sweep() {
+        let path = temp_file("sweep.toml", "configs = [\"benchmark.toml\"]\n");
+        let benchmark = path.parent().expect("sweep parent").join("benchmark.toml");
+        std::fs::write(
+            &benchmark,
+            "agent = \"not-installed\"\nworkload = \"bug-fix\"\nprovider = \"local\"\nmodel = \"test-model\"\n",
+        )
+        .expect("benchmark");
+        let error = run(path.to_str().expect("path"), false, None, &mut Vec::new())
+            .expect_err("invalid agent leaves a failed sweep");
+        assert!(error.to_string().contains("failed benchmark"));
+        let report = path
+            .parent()
+            .expect("parent")
+            .join("results/sweep-comparison/report.html");
+        assert!(report.is_file(), "automatic comparison report exists");
     }
 }

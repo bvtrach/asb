@@ -43,6 +43,7 @@ struct RunResult<'a> {
     elapsed_ms: u128,
     exit_code: Option<i32>,
     token_usage: measurements::TokenUsage,
+    steps: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     cassette: Option<String>,
     stdout: String,
@@ -107,7 +108,13 @@ fn run_mode(
     let workload_directory = std::env::var_os("ASB_WORKLOAD_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir));
-    let prompt = workloads::load(&config.workload, &workload_directory).map_err(Error::Input)?;
+    let prompt = workloads::load_trial(
+        &config.workload,
+        config.trial.as_deref(),
+        config.trial_set.as_deref(),
+        &workload_directory,
+    )
+    .map_err(Error::Input)?;
     workloads::prepare_fixture(&config.workload, &workspace).map_err(Error::Run)?;
     workloads::prepare_external(&config.workload, &workload_directory, &workspace)
         .map_err(Error::Run)?;
@@ -257,6 +264,11 @@ fn run_mode(
             .as_ref()
             .map(|(_, cassette)| cassette.as_path()),
     );
+    let steps = measurements::steps_from_sources(
+        &config.agent,
+        &bounded(&child.stdout),
+        &bounded(&child.stderr),
+    );
     let result = RunResult {
         status: if success { "completed" } else { "failed" },
         agent: &config.agent,
@@ -267,6 +279,7 @@ fn run_mode(
         elapsed_ms,
         exit_code: child.status.code(),
         token_usage,
+        steps,
         cassette: tape_cassette
             .as_ref()
             .map(|(_, cassette)| cassette.display().to_string()),
@@ -288,6 +301,7 @@ fn run_mode(
             elapsed_ms,
             exit_code: result.exit_code,
             token_usage: result.token_usage.clone(),
+            steps: result.steps,
             started_unix_ms: session.started_unix_ms(),
         };
         session.finish(measured).map_err(Error::Run)?;
@@ -381,6 +395,7 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
     let summary = serde_json::json!({
         "success_rate": result.success_rate,
         "elapsed_ms": result.elapsed_ms,
+        "steps": result.steps,
         "token_usage": result.token_usage,
     });
     serde_json::to_writer_pretty(&mut *output, &summary)
@@ -391,9 +406,10 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
 fn render_human(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
     writeln!(
         output,
-        "success_rate={:.3} elapsed_ms={} input_tokens={} output_tokens={} cached_tokens={} total_tokens={}",
+        "success_rate={:.3} elapsed_ms={} steps={} input_tokens={} output_tokens={} cached_tokens={} total_tokens={}",
         result.success_rate,
         result.elapsed_ms,
+        result.steps,
         format_token(result.token_usage.input_tokens),
         format_token(result.token_usage.output_tokens),
         format_token(result.token_usage.cached_tokens),
@@ -695,6 +711,7 @@ mod tests {
                 total_tokens: Some(7),
                 source: Some("test".into()),
             },
+            steps: 2,
             cassette: None,
             stdout: "done".into(),
             stderr: String::new(),
@@ -708,6 +725,7 @@ mod tests {
         let text = String::from_utf8(output).expect("utf8");
         assert!(text.starts_with("success_rate=1.000"));
         assert!(text.contains("elapsed_ms=12"));
+        assert!(text.contains("steps=2"));
         assert!(text.contains("cached_tokens=1"));
         assert!(text.contains("total_tokens=7"));
         assert!(!text.contains("done"));
@@ -721,6 +739,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&output).expect("valid json");
         assert_eq!(value["success_rate"], 1.0);
         assert_eq!(value["elapsed_ms"], 12);
+        assert_eq!(value["steps"], 2);
         assert_eq!(value["token_usage"]["total_tokens"], 7);
         assert_eq!(value["token_usage"]["cached_tokens"], 1);
         assert!(value.get("stdout").is_none());
@@ -761,6 +780,8 @@ mod tests {
             workload: "bug-fix".into(),
             provider: "cli2key".into(),
             model: "gpt-test".into(),
+            trial_set: None,
+            trial: None,
             workspace: "workspace".into(),
             log_file: "run.log".into(),
             measurements: None,
@@ -779,6 +800,8 @@ mod tests {
             workload: "bug-fix".into(),
             provider: "cli2key".into(),
             model: "gpt-6.1-sol".into(),
+            trial_set: None,
+            trial: None,
             workspace: "workspace".into(),
             log_file: "run.log".into(),
             measurements: None,
@@ -801,6 +824,8 @@ mod tests {
             workload: "bug-fix".into(),
             provider: "cli2key".into(),
             model: "gpt-6.1-sol".into(),
+            trial_set: None,
+            trial: None,
             workspace: "workspace".into(),
             log_file: "run.log".into(),
             measurements: None,
@@ -842,6 +867,8 @@ mod tests {
             workload: "bug-fix".into(),
             provider: "opencode-zen".into(),
             model: "mimo-v2.6-flash-free".into(),
+            trial_set: None,
+            trial: None,
             workspace: "workspace".into(),
             log_file: "run.log".into(),
             measurements: None,
@@ -856,6 +883,8 @@ mod tests {
             workload: "bug-fix".into(),
             provider: "cli2key".into(),
             model: "gpt-test".into(),
+            trial_set: None,
+            trial: None,
             workspace: "workspace".into(),
             log_file: "run.log".into(),
             measurements: None,
@@ -870,6 +899,8 @@ mod tests {
             workload: "bug-fix".into(),
             provider: "local".into(),
             model: "test-model".into(),
+            trial_set: None,
+            trial: None,
             workspace: "workspace".into(),
             log_file: "run.log".into(),
             measurements: None,

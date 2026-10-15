@@ -10,6 +10,7 @@ asb tool install AGENT
 asb tool install llmtape
 asb workload list
 asb workload install SOURCE.txt|URL
+asb workload tui
 asb provider models [PROVIDER] [--free]
 asb setup tui
 asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]
@@ -24,13 +25,27 @@ only after a selection. It writes one uniquely named test TOML per compatible
 combination and one sweep TOML referencing those files. The model step queries
 the selected provider catalogs and lists all returned tool-capable models (for
 example DeepSeek, GLM, GPT, and Fable on OpenRouter), falling back to a pinned
-local default only when discovery is unavailable. `init` writes
-`.asb/project.toml` with project-local tool, workload, and
+local default only when discovery is unavailable. When generation succeeds, the
+wizard prints the exact `asb sweep <generated>.toml` command to run the sweep.
+`asb workload tui` opens
+the same Ratatui interaction components in a
+two-level workload/trial tree. Select workloads and enabled trials, then it
+writes `<workload>.workload.toml` files; `setup tui` presents those trial sets
+as selectable workload entries and generates one benchmark configuration per
+enabled trial. Both TUIs prefix every selectable item with a colored `ⓘ`:
+green means runnable, red means missing, and yellow means not locally
+verifiable (for example a remote provider catalog). On an agent, external
+workload, or collector, `Ctrl-I` invokes the bounded project-local installer
+when one exists and refreshes the status; providers and models remain
+discovery-only. While an installer runs, the footer is refreshed live as
+`Installing (XX%)`; completion is shown in green and failure/unavailability in
+red. `init` writes `.asb/project.toml` with project-local tool, workload, and
 workspace directories and copies the bundled workload prompts into
 `workloads/` and seeds `.asb/fixtures/` with the source, tests, and supporting
 files for every built-in workload. `run` copies the selected fixture into the
 workspace without overwriting existing edits. `setup` writes a human-readable
-TOML configuration.
+TOML configuration; when `--output` is supplied it also prints the exact
+`asb run <file>` command for that configuration.
 Run `asb init` in a separate benchmark project directory; it intentionally
 refuses to modify the ASB source checkout.
 If the directory is already initialized, ASB warns and makes no changes;
@@ -79,7 +94,10 @@ section listing every collector module and defaulting its output directory to
 the no-collection behavior, or pass `--measurements DIR` to enable collection
 for one run.
 
-`asb compare SWEEP.toml` creates `results/<sweep>-comparison/report.html` in
+`asb sweep` automatically runs the same comparison after all benchmark entries
+finish, including partial sweeps so failed or missing entries remain visible.
+`asb compare SWEEP.toml` can be run at any time to regenerate
+`results/<sweep>-comparison/report.html` in
 addition to `comparison.json` and SVG charts. Open the report locally for a
 professional, offline overview: every benchmark row shows its agent, provider,
 model, workload, all numeric measurements, and links to raw run/collector/log

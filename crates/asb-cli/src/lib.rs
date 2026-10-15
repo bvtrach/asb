@@ -80,7 +80,7 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
         }
         [command, subcommand, help_arg]
             if (command == "tool" || command == "workload")
-                && (subcommand == "list" || subcommand == "install")
+                && (subcommand == "list" || subcommand == "install" || subcommand == "tui")
                 && (help_arg == "--help" || help_arg == "-h") =>
         {
             help::command(&format!("{command} {subcommand}"), stdout)
@@ -127,6 +127,9 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
         [command, subcommand, rest @ ..] if command == "workload" && subcommand == "install" => {
             install::workload(rest, stdout)
         }
+        [command, subcommand, rest @ ..] if command == "workload" && subcommand == "tui" => {
+            tui::workload_tui(rest, stdout)
+        }
         [command, subcommand, rest @ ..] if command == "provider" && subcommand == "models" => {
             models::list(rest, stdout)
         }
@@ -137,7 +140,7 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
             suggestions::unknown("tool command", subcommand, &["list", "install"]),
         )),
         [command, subcommand, ..] if command == "workload" => Err(CliError::Input(
-            suggestions::unknown("workload command", subcommand, &["list", "install"]),
+            suggestions::unknown("workload command", subcommand, &["list", "install", "tui"]),
         )),
         [command, ..] => Err(CliError::Input(suggestions::unknown(
             "command", command, COMMANDS,
@@ -353,6 +356,7 @@ mod tests {
             vec!["workload", "--help"],
             vec!["workload", "list", "--help"],
             vec!["workload", "install", "--help"],
+            vec!["workload", "tui", "--help"],
         ] {
             let is_tool_install_help = words == ["tool", "install", "--help"];
             let args = words.into_iter().map(OsString::from).collect::<Vec<_>>();

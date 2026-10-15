@@ -103,6 +103,8 @@ pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
         workload: required(workload)?,
         provider,
         model,
+        trial_set: None,
+        trial: None,
         workspace: workspace.unwrap_or(project_config.workspace_dir),
         log_file: destination
             .as_deref()
@@ -120,6 +122,7 @@ pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
         std::fs::write(&path, text.as_bytes())
             .map_err(|error| Error::Io(format!("cannot write {path}: {error}")))?;
         writeln!(output, "Wrote {path}").map_err(io_error)?;
+        writeln!(output, "{}", run_command_message(&path)).map_err(io_error)?;
     } else {
         output.write_all(text.as_bytes()).map_err(io_error)?;
     }
@@ -135,6 +138,10 @@ fn default_log_name(destination: &str) -> String {
         .unwrap_or_else(|| "benchmark.log".into())
 }
 
+fn run_command_message(path: &str) -> String {
+    format!("Run it with: asb run {path}")
+}
+
 fn required(value: Option<String>) -> Result<String, Error> {
     let value = value.ok_or(Error::Usage(
         "setup requires agent, workload, provider, and model",
@@ -147,12 +154,20 @@ fn required(value: Option<String>) -> Result<String, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_log_name, setup};
+    use super::{default_log_name, run_command_message, setup};
 
     #[test]
     fn setup_derives_log_name_from_configuration_stem() {
         assert_eq!(default_log_name("configs/foo.toml"), "foo.log");
         assert_eq!(default_log_name("benchmark"), "benchmark.log");
+    }
+
+    #[test]
+    fn setup_output_explains_how_to_run_written_configuration() {
+        assert_eq!(
+            run_command_message("configs/foo.toml"),
+            "Run it with: asb run configs/foo.toml"
+        );
     }
 
     #[test]
