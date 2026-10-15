@@ -56,6 +56,12 @@ make install
 
 The only workspace member is `crates/asb-cli`.
 
+Update a checkout to the current `main` branch with:
+
+```sh
+make update
+```
+
 ## Example
 
 ```sh

@@ -4,6 +4,7 @@ Build ASB, initialize a project, install an agent and workload, create a
 configuration, then run it:
 
 ```sh
+make update
 cargo build --locked
 make install
 ./target/debug/asb init

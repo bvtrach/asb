@@ -1,6 +1,9 @@
 .DEFAULT_GOAL := build
 
-.PHONY: build test install clean
+.PHONY: update build test install clean
+
+update:
+	git pull --ff-only origin main
 
 build:
 	cargo build --locked
