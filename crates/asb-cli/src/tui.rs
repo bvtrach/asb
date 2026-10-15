@@ -432,25 +432,35 @@ struct WorkloadApp {
 }
 
 fn external_workload_choices(directory: &Path) -> Vec<Choice> {
-    let mut names = fs::read_dir(directory)
-        .ok()
-        .into_iter()
-        .flat_map(|entries| entries.filter_map(Result::ok))
-        .filter_map(|entry| {
-            let path = entry.path();
-            (path.is_dir() && path.join("source").is_dir())
-                .then(|| path.file_name()?.to_str().map(str::to_owned))
-                .flatten()
-        })
-        .collect::<Vec<_>>();
-    names.sort();
+    let mut names = install::external_workload_names()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    names.extend(
+        fs::read_dir(directory)
+            .ok()
+            .into_iter()
+            .flat_map(|entries| entries.filter_map(Result::ok))
+            .filter_map(|entry| {
+                let path = entry.path();
+                (path.is_dir() && path.join("source").is_dir())
+                    .then(|| path.file_name()?.to_str().map(str::to_owned))
+                    .flatten()
+            }),
+    );
     names
         .into_iter()
-        .map(|label| Choice {
-            label,
-            provider: None,
-            model: None,
-            availability: Availability::Unknown,
+        .map(|label| {
+            let availability = if install::workload_available(&label, directory) {
+                Availability::Available
+            } else {
+                Availability::Missing
+            };
+            Choice {
+                label,
+                provider: None,
+                model: None,
+                availability,
+            }
         })
         .collect()
 }
@@ -459,9 +469,7 @@ fn refresh_workload_availability(app: &mut WorkloadApp) {
     let directory = project::resolve(&app.root, &app.project.workloads_dir);
     for choice in &mut app.workloads.choices {
         let name = &choice.label;
-        choice.availability = if directory.join(name).join("source").is_dir()
-            && directory.join(format!("{name}.txt")).is_file()
-        {
+        choice.availability = if install::workload_available(name, &directory) {
             Availability::Available
         } else {
             Availability::Missing
@@ -761,7 +769,7 @@ fn draw_workload(frame: &mut ratatui::Frame<'_>, app: &WorkloadApp) {
         vertical[0],
     );
     let description = if app.level == 0 {
-        "Choose installed external workloads."
+        "Choose external workloads; red entries can be installed with Ctrl-I."
     } else {
         "Choose enabled trials for the selected workload."
     };
@@ -1447,6 +1455,21 @@ mod tests {
     fn readiness_indicator_uses_text_glyph_not_emoji_glyph() {
         assert_eq!(super::INFO_GLYPH, "ⓘ");
         assert_ne!(super::INFO_GLYPH, "ℹ");
+    }
+
+    #[test]
+    fn workload_tui_lists_uninstalled_external_workloads_as_missing() {
+        let root =
+            std::env::temp_dir().join(format!("asb-workload-choices-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let choices = super::external_workload_choices(&root);
+        let terminal = choices
+            .iter()
+            .find(|choice| choice.label == "terminal-bench")
+            .expect("catalog workload is listed");
+        assert_eq!(terminal.availability, super::Availability::Missing);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

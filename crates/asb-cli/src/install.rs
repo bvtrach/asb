@@ -160,6 +160,23 @@ fn external_workload(name: &str) -> Option<&'static ExternalWorkload> {
         .find(|workload| workload.name == name)
 }
 
+/// Return the pinned external workloads that the TUIs can offer for install.
+pub fn external_workload_names() -> impl Iterator<Item = &'static str> {
+    EXTERNAL_WORKLOADS.iter().map(|workload| workload.name)
+}
+
+/// Check whether an external workload has its runnable local bundle and
+/// prompt. This is side-effect free and safe to call while rendering a TUI.
+pub fn workload_available(name: &str, directory: &Path) -> bool {
+    if bundle_spec(name).is_some() {
+        directory.join(name).join("ASB-BUNDLE").is_file()
+            && directory.join(name).join("source").is_dir()
+            && directory.join(format!("{name}.txt")).is_file()
+    } else {
+        directory.join(format!("{name}.txt")).is_file()
+    }
+}
+
 fn bundle_spec(name: &str) -> Option<BundleSpec> {
     match name {
         "swe-bench" => Some(BundleSpec {
