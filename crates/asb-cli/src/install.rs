@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const LLMTAPE_WRAPPER: &str = include_str!("../../../scripts/llmtape.mjs");
+const BPFTRACE_SOURCE: &str =
+    "https://github.com/bpftrace/bpftrace/archive/refs/tags/v0.20.2.tar.gz";
 
 #[derive(Clone, Copy)]
 enum Recipe {
@@ -580,7 +582,13 @@ fn install_recipe(recipe: Recipe, root: &Path) -> Result<PathBuf, Error> {
 /// recording `uname -r` prevents silently reusing a project tool from another
 /// machine or kernel image.
 fn install_bpftrace(root: &Path) -> Result<PathBuf, Error> {
-    let source = host_executable("bpftrace")?;
+    let source = host_executable("bpftrace").or_else(|error| {
+        if matches!(error, Error::Io(_)) {
+            build_bpftrace(root)
+        } else {
+            Err(error)
+        }
+    })?;
     let version = command_output(&source, &["--version"], "bpftrace version")?;
     let kernel = command_output(Path::new("uname"), &["-r"], "kernel release")?;
     let machine = command_output(Path::new("uname"), &["-m"], "kernel architecture")?;
@@ -608,6 +616,96 @@ fn install_bpftrace(root: &Path) -> Result<PathBuf, Error> {
         ))
     })?;
     Ok(destination)
+}
+
+fn build_bpftrace(root: &Path) -> Result<PathBuf, Error> {
+    let source_dir = root.join("source");
+    let build_dir = root.join("build");
+    let archive = root.join(".bpftrace-source.tar.gz");
+    if !source_dir.is_dir() {
+        fs::create_dir_all(root)
+            .map_err(|error| Error::Io(format!("cannot create {}: {error}", root.display())))?;
+        let status = Command::new("curl")
+            .args([
+                "--fail",
+                "--location",
+                "--silent",
+                "--show-error",
+                "--output",
+            ])
+            .arg(&archive)
+            .arg(BPFTRACE_SOURCE)
+            .status()
+            .map_err(|error| missing_dependency("curl", "bpftrace source build", error))?;
+        if !status.success() {
+            return Err(Error::Io(format!(
+                "could not download pinned bpftrace source from {BPFTRACE_SOURCE}"
+            )));
+        }
+        fs::create_dir_all(&source_dir).map_err(|error| {
+            Error::Io(format!("cannot create bpftrace source directory: {error}"))
+        })?;
+        let status = Command::new("tar")
+            .args(["-xzf"])
+            .arg(&archive)
+            .args(["-C"])
+            .arg(&source_dir)
+            .args(["--strip-components=1"])
+            .status()
+            .map_err(|error| missing_dependency("tar", "bpftrace source build", error))?;
+        if !status.success() {
+            return Err(Error::Io(
+                "could not extract the pinned bpftrace source".into(),
+            ));
+        }
+    }
+    let status = Command::new("cmake")
+        .args(["-S"])
+        .arg(&source_dir)
+        .args(["-B"])
+        .arg(&build_dir)
+        .args(["-DBUILD_TESTING=OFF", "-DBPFTRACE_BUILD_TESTING=OFF"])
+        .status()
+        .map_err(|error| missing_dependency("cmake", "bpftrace source build", error))?;
+    if !status.success() {
+        return Err(Error::Io(
+            "cmake could not configure bpftrace; install its development dependencies and rerun `asb tool install bpftrace`".into(),
+        ));
+    }
+    let status = Command::new("cmake")
+        .args(["--build"])
+        .arg(&build_dir)
+        .args(["--target", "bpftrace", "--parallel"])
+        .status()
+        .map_err(|error| missing_dependency("cmake", "bpftrace source build", error))?;
+    if !status.success() {
+        return Err(Error::Io(
+            "bpftrace source compilation failed; install the compiler and libbpf/libclang development packages, then rerun `asb tool install bpftrace`".into(),
+        ));
+    }
+    find_built_bpftrace(&build_dir).ok_or_else(|| {
+        Error::Io(format!(
+            "bpftrace built without a discoverable executable under {}",
+            build_dir.display()
+        ))
+    })
+}
+
+fn find_built_bpftrace(directory: &Path) -> Option<PathBuf> {
+    let mut entries = fs::read_dir(directory).ok()?.filter_map(Result::ok);
+    while let Some(entry) = entries.next() {
+        let path = entry.path();
+        if path.file_name().and_then(|name| name.to_str()) == Some("bpftrace") && path.is_file() {
+            return Some(path);
+        }
+        if path.is_dir()
+            && path.file_name().and_then(|name| name.to_str()) != Some("CMakeFiles")
+            && let Some(found) = find_built_bpftrace(&path)
+        {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn command_output(program: &Path, args: &[&str], label: &str) -> Result<String, Error> {
