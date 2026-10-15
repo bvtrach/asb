@@ -39,8 +39,10 @@ Workloads are loaded from `workloads/` beside the configuration file. Set
 the catalogue.
 
 `asb tool install` installs a pinned package recipe into the configured tools
-directory for the supported agents, or downloads/copies an executable supplied
-with `--source`. npm recipes are project-local; Python recipes use a
+directory for supported agents and support tools, or downloads/copies an
+executable supplied with `--source`. The `llmtape` support tool is project-local
+and is automatically preferred by record/replay when installed. npm recipes are
+project-local; Python recipes use a
 project-local virtual environment. `asb workload install` downloads a prompt
 URL, resolves a pinned external workload alias, or copies a local prompt into
 the configured workloads directory. The `swe-bench` and `terminal-bench`

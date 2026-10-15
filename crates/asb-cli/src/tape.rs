@@ -24,7 +24,12 @@ pub struct Session {
 
 impl Session {
     /// Start llmtape on an available loopback port and wait until it accepts connections.
-    pub fn start(mode: Mode, cassette: &Path, upstream: Option<&str>) -> Result<Self, Error> {
+    pub fn start(
+        mode: Mode,
+        cassette: &Path,
+        upstream: Option<&str>,
+        project_executable: Option<&Path>,
+    ) -> Result<Self, Error> {
         if mode == Mode::Replay && !cassette.is_file() {
             return Err(Error::Input(format!(
                 "replay cassette {} does not exist; run `asb record CONFIG --cassette {}` first",
@@ -42,7 +47,10 @@ impl Session {
             })?;
         }
         let port = free_port()?;
-        let executable = std::env::var("ASB_LLM_TAPE").unwrap_or_else(|_| "llmtape".into());
+        let executable = project_executable
+            .map(|path| path.to_string_lossy().into_owned())
+            .or_else(|| std::env::var("ASB_LLM_TAPE").ok())
+            .unwrap_or_else(|| "llmtape".into());
         let mut command = Command::new(&executable);
         command
             .arg(match mode {
@@ -72,7 +80,7 @@ impl Session {
             .stderr(Stdio::null());
         let child = command.spawn().map_err(|error| {
             Error::Run(format!(
-                "cannot start llmtape (`{executable}`); install it with `npm install -g llmtape` or set ASB_LLM_TAPE to its executable: {error}"
+                "cannot start llmtape (`{executable}`); run `asb tool install llmtape` or set ASB_LLM_TAPE to another executable: {error}"
             ))
         })?;
         let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));

@@ -10,6 +10,7 @@ make install
 ./target/debug/asb init
 ./target/debug/asb tool list
 ./target/debug/asb tool install codex
+./target/debug/asb tool install llmtape
 ./target/debug/asb workload list
 ./target/debug/asb provider models openrouter
 ./target/debug/asb workload install \
@@ -103,7 +104,7 @@ structured result for scripts:
 ```
 
 Use `asb COMMAND --help` for concise help on every command and subcommand.
-`asb tool list` enumerates all built-in agent installers; `asb workload list`
+`asb tool list` enumerates all built-in agent and support-tool installers; `asb workload list`
 enumerates local prompt files and installable external aliases. The
 `swe-bench` and `terminal-bench` aliases fetch pinned upstream source archives
 into the configured workload directory and copy them into
@@ -124,6 +125,7 @@ The built-in recipes are:
 | `openhands` | pinned Python package | `openhands` |
 | `openjiuwen` | pinned Python package | `openjiuwen` |
 | `cli2key` | pinned npm bridge package | `codex-bridge` |
+| `llmtape` | pinned npm package | `llmtape` |
 
 The npm recipes require `npm`; the Python recipes require `python3` with
 virtual-environment support. `asb tool install AGENT --dry-run` prints the
