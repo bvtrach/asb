@@ -9,6 +9,12 @@ pub struct BenchmarkConfig {
     pub workload: String,
     pub provider: String,
     pub model: String,
+    /// Optional trial-set TOML selected for an external workload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial_set: Option<String>,
+    /// Optional trial identifier within the selected trial set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial: Option<String>,
     #[serde(default = "default_workspace")]
     pub workspace: String,
     #[serde(default = "default_log_file")]

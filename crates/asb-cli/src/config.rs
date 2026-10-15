@@ -103,6 +103,8 @@ pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
         workload: required(workload)?,
         provider,
         model,
+        trial_set: None,
+        trial: None,
         workspace: workspace.unwrap_or(project_config.workspace_dir),
         log_file: destination
             .as_deref()

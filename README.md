@@ -10,6 +10,7 @@ asb tool install AGENT
 asb tool install llmtape
 asb workload list
 asb workload install SOURCE.txt|URL
+asb workload tui
 asb provider models [PROVIDER] [--free]
 asb setup tui
 asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]
@@ -24,8 +25,12 @@ only after a selection. It writes one uniquely named test TOML per compatible
 combination and one sweep TOML referencing those files. The model step queries
 the selected provider catalogs and lists all returned tool-capable models (for
 example DeepSeek, GLM, GPT, and Fable on OpenRouter), falling back to a pinned
-local default only when discovery is unavailable. `init` writes
-`.asb/project.toml` with project-local tool, workload, and
+local default only when discovery is unavailable. `asb workload tui` opens
+the same Ratatui interaction components in a
+two-level workload/trial tree. Select workloads and enabled trials, then it
+writes `<workload>.workload.toml` files; `setup tui` presents those trial sets
+as selectable workload entries and generates one benchmark configuration per
+enabled trial. `init` writes `.asb/project.toml` with project-local tool, workload, and
 workspace directories and copies the bundled workload prompts into
 `workloads/` and seeds `.asb/fixtures/` with the source, tests, and supporting
 files for every built-in workload. `run` copies the selected fixture into the

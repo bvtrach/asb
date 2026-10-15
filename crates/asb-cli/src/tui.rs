@@ -1,7 +1,7 @@
 //! Interactive, modular setup wizard built with Ratatui.
 
 use crate::benchmark::{BenchmarkConfig, MeasurementConfig};
-use crate::{Error, measurements, models, project, providers};
+use crate::{Error, measurements, models, project, providers, workloads};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
@@ -269,6 +269,320 @@ pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
     output.flush().map_err(crate::io_error)
 }
 
+/// Launch the tree-shaped workload/trial selector. It reuses the setup TUI's
+/// Pane, terminal lifecycle, search, selection, and keyboard conventions.
+pub fn workload_tui(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
+    if !args.is_empty() {
+        return Err(Error::Usage("workload tui does not accept options"));
+    }
+    let (root, project) = project::load(Path::new("."))?;
+    let workload_dir = project::resolve(&root, &project.workloads_dir);
+    let choices = external_workload_choices(&workload_dir);
+    if choices.is_empty() {
+        return Err(Error::Input(
+            "no installed external workloads; install one with `asb workload install`".into(),
+        ));
+    }
+    let mut app = WorkloadApp {
+        root,
+        project,
+        workloads: Pane::new(choices),
+        trials: Pane::new(Vec::new()),
+        level: 0,
+        selected_workload: None,
+        selections: BTreeSet::new(),
+        message: "Space selects; Enter opens trials/saves; Tab down; Shift-Tab up; Esc cancels."
+            .into(),
+    };
+    let mut terminal = start_terminal()
+        .map_err(|error| Error::Io(format!("cannot start workload TUI: {error}")))?;
+    let result = workload_loop(&mut terminal, &mut app);
+    let cleanup = stop_terminal(terminal);
+    if result.is_ok() {
+        cleanup.map_err(|error| Error::Io(format!("cannot restore terminal: {error}")))?;
+    }
+    let count = result?;
+    writeln!(output, "Wrote {count} workload trial-set configurations").map_err(crate::io_error)
+}
+
+struct WorkloadApp {
+    root: PathBuf,
+    project: project::ProjectConfig,
+    workloads: Pane,
+    trials: Pane,
+    level: usize,
+    selected_workload: Option<String>,
+    selections: BTreeSet<String>,
+    message: String,
+}
+
+fn external_workload_choices(directory: &Path) -> Vec<Choice> {
+    let mut names = fs::read_dir(directory)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .filter_map(|entry| {
+            let path = entry.path();
+            (path.is_dir() && path.join("source").is_dir())
+                .then(|| path.file_name()?.to_str().map(str::to_owned))
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    names.sort();
+    names
+        .into_iter()
+        .map(|label| Choice {
+            label,
+            provider: None,
+            model: None,
+        })
+        .collect()
+}
+
+fn workload_loop(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    app: &mut WorkloadApp,
+) -> Result<usize, Error> {
+    loop {
+        terminal
+            .draw(|frame| draw_workload(frame, app))
+            .map_err(|error| Error::Io(format!("cannot draw workload TUI: {error}")))?;
+        if !event::poll(std::time::Duration::from_millis(250))
+            .map_err(|error| Error::Io(format!("cannot read workload TUI input: {error}")))?
+        {
+            continue;
+        }
+        let Event::Key(key) = event::read()
+            .map_err(|error| Error::Io(format!("cannot read workload TUI input: {error}")))?
+        else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        match key {
+            KeyEvent {
+                code: KeyCode::Esc, ..
+            } => {
+                return Err(Error::Usage("workload TUI cancelled"));
+            }
+            KeyEvent {
+                code: KeyCode::Char('c'),
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::CONTROL) => {
+                return Err(Error::Usage("workload TUI cancelled"));
+            }
+            KeyEvent {
+                code: KeyCode::Tab,
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::SHIFT) => app.level = 0,
+            KeyEvent {
+                code: KeyCode::BackTab,
+                ..
+            } => app.level = 0,
+            KeyEvent {
+                code: KeyCode::Tab | KeyCode::Enter,
+                ..
+            } => {
+                if app.level == 0 {
+                    if !app.workloads.has_selection() {
+                        app.message = "Select at least one external workload first.".into();
+                        continue;
+                    }
+                    let current = app.workloads.choices[app.workloads.cursor].label.clone();
+                    if app.selected_workload.as_deref() != Some(&current) {
+                        app.selected_workload = Some(current.clone());
+                        app.trials = Pane::new(
+                            workloads::trial_ids(&current)
+                                .into_iter()
+                                .map(|trial| Choice {
+                                    label: trial.id,
+                                    provider: None,
+                                    model: None,
+                                })
+                                .collect(),
+                        );
+                        app.level = 1;
+                        app.message = "Select enabled trials; Enter saves this workload. Search filters trials.".into();
+                    } else if !app.selections.is_empty() {
+                        return write_trial_sets(app);
+                    }
+                } else if app.trials.has_selection() {
+                    let workload = app.selected_workload.take().expect("trial workload");
+                    for choice in app.trials.selected_choices() {
+                        app.selections
+                            .insert(format!("{workload}\t{}", choice.label));
+                    }
+                    app.level = 0;
+                    app.message =
+                        "Trial set saved. Select another workload or press Enter again to finish."
+                            .into();
+                } else {
+                    app.message = "Select at least one trial before continuing.".into();
+                }
+            }
+            key if handle_pane_key(
+                if app.level == 0 {
+                    &mut app.workloads
+                } else {
+                    &mut app.trials
+                },
+                key,
+            ) => {}
+            _ => {}
+        }
+    }
+}
+
+/// Apply the shared searchable-list controls used by both terminal TUIs.
+fn handle_pane_key(pane: &mut Pane, key: KeyEvent) -> bool {
+    match key {
+        KeyEvent {
+            code: KeyCode::Char(' '),
+            ..
+        } => pane.toggle(),
+        KeyEvent {
+            code: KeyCode::Up, ..
+        } => pane.move_cursor(-1),
+        KeyEvent {
+            code: KeyCode::Down,
+            ..
+        } => pane.move_cursor(1),
+        KeyEvent {
+            code: KeyCode::PageUp,
+            ..
+        } => pane.move_cursor(-8),
+        KeyEvent {
+            code: KeyCode::PageDown,
+            ..
+        } => pane.move_cursor(8),
+        KeyEvent {
+            code: KeyCode::Home,
+            ..
+        } => pane.cursor = 0,
+        KeyEvent {
+            code: KeyCode::End, ..
+        } => {
+            if let Some(last) = pane.choices.len().checked_sub(1) {
+                pane.cursor = last;
+            }
+        }
+        KeyEvent {
+            code: KeyCode::Backspace,
+            ..
+        } => {
+            pane.search.pop();
+            pane.search_changed();
+        }
+        KeyEvent {
+            code: KeyCode::Char(ch),
+            modifiers,
+            ..
+        } if !modifiers.contains(KeyModifiers::CONTROL)
+            && !modifiers.contains(KeyModifiers::ALT) =>
+        {
+            pane.search.push(ch);
+            pane.search_changed();
+        }
+        _ => return false,
+    }
+    true
+}
+
+fn draw_workload(frame: &mut ratatui::Frame<'_>, app: &WorkloadApp) {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(5),
+            Constraint::Length(2),
+        ])
+        .split(frame.area());
+    let steps = ["workloads", "trials"];
+    let step_line = steps
+        .iter()
+        .enumerate()
+        .flat_map(|(index, name)| {
+            let style = if index == app.level {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else if index < app.level {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            [
+                Span::styled(format!(" {name} "), style),
+                Span::raw(if index + 1 == steps.len() {
+                    ""
+                } else {
+                    " ─ "
+                }),
+            ]
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(Line::from(step_line)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("ASB workload trials"),
+        ),
+        vertical[0],
+    );
+    let description = if app.level == 0 {
+        "Choose installed external workloads."
+    } else {
+        "Choose enabled trials for the selected workload."
+    };
+    frame.render_widget(
+        Paragraph::new(description).block(Block::default().borders(Borders::ALL).title("Step")),
+        vertical[1],
+    );
+    let pane = if app.level == 0 {
+        &app.workloads
+    } else {
+        &app.trials
+    };
+    render_choice_pane(frame, vertical[2], pane);
+    frame.render_widget(Paragraph::new(app.message.clone()), vertical[3]);
+}
+
+fn write_trial_sets(app: &WorkloadApp) -> Result<usize, Error> {
+    let directory = project::resolve(&app.root, &app.project.workloads_dir);
+    let mut grouped = std::collections::BTreeMap::<String, Vec<String>>::new();
+    for value in &app.selections {
+        if let Some((workload, trial)) = value.split_once('\t') {
+            grouped
+                .entry(workload.to_owned())
+                .or_default()
+                .push(trial.to_owned());
+        }
+    }
+    let mut written = 0;
+    for (workload, ids) in grouped {
+        let catalog = workloads::trial_ids(&workload);
+        let trials = catalog
+            .into_iter()
+            .filter(|trial| ids.contains(&trial.id))
+            .collect();
+        let config = workloads::TrialSet {
+            workload: workload.clone(),
+            trials,
+        };
+        let path = directory.join(format!("{workload}.workload.toml"));
+        let text =
+            toml::to_string_pretty(&config).map_err(|error| Error::Input(error.to_string()))?;
+        fs::write(path, text).map_err(|error| Error::Io(error.to_string()))?;
+        written += 1;
+    }
+    Ok(written)
+}
+
 fn start_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>, io::Error> {
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -340,53 +654,7 @@ fn run_loop(
                     return Ok(generated);
                 }
             }
-            KeyEvent {
-                code: KeyCode::Char(' '),
-                ..
-            } => app.panes[app.step].toggle(),
-            KeyEvent {
-                code: KeyCode::Up, ..
-            } => app.panes[app.step].move_cursor(-1),
-            KeyEvent {
-                code: KeyCode::Down,
-                ..
-            } => app.panes[app.step].move_cursor(1),
-            KeyEvent {
-                code: KeyCode::PageUp,
-                ..
-            } => app.panes[app.step].move_cursor(-8),
-            KeyEvent {
-                code: KeyCode::PageDown,
-                ..
-            } => app.panes[app.step].move_cursor(8),
-            KeyEvent {
-                code: KeyCode::Home,
-                ..
-            } => app.panes[app.step].cursor = 0,
-            KeyEvent {
-                code: KeyCode::End, ..
-            } => {
-                if let Some(last) = app.panes[app.step].choices.len().checked_sub(1) {
-                    app.panes[app.step].cursor = last;
-                }
-            }
-            KeyEvent {
-                code: KeyCode::Backspace,
-                ..
-            } => {
-                app.panes[app.step].search.pop();
-                app.panes[app.step].search_changed();
-            }
-            KeyEvent {
-                code: KeyCode::Char(ch),
-                modifiers,
-                ..
-            } if !modifiers.contains(KeyModifiers::CONTROL)
-                && !modifiers.contains(KeyModifiers::ALT) =>
-            {
-                app.panes[app.step].search.push(ch);
-                app.panes[app.step].search_changed();
-            }
+            key if handle_pane_key(&mut app.panes[app.step], key) => {}
             _ => {}
         }
     }
@@ -438,11 +706,23 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
             .block(Block::default().borders(Borders::ALL).title("Step")),
         vertical[1],
     );
+    let pane = &app.panes[app.step];
+    render_choice_pane(frame, vertical[2], pane);
+    frame.render_widget(
+        Paragraph::new(Text::from(Line::from(vec![
+            Span::styled(app.message.clone(), Style::default().fg(Color::Yellow)),
+            Span::raw("  Space select  ↑/↓ move  Tab/Enter next  Shift-Tab back  Esc cancel"),
+        ]))),
+        vertical[3],
+    );
+}
+
+/// Render the shared searchable, selectable list pane used by both TUIs.
+fn render_choice_pane(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rect, pane: &Pane) {
     let body = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(3)])
-        .split(vertical[2]);
-    let pane = &app.panes[app.step];
+        .split(area);
     let search = if pane.search.is_empty() {
         String::new()
     } else {
@@ -481,13 +761,6 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
         body[1],
         &mut state,
     );
-    frame.render_widget(
-        Paragraph::new(Text::from(Line::from(vec![
-            Span::styled(app.message.clone(), Style::default().fg(Color::Yellow)),
-            Span::raw("  Space select  ↑/↓ move  Tab/Enter next  Shift-Tab back  Esc cancel"),
-        ]))),
-        vertical[3],
-    );
 }
 
 fn workload_choices(root: &Path, directory: &str) -> Vec<Choice> {
@@ -497,11 +770,14 @@ fn workload_choices(root: &Path, directory: &str) -> Vec<Choice> {
         .into_iter()
         .flat_map(|entries| entries.filter_map(Result::ok))
         .filter_map(|entry| {
-            entry
-                .path()
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .map(str::to_owned)
+            let path = entry.path();
+            let file_name = path.file_name()?.to_str()?;
+            if path.extension().and_then(|value| value.to_str()) == Some("txt") {
+                return Some(file_name.trim_end_matches(".txt").to_owned());
+            }
+            file_name
+                .strip_suffix(".workload.toml")
+                .map(|name| format!("{name} [trial set]"))
         })
         .collect::<BTreeSet<_>>();
     if names.is_empty() {
@@ -592,29 +868,35 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
                 if model_provider != provider {
                     continue;
                 }
-                for workload in &workloads {
-                    let name = format!("asb-test-{stamp}-{index:03}.toml");
-                    let path = app.root.join(&name);
-                    let config = BenchmarkConfig {
-                        agent: agent.clone(),
-                        workload: workload.clone(),
-                        provider: provider.clone(),
-                        model: model.clone(),
-                        workspace: app.project.workspace_dir.clone(),
-                        log_file: format!("{}.log", name.trim_end_matches(".toml")),
-                        measurements: Some(MeasurementConfig {
-                            enabled: true,
-                            directory: "measurements".into(),
-                            collectors: measures.clone(),
-                        }),
-                    };
-                    let text = toml::to_string_pretty(&config)
-                        .map_err(|error| Error::Input(format!("cannot render {name}: {error}")))?;
-                    fs::write(&path, text).map_err(|error| {
-                        Error::Io(format!("cannot write {}: {error}", path.display()))
-                    })?;
-                    paths.push(name);
-                    index += 1;
+                for workload_choice in &workloads {
+                    let (workload, trial_set, trials) = selected_trials(app, workload_choice)?;
+                    for trial in trials {
+                        let name = format!("asb-test-{stamp}-{index:03}.toml");
+                        let path = app.root.join(&name);
+                        let config = BenchmarkConfig {
+                            agent: agent.clone(),
+                            workload: workload.clone(),
+                            provider: provider.clone(),
+                            model: model.clone(),
+                            trial_set: trial_set.clone(),
+                            trial,
+                            workspace: app.project.workspace_dir.clone(),
+                            log_file: format!("{}.log", name.trim_end_matches(".toml")),
+                            measurements: Some(MeasurementConfig {
+                                enabled: true,
+                                directory: "measurements".into(),
+                                collectors: measures.clone(),
+                            }),
+                        };
+                        let text = toml::to_string_pretty(&config).map_err(|error| {
+                            Error::Input(format!("cannot render {name}: {error}"))
+                        })?;
+                        fs::write(&path, text).map_err(|error| {
+                            Error::Io(format!("cannot write {}: {error}", path.display()))
+                        })?;
+                        paths.push(name);
+                        index += 1;
+                    }
                 }
             }
         }
@@ -634,6 +916,33 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
         tests: index,
         sweep,
     })
+}
+
+fn selected_trials(
+    app: &App,
+    choice: &str,
+) -> Result<(String, Option<String>, Vec<Option<String>>), Error> {
+    let Some(workload) = choice.strip_suffix(" [trial set]") else {
+        return Ok((choice.to_owned(), None, vec![None]));
+    };
+    let filename = format!("{workload}.workload.toml");
+    let path = project::resolve(&app.root, &app.project.workloads_dir).join(&filename);
+    let trial_set = workloads::read_trial_set(&path).map_err(Error::Input)?;
+    if trial_set.trials.is_empty() {
+        return Err(Error::Input(format!(
+            "workload trial set {} does not enable any trials; run `asb workload tui`",
+            path.display()
+        )));
+    }
+    Ok((
+        workload.to_owned(),
+        Some(filename),
+        trial_set
+            .trials
+            .into_iter()
+            .map(|trial| Some(trial.id))
+            .collect(),
+    ))
 }
 
 #[cfg(test)]

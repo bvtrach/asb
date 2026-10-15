@@ -48,13 +48,16 @@ pub fn command(name: &str, output: &mut dyn Write) -> Result<(), Error> {
             "Usage: asb tool install NAME [--source URL|PATH] [--dir DIR] [--dry-run]\n\nInstall a pinned built-in agent or support tool, or copy/download an executable with --source. `cli2key` installs the local provider bridge; `llmtape` installs the local record/replay proxy. If npm or Python is missing, ASB prints a copy-paste user-local repair command."
         }
         "workload" => {
-            "Usage: asb workload COMMAND\n\nCommands:\n  list                 List workload files in the project.\n  install SOURCE ...   Copy or download a workload prompt."
+            "Usage: asb workload COMMAND\n\nCommands:\n  list                 List workload files in the project.\n  install SOURCE ...   Copy or download a workload prompt.\n  tui                  Select trials and write workload trial-set TOML."
         }
         "workload list" => {
             "Usage: asb workload list [--dir DIR]\n\nList installable .txt workloads in the configured directory."
         }
         "workload install" => {
             "Usage: asb workload install SOURCE.txt|URL [--name NAME] [--dir DIR]\n\nCopy or download one prompt into the project workload directory."
+        }
+        "workload tui" => {
+            "Usage: asb workload tui\n\nOpen the shared keyboard-driven workload trial wizard. Select installed external workloads, then their trials with Space; use arrows, Tab, Enter, Shift-Tab, and substring search. The wizard writes one <workload>.workload.toml trial-set file per selected workload."
         }
         _ => return root(output),
     };

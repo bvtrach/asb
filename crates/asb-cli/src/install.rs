@@ -3,6 +3,7 @@
 use crate::Error;
 use crate::project;
 use crate::suggestions;
+use crate::workloads;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -333,6 +334,8 @@ fn install_bundle(
                 ))
             })?;
         }
+        workloads::write_default_trial_set(name, directory)
+            .map_err(|error| Error::Io(format!("cannot write {name} trial set: {error}")))?;
         writeln!(
             output,
             "External workload {name} already installed at {}",
@@ -413,6 +416,8 @@ fn install_bundle(
             ))
         })?;
     }
+    workloads::write_default_trial_set(name, directory)
+        .map_err(|error| Error::Io(format!("cannot write {name} trial set: {error}")))?;
     let _ = fs::remove_file(&archive);
     let _ = fs::remove_dir_all(&extract);
     writeln!(
@@ -423,7 +428,7 @@ fn install_bundle(
     .map_err(super::io_error)
 }
 
-/// List `.txt` workloads in the configured project directory.
+/// List prompt workloads and configurable external workload trial sets.
 pub fn workload_list(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Error> {
     let (project_root, project_config) = project::load(Path::new("."))?;
     let mut directory = std::env::var_os("ASB_WORKLOAD_DIR")
@@ -452,12 +457,30 @@ pub fn workload_list(args: &[String], output: &mut dyn std::io::Write) -> Result
         })
         .collect::<Vec<_>>();
     names.sort();
+    let mut trial_sets = fs::read_dir(&directory)
+        .map_err(|error| Error::Io(format!("cannot read {}: {error}", directory.display())))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_str()?;
+            name.strip_suffix(".workload.toml").map(str::to_owned)
+        })
+        .collect::<Vec<_>>();
+    trial_sets.sort();
     writeln!(output, "Available workloads in {}:", directory.display()).map_err(super::io_error)?;
     if names.is_empty() {
         writeln!(output, "  (none)").map_err(super::io_error)?;
     } else {
         for name in names {
             writeln!(output, "  {name}").map_err(super::io_error)?;
+        }
+    }
+    writeln!(output, "Configured workload trial sets:").map_err(super::io_error)?;
+    if trial_sets.is_empty() {
+        writeln!(output, "  (none)").map_err(super::io_error)?;
+    } else {
+        for name in trial_sets {
+            writeln!(output, "  {name} [trial set]").map_err(super::io_error)?;
         }
     }
     writeln!(output, "Installable external workloads:").map_err(super::io_error)?;
