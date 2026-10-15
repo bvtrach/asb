@@ -222,7 +222,18 @@ fn recipe(name: &str) -> Option<Recipe> {
 }
 
 pub fn tool(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Error> {
+    let mut progress = |_percent: u8, _stage: &str| {};
+    tool_with_progress(args, output, &mut progress)
+}
+
+/// Install a project-local tool and report concrete installer stages.
+pub fn tool_with_progress(
+    args: &[String],
+    output: &mut dyn std::io::Write,
+    progress: &mut dyn FnMut(u8, &str),
+) -> Result<(), Error> {
     let (id, source, root, dry_run) = parse_tool(args)?;
+    progress(2, "preparing");
     let root = root.join(&id);
     if let Some(source) = source {
         let destination = root.join("bin").join(executable_name(&id));
@@ -231,10 +242,12 @@ pub fn tool(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Erro
                 .map_err(super::io_error)?;
             return Ok(());
         }
+        progress(20, "copying source");
         fs::create_dir_all(destination.parent().expect("bin parent"))
             .map_err(|error| Error::Io(format!("cannot create {}: {error}", root.display())))?;
         install_source(&source, &destination, "tool")?;
         make_executable(&destination)?;
+        progress(100, "ready");
         writeln!(output, "Installed tool {id} at {}", destination.display())
             .map_err(super::io_error)?;
         return Ok(());
@@ -252,8 +265,9 @@ pub fn tool(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Erro
         writeln!(output, "{}", describe(plan, &root)).map_err(super::io_error)?;
         return Ok(());
     }
-    let executable = install_recipe(plan, &root)?;
+    let executable = install_recipe(plan, &root, progress)?;
     if id == "cli2key" {
+        progress(90, "generating local API key");
         let status = Command::new(&executable)
             .args(["key", "refresh"])
             .stdout(Stdio::null())
@@ -268,6 +282,7 @@ pub fn tool(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Erro
         writeln!(output, "Generated a local cli2key API key for project runs")
             .map_err(super::io_error)?;
     }
+    progress(100, "ready");
     let kind = if id == "llmtape" { "tool" } else { "agent" };
     writeln!(output, "Installed {kind} {id} at {}", executable.display())
         .map_err(super::io_error)?;
@@ -299,15 +314,28 @@ pub fn tool_available(name: &str, tools_root: &Path) -> bool {
 }
 
 pub fn workload(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Error> {
+    let mut progress = |_percent: u8, _stage: &str| {};
+    workload_with_progress(args, output, &mut progress)
+}
+
+/// Install a workload and report concrete download/extraction stages.
+pub fn workload_with_progress(
+    args: &[String],
+    output: &mut dyn std::io::Write,
+    progress: &mut dyn FnMut(u8, &str),
+) -> Result<(), Error> {
     let (source, name, directory) = parse_workload(args)?;
+    progress(2, "preparing");
     fs::create_dir_all(&directory)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", directory.display())))?;
     if let Some(bundle) = bundle_spec(&name) {
-        install_bundle(&name, bundle, &directory, output)?;
+        install_bundle(&name, bundle, &directory, output, progress)?;
         return Ok(());
     }
+    progress(30, "downloading prompt");
     let destination = directory.join(format!("{name}.txt"));
     install_source(&source, &destination, "workload")?;
+    progress(100, "ready");
     writeln!(
         output,
         "Installed workload {name} at {}",
@@ -322,11 +350,13 @@ fn install_bundle(
     bundle: BundleSpec,
     directory: &Path,
     output: &mut dyn std::io::Write,
+    progress: &mut dyn FnMut(u8, &str),
 ) -> Result<(), Error> {
     let bundle_dir = directory.join(name);
     let source_dir = bundle_dir.join("source");
     let marker = bundle_dir.join("ASB-BUNDLE");
     if marker.is_file() && source_dir.is_dir() {
+        progress(80, "validating existing bundle");
         let installed = fs::read_to_string(&marker).map_err(|error| {
             Error::Io(format!(
                 "cannot read external workload marker {}: {error}",
@@ -356,6 +386,7 @@ fn install_bundle(
             bundle_dir.display()
         )
         .map_err(super::io_error)?;
+        progress(100, "ready");
         return Ok(());
     }
     if bundle_dir.exists() {
@@ -380,7 +411,9 @@ fn install_bundle(
             extract.display()
         ))
     })?;
+    progress(20, "downloading bundle");
     install_source(bundle.archive, &archive, "external workload bundle")?;
+    progress(45, "extracting bundle");
     let status = Command::new("tar")
         .args(["--extract", "--gzip", "--file"])
         .arg(&archive)
@@ -439,7 +472,9 @@ fn install_bundle(
         "Installed external workload {name} at {} with local source and prompt",
         bundle_dir.display()
     )
-    .map_err(super::io_error)
+    .map_err(super::io_error)?;
+    progress(100, "ready");
+    Ok(())
 }
 
 /// List prompt workloads and configurable external workload trial sets.
@@ -504,15 +539,22 @@ pub fn workload_list(args: &[String], output: &mut dyn std::io::Write) -> Result
     Ok(())
 }
 
-fn install_recipe(recipe: Recipe, root: &Path) -> Result<PathBuf, Error> {
+fn install_recipe(
+    recipe: Recipe,
+    root: &Path,
+    progress: &mut dyn FnMut(u8, &str),
+) -> Result<PathBuf, Error> {
     fs::create_dir_all(root)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", root.display())))?;
     let status = match recipe {
-        Recipe::Npm { package, .. } => Command::new("npm")
+        Recipe::Npm { package, .. } => {
+            progress(15, "installing npm package");
+            Command::new("npm")
             .args(["install", "--prefix"])
             .arg(root)
             .args(["--no-save", package])
-            .status(),
+            .status()
+        }
         Recipe::Python { package, .. } => {
             let venv = root.join("venv");
             let created = match Command::new("python3")
@@ -541,11 +583,13 @@ fn install_recipe(recipe: Recipe, root: &Path) -> Result<PathBuf, Error> {
                     "python3 could not create the agent environment".into(),
                 ));
             }
+            progress(35, "installing Python package");
             Command::new(venv.join("bin/python"))
                 .args(["-m", "pip", "install", package])
                 .status()
         }
         Recipe::Host { executable } => {
+            progress(55, "copying host tool");
             let source = host_executable(executable)?;
             let destination = root.join("bin").join(executable);
             fs::create_dir_all(destination.parent().expect("host tool parent"))
@@ -560,8 +604,9 @@ fn install_recipe(recipe: Recipe, root: &Path) -> Result<PathBuf, Error> {
             make_executable(&destination)?;
             return Ok(destination);
         }
-        Recipe::Bpftrace => return install_bpftrace(root),
+        Recipe::Bpftrace => return install_bpftrace(root, progress),
         Recipe::Flamegraph => {
+            progress(25, "downloading FlameGraph scripts");
             let bin = root.join("bin");
             fs::create_dir_all(&bin)
                 .map_err(|error| Error::Io(format!("cannot create {}: {error}", bin.display())))?;
@@ -578,6 +623,7 @@ fn install_recipe(recipe: Recipe, root: &Path) -> Result<PathBuf, Error> {
                 let destination = bin.join(name);
                 install_source(url, &destination, "flamegraph tool")?;
                 make_executable(&destination)?;
+                progress(if name == "flamegraph" { 90 } else { 60 }, "installing FlameGraph scripts");
             }
             return Ok(bin.join("flamegraph"));
         }
@@ -618,10 +664,11 @@ fn install_recipe(recipe: Recipe, root: &Path) -> Result<PathBuf, Error> {
 /// install it.  bpftrace is kernel-sensitive; using the exact host binary and
 /// recording `uname -r` prevents silently reusing a project tool from another
 /// machine or kernel image.
-fn install_bpftrace(root: &Path) -> Result<PathBuf, Error> {
+fn install_bpftrace(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
+    progress(10, "checking host bpftrace");
     let source = match host_executable("bpftrace") {
         Ok(source) => source,
-        Err(host_error) => match build_bpftrace(root) {
+        Err(host_error) => match build_bpftrace(root, progress) {
             Ok(source) => source,
             Err(build_error) => {
                 return Err(Error::Io(format!(
@@ -632,6 +679,7 @@ fn install_bpftrace(root: &Path) -> Result<PathBuf, Error> {
         },
     };
     let version = command_output(&source, &["--version"], "bpftrace version")?;
+    progress(95, "recording kernel compatibility");
     let kernel = command_output(Path::new("uname"), &["-r"], "kernel release")?;
     let machine = command_output(Path::new("uname"), &["-m"], "kernel architecture")?;
     let bin = root.join("bin");
@@ -657,10 +705,11 @@ fn install_bpftrace(root: &Path) -> Result<PathBuf, Error> {
             "cannot write bpftrace compatibility metadata: {error}"
         ))
     })?;
+    progress(100, "ready");
     Ok(destination)
 }
 
-fn build_bpftrace(root: &Path) -> Result<PathBuf, Error> {
+fn build_bpftrace(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
     let source_dir = root.join("source");
     let build_dir = root.join("build");
     let archive = root.join(".bpftrace-source.tar.gz");
@@ -685,6 +734,7 @@ fn build_bpftrace(root: &Path) -> Result<PathBuf, Error> {
                 bpftrace_source_commands()
             )));
         }
+        progress(25, "downloading bpftrace source");
         fs::create_dir_all(&source_dir).map_err(|error| {
             Error::Io(format!("cannot create bpftrace source directory: {error}"))
         })?;
@@ -702,6 +752,7 @@ fn build_bpftrace(root: &Path) -> Result<PathBuf, Error> {
                 bpftrace_dependency_commands("tar")
             )));
         }
+        progress(40, "extracting bpftrace source");
     }
     let status = Command::new("cmake")
         .args(["-S"])
@@ -717,6 +768,7 @@ fn build_bpftrace(root: &Path) -> Result<PathBuf, Error> {
             bpftrace_source_commands()
         )));
     }
+    progress(60, "configuring bpftrace build");
     let status = Command::new("cmake")
         .args(["--build"])
         .arg(&build_dir)
@@ -729,6 +781,7 @@ fn build_bpftrace(root: &Path) -> Result<PathBuf, Error> {
             bpftrace_source_commands()
         )));
     }
+    progress(90, "building bpftrace");
     find_built_bpftrace(&build_dir).ok_or_else(|| {
         Error::Io(format!(
             "bpftrace built without a discoverable executable under {}",
@@ -1125,6 +1178,40 @@ mod tests {
     }
 
     #[test]
+    fn install_progress_reports_real_workload_stages() {
+        let root =
+            std::env::temp_dir().join(format!("asb-install-progress-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("prompt.txt");
+        fs::write(&source, "prompt").unwrap();
+        let mut events = Vec::new();
+        let mut progress = |percent: u8, stage: &str| events.push((percent, stage.to_owned()));
+        let mut output = Vec::new();
+        workload_with_progress(
+            &[
+                source.to_string_lossy().into_owned(),
+                "--dir".into(),
+                root.join("workloads").to_string_lossy().into_owned(),
+            ],
+            &mut output,
+            &mut progress,
+        )
+        .expect("local workload installation succeeds");
+        assert!(
+            events
+                .iter()
+                .any(|(percent, stage)| *percent == 2 && stage == "preparing")
+        );
+        assert!(
+            events
+                .iter()
+                .any(|(percent, stage)| *percent == 100 && stage == "ready")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn tool_list_includes_builtins_and_source_fallback() {
         let mut output = Vec::new();
         tool_list(&mut output).expect("tool list succeeds");
@@ -1243,7 +1330,8 @@ mod tests {
         let spec = bundle_spec("swe-bench").unwrap();
         fs::write(bundle_dir.join("ASB-BUNDLE"), spec.marker).unwrap();
         let mut output = Vec::new();
-        install_bundle("swe-bench", spec, &directory, &mut output)
+        let mut progress = |_percent: u8, _stage: &str| {};
+        install_bundle("swe-bench", spec, &directory, &mut output, &mut progress)
             .expect("existing bundle is reused");
         assert!(
             String::from_utf8(output)

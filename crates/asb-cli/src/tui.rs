@@ -318,10 +318,6 @@ fn visible_message(message: &str, until: Option<std::time::Instant>) -> &str {
     }
 }
 
-fn install_progress(started: std::time::Instant) -> u8 {
-    8_u8.saturating_add((started.elapsed().as_millis() / 200).min(87) as u8)
-}
-
 /// Launch the setup wizard and write one TOML per selected combination.
 pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
     if !args.is_empty() {
@@ -575,24 +571,33 @@ fn install_workload_selection(
         Color::Cyan,
         false,
     );
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let progress_state = std::sync::Arc::new(std::sync::Mutex::new((8_u8, "preparing".to_owned())));
+    let worker_progress = std::sync::Arc::clone(&progress_state);
+    let (sender, receiver) = std::sync::mpsc::channel();
     let install_name = name.clone();
     std::thread::spawn(move || {
         let mut output = Vec::new();
-        let result = install::workload(&[install_name], &mut output);
+        let mut progress = |percent: u8, stage: &str| {
+            if let Ok(mut state) = worker_progress.lock() {
+                *state = (percent, stage.to_owned());
+            }
+        };
+        let result = install::workload_with_progress(&[install_name], &mut output, &mut progress);
         let _ = sender.send(result);
     });
-    let started = std::time::Instant::now();
     let result = loop {
         if let Ok(result) = receiver.try_recv() {
             break result;
         }
-        let percent = install_progress(started);
+        let (percent, stage) = progress_state
+            .lock()
+            .map(|state| state.clone())
+            .unwrap_or((8, "installing".to_owned()));
         set_message(
             &mut app.message,
             &mut app.message_color,
             &mut app.message_until,
-            format!("Installing ({percent}%)..."),
+            format!("Installing ({percent}%): {stage}"),
             Color::Cyan,
             false,
         );
@@ -1013,32 +1018,41 @@ fn install_setup_selection(
     );
     let step = app.step;
     let install_label = label.clone();
-    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let progress_state = std::sync::Arc::new(std::sync::Mutex::new((8_u8, "preparing".to_owned())));
+    let worker_progress = std::sync::Arc::clone(&progress_state);
+    let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut output = Vec::new();
+        let mut progress = |percent: u8, stage: &str| {
+            if let Ok(mut state) = worker_progress.lock() {
+                *state = (percent, stage.to_owned());
+            }
+        };
         let result = match step {
-            0 | 4 => install::tool(&[install_label], &mut output),
+            0 | 4 => install::tool_with_progress(&[install_label], &mut output, &mut progress),
             3 => {
                 let workload = install_label
                     .strip_suffix(" [trial set]")
                     .unwrap_or(&install_label);
-                install::workload(&[workload.to_owned()], &mut output)
+                install::workload_with_progress(&[workload.to_owned()], &mut output, &mut progress)
             }
             _ => unreachable!("installable setup steps were checked above"),
         };
         let _ = sender.send(result);
     });
-    let started = std::time::Instant::now();
     let result = loop {
         if let Ok(result) = receiver.try_recv() {
             break result;
         }
-        let percent = install_progress(started);
+        let (percent, stage) = progress_state
+            .lock()
+            .map(|state| state.clone())
+            .unwrap_or((8, "installing".to_owned()));
         set_message(
             &mut app.message,
             &mut app.message_color,
             &mut app.message_until,
-            format!("Installing ({percent}%)..."),
+            format!("Installing ({percent}%): {stage}"),
             Color::Cyan,
             false,
         );
