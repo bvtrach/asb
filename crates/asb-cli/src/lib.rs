@@ -1,6 +1,7 @@
 //! Small command line front end for configuring and running ASB benchmarks.
 
 mod benchmark;
+mod cli2key;
 mod config;
 mod help;
 mod install;

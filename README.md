@@ -38,10 +38,12 @@ Every command and subcommand has concise help; use `asb COMMAND --help`.
 shows the `.txt` prompts available in the current project.
 
 Before a run, ASB executes a modular preparation stage. For `cli2key`, it
-reuses `CLI2KEY_API_KEY` when supplied or creates an ephemeral process-local
-key for the cli2key executable. ASB passes that executable the key, selected
-model, and local Codex binary through `CLI2KEY_*` environment variables; the
-key and endpoint are never passed to Codex.
+starts the project-local bridge when `CLI2KEY_BASE_URL` is not supplied, reads
+the bridge API key, and configures the selected agent with the bridge endpoint,
+API key, and selected model. OpenCode uses the bridge's Anthropic Messages API
+for compatibility. The bridge process is stopped when the run finishes. If an
+external bridge endpoint is supplied, `CLI2KEY_API_KEY` must contain its
+matching key.
 
 Built-in tool recipes install pinned releases into the project (and do not
 modify global tools): `codex`, `opencode`, `codeagent`, `workbuddy`, `gemini`,

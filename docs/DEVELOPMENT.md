@@ -12,6 +12,10 @@ cargo test --locked
 cargo build --locked
 ```
 
+These checks are offline and deterministic: CI never starts an agent, bridge,
+or live provider. Run `asb run` with credentials only as an explicit local
+smoke/benchmark operation.
+
 Workspaces, caches, and build outputs stay under `/srv/data/projects`. Do not
 put credentials, machine-specific paths, prompts, or provider responses in the
 repository. Live runs receive credentials from the agent/provider environment.

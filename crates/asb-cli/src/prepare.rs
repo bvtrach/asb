@@ -1,43 +1,43 @@
 //! Pre-run environment preparation hooks.
 
 use crate::Error;
-use std::io::Read;
 use std::process::Command;
 
 /// Apply provider-specific preparation immediately before launching an agent.
 pub fn apply(
     command: &mut Command,
+    agent: &str,
     provider: &str,
     model: &str,
     codex_executable: Option<&str>,
+    cli2key: Option<(&str, &str)>,
 ) -> Result<(), Error> {
     if provider.eq_ignore_ascii_case("cli2key") {
-        prepare_cli2key(command, model, codex_executable)?;
+        prepare_cli2key(command, agent, model, codex_executable, cli2key)?;
     }
     Ok(())
 }
 
 fn prepare_cli2key(
     command: &mut Command,
+    agent: &str,
     model: &str,
     codex_executable: Option<&str>,
+    cli2key: Option<(&str, &str)>,
 ) -> Result<(), Error> {
-    let key = match std::env::var("CLI2KEY_API_KEY") {
-        Ok(value) if !value.trim().is_empty() => value,
-        Ok(_) => generate_key()?,
-        Err(_) => generate_key()?,
-    };
+    let (key, base_url) = cli2key.ok_or_else(|| {
+        Error::Run("cli2key provider was selected without an API endpoint".into())
+    })?;
     command
-        .env("CLI2KEY_API_KEY", &key)
-        .env("CLI2KEY_MODEL", model);
-    if let Some(endpoint) = std::env::var_os("CLI2KEY_BASE_URL") {
-        let endpoint = endpoint.to_string_lossy();
-        if endpoint.trim().is_empty() || endpoint.contains(['\r', '\n']) {
-            return Err(Error::Run(
-                "CLI2KEY_BASE_URL must be a non-empty single-line endpoint".into(),
-            ));
-        }
-        command.env("CLI2KEY_BASE_URL", endpoint.as_ref());
+        .env("CLI2KEY_API_KEY", key)
+        .env("CLI2KEY_BASE_URL", base_url)
+        .env("CLI2KEY_MODEL", model)
+        .env("OPENAI_API_KEY", key)
+        .env("OPENAI_BASE_URL", base_url)
+        .env("ANTHROPIC_API_KEY", key)
+        .env("ANTHROPIC_BASE_URL", base_url.trim_end_matches("/v1"));
+    if agent.eq_ignore_ascii_case("opencode") {
+        command.env("OPENCODE_CONFIG_CONTENT", opencode_config(model, base_url)?);
     }
     if let Some(executable) = codex_executable {
         command.env("CLI2KEY_CODEX_BIN", executable);
@@ -45,17 +45,28 @@ fn prepare_cli2key(
     Ok(())
 }
 
-fn generate_key() -> Result<String, Error> {
-    let mut bytes = [0_u8; 32];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(&mut bytes))
-        .map_err(|error| Error::Run(format!("cannot generate ephemeral cli2key: {error}")))?;
-    let mut key = String::from("sk-asb-");
-    for byte in bytes {
-        use std::fmt::Write as _;
-        write!(&mut key, "{byte:02x}").expect("writing to String cannot fail");
-    }
-    Ok(key)
+fn opencode_config(model: &str, base_url: &str) -> Result<String, Error> {
+    let mut models = serde_json::Map::new();
+    models.insert(model.to_owned(), serde_json::json!({"name": model}));
+    serde_json::to_string(&serde_json::json!({
+        "$schema": "https://opencode.ai/config.json",
+        "provider": {
+            "cli2key": {
+                "npm": "@ai-sdk/anthropic",
+                "name": "cli2key (Codex Bridge)",
+                "options": {
+                    "baseURL": base_url,
+                    "apiKey": "{env:CLI2KEY_API_KEY}"
+                },
+                "models": models
+            }
+        }
+    }))
+    .map_err(|error| {
+        Error::Run(format!(
+            "cannot configure OpenCode cli2key provider: {error}"
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -63,18 +74,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generated_key_is_ephemeral_format() {
-        let key = generate_key().expect("random source available");
-        assert!(key.starts_with("sk-asb-"));
-        assert_eq!(key.len(), 71);
-        assert!(key[7..].bytes().all(|byte| byte.is_ascii_hexdigit()));
-    }
-
-    #[test]
-    fn cli2key_preparation_targets_the_wrapper_not_codex() {
+    fn cli2key_preparation_configures_the_selected_agent_api() {
         let mut command = Command::new("cli2key");
-        apply(&mut command, "cli2key", "gpt-test", Some("/project/codex"))
-            .expect("preparation succeeds");
+        apply(
+            &mut command,
+            "opencode",
+            "cli2key",
+            "gpt-test",
+            Some("/project/codex"),
+            Some(("cb_test", "http://127.0.0.1:3456/v1")),
+        )
+        .expect("preparation succeeds");
         let values = command
             .get_envs()
             .filter_map(|(name, value)| {
@@ -90,7 +100,31 @@ mod tests {
             values.get("CLI2KEY_CODEX_BIN").map(|value| value.as_ref()),
             Some("/project/codex")
         );
-        assert!(!values.contains_key("OPENAI_API_KEY"));
-        assert!(!values.contains_key("OPENAI_BASE_URL"));
+        assert_eq!(
+            values.get("OPENAI_API_KEY").map(|value| value.as_ref()),
+            Some("cb_test")
+        );
+        assert_eq!(
+            values.get("OPENAI_BASE_URL").map(|value| value.as_ref()),
+            Some("http://127.0.0.1:3456/v1")
+        );
+        assert_eq!(
+            values.get("ANTHROPIC_BASE_URL").map(|value| value.as_ref()),
+            Some("http://127.0.0.1:3456")
+        );
+        let config: serde_json::Value = serde_json::from_str(
+            values
+                .get("OPENCODE_CONFIG_CONTENT")
+                .expect("OpenCode config is set"),
+        )
+        .expect("OpenCode config is valid JSON");
+        assert_eq!(
+            config["provider"]["cli2key"]["models"]["gpt-test"]["name"],
+            "gpt-test"
+        );
+        assert_eq!(
+            config["provider"]["cli2key"]["options"]["apiKey"],
+            "{env:CLI2KEY_API_KEY}"
+        );
     }
 }

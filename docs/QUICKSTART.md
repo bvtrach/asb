@@ -31,19 +31,20 @@ values. `asb models openrouter` uses the same environment to print the current
 catalog; `asb models --json` queries every supported provider and reports
 missing credentials or unavailable endpoints individually.
 
-For a local cli2key bridge, select `--provider cli2key` and set its endpoint:
+For a local cli2key bridge, install the bridge and select `--provider cli2key`:
 
 ```sh
-export CLI2KEY_BASE_URL=http://127.0.0.1:PORT/v1
-asb setup --agent codex --workload bug-fix --provider cli2key --model MODEL --output benchmark.toml
+asb tool install cli2key
+asb setup --agent opencode --workload bug-fix --provider cli2key --model gpt-6.1-sol --output benchmark.toml
 asb run benchmark.toml
 ```
 
-The pre-run hook reuses `CLI2KEY_API_KEY` when set; otherwise it creates an
-ephemeral key for the cli2key executable. ASB also provides the local Codex
-binary as `CLI2KEY_CODEX_BIN`; the generated key is never passed to Codex or
-written to disk. Install the cli2key executable with
-`asb tool install cli2key --source PATH` (or provide it on `PATH`).
+ASB starts the project-local bridge, obtains its API key, and configures the
+selected agent's API environment automatically. OpenCode uses the bridge's
+Anthropic Messages API. If using an
+already running external bridge, set both `CLI2KEY_BASE_URL` and its matching
+`CLI2KEY_API_KEY`. The bridge supports `gpt-6-astra`, `gpt-6.1-sol`, and
+`gpt-6-luna`.
 
 `asb init` copies the bundled `.txt` workloads into `workloads/`, so they are
 available immediately after initialization. Add a file such as

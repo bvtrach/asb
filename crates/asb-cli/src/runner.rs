@@ -2,6 +2,7 @@
 
 use super::{Error, io_error, read_config};
 use crate::benchmark::BenchmarkConfig;
+use crate::cli2key;
 use crate::prepare;
 use crate::project;
 use crate::providers;
@@ -51,16 +52,16 @@ pub fn run(path: &str, json: bool, output: &mut dyn Write) -> Result<(), Error> 
         .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir));
     let prompt = workloads::load(&config.workload, &workload_directory).map_err(Error::Input)?;
     let codex_executable = local_agent("codex", &project_root, &project_config.tools_dir);
+    let bridge = if config.provider.eq_ignore_ascii_case("cli2key") {
+        cli2key::Bridge::connect(
+            local_agent("cli2key", &project_root, &project_config.tools_dir).as_deref(),
+        )
+        .map(Some)?
+    } else {
+        None
+    };
     let (mut program, args) = command_for(&config);
-    let cli2key_agent = config.provider.eq_ignore_ascii_case("cli2key")
-        && config.agent.eq_ignore_ascii_case("codex");
-    if cli2key_agent {
-        program = "cli2key".into();
-        if let Some(local) = local_agent("cli2key", &project_root, &project_config.tools_dir) {
-            program = local;
-        }
-    } else if let Some(local) = local_agent(&config.agent, &project_root, &project_config.tools_dir)
-    {
+    if let Some(local) = local_agent(&config.agent, &project_root, &project_config.tools_dir) {
         program = local;
     }
     let started = Instant::now();
@@ -73,9 +74,13 @@ pub fn run(path: &str, json: bool, output: &mut dyn Write) -> Result<(), Error> 
     providers::configure(&mut command, &config.provider, &config.model);
     prepare::apply(
         &mut command,
+        &config.agent,
         &config.provider,
         &config.model,
         codex_executable.as_deref(),
+        bridge
+            .as_ref()
+            .map(|value| (value.api_key(), value.base_url())),
     )?;
     let child = command
         .output()
@@ -147,10 +152,6 @@ fn excerpt(value: &str) -> &str {
 }
 
 fn command_for(config: &BenchmarkConfig) -> (String, Vec<String>) {
-    if config.provider.eq_ignore_ascii_case("cli2key") && config.agent.eq_ignore_ascii_case("codex")
-    {
-        return ("cli2key".into(), Vec::new());
-    }
     match config.agent.as_str() {
         "codex" => (
             "codex".into(),
@@ -159,11 +160,19 @@ fn command_for(config: &BenchmarkConfig) -> (String, Vec<String>) {
         "aider" => ("aider".into(), vec!["--message".into()]),
         "opencode" => (
             "opencode".into(),
-            vec!["run".into(), "--model".into(), config.model.clone()],
+            vec!["run".into(), "--model".into(), opencode_model(config)],
         ),
         "qwen-code" => ("qwen".into(), Vec::new()),
         "mini-swe" => ("mini".into(), Vec::new()),
         other => (other.into(), Vec::new()),
+    }
+}
+
+fn opencode_model(config: &BenchmarkConfig) -> String {
+    if config.provider.eq_ignore_ascii_case("cli2key") && !config.model.contains('/') {
+        format!("cli2key/{}", config.model)
+    } else {
+        config.model.clone()
     }
 }
 
