@@ -581,6 +581,9 @@ fn usage_from_text(text: &str) -> TokenUsage {
             usage = usage.add(usage_from_json(&value));
             continue;
         }
+        for value in embedded_json_values(line) {
+            usage = usage.add(usage_from_json(&value));
+        }
         if line.to_ascii_lowercase().contains("tokens used")
             && let Some(value) = lines
                 .peek()
@@ -590,24 +593,123 @@ fn usage_from_text(text: &str) -> TokenUsage {
             let _ = lines.next();
             continue;
         }
-        usage = usage.add(usage_from_key_values(line));
+        // JSON fields are already accounted for above.  Avoid treating their
+        // `"name":number` members as a second key/value event.
+        if !line.contains(['{', '}']) {
+            usage = usage.add(usage_from_key_values(line));
+        }
     }
     usage
+}
+
+/// Extract complete JSON objects from agent prefixes such as `event: {...}`.
+/// Agents frequently mix human-readable progress text with JSON usage events;
+/// requiring a whole line to be JSON made token accounting work only for the
+/// agent that emits a pure JSON stream.
+fn embedded_json_values(text: &str) -> Vec<serde_json::Value> {
+    let mut values = Vec::new();
+    let mut start = None;
+    let mut depth = 0_u32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, character) in text.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match character {
+            '"' => in_string = true,
+            '{' if depth == 0 => {
+                start = Some(index);
+                depth = 1;
+            }
+            '{' if depth > 0 => depth += 1,
+            '}' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(start) = start.take()
+                        && let Ok(value) = serde_json::from_str(&text[start..=index])
+                    {
+                        values.push(value);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    values
 }
 
 fn usage_from_json(value: &serde_json::Value) -> TokenUsage {
     let mut usage = TokenUsage::default();
     if let Some(object) = value.as_object() {
-        usage.input_tokens = find_number(object, &["input_tokens", "prompt_tokens", "inputTokens"]);
+        let short_usage = object.contains_key("total")
+            || (object.contains_key("input") && object.contains_key("output"))
+            || object.contains_key("cached")
+            || object.contains_key("cacheRead");
+        usage.input_tokens = find_number(
+            object,
+            &[
+                "input_tokens",
+                "prompt_tokens",
+                "inputTokens",
+                "promptTokens",
+                "input_token_count",
+                "prompt_token_count",
+            ],
+        )
+        .or_else(|| {
+            short_usage
+                .then(|| find_number(object, &["input", "prompt"]))
+                .flatten()
+        });
         usage.output_tokens = find_number(
             object,
-            &["output_tokens", "completion_tokens", "outputTokens"],
-        );
+            &[
+                "output_tokens",
+                "completion_tokens",
+                "outputTokens",
+                "completionTokens",
+                "output_token_count",
+                "completion_token_count",
+            ],
+        )
+        .or_else(|| {
+            short_usage
+                .then(|| find_number(object, &["output", "completion"]))
+                .flatten()
+        });
         usage.cached_tokens = find_number(
             object,
-            &["cached_tokens", "cache_read_input_tokens", "cachedTokens"],
-        );
-        usage.total_tokens = find_number(object, &["total_tokens", "totalTokens"]);
+            &[
+                "cached_tokens",
+                "cache_read_input_tokens",
+                "cachedTokens",
+                "cache_read_tokens",
+                "cacheRead",
+                "cache_read",
+            ],
+        )
+        .or_else(|| {
+            short_usage
+                .then(|| find_number(object, &["cached"]))
+                .flatten()
+        });
+        usage.total_tokens = find_number(
+            object,
+            &["total_tokens", "totalTokens", "token_count", "tokens_used"],
+        )
+        .or_else(|| {
+            short_usage
+                .then(|| find_number(object, &["total"]))
+                .flatten()
+        });
         for (name, child) in object {
             if name == "tokens" {
                 usage = usage.merge(usage_from_opencode_tokens(child));
@@ -615,14 +717,31 @@ fn usage_from_json(value: &serde_json::Value) -> TokenUsage {
                 "input_tokens",
                 "prompt_tokens",
                 "inputTokens",
+                "promptTokens",
+                "input_token_count",
+                "prompt_token_count",
                 "output_tokens",
                 "completion_tokens",
                 "outputTokens",
+                "completionTokens",
+                "output_token_count",
+                "completion_token_count",
                 "cached_tokens",
                 "cache_read_input_tokens",
                 "cachedTokens",
+                "cache_read_tokens",
+                "cacheRead",
+                "cache_read",
                 "total_tokens",
                 "totalTokens",
+                "token_count",
+                "tokens_used",
+                "input",
+                "prompt",
+                "output",
+                "completion",
+                "cached",
+                "total",
             ]
             .contains(&name.as_str())
             {
@@ -645,11 +764,14 @@ fn usage_from_opencode_tokens(value: &serde_json::Value) -> TokenUsage {
     let Some(object) = value.as_object() else {
         return TokenUsage::default();
     };
-    let cached = object.get("cache").and_then(|cache| {
-        cache
-            .get("read")
-            .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
-    });
+    let cached = object
+        .get("cache")
+        .and_then(|cache| {
+            cache
+                .get("read")
+                .and_then(|value| value.as_u64().or_else(|| value.as_str()?.parse().ok()))
+        })
+        .or_else(|| find_number(object, &["cached", "cacheRead", "cache_read"]));
     TokenUsage {
         input_tokens: find_number(object, &["input"]),
         output_tokens: find_number(object, &["output"]),
@@ -877,6 +999,50 @@ mod tests {
         let usage = token_usage_from_sources("cli2key", "codex", "tokens used\n42,567\n", "", None);
         assert_eq!(usage.total_tokens, Some(42_567));
         assert_eq!(usage.source.as_deref(), Some("agent-output"));
+    }
+
+    #[test]
+    fn parses_usage_events_emitted_by_each_supported_agent_family() {
+        let cases = [
+            (
+                "codex",
+                r#"response.completed {"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}"#,
+            ),
+            (
+                "pi",
+                r#"event: {"type":"turn_end","usage":{"input":7,"output":3,"total":10,"cacheRead":2}}"#,
+            ),
+            (
+                "qwen-code",
+                r#"{"type":"result","stats":{"total_tokens":10,"input_tokens":7,"output_tokens":3,"cached":2}}"#,
+            ),
+            (
+                "aider",
+                r#"completion: {"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}"#,
+            ),
+            (
+                "workbuddy",
+                r#"done {"usage":{"inputTokens":7,"outputTokens":3,"totalTokens":10}}"#,
+            ),
+            (
+                "openjiuwen",
+                r#"{"benchmark_usage":{"task_summary":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}}"#,
+            ),
+            (
+                "openhands",
+                r#"llm response {"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}"#,
+            ),
+            (
+                "mini-swe",
+                r#"result {"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}"#,
+            ),
+        ];
+        for (agent, output) in cases {
+            let usage = token_usage_from_sources("cli2key", agent, output, "", None);
+            assert_eq!(usage.input_tokens, Some(7), "{agent} input");
+            assert_eq!(usage.output_tokens, Some(3), "{agent} output");
+            assert_eq!(usage.total_tokens, Some(10), "{agent} total");
+        }
     }
 
     #[test]
