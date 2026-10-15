@@ -1,7 +1,7 @@
 //! Interactive, modular setup wizard built with Ratatui.
 
 use crate::benchmark::{BenchmarkConfig, MeasurementConfig};
-use crate::{Error, measurements, models, project, providers, workloads};
+use crate::{Error, install, measurements, models, project, providers, workloads};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
@@ -37,14 +37,22 @@ const DESCRIPTIONS: &[&str] = &[
     "Choose the provider endpoint used by the selected agents.",
     "Choose tool-capable models available in the selected providers.",
     "Choose one or more workload prompts installed in this project.",
-    "Choose the measurements written for every generated benchmark.",
+    "Choose the measurement collectors; host tools are installed project-locally when possible.",
 ];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Availability {
+    Available,
+    Missing,
+    Unknown,
+}
 
 #[derive(Clone, Debug)]
 struct Choice {
     label: String,
     provider: Option<String>,
     model: Option<String>,
+    availability: Availability,
 }
 
 #[derive(Clone, Debug)]
@@ -148,6 +156,7 @@ impl App {
                 label: (*name).into(),
                 provider: None,
                 model: None,
+                availability: Availability::Unknown,
             })
             .collect();
         let provider_choices = providers::names()
@@ -158,6 +167,7 @@ impl App {
                 label: name.into(),
                 provider: None,
                 model: None,
+                availability: Availability::Unknown,
             })
             .collect();
         let workloads = workload_choices(&root, &project.workloads_dir);
@@ -167,11 +177,12 @@ impl App {
                 label: name,
                 provider: None,
                 model: None,
+                availability: Availability::Available,
             })
             .collect();
         let mut measure_pane = Pane::new(measures);
         measure_pane.selected.fill(true);
-        Self {
+        let mut app = Self {
             root,
             project,
             panes: vec![
@@ -183,6 +194,38 @@ impl App {
             ],
             step: 0,
             message: "Space selects; arrows move; Tab or Enter advances; Esc cancels.".into(),
+        };
+        app.refresh_availability();
+        app
+    }
+
+    fn refresh_availability(&mut self) {
+        let tools = project::resolve(&self.root, &self.project.tools_dir);
+        for choice in &mut self.panes[0].choices {
+            choice.availability = if install::tool_available(&choice.label, &tools) {
+                Availability::Available
+            } else {
+                Availability::Missing
+            };
+        }
+        let workloads = project::resolve(&self.root, &self.project.workloads_dir);
+        for choice in &mut self.panes[3].choices {
+            let name = choice
+                .label
+                .strip_suffix(" [trial set]")
+                .unwrap_or(&choice.label);
+            choice.availability = if workloads::load(name, &workloads).is_ok() {
+                Availability::Available
+            } else {
+                Availability::Missing
+            };
+        }
+        for choice in &mut self.panes[4].choices {
+            choice.availability = match choice.label.as_str() {
+                "token_usage" | "steps" | "success_rate" => Availability::Available,
+                name if install::tool_available(name, &tools) => Availability::Available,
+                _ => Availability::Missing,
+            };
         }
     }
 
@@ -206,6 +249,7 @@ impl App {
                     label: format!("{provider}:{model}"),
                     provider: Some(provider.clone()),
                     model: Some(model),
+                    availability: Availability::Unknown,
                 });
             }
         }
@@ -294,6 +338,7 @@ pub fn workload_tui(args: &[String], output: &mut dyn Write) -> Result<(), Error
         message: "Space selects; Enter opens trials/saves; Tab down; Shift-Tab up; Esc cancels."
             .into(),
     };
+    refresh_workload_availability(&mut app);
     let mut terminal = start_terminal()
         .map_err(|error| Error::Io(format!("cannot start workload TUI: {error}")))?;
     let result = workload_loop(&mut terminal, &mut app);
@@ -335,8 +380,23 @@ fn external_workload_choices(directory: &Path) -> Vec<Choice> {
             label,
             provider: None,
             model: None,
+            availability: Availability::Unknown,
         })
         .collect()
+}
+
+fn refresh_workload_availability(app: &mut WorkloadApp) {
+    let directory = project::resolve(&app.root, &app.project.workloads_dir);
+    for choice in &mut app.workloads.choices {
+        let name = &choice.label;
+        choice.availability = if directory.join(name).join("source").is_dir()
+            && directory.join(format!("{name}.txt")).is_file()
+        {
+            Availability::Available
+        } else {
+            Availability::Missing
+        };
+    }
 }
 
 fn workload_loop(
@@ -374,6 +434,13 @@ fn workload_loop(
                 return Err(Error::Usage("workload TUI cancelled"));
             }
             KeyEvent {
+                code: KeyCode::Char('i'),
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::CONTROL) => {
+                install_workload_selection(app);
+            }
+            KeyEvent {
                 code: KeyCode::Tab,
                 modifiers,
                 ..
@@ -401,6 +468,7 @@ fn workload_loop(
                                     label: trial.id,
                                     provider: None,
                                     model: None,
+                                    availability: Availability::Available,
                                 })
                                 .collect(),
                         );
@@ -434,6 +502,26 @@ fn workload_loop(
             _ => {}
         }
     }
+}
+
+fn install_workload_selection(app: &mut WorkloadApp) {
+    if app.level != 0 {
+        app.message =
+            "Trials are configured locally; return to workloads before installing.".into();
+        return;
+    }
+    let Some(choice) = app.workloads.choices.get(app.workloads.cursor) else {
+        app.message = "Nothing is highlighted to install.".into();
+        return;
+    };
+    let name = choice.label.clone();
+    let mut output = Vec::new();
+    let result = install::workload(&[name.clone()], &mut output);
+    refresh_workload_availability(app);
+    app.message = match result {
+        Ok(()) => format!("Installed or refreshed `{name}`. ⓘ status updated."),
+        Err(error) => format!("Cannot install `{name}`: {error}"),
+    };
 }
 
 /// Apply the shared searchable-list controls used by both terminal TUIs.
@@ -549,7 +637,13 @@ fn draw_workload(frame: &mut ratatui::Frame<'_>, app: &WorkloadApp) {
         &app.trials
     };
     render_choice_pane(frame, vertical[2], pane);
-    frame.render_widget(Paragraph::new(app.message.clone()), vertical[3]);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(app.message.clone(), Style::default().fg(Color::Yellow)),
+            Span::raw("  ⓘ green=ready red=missing yellow=unknown  Ctrl-I install  Space select  ↑/↓ move  Tab/Enter next  Shift-Tab back  Esc cancel"),
+        ])),
+        vertical[3],
+    );
 }
 
 fn write_trial_sets(app: &WorkloadApp) -> Result<usize, Error> {
@@ -636,6 +730,13 @@ fn run_loop(
                 return Err(Error::Usage("setup TUI cancelled"));
             }
             KeyEvent {
+                code: KeyCode::Char('i'),
+                modifiers,
+                ..
+            } if modifiers.contains(KeyModifiers::CONTROL) => {
+                install_setup_selection(app);
+            }
+            KeyEvent {
                 code: KeyCode::Tab,
                 modifiers,
                 ..
@@ -711,7 +812,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
     frame.render_widget(
         Paragraph::new(Text::from(Line::from(vec![
             Span::styled(app.message.clone(), Style::default().fg(Color::Yellow)),
-            Span::raw("  Space select  ↑/↓ move  Tab/Enter next  Shift-Tab back  Esc cancel"),
+            Span::raw("  ⓘ green=ready red=missing yellow=unknown  Ctrl-I install  Space select  ↑/↓ move  Tab/Enter next  Shift-Tab back  Esc cancel"),
         ]))),
         vertical[3],
     );
@@ -740,7 +841,8 @@ fn render_choice_pane(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rec
             let marker = if pane.selected[*index] { "[x]" } else { "[ ]" };
             ListItem::new(Line::from(vec![
                 Span::raw(format!("{marker} ")),
-                Span::raw(choice.label.clone()),
+                Span::styled("ⓘ", availability_style(choice.availability)),
+                Span::raw(format!(" {}", choice.label)),
             ]))
         })
         .collect::<Vec<_>>();
@@ -761,6 +863,39 @@ fn render_choice_pane(frame: &mut ratatui::Frame<'_>, area: ratatui::layout::Rec
         body[1],
         &mut state,
     );
+}
+
+fn availability_style(availability: Availability) -> Style {
+    match availability {
+        Availability::Available => Style::default().fg(Color::Green),
+        Availability::Missing => Style::default().fg(Color::Red),
+        Availability::Unknown => Style::default().fg(Color::Yellow),
+    }
+}
+
+fn install_setup_selection(app: &mut App) {
+    let Some(choice) = app.panes[app.step].choices.get(app.panes[app.step].cursor) else {
+        app.message = "Nothing is highlighted to install.".into();
+        return;
+    };
+    let label = choice.label.clone();
+    let mut output = Vec::new();
+    let result = match app.step {
+        0 | 4 => install::tool(&[label.clone()], &mut output),
+        3 => {
+            let workload = label.strip_suffix(" [trial set]").unwrap_or(&label);
+            install::workload(&[workload.to_owned()], &mut output)
+        }
+        _ => {
+            app.message = "This item is discovered or configured, not installed by ASB.".into();
+            return;
+        }
+    };
+    app.refresh_availability();
+    app.message = match result {
+        Ok(()) => format!("Installed or refreshed `{label}`. ⓘ status updated."),
+        Err(error) => format!("Cannot install `{label}`: {error}"),
+    };
 }
 
 fn workload_choices(root: &Path, directory: &str) -> Vec<Choice> {
@@ -801,6 +936,7 @@ fn workload_choices(root: &Path, directory: &str) -> Vec<Choice> {
             label,
             provider: None,
             model: None,
+            availability: Availability::Available,
         })
         .collect()
 }
@@ -947,7 +1083,7 @@ fn selected_trials(
 
 #[cfg(test)]
 mod tests {
-    use super::{App, Choice, Pane, default_model, generate_configs};
+    use super::{App, Availability, Choice, Pane, default_model, generate_configs};
     use crate::project::ProjectConfig;
 
     #[test]
@@ -957,11 +1093,13 @@ mod tests {
                 label: "alpha".into(),
                 provider: None,
                 model: None,
+                availability: Availability::Unknown,
             },
             Choice {
                 label: "beta".into(),
                 provider: None,
                 model: None,
+                availability: Availability::Unknown,
             },
         ]);
         pane.search = "bet".into();
@@ -973,6 +1111,31 @@ mod tests {
         pane.search.clear();
         pane.search_changed();
         assert_eq!(pane.visible().len(), 2);
+    }
+
+    #[test]
+    fn app_marks_missing_agents_and_internal_collectors() {
+        let root = std::env::temp_dir().join(format!("asb-tui-status-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let app = App::new(root.clone(), ProjectConfig::default());
+        assert!(
+            app.panes[0]
+                .choices
+                .iter()
+                .all(|choice| choice.availability == Availability::Missing)
+        );
+        assert!(
+            app.panes[4]
+                .choices
+                .iter()
+                .filter(|choice| matches!(
+                    choice.label.as_str(),
+                    "token_usage" | "steps" | "success_rate"
+                ))
+                .all(|choice| choice.availability == Availability::Available)
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

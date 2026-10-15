@@ -30,7 +30,12 @@ the same Ratatui interaction components in a
 two-level workload/trial tree. Select workloads and enabled trials, then it
 writes `<workload>.workload.toml` files; `setup tui` presents those trial sets
 as selectable workload entries and generates one benchmark configuration per
-enabled trial. `init` writes `.asb/project.toml` with project-local tool, workload, and
+enabled trial. Both TUIs prefix every selectable item with a colored `ⓘ`:
+green means runnable, red means missing, and yellow means not locally
+verifiable (for example a remote provider catalog). On an agent, external
+workload, or collector, `Ctrl-I` invokes the bounded project-local installer
+when one exists and refreshes the status; providers and models remain
+discovery-only. `init` writes `.asb/project.toml` with project-local tool, workload, and
 workspace directories and copies the bundled workload prompts into
 `workloads/` and seeds `.asb/fixtures/` with the source, tests, and supporting
 files for every built-in workload. `run` copies the selected fixture into the

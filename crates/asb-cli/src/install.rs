@@ -284,6 +284,20 @@ pub fn tool_list(output: &mut dyn std::io::Write) -> Result<(), Error> {
     writeln!(output, "  custom       --source URL|PATH").map_err(super::io_error)
 }
 
+/// Report whether a built-in tool is runnable from the host or this project.
+/// This is intentionally side-effect free so TUIs can refresh status on every
+/// navigation or after a Ctrl-I installation attempt.
+pub fn tool_available(name: &str, tools_root: &Path) -> bool {
+    let Some(plan) = recipe(name) else {
+        return false;
+    };
+    let local = executable(plan, &tools_root.join(name));
+    if local.is_file() {
+        return true;
+    }
+    matches!(plan, Recipe::Host { executable } if host_executable(executable).is_ok())
+}
+
 pub fn workload(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Error> {
     let (source, name, directory) = parse_workload(args)?;
     fs::create_dir_all(&directory)
@@ -1097,6 +1111,17 @@ mod tests {
         );
         assert!(LLMTAPE_WRAPPER.contains("llmtape record"));
         assert!(LLMTAPE_WRAPPER.contains("llmtape replay"));
+    }
+
+    #[test]
+    fn tool_availability_prefers_project_local_installations() {
+        let root = std::env::temp_dir().join(format!("asb-tool-status-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("llmtape/bin")).unwrap();
+        fs::write(root.join("llmtape/bin/llmtape"), "#!/bin/sh\n").unwrap();
+        assert!(tool_available("llmtape", &root));
+        assert!(!tool_available("not-a-tool", &root));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
