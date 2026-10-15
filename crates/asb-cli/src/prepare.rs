@@ -35,10 +35,37 @@ fn prepare_cli2key(
         .env("OPENAI_API_KEY", key)
         .env("OPENAI_BASE_URL", base_url)
         .env("OPENAI_API_BASE", base_url)
+        .env("OPENAI_MODEL", model)
+        .env("ANTHROPIC_MODEL", model)
+        .env("QWEN_DEFAULT_AUTH_TYPE", "anthropic")
         .env("ANTHROPIC_API_KEY", key)
         .env("ANTHROPIC_BASE_URL", base_url.trim_end_matches("/v1"));
     if agent.eq_ignore_ascii_case("opencode") {
         command.env("OPENCODE_CONFIG_CONTENT", opencode_config(model, base_url)?);
+    }
+    if agent.eq_ignore_ascii_case("qwen-code") {
+        command
+            .env_remove("OPENAI_API_KEY")
+            .env_remove("OPENAI_BASE_URL")
+            .env_remove("OPENAI_API_BASE")
+            .env_remove("OPENAI_MODEL");
+    }
+    if agent.eq_ignore_ascii_case("mini-swe") {
+        command
+            .env("MSWEA_CONFIGURED", "true")
+            .env("MSWEA_MODEL_NAME", format!("anthropic/{model}"))
+            .env("MSWEA_SILENT_STARTUP", "1")
+            .env("MSWEA_COST_TRACKING", "ignore_errors");
+    }
+    if agent.eq_ignore_ascii_case("openhands") {
+        command
+            .env("LLM_API_KEY", key)
+            .env("LLM_BASE_URL", base_url.trim_end_matches("/v1"))
+            .env("LLM_MODEL", format!("anthropic/{model}"))
+            .env("OPENHANDS_SUPPRESS_BANNER", "1");
+    }
+    if agent.eq_ignore_ascii_case("openjiuwen") {
+        command.env("OPENJIUWEN_API_KEY", key);
     }
     if let Some(executable) = codex_executable {
         command.env("CLI2KEY_CODEX_BIN", executable);

@@ -45,6 +45,12 @@ for compatibility. The bridge process is stopped when the run finishes. If an
 external bridge endpoint is supplied, `CLI2KEY_API_KEY` must contain its
 matching key.
 
+The bundled cli2key bridge executes workloads through `codex`, `opencode`,
+`qwen-code`, `mini-swe`, `openhands`, and `openjiuwen`. `aider`, `gemini`, and
+`workbuddy` require wire protocols the bridge does not expose, so ASB rejects
+those combinations before launch. `codeagent` is a web-server-only binary and
+has no non-interactive workload command.
+
 Built-in tool recipes install pinned releases into the project (and do not
 modify global tools): `codex`, `opencode`, `codeagent`, `workbuddy`, `gemini`,
 `qwen-code`, and `cli2key` use npm; `aider`, `mini-swe`, `openhands`, and

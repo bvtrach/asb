@@ -46,6 +46,12 @@ already running external bridge, set both `CLI2KEY_BASE_URL` and its matching
 `CLI2KEY_API_KEY`. The bridge supports `gpt-6-astra`, `gpt-6.1-sol`, and
 `gpt-6-luna`.
 
+The bundled bridge executes workloads through `codex`, `opencode`,
+`qwen-code`, `mini-swe`, `openhands`, and `openjiuwen`. `aider`, `gemini`, and
+`workbuddy` require incompatible provider protocols and are rejected before
+launch; `codeagent` is a web-server-only installer and cannot run a
+non-interactive workload.
+
 `asb init` copies the bundled `.txt` workloads into `workloads/`, so they are
 available immediately after initialization. Add a file such as
 `workloads/my-task.txt`, then select it with `--workload my-task`. To keep

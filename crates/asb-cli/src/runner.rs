@@ -51,6 +51,14 @@ pub fn run(path: &str, json: bool, output: &mut dyn Write) -> Result<(), Error> 
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir));
     let prompt = workloads::load(&config.workload, &workload_directory).map_err(Error::Input)?;
+    if config.provider.eq_ignore_ascii_case("cli2key")
+        && matches!(config.agent.as_str(), "aider" | "gemini" | "workbuddy")
+    {
+        return Err(Error::Run(format!(
+            "cli2key cannot run agent {}: the local bridge exposes Anthropic Messages and OpenAI Responses, while this agent requires a different provider protocol; use codex, opencode, qwen-code, mini-swe, openhands, or openjiuwen",
+            config.agent
+        )));
+    }
     let codex_executable = local_agent("codex", &project_root, &project_config.tools_dir);
     let bridge = if config.provider.eq_ignore_ascii_case("cli2key") {
         cli2key::Bridge::connect(
@@ -60,17 +68,22 @@ pub fn run(path: &str, json: bool, output: &mut dyn Write) -> Result<(), Error> 
     } else {
         None
     };
-    let (mut program, args) = command_for(&config);
+    let specification = command_for(
+        &config,
+        bridge.as_ref().map(cli2key::Bridge::base_url),
+        &prompt,
+    )?;
+    let mut program = specification.program;
     if let Some(local) = local_agent(&config.agent, &project_root, &project_config.tools_dir) {
         program = local;
     }
     let started = Instant::now();
     let mut command = Command::new(&program);
-    command
-        .args(args)
-        .arg(prompt)
-        .current_dir(&workspace)
-        .stdin(Stdio::null());
+    command.args(specification.args);
+    if specification.append_prompt {
+        command.arg(prompt);
+    }
+    command.current_dir(&workspace).stdin(Stdio::null());
     providers::configure(&mut command, &config.provider, &config.model);
     prepare::apply(
         &mut command,
@@ -151,21 +164,111 @@ fn excerpt(value: &str) -> &str {
     }
 }
 
-fn command_for(config: &BenchmarkConfig) -> (String, Vec<String>) {
-    match config.agent.as_str() {
-        "codex" => (
-            "codex".into(),
-            vec!["exec".into(), "--model".into(), config.model.clone()],
-        ),
-        "aider" => ("aider".into(), vec!["--message".into()]),
-        "opencode" => (
-            "opencode".into(),
-            vec!["run".into(), "--model".into(), opencode_model(config)],
-        ),
-        "qwen-code" => ("qwen".into(), Vec::new()),
-        "mini-swe" => ("mini".into(), Vec::new()),
-        other => (other.into(), Vec::new()),
-    }
+struct CommandSpec {
+    program: String,
+    args: Vec<String>,
+    append_prompt: bool,
+}
+
+fn command_for(
+    config: &BenchmarkConfig,
+    cli2key_base_url: Option<&str>,
+    prompt: &str,
+) -> Result<CommandSpec, Error> {
+    let spec = match config.agent.as_str() {
+        "codex" => CommandSpec {
+            program: "codex".into(),
+            args: vec![
+                "exec".into(),
+                "--skip-git-repo-check".into(),
+                "--model".into(),
+                config.model.clone(),
+            ],
+            append_prompt: true,
+        },
+        "aider" => CommandSpec {
+            program: "aider".into(),
+            args: vec!["--message".into()],
+            append_prompt: true,
+        },
+        "opencode" => CommandSpec {
+            program: "opencode".into(),
+            args: vec!["run".into(), "--model".into(), opencode_model(config)],
+            append_prompt: true,
+        },
+        "qwen-code" => CommandSpec {
+            program: "qwen".into(),
+            args: vec!["--model".into(), config.model.clone(), "--yolo".into()],
+            append_prompt: true,
+        },
+        "mini-swe" => CommandSpec {
+            program: "mini".into(),
+            args: vec![
+                "--model".into(),
+                format!("anthropic/{}", config.model),
+                "--task".into(),
+                prompt.into(),
+                "--yolo".into(),
+                "--exit-immediately".into(),
+            ],
+            append_prompt: false,
+        },
+        "openhands" => CommandSpec {
+            program: "openhands".into(),
+            args: vec![
+                "--headless".into(),
+                "--yolo".into(),
+                "--override-with-envs".into(),
+                "--task".into(),
+                prompt.into(),
+            ],
+            append_prompt: false,
+        },
+        "openjiuwen" => CommandSpec {
+            program: "openjiuwen".into(),
+            args: [
+                "--model",
+                config.model.as_str(),
+                "--provider",
+                "anthropic",
+                "--api-base",
+                cli2key_base_url.unwrap_or_default(),
+                "run",
+                prompt,
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            append_prompt: false,
+        },
+        "gemini" => CommandSpec {
+            program: "gemini".into(),
+            args: vec![
+                "-p".into(),
+                prompt.into(),
+                "-m".into(),
+                config.model.clone(),
+                "--yolo".into(),
+            ],
+            append_prompt: false,
+        },
+        "workbuddy" => CommandSpec {
+            program: "codebuddy".into(),
+            args: vec!["--print".into(), "--model".into(), config.model.clone(), "-y".into()],
+            append_prompt: true,
+        },
+        "codeagent" => {
+            return Err(Error::Run(
+                "codeagent provides a web server and has no non-interactive prompt command; use an executable agent such as codex, opencode, qwen-code, openhands, or openjiuwen".into(),
+            ))
+        }
+        other => CommandSpec {
+            program: other.into(),
+            args: Vec::new(),
+            append_prompt: true,
+        },
+    };
+    Ok(spec)
 }
 
 fn opencode_model(config: &BenchmarkConfig) -> String {
@@ -229,7 +332,8 @@ fn bounded(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{RunResult, render_human, render_json};
+    use super::{RunResult, command_for, render_human, render_json};
+    use crate::benchmark::BenchmarkConfig;
 
     fn result<'a>() -> RunResult<'a> {
         RunResult {
@@ -262,5 +366,33 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&output).expect("valid json");
         assert_eq!(value["status"], "completed");
         assert_eq!(value["stdout"], "done");
+    }
+
+    #[test]
+    fn cli2key_command_mappings_place_workload_once() {
+        let config = BenchmarkConfig {
+            agent: "openhands".into(),
+            workload: "bug-fix".into(),
+            provider: "cli2key".into(),
+            model: "gpt-test".into(),
+            workspace: "workspace".into(),
+        };
+        let command = command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt")
+            .expect("known agent has a command");
+        assert_eq!(command.program, "openhands");
+        assert!(!command.append_prompt);
+        assert_eq!(command.args.last().map(String::as_str), Some("prompt"));
+    }
+
+    #[test]
+    fn codeagent_is_rejected_without_a_noninteractive_command() {
+        let config = BenchmarkConfig {
+            agent: "codeagent".into(),
+            workload: "bug-fix".into(),
+            provider: "cli2key".into(),
+            model: "gpt-test".into(),
+            workspace: "workspace".into(),
+        };
+        assert!(command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt").is_err());
     }
 }
