@@ -22,3 +22,13 @@ values.
 Workloads are the `.txt` files in `workloads/`. Add a file such as
 `workloads/my-task.txt`, then select it with `--workload my-task`. To keep
 workloads elsewhere, set `ASB_WORKLOAD_DIR` before `asb run`.
+
+Install a local agent executable or external prompt with:
+
+```sh
+asb tool install codex
+asb workload install /path/to/customer-task.txt
+```
+
+The agent command is copied from `PATH` into `~/.local/bin` by default. Add
+`--source PATH` or `--dir DIR` only when you need a different source or target.

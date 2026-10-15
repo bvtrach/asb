@@ -2,6 +2,7 @@
 
 mod benchmark;
 mod config;
+mod install;
 mod providers;
 mod runner;
 mod workloads;
@@ -38,6 +39,12 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
         }
         [command, rest @ ..] if command == "setup" => config::setup(rest, stdout),
         [command, path] if command == "run" => runner::run(path, stdout),
+        [command, subcommand, rest @ ..] if command == "tool" && subcommand == "install" => {
+            install::tool(rest, stdout)
+        }
+        [command, subcommand, rest @ ..] if command == "workload" && subcommand == "install" => {
+            install::workload(rest, stdout)
+        }
         [command, help] if (command == "setup" || command == "run") && help == "--help" => {
             write_help(stdout)
         }
@@ -50,7 +57,7 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
 }
 
 fn write_help(output: &mut dyn Write) -> Result<(), CliError> {
-    writeln!(output, "ASB\n\nUsage:\n  asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n  asb run CONFIG\n\nsetup writes a benchmark configuration. run executes it live.")
+    writeln!(output, "ASB\n\nUsage:\n  asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]\n  asb run CONFIG\n  asb tool install AGENT [--source PATH] [--dir DIR]\n  asb workload install SOURCE.txt [--name NAME] [--dir DIR]\n\nsetup writes a benchmark configuration. run executes it live. install adds local agents or workload prompts.")
         .map_err(io_error)
 }
 
