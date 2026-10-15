@@ -381,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_measurements() {
+    fn records_missing_measurements_without_discarding_sweep_results() {
         let root = std::env::temp_dir().join(format!(
             "asb-compare-missing-{}",
             SystemTime::now()
