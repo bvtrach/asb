@@ -72,6 +72,21 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             continue;
         }
         let run_value = read_json(&run_path)?;
+        let run_status = if run_value.get("success") == Some(&Value::Bool(false)) {
+            Some(format!(
+                "benchmark run failed (status={}, exit_code={})",
+                run_value
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown"),
+                run_value
+                    .get("exit_code")
+                    .map(Value::to_string)
+                    .unwrap_or_else(|| "null".into())
+            ))
+        } else {
+            None
+        };
         let mut metrics = BTreeMap::new();
         flatten_numbers("", &run_value, &mut metrics);
         let mut series = BTreeMap::new();
@@ -104,7 +119,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             result_dir,
             metrics,
             series,
-            None,
+            run_status,
         ));
     }
 
