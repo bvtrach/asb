@@ -325,7 +325,7 @@ fn write_html_report(
     let mut html = String::from(HTML_HEAD);
     html = html.replacen(
         "</style></head>",
-        &format!("{}\n</style></head>", INTERACTIVE_STYLE),
+        &format!("{}\n{}\n</style></head>", INTERACTIVE_STYLE, MODAL_STYLE),
         1,
     );
     html.push_str("<main class=\"shell\">");
@@ -379,7 +379,7 @@ fn write_html_report(
             Error::Run(format!("cannot read generated chart {}: {error}", graph))
         })?;
         html.push_str(&format!(
-            "<figure class=\"interactive-chart\" data-graph=\"{}\"><div class=\"chart-toolbar\"><strong>{}</strong><button type=\"button\" class=\"chart-reset\">Reset view</button></div><div class=\"chart-stage\"><div class=\"chart-tooltip\" role=\"status\" aria-live=\"polite\"></div>{svg}</div><figcaption><a href=\"{}\" download>Download SVG</a></figcaption></figure>",
+            "<figure class=\"interactive-chart\" data-graph=\"{}\"><div class=\"chart-backdrop\" aria-hidden=\"true\"></div><div class=\"chart-toolbar\"><strong>{}</strong><span><button type=\"button\" class=\"chart-reset\">Reset view</button><button type=\"button\" class=\"chart-expand\" aria-label=\"Enlarge chart\">Enlarge</button><button type=\"button\" class=\"chart-close\" aria-label=\"Close enlarged chart\" hidden>Close</button></span></div><div class=\"chart-stage\"><div class=\"chart-tooltip\" role=\"status\" aria-live=\"polite\"></div>{svg}</div><figcaption><a href=\"{}\" download>Download SVG</a></figcaption></figure>",
             escape(graph),
             escape(graph.strip_suffix(".svg").unwrap_or(graph)),
             escape(graph),
@@ -405,12 +405,17 @@ const HTML_HEAD: &str = r#"<!doctype html><html lang="en"><head><meta charset="u
 
 const INTERACTIVE_STYLE: &str = r#".interactive-chart{position:relative;overflow:hidden}.chart-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 8px;color:var(--ink);font-size:12px}.chart-toolbar strong{overflow-wrap:anywhere}.chart-toolbar button{margin:0;font-size:12px}.chart-stage{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:8px;background:linear-gradient(180deg,#fff,#f7fbfe)}.chart-stage svg{display:block;width:100%;height:auto;min-height:260px;cursor:grab;touch-action:none;user-select:none}.chart-stage svg.is-panning{cursor:grabbing}.chart-stage .bar{transition:fill .12s,opacity .12s}.chart-stage .bar.hovered{fill:#d95f02;stroke:#8f3f00;stroke-width:1.5}.chart-stage .series{transition:stroke-width .12s,opacity .12s}.chart-stage .series.hovered{stroke-width:4;filter:drop-shadow(0 2px 2px #18212b44)}.chart-stage .series-point{pointer-events:all;transition:fill .12s,r .12s}.chart-stage .series-point.hovered{fill:#d95f02;stroke:#fff;stroke-width:2;r:7}.chart-tooltip{position:absolute;z-index:2;pointer-events:none;opacity:0;transform:translateY(-3px);padding:7px 10px;border:1px solid #17324d33;border-radius:7px;background:#18212bf2;color:#fff;box-shadow:0 6px 16px #17324d44;font-size:12px;line-height:1.3;white-space:nowrap;transition:opacity .12s}.chart-tooltip.visible{opacity:1}.interactive-chart figcaption{display:flex;justify-content:space-between;gap:8px}.interactive-chart figcaption::after{content:'Hover values · wheel zoom · drag pan';color:var(--muted);font-size:11px}"#;
 
+const MODAL_STYLE: &str = r#"body.chart-open{overflow:hidden}.chart-backdrop{display:none;position:fixed;inset:0;background:#081522c9;z-index:30}.interactive-chart.expanded{position:fixed;z-index:31;left:10vw;top:10vh;width:80vw;height:80vh;margin:0;padding:18px;background:var(--panel);border:1px solid #b9c9d8;border-radius:16px;box-shadow:0 24px 80px #08152299}.interactive-chart.expanded .chart-backdrop{display:block}.interactive-chart.expanded .chart-toolbar{position:relative;z-index:32}.interactive-chart.expanded .chart-stage{height:calc(80vh - 92px);min-height:0}.interactive-chart.expanded .chart-stage svg{height:100%;min-height:0}.interactive-chart.expanded figcaption{position:relative;z-index:32}@media(max-width:700px){.interactive-chart.expanded{left:3vw;top:3vh;width:94vw;height:94vh;padding:10px}.interactive-chart.expanded .chart-stage{height:calc(94vh - 78px)}}"#;
+
 const INTERACTIVE_SCRIPT: &str = r#"<script>
 document.querySelectorAll('.interactive-chart').forEach(chart=>{
   const stage=chart.querySelector('.chart-stage');
   const svg=stage.querySelector('svg');
   const tooltip=chart.querySelector('.chart-tooltip');
   const reset=chart.querySelector('.chart-reset');
+  const expand=chart.querySelector('.chart-expand');
+  const close=chart.querySelector('.chart-close');
+  const backdrop=chart.querySelector('.chart-backdrop');
   const original=svg.getAttribute('viewBox').split(/\s+/).map(Number);
   let view={x:original[0],y:original[1],w:original[2],h:original[3]};
   let drag=null;
@@ -437,6 +442,12 @@ document.querySelectorAll('.interactive-chart').forEach(chart=>{
   stage.addEventListener('pointermove',event=>{if(!drag)positionTooltip(event)});
   stage.addEventListener('pointerleave',()=>{clearHover();tooltip.classList.remove('visible')});
   const applyView=()=>svg.setAttribute('viewBox',`${view.x} ${view.y} ${view.w} ${view.h}`);
+  const setExpanded=expanded=>{
+    chart.classList.toggle('expanded',expanded);
+    document.body.classList.toggle('chart-open',expanded);
+    expand.hidden=expanded;close.hidden=!expanded;
+    if(expanded)close.focus();else expand.focus();
+  };
   svg.addEventListener('wheel',event=>{
     event.preventDefault();
     const bounds=svg.getBoundingClientRect();
@@ -463,6 +474,10 @@ document.querySelectorAll('.interactive-chart').forEach(chart=>{
   const stopDrag=event=>{if(!drag)return;drag=null;svg.classList.remove('is-panning');if(svg.hasPointerCapture(event.pointerId))svg.releasePointerCapture(event.pointerId)};
   svg.addEventListener('pointerup',stopDrag);svg.addEventListener('pointercancel',stopDrag);
   reset.addEventListener('click',()=>{view={x:original[0],y:original[1],w:original[2],h:original[3]};applyView()});
+  expand.addEventListener('click',()=>setExpanded(true));
+  close.addEventListener('click',()=>setExpanded(false));
+  backdrop.addEventListener('click',()=>setExpanded(false));
+  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&chart.classList.contains('expanded'))setExpanded(false)});
 });
 </script>"#;
 
@@ -823,6 +838,9 @@ mod tests {
         assert!(report.contains("class=\"interactive-chart\""));
         assert!(report.contains("chart-tooltip"));
         assert!(report.contains("wheel zoom"));
+        assert!(report.contains("chart-expand"));
+        assert!(report.contains("chart-close"));
+        assert!(report.contains("80vw"));
         assert!(report.contains("Select all"));
         let _ = std::fs::remove_dir_all(root);
     }
