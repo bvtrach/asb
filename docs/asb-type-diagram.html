@@ -636,9 +636,19 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   const viewBox = svg.viewBox.baseVal;
   const titles = new Map();
 
-  const titleOf = (element) => element.querySelector(':scope > title')?.textContent?.trim() || element.querySelector('title')?.textContent?.trim() || element.id || 'graph element';
+  const rawTitleOf = (element) => element.querySelector(':scope > title')?.textContent?.trim() || element.querySelector('title')?.textContent?.trim() || element.id || 'graph element';
+  const visibleNameOf = (element) => {
+    const text = [...element.querySelectorAll(':scope > text, :scope > g text')].map((item) => item.textContent.trim()).filter(Boolean).join(' · ');
+    return text || rawTitleOf(element);
+  };
+  const titleOf = (element) => {
+    const raw = rawTitleOf(element);
+    if (!element.classList.contains('edge')) return visibleNameOf(element);
+    const ends = raw.split('->').map((part) => titles.get(part.trim())).filter(Boolean);
+    return ends.length === 2 ? `${visibleNameOf(ends[0])} → ${visibleNameOf(ends[1])}` : raw;
+  };
   allElements.forEach((element) => {
-    const title = titleOf(element);
+    const title = rawTitleOf(element);
     titles.set(title, element);
     element.setAttribute('tabindex', '0');
     element.setAttribute('role', element.classList.contains('node') ? 'button' : 'img');
@@ -687,8 +697,25 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     const targetScale = Math.max(.08, Math.min(2.5, state.scale));
     moveTo(targetScale, viewport.clientWidth / 2 - graphX * targetScale, viewport.clientHeight / 2 - graphY * targetScale, true);
   }
+  function centerElements(elements) {
+    const viewportRect = viewport.getBoundingClientRect();
+    const rects = elements.map((element) => element.getBoundingClientRect()).filter((rect) => rect.width > 0 && rect.height > 0);
+    if (!rects.length) return;
+    const left = Math.min(...rects.map((rect) => rect.left - viewportRect.left));
+    const top = Math.min(...rects.map((rect) => rect.top - viewportRect.top));
+    const right = Math.max(...rects.map((rect) => rect.right - viewportRect.left));
+    const bottom = Math.max(...rects.map((rect) => rect.bottom - viewportRect.top));
+    const width = Math.max(1, right - left);
+    const height = Math.max(1, bottom - top);
+    const currentX = (left + right) / 2;
+    const currentY = (top + bottom) / 2;
+    const targetScale = Math.max(.05, Math.min(2.5, state.scale * Math.min(1.5, (viewport.clientWidth - 72) / width, (viewport.clientHeight - 72) / height)));
+    const graphX = (currentX - state.tx) / state.scale;
+    const graphY = (currentY - state.ty) / state.scale;
+    moveTo(targetScale, viewport.clientWidth / 2 - graphX * targetScale, viewport.clientHeight / 2 - graphY * targetScale, true);
+  }
   function edgeEnds(edge) {
-    const parts = titleOf(edge).split('->').map((part) => part.trim());
+    const parts = rawTitleOf(edge).split('->').map((part) => part.trim());
     if (parts.length !== 2) return [];
     return parts.map((part) => titles.get(part)).filter(Boolean);
   }
@@ -696,8 +723,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     const ends = edgeEnds(edge);
     const target = ends[reverse ? 0 : 1];
     if (target) {
-      selection.textContent = `${titleOf(edge)} → ${titleOf(target)}`;
-      center(target);
+      selection.textContent = titleOf(edge);
+      centerElements([...relatedTo(edge), target]);
     } else {
       center(edge);
     }
@@ -705,8 +732,12 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   function relatedTo(element) {
     const title = titleOf(element);
     const related = new Set([element]);
+    if (element.classList.contains('edge')) {
+      edgeEnds(element).forEach((endpoint) => related.add(endpoint));
+      return related;
+    }
     if (!element.classList.contains('node')) return related;
-    edges.forEach((edge) => { const text = titleOf(edge); if (text.includes(title) || text.includes(element.id)) related.add(edge); });
+    edges.forEach((edge) => { if (edgeEnds(edge).includes(element)) { related.add(edge); edgeEnds(edge).forEach((endpoint) => related.add(endpoint)); } });
     return related;
   }
   function select(element, reverseEdge = false) {
@@ -716,7 +747,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     allElements.forEach((item) => item.classList.toggle('is-selected', item === element));
     related.forEach((item) => item.classList.add('is-related'));
     selection.textContent = titleOf(element);
-    if (element.classList.contains('edge')) followEdge(element, reverseEdge); else center(element);
+    if (element.classList.contains('edge')) followEdge(element, reverseEdge); else centerElements([...related]);
   }
   function showTooltip(element, event) {
     tooltip.textContent = titleOf(element);
