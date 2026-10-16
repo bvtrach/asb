@@ -10,7 +10,7 @@ make install
 ./target/debug/asb init
 ./target/debug/asb tool list
 ./target/debug/asb tool install codex
-./target/debug/asb tool install llmtape
+./target/debug/asb tool install perfetto
 ./target/debug/asb workload list
 ./target/debug/asb provider models openrouter
 ./target/debug/asb workload install \
@@ -103,11 +103,35 @@ Source-installed agents use `.asb-tools/<agent>/bin/`; workloads are stored in
 changes every command consistently. Add `--dir DIR` only when you need a
 one-off destination.
 
+All runtime collectors are process-scoped: mpstat/iostat result names use
+pidstat for the agent and child tasks, perf uses `-p`, built-in bpftrace
+profiles use the agent PID, and Perfetto filters scheduler events to that PID.
+To collect scheduler and process-lifecycle evidence for a run, install the
+project-local Perfetto Tracebox tool above, enable the `perfetto` measurement
+collector in the generated run configuration, and run normally. ASB stores its
+trace, configuration, and fixed lifecycle markers in that run's measurement
+directory; it never writes prompts, credentials, provider responses, or model
+configuration into the trace. The same run records `perf stat` counters when
+the host permits them.
+
 Run output is concise and human-readable by default. Add `--json` to emit the
 structured result for scripts:
 
 ```sh
 ./target/debug/asb run benchmark.toml --json
+```
+
+For live debugging, also stream the agent's stdout and stderr while the run is
+active:
+
+```sh
+./target/debug/asb run benchmark.toml --show-output
+```
+
+For a generated sweep, use the same option:
+
+```sh
+./target/debug/asb sweep sweep.toml --show-output
 ```
 
 Use `asb COMMAND --help` for concise help on every command and subcommand.
@@ -124,14 +148,15 @@ The built-in recipes are:
 | `codex` | pinned npm package | `codex` |
 | `opencode` | pinned npm package | `opencode` |
 | `workbuddy` | pinned npm package | `codebuddy` |
-| `gemini` | pinned npm package | `gemini` |
 | `qwen-code` | pinned npm package | `qwen` |
-| `aider` | pinned Python package | `aider` |
 | `mini-swe` | pinned Python package | `mini` |
 | `openhands` | pinned Python package | `openhands` |
 | `openjiuwen` | pinned Python package | `openjiuwen` |
+| `claude-code` | pinned npm package | `claude` |
+| `goose` | pinned upstream Linux binary | `goose` |
+| `cline` | pinned npm package | `cline` |
+| `continue` | pinned npm package | `cn` |
 | `cli2key` | pinned npm bridge package | `codex-bridge` |
-| `llmtape` | pinned npm package | `llmtape` |
 
 The npm recipes require `npm`; the Python recipes require `python3` with
 virtual-environment support. `asb tool install AGENT --dry-run` prints the
@@ -151,3 +176,13 @@ installer reports copy-paste package commands for the three supported distro
 families (Red Hat/Fedora, Debian/Ubuntu, and openEuler) if that fallback
 cannot be configured or compiled. The same commands are shown when no matching
 host `bpftrace` package is available.
+
+ASB's built-in BPFTrace profiles are scoped to the spawned agent PID, rather
+than sampling unrelated host work. Add entries such as
+`"bpftrace:sched-latency"` and `"bpftrace:futex-wait"` to
+`measurements.collectors`, or set
+`ASB_BPFTRACE_PROFILES=sched-latency,futex-wait` before `asb run`. The available
+profiles are `sched-latency`, `cpu-migrations`, `futex-wait`, `syscall-rate`,
+and `lock-contention`; `all` selects the full catalog. Each profile writes a
+separate JSON result and SVG, and comparison reports graph every extracted
+numeric metric.

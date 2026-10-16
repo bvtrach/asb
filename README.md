@@ -7,7 +7,6 @@ agent/workload, create a configuration, then run it:
 asb init [PROJECT_DIR] [--reset]
 asb tool list
 asb tool install AGENT
-asb tool install llmtape
 asb workload list
 asb workload install SOURCE.txt|URL
 asb workload tui
@@ -73,13 +72,33 @@ remain deterministic: `ASB_MEASURE_MPSTAT=1`, `ASB_MEASURE_IOSTAT=1`, and
 `ASB_MEASURE_PERF=1` start the corresponding local tools. BPFTrace programs
 are selected with `ASB_MEASURE_BPFTRACE=1` and a semicolon-separated
 `ASB_BPFTRACE_PROGRAMS` list such as
-`program.bt?PID=123&INTERVAL=1`. Flamegraphs use the local tools named by
+`program.bt?PID=123&INTERVAL=1`. ASB also includes PID-scoped BPFTrace profiles:
+`sched-latency`, `cpu-migrations`, `futex-wait`, `syscall-rate`, and
+`lock-contention`. Select them in a benchmark configuration as
+`bpftrace:PROFILE` entries in `measurements.collectors`, or set
+`ASB_BPFTRACE_PROFILES=sched-latency,futex-wait` (use `all` for every profile).
+Each profile writes its own JSON result and SVG; `asb compare` embeds those
+artifacts and produces one cross-run graph per numeric profile metric. The
+profiles deliberately do not include a generic NUMA or language-runtime data
+structure probe: neither has a portable kernel ABI, so such measurements stay
+available through the custom-program interface. Flamegraphs use the local tools named by
 `ASB_FLAMEGRAPH_STACKCOLLAPSE` and `ASB_FLAMEGRAPH_RENDER`; the SVG is paired
-with machine-readable `flamegraph.json` metadata. The mpstat and iostat files
-retain bounded raw samples and add averaged machine-readable CPU, I/O
-throughput, latency, queue-depth, and utilization metrics. `asb compare` uses
-those metrics rather than scraping every raw sample, so it emits one canonical
-runtime graph plus useful unit-labelled resource graphs. If perf permissions,
+with machine-readable `flamegraph.json` metadata. The mpstat and iostat result
+files use process-scoped `pidstat` sampling for the agent process and its child
+tasks; they retain bounded raw samples, averaged machine-readable CPU and I/O
+metrics, and per-sample `series` arrays. `perf stat` is run in interval mode
+and emits the same bounded series. Set `ASB_MEASURE_INTERVAL_MS` to choose the
+sampling period (100--60000 ms, default 1000 ms); pidstat rounds sub-second
+values up to its whole-second interface, while perf supports the requested
+millisecond period. `asb compare` turns every series with at least two points
+into a line SVG with the same hover, zoom, pan, reset, and enlarge controls as
+bar charts. BPFTrace custom programs can provide additional series when they
+print interval-scoped `@asb_*` values; the built-in profiles now emit
+cumulative one-second `@asb_*` snapshots as well as their final aggregates.
+Perfetto remains the authoritative timestamped native trace and now also
+extracts timestamped scheduler-event and scheduler-duration series from the
+trace processor; those timestamps are used as the line-chart x coordinates.
+If perf permissions,
 samples, or FlameGraph tools are unavailable, `flamegraph.json` records the
 reason and status as `unavailable`; an ordinary `asb run` is unaffected.
 Before a run starts, perf and configured BPFTrace collectors are probed without
@@ -88,11 +107,38 @@ collector only; if passwordless sudo is not already authorized, the run stops
 before the agent starts and prints a scoped `/etc/sudoers.d/asb-<collector>`
 repair command.
 
+Install Perfetto locally with `asb tool install perfetto`. It installs both the
+project-local Tracebox collector and the project-local Perfetto trace processor.
+When the `perfetto` collector is selected (or `ASB_MEASURE_PERFETTO=1` is set),
+ASB validates the exact ftrace configuration before the agent starts, then
+starts Tracebox after the agent PID is known, filters scheduler events to that
+PID, and writes
+`perfetto-scheduling.perfetto-trace`, the generated trace configuration, and
+`perfetto-tracepoints.json` to the measurement directory. It also writes one
+portable `perfetto-metric-*.svg` per extracted metric; `asb compare` embeds
+those per-metric graphs, links the native trace, and charts the extracted
+scheduler/process metrics. The trace contains
+scheduler switch/wakeup, process/thread lifecycle, and fixed ASB lifecycle
+markers for measurement-ready, agent spawn, agent execution, and agent exit.
+It contains no prompt, provider response, configuration value, or credential.
+
+The `perf` collector writes both `perf.data` for call-stack analysis and
+`perf-stat.json` with task-clock, context switches, CPU migrations, page
+faults, cycles, and instructions where host policy permits those counters.
+Unavailable collector reasons are retained as JSON rather than silently being
+reported as success. Ftrace is a Linux kernel tracefs interface, not a host
+binary that ASB can install locally. If the installed collector needs elevated
+tracefs access, ASB tries `sudo -n` during run preparation; without a scoped
+passwordless sudo rule it stops before the agent starts and prints a repair
+command instead of prompting or producing a partial benchmark.
+
 Configurations generated by `asb setup` include an enabled `measurements`
 section listing every collector module and defaulting its output directory to
 `measurements`, plus a `log_file` defaulting to the configuration's stem with a
-`.log` extension. A hand-written configuration can omit that section to retain
-the no-collection behavior, or pass `--measurements DIR` to enable collection
+`.log` extension. They also include `concurrency = 1`; increase it to run
+isolated copies of the same agent/model/workload in parallel. The setup TUI has
+a final concurrency step for selecting this value. A hand-written configuration
+can omit that section to retain the no-collection behavior, or pass `--measurements DIR` to enable collection
 for one run.
 
 `asb sweep` automatically runs the same comparison after all benchmark entries
@@ -106,16 +152,17 @@ artifacts. Checkbox filters can enable or disable individual benchmarks,
 agents, providers, models, and workloads without contacting a provider or
 rerunning the sweep.
 
-`asb run CONFIG --record` runs the same configuration through the local `llmtape`
-proxy and writes a JSONL cassette (by default below `cassettes/` next to the
-configuration). Install the proxy into the current benchmark project with
-`asb tool install llmtape`; this installs the pinned npm library plus ASB's
-project-local `llmtape` proxy wrapper. No global llmtape installation is required. ASB
-does not search the host `PATH` implicitly. To deliberately use another
-executable, set `ASB_LLM_TAPE`. Use `--cassette FILE` to choose an explicit
-path. `asb run CONFIG --replay` starts llmtape's cassette server and routes
+`asb run CONFIG --record` runs the same configuration through ASB's built-in
+local tape proxy and writes a JSONL cassette (by default below `cassettes/`
+next to the configuration). ASB materializes this small proxy beside the
+cassette automatically; no external recorder package is required.
+It does not search the host `PATH` implicitly. To deliberately use another
+compatible executable, set `ASB_LLM_TAPE`. Use `--cassette FILE` to choose an
+explicit path. `asb run CONFIG --replay` starts the tape server and routes
 all supported provider endpoints to it; it refuses a missing cassette and does
-not start cli2key or connect to any live provider. Cassettes are local test
+not start cli2key or connect to any live provider. Add
+`--respect-record-timings` to `run --replay` or `sweep --replay` to reproduce
+the bounded response delays recorded in each cassette entry. Cassettes are local test
 artifacts and should not be committed when they contain provider responses.
 
 `provider models` queries live provider model catalogs. Pass a provider to query one,
@@ -159,15 +206,21 @@ external bridge endpoint is supplied, `CLI2KEY_API_KEY` must contain its
 matching key.
 
 The bundled cli2key bridge executes workloads through `codex`, `opencode`,
-`qwen-code`, `mini-swe`, `openhands`, `openjiuwen`, and `workbuddy`.
+`qwen-code`, `mini-swe`, `openhands`, `openjiuwen`, `workbuddy`, `claude-code`,
+`goose`, `cline`, and `continue` when the selected CLI supports the
+configured compatible endpoint.
 WorkBuddy uses project-local CodeBuddy model settings configured for the
-bridge's Responses API. Aider requires OpenAI Chat Completions and therefore
-needs an OpenAI-compatible provider; Gemini still requires its Google provider.
+bridge's Responses API.
 Built-in tool recipes install pinned releases into the project (and do not
-modify global tools): `codex`, `pi`, `opencode`, `workbuddy`, `gemini`,
-`qwen-code`, and `cli2key` use npm; `aider`, `mini-swe`, `openhands`, and
-`openjiuwen` use an isolated Python virtual environment. Any other agent can
-be installed from a local executable or URL with `--source`.
+modify global tools): `codex`, `pi`, `opencode`, `workbuddy`,
+`qwen-code`, `cli2key`, `claude-code`, `cline`, and `continue` use pinned npm
+packages; `mini-swe`, `openhands`, and `openjiuwen` use an isolated Python
+virtual environment. `goose` uses a SHA-256-pinned upstream binary. Any
+other agent can be installed from a local executable or URL with `--source`.
+
+Claude Code, Goose, Cline, and Continue can use OpenRouter or the cli2key
+OpenAI-compatible bridge; ASB writes the required endpoint/model environment
+and Continue project configuration automatically.
 
 If npm, Python, curl, or tar is unavailable, the failed command prints a
 copy-paste repair command. The npm repair uses user-local `fnm`; the Python
@@ -200,7 +253,10 @@ make install
 ```
 
 `make build` regenerates `target/asb.bash` and `target/_asb` from ASB's command
-and option catalog. `make install` installs Bash completion at
+and option catalog, generates Rust API documentation under `target/doc/`, and
+generates the AutoUML Mermaid diagram plus SVG under `docs/`. It installs the
+pinned AutoUML generator project-locally under `target/tools/`. `make install`
+installs Bash completion at
 `~/.local/share/bash-completion/completions/asb` and Zsh completion at
 `~/.local/share/zsh/site-functions/_asb`, alongside the binary.
 

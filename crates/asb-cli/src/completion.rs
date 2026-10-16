@@ -1,6 +1,6 @@
 //! Shell completion script generation.
 
-use crate::{Error, io_error};
+use crate::{Error, install, io_error};
 use std::fmt::Write as FmtWrite;
 use std::io::Write;
 
@@ -27,23 +27,6 @@ const SWEEP_OPTIONS: &[&str] = &["--record", "--replay", "--json"];
 const PROVIDER_SUBCOMMANDS: &[&str] = &["models"];
 const PROVIDER_MODELS_OPTIONS: &[&str] = &["--json", "--free"];
 const TOOL_SUBCOMMANDS: &[&str] = &["list", "install"];
-const TOOL_INSTALL_VALUES: &[&str] = &[
-    "codex",
-    "pi",
-    "opencode",
-    "workbuddy",
-    "gemini",
-    "qwen-code",
-    "aider",
-    "mini-swe",
-    "openhands",
-    "openjiuwen",
-    "cli2key",
-    "llmtape",
-    "--source",
-    "--dir",
-    "--dry-run",
-];
 const WORKLOAD_SUBCOMMANDS: &[&str] = &["list", "install", "tui"];
 const WORKLOAD_LIST_OPTIONS: &[&str] = &["--dir"];
 const WORKLOAD_INSTALL_OPTIONS: &[&str] = &["--name", "--dir"];
@@ -85,11 +68,12 @@ fn generate_bash() -> String {
         PROVIDER_SUBCOMMANDS,
         &[("models", PROVIDER_MODELS_OPTIONS)],
     );
+    let tool_values = tool_install_values();
     nested_case(
         &mut script,
         "tool",
         TOOL_SUBCOMMANDS,
-        &[("install", TOOL_INSTALL_VALUES)],
+        &[("install", &tool_values)],
     );
     nested_case(
         &mut script,
@@ -158,11 +142,12 @@ fn generate_zsh() -> String {
         PROVIDER_SUBCOMMANDS,
         &[("models", PROVIDER_MODELS_OPTIONS)],
     );
+    let tool_values = tool_install_values();
     zsh_nested_case(
         &mut script,
         "tool",
         TOOL_SUBCOMMANDS,
-        &[("install", TOOL_INSTALL_VALUES)],
+        &[("install", &tool_values)],
     );
     zsh_nested_case(
         &mut script,
@@ -175,6 +160,12 @@ fn generate_zsh() -> String {
     );
     script.push_str("      esac\n      ;;\n  esac\n}\n");
     script
+}
+
+fn tool_install_values() -> Vec<&'static str> {
+    let mut values = install::tool_names().collect::<Vec<_>>();
+    values.extend(["--source", "--dir", "--dry-run"]);
+    values
 }
 
 fn zsh_simple_case(script: &mut String, command: &str, options: &[&str]) {

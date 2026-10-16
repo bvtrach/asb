@@ -1,17 +1,38 @@
 //! Project-local installers for agents and workload prompt files.
 
 use crate::Error;
+use crate::agents;
 use crate::project;
 use crate::suggestions;
+use crate::tools;
 use crate::workloads;
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
-const LLMTAPE_WRAPPER: &str = include_str!("../../../scripts/llmtape.mjs");
 const BPFTRACE_SOURCE: &str =
     "https://github.com/bpftrace/bpftrace/archive/refs/tags/v0.20.2.tar.gz";
+const PERFETTO_LINUX_X86_64_URL: &str =
+    "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v58.2/linux-amd64/tracebox";
+const PERFETTO_LINUX_X86_64_SHA256: &str =
+    "5348e5f3513dec2e70f02d3e4296cfed546e6ebc7f9a7cc6b5499f363b4aea03";
+const PERFETTO_LINUX_AARCH64_URL: &str =
+    "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v58.2/linux-arm64/tracebox";
+const PERFETTO_LINUX_AARCH64_SHA256: &str =
+    "2d21883e9c55818f851fd8c391afb9b366032b3110076b4fd41f31f30b5849fa";
+const PERFETTO_PROCESSOR_LINUX_X86_64_URL: &str = "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v58.2/linux-amd64/trace_processor_shell";
+const PERFETTO_PROCESSOR_LINUX_X86_64_SHA256: &str =
+    "58042408e6cc861fb1a731c26bb082dc222285561eaa4e12a48a8b2b90dca7b9";
+const PERFETTO_PROCESSOR_LINUX_AARCH64_URL: &str = "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v58.2/linux-arm64/trace_processor_shell";
+const PERFETTO_PROCESSOR_LINUX_AARCH64_SHA256: &str =
+    "0e6e0c5452c505c8d46fe472fd196a0d17d963460727e2ce2013b02aa1309555";
+const GOOSE_X86_64_URL: &str = "https://github.com/aaif-goose/goose/releases/download/v1.54.0/goose-x86_64-unknown-linux-gnu.tar.gz";
+const GOOSE_X86_64_SHA256: &str =
+    "ab396c95aebbd28b4d38c175234be8d4a3ea0c96e7ccb24c307e4618c9be57e1";
+const GOOSE_AARCH64_URL: &str = "https://github.com/aaif-goose/goose/releases/download/v1.54.0/goose-aarch64-unknown-linux-gnu.tar.gz";
+const GOOSE_AARCH64_SHA256: &str =
+    "0f174b5118a53888cd4e65b7ca9a4b72dd0b887e89142c8ce41e2409205e40d5";
 
 trait LoggedStatus {
     fn logged_status(&mut self) -> io::Result<ExitStatus>;
@@ -35,7 +56,7 @@ impl LoggedStatus for Command {
 }
 
 #[derive(Clone, Copy)]
-enum Recipe {
+pub(crate) enum Recipe {
     Npm {
         package: &'static str,
         executable: &'static str,
@@ -48,7 +69,9 @@ enum Recipe {
         executable: &'static str,
     },
     Bpftrace,
+    Perfetto,
     Flamegraph,
+    Goose,
 }
 
 struct ExternalWorkload {
@@ -61,26 +84,6 @@ struct BundleSpec {
     marker: &'static str,
     prompt: &'static str,
 }
-
-const BUILTIN_TOOLS: &[&str] = &[
-    "codex",
-    "pi",
-    "opencode",
-    "workbuddy",
-    "gemini",
-    "qwen-code",
-    "aider",
-    "mini-swe",
-    "openhands",
-    "openjiuwen",
-    "cli2key",
-    "llmtape",
-    "mpstat",
-    "iostat",
-    "perf",
-    "bpftrace",
-    "flamegraph",
-];
 
 const EXTERNAL_WORKLOADS: &[ExternalWorkload] = &[
     ExternalWorkload {
@@ -181,96 +184,65 @@ fn bundle_spec(name: &str) -> Option<BundleSpec> {
         "swe-bench" => Some(BundleSpec {
             archive: "https://github.com/SWE-bench/SWE-bench/archive/02e7a74ffd0b707aab73d203fe87bdc7c76afc8e.tar.gz",
             marker: "swe-bench/SWE-bench@02e7a74ffd0b707aab73d203fe87bdc7c76afc8e",
-            prompt: "Use the upstream SWE-bench source in `external-workload/source`. Inspect its README and package metadata, select a concrete SWE-bench task or dataset-backed command available in this checkout, make the requested change, and run the narrowest applicable tests. Keep all changes inside this local checkout and do not download additional data during the run.\n",
+            prompt: "Use the installed upstream SWE-bench checkout in `external-workload`. Inspect its README and package metadata, select a concrete SWE-bench task or dataset-backed command available in this checkout, make the requested change, and run the narrowest applicable tests. Keep all changes inside this local checkout and do not download additional data during the run.\n",
         }),
         "terminal-bench" => Some(BundleSpec {
             archive: "https://github.com/harbor-framework/terminal-bench/archive/452bf305c6daa62fc59061d22133a7cbc7c1572e.tar.gz",
             marker: "terminal-bench/terminal-bench@452bf305c6daa62fc59061d22133a7cbc7c1572e",
-            prompt: "Use the upstream Terminal-Bench source in `external-workload/source`. Inspect its README, task definitions, and local runner instructions, then execute or improve a concrete terminal task using only the installed checkout and run its focused tests. Do not download additional data during the run.\n",
+            prompt: "Use the installed upstream Terminal-Bench checkout in `external-workload`. Inspect its README, task definitions, and local runner instructions, then execute or improve a concrete terminal task using only the installed checkout and run its focused tests. Do not download additional data during the run.\n",
         }),
         _ => None,
     }
 }
 
-fn recipe(name: &str) -> Option<Recipe> {
-    match name {
-        "codex" => Some(Recipe::Npm {
-            package: "@openai/codex@0.162.1",
-            executable: "codex",
-        }),
-        "pi" => Some(Recipe::Npm {
-            package: "@mariozechner/pi-coding-agent@0.73.1",
-            executable: "pi",
-        }),
-        "opencode" => Some(Recipe::Npm {
-            package: "opencode-ai@1.19.0",
-            executable: "opencode",
-        }),
-        "workbuddy" => Some(Recipe::Npm {
-            package: "@tencent-ai/codebuddy-code@2.167.0",
-            executable: "codebuddy",
-        }),
-        "gemini" => Some(Recipe::Npm {
-            package: "@google/gemini-cli@0.64.0",
-            executable: "gemini",
-        }),
-        "qwen-code" => Some(Recipe::Npm {
-            package: "@qwen-code/qwen-code@0.25.1",
-            executable: "qwen",
-        }),
-        "aider" => Some(Recipe::Python {
-            package: "aider-chat==0.86.2",
-            executable: "aider",
-        }),
-        "mini-swe" => Some(Recipe::Python {
-            package: "mini-swe-agent==2.4.6",
-            executable: "mini",
-        }),
-        "openhands" => Some(Recipe::Python {
-            package: "openhands==1.16.0",
-            executable: "openhands",
-        }),
-        "openjiuwen" => Some(Recipe::Python {
-            package: "openjiuwen[cli]==0.1.19.post2",
-            executable: "openjiuwen",
-        }),
-        "cli2key" => Some(Recipe::Npm {
-            package: "codex-anthropic-bridge@0.1.10",
-            executable: "codex-bridge",
-        }),
-        "llmtape" => Some(Recipe::Npm {
-            package: "llmtape@1.2.0",
-            executable: "llmtape",
-        }),
-        "mpstat" => Some(Recipe::Host {
-            executable: "mpstat",
-        }),
-        "iostat" => Some(Recipe::Host {
-            executable: "iostat",
-        }),
-        "perf" => Some(Recipe::Host { executable: "perf" }),
-        "bpftrace" => Some(Recipe::Bpftrace),
-        "flamegraph" => Some(Recipe::Flamegraph),
-        _ => None,
-    }
+pub struct ToolInstallOptions {
+    pub name: String,
+    pub source: Option<String>,
+    pub dir: Option<PathBuf>,
+    pub dry_run: bool,
 }
 
-pub fn tool(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Error> {
+pub struct WorkloadInstallOptions {
+    pub source: String,
+    pub name: Option<String>,
+    pub dir: Option<PathBuf>,
+}
+
+pub struct WorkloadListOptions {
+    pub dir: Option<PathBuf>,
+}
+
+pub fn tool(options: ToolInstallOptions, output: &mut dyn std::io::Write) -> Result<(), Error> {
     let mut progress = |_percent: u8, _stage: &str| {};
-    tool_with_progress(args, output, &mut progress)
+    tool_with_progress(options, output, &mut progress)
 }
 
 /// Install a project-local tool and report concrete installer stages.
 pub fn tool_with_progress(
-    args: &[String],
+    options: ToolInstallOptions,
     output: &mut dyn std::io::Write,
     progress: &mut dyn FnMut(u8, &str),
 ) -> Result<(), Error> {
-    let (id, source, root, dry_run) = parse_tool(args)?;
+    let ToolInstallOptions {
+        name: id,
+        source,
+        dir,
+        dry_run,
+    } = options;
+    if !valid_name(&id) {
+        return Err(Error::Input(format!("invalid tool name `{id}`")));
+    }
+    let (project_root, project_config) = project::load(Path::new("."))?;
+    let root = dir
+        .map(|value| project::resolve(&project_root, &value.to_string_lossy()))
+        .unwrap_or_else(|| project::resolve(&project_root, &project_config.tools_dir));
     progress(2, "preparing");
     let root = root.join(&id);
+    let built_in = built_in_tool(&id);
     if let Some(source) = source {
-        let destination = root.join("bin").join(executable_name(&id));
+        let destination = root
+            .join("bin")
+            .join(built_in.map_or(id.as_str(), |(_, executable, _)| executable));
         if dry_run {
             writeln!(output, "download {source} -> {}", destination.display())
                 .map_err(super::io_error)?;
@@ -286,12 +258,12 @@ pub fn tool_with_progress(
             .map_err(super::io_error)?;
         return Ok(());
     }
-    let plan = match recipe(&id) {
-        Some(plan) => plan,
+    let plan = match built_in {
+        Some((recipe, _, _)) => recipe,
         None => {
             return Err(Error::Input(format!(
                 "{}; pass --source URL or PATH",
-                suggestions::unknown("tool", &id, BUILTIN_TOOLS)
+                suggestions::unknown("tool", &id, &tool_names().collect::<Vec<_>>())
             )));
         }
     };
@@ -315,7 +287,7 @@ pub fn tool_with_progress(
             .map_err(super::io_error)?;
     }
     progress(100, "ready");
-    let kind = if id == "llmtape" { "tool" } else { "agent" };
+    let kind = built_in.expect("known tool has metadata").2;
     writeln!(output, "Installed {kind} {id} at {}", executable.display())
         .map_err(super::io_error)?;
     Ok(())
@@ -324,9 +296,23 @@ pub fn tool_with_progress(
 /// List every built-in tool recipe and its project-local executable.
 pub fn tool_list(output: &mut dyn std::io::Write) -> Result<(), Error> {
     writeln!(output, "Available tools:").map_err(super::io_error)?;
-    for &name in BUILTIN_TOOLS {
-        let plan = recipe(name).expect("listed tool has a recipe");
-        writeln!(output, "  {name:<12} {}", tool_summary(plan)).map_err(super::io_error)?;
+    for agent in agents::all() {
+        writeln!(
+            output,
+            "  {:<12} {}",
+            agent.id(),
+            tool_summary(agent.recipe())
+        )
+        .map_err(super::io_error)?;
+    }
+    for tool in tools::all() {
+        writeln!(
+            output,
+            "  {:<12} {}",
+            tool.id(),
+            tool_summary(tool.recipe())
+        )
+        .map_err(super::io_error)?;
     }
     writeln!(output, "  custom       --source URL|PATH").map_err(super::io_error)
 }
@@ -335,7 +321,7 @@ pub fn tool_list(output: &mut dyn std::io::Write) -> Result<(), Error> {
 /// This is intentionally side-effect free so TUIs can refresh status on every
 /// navigation or after a Ctrl-I installation attempt.
 pub fn tool_available(name: &str, tools_root: &Path) -> bool {
-    let Some(plan) = recipe(name) else {
+    let Some((plan, _, _)) = built_in_tool(name) else {
         return false;
     };
     let local = executable(plan, &tools_root.join(name));
@@ -345,18 +331,58 @@ pub fn tool_available(name: &str, tools_root: &Path) -> bool {
     matches!(plan, Recipe::Host { executable } if host_executable(executable).is_ok())
 }
 
-pub fn workload(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Error> {
+/// All installable IDs, composed from the agent and non-agent registries.
+/// Keeping this here ensures completions, listings, and installation share the
+/// same catalogue rather than duplicating agent identifiers.
+pub(crate) fn tool_names() -> impl Iterator<Item = &'static str> {
+    agents::names().chain(tools::names())
+}
+
+fn built_in_tool(id: &str) -> Option<(Recipe, &'static str, &'static str)> {
+    if let Some(agent) = agents::find(id) {
+        return Some((agent.recipe(), agent.executable(), "agent"));
+    }
+    let tool = tools::find(id)?;
+    let kind = match tool.kind() {
+        tools::ToolKind::Collector => "collector",
+        tools::ToolKind::Support => "tool",
+    };
+    Some((tool.recipe(), tool.executable()?, kind))
+}
+
+pub fn workload(
+    options: WorkloadInstallOptions,
+    output: &mut dyn std::io::Write,
+) -> Result<(), Error> {
     let mut progress = |_percent: u8, _stage: &str| {};
-    workload_with_progress(args, output, &mut progress)
+    workload_with_progress(options, output, &mut progress)
 }
 
 /// Install a workload and report concrete download/extraction stages.
 pub fn workload_with_progress(
-    args: &[String],
+    options: WorkloadInstallOptions,
     output: &mut dyn std::io::Write,
     progress: &mut dyn FnMut(u8, &str),
 ) -> Result<(), Error> {
-    let (source, name, directory) = parse_workload(args)?;
+    let WorkloadInstallOptions {
+        source: requested,
+        name: requested_name,
+        dir: requested_dir,
+    } = options;
+    let (source, default_name, project_root, project_config) = workload_source(&requested)?;
+    let name = requested_name.unwrap_or(default_name);
+    if !valid_name(&name) {
+        return Err(Error::Input(
+            "workload name must contain only letters, numbers, '.', '_' or '-'".into(),
+        ));
+    }
+    let directory = requested_dir
+        .map(|value| project::resolve(&project_root, &value.to_string_lossy()))
+        .unwrap_or_else(|| {
+            std::env::var_os("ASB_WORKLOAD_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir))
+        });
     progress(2, "preparing");
     fs::create_dir_all(&directory)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", directory.display())))?;
@@ -510,23 +536,16 @@ fn install_bundle(
 }
 
 /// List prompt workloads and configurable external workload trial sets.
-pub fn workload_list(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Error> {
+pub fn workload_list(
+    options: WorkloadListOptions,
+    output: &mut dyn std::io::Write,
+) -> Result<(), Error> {
     let (project_root, project_config) = project::load(Path::new("."))?;
-    let mut directory = std::env::var_os("ASB_WORKLOAD_DIR")
-        .map(PathBuf::from)
+    let directory = options
+        .dir
+        .map(|value| project::resolve(&project_root, &value.to_string_lossy()))
+        .or_else(|| std::env::var_os("ASB_WORKLOAD_DIR").map(PathBuf::from))
         .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir));
-    let mut index = 0;
-    while index < args.len() {
-        if args[index] != "--dir" {
-            return Err(Error::Usage("workload list accepts --dir DIR"));
-        }
-        directory = project::resolve(
-            &project_root,
-            args.get(index + 1)
-                .ok_or(Error::Usage("--dir requires a directory"))?,
-        );
-        index += 2;
-    }
     let mut names = fs::read_dir(&directory)
         .map_err(|error| Error::Io(format!("cannot read {}: {error}", directory.display())))?
         .filter_map(Result::ok)
@@ -634,9 +653,30 @@ fn install_recipe(
                 ))
             })?;
             make_executable(&destination)?;
+            if executable == "mpstat" {
+                // Process-scoped CPU/I/O collection uses pidstat from the
+                // same sysstat package; retain it beside the copied mpstat
+                // tool so runs do not silently fall back to host-wide data.
+                let pidstat = host_executable("pidstat").map_err(|_| {
+                    Error::Io(
+                        "mpstat installation also needs the matching sysstat `pidstat` binary for process-scoped collection; install sysstat and rerun `asb tool install mpstat`".into(),
+                    )
+                })?;
+                let pidstat_destination = root.join("bin").join("pidstat");
+                fs::copy(&pidstat, &pidstat_destination).map_err(|error| {
+                    Error::Io(format!(
+                        "cannot copy process-scoped pidstat tool {} to {}: {error}",
+                        pidstat.display(),
+                        pidstat_destination.display()
+                    ))
+                })?;
+                make_executable(&pidstat_destination)?;
+            }
             return Ok(destination);
         }
         Recipe::Bpftrace => return install_bpftrace(root, progress),
+        Recipe::Perfetto => return install_perfetto(root, progress),
+        Recipe::Goose => return install_goose(root, progress),
         Recipe::Flamegraph => {
             progress(25, "downloading FlameGraph scripts");
             let bin = root.join("bin");
@@ -667,7 +707,9 @@ fn install_recipe(
                 Recipe::Python { .. } => "python3",
                 Recipe::Host { .. } => "host measurement binary",
                 Recipe::Bpftrace => "bpftrace and uname",
+                Recipe::Perfetto => "curl and sha256sum",
                 Recipe::Flamegraph => "curl",
+                Recipe::Goose => "curl, tar, and sha256sum",
             };
             missing_dependency(dependency, "agent installation", error)
         } else {
@@ -680,16 +722,143 @@ fn install_recipe(
         ));
     }
     let executable = executable(recipe, root);
-    if is_llmtape(recipe) {
-        fs::create_dir_all(executable.parent().expect("llmtape wrapper parent")).map_err(
-            |error| Error::Io(format!("cannot create llmtape wrapper directory: {error}")),
-        )?;
-        fs::write(&executable, LLMTAPE_WRAPPER).map_err(|error| {
-            Error::Io(format!("cannot write {}: {error}", executable.display()))
-        })?;
-        make_executable(&executable)?;
-    }
     Ok(executable)
+}
+
+fn install_goose(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
+    let (url, checksum) = match std::env::consts::ARCH {
+        "x86_64" => (GOOSE_X86_64_URL, GOOSE_X86_64_SHA256),
+        "aarch64" => (GOOSE_AARCH64_URL, GOOSE_AARCH64_SHA256),
+        architecture => {
+            return Err(Error::Input(format!(
+                "Goose is packaged by ASB only for Linux x86_64 and aarch64; this host is {architecture}"
+            )));
+        }
+    };
+    let archive = root.join("goose.tar.gz");
+    let extract = root.join("extract");
+    fs::create_dir_all(&extract)
+        .map_err(|error| Error::Io(format!("cannot create Goose extraction directory: {error}")))?;
+    progress(20, "downloading pinned Goose binary");
+    install_source(url, &archive, "Goose binary")?;
+    progress(45, "verifying Goose checksum");
+    verify_sha256(&archive, checksum, "Goose binary")?;
+    progress(60, "extracting Goose binary");
+    let status = Command::new("tar")
+        .args(["--extract", "--gzip", "--file"])
+        .arg(&archive)
+        .args(["--directory"])
+        .arg(&extract)
+        .logged_status()
+        .map_err(|error| missing_dependency("tar", "Goose installation", error))?;
+    if !status.success() {
+        return Err(Error::Io(
+            "could not extract the pinned Goose binary".into(),
+        ));
+    }
+    let source = extract.join("goose");
+    if !source.is_file() {
+        return Err(Error::Io(
+            "pinned Goose archive did not contain a goose executable".into(),
+        ));
+    }
+    let destination = root.join("bin").join("goose");
+    fs::create_dir_all(destination.parent().expect("Goose bin parent"))
+        .map_err(|error| Error::Io(format!("cannot create Goose bin directory: {error}")))?;
+    fs::copy(&source, &destination).map_err(|error| {
+        Error::Io(format!(
+            "cannot install Goose at {}: {error}",
+            destination.display()
+        ))
+    })?;
+    make_executable(&destination)?;
+    let _ = fs::remove_file(archive);
+    let _ = fs::remove_dir_all(extract);
+    progress(100, "ready");
+    Ok(destination)
+}
+
+/// Download a pinned official Perfetto Tracebox binary into the benchmark
+/// project. Tracebox is the Linux Perfetto collector used by the optional
+/// scheduler and userspace tracepoint measurement adapter.
+fn install_perfetto(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
+    let ((tracebox_url, tracebox_hash), (processor_url, processor_hash)) =
+        match std::env::consts::ARCH {
+            "x86_64" => (
+                (PERFETTO_LINUX_X86_64_URL, PERFETTO_LINUX_X86_64_SHA256),
+                (
+                    PERFETTO_PROCESSOR_LINUX_X86_64_URL,
+                    PERFETTO_PROCESSOR_LINUX_X86_64_SHA256,
+                ),
+            ),
+            "aarch64" => (
+                (PERFETTO_LINUX_AARCH64_URL, PERFETTO_LINUX_AARCH64_SHA256),
+                (
+                    PERFETTO_PROCESSOR_LINUX_AARCH64_URL,
+                    PERFETTO_PROCESSOR_LINUX_AARCH64_SHA256,
+                ),
+            ),
+            architecture => {
+                return Err(Error::Input(format!(
+                    "Perfetto Tracebox is currently packaged by ASB only for Linux x86_64 and aarch64; this project is running on {architecture}"
+                )));
+            }
+        };
+    let bin = root.join("bin");
+    fs::create_dir_all(&bin)
+        .map_err(|error| Error::Io(format!("cannot create {}: {error}", bin.display())))?;
+    let destination = bin.join("tracebox");
+    progress(20, "downloading pinned Perfetto Tracebox");
+    install_source(tracebox_url, &destination, "Perfetto Tracebox")?;
+    progress(45, "verifying Perfetto Tracebox checksum");
+    verify_sha256(&destination, tracebox_hash, "Perfetto Tracebox")?;
+    make_executable(&destination)?;
+    let processor = bin.join("trace_processor_shell");
+    progress(60, "downloading pinned Perfetto trace processor");
+    install_source(processor_url, &processor, "Perfetto trace processor")?;
+    progress(80, "verifying Perfetto trace processor checksum");
+    verify_sha256(&processor, processor_hash, "Perfetto trace processor")?;
+    make_executable(&processor)?;
+    progress(90, "checking project-local Perfetto tools");
+    let version = Command::new(&destination)
+        .arg("--version")
+        .logged_status()
+        .map_err(|error| Error::Io(format!("cannot start installed Perfetto Tracebox: {error}")))?;
+    if !version.success() {
+        return Err(Error::Io(
+            "installed Perfetto Tracebox did not report a usable version".into(),
+        ));
+    }
+    let processor_version = Command::new(&processor)
+        .arg("--version")
+        .logged_status()
+        .map_err(|error| {
+            Error::Io(format!(
+                "cannot start installed Perfetto trace processor: {error}"
+            ))
+        })?;
+    if !processor_version.success() {
+        return Err(Error::Io(
+            "installed Perfetto trace processor did not report a usable version".into(),
+        ));
+    }
+    Ok(destination)
+}
+
+fn verify_sha256(destination: &Path, expected_hash: &str, label: &str) -> Result<(), Error> {
+    let digest = command_output(
+        &PathBuf::from("sha256sum"),
+        &[destination.to_string_lossy().as_ref()],
+        &format!("{label} checksum"),
+    )?;
+    let actual_hash = digest.split_whitespace().next().unwrap_or_default();
+    if actual_hash != expected_hash {
+        let _ = fs::remove_file(destination);
+        return Err(Error::Io(format!(
+            "{label} checksum mismatch: expected {expected_hash}, got {actual_hash}"
+        )));
+    }
+    Ok(())
 }
 
 /// Copy the host bpftrace binary and persist the kernel pairing used to
@@ -895,26 +1064,14 @@ fn json_string(value: &str) -> String {
 
 fn executable(recipe: Recipe, root: &Path) -> PathBuf {
     match recipe {
-        Recipe::Npm {
-            package,
-            executable,
-        } if package == "llmtape@1.2.0" => root.join("bin").join(executable),
         Recipe::Npm { executable, .. } => root.join("node_modules/.bin").join(executable),
         Recipe::Python { executable, .. } => root.join("venv/bin").join(executable),
         Recipe::Host { executable } => root.join("bin").join(executable),
         Recipe::Bpftrace => root.join("bin").join("bpftrace"),
+        Recipe::Perfetto => root.join("bin").join("tracebox"),
         Recipe::Flamegraph => root.join("bin").join("flamegraph"),
+        Recipe::Goose => root.join("bin").join("goose"),
     }
-}
-
-fn is_llmtape(recipe: Recipe) -> bool {
-    matches!(
-        recipe,
-        Recipe::Npm {
-            package: "llmtape@1.2.0",
-            ..
-        }
-    )
 }
 
 fn describe(recipe: Recipe, root: &Path) -> String {
@@ -931,8 +1088,16 @@ fn describe(recipe: Recipe, root: &Path) -> String {
             "copy the host-compatible bpftrace into {}/bin and record uname metadata",
             root.display()
         ),
+        Recipe::Perfetto => format!(
+            "download pinned Perfetto Tracebox and trace processor into {}/bin and verify their SHA-256 checksums",
+            root.display()
+        ),
         Recipe::Flamegraph => format!(
             "download pinned FlameGraph scripts into {}/bin",
+            root.display()
+        ),
+        Recipe::Goose => format!(
+            "download and verify pinned Goose binary into {}/bin",
             root.display()
         ),
     }
@@ -952,7 +1117,9 @@ fn tool_summary(recipe: Recipe) -> String {
         } => format!("python {package} -> {executable}"),
         Recipe::Host { executable } => format!("host binary -> {executable}"),
         Recipe::Bpftrace => "host-compatible bpftrace + kernel metadata".into(),
+        Recipe::Perfetto => "pinned Perfetto Tracebox + trace processor".into(),
         Recipe::Flamegraph => "pinned FlameGraph scripts -> flamegraph".into(),
+        Recipe::Goose => "pinned Goose binary (x86_64/aarch64) -> goose".into(),
     }
 }
 
@@ -971,43 +1138,21 @@ fn host_executable(name: &str) -> Result<PathBuf, Error> {
     Ok(path)
 }
 
-fn parse_tool(args: &[String]) -> Result<(String, Option<String>, PathBuf, bool), Error> {
-    let id = args
-        .first()
-        .filter(|value| valid_name(value))
-        .cloned()
-        .ok_or(Error::Usage("tool install requires a tool name"))?;
-    let mut source = None;
-    let (project_root, project_config) = project::load(Path::new("."))?;
-    let mut root = project::resolve(&project_root, &project_config.tools_dir);
-    let mut dry_run = false;
-    parse_options(&args[1..], |flag, value| match flag {
-        "--source" => Ok(source = Some(value.to_owned())),
-        "--dir" => Ok(root = project::resolve(&project_root, value)),
-        "--dry-run" if value.is_empty() => Ok(dry_run = true),
-        _ => Err(Error::Usage(
-            "tool install accepts --source URL|PATH, --dir DIR, and --dry-run",
-        )),
-    })?;
-    Ok((id, source, root, dry_run))
-}
-
-fn parse_workload(args: &[String]) -> Result<(String, String, PathBuf), Error> {
-    let requested = args.first().cloned().ok_or(Error::Usage(
-        "workload install requires a local path or URL",
-    ))?;
-    let source = external_workload(&requested)
+fn workload_source(
+    requested: &str,
+) -> Result<(String, String, PathBuf, project::ProjectConfig), Error> {
+    let source = external_workload(requested)
         .map(|workload| workload.source.to_owned())
-        .unwrap_or_else(|| requested.clone());
-    if external_workload(&requested).is_none()
-        && valid_name(&requested)
-        && !Path::new(&requested).is_file()
+        .unwrap_or_else(|| requested.to_owned());
+    if external_workload(requested).is_none()
+        && valid_name(requested)
+        && !Path::new(requested).is_file()
     {
         let aliases = EXTERNAL_WORKLOADS
             .iter()
             .map(|workload| workload.name)
             .collect::<Vec<_>>();
-        if let Some(candidate) = suggestions::closest(&requested, &aliases) {
+        if let Some(candidate) = suggestions::closest(requested, &aliases) {
             return Err(Error::Input(format!(
                 "workload source `{requested}` was not found; did you mean external workload `{candidate}`?"
             )));
@@ -1026,51 +1171,11 @@ fn parse_workload(args: &[String]) -> Result<(String, String, PathBuf), Error> {
             "workload source must have a simple file name".into(),
         ))?
         .to_owned();
-    let mut name = external_workload(&requested)
+    let name = external_workload(requested)
         .map(|workload| workload.name.to_owned())
         .unwrap_or(default_name);
     let (project_root, project_config) = project::load(Path::new("."))?;
-    let mut directory = std::env::var_os("ASB_WORKLOAD_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir));
-    parse_options(&args[1..], |flag, value| match flag {
-        "--name" if valid_name(value) => Ok(name = value.to_owned()),
-        "--dir" => Ok(directory = project::resolve(&project_root, value)),
-        _ => Err(Error::Usage(
-            "workload install accepts --name NAME and --dir DIR",
-        )),
-    })?;
-    Ok((source, name, directory))
-}
-
-fn executable_name(agent: &str) -> &str {
-    match agent {
-        "workbuddy" => "codebuddy",
-        "qwen-code" => "qwen",
-        "mini-swe" => "mini",
-        other => other,
-    }
-}
-
-fn parse_options(
-    args: &[String],
-    mut apply: impl FnMut(&str, &str) -> Result<(), Error>,
-) -> Result<(), Error> {
-    let mut index = 0;
-    while index < args.len() {
-        let flag = args[index].as_str();
-        if flag == "--dry-run" {
-            apply(flag, "")?;
-            index += 1;
-            continue;
-        }
-        let value = args
-            .get(index + 1)
-            .ok_or(Error::Usage("install options require values"))?;
-        apply(flag, value)?;
-        index += 2;
-    }
-    Ok(())
+    Ok((source, name, project_root, project_config))
 }
 
 fn valid_name(value: &str) -> bool {
@@ -1158,51 +1263,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn built_in_recipes_cover_all_documented_agents() {
-        for agent in [
-            "codex",
-            "pi",
-            "opencode",
-            "workbuddy",
-            "gemini",
-            "qwen-code",
-            "aider",
-            "mini-swe",
-            "openhands",
-            "openjiuwen",
-            "cli2key",
-            "llmtape",
-            "mpstat",
-            "iostat",
-            "perf",
-            "bpftrace",
-            "flamegraph",
-        ] {
-            let recipe = recipe(agent).expect("documented agent has a recipe");
+    fn installer_catalogue_is_composed_from_adapter_registries() {
+        let names = tool_names().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(names.len(), agents::all().len() + tools::all().len());
+        for id in &names {
+            let (recipe, executable, _) = built_in_tool(id).expect("registered install target");
             assert!(!describe(recipe, Path::new(".asb-tools")).is_empty());
-            assert!(!executable_name(agent).is_empty());
+            assert!(!executable.is_empty());
         }
+        assert!(agents::all().iter().all(|agent| names.contains(agent.id())));
     }
 
     #[test]
-    fn llmtape_recipe_materializes_a_project_local_wrapper() {
-        let recipe = recipe("llmtape").expect("llmtape recipe");
-        assert!(is_llmtape(recipe));
+    fn perfetto_recipe_uses_project_local_tracebox() {
+        let recipe = tools::find("perfetto").expect("perfetto recipe").recipe();
         assert_eq!(
-            executable(recipe, Path::new(".asb-tools/llmtape")),
-            Path::new(".asb-tools/llmtape/bin/llmtape")
+            executable(recipe, Path::new(".asb-tools/perfetto")),
+            Path::new(".asb-tools/perfetto/bin/tracebox")
         );
-        assert!(LLMTAPE_WRAPPER.contains("llmtape record"));
-        assert!(LLMTAPE_WRAPPER.contains("llmtape replay"));
+        assert_eq!(
+            Path::new(".asb-tools/perfetto/bin").join("trace_processor_shell"),
+            Path::new(".asb-tools/perfetto/bin/trace_processor_shell")
+        );
+        assert!(describe(recipe, Path::new(".asb-tools/perfetto")).contains("SHA-256"));
     }
 
     #[test]
     fn tool_availability_prefers_project_local_installations() {
         let root = std::env::temp_dir().join(format!("asb-tool-status-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("llmtape/bin")).unwrap();
-        fs::write(root.join("llmtape/bin/llmtape"), "#!/bin/sh\n").unwrap();
-        assert!(tool_available("llmtape", &root));
         assert!(!tool_available("not-a-tool", &root));
         let _ = fs::remove_dir_all(root);
     }
@@ -1219,11 +1308,11 @@ mod tests {
         let mut progress = |percent: u8, stage: &str| events.push((percent, stage.to_owned()));
         let mut output = Vec::new();
         workload_with_progress(
-            &[
-                source.to_string_lossy().into_owned(),
-                "--dir".into(),
-                root.join("workloads").to_string_lossy().into_owned(),
-            ],
+            WorkloadInstallOptions {
+                source: source.to_string_lossy().into_owned(),
+                name: None,
+                dir: Some(root.join("workloads")),
+            },
             &mut output,
             &mut progress,
         )
@@ -1249,10 +1338,11 @@ mod tests {
         assert!(!text.contains("codeagent"));
         assert!(text.contains("pi"));
         assert!(text.contains("openjiuwen"));
-        assert!(text.contains("llmtape"));
+        assert!(!text.contains("llmtape"));
         assert!(text.contains("mpstat"));
         assert!(text.contains("bpftrace"));
         assert!(text.contains("custom"));
+        assert!(tools::find("llmtape").is_none());
     }
 
     #[test]
@@ -1317,7 +1407,9 @@ mod tests {
         fs::write(directory.join("ignored.md"), "ignored").expect("other file");
         let mut output = Vec::new();
         workload_list(
-            &["--dir".into(), directory.to_string_lossy().into_owned()],
+            WorkloadListOptions {
+                dir: Some(directory.clone()),
+            },
             &mut output,
         )
         .expect("workload list succeeds");
@@ -1347,6 +1439,16 @@ mod tests {
         assert!(bundle_spec("swe-bench").is_some());
         assert!(bundle_spec("terminal-bench").is_some());
         assert!(external_workload("methodology-only").is_none());
+        let installed = EXTERNAL_WORKLOADS
+            .iter()
+            .map(|workload| workload.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        let adapters =
+            workloads::external_adapter_names().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            adapters, installed,
+            "every external workload needs an adapter"
+        );
     }
 
     #[test]
@@ -1377,7 +1479,16 @@ mod tests {
 
     #[test]
     fn unknown_agent_install_suggests_the_closest_builtin() {
-        let error = tool(&["opencod".into()], &mut Vec::new()).expect_err("typo rejected");
+        let error = tool(
+            ToolInstallOptions {
+                name: "opencod".into(),
+                source: None,
+                dir: None,
+                dry_run: false,
+            },
+            &mut Vec::new(),
+        )
+        .expect_err("typo rejected");
         assert!(error.to_string().contains("did you mean `opencode`?"));
     }
 }

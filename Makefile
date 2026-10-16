@@ -10,6 +10,8 @@ AUTO_UML := $(AUTO_UML_ROOT)/bin/auto-uml
 UML_RAW_DOT := target/asb-type-diagram.raw.dot
 UML_DOT := docs/asb-type-diagram.dot
 UML_SVG := docs/asb-type-diagram.svg
+UML_RAW_MERMAID := target/asb-type-diagram.raw.mmd
+UML_MERMAID := docs/asb-type-diagram.mmd
 FLOW_SCRIPT := scripts/generate_function_flows.py
 DATAFLOW_DOT := docs/asb-dataflow.dot
 DATAFLOW_SVG := docs/asb-dataflow.svg
@@ -43,6 +45,8 @@ uml: $(AUTO_UML)
 	$(AUTO_UML) --lang rust --source-code crates --format graphviz --destination "$(UML_RAW_DOT)"
 	python3 scripts/organize_uml_dot.py "$(UML_RAW_DOT)" "$(UML_DOT)"
 	dot -Tsvg -o "$(UML_SVG)" "$(UML_DOT)"
+	$(AUTO_UML) --lang rust --source-code crates --format mermaid --destination "$(UML_RAW_MERMAID)"
+	python3 scripts/normalize_uml.py "$(UML_RAW_MERMAID)" "$(UML_MERMAID)"
 
 flows:
 	command -v dot >/dev/null || (echo "Graphviz 'dot' is required for flow-diagram generation (install the graphviz package)." >&2; exit 1)

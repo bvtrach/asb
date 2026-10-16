@@ -1,6 +1,7 @@
 //! The setup command and its small file format.
 
 use super::{Error, io_error};
+use crate::agents;
 use crate::benchmark::{BenchmarkConfig, MeasurementConfig};
 use crate::measurements;
 use crate::project;
@@ -8,72 +9,34 @@ use crate::providers;
 use crate::suggestions;
 use std::io::Write;
 
-/// Parse setup flags and write a TOML benchmark configuration.
-pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
-    let mut agent = None;
-    let mut workload = None;
-    let mut provider = None;
-    let mut model = None;
-    let mut workspace = None;
-    let mut destination = None;
-    let mut index = 0;
-    while index < args.len() {
-        let flag = args[index].as_str();
-        if let Some(name) = flag.strip_prefix('-').filter(|name| {
-            !name.starts_with('-')
-                && matches!(
-                    *name,
-                    "agent" | "workload" | "provider" | "model" | "workspace" | "output"
-                )
-        }) {
-            return Err(Error::Input(format!(
-                "setup option `{flag}` is invalid; use `--{name}` with two dashes"
-            )));
-        }
-        let value = args
-            .get(index + 1)
-            .ok_or(Error::Usage("setup options require values"))?;
-        match flag {
-            "--agent" => agent = Some(value.clone()),
-            "--workload" => workload = Some(value.clone()),
-            "--provider" => provider = Some(value.clone()),
-            "--model" => model = Some(value.clone()),
-            "--workspace" => workspace = Some(value.clone()),
-            "--output" => destination = Some(value.clone()),
-            _ => {
-                let options = [
-                    "--agent",
-                    "--workload",
-                    "--provider",
-                    "--model",
-                    "--workspace",
-                    "--output",
-                ];
-                return Err(Error::Input(format!(
-                    "{}",
-                    suggestions::unknown("setup option", flag, &options)
-                )));
-            }
-        }
-        index += 2;
-    }
+pub struct SetupOptions {
+    pub agent: Option<String>,
+    pub workload: Option<String>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub concurrency: Option<usize>,
+    pub workspace: Option<String>,
+    pub output: Option<String>,
+}
+
+/// Write a TOML benchmark configuration from parsed setup options.
+pub fn setup(options: SetupOptions, output: &mut dyn Write) -> Result<(), Error> {
+    let SetupOptions {
+        agent,
+        workload,
+        provider,
+        model,
+        concurrency,
+        workspace,
+        output: destination,
+    } = options;
     let (_, project_config) = project::load(std::path::Path::new("."))?;
     let agent = required(agent)?;
-    if let Some(candidate) = suggestions::closest(
-        &agent,
-        &[
-            "codex",
-            "pi",
-            "opencode",
-            "workbuddy",
-            "gemini",
-            "qwen-code",
-            "aider",
-            "mini-swe",
-            "openhands",
-            "openjiuwen",
-        ],
-    ) {
+    let known_agents = agents::all()
+        .iter()
+        .map(|adapter| adapter.id())
+        .collect::<Vec<_>>();
+    if let Some(candidate) = suggestions::closest(&agent, &known_agents) {
         return Err(Error::Input(format!(
             "unknown agent `{agent}`; did you mean `{candidate}`?"
         )));
@@ -97,11 +60,16 @@ pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
             )));
         }
     }
+    let concurrency = concurrency.unwrap_or(1);
+    if concurrency == 0 {
+        return Err(Error::Input("concurrency must be at least 1".into()));
+    }
     let config = BenchmarkConfig {
         agent,
         workload: required(workload)?,
         provider,
         model,
+        concurrency,
         trial_set: None,
         trial: None,
         workspace: workspace.unwrap_or(project_config.workspace_dir),
@@ -153,7 +121,7 @@ fn required(value: Option<String>) -> Result<String, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_log_name, run_command_message, setup};
+    use super::{SetupOptions, default_log_name, run_command_message, setup};
 
     #[test]
     fn setup_derives_log_name_from_configuration_stem() {
@@ -170,70 +138,39 @@ mod tests {
     }
 
     #[test]
-    fn explains_single_dash_long_option_typo() {
-        let error = setup(
-            &[
-                "--agent".into(),
-                "opencode".into(),
-                "-workload".into(),
-                "bug-fix".into(),
-            ],
-            &mut Vec::new(),
-        )
-        .expect_err("single-dash option must be rejected");
-        assert_eq!(
-            error.to_string(),
-            "setup option `-workload` is invalid; use `--workload` with two dashes"
-        );
+    fn setup_writes_default_concurrency() {
+        let mut output = Vec::new();
+        setup(options("pi", "cli2key", "gpt-6.1-sol"), &mut output).expect("setup succeeds");
+        let text = String::from_utf8(output).expect("setup is UTF-8");
+        assert!(text.contains("concurrency = 1"));
+    }
+
+    fn options(agent: &str, provider: &str, model: &str) -> SetupOptions {
+        SetupOptions {
+            agent: Some(agent.into()),
+            workload: Some("bug-fix".into()),
+            provider: Some(provider.into()),
+            model: Some(model.into()),
+            concurrency: None,
+            workspace: None,
+            output: None,
+        }
     }
 
     #[test]
     fn setup_suggests_close_agent_and_provider_names() {
-        let agent_error = setup(
-            &[
-                "--agent".into(),
-                "opencod".into(),
-                "--workload".into(),
-                "bug-fix".into(),
-                "--provider".into(),
-                "local".into(),
-                "--model".into(),
-                "test".into(),
-            ],
-            &mut Vec::new(),
-        )
-        .expect_err("agent typo rejected");
+        let agent_error = setup(options("opencod", "local", "test"), &mut Vec::new())
+            .expect_err("agent typo rejected");
         assert!(agent_error.to_string().contains("did you mean `opencode`?"));
-        let provider_error = setup(
-            &[
-                "--agent".into(),
-                "opencode".into(),
-                "--workload".into(),
-                "bug-fix".into(),
-                "--provider".into(),
-                "openruter".into(),
-                "--model".into(),
-                "test".into(),
-            ],
-            &mut Vec::new(),
-        )
-        .expect_err("provider typo rejected");
+        let provider_error = setup(options("opencode", "openruter", "test"), &mut Vec::new())
+            .expect_err("provider typo rejected");
         assert!(
             provider_error
                 .to_string()
                 .contains("did you mean `openrouter`?")
         );
         let model_error = setup(
-            &[
-                "--agent".into(),
-                "opencode".into(),
-                "--workload".into(),
-                "bug-fix".into(),
-                "--provider".into(),
-                "cli2key".into(),
-                "--model".into(),
-                "gpt-6.1-sl".into(),
-            ],
+            options("opencode", "cli2key", "gpt-6.1-sl"),
             &mut Vec::new(),
         )
         .expect_err("model typo rejected");

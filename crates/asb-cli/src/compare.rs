@@ -1,7 +1,7 @@
 //! Offline comparison and SVG chart generation for completed sweeps.
 
 use crate::{Error, read_config};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs;
@@ -29,9 +29,15 @@ struct BenchmarkData {
     provider: String,
     model: String,
     metrics: BTreeMap<String, f64>,
-    series: BTreeMap<String, Vec<f64>>,
+    series: BTreeMap<String, TimeSeries>,
     status: Option<String>,
     artifacts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TimeSeries {
+    values: Vec<f64>,
+    timestamps_ms: Option<Vec<f64>>,
 }
 
 /// Compare all completed benchmark measurements referenced by a sweep.
@@ -138,9 +144,35 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             // numerical series: scraping its last token created noisy and
             // misleading graphs for repeated mpstat/iostat samples.
             if let Some(collector_series) = collector.get("series") {
-                let points = series_values(collector_series);
-                if points.len() >= 2 {
-                    series.insert(name.to_owned(), points);
+                let collector_timestamps = collector.get("series_timestamps");
+                let timestamp_map = collector_timestamps.and_then(Value::as_object);
+                if let Some(series_map) = collector_series.as_object() {
+                    for (metric, raw_values) in series_map {
+                        let points = series_values(raw_values);
+                        if points.len() < 2 {
+                            continue;
+                        }
+                        series.insert(
+                            metric.clone(),
+                            TimeSeries {
+                                values: points,
+                                timestamps_ms: timestamp_map
+                                    .and_then(|map| map.get(metric))
+                                    .map(series_values),
+                            },
+                        );
+                    }
+                } else {
+                    let points = series_values(collector_series);
+                    if points.len() >= 2 {
+                        series.insert(
+                            name.to_owned(),
+                            TimeSeries {
+                                values: points,
+                                timestamps_ms: None,
+                            },
+                        );
+                    }
                 }
             }
         }
@@ -159,7 +191,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
     }
 
     let mut metric_values: BTreeMap<String, Vec<(String, f64)>> = BTreeMap::new();
-    let mut series_values: BTreeMap<String, Vec<(String, Vec<f64>)>> = BTreeMap::new();
+    let mut series_values: BTreeMap<String, Vec<(String, TimeSeries)>> = BTreeMap::new();
     for benchmark in &benchmark_data {
         for (name, value) in &benchmark.metrics {
             metric_values
@@ -199,7 +231,8 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             "provider": benchmark.provider,
             "model": benchmark.model,
             "metrics": benchmark.metrics,
-            "series": benchmark.series,
+            "series": benchmark.series.iter().map(|(name, series)| (name, &series.values)).collect::<BTreeMap<_, _>>(),
+            "series_timestamps": benchmark.series.iter().filter_map(|(name, series)| series.timestamps_ms.as_ref().map(|timestamps| (name, timestamps))).collect::<BTreeMap<_, _>>(),
             "status": benchmark.status,
             "artifacts": benchmark.artifacts,
         })).collect::<Vec<_>>(),
@@ -256,10 +289,37 @@ fn benchmark_identity(path: &Path) -> Result<(String, String, String, String), E
 
 fn artifact_links(sweep_parent: &Path, result_dir: &Path) -> Vec<String> {
     let mut files = Vec::new();
-    collect_artifacts(result_dir, 0, &mut files);
+    // Measurement artifacts are the primary evidence for a comparison. Add
+    // them before the bounded recursive inventory so a large external
+    // workload workspace cannot crowd the bpftrace/perfetto SVGs out of the
+    // HTML report's artifact links.
+    let measurement_dir = result_dir.join("measurements");
+    if let Ok(entries) = fs::read_dir(&measurement_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with("bpftrace-")
+                            || name.starts_with("perfetto-metric-")
+                            || name == "flamegraph.svg"
+                            || name == "flamegraph.json"
+                    })
+            {
+                files.push(path);
+            }
+        }
+    }
+    // Do not inventory external workload workspaces; only measurement output
+    // is comparison evidence and should appear in the report.
+    collect_artifacts(&measurement_dir, 0, &mut files);
     files.sort();
+    files.dedup();
     files
         .into_iter()
+        .filter(|path| path.file_name().and_then(|name| name.to_str()) != Some("run.json"))
         .filter_map(|path| path.strip_prefix(sweep_parent).ok().map(PathBuf::from))
         .map(|path| format!("../../{}", path.to_string_lossy().replace('\\', "/")))
         .collect()
@@ -325,7 +385,10 @@ fn write_html_report(
     let mut html = String::from(HTML_HEAD);
     html = html.replacen(
         "</style></head>",
-        &format!("{}\n{}\n</style></head>", INTERACTIVE_STYLE, MODAL_STYLE),
+        &format!(
+            "{}\n{}\n{}\n</style></head>",
+            INTERACTIVE_STYLE, MODAL_STYLE, INLINE_SVG_STYLE
+        ),
         1,
     );
     html.push_str("<main class=\"shell\">");
@@ -365,31 +428,164 @@ fn write_html_report(
                 .collect::<String>();
             format!("<details><summary>All metrics</summary><dl>{items}</dl></details>")
         };
-        html.push_str(&format!("<tr data-dimension-benchmark=\"{}\" data-dimension-agent=\"{}\" data-dimension-provider=\"{}\" data-dimension-model=\"{}\" data-dimension-workload=\"{}\"><td><strong>{}</strong></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"details\">{}{}</td></tr>",
+        let artifacts = if benchmark.artifacts.is_empty() {
+            String::new()
+        } else {
+            let links = benchmark
+                .artifacts
+                .iter()
+                .map(|artifact| {
+                    format!(
+                        "<li><a href=\"{}\" download>{}</a></li>",
+                        escape(artifact),
+                        escape(artifact.rsplit('/').next().unwrap_or(artifact))
+                    )
+                })
+                .collect::<String>();
+            let perfetto_svgs = benchmark
+                .artifacts
+                .iter()
+                .filter(|artifact| {
+                    artifact.contains("/perfetto-metric-") && artifact.ends_with(".svg")
+                })
+                .map(|artifact| {
+                    inline_svg_artifact(
+                        comparison_dir,
+                        artifact,
+                        "perfetto-metric",
+                        "Perfetto metric SVG",
+                    )
+                })
+                .collect::<Result<String, Error>>()?;
+            let bpftrace_svgs = benchmark
+                .artifacts
+                .iter()
+                .filter(|artifact| {
+                    artifact
+                        .rsplit('/')
+                        .next()
+                        .is_some_and(|name| name.starts_with("bpftrace-") && name.ends_with(".svg"))
+                })
+                .map(|artifact| {
+                    inline_svg_artifact(
+                        comparison_dir,
+                        artifact,
+                        "bpftrace-profile",
+                        "bpftrace profile SVG",
+                    )
+                })
+                .collect::<Result<String, Error>>()?;
+            let flamegraph_svgs = benchmark
+                .artifacts
+                .iter()
+                .filter(|artifact| {
+                    artifact
+                        .rsplit('/')
+                        .next()
+                        .is_some_and(|name| name == "flamegraph.svg")
+                })
+                .map(|artifact| {
+                    inline_svg_artifact(comparison_dir, artifact, "flamegraph", "Flamegraph SVG")
+                })
+                .collect::<Result<String, Error>>()?;
+            let flamegraph_status = benchmark
+                .artifacts
+                .iter()
+                .filter(|artifact| {
+                    artifact.rsplit('/').next().is_some_and(|name| name == "flamegraph.json")
+                })
+                .map(|artifact| {
+                    format!(
+                        "<p class=\"flamegraph-status\">Flamegraph collector status: <a href=\"{}\">flamegraph.json</a>. An SVG is embedded here when collection completed.</p>",
+                        escape(artifact)
+                    )
+                })
+                .collect::<String>();
+            format!(
+                "<details><summary>Run artifacts</summary>{perfetto_svgs}{bpftrace_svgs}{flamegraph_svgs}{flamegraph_status}<ul class=\"artifact-list\">{links}</ul></details>"
+            )
+        };
+        html.push_str(&format!("<tr data-dimension-benchmark=\"{}\" data-dimension-agent=\"{}\" data-dimension-provider=\"{}\" data-dimension-model=\"{}\" data-dimension-workload=\"{}\"><td><strong>{}</strong></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"details\">{}{}{}</td></tr>",
             escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
             escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
             runtime, success, tokens,
             metrics_details,
+            artifacts,
             benchmark.status.as_ref().map_or(String::new(), |status| format!("<span class=\"status\">{}</span>", escape(status))),
             ));
     }
-    html.push_str("</tbody></table></div></section><section><div class=\"section-title\"><h2>Charts</h2><p class=\"muted\">SVG files are linked below and remain available for download.</p></div><div class=\"charts\">");
-    for graph in graphs {
-        let svg = fs::read_to_string(comparison_dir.join(graph)).map_err(|error| {
-            Error::Run(format!("cannot read generated chart {}: {error}", graph))
-        })?;
-        html.push_str(&format!(
-            "<figure class=\"interactive-chart\" data-graph=\"{}\"><div class=\"chart-backdrop\" aria-hidden=\"true\"></div><div class=\"chart-toolbar\"><strong>{}</strong><span><button type=\"button\" class=\"chart-reset\">Reset view</button><button type=\"button\" class=\"chart-expand\" aria-label=\"Enlarge chart\">Enlarge</button><button type=\"button\" class=\"chart-close\" aria-label=\"Close enlarged chart\" hidden>Close</button></span></div><div class=\"chart-stage\"><div class=\"chart-tooltip\" role=\"status\" aria-live=\"polite\"></div>{svg}</div><figcaption><a href=\"{}\" download>Download SVG</a></figcaption></figure>",
-            escape(graph),
-            escape(graph.strip_suffix(".svg").unwrap_or(graph)),
-            escape(graph),
-        ));
+    let bpftrace_graphs = graphs
+        .iter()
+        .filter(|graph| {
+            graph.starts_with("metric-bpftrace-") || graph.starts_with("series-bpftrace-")
+        })
+        .collect::<Vec<_>>();
+    if !bpftrace_graphs.is_empty() {
+        html.push_str("</tbody></table></div></section><section><div class=\"section-title\"><h2>bpftrace profiles</h2><p class=\"muted\">Cross-run SVG graphs for every bpftrace aggregate emitted by the selected profiles.</p></div><div class=\"charts\">");
+        for graph in &bpftrace_graphs {
+            html.push_str(&chart_figure(&comparison_dir, graph)?);
+        }
+        html.push_str("</div></section>");
+    } else {
+        html.push_str("</tbody></table></div></section>");
+    }
+    html.push_str("<section><div class=\"section-title\"><h2>Charts</h2><p class=\"muted\">SVG files are linked below and remain available for download.</p></div><div class=\"charts\">");
+    for graph in graphs
+        .iter()
+        .filter(|graph| !bpftrace_graphs.iter().any(|bpf| *bpf == *graph))
+    {
+        html.push_str(&chart_figure(&comparison_dir, graph)?);
     }
     html.push_str("</div></section><footer>Generated locally by <code>asb compare</code>. No provider or agent was contacted.</footer></main>");
     html.push_str(INTERACTIVE_SCRIPT);
     html.push_str(HTML_SCRIPT);
     fs::write(comparison_dir.join("report.html"), html)
         .map_err(|error| Error::Run(format!("cannot write HTML report: {error}")))
+}
+
+fn chart_figure(comparison_dir: &Path, graph: &str) -> Result<String, Error> {
+    let svg = fs::read_to_string(comparison_dir.join(graph))
+        .map_err(|error| Error::Run(format!("cannot read generated chart {}: {error}", graph)))?;
+    Ok(format!(
+        "<figure class=\"interactive-chart\" data-graph=\"{}\"><div class=\"chart-backdrop\" aria-hidden=\"true\"></div><div class=\"chart-toolbar\"><strong>{}</strong><span><button type=\"button\" class=\"chart-reset\">Reset view</button><button type=\"button\" class=\"chart-expand\" aria-label=\"Enlarge chart\">Enlarge</button><button type=\"button\" class=\"chart-close\" aria-label=\"Close enlarged chart\" hidden>Close</button></span></div><div class=\"chart-stage\"><div class=\"chart-tooltip\" role=\"status\" aria-live=\"polite\"></div>{svg}</div><figcaption><a href=\"{}\" download>Download SVG</a></figcaption></figure>",
+        escape(graph),
+        escape(graph.strip_suffix(".svg").unwrap_or(graph)),
+        escape(graph),
+    ))
+}
+
+fn inline_svg_artifact(
+    comparison_dir: &Path,
+    artifact: &str,
+    class: &str,
+    fallback: &str,
+) -> Result<String, Error> {
+    let path = comparison_dir.join(artifact);
+    let metadata = fs::metadata(&path).map_err(|error| {
+        Error::Run(format!(
+            "cannot read embedded SVG artifact {artifact}: {error}"
+        ))
+    })?;
+    if metadata.len() > MAX_BYTES {
+        return Err(Error::Run(format!(
+            "embedded SVG artifact {artifact} exceeds 16 MiB"
+        )));
+    }
+    let svg = fs::read_to_string(&path).map_err(|error| {
+        Error::Run(format!(
+            "cannot read embedded SVG artifact {artifact}: {error}"
+        ))
+    })?;
+    let trimmed = svg.trim_start();
+    if !trimmed.starts_with("<svg") && !trimmed.starts_with("<?xml") {
+        return Err(Error::Run(format!(
+            "embedded SVG artifact {artifact} does not contain an SVG document"
+        )));
+    }
+    Ok(format!(
+        "<div class=\"embedded-svg {class}\" aria-label=\"{}\">{svg}</div>",
+        escape(fallback)
+    ))
 }
 
 fn title_case(value: &str) -> String {
@@ -400,12 +596,14 @@ fn title_case(value: &str) -> String {
 }
 
 const HTML_HEAD: &str = r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ASB sweep report</title><style>
-:root{color-scheme:light;--ink:#18212b;--muted:#61707f;--line:#dce4ec;--panel:#fff;--accent:#1769aa;--accent-soft:#e8f2fa;--bg:#f4f7fa}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.shell{max-width:1500px;margin:auto;padding:36px 28px 56px}.hero{background:linear-gradient(135deg,#12344d,#1769aa);color:#fff;border-radius:18px;padding:42px 46px;box-shadow:0 14px 32px #12344d33}.hero h1{font-size:clamp(2rem,4vw,3.4rem);line-height:1.05;margin:4px 0 14px;letter-spacing:-.04em}.hero p{max-width:760px;margin:0;color:#e5f2fb;font-size:16px}.eyebrow{font-size:11px!important;letter-spacing:.16em;font-weight:700}.explain,.filters,section{background:var(--panel);border:1px solid var(--line);border-radius:14px;margin-top:20px;padding:24px;box-shadow:0 4px 14px #17324d0b}.explain{border-left:4px solid var(--accent)}h2{font-size:19px;margin:0}.section-title{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}.filter-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px}fieldset{border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:0}legend{font-weight:700;color:var(--accent);padding:0 5px}label{display:flex;gap:8px;align-items:flex-start;margin:6px 0;color:var(--muted);overflow-wrap:anywhere}input{accent-color:var(--accent);margin-top:4px}.filter-count,.muted{color:var(--muted);margin:14px 0 0}.text-link,a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}button{background:#fff;border:1px solid #b9c9d8;border-radius:7px;color:var(--accent);cursor:pointer;padding:7px 11px;margin-left:6px}button:hover{background:var(--accent-soft)}.table-wrap{overflow:auto}table{border-collapse:collapse;min-width:100%;white-space:nowrap}th{text-align:left;background:#eef4f8;color:#405466;font-size:12px;letter-spacing:.04em;text-transform:uppercase}th,td{border-bottom:1px solid var(--line);padding:12px 10px;vertical-align:top}.links{white-space:normal;min-width:170px}.links a{display:inline-block;margin:0 8px 5px 0;font-size:12px}.status{display:block;color:#9a4b00;background:#fff4e5;border-radius:5px;font-size:11px;padding:3px 6px;margin-top:4px;max-width:260px;white-space:normal}.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px}.charts figure{margin:0;border:1px solid var(--line);border-radius:10px;padding:10px;background:#fbfdff}.charts img{width:100%;height:auto;display:block}.charts figcaption{padding:8px 2px 2px;font-size:12px;overflow-wrap:anywhere}footer{color:var(--muted);text-align:center;padding:28px 0 0}code{background:#e9eef3;border-radius:4px;padding:2px 5px}@media(max-width:700px){.shell{padding:18px 12px}.hero{padding:30px 24px}.section-title{align-items:flex-start;flex-direction:column}.section-title button{margin:0 6px 0 0}}
+:root{color-scheme:light;--ink:#18212b;--muted:#61707f;--line:#dce4ec;--panel:#fff;--accent:#1769aa;--accent-soft:#e8f2fa;--bg:#f4f7fa}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.shell{max-width:1500px;margin:auto;padding:36px 28px 56px}.hero{background:linear-gradient(135deg,#12344d,#1769aa);color:#fff;border-radius:18px;padding:42px 46px;box-shadow:0 14px 32px #12344d33}.hero h1{font-size:clamp(2rem,4vw,3.4rem);line-height:1.05;margin:4px 0 14px;letter-spacing:-.04em}.hero p{max-width:760px;margin:0;color:#e5f2fb;font-size:16px}.eyebrow{font-size:11px!important;letter-spacing:.16em;font-weight:700}.explain,.filters,section{background:var(--panel);border:1px solid var(--line);border-radius:14px;margin-top:20px;padding:24px;box-shadow:0 4px 14px #17324d0b}.explain{border-left:4px solid var(--accent)}h2{font-size:19px;margin:0}.section-title{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}.filter-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px}fieldset{border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:0}legend{font-weight:700;color:var(--accent);padding:0 5px}label{display:flex;gap:8px;align-items:flex-start;margin:6px 0;color:var(--muted);overflow-wrap:anywhere}input{accent-color:var(--accent);margin-top:4px}.filter-count,.muted{color:var(--muted);margin:14px 0 0}.text-link,a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}button{background:#fff;border:1px solid #b9c9d8;border-radius:7px;color:var(--accent);cursor:pointer;padding:7px 11px;margin-left:6px}button:hover{background:var(--accent-soft)}.table-wrap{overflow:auto}table{border-collapse:collapse;min-width:100%;white-space:nowrap}th{text-align:left;background:#eef4f8;color:#405466;font-size:12px;letter-spacing:.04em;text-transform:uppercase}th,td{border-bottom:1px solid var(--line);padding:12px 10px;vertical-align:top}.links{white-space:normal;min-width:170px}.links a{display:inline-block;margin:0 8px 5px 0;font-size:12px}.artifact-list{padding-left:18px;margin:8px 0;white-space:normal}.perfetto-metric{display:block;width:min(760px,100%);height:180px;border:0;margin:8px 0}.status{display:block;color:#9a4b00;background:#fff4e5;border-radius:5px;font-size:11px;padding:3px 6px;margin-top:4px;max-width:260px;white-space:normal}.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px}.charts figure{margin:0;border:1px solid var(--line);border-radius:10px;padding:10px;background:#fbfdff}.charts img{width:100%;height:auto;display:block}.charts figcaption{padding:8px 2px 2px;font-size:12px;overflow-wrap:anywhere}footer{color:var(--muted);text-align:center;padding:28px 0 0}code{background:#e9eef3;border-radius:4px;padding:2px 5px}@media(max-width:700px){.shell{padding:18px 12px}.hero{padding:30px 24px}.section-title{align-items:flex-start;flex-direction:column}.section-title button{margin:0 6px 0 0}}
 </style></head><body>"#;
 
-const INTERACTIVE_STYLE: &str = r#".interactive-chart{position:relative;overflow:hidden}.chart-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 8px;color:var(--ink);font-size:12px}.chart-toolbar strong{overflow-wrap:anywhere}.chart-toolbar button{margin:0;font-size:12px}.chart-stage{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:8px;background:linear-gradient(180deg,#fff,#f7fbfe)}.chart-stage svg{display:block;width:100%;height:auto;min-height:260px;cursor:grab;touch-action:none;user-select:none}.chart-stage svg.is-panning{cursor:grabbing}.chart-stage .bar{transition:fill .12s,opacity .12s}.chart-stage .bar.hovered{fill:#d95f02;stroke:#8f3f00;stroke-width:1.5}.chart-stage .series{transition:stroke-width .12s,opacity .12s}.chart-stage .series.hovered{stroke-width:4;filter:drop-shadow(0 2px 2px #18212b44)}.chart-stage .series-point{pointer-events:all;transition:fill .12s,r .12s}.chart-stage .series-point.hovered{fill:#d95f02;stroke:#fff;stroke-width:2;r:7}.chart-tooltip{position:absolute;z-index:2;pointer-events:none;opacity:0;transform:translateY(-3px);padding:7px 10px;border:1px solid #17324d33;border-radius:7px;background:#18212bf2;color:#fff;box-shadow:0 6px 16px #17324d44;font-size:12px;line-height:1.3;white-space:nowrap;transition:opacity .12s}.chart-tooltip.visible{opacity:1}.interactive-chart figcaption{display:flex;justify-content:space-between;gap:8px}.interactive-chart figcaption::after{content:'Hover values · wheel zoom · drag pan';color:var(--muted);font-size:11px}"#;
+const INTERACTIVE_STYLE: &str = r#".interactive-chart{position:relative;overflow:hidden}.chart-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 8px;color:var(--ink);font-size:12px}.chart-toolbar strong{overflow-wrap:anywhere}.chart-toolbar button{margin:0;font-size:12px}.chart-stage{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:8px;background:linear-gradient(180deg,#fff,#f7fbfe)}.chart-stage svg{display:block;width:100%;height:auto;min-height:260px;cursor:grab;touch-action:none;user-select:none}.chart-stage svg.is-panning{cursor:grabbing}.chart-stage .bar{transition:fill .12s,opacity .12s}.chart-stage .bar.hovered{fill:#d95f02;stroke:#8f3f00;stroke-width:1.5}.chart-stage .series{transition:stroke-width .12s,opacity .12s}.chart-stage .series.hovered{stroke-width:4;filter:drop-shadow(0 2px 2px #18212b44)}.chart-stage .series-point{pointer-events:all;transition:fill .12s,r .12s}.chart-stage .series-point.hovered{fill:#d95f02;stroke:#fff;stroke-width:2;r:7}.chart-tooltip{position:absolute;z-index:2;pointer-events:none;opacity:0;transform:translateY(-3px);padding:7px 10px;border:1px solid #17324d33;border-radius:7px;background:#18212bf2;color:#fff;box-shadow:0 6px 16px #17324d44;font-size:12px;line-height:1.3;white-space:nowrap;transition:opacity .12s}.chart-tooltip.visible{opacity:1}.interactive-chart figcaption{display:flex;justify-content:space-between;gap:8px}.interactive-chart figcaption::after{content:'Hover values · wheel zoom · drag pan';color:var(--muted);font-size:11px}.bpftrace-profile{display:block;width:min(760px,100%);height:220px;border:0;margin:8px 0}.flamegraph{display:block;width:min(1100px,100%);height:420px;border:1px solid var(--line);border-radius:8px;margin:10px 0;background:#fff}.flamegraph-status{color:var(--muted);font-size:12px;margin:8px 0}"#;
 
 const MODAL_STYLE: &str = r#"body.chart-open{overflow:hidden}.chart-backdrop{display:none;position:fixed;inset:0;background:#081522c9;z-index:30}.interactive-chart.expanded{position:fixed;z-index:31;left:10vw;top:10vh;width:80vw;height:80vh;margin:0;padding:18px;background:var(--panel);border:1px solid #b9c9d8;border-radius:16px;box-shadow:0 24px 80px #08152299}.interactive-chart.expanded .chart-backdrop{display:block}.interactive-chart.expanded .chart-toolbar{position:relative;z-index:32}.interactive-chart.expanded .chart-stage{height:calc(80vh - 92px);min-height:0}.interactive-chart.expanded .chart-stage svg{height:100%;min-height:0}.interactive-chart.expanded figcaption{position:relative;z-index:32}@media(max-width:700px){.interactive-chart.expanded{left:3vw;top:3vh;width:94vw;height:94vh;padding:10px}.interactive-chart.expanded .chart-stage{height:calc(94vh - 78px)}}"#;
+
+const INLINE_SVG_STYLE: &str = r#".embedded-svg{display:block;overflow:auto;border:1px solid var(--line);border-radius:8px;background:#fff;margin:8px 0}.embedded-svg svg{display:block;width:100%;height:auto}.embedded-svg.perfetto-metric{width:min(760px,100%);max-height:260px}.embedded-svg.bpftrace-profile{width:min(760px,100%);max-height:300px}.embedded-svg.flamegraph{width:100%;max-height:520px}.embedded-svg.flamegraph svg{min-width:900px}"#;
 
 const INTERACTIVE_SCRIPT: &str = r#"<script>
 document.querySelectorAll('.interactive-chart').forEach(chart=>{
@@ -434,7 +632,7 @@ document.querySelectorAll('.interactive-chart').forEach(chart=>{
       const series=svg.querySelector(`.series[data-series-index="${item.dataset.seriesIndex}"]`);
       if(series)series.classList.add('hovered');
     }
-    tooltip.textContent=`${item.dataset.label}: ${item.dataset.value}`;
+    tooltip.textContent=item.dataset.timestamp?`${item.dataset.label}: ${item.dataset.value} @ ${item.dataset.timestamp} ms`:`${item.dataset.label}: ${item.dataset.value}`;
     tooltip.classList.add('visible');
     positionTooltip(event);
   };
@@ -615,12 +813,22 @@ fn write_bar_svg(path: &Path, title: &str, values: &[(String, f64)]) -> Result<(
         .map_err(|error| Error::Run(format!("cannot write {}: {error}", path.display())))
 }
 
-fn write_line_svg(path: &Path, title: &str, values: &[(String, Vec<f64>)]) -> Result<(), Error> {
+fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> Result<(), Error> {
     let max = values
         .iter()
-        .flat_map(|(_, points)| points.iter().copied())
+        .flat_map(|(_, points)| points.values.iter().copied())
         .fold(0.0_f64, f64::max)
         .max(1.0);
+    let timestamp_bounds = values
+        .iter()
+        .filter_map(|(_, points)| points.timestamps_ms.as_ref())
+        .flat_map(|timestamps| timestamps.iter().copied())
+        .fold(None, |bounds: Option<(f64, f64)>, timestamp| {
+            Some(match bounds {
+                Some((min, max)) => (min.min(timestamp), max.max(timestamp)),
+                None => (timestamp, timestamp),
+            })
+        });
     let mut svg = svg_header(900.0, 460.0, title);
     append_y_axis(
         &mut svg,
@@ -634,10 +842,16 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, Vec<f64>)]) -> Re
     for (series_index, (label, points)) in values.iter().enumerate() {
         let color = ["#4472c4", "#ed7d31", "#70ad47", "#a5a5a5", "#ffc000"][series_index % 5];
         let coordinates = points
+            .values
             .iter()
             .enumerate()
             .map(|(index, value)| {
-                let x = 75.0 + index as f64 / points.len().max(1) as f64 * 800.0;
+                let x = line_x(
+                    index,
+                    points.timestamps_ms.as_deref(),
+                    timestamp_bounds,
+                    points.values.len(),
+                );
                 let y = PLOT_BOTTOM - value.max(0.0) / max * (PLOT_BOTTOM - PLOT_TOP);
                 format!("{x:.1},{y:.1}")
             })
@@ -647,11 +861,23 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, Vec<f64>)]) -> Re
             "<polyline class=\"series\" data-series-index=\"{series_index}\" data-label=\"{}\" points=\"{coordinates}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"2\"/>",
             escape(label)
         ));
-        for (index, value) in points.iter().enumerate() {
-            let x = 75.0 + index as f64 / points.len().max(1) as f64 * 800.0;
+        for (index, value) in points.values.iter().enumerate() {
+            let x = line_x(
+                index,
+                points.timestamps_ms.as_deref(),
+                timestamp_bounds,
+                points.values.len(),
+            );
             let y = PLOT_BOTTOM - value.max(0.0) / max * (PLOT_BOTTOM - PLOT_TOP);
+            let timestamp = points
+                .timestamps_ms
+                .as_ref()
+                .and_then(|timestamps| timestamps.get(index))
+                .map_or_else(String::new, |timestamp| {
+                    format!(" data-timestamp=\"{timestamp}\"")
+                });
             svg.push_str(&format!(
-                "<circle class=\"series-point\" data-series-index=\"{series_index}\" data-label=\"{}\" data-value=\"{value}\" cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"6\" fill=\"transparent\" stroke=\"none\"/>",
+                "<circle class=\"series-point\" data-series-index=\"{series_index}\" data-label=\"{}\" data-value=\"{value}\"{timestamp} cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"6\" fill=\"transparent\" stroke=\"none\"/>",
                 escape(label)
             ));
         }
@@ -664,6 +890,28 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, Vec<f64>)]) -> Re
     svg.push_str("</svg>\n");
     fs::write(path, svg)
         .map_err(|error| Error::Run(format!("cannot write {}: {error}", path.display())))
+}
+
+fn line_x(
+    index: usize,
+    timestamps: Option<&[f64]>,
+    bounds: Option<(f64, f64)>,
+    length: usize,
+) -> f64 {
+    let fraction = timestamps
+        .and_then(|timestamps| timestamps.get(index))
+        .zip(bounds)
+        .map_or_else(
+            || index as f64 / length.saturating_sub(1).max(1) as f64,
+            |(timestamp, (min, max))| {
+                if max > min {
+                    (*timestamp - min) / (max - min)
+                } else {
+                    index as f64 / length.saturating_sub(1).max(1) as f64
+                }
+            },
+        );
+    75.0 + fraction.clamp(0.0, 1.0) * 800.0
 }
 
 fn append_y_axis(
@@ -787,6 +1035,14 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(root.join("sweep-results/000-one/measurements")).unwrap();
+        std::fs::create_dir_all(root.join("sweep-results/000-one/workspace")).unwrap();
+        for index in 0..300 {
+            std::fs::write(
+                root.join(format!("sweep-results/000-one/workspace/file-{index}.txt")),
+                "external workload evidence",
+            )
+            .unwrap();
+        }
         std::fs::write(
             root.join("one.toml"),
             "agent=\"codex\"\nworkload=\"bug-fix\"\nprovider=\"local\"\nmodel=\"m\"\n",
@@ -801,6 +1057,36 @@ mod tests {
         std::fs::write(
             root.join("sweep-results/000-one/measurements/mpstat.json"),
             r#"{"stdout":"sample 1\nsample 2\n","metrics":{"cpu.user_pct":12.5,"cpu.iowait_pct":3.0}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("sweep-results/000-one/measurements/perfetto.json"),
+            r#"{"metrics":{"perfetto.scheduler_events":24,"perfetto.tracepoints":4},"series":{"perfetto.scheduler_events_per_s":[3,7]},"series_timestamps":{"perfetto.scheduler_events_per_s":[12000,13000]}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("sweep-results/000-one/measurements/perfetto-metric-scheduler_events.svg"),
+            "<svg><title>Perfetto scheduler events</title></svg>",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("sweep-results/000-one/measurements/bpftrace-sched-latency.json"),
+            r#"{"metrics":{"bpftrace.sched-latency.wakeup_latency_events":7}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("sweep-results/000-one/measurements/bpftrace-sched-latency.svg"),
+            "<svg><title>bpftrace sched-latency</title></svg>",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("sweep-results/000-one/measurements/flamegraph.svg"),
+            "<svg><title>flamegraph</title></svg>",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("sweep-results/000-one/measurements/flamegraph.json"),
+            r#"{"status":"completed","artifact":"flamegraph.svg"}"#,
         )
         .unwrap();
         run(root.join("sweep.toml").to_str().unwrap(), &mut Vec::new()).unwrap();
@@ -824,6 +1110,18 @@ mod tests {
                 .is_file()
         );
         assert!(
+            root.join("results/sweep-comparison/metric-perfetto.perfetto.scheduler_events.svg")
+                .is_file()
+        );
+        assert!(
+            root.join("results/sweep-comparison/series-perfetto.scheduler_events_per_s.svg")
+                .is_file()
+        );
+        assert!(
+            root.join("results/sweep-comparison/metric-bpftrace-sched-latency.bpftrace.sched-latency.wakeup_latency_events.svg")
+                .is_file()
+        );
+        assert!(
             !root
                 .join("results/sweep-comparison/series-mpstat.svg")
                 .exists()
@@ -835,7 +1133,25 @@ mod tests {
         assert!(report.contains(">Details</th>"));
         assert!(report.contains("All metrics"));
         assert!(!report.contains("run.json"));
+        assert!(report.contains("Perfetto metric SVG"));
+        assert!(report.contains("perfetto-metric-scheduler_events.svg"));
+        assert!(report.contains("<div class=\"embedded-svg perfetto-metric\""));
+        assert!(report.contains("bpftrace profile SVG"));
+        assert!(report.contains("bpftrace-sched-latency.svg"));
+        assert!(report.contains(
+            "<div class=\"embedded-svg bpftrace-profile\" aria-label=\"bpftrace profile SVG\"><svg>"
+        ));
+        assert!(report.contains("bpftrace profiles"));
+        assert!(report.contains("class=\"embedded-svg flamegraph\""));
+        assert!(report.contains("flamegraph.svg"));
+        assert!(report.contains(
+            "<div class=\"embedded-svg flamegraph\" aria-label=\"Flamegraph SVG\"><svg>"
+        ));
+        assert!(!report.contains("<object class=\"flamegraph\""));
+        assert!(report.contains("Flamegraph collector status"));
         assert!(report.contains("class=\"interactive-chart\""));
+        assert!(report.contains("series-perfetto.scheduler_events_per_s.svg"));
+        assert!(report.contains("data-timestamp=\"12000\""));
         assert!(report.contains("chart-tooltip"));
         assert!(report.contains("wheel zoom"));
         assert!(report.contains("chart-expand"));
@@ -858,13 +1174,20 @@ mod tests {
         super::write_line_svg(
             &root.join("tokens.svg"),
             "token_usage.total_tokens",
-            &[("run".into(), vec![0.0, 100.0])],
+            &[(
+                "run".into(),
+                super::TimeSeries {
+                    values: vec![0.0, 100.0],
+                    timestamps_ms: Some(vec![10.0, 20.0]),
+                },
+            )],
         )
         .unwrap();
         let svg = std::fs::read_to_string(root.join("tokens.svg")).unwrap();
         assert!(svg.contains("unit: tokens"));
         assert!(svg.contains(">0</text>"));
         assert!(svg.contains(">100</text>"));
+        assert!(svg.contains("data-timestamp=\"10\""));
         let _ = std::fs::remove_dir_all(root);
     }
 

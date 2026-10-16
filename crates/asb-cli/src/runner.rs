@@ -1,8 +1,8 @@
 //! Live execution of one configured benchmark.
 
 use super::{Error, io_error, read_config};
+use crate::agents;
 use crate::benchmark::BenchmarkConfig;
-use crate::cli2key;
 use crate::measurements;
 use crate::models;
 use crate::prepare;
@@ -12,24 +12,15 @@ use crate::suggestions;
 use crate::tape;
 use crate::workloads;
 use serde::Serialize;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::Duration;
 use std::time::Instant;
 
 const MAX_OUTPUT: usize = 1024 * 1024;
-const BUILTIN_AGENTS: &[&str] = &[
-    "codex",
-    "pi",
-    "opencode",
-    "workbuddy",
-    "gemini",
-    "qwen-code",
-    "aider",
-    "mini-swe",
-    "openhands",
-    "openjiuwen",
-];
+const MAX_AGENT_RUNTIME: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Serialize)]
 struct RunResult<'a> {
@@ -53,26 +44,166 @@ struct RunResult<'a> {
 pub fn run_with_tape(
     path: &str,
     json: bool,
+    show_output: bool,
     measurement_dir: Option<&str>,
     mode: Option<tape::Mode>,
     cassette: Option<&str>,
-    output: &mut dyn Write,
-) -> Result<(), Error> {
-    let tape_request = mode.map(|value| (value, cassette));
-    run_mode(path, json, measurement_dir, tape_request, output)
-}
-
-fn run_mode(
-    path: &str,
-    json: bool,
-    measurement_dir: Option<&str>,
-    tape_request: Option<(tape::Mode, Option<&str>)>,
+    respect_record_timings: bool,
     output: &mut dyn Write,
 ) -> Result<(), Error> {
     let config_path = Path::new(path);
     let text = read_config(config_path)?;
     let config: BenchmarkConfig = toml::from_str(&text)
         .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
+    let tape_request = mode.map(|value| (value, cassette));
+    if config.concurrency > 1 {
+        return run_concurrent(
+            config_path,
+            &config,
+            json,
+            show_output,
+            measurement_dir,
+            tape_request,
+            respect_record_timings,
+            output,
+        );
+    }
+    run_mode(
+        config_path,
+        config,
+        json,
+        show_output,
+        measurement_dir,
+        tape_request,
+        respect_record_timings,
+        output,
+    )
+}
+
+/// Execute identical replicas concurrently. Each replica gets an isolated
+/// workspace, log, measurement directory, and record cassette so agents never
+/// mutate one another's files. Output is buffered per replica and emitted in
+/// replica order after completion to keep the terminal readable.
+fn run_concurrent(
+    config_path: &Path,
+    config: &BenchmarkConfig,
+    json: bool,
+    show_output: bool,
+    measurement_dir: Option<&str>,
+    tape_request: Option<(tape::Mode, Option<&str>)>,
+    respect_record_timings: bool,
+    output: &mut dyn Write,
+) -> Result<(), Error> {
+    let mut jobs = Vec::with_capacity(config.concurrency);
+    for index in 1..=config.concurrency {
+        let mut replica = config.clone();
+        replica.concurrency = 1;
+        replica.workspace = parallel_path(&replica.workspace, index);
+        replica.log_file = parallel_path(&replica.log_file, index);
+        if let Some(measurements) = replica.measurements.as_mut() {
+            measurements.directory = parallel_path(&measurements.directory, index);
+        }
+        let cassette = tape_request.and_then(|(mode, requested)| {
+            requested
+                .map(|path| append_path_suffix(Path::new(path), index))
+                .or_else(|| {
+                    (mode == tape::Mode::Record).then(|| {
+                        append_path_suffix(&default_cassette(config_path, &replica), index)
+                    })
+                })
+                .map(|path| (mode, path))
+        });
+        let measurement = measurement_dir.map(|path| PathBuf::from(parallel_path(path, index)));
+        jobs.push((replica, measurement, cassette));
+    }
+
+    let mut completed = Vec::with_capacity(jobs.len());
+    std::thread::scope(|scope| {
+        let handles =
+            jobs.into_iter()
+                .enumerate()
+                .map(|(index, (replica, measurement, cassette))| {
+                    scope.spawn(move || {
+                        let mut buffer = Vec::new();
+                        let mode = cassette.as_ref().map(|(mode, _)| *mode);
+                        let cassette_path =
+                            cassette.as_ref().map(|(_, path)| path.to_string_lossy());
+                        let cassette_path = cassette_path.as_deref();
+                        let measurement_path = measurement.as_deref().and_then(Path::to_str);
+                        let result = run_mode(
+                            config_path,
+                            replica,
+                            json,
+                            show_output,
+                            measurement_path,
+                            mode.map(|mode| (mode, cassette_path)),
+                            respect_record_timings,
+                            &mut buffer,
+                        );
+                        (index, result, buffer)
+                    })
+                });
+        for handle in handles {
+            completed.push(
+                handle
+                    .join()
+                    .expect("benchmark concurrency worker panicked"),
+            );
+        }
+    });
+
+    completed.sort_by_key(|(index, _, _)| *index);
+    let mut failures = Vec::new();
+    for (index, result, buffer) in completed {
+        output.write_all(&buffer).map_err(io_error)?;
+        if let Err(error) = result {
+            failures.push(format!("replica {index}: {error}"));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::Run(format!(
+            "{} concurrent benchmark replica(s) failed: {}",
+            failures.len(),
+            failures.join("; ")
+        )))
+    }
+}
+
+fn parallel_path(value: &str, index: usize) -> String {
+    append_path_suffix(Path::new(value), index)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn append_path_suffix(path: &Path, index: usize) -> PathBuf {
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("benchmark");
+    let extension = path.extension().and_then(|value| value.to_str());
+    let name = match extension {
+        Some(extension) => format!("{stem}-concurrency-{index}.{extension}"),
+        None => format!("{stem}-concurrency-{index}"),
+    };
+    if let Some(parent) = path.parent() {
+        parent.join(name)
+    } else {
+        PathBuf::from(name)
+    }
+}
+
+fn run_mode(
+    config_path: &Path,
+    config: BenchmarkConfig,
+    json: bool,
+    show_output: bool,
+    measurement_dir: Option<&str>,
+    tape_request: Option<(tape::Mode, Option<&str>)>,
+    respect_record_timings: bool,
+    output: &mut dyn Write,
+) -> Result<(), Error> {
     let tape_cassette = tape_request.map(|(mode, requested)| {
         (
             mode,
@@ -117,29 +248,23 @@ fn run_mode(
     workloads::prepare_fixture(&config.workload, &workspace).map_err(Error::Run)?;
     workloads::prepare_external(&config.workload, &workload_directory, &workspace)
         .map_err(Error::Run)?;
-    let codex_executable = local_agent("codex", &project_root, &project_config.tools_dir);
     let tape_mode = tape_request.map(|(mode, _)| mode);
-    let bridge = if config.provider.eq_ignore_ascii_case("cli2key")
-        && tape_mode != Some(tape::Mode::Replay)
-    {
-        cli2key::Bridge::connect(
-            local_agent("cli2key", &project_root, &project_config.tools_dir).as_deref(),
-        )
-        .map(Some)?
-    } else {
-        None
-    };
+    let bridge = providers::start_local_bridge(
+        &config.provider,
+        &project_root,
+        &project_config.tools_dir,
+        tape_mode == Some(tape::Mode::Replay),
+    )?;
     let mut tape_session = if let Some((mode, cassette)) = tape_cassette.as_ref() {
-        let upstream = tape::upstream(
+        let upstream = providers::tape_upstream(
             &config.provider,
-            bridge.as_ref().map(cli2key::Bridge::base_url),
+            providers::local_bridge_endpoint(&config.provider, bridge.as_ref()),
         );
-        let tape_executable = local_agent("llmtape", &project_root, &project_config.tools_dir);
         Some(tape::Session::start(
             *mode,
             cassette,
             upstream.as_deref(),
-            tape_executable.as_deref().map(Path::new),
+            respect_record_timings,
         )?)
     } else {
         None
@@ -147,11 +272,11 @@ fn run_mode(
     let tape_url = tape_session.as_ref().map(|session| session.url());
     let specification = command_for(
         &config,
-        tape_url.or_else(|| bridge.as_ref().map(cli2key::Bridge::base_url)),
+        tape_url.or_else(|| providers::local_bridge_endpoint(&config.provider, bridge.as_ref())),
         &prompt,
     )?;
     let mut program = specification.program;
-    if let Some(local) = local_agent(&config.agent, &project_root, &project_config.tools_dir) {
+    if let Some(local) = agents::resolve(&config.agent, &project_root, &project_config.tools_dir) {
         program = local;
     }
     let started = Instant::now();
@@ -166,36 +291,28 @@ fn run_mode(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     providers::configure(&mut command, &config.provider, &config.model);
-    let cli2key_endpoint = tape_url.or_else(|| bridge.as_ref().map(cli2key::Bridge::base_url));
-    prepare::apply(
+    let provider_endpoint =
+        tape_url.or_else(|| providers::local_bridge_endpoint(&config.provider, bridge.as_ref()));
+    let provider_credentials =
+        providers::local_bridge_credentials(&config.provider, bridge.as_ref(), provider_endpoint);
+    prepare::apply_with_tape(
+        &mut command,
+        &config.provider,
+        &config.model,
+        provider_credentials,
+        tape_url,
+        tape_mode == Some(tape::Mode::Replay),
+    )?;
+    agents::prepare(
         &mut command,
         &config.agent,
         &config.provider,
         &config.model,
-        codex_executable.as_deref(),
-        if config.provider.eq_ignore_ascii_case("cli2key") {
-            Some((
-                bridge
-                    .as_ref()
-                    .map_or("asb-replay", cli2key::Bridge::api_key),
-                cli2key_endpoint.unwrap_or("http://127.0.0.1:0/v1"),
-            ))
-        } else {
-            None
-        },
-        (config.agent.eq_ignore_ascii_case("pi")
-            && config.provider.eq_ignore_ascii_case("cli2key"))
-        .then(|| project::resolve(&project_root, &project_config.tools_dir).join("pi/config"))
-        .as_deref(),
-        (config.agent.eq_ignore_ascii_case("workbuddy")
-            && config.provider.eq_ignore_ascii_case("cli2key"))
-        .then(|| {
-            project::resolve(&project_root, &project_config.tools_dir).join("workbuddy/config")
-        })
-        .as_deref(),
+        provider_credentials,
+        &project::resolve(&project_root, &project_config.tools_dir),
     )?;
     if let Some(url) = tape_url {
-        tape::configure_command(
+        providers::configure_tape(
             &mut command,
             &config.provider,
             url,
@@ -226,34 +343,62 @@ fn run_mode(
         })
         .transpose()
         .map_err(Error::Run)?;
-    let child = command
-        .spawn()
-        .map_err(|error| Error::Run(format!("could not start {program}: {error}")))?;
     if let Some(session) = measurement_session.as_mut() {
+        session.trace_instant("asb.measurements.ready");
+        session.trace_instant("asb.agent.spawn");
+        session.trace_begin("asb.agent.execute");
+    }
+    let child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            if let Some(session) = measurement_session.as_mut() {
+                session.trace_end();
+                session.trace_instant("asb.agent.spawn_failed");
+            }
+            return Err(Error::Run(format!("could not start {program}: {error}")));
+        }
+    };
+    if let Some(session) = measurement_session.as_mut() {
+        session.trace_instant("asb.agent.started");
         session.attach_pid(child.id()).map_err(Error::Run)?;
     }
-    let child = child
-        .wait_with_output()
+    let child = wait_with_output(child, show_output, output)
         .map_err(|error| Error::Run(format!("could not wait for {program}: {error}")))?;
-    if let Some(session) = tape_session.take() {
-        session.stop()?;
+    if let Some(session) = measurement_session.as_mut() {
+        session.trace_end();
+        session.trace_instant("asb.agent.exited");
     }
+    let mut run_error = tape_session
+        .take()
+        .and_then(|session| session.stop().err())
+        .map(|error| error.to_string());
     if let Some((tape::Mode::Record, cassette)) = tape_cassette.as_ref() {
-        let metadata = std::fs::metadata(cassette).map_err(|error| {
-            Error::Run(format!(
-                "record completed without creating cassette {}; verify the provider endpoint and llmtape installation: {error}",
-                cassette.display()
-            ))
-        })?;
-        if metadata.len() == 0 {
-            return Err(Error::Run(format!(
-                "record created an empty cassette {}; the agent made no provider request; verify its provider base URL and credentials",
-                cassette.display()
-            )));
+        match std::fs::metadata(cassette) {
+            Ok(metadata) if metadata.len() > 0 => {}
+            Ok(_) => {
+                run_error = Some(format!(
+                    "record created an empty cassette {}; the agent made no provider request; verify its provider base URL and credentials",
+                    cassette.display()
+                ));
+            }
+            Err(error) => {
+                run_error = Some(format!(
+                    "record completed without creating cassette {}; verify the provider endpoint and llmtape installation: {error}",
+                    cassette.display()
+                ));
+            }
         }
     }
     let elapsed_ms = started.elapsed().as_millis();
-    let success = process_successful(&child.status, &child.stdout, &child.stderr);
+    let success =
+        run_error.is_none() && process_successful(&child.status, &child.stdout, &child.stderr);
+    let adapter_artifacts = agents::find(&config.agent)
+        .map(|adapter| {
+            adapter.collect(&agents::CollectionContext {
+                workspace: &workspace,
+            })
+        })
+        .unwrap_or_default();
     let mut token_usage = measurements::token_usage_from_sources(
         &config.provider,
         &config.agent,
@@ -263,19 +408,25 @@ fn run_mode(
             .as_ref()
             .map(|(_, cassette)| cassette.as_path()),
     );
-    if config.agent.eq_ignore_ascii_case("mini-swe") {
-        let trajectory = workspace.join(".asb-mini-swe.traj.json");
-        token_usage = token_usage.merge_with_source(
-            measurements::token_usage_from_path(&trajectory),
-            "agent-artifact",
-        );
-        let _ = std::fs::remove_file(trajectory);
+    if let Some(artifact_usage) = adapter_artifacts.token_usage {
+        token_usage = token_usage
+            .merge_with_source(artifact_usage, "agent-artifact")
+            .with_derived_total();
+    }
+    for path in adapter_artifacts.cleanup_paths {
+        let _ = std::fs::remove_file(path);
     }
     let steps = measurements::steps_from_sources(
         &config.agent,
         &bounded(&child.stdout),
         &bounded(&child.stderr),
     );
+    let mut stderr = bounded(&child.stderr);
+    if let Some(error) = run_error.as_deref() {
+        stderr.push_str("\nASB run error: ");
+        stderr.push_str(error);
+        stderr.push('\n');
+    }
     let result = RunResult {
         status: if success { "completed" } else { "failed" },
         agent: &config.agent,
@@ -291,7 +442,7 @@ fn run_mode(
             .as_ref()
             .map(|(_, cassette)| cassette.display().to_string()),
         stdout: bounded(&child.stdout),
-        stderr: bounded(&child.stderr),
+        stderr,
     };
     write_log(config_path, &config.log_file, &result)?;
     if let Some(session) = measurement_session {
@@ -318,7 +469,9 @@ fn run_mode(
     } else {
         render_human(&result, output)?;
     }
-    if success {
+    if let Some(error) = run_error {
+        Err(Error::Run(error))
+    } else if success {
         Ok(())
     } else {
         Err(Error::Run("agent exited unsuccessfully".into()))
@@ -451,18 +604,128 @@ fn process_successful(status: &std::process::ExitStatus, stdout: &[u8], stderr: 
     .any(|marker| output.contains(marker))
 }
 
-struct CommandSpec {
-    program: String,
-    args: Vec<String>,
-    append_prompt: bool,
+enum OutputChunk {
+    Stdout(Vec<u8>),
+    Stderr(Vec<u8>),
+    Finished,
 }
+
+/// Wait for an agent while optionally forwarding both output streams live.
+/// Readers run independently so a verbose agent cannot deadlock on a full
+/// stdout or stderr pipe. The complete bounded-by-the-existing-runner capture
+/// is still returned for logging and token parsing.
+fn wait_with_output(
+    mut child: Child,
+    show_output: bool,
+    output: &mut dyn Write,
+) -> std::io::Result<Output> {
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("agent stdout was not piped"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| std::io::Error::other("agent stderr was not piped"))?;
+    let (sender, receiver) = mpsc::channel();
+    let stdout_sender = sender.clone();
+    std::thread::spawn(move || read_stream(stdout, OutputStream::Stdout, stdout_sender));
+    std::thread::spawn(move || read_stream(stderr, OutputStream::Stderr, sender));
+
+    let mut stdout_capture = Vec::new();
+    let mut stderr_capture = Vec::new();
+    let mut finished_streams = 0;
+    let mut status = None;
+    let deadline = Instant::now() + MAX_AGENT_RUNTIME;
+    let mut timed_out = false;
+    while (finished_streams < 2 || status.is_none()) && !timed_out {
+        match receiver.recv_timeout(Duration::from_millis(50)) {
+            Ok(OutputChunk::Stdout(chunk)) => {
+                if show_output {
+                    output.write_all(&chunk)?;
+                    output.flush()?;
+                }
+                stdout_capture.extend_from_slice(&chunk);
+            }
+            Ok(OutputChunk::Stderr(chunk)) => {
+                if show_output {
+                    output.write_all(&chunk)?;
+                    output.flush()?;
+                }
+                stderr_capture.extend_from_slice(&chunk);
+            }
+            Ok(OutputChunk::Finished) => finished_streams += 1,
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        if status.is_none() {
+            status = child.try_wait()?;
+        }
+        if status.is_none() && Instant::now() >= deadline {
+            timed_out = true;
+            let _ = child.kill();
+            status = Some(child.wait()?);
+        }
+    }
+    let status = status.unwrap_or(child.wait()?);
+    if timed_out {
+        stderr_capture.extend_from_slice(
+            format!(
+                "agent execution exceeded {} seconds\n",
+                MAX_AGENT_RUNTIME.as_secs()
+            )
+            .as_bytes(),
+        );
+    }
+    Ok(Output {
+        status,
+        stdout: stdout_capture,
+        stderr: stderr_capture,
+    })
+}
+
+enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
+fn read_stream<R: Read>(mut stream: R, kind: OutputStream, sender: mpsc::Sender<OutputChunk>) {
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(size) => {
+                let chunk = buffer[..size].to_vec();
+                let message = match kind {
+                    OutputStream::Stdout => OutputChunk::Stdout(chunk),
+                    OutputStream::Stderr => OutputChunk::Stderr(chunk),
+                };
+                if sender.send(message).is_err() {
+                    return;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let _ = sender.send(OutputChunk::Finished);
+}
+
+type CommandSpec = agents::CommandSpec;
 
 fn command_for(
     config: &BenchmarkConfig,
-    cli2key_base_url: Option<&str>,
+    provider_base_url: Option<&str>,
     prompt: &str,
 ) -> Result<CommandSpec, Error> {
-    if let Some(candidate) = suggestions::closest(&config.agent, BUILTIN_AGENTS) {
+    if let Some(adapter) = agents::find(&config.agent) {
+        return Ok(adapter.command(&agents::CommandContext {
+            config,
+            endpoint: provider_base_url,
+            prompt,
+        }));
+    }
+    let agent_names = agents::names().collect::<Vec<_>>();
+    if let Some(candidate) = suggestions::closest(&config.agent, &agent_names) {
         return Err(Error::Input(format!(
             "unknown agent `{}`; did you mean `{candidate}`?",
             config.agent
@@ -476,215 +739,11 @@ fn command_for(
             )));
         }
     }
-    if config.provider.eq_ignore_ascii_case("cli2key") && config.agent == "gemini" {
-        return Err(Error::Run(
-            "gemini requires the Google Generative Language API and cannot use the cli2key OpenAI/Anthropic bridge; choose an OpenAI-compatible agent or configure a Google provider".into(),
-        ));
-    }
-    if config.provider.eq_ignore_ascii_case("cli2key") && config.agent == "aider" {
-        return Err(Error::Run(
-            "aider requires OpenAI Chat Completions, while the cli2key bridge exposes Responses and Anthropic Messages; choose an OpenAI-compatible provider for aider or use codex, opencode, qwen-code, mini-swe, openhands, openjiuwen, or workbuddy with cli2key".into(),
-        ));
-    }
-    let spec = match config.agent.as_str() {
-        "codex" => CommandSpec {
-            program: "codex".into(),
-            args: vec![
-                "exec".into(),
-                "--skip-git-repo-check".into(),
-                "--json".into(),
-                "--model".into(),
-                config.model.clone(),
-            ],
-            append_prompt: true,
-        },
-        "pi" => CommandSpec {
-            program: "pi".into(),
-            args: vec![
-                "--provider".into(),
-                pi_provider(config),
-                "--model".into(),
-                config.model.clone(),
-                "--mode".into(),
-                "json".into(),
-                "--print".into(),
-            ],
-            append_prompt: true,
-        },
-        "aider" => CommandSpec {
-            program: "aider".into(),
-            args: vec![
-                "--model".into(),
-                config.model.clone(),
-                "--no-git".into(),
-                "--no-pretty".into(),
-                "--yes-always".into(),
-                "--message".into(),
-            ],
-            append_prompt: true,
-        },
-        "opencode" => CommandSpec {
-            program: "opencode".into(),
-            args: vec![
-                "run".into(),
-                "--model".into(),
-                opencode_model(config),
-                "--format".into(),
-                "json".into(),
-            ],
-            append_prompt: true,
-        },
-        "qwen-code" => CommandSpec {
-            program: "qwen".into(),
-            args: vec![
-                "--model".into(),
-                config.model.clone(),
-                "--output-format".into(),
-                "json".into(),
-                "--yolo".into(),
-            ],
-            append_prompt: true,
-        },
-        "mini-swe" => CommandSpec {
-            program: "mini".into(),
-            args: vec![
-                "--model".into(),
-                format!("anthropic/{}", config.model),
-                "--task".into(),
-                prompt.into(),
-                "--yolo".into(),
-                "--exit-immediately".into(),
-                "--output".into(),
-                ".asb-mini-swe.traj.json".into(),
-            ],
-            append_prompt: false,
-        },
-        "openhands" => CommandSpec {
-            program: "openhands".into(),
-            args: vec![
-                "--headless".into(),
-                "--json".into(),
-                "--yolo".into(),
-                "--override-with-envs".into(),
-                "--task".into(),
-                prompt.into(),
-            ],
-            append_prompt: false,
-        },
-        "openjiuwen" => CommandSpec {
-            program: "openjiuwen".into(),
-            args: [
-                "--model",
-                config.model.as_str(),
-                "--provider",
-                "anthropic",
-                "--api-base",
-                cli2key_base_url.unwrap_or_default(),
-                "run",
-                "-f",
-                "json",
-                prompt,
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
-            append_prompt: false,
-        },
-        "gemini" => CommandSpec {
-            program: "gemini".into(),
-            args: vec![
-                "-p".into(),
-                prompt.into(),
-                "-m".into(),
-                config.model.clone(),
-                "--output-format".into(),
-                "json".into(),
-                "--yolo".into(),
-            ],
-            append_prompt: false,
-        },
-        "workbuddy" => CommandSpec {
-            program: "codebuddy".into(),
-            args: vec![
-                "--print".into(),
-                "--output-format".into(),
-                "json".into(),
-                "--model".into(),
-                config.model.clone(),
-                "-y".into(),
-            ],
-            append_prompt: true,
-        },
-        other => CommandSpec {
-            program: other.into(),
-            args: Vec::new(),
-            append_prompt: true,
-        },
-    };
-    Ok(spec)
-}
-
-fn opencode_model(config: &BenchmarkConfig) -> String {
-    if config.model.contains('/') {
-        return config.model.clone();
-    }
-    if config.provider.eq_ignore_ascii_case("cli2key") {
-        format!("cli2key/{}", config.model)
-    } else if config.provider.eq_ignore_ascii_case("opencode-zen") {
-        format!("opencode/{}", config.model)
-    } else {
-        config.model.clone()
-    }
-}
-
-fn pi_provider(config: &BenchmarkConfig) -> String {
-    config.provider.clone()
-}
-
-fn local_agent(agent: &str, project_root: &Path, tools_dir: &str) -> Option<String> {
-    let executable = match agent {
-        "qwen-code" => "qwen",
-        "mini-swe" => "mini",
-        "cli2key" => "codex-bridge",
-        "workbuddy" => "codebuddy",
-        other => other,
-    };
-    let mut candidates = Vec::new();
-    if let Some(directory) = std::env::var_os("ASB_TOOL_DIR") {
-        candidates.push(std::path::PathBuf::from(directory).join(executable));
-    }
-    candidates.push(
-        project::resolve(project_root, tools_dir)
-            .join(agent)
-            .join("bin")
-            .join(executable),
-    );
-    candidates.push(
-        project::resolve(project_root, tools_dir)
-            .join(agent)
-            .join("node_modules/.bin")
-            .join(executable),
-    );
-    candidates.push(
-        project::resolve(project_root, tools_dir)
-            .join(agent)
-            .join("venv/bin")
-            .join(executable),
-    );
-    candidates.push(Path::new(".asb-tools/bin").join(executable));
-    if executable != agent {
-        candidates.push(
-            project::resolve(project_root, tools_dir)
-                .join(agent)
-                .join("bin")
-                .join(agent),
-        );
-    }
-    candidates
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-        .and_then(|candidate| candidate.canonicalize().ok())
-        .map(|candidate| candidate.to_string_lossy().into_owned())
+    Ok(CommandSpec {
+        program: config.agent.clone(),
+        args: Vec::new(),
+        append_prompt: true,
+    })
 }
 
 fn bounded(bytes: &[u8]) -> String {
@@ -693,10 +752,7 @@ fn bounded(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        RunResult, command_for, opencode_model, render_human, render_json, resolve_log_path,
-        write_log,
-    };
+    use super::{RunResult, command_for, render_human, render_json, resolve_log_path, write_log};
     use crate::benchmark::BenchmarkConfig;
     use crate::measurements::TokenUsage;
 
@@ -786,6 +842,7 @@ mod tests {
             workload: "bug-fix".into(),
             provider: "cli2key".into(),
             model: "gpt-test".into(),
+            concurrency: 1,
             trial_set: None,
             trial: None,
             workspace: "workspace".into(),
@@ -807,6 +864,7 @@ mod tests {
             workload: "bug-fix".into(),
             provider: "cli2key".into(),
             model: "gpt-test".into(),
+            concurrency: 1,
             trial_set: None,
             trial: None,
             workspace: "workspace".into(),
@@ -832,12 +890,44 @@ mod tests {
     }
 
     #[test]
+    fn newly_supported_agent_commands_are_noninteractive_and_machine_readable() {
+        for (agent, program, marker) in [
+            ("claude-code", "claude", "--output-format"),
+            ("goose", "goose", "--output-format"),
+            ("cline", "cline", "--json"),
+            ("continue", "cn", "--auto"),
+        ] {
+            let config = BenchmarkConfig {
+                agent: agent.into(),
+                workload: "bug-fix".into(),
+                provider: "cli2key".into(),
+                model: "gpt-test".into(),
+                concurrency: 1,
+                trial_set: None,
+                trial: None,
+                workspace: "workspace".into(),
+                log_file: "run.log".into(),
+                measurements: None,
+            };
+            let command = command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt")
+                .expect("new agent command");
+            assert_eq!(command.program, program, "{agent} program");
+            assert!(
+                command.args.iter().any(|value| value == marker),
+                "{agent} marker"
+            );
+            assert!(!command.append_prompt, "{agent} embeds prompt exactly once");
+        }
+    }
+
+    #[test]
     fn pi_cli2key_uses_openai_bridge_and_print_mode() {
         let config = BenchmarkConfig {
             agent: "pi".into(),
             workload: "bug-fix".into(),
             provider: "cli2key".into(),
             model: "gpt-6.1-sol".into(),
+            concurrency: 1,
             trial_set: None,
             trial: None,
             workspace: "workspace".into(),
@@ -853,26 +943,6 @@ mod tests {
         assert!(command.args.contains(&"--mode".into()));
         assert!(command.args.contains(&"json".into()));
         assert!(command.append_prompt);
-    }
-
-    #[test]
-    fn aider_cli2key_reports_the_bridge_protocol_boundary() {
-        let config = BenchmarkConfig {
-            agent: "aider".into(),
-            workload: "bug-fix".into(),
-            provider: "cli2key".into(),
-            model: "gpt-6.1-sol".into(),
-            trial_set: None,
-            trial: None,
-            workspace: "workspace".into(),
-            log_file: "run.log".into(),
-            measurements: None,
-        };
-        let error = match command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt") {
-            Ok(_) => panic!("bridge protocol boundary must be rejected"),
-            Err(error) => error,
-        };
-        assert!(error.to_string().contains("OpenAI Chat Completions"));
     }
 
     #[test]
@@ -899,19 +969,26 @@ mod tests {
     }
 
     #[test]
-    fn opencode_zen_uses_opencode_provider_model_namespace() {
+    fn opencode_zen_command_uses_opencode_provider_model_namespace() {
         let config = BenchmarkConfig {
             agent: "opencode".into(),
             workload: "bug-fix".into(),
             provider: "opencode-zen".into(),
             model: "mimo-v2.6-flash-free".into(),
+            concurrency: 1,
             trial_set: None,
             trial: None,
             workspace: "workspace".into(),
             log_file: "run.log".into(),
             measurements: None,
         };
-        assert_eq!(opencode_model(&config), "opencode/mimo-v2.6-flash-free");
+        let command = command_for(&config, None, "prompt").expect("known agent");
+        assert!(command.args.windows(2).any(|pair| {
+            pair == [
+                "--model".to_owned(),
+                "opencode/mimo-v2.6-flash-free".to_owned(),
+            ]
+        }));
     }
 
     #[test]
@@ -921,6 +998,7 @@ mod tests {
             workload: "bug-fix".into(),
             provider: "local".into(),
             model: "test-model".into(),
+            concurrency: 1,
             trial_set: None,
             trial: None,
             workspace: "workspace".into(),

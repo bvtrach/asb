@@ -20,7 +20,10 @@ struct SweepFile {
 pub fn run(
     path: &str,
     json: bool,
+    show_output: bool,
     mode: Option<crate::tape::Mode>,
+    respect_record_timings: bool,
+    cassette_root: Option<&Path>,
     output: &mut dyn Write,
 ) -> Result<(), Error> {
     let sweep_path = Path::new(path);
@@ -95,31 +98,41 @@ pub fn run(
                 result_dir.display()
             ))
         })?;
-        let isolated = isolated_config(&config, &result_dir);
-        // Pass an absolute path to the runner.  Relative paths inside a sweep
-        // result directory can make project discovery resolve against the
-        // result path rather than the owning benchmark project.
-        let isolated_path = result_dir
-            .canonicalize()
-            .map_err(|error| {
-                Error::Run(format!(
-                    "cannot resolve isolated benchmark {}: {error}",
-                    result_dir.display()
-                ))
-            })?
-            .join("benchmark.toml");
+        // Resolve the result directory before rendering paths into the
+        // isolated config. Otherwise a relative result directory is resolved
+        // a second time by the runner, nesting logs/workspaces under the
+        // result directory itself.
+        let resolved_result_dir = result_dir.canonicalize().map_err(|error| {
+            Error::Run(format!(
+                "cannot resolve isolated benchmark {}: {error}",
+                result_dir.display()
+            ))
+        })?;
+        let isolated = isolated_config(&config, &resolved_result_dir);
+        let isolated_path = resolved_result_dir.join("benchmark.toml");
         let serialized = toml::to_string_pretty(&isolated)
             .map_err(|error| Error::Run(format!("cannot render sweep benchmark: {error}")))?;
         std::fs::write(&isolated_path, serialized).map_err(|error| {
             Error::Run(format!("cannot write {}: {error}", isolated_path.display()))
         })?;
-        let cassette = None;
+        let cassette = cassette_root.map(|root| {
+            root.join(format!("{index:03}-{}", safe_name(&config_path)))
+                .join("cassettes")
+                .join(format!(
+                    "benchmark-{}-{}-{}.jsonl",
+                    safe_component(&config.agent),
+                    safe_component(&config.workload),
+                    safe_component(&config.model)
+                ))
+        });
         if let Err(error) = runner::run_with_tape(
             isolated_path.to_string_lossy().as_ref(),
             json,
+            show_output,
             None,
             mode,
-            cassette,
+            cassette.as_deref().and_then(|path| path.to_str()),
+            respect_record_timings,
             output,
         ) {
             failures.push(format!("{}: {error}", config_path.display()));
@@ -209,6 +222,19 @@ fn safe_name(path: &Path) -> String {
         .collect()
 }
 
+fn safe_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::run;
@@ -232,16 +258,32 @@ mod tests {
             "benchmark.toml",
             "agent = \"codex\"\nworkload = \"bug-fix\"\nprovider = \"openrouter\"\nmodel = \"tool-model\"\n",
         );
-        let error = run(path.to_str().expect("path"), false, None, &mut Vec::new())
-            .expect_err("normal benchmark must be rejected");
+        let error = run(
+            path.to_str().expect("path"),
+            false,
+            false,
+            None,
+            false,
+            None,
+            &mut Vec::new(),
+        )
+        .expect_err("normal benchmark must be rejected");
         assert!(error.to_string().contains("not a sweep TOML"));
     }
 
     #[test]
     fn rejects_unsafe_references_before_execution() {
         let path = temp_file("sweep.toml", "configs = [\"../benchmark.toml\"]\n");
-        let error = run(path.to_str().expect("path"), false, None, &mut Vec::new())
-            .expect_err("parent traversal must be rejected");
+        let error = run(
+            path.to_str().expect("path"),
+            false,
+            false,
+            None,
+            false,
+            None,
+            &mut Vec::new(),
+        )
+        .expect_err("parent traversal must be rejected");
         assert!(error.to_string().contains("unsafe benchmark path"));
     }
 
@@ -254,8 +296,16 @@ mod tests {
             "agent = \"not-installed\"\nworkload = \"bug-fix\"\nprovider = \"local\"\nmodel = \"test-model\"\n",
         )
         .expect("benchmark");
-        let error = run(path.to_str().expect("path"), false, None, &mut Vec::new())
-            .expect_err("invalid agent leaves a failed sweep");
+        let error = run(
+            path.to_str().expect("path"),
+            false,
+            false,
+            None,
+            false,
+            None,
+            &mut Vec::new(),
+        )
+        .expect_err("invalid agent leaves a failed sweep");
         assert!(error.to_string().contains("failed benchmark"));
         let report = path
             .parent()

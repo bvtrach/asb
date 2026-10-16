@@ -5,16 +5,62 @@
 //! result is written as bounded JSON so later processing never has to parse
 //! terminal output.
 
+use crate::collectors;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_CAPTURE: usize = 256 * 1024;
 const MAX_RUNS: usize = 10_000;
+const FLAMEGRAPH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// A bounded, target-PID-scoped bpftrace program. Profiles use only stable
+/// kernel tracepoint families where possible; users can still supply a
+/// runtime-specific program through ASB_BPFTRACE_PROGRAMS.
+#[derive(Clone, Copy)]
+struct BpftraceProfile {
+    name: &'static str,
+    description: &'static str,
+    program: &'static str,
+}
+
+const BPFTRACE_PROFILES: &[BpftraceProfile] = &[
+    BpftraceProfile {
+        name: "sched-latency",
+        description: "wakeup-to-run latency for agent tasks",
+        program: include_str!("bpftrace_profiles/sched_latency.bt"),
+    },
+    BpftraceProfile {
+        name: "cpu-migrations",
+        description: "agent task migrations between CPUs",
+        program: include_str!("bpftrace_profiles/cpu_migrations.bt"),
+    },
+    BpftraceProfile {
+        name: "futex-wait",
+        description: "futex wait count and duration for agent threads",
+        program: include_str!("bpftrace_profiles/futex_wait.bt"),
+    },
+    BpftraceProfile {
+        name: "syscall-rate",
+        description: "aggregate system-call pressure from the agent process",
+        program: include_str!("bpftrace_profiles/syscall_rate.bt"),
+    },
+    BpftraceProfile {
+        name: "lock-contention",
+        description: "kernel lock contention for agent threads when supported",
+        program: include_str!("bpftrace_profiles/lock_contention.bt"),
+    },
+];
+
+/// Names accepted by `bpftrace:PROFILE` collector selections and
+/// `ASB_BPFTRACE_PROFILES=PROFILE,...`.
+pub fn bpftrace_profile_names() -> impl Iterator<Item = &'static str> {
+    BPFTRACE_PROFILES.iter().map(|profile| profile.name)
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TokenUsage {
@@ -27,21 +73,10 @@ pub struct TokenUsage {
 
 /// Stable names used in generated configuration files and downstream tools.
 pub fn available_collectors() -> Vec<String> {
-    [
-        "system",
-        "runtime",
-        "mpstat",
-        "iostat",
-        "perf",
-        "flamegraph",
-        "bpftrace",
-        "token_usage",
-        "steps",
-        "success_rate",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect()
+    collectors::all()
+        .iter()
+        .map(|collector| collector.id().to_owned())
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -82,9 +117,17 @@ struct CollectorResult {
     elapsed_ms: u128,
     stdout: String,
     stderr: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    artifact: Option<String>,
     /// Parsed, stable metrics. Raw stdout/stderr remain available for detail,
     /// but comparison must consume this bounded machine-readable map instead.
     metrics: BTreeMap<String, f64>,
+    /// Bounded samples emitted by collectors that support interval output.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    series: BTreeMap<String, Vec<f64>>,
+    /// Timestamp in milliseconds for each Perfetto series sample.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    series_timestamps: BTreeMap<String, Vec<f64>>,
 }
 
 struct Collector {
@@ -103,7 +146,29 @@ pub struct Session {
     collectors: Vec<Collector>,
     perf_data: Option<PathBuf>,
     perf_enabled: bool,
+    perfetto_trace: Option<PathBuf>,
+    perfetto_enabled: bool,
+    trace_marker: Option<PathBuf>,
+    tracepoint_count: u64,
+    perfetto_metrics: BTreeMap<String, f64>,
+    bpftrace_profiles: Vec<BpftraceProfile>,
+    mpstat_enabled: bool,
+    iostat_enabled: bool,
+    bpftrace_enabled: bool,
     sudo_collectors: BTreeSet<String>,
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        // An early runner error (for example, an incomplete replay cassette)
+        // must not orphan process-scoped collectors. `finish` takes ownership
+        // of the collector list, so this only handles paths that return before
+        // normal finalization.
+        for mut collector in self.collectors.drain(..) {
+            let _ = collector.child.kill();
+            let _ = collector.child.wait();
+        }
+    }
 }
 
 impl Session {
@@ -120,9 +185,11 @@ impl Session {
         selected: &[String],
         tool_dir: Option<&Path>,
     ) -> Result<Self, String> {
-        let sudo_collectors = preflight_collectors(selected, tool_dir)?;
         fs::create_dir_all(dir)
             .map_err(|e| format!("cannot create measurements directory: {e}"))?;
+        // Privilege and tracefs checks must complete before any agent process
+        // is prepared. This prevents a partially measured benchmark run.
+        let sudo_collectors = preflight_collectors(dir, selected, tool_dir)?;
         let started_unix_ms = unix_ms();
         let info = SystemInfo {
             schema_version: 1,
@@ -136,33 +203,56 @@ impl Session {
         };
         write_json(&dir.join("system.json"), &info)?;
 
-        let mut session = Self {
+        let session = Self {
             dir: dir.to_path_buf(),
             tool_dir: tool_dir.map(Path::to_path_buf),
             started_unix_ms,
             collectors: Vec::new(),
             perf_data: None,
             perf_enabled: selected_or_env("perf", "ASB_MEASURE_PERF", selected),
+            perfetto_trace: None,
+            perfetto_enabled: selected_or_env("perfetto", "ASB_MEASURE_PERFETTO", selected),
+            trace_marker: None,
+            tracepoint_count: 0,
+            perfetto_metrics: BTreeMap::new(),
+            bpftrace_profiles: selected_bpftrace_profiles(selected)?,
+            mpstat_enabled: selected_or_env("mpstat", "ASB_MEASURE_MPSTAT", selected),
+            iostat_enabled: selected_or_env("iostat", "ASB_MEASURE_IOSTAT", selected),
+            bpftrace_enabled: selected_or_env("bpftrace", "ASB_MEASURE_BPFTRACE", selected),
             sudo_collectors,
         };
-        session.start_snapshot(
-            "mpstat",
-            "ASB_MEASURE_MPSTAT",
-            &["-P", "ALL", "1"],
-            selected,
-        )?;
-        session.start_snapshot("iostat", "ASB_MEASURE_IOSTAT", &["-x", "1"], selected)?;
-        if selected_or_env("bpftrace", "ASB_MEASURE_BPFTRACE", selected)
-            && std::env::var_os("ASB_BPFTRACE_PROGRAMS").is_some()
-        {
-            session.start_bpftrace()?;
-        }
         Ok(session)
+    }
+
+    /// Emit a fixed-name userspace Perfetto/ftrace instant. Names are constant
+    /// ASB lifecycle markers only; configurations, prompts, credentials, and
+    /// provider responses are never written to the kernel trace buffer.
+    pub fn trace_instant(&mut self, name: &str) {
+        self.write_trace_marker(&format!("I|{}|{name}", std::process::id()));
+    }
+
+    /// Begin a fixed-name ASB lifecycle span in the Perfetto timeline.
+    pub fn trace_begin(&mut self, name: &str) {
+        self.write_trace_marker(&format!("B|{}|{name}", std::process::id()));
+    }
+
+    /// End the most recently opened ASB lifecycle span.
+    pub fn trace_end(&mut self) {
+        self.write_trace_marker("E");
     }
 
     /// Attach perf to the selected child after it has been spawned.
     pub fn attach_pid(&mut self, pid: u32) -> Result<(), String> {
+        // PID-sensitive collectors start only after the agent exists. This
+        // prevents scheduler/process traces and process statistics from
+        // including unrelated agents running on the host.
+        self.start_perfetto(pid)?;
+        self.start_process_snapshots(pid)?;
+        if self.bpftrace_enabled && std::env::var_os("ASB_BPFTRACE_PROGRAMS").is_some() {
+            self.start_bpftrace(pid)?;
+        }
         if !self.perf_enabled {
+            self.start_bpftrace_profiles(pid)?;
             return Ok(());
         }
         let data = self.dir.join("perf.data");
@@ -174,7 +264,9 @@ impl Session {
             .map_err(|e| format!("cannot create perf standard output: {e}"))?;
         let child = match self
             .command("perf")
-            .args(["record", "-g", "-p"])
+            // Keep perf data bounded enough for the offline flamegraph
+            // renderer while retaining process-scoped call samples.
+            .args(["record", "-g", "-F", "19", "-p"])
             .arg(pid.to_string())
             .args(["-o"])
             .arg(&data)
@@ -185,6 +277,7 @@ impl Session {
             Ok(child) => child,
             Err(error) if !env_true("ASB_MEASURE_PERF") => {
                 write_unavailable(&self.dir.join("perf.json"), "perf", error.to_string())?;
+                self.start_bpftrace_profiles(pid)?;
                 return Ok(());
             }
             Err(error) => {
@@ -201,16 +294,72 @@ impl Session {
             stdout_path,
             stderr_path,
         });
+        let stat_stdout_path = self.dir.join("perf-stat.stdout");
+        let stat_stderr_path = self.dir.join("perf-stat.stderr");
+        let stat_stdout = File::create(&stat_stdout_path)
+            .map_err(|e| format!("cannot create perf stat output: {e}"))?;
+        let stat_stderr = File::create(&stat_stderr_path)
+            .map_err(|e| format!("cannot create perf stat error output: {e}"))?;
+        let interval_ms = measurement_interval_ms().to_string();
+        let stat = self
+            .command("perf")
+            .args([
+                "stat",
+                "-I",
+                &interval_ms,
+                "-x,",
+                "-e",
+                "task-clock,context-switches,cpu-migrations,page-faults,cycles,instructions",
+                "-p",
+            ])
+            .arg(pid.to_string())
+            .stdout(Stdio::from(stat_stdout))
+            .stderr(Stdio::from(stat_stderr))
+            .spawn();
+        match stat {
+            Ok(child) => self.collectors.push(Collector {
+                name: "perf-stat".into(),
+                child,
+                started: Instant::now(),
+                stdout_path: stat_stdout_path,
+                stderr_path: stat_stderr_path,
+            }),
+            Err(error) => write_unavailable(
+                &self.dir.join("perf-stat.json"),
+                "perf-stat",
+                error.to_string(),
+            )?,
+        }
+        self.start_bpftrace_profiles(pid)?;
         Ok(())
     }
 
     /// Finish collectors and write the run record and aggregate summary.
     pub fn finish<'a>(mut self, measurement: RunMeasurement<'a>) -> Result<(), String> {
-        for mut collector in self.collectors.drain(..) {
+        let collectors = std::mem::take(&mut self.collectors);
+        for mut collector in collectors {
             let status = match collector.child.try_wait() {
                 Ok(Some(status)) => status,
                 Ok(None) => {
-                    let _ = collector.child.kill();
+                    // Tracebox writes its protobuf trace and bpftrace writes its map
+                    // summaries on an orderly interrupt. Do not SIGKILL either collector:
+                    // a short benchmark would otherwise lose the very artifacts ASB is
+                    // meant to report.
+                    if collector.name == "perf"
+                        || collector.name == "perfetto"
+                        || collector.name.starts_with("bpftrace-")
+                    {
+                        let interrupted = Command::new("kill")
+                            .arg("-INT")
+                            .arg(collector.child.id().to_string())
+                            .status()
+                            .is_ok_and(|status| status.success());
+                        if !interrupted {
+                            let _ = collector.child.kill();
+                        }
+                    } else {
+                        let _ = collector.child.kill();
+                    }
                     collector
                         .child
                         .wait()
@@ -228,35 +377,253 @@ impl Session {
             let _ = fs::remove_file(&collector.stdout_path);
             let _ = fs::remove_file(&collector.stderr_path);
             let stopped_by_runner = status.code().is_none();
-            let metrics = parse_collector_metrics(&collector.name, &stdout);
+            let metrics_source = if collector.name == "perf-stat" {
+                &stderr
+            } else {
+                &stdout
+            };
+            let mut metrics = parse_collector_metrics(&collector.name, metrics_source);
+            let series = parse_collector_series(&collector.name, metrics_source);
+            let (series, series_timestamps) = if collector.name == "perfetto" {
+                let (mut trace_series, timestamps) = self.perfetto_trace_series();
+                trace_series.extend(series);
+                (trace_series, timestamps)
+            } else {
+                (series, BTreeMap::new())
+            };
+            if collector.name == "perfetto" {
+                self.perfetto_metrics = self.perfetto_trace_metrics();
+                metrics.extend(self.perfetto_metrics.clone());
+            }
+            let artifact = match collector.name.as_str() {
+                "perf" => self
+                    .perf_data
+                    .as_ref()
+                    .filter(|path| path.is_file())
+                    .map(|path| file_name(path)),
+                "perfetto" => self
+                    .perfetto_trace
+                    .as_ref()
+                    .filter(|path| path.is_file())
+                    .map(|path| file_name(path)),
+                _ => None,
+            };
+            let collector_status = if status.success()
+                || (stopped_by_runner && collector.name != "perf" && !stdout.is_empty())
+                || (stopped_by_runner && collector.name == "perf-stat" && !stderr.is_empty())
+                || (stopped_by_runner
+                    && collector_artifact_exists(
+                        &collector.name,
+                        self.perf_data.as_deref(),
+                        self.perfetto_trace.as_deref(),
+                    )) {
+                "completed"
+            } else {
+                "failed"
+            };
+            let collector_status = if collector.name == "perfetto"
+                && (stderr.contains("Failed to create FtraceController")
+                    || stderr.contains("FtraceController"))
+            {
+                "unavailable"
+            } else {
+                collector_status
+            };
+            if let Some(profile) = collector.name.strip_prefix("bpftrace-") {
+                write_bpftrace_profile_svg(&self.dir, profile, collector_status, &metrics)?;
+            }
             let result = CollectorResult {
                 schema_version: 1,
                 collector: collector.name.clone(),
-                status: if status.success()
-                    || (stopped_by_runner && collector.name != "perf" && !stdout.is_empty())
-                    || (stopped_by_runner
-                        && collector.name == "perf"
-                        && self
-                            .perf_data
-                            .as_ref()
-                            .is_some_and(|path| path.metadata().is_ok_and(|m| m.len() > 0)))
-                {
-                    "completed"
-                } else {
-                    "failed"
-                }
-                .into(),
+                status: collector_status.into(),
                 exit_code: status.code(),
                 elapsed_ms: collector.started.elapsed().as_millis(),
                 stdout,
                 stderr,
+                artifact,
                 metrics,
+                series,
+                series_timestamps,
             };
             write_json(&self.dir.join(format!("{}.json", collector.name)), &result)?;
         }
         write_json(&self.dir.join("run.json"), &measurement)?;
         self.write_flamegraph()?;
+        if self.perfetto_enabled {
+            write_json(
+                &self.dir.join("perfetto-tracepoints.json"),
+                &serde_json::json!({
+                    "schema_version": 1,
+                    "collector": "perfetto",
+                    "tracepoint_count": self.tracepoint_count,
+                    "trace_marker": self.trace_marker.as_ref().map(|path| path.display().to_string()),
+                    "trace": self.perfetto_trace.as_ref().map(|path| file_name(path)),
+                }),
+            )?;
+            write_perfetto_metric_svgs(
+                &self.dir,
+                self.perfetto_trace.as_deref(),
+                self.tracepoint_count,
+                &self.perfetto_metrics,
+            )?;
+        }
         update_summary(&self.dir, &measurement)
+    }
+
+    fn start_perfetto(&mut self, pid: u32) -> Result<(), String> {
+        if !self.perfetto_enabled {
+            return Ok(());
+        }
+        let config = self.dir.join("perfetto-scheduling.pbtx");
+        fs::write(&config, perfetto_config(Some(pid)))
+            .map_err(|error| format!("cannot write Perfetto trace configuration: {error}"))?;
+        let trace = self.dir.join("perfetto-scheduling.perfetto-trace");
+        // A sudo-launched Tracebox otherwise creates a root-only 0600 trace.
+        // Precreating the artifact keeps its ownership with the benchmark user.
+        File::create(&trace)
+            .map_err(|error| format!("cannot create Perfetto trace artifact: {error}"))?;
+        let stdout_path = self.dir.join("perfetto.stdout");
+        let stderr_path = self.dir.join("perfetto.stderr");
+        let child = self
+            .command("perfetto")
+            .args(["--txt", "-c"])
+            .arg(&config)
+            .args(["-o"])
+            .arg(&trace)
+            .stdout(Stdio::from(File::create(&stdout_path).map_err(
+                |error| format!("cannot create Perfetto output: {error}"),
+            )?))
+            .stderr(Stdio::from(File::create(&stderr_path).map_err(
+                |error| format!("cannot create Perfetto error output: {error}"),
+            )?))
+            .spawn();
+        match child {
+            Ok(child) => {
+                self.perfetto_trace = Some(trace);
+                self.trace_marker = trace_marker_path();
+                self.collectors.push(Collector {
+                    name: "perfetto".into(),
+                    child,
+                    started: Instant::now(),
+                    stdout_path,
+                    stderr_path,
+                });
+            }
+            Err(error) if !env_true("ASB_MEASURE_PERFETTO") => write_unavailable(
+                &self.dir.join("perfetto.json"),
+                "perfetto",
+                format!("{error}; install it with `asb tool install perfetto` in this project"),
+            )?,
+            Err(error) => {
+                return Err(format!(
+                    "cannot start Perfetto Tracebox (disable with ASB_MEASURE_PERFETTO=0): {error}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn write_trace_marker(&mut self, event: &str) {
+        let Some(path) = self.trace_marker.as_ref() else {
+            return;
+        };
+        if OpenOptions::new()
+            .write(true)
+            .open(path)
+            .and_then(|mut file| file.write_all(event.as_bytes()))
+            .is_ok()
+        {
+            self.tracepoint_count = self.tracepoint_count.saturating_add(1);
+        }
+    }
+
+    /// Summarize the native trace with the installer-provided trace processor.
+    /// The trace itself remains the authoritative artifact; these aggregates
+    /// make scheduler activity comparable in ASB's offline SVG and HTML views.
+    fn perfetto_trace_metrics(&self) -> BTreeMap<String, f64> {
+        let mut metrics = BTreeMap::new();
+        let Some(trace) = self.perfetto_trace.as_ref().filter(|path| path.is_file()) else {
+            return metrics;
+        };
+        metrics.insert(
+            "perfetto.trace_bytes".into(),
+            trace.metadata().map_or(0, |metadata| metadata.len()) as f64,
+        );
+        metrics.insert("perfetto.tracepoints".into(), self.tracepoint_count as f64);
+        let Some(tool_dir) = self.tool_dir.as_ref() else {
+            return metrics;
+        };
+        let processor = tool_dir.join("perfetto/bin/trace_processor_shell");
+        if !processor.is_file() {
+            return metrics;
+        }
+        for (metric, query) in [
+            ("perfetto.scheduler_events", "SELECT COUNT(*) FROM sched"),
+            ("perfetto.processes", "SELECT COUNT(*) FROM process"),
+            ("perfetto.threads", "SELECT COUNT(*) FROM thread"),
+        ] {
+            let Ok(output) = Command::new(&processor)
+                .args(["query"])
+                .arg(trace)
+                .arg(query)
+                .output()
+            else {
+                continue;
+            };
+            if output.status.success() {
+                if let Some(value) = bounded(&output.stdout).lines().rev().find_map(parse_float) {
+                    metrics.insert(metric.into(), value);
+                }
+            }
+        }
+        metrics
+    }
+
+    /// Extract timestamped scheduler samples directly from the Perfetto trace.
+    /// The timestamp column is retained in milliseconds so comparison graphs
+    /// use trace time rather than synthetic point indexes.
+    fn perfetto_trace_series(&self) -> (BTreeMap<String, Vec<f64>>, BTreeMap<String, Vec<f64>>) {
+        let mut series = BTreeMap::new();
+        let mut timestamps = BTreeMap::new();
+        let Some(trace) = self.perfetto_trace.as_ref().filter(|path| path.is_file()) else {
+            return (series, timestamps);
+        };
+        let Some(tool_dir) = self.tool_dir.as_ref() else {
+            return (series, timestamps);
+        };
+        let processor = tool_dir.join("perfetto/bin/trace_processor_shell");
+        if !processor.is_file() {
+            return (series, timestamps);
+        }
+        for (name, query) in [
+            (
+                "perfetto.scheduler_events_per_s",
+                "SELECT ts/1000000000 AS timestamp_s, COUNT(*) AS value FROM sched GROUP BY timestamp_s ORDER BY timestamp_s",
+            ),
+            (
+                "perfetto.scheduler_duration_ms_per_s",
+                "SELECT ts/1000000000 AS timestamp_s, SUM(dur)/1000000.0 AS value FROM sched GROUP BY timestamp_s ORDER BY timestamp_s",
+            ),
+        ] {
+            let Ok(output) = Command::new(&processor)
+                .args(["query"])
+                .arg(trace)
+                .arg(query)
+                .output()
+            else {
+                continue;
+            };
+            if !output.status.success() {
+                continue;
+            }
+            let (sample_timestamps, values) =
+                parse_perfetto_series_output(&bounded(&output.stdout));
+            if values.len() >= 2 {
+                timestamps.insert(name.into(), sample_timestamps);
+                series.insert(name.into(), values);
+            }
+        }
+        (series, timestamps)
     }
 
     fn start_snapshot(
@@ -264,15 +631,16 @@ impl Session {
         name: &str,
         variable: &str,
         args: &[&str],
-        selected: &[String],
+        enabled: bool,
+        command_name: &str,
     ) -> Result<(), String> {
-        if !selected_or_env(name, variable, selected) {
+        if !enabled {
             return Ok(());
         }
         let stdout_path = self.dir.join(format!("{name}.stdout"));
         let stderr_path = self.dir.join(format!("{name}.stderr"));
         let child = match self
-            .command(name)
+            .command(command_name)
             .args(args)
             .stdout(Stdio::from(
                 File::create(&stdout_path)
@@ -308,7 +676,26 @@ impl Session {
         Ok(())
     }
 
-    fn start_bpftrace(&mut self) -> Result<(), String> {
+    fn start_process_snapshots(&mut self, pid: u32) -> Result<(), String> {
+        let interval = pidstat_interval_seconds();
+        self.start_snapshot(
+            "mpstat",
+            "ASB_MEASURE_MPSTAT",
+            &["-u", "-T", "ALL", "-p", &pid.to_string(), &interval],
+            self.mpstat_enabled,
+            "pidstat",
+        )?;
+        self.start_snapshot(
+            "iostat",
+            "ASB_MEASURE_IOSTAT",
+            &["-d", "-T", "ALL", "-p", &pid.to_string(), &interval],
+            self.iostat_enabled,
+            "pidstat",
+        )?;
+        Ok(())
+    }
+
+    fn start_bpftrace(&mut self, pid: u32) -> Result<(), String> {
         let specs = std::env::var("ASB_BPFTRACE_PROGRAMS")
             .map_err(|_| "ASB_MEASURE_BPFTRACE=1 requires ASB_BPFTRACE_PROGRAMS".to_owned())?;
         for (index, spec) in specs
@@ -318,6 +705,7 @@ impl Session {
         {
             let (program, params) = spec.split_once('?').map_or((spec, ""), |parts| parts);
             let mut command = self.command("bpftrace");
+            command.args(["-p", &pid.to_string()]);
             command.arg(program);
             for parameter in params.split('&').filter(|s| !s.is_empty()) {
                 let (key, value) = parameter.split_once('=').ok_or_else(|| {
@@ -364,6 +752,48 @@ impl Session {
         Ok(())
     }
 
+    /// Start each selected built-in profile after the agent PID is known. This
+    /// keeps all probes scoped to the benchmarked agent rather than the host.
+    fn start_bpftrace_profiles(&mut self, pid: u32) -> Result<(), String> {
+        for profile in &self.bpftrace_profiles {
+            let name = format!("bpftrace-{}", profile.name);
+            let stdout_path = self.dir.join(format!("{name}.stdout"));
+            let stderr_path = self.dir.join(format!("{name}.stderr"));
+            let stdout = File::create(&stdout_path)
+                .map_err(|error| format!("cannot create {name} output: {error}"))?;
+            let stderr = File::create(&stderr_path)
+                .map_err(|error| format!("cannot create {name} error output: {error}"))?;
+            let child = self
+                .command("bpftrace")
+                .args(["-e", profile.program])
+                .arg(pid.to_string())
+                .stdout(Stdio::from(stdout))
+                .stderr(Stdio::from(stderr))
+                .spawn();
+            match child {
+                Ok(child) => self.collectors.push(Collector {
+                    name,
+                    child,
+                    started: Instant::now(),
+                    stdout_path,
+                    stderr_path,
+                }),
+                Err(error) if !env_true("ASB_MEASURE_BPFTRACE") => write_unavailable(
+                    &self.dir.join(format!("bpftrace-{}.json", profile.name)),
+                    &format!("bpftrace-{}", profile.name),
+                    format!("{}; profile: {}", error, profile.description),
+                )?,
+                Err(error) => {
+                    return Err(format!(
+                        "cannot start bpftrace profile {}: {error}",
+                        profile.name
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn write_flamegraph(&self) -> Result<(), String> {
         let Some(data) = self.perf_data.as_ref() else {
             return write_flamegraph_status(
@@ -382,16 +812,26 @@ impl Session {
             );
         }
         let collapse = std::env::var_os("ASB_FLAMEGRAPH_STACKCOLLAPSE").or_else(|| {
-            self.tool_dir
-                .as_ref()
-                .map(|dir| dir.join("bin/stackcollapse-perf.pl").into_os_string())
-                .filter(|path| Path::new(path).is_file())
+            self.tool_dir.as_ref().and_then(|dir| {
+                [
+                    dir.join("flamegraph/bin/stackcollapse-perf.pl"),
+                    dir.join("bin/stackcollapse-perf.pl"),
+                ]
+                .into_iter()
+                .find(|path| path.is_file())
+                .map(|path| path.into_os_string())
+            })
         });
         let render = std::env::var_os("ASB_FLAMEGRAPH_RENDER").or_else(|| {
-            self.tool_dir
-                .as_ref()
-                .map(|dir| dir.join("bin/flamegraph").into_os_string())
-                .filter(|path| Path::new(path).is_file())
+            self.tool_dir.as_ref().and_then(|dir| {
+                [
+                    dir.join("flamegraph/bin/flamegraph"),
+                    dir.join("bin/flamegraph"),
+                ]
+                .into_iter()
+                .find(|path| path.is_file())
+                .map(|path| path.into_os_string())
+            })
         });
         let (Some(collapse), Some(render)) = (collapse, render) else {
             return write_flamegraph_status(
@@ -401,64 +841,61 @@ impl Session {
                 "install stackcollapse-perf.pl and flamegraph in the project tool directory",
             );
         };
-        let script = self
+        let mut script = self
             .command("perf")
             .args(["script", "-i"])
             .arg(data)
-            .output()
-            .map_err(|e| format!("cannot run perf script for flamegraph: {e}"))?;
-        if !script.status.success() {
-            return write_flamegraph_status(
-                &self.dir,
-                "unavailable",
-                None,
-                "perf script failed; check perf.json and host perf permissions",
-            );
-        }
-        let collapsed = Command::new(collapse)
-            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("cannot start perf script for flamegraph: {e}"))?;
+        let script_stdout = script
+            .stdout
+            .take()
+            .ok_or_else(|| "perf script stdout was not piped".to_owned())?;
+        let folded_path = self.dir.join("flamegraph.folded");
+        let mut collapsed = Command::new(collapse)
+            .stdin(Stdio::from(script_stdout))
+            .stdout(Stdio::from(File::create(&folded_path).map_err(|e| {
+                format!("cannot create flamegraph folded output: {e}")
+            })?))
+            .stderr(Stdio::null())
             .spawn()
             .map_err(|e| format!("cannot start flamegraph stack collapse script: {e}"))?;
-        let mut collapsed = collapsed;
-        if let Some(mut input) = collapsed.stdin.take() {
-            input
-                .write_all(&script.stdout)
-                .map_err(|e| format!("cannot feed stack collapse script: {e}"))?;
-        }
-        let collapsed_output = collapsed
-            .wait_with_output()
-            .map_err(|e| format!("cannot finish stack collapse script: {e}"))?;
-        if !collapsed_output.status.success() {
+        if !wait_bounded(&mut script, FLAMEGRAPH_TIMEOUT)? {
             return write_flamegraph_status(
                 &self.dir,
                 "unavailable",
                 None,
-                "the stack collapse script failed to process perf output",
+                "perf script exceeded the 60 second flamegraph deadline or failed",
+            );
+        }
+        if !wait_bounded(&mut collapsed, FLAMEGRAPH_TIMEOUT)? {
+            return write_flamegraph_status(
+                &self.dir,
+                "unavailable",
+                None,
+                "the stack collapse script exceeded the 60 second flamegraph deadline or failed",
             );
         }
         let mut render = Command::new(render);
-        render.stdin(Stdio::piped()).stdout(Stdio::from(
-            File::create(self.dir.join("flamegraph.svg"))
-                .map_err(|e| format!("cannot create flamegraph.svg: {e}"))?,
-        ));
+        render
+            .stdin(Stdio::from(File::open(&folded_path).map_err(|e| {
+                format!("cannot open collapsed flamegraph output: {e}")
+            })?))
+            .stdout(Stdio::from(
+                File::create(self.dir.join("flamegraph.svg"))
+                    .map_err(|e| format!("cannot create flamegraph.svg: {e}"))?,
+            ));
         let mut render = render
             .spawn()
             .map_err(|e| format!("cannot start flamegraph renderer: {e}"))?;
-        if let Some(mut input) = render.stdin.take() {
-            input
-                .write_all(&collapsed_output.stdout)
-                .map_err(|e| format!("cannot feed flamegraph renderer: {e}"))?;
-        }
-        let status = render
-            .wait()
-            .map_err(|e| format!("cannot finish flamegraph renderer: {e}"))?;
-        if !status.success() {
+        if !wait_bounded(&mut render, FLAMEGRAPH_TIMEOUT)? {
             return write_flamegraph_status(
                 &self.dir,
                 "unavailable",
                 None,
-                "the flamegraph renderer failed",
+                "the flamegraph renderer exceeded the 60 second deadline or failed",
             );
         }
         write_flamegraph_status(&self.dir, "completed", Some("flamegraph.svg"), "")
@@ -476,13 +913,42 @@ impl Session {
 
     fn executable(&self, name: &str) -> PathBuf {
         if let Some(tool_dir) = &self.tool_dir {
-            let local = tool_dir.join("bin").join(name);
-            if local.is_file() {
-                return local;
+            let binary = tool_binary_name(name);
+            for local in [
+                tool_dir.join(name).join("bin").join(binary),
+                tool_dir.join("bin").join(binary),
+            ] {
+                if local.is_file() {
+                    return local;
+                }
             }
         }
-        PathBuf::from(name)
+        PathBuf::from(tool_binary_name(name))
     }
+}
+
+fn parse_perfetto_series_output(output: &str) -> (Vec<f64>, Vec<f64>) {
+    let mut timestamps = Vec::new();
+    let mut values = Vec::new();
+    for line in output.lines() {
+        let fields = line
+            .split(',')
+            .map(|field| field.trim().trim_matches('"'))
+            .collect::<Vec<_>>();
+        if fields.len() < 2 {
+            continue;
+        }
+        let (Some(timestamp_s), Some(value)) = (parse_float(fields[0]), parse_float(fields[1]))
+        else {
+            continue;
+        };
+        timestamps.push(timestamp_s * 1_000.0);
+        values.push(value);
+        if values.len() >= 2_048 {
+            break;
+        }
+    }
+    (timestamps, values)
 }
 
 /// Extract token usage from environment conventions, agent output, and an
@@ -598,7 +1064,16 @@ impl TokenUsage {
             input_tokens: self.input_tokens.or(other.input_tokens),
             output_tokens: self.output_tokens.or(other.output_tokens),
             cached_tokens: self.cached_tokens.or(other.cached_tokens),
-            total_tokens: self.total_tokens.or(other.total_tokens),
+            // Agent artifacts occasionally report a partial or stale total
+            // (mini-SWE has emitted a small per-step total).  Keep the
+            // largest observed total until the canonical input+output total
+            // is derived below instead of letting a later artifact overwrite
+            // the complete run.
+            total_tokens: match (self.total_tokens, other.total_tokens) {
+                (Some(left), Some(right)) => Some(left.max(right)),
+                (Some(value), None) | (None, Some(value)) => Some(value),
+                (None, None) => None,
+            },
             source: self.source.or(other.source),
         }
     }
@@ -625,12 +1100,12 @@ impl TokenUsage {
         merged
     }
 
-    fn with_derived_total(mut self) -> Self {
-        if self.total_tokens.is_none() {
-            self.total_tokens = self
-                .input_tokens
-                .zip(self.output_tokens)
-                .map(|(input, output)| input + output);
+    pub(crate) fn with_derived_total(mut self) -> Self {
+        // Cached input is a subset of input tokens, so total is input+output
+        // rather than input+output+cached.  Prefer this canonical value over
+        // provider-specific totals whenever both components are available.
+        if let Some((input, output)) = self.input_tokens.zip(self.output_tokens) {
+            self.total_tokens = Some(input.saturating_add(output));
         }
         self
     }
@@ -830,11 +1305,13 @@ fn usage_from_json(value: &serde_json::Value) -> TokenUsage {
             &[
                 "cached_tokens",
                 "cache_read_input_tokens",
+                "cache_creation_input_tokens",
                 "cachedTokens",
                 "cache_read_tokens",
                 "cacheRead",
                 "cache_read",
                 "cacheReadInputTokens",
+                "cacheCreationInputTokens",
                 "cachedContentTokenCount",
             ],
         )
@@ -880,11 +1357,13 @@ fn usage_from_json(value: &serde_json::Value) -> TokenUsage {
                 "outputTokenCount",
                 "cached_tokens",
                 "cache_read_input_tokens",
+                "cache_creation_input_tokens",
                 "cachedTokens",
                 "cache_read_tokens",
                 "cacheRead",
                 "cache_read",
                 "cacheReadInputTokens",
+                "cacheCreationInputTokens",
                 "cachedContentTokenCount",
                 "total_tokens",
                 "totalTokens",
@@ -896,6 +1375,8 @@ fn usage_from_json(value: &serde_json::Value) -> TokenUsage {
                 "output",
                 "completion",
                 "cached",
+                "cache_creation_input_tokens",
+                "cacheCreationInputTokens",
                 "total",
             ]
             .contains(&name.as_str())
@@ -1012,6 +1493,7 @@ fn usage_from_key_values(line: &str) -> TokenUsage {
             | "cachedtokens"
             | "cacheread"
             | "cachereadinputtokens"
+            | "cachecreationinputtokens"
             | "cachedcontenttokencount" => usage.cached_tokens = Some(number),
             "total" | "totaltokens" | "totaltokencount" | "tokencount" | "tokensused" => {
                 usage.total_tokens = Some(number)
@@ -1091,7 +1573,10 @@ fn write_unavailable(path: &Path, collector: &str, error: String) -> Result<(), 
             elapsed_ms: 0,
             stdout: String::new(),
             stderr: error,
+            artifact: None,
             metrics: BTreeMap::new(),
+            series: BTreeMap::new(),
+            series_timestamps: BTreeMap::new(),
         },
     )
 }
@@ -1102,6 +1587,24 @@ struct FlamegraphStatus<'a> {
     status: &'a str,
     artifact: Option<&'a str>,
     reason: Option<&'a str>,
+}
+
+fn wait_bounded(child: &mut Child, timeout: Duration) -> Result<bool, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child
+            .try_wait()
+            .map_err(|error| format!("cannot poll collector process: {error}"))?
+        {
+            Some(status) => return Ok(status.success()),
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(false);
+            }
+            None => std::thread::sleep(Duration::from_millis(25)),
+        }
+    }
 }
 
 fn write_flamegraph_status(
@@ -1121,12 +1624,401 @@ fn write_flamegraph_status(
     )
 }
 
+/// Write one dependency-free SVG per stable Perfetto metric. Raw traces are
+/// intentionally not converted to text: they can contain host process names,
+/// while these SVGs contain only ASB's fixed aggregate metrics.
+fn write_perfetto_metric_svgs(
+    dir: &Path,
+    trace: Option<&Path>,
+    tracepoint_count: u64,
+    metrics: &BTreeMap<String, f64>,
+) -> Result<(), String> {
+    let mut all_metrics = metrics.clone();
+    if all_metrics.is_empty() {
+        all_metrics.insert("perfetto.tracepoints".into(), tracepoint_count as f64);
+    }
+    for (name, value) in all_metrics {
+        let trace_state = trace
+            .filter(|path| path.is_file())
+            .map_or("native trace unavailable", |_| "native trace recorded");
+        let label = name.trim_start_matches("perfetto.");
+        let svg = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"760\" height=\"180\" viewBox=\"0 0 760 180\"><title>Perfetto {}</title><rect width=\"760\" height=\"180\" fill=\"#101827\"/><rect x=\"16\" y=\"16\" width=\"728\" height=\"148\" rx=\"10\" fill=\"#182334\"/><text x=\"36\" y=\"50\" fill=\"#e5edf8\" font-family=\"sans-serif\" font-size=\"20\" font-weight=\"bold\">Perfetto: {}</text><text x=\"36\" y=\"92\" fill=\"#78dba9\" font-family=\"monospace\" font-size=\"28\">{:.0}</text><text x=\"36\" y=\"132\" fill=\"#b9c7dc\" font-family=\"sans-serif\" font-size=\"15\">{} · lifecycle markers: {tracepoint_count}</text></svg>\n",
+            escape_svg(label),
+            escape_svg(label),
+            value,
+            trace_state,
+        );
+        fs::write(
+            dir.join(format!("perfetto-metric-{}.svg", safe_svg_name(label))),
+            svg,
+        )
+        .map_err(|error| format!("cannot write Perfetto metric SVG: {error}"))?;
+    }
+    Ok(())
+}
+
+/// Each built-in eBPF profile owns one SVG. The comparison layer additionally
+/// creates one cross-run graph per numeric metric in that profile.
+fn write_bpftrace_profile_svg(
+    dir: &Path,
+    profile: &str,
+    status: &str,
+    metrics: &BTreeMap<String, f64>,
+) -> Result<(), String> {
+    let mut lines = vec![format!("status: {status}")];
+    for (name, value) in metrics {
+        lines.push(format!(
+            "{}: {:.0}",
+            name.rsplit('.').next().unwrap_or(name),
+            value
+        ));
+    }
+    if metrics.is_empty() {
+        lines.push("no aggregate values emitted; inspect the paired JSON result".into());
+    }
+    let height = 76 + lines.len() * 26;
+    let mut svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"760\" height=\"{height}\" viewBox=\"0 0 760 {height}\"><title>bpftrace {}</title><rect width=\"760\" height=\"{height}\" fill=\"#101827\"/><rect x=\"16\" y=\"16\" width=\"728\" height=\"{}\" rx=\"10\" fill=\"#182334\"/><text x=\"36\" y=\"48\" fill=\"#e5edf8\" font-family=\"sans-serif\" font-size=\"20\" font-weight=\"bold\">bpftrace: {}</text>",
+        escape_svg(profile),
+        height - 32,
+        escape_svg(profile)
+    );
+    for (index, line) in lines.iter().enumerate() {
+        let color = if index == 0 && status == "completed" {
+            "#78dba9"
+        } else if index == 0 {
+            "#ffb86b"
+        } else {
+            "#b9c7dc"
+        };
+        svg.push_str(&format!(
+            "<text x=\"36\" y=\"{}\" fill=\"{color}\" font-family=\"monospace\" font-size=\"15\">{}</text>",
+            76 + index * 26,
+            escape_svg(line)
+        ));
+    }
+    svg.push_str("</svg>\n");
+    fs::write(dir.join(format!("bpftrace-{profile}.svg")), svg)
+        .map_err(|error| format!("cannot write bpftrace profile SVG: {error}"))
+}
+
+fn escape_svg(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn safe_svg_name(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 fn parse_collector_metrics(name: &str, output: &str) -> BTreeMap<String, f64> {
     match name {
-        "mpstat" => parse_mpstat_metrics(output),
-        "iostat" => parse_iostat_metrics(output),
+        "mpstat" => {
+            let metrics = parse_pidstat_cpu_metrics(output);
+            if metrics.is_empty() {
+                parse_mpstat_metrics(output)
+            } else {
+                metrics
+            }
+        }
+        "iostat" => {
+            let metrics = parse_pidstat_io_metrics(output);
+            if metrics.is_empty() {
+                parse_iostat_metrics(output)
+            } else {
+                metrics
+            }
+        }
+        "perf-stat" => parse_perf_stat_metrics(output),
+        profile if profile.starts_with("bpftrace-") => {
+            parse_bpftrace_metrics(profile.trim_start_matches("bpftrace-"), output)
+        }
         _ => BTreeMap::new(),
     }
+}
+
+fn parse_collector_series(name: &str, output: &str) -> BTreeMap<String, Vec<f64>> {
+    match name {
+        "mpstat" => parse_pidstat_series(
+            output,
+            &["%usr", "%system", "%guest", "%wait", "%CPU"],
+            |name| {
+                format!(
+                    "process.cpu.{}",
+                    match name {
+                        "%usr" => "user_pct",
+                        "%system" => "system_pct",
+                        "%guest" => "guest_pct",
+                        "%wait" => "wait_pct",
+                        "%CPU" => "total_pct",
+                        _ => "unknown",
+                    }
+                )
+            },
+        ),
+        "iostat" => parse_pidstat_series(
+            output,
+            &["kB_rd/s", "kB_wr/s", "kB_ccwr/s", "iodelay"],
+            |name| {
+                format!(
+                    "process.io.{}",
+                    match name {
+                        "kB_rd/s" => "read_kib_per_s",
+                        "kB_wr/s" => "write_kib_per_s",
+                        "kB_ccwr/s" => "cancelled_write_kib_per_s",
+                        "iodelay" => "delay_ticks",
+                        _ => "unknown",
+                    }
+                )
+            },
+        ),
+        "perf-stat" => parse_perf_stat_series(output),
+        profile if profile.starts_with("bpftrace-") => {
+            parse_bpftrace_series(profile.trim_start_matches("bpftrace-"), output)
+        }
+        _ => BTreeMap::new(),
+    }
+}
+
+fn parse_pidstat_series(
+    output: &str,
+    wanted: &[&str],
+    name: impl Fn(&str) -> String,
+) -> BTreeMap<String, Vec<f64>> {
+    let mut header = None;
+    let mut samples: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    for line in output.lines() {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.first().is_some_and(|field| *field == "Average:")
+            || fields.first().is_some_and(|field| *field == "Linux")
+        {
+            continue;
+        }
+        if fields.iter().any(|field| wanted.contains(field)) {
+            header = Some(fields);
+            continue;
+        }
+        let Some(header_fields) = header.as_ref() else {
+            continue;
+        };
+        if fields.len() != header_fields.len() {
+            continue;
+        }
+        for wanted_name in wanted {
+            let Some(index) = header_fields.iter().position(|field| field == wanted_name) else {
+                continue;
+            };
+            let Some(value) = fields.get(index).and_then(|field| parse_float(field)) else {
+                continue;
+            };
+            samples.entry(name(wanted_name)).or_default().push(value);
+        }
+    }
+    samples.retain(|_, values| !values.is_empty());
+    samples
+}
+
+fn parse_perf_stat_series(output: &str) -> BTreeMap<String, Vec<f64>> {
+    let mut series: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    for line in output.lines() {
+        let fields = line.split(',').map(str::trim).collect::<Vec<_>>();
+        let Some(event_index) = fields.iter().position(|field| {
+            matches!(
+                *field,
+                "task-clock"
+                    | "context-switches"
+                    | "cpu-migrations"
+                    | "page-faults"
+                    | "cycles"
+                    | "instructions"
+            )
+        }) else {
+            continue;
+        };
+        let Some(value) = event_index
+            .checked_sub(2)
+            .and_then(|index| fields.get(index))
+            .and_then(|field| parse_float(field))
+        else {
+            continue;
+        };
+        let Some(name) = perf_metric_name(fields[event_index]) else {
+            continue;
+        };
+        series
+            .entry(format!("perf.{name}"))
+            .or_default()
+            .push(value);
+    }
+    series
+}
+
+/// bpftrace prints aggregation maps as `@asb_metric: value`. Only these
+/// ASB-owned map names are accepted, so arbitrary program output cannot create
+/// comparison metrics accidentally.
+fn parse_bpftrace_metrics(profile: &str, output: &str) -> BTreeMap<String, f64> {
+    let mut metrics = BTreeMap::new();
+    for line in output.lines() {
+        let Some((name, value)) = line.trim().split_once(':') else {
+            continue;
+        };
+        let Some(name) = name.trim().strip_prefix("@asb_") else {
+            continue;
+        };
+        let Some(value) = parse_float(value) else {
+            continue;
+        };
+        metrics.insert(format!("bpftrace.{profile}.{name}"), value);
+    }
+    metrics
+}
+
+fn parse_bpftrace_series(profile: &str, output: &str) -> BTreeMap<String, Vec<f64>> {
+    let mut series: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    for line in output.lines() {
+        let Some((name, value)) = line.trim().split_once(':') else {
+            continue;
+        };
+        let Some(name) = name.trim().strip_prefix("@asb_") else {
+            continue;
+        };
+        let Some(value) = parse_float(value) else {
+            continue;
+        };
+        series
+            .entry(format!("bpftrace.{profile}.{name}"))
+            .or_default()
+            .push(value);
+    }
+    series
+}
+
+/// Parse `perf stat -x,` output into stable unit-named fields. Unsupported
+/// counters remain absent instead of being inferred from unrelated values.
+fn parse_perf_stat_metrics(output: &str) -> BTreeMap<String, f64> {
+    let mut metrics = BTreeMap::new();
+    for line in output.lines() {
+        let fields = line.split(',').map(str::trim).collect::<Vec<_>>();
+        let Some(event_index) = fields.iter().position(|field| {
+            matches!(
+                *field,
+                "task-clock"
+                    | "context-switches"
+                    | "cpu-migrations"
+                    | "page-faults"
+                    | "cycles"
+                    | "instructions"
+            )
+        }) else {
+            continue;
+        };
+        let Some(value) = event_index
+            .checked_sub(2)
+            .and_then(|index| fields.get(index))
+            .and_then(|field| parse_float(field))
+        else {
+            continue;
+        };
+        let Some(name) = perf_metric_name(fields[event_index]) else {
+            continue;
+        };
+        metrics.insert(format!("perf.{name}"), value);
+    }
+    metrics
+}
+
+fn perf_metric_name(event: &str) -> Option<&'static str> {
+    match event {
+        "task-clock" => Some("task_clock_ms"),
+        "context-switches" => Some("context_switches"),
+        "cpu-migrations" => Some("cpu_migrations"),
+        "page-faults" => Some("page_faults"),
+        "cycles" => Some("cycles"),
+        "instructions" => Some("instructions"),
+        _ => None,
+    }
+}
+
+fn tool_binary_name(name: &str) -> &str {
+    if name == "perfetto" { "tracebox" } else { name }
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("artifact")
+        .to_owned()
+}
+
+fn collector_artifact_exists(
+    name: &str,
+    perf_data: Option<&Path>,
+    perfetto_trace: Option<&Path>,
+) -> bool {
+    let path = match name {
+        "perf" => perf_data,
+        "perfetto" => perfetto_trace,
+        _ => None,
+    };
+    path.is_some_and(|path| path.metadata().is_ok_and(|metadata| metadata.len() > 0))
+}
+
+fn trace_marker_path() -> Option<PathBuf> {
+    [
+        PathBuf::from("/sys/kernel/tracing/trace_marker"),
+        PathBuf::from("/sys/kernel/debug/tracing/trace_marker"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+}
+
+fn perfetto_config(pid: Option<u32>) -> String {
+    // Tracebox's bundled schema rejects FtraceConfig.pid_filter. Process
+    // scoping is applied during post-processing using ASB lifecycle markers.
+    let _ = pid;
+    r#"duration_ms: 3600000
+buffers { size_kb: 65536 fill_policy: RING_BUFFER }
+data_sources {
+  config {
+    name: "linux.ftrace"
+    ftrace_config {
+      compact_sched { enabled: true }
+      ftrace_events: "sched/sched_switch"
+      ftrace_events: "sched/sched_waking"
+      ftrace_events: "sched/sched_wakeup_new"
+      ftrace_events: "sched/sched_process_exit"
+      ftrace_events: "sched/sched_process_free"
+      ftrace_events: "task/task_newtask"
+      ftrace_events: "task/task_rename"
+      ftrace_events: "ftrace/print"
+    }
+  }
+}
+data_sources {
+  config {
+    name: "linux.process_stats"
+    process_stats_config { scan_all_processes_on_start: false }
+  }
+}
+"#
+    .to_owned()
+}
+
+fn perfetto_probe_config() -> String {
+    perfetto_config(None).replacen("duration_ms: 3600000", "duration_ms: 250", 1)
 }
 
 fn parse_mpstat_metrics(output: &str) -> BTreeMap<String, f64> {
@@ -1166,6 +2058,93 @@ fn parse_mpstat_metrics(output: &str) -> BTreeMap<String, f64> {
         .filter_map(|(name, (sum, count))| {
             (count > 0).then_some((format!("cpu.{name}"), sum / count as f64))
         })
+        .collect()
+}
+
+/// Parse process-scoped `pidstat -u` output. The collector is retained under
+/// the stable `mpstat` result name for compatibility, but it no longer uses
+/// host-wide mpstat CPU totals.
+fn parse_pidstat_cpu_metrics(output: &str) -> BTreeMap<String, f64> {
+    parse_pidstat_columns(
+        output,
+        &["%usr", "%system", "%guest", "%wait", "%CPU"],
+        |name| {
+            format!(
+                "process.cpu.{}",
+                match name {
+                    "%usr" => "user_pct",
+                    "%system" => "system_pct",
+                    "%guest" => "guest_pct",
+                    "%wait" => "wait_pct",
+                    "%CPU" => "total_pct",
+                    _ => "unknown",
+                }
+            )
+        },
+    )
+}
+
+/// Parse process-scoped `pidstat -d` output. Values are averaged over the
+/// selected agent process and its child tasks, excluding unrelated processes.
+fn parse_pidstat_io_metrics(output: &str) -> BTreeMap<String, f64> {
+    parse_pidstat_columns(
+        output,
+        &["kB_rd/s", "kB_wr/s", "kB_ccwr/s", "iodelay"],
+        |name| {
+            format!(
+                "process.io.{}",
+                match name {
+                    "kB_rd/s" => "read_kib_per_s",
+                    "kB_wr/s" => "write_kib_per_s",
+                    "kB_ccwr/s" => "cancelled_write_kib_per_s",
+                    "iodelay" => "delay_ticks",
+                    _ => "unknown",
+                }
+            )
+        },
+    )
+}
+
+fn parse_pidstat_columns(
+    output: &str,
+    wanted: &[&str],
+    name: impl Fn(&str) -> String,
+) -> BTreeMap<String, f64> {
+    let mut header = None;
+    let mut totals: BTreeMap<String, (f64, usize)> = BTreeMap::new();
+    for line in output.lines() {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.first().is_some_and(|field| *field == "Average:") {
+            continue;
+        }
+        if fields.iter().any(|field| wanted.contains(field)) {
+            header = Some(fields);
+            continue;
+        }
+        let Some(header_fields) = header.as_ref() else {
+            continue;
+        };
+        if fields.len() != header_fields.len()
+            || fields.first().is_some_and(|field| *field == "Linux")
+        {
+            continue;
+        }
+        for wanted_name in wanted {
+            let Some(index) = header_fields.iter().position(|field| field == wanted_name) else {
+                continue;
+            };
+            let Some(value) = fields.get(index).and_then(|field| parse_float(field)) else {
+                continue;
+            };
+            let entry = totals.entry((*wanted_name).to_owned()).or_default();
+            entry.0 += value;
+            entry.1 += 1;
+        }
+    }
+    totals
+        .into_iter()
+        .filter(|(_, (_, count))| *count > 0)
+        .map(|(metric, (sum, count))| (name(&metric), sum / count as f64))
         .collect()
 }
 
@@ -1292,6 +2271,21 @@ fn parse_float(value: &str) -> Option<f64> {
         .ok()
 }
 
+fn measurement_interval_ms() -> u64 {
+    std::env::var("ASB_MEASURE_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1_000)
+        .clamp(100, 60_000)
+}
+
+fn pidstat_interval_seconds() -> String {
+    // pidstat accepts whole-second intervals. Preserve the requested lower
+    // bound while rounding sub-second requests up to the nearest supported
+    // interval; perf stat below supports the full millisecond range.
+    measurement_interval_ms().div_ceil(1_000).to_string()
+}
+
 fn bounded(bytes: &[u8]) -> String {
     String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_CAPTURE)]).into_owned()
 }
@@ -1306,7 +2300,7 @@ fn read_bounded(path: &Path) -> String {
     }
     bounded(&bytes)
 }
-fn env_true(name: &str) -> bool {
+pub(crate) fn env_true(name: &str) -> bool {
     matches!(
         std::env::var(name).as_deref(),
         Ok("1") | Ok("true") | Ok("yes")
@@ -1318,12 +2312,14 @@ fn env_true(name: &str) -> bool {
 /// non-interactive sudo. Perf is intentionally not granted a sudoers rule:
 /// its kernel policy has a narrower, user-applied repair path below.
 fn preflight_collectors(
+    measurement_dir: &Path,
     selected: &[String],
     tool_dir: Option<&Path>,
 ) -> Result<BTreeSet<String>, String> {
     let mut sudo_collectors = BTreeSet::new();
-    let bpftrace_selected = selected_or_env("bpftrace", "ASB_MEASURE_BPFTRACE", selected)
-        && std::env::var_os("ASB_BPFTRACE_PROGRAMS").is_some();
+    let bpftrace_selected = (selected_or_env("bpftrace", "ASB_MEASURE_BPFTRACE", selected)
+        && std::env::var_os("ASB_BPFTRACE_PROGRAMS").is_some())
+        || !selected_bpftrace_profiles(selected)?.is_empty();
     let probes = [
         (
             "perf",
@@ -1371,14 +2367,137 @@ fn preflight_collectors(
             }
         }
     }
+    let bpftrace_profiles = selected_bpftrace_profiles(selected)?;
+    if !bpftrace_profiles.is_empty() {
+        let executable = resolve_executable(tool_dir, "bpftrace");
+        if !executable.is_file() {
+            return Err(format!(
+                "selected bpftrace profiles need a project-local bpftrace executable. What to do: run `asb tool install bpftrace` in this project, then rerun the benchmark."
+            ));
+        }
+        for profile in bpftrace_profiles {
+            if bpftrace_profile_probe(&executable, profile, false)? {
+                continue;
+            }
+            if bpftrace_profile_probe(&executable, profile, true)? {
+                sudo_collectors.insert("bpftrace".to_owned());
+                continue;
+            }
+            if passwordless_sudo_available() {
+                return Err(format!(
+                    "bpftrace profile `{}` cannot attach on this kernel. It is not a sudo authorization failure; inspect the kernel tracepoint support and the profile's JSON/SVG documentation before rerunning.",
+                    profile.name
+                ));
+            }
+            return Err(passwordless_sudo_error("bpftrace", &executable));
+        }
+    }
+    if selected_or_env("perfetto", "ASB_MEASURE_PERFETTO", selected) {
+        let executable = resolve_executable(tool_dir, "perfetto");
+        // A missing optional collector is reported as unavailable when the
+        // session starts, preserving the existing opt-in behavior. Once it is
+        // installed, however, validate the real tracefs/ftrace path before
+        // starting an agent.
+        if executable.is_file() {
+            if trace_marker_path().is_none() {
+                return Err(perfetto_tracefs_error());
+            }
+            if perfetto_probe(&executable, measurement_dir, false)? {
+                return Ok(sudo_collectors);
+            }
+            if perfetto_probe(&executable, measurement_dir, true)? {
+                sudo_collectors.insert("perfetto".to_owned());
+            } else {
+                return Err(passwordless_sudo_error("perfetto", &executable));
+            }
+        }
+    }
     Ok(sudo_collectors)
+}
+
+/// Compile and attach a concrete profile before the agent starts. The appended
+/// BEGIN exit keeps the probe bounded while exercising the exact tracepoints,
+/// predicates, and target-PID parameter form used during the run.
+fn bpftrace_profile_probe(
+    executable: &Path,
+    profile: BpftraceProfile,
+    sudo: bool,
+) -> Result<bool, String> {
+    let program = format!("{}\nBEGIN {{ exit(); }}", profile.program);
+    let mut command = if sudo {
+        let mut command = Command::new("sudo");
+        command.args(["-n", "--"]);
+        command.arg(executable);
+        command
+    } else {
+        Command::new(executable)
+    };
+    command
+        .args(["-e", &program, "0"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .map_err(|error| format!("cannot probe bpftrace profile {}: {error}", profile.name))
+}
+
+fn passwordless_sudo_available() -> bool {
+    Command::new("sudo")
+        .args(["-n", "true"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Probe the exact ftrace configuration used by ASB. `--background-wait`
+/// waits for Perfetto to acknowledge every data source, so a successful
+/// process launch cannot mask an unavailable tracefs instance.
+fn perfetto_probe(executable: &Path, measurement_dir: &Path, sudo: bool) -> Result<bool, String> {
+    let config = measurement_dir.join(".perfetto-preflight.pbtx");
+    let trace = measurement_dir.join(".perfetto-preflight.perfetto-trace");
+    fs::write(&config, perfetto_probe_config())
+        .map_err(|error| format!("cannot write Perfetto preflight configuration: {error}"))?;
+    let mut command = if sudo {
+        let mut command = Command::new("sudo");
+        command.args(["-n", "--"]);
+        command.arg(executable);
+        command
+    } else {
+        Command::new(executable)
+    };
+    let result = command
+        .args(["--txt", "-c"])
+        .arg(&config)
+        .args(["-o"])
+        .arg(&trace)
+        .arg("--background-wait")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = fs::remove_file(&config);
+    let _ = fs::remove_file(&trace);
+    match result {
+        Ok(status) => Ok(status.success()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && sudo => Ok(false),
+        Err(error) => Err(format!("cannot probe Perfetto ftrace collector: {error}")),
+    }
+}
+
+fn perfetto_tracefs_error() -> String {
+    "Perfetto needs the Linux tracefs ftrace interface, but ASB could not find trace_marker under /sys/kernel/tracing or /sys/kernel/debug/tracing. This is a host kernel interface, not an installable project tool. What to do: mount tracefs or enable kernel tracing, then rerun. If mounting tracefs requires privileges, grant the required passwordless sudo access before starting the benchmark; ASB never prompts for a password.".into()
 }
 
 fn resolve_executable(tool_dir: Option<&Path>, name: &str) -> PathBuf {
     if let Some(tool_dir) = tool_dir {
-        let local = tool_dir.join("bin").join(name);
-        if local.is_file() {
-            return local;
+        let binary = tool_binary_name(name);
+        for local in [
+            tool_dir.join(name).join("bin").join(binary),
+            tool_dir.join("bin").join(binary),
+        ] {
+            if local.is_file() {
+                return local;
+            }
         }
     }
     if let Some(path) = std::env::var_os("PATH") {
@@ -1389,7 +2508,7 @@ fn resolve_executable(tool_dir: Option<&Path>, name: &str) -> PathBuf {
             }
         }
     }
-    PathBuf::from(name)
+    PathBuf::from(tool_binary_name(name))
 }
 
 fn passwordless_sudo_error(name: &str, executable: &Path) -> String {
@@ -1417,7 +2536,63 @@ fn shell_quote(value: &str) -> String {
 }
 
 fn selected_or_env(name: &str, variable: &str, selected: &[String]) -> bool {
-    selected.iter().any(|value| value == name) || env_true(variable)
+    debug_assert_eq!(
+        collectors::find(name).and_then(|collector| collector.environment_flag()),
+        Some(variable)
+    );
+    let Some(collector) = collectors::find(name) else {
+        return false;
+    };
+    // Resolve these catalog properties here even when the execution path only
+    // needs enablement. It verifies that every selectable collector carries
+    // complete lifecycle metadata for the PID-attached runner.
+    let _tool = collector.tool_id();
+    let _pid_attached = collector.requires_pid();
+    collectors::selected_or_environment(name, selected)
+}
+
+fn selected_bpftrace_profiles(selected: &[String]) -> Result<Vec<BpftraceProfile>, String> {
+    let mut requested = selected
+        .iter()
+        .filter_map(|value| value.strip_prefix("bpftrace:"))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if let Ok(value) = std::env::var("ASB_BPFTRACE_PROFILES") {
+        requested.extend(
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
+        );
+    }
+    if selected.iter().any(|value| value == "bpftrace") && requested.is_empty() {
+        requested.extend(
+            BPFTRACE_PROFILES
+                .iter()
+                .map(|profile| profile.name.to_owned()),
+        );
+    }
+    if requested.iter().any(|value| value == "all") {
+        return Ok(BPFTRACE_PROFILES.to_vec());
+    }
+    requested.sort();
+    requested.dedup();
+    requested
+        .iter()
+        .map(|name| {
+            BPFTRACE_PROFILES
+                .iter()
+                .find(|profile| profile.name == name)
+                .copied()
+                .ok_or_else(|| {
+                    format!(
+                        "unknown bpftrace profile `{name}`; choose one of: {}",
+                        bpftrace_profile_names().collect::<Vec<_>>().join(", ")
+                    )
+                })
+        })
+        .collect()
 }
 fn env_u64(name: &str) -> Option<u64> {
     std::env::var(name).ok()?.parse().ok()
@@ -1523,51 +2698,106 @@ mod tests {
             (
                 "codex",
                 r#"response.completed {"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}"#,
+                7,
+                3,
+                10,
             ),
             (
                 "pi",
                 r#"event: {"type":"turn_end","usage":{"input":7,"output":3,"total":10,"cacheRead":2}}"#,
+                7,
+                3,
+                10,
             ),
             (
                 "qwen-code",
                 r#"{"type":"result","stats":{"total_tokens":10,"input_tokens":7,"output_tokens":3,"cached":2}}"#,
-            ),
-            (
-                "aider",
-                r#"completion: {"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}"#,
+                7,
+                3,
+                10,
             ),
             (
                 "workbuddy",
                 r#"done {"usage":{"inputTokens":7,"outputTokens":3,"totalTokens":10}}"#,
+                7,
+                3,
+                10,
             ),
             (
                 "openjiuwen",
                 r#"{"benchmark_usage":{"task_summary":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}}"#,
+                7,
+                3,
+                10,
             ),
             (
                 "openhands",
                 r#"llm response {"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}"#,
+                7,
+                3,
+                10,
             ),
             (
                 "mini-swe",
                 r#"result {"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}"#,
+                7,
+                3,
+                10,
+            ),
+            (
+                "claude-code",
+                r#"{"type":"result","usage":{"input_tokens":17,"output_tokens":4,"cache_read_input_tokens":2,"total_tokens":21}}"#,
+                17,
+                4,
+                21,
+            ),
+            (
+                "goose",
+                r#"{"message":{"usage":{"prompt_tokens":19,"completion_tokens":6,"total_tokens":25}}}"#,
+                19,
+                6,
+                25,
+            ),
+            (
+                "cline",
+                r#"event {"usage":{"inputTokens":23,"outputTokens":8,"cachedTokens":3,"totalTokens":31}}"#,
+                23,
+                8,
+                31,
+            ),
+            (
+                "continue",
+                r#"{"usage":{"input":31,"output":10,"cached":4,"total":41}}"#,
+                31,
+                10,
+                41,
             ),
         ];
-        for (agent, output) in cases {
+        for (agent, output, input, response, total) in cases {
             let usage = token_usage_from_sources("cli2key", agent, output, "", None);
-            assert_eq!(usage.input_tokens, Some(7), "{agent} input");
-            assert_eq!(usage.output_tokens, Some(3), "{agent} output");
-            assert_eq!(usage.total_tokens, Some(10), "{agent} total");
+            assert_eq!(usage.input_tokens, Some(input), "{agent} input");
+            assert_eq!(usage.output_tokens, Some(response), "{agent} output");
+            assert_eq!(usage.total_tokens, Some(total), "{agent} total");
         }
+    }
+
+    #[test]
+    fn derives_mini_swe_total_from_complete_input_and_output() {
+        let usage = token_usage_from_sources(
+            "cli2key",
+            "mini-swe",
+            r#"{"usage":{"input_tokens":182398,"output_tokens":4189,"total_tokens":116}}"#,
+            "",
+            None,
+        );
+        assert_eq!(usage.input_tokens, Some(182398));
+        assert_eq!(usage.output_tokens, Some(4189));
+        assert_eq!(usage.total_tokens, Some(186587));
     }
 
     #[test]
     fn parses_provider_usage_metadata_and_agent_raw_usage_shapes() {
         let cases = [
-            (
-                "gemini",
-                r#"{"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":4,"cachedContentTokenCount":2,"totalTokenCount":15}}"#,
-            ),
             (
                 "workbuddy",
                 r#"[{"rawUsage":{"inputTokens":21,"outputTokens":5,"totalTokens":26,"inputTokensDetails":{"cached_tokens":3}}}]"#,
@@ -1585,9 +2815,7 @@ mod tests {
             let usage = token_usage_from_sources("cli2key", agent, output, "", None);
             assert_eq!(
                 usage.input_tokens,
-                Some(if agent == "gemini" {
-                    11
-                } else if agent == "workbuddy" {
+                Some(if agent == "workbuddy" {
                     21
                 } else if agent == "openhands" {
                     31
@@ -1598,9 +2826,7 @@ mod tests {
             );
             assert_eq!(
                 usage.output_tokens,
-                Some(if agent == "gemini" {
-                    4
-                } else if agent == "workbuddy" {
+                Some(if agent == "workbuddy" {
                     5
                 } else if agent == "openhands" {
                     7
@@ -1611,9 +2837,7 @@ mod tests {
             );
             assert_eq!(
                 usage.cached_tokens,
-                Some(if agent == "gemini" {
-                    2
-                } else if agent == "workbuddy" {
+                Some(if agent == "workbuddy" {
                     3
                 } else if agent == "openhands" {
                     4
@@ -1624,9 +2848,7 @@ mod tests {
             );
             assert_eq!(
                 usage.total_tokens,
-                Some(if agent == "gemini" {
-                    15
-                } else if agent == "workbuddy" {
+                Some(if agent == "workbuddy" {
                     26
                 } else if agent == "openhands" {
                     38
@@ -1636,20 +2858,6 @@ mod tests {
                 "{agent} total"
             );
         }
-    }
-
-    #[test]
-    fn parses_aider_sent_received_token_summary_with_suffixes() {
-        let usage = token_usage_from_sources(
-            "cli2key",
-            "aider",
-            "> Tokens: 12.5k sent, 133 received. Cost: $0.01 message.\n",
-            "",
-            None,
-        );
-        assert_eq!(usage.input_tokens, Some(12_500));
-        assert_eq!(usage.output_tokens, Some(133));
-        assert_eq!(usage.total_tokens, Some(12_633));
     }
 
     #[test]
@@ -1699,6 +2907,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_process_scoped_pidstat_cpu_and_io_metrics() {
+        let cpu = parse_pidstat_cpu_metrics(
+            "Linux 6.1\n12:00:00 UID PID %usr %system %guest %wait %CPU CPU Command\n12:00:01 1000 42 10.00 2.00 0.00 1.00 12.00 3 agent\n12:00:02 1000 42 20.00 4.00 0.00 0.00 24.00 3 agent\n",
+        );
+        assert_eq!(cpu["process.cpu.user_pct"], 15.0);
+        assert_eq!(cpu["process.cpu.system_pct"], 3.0);
+        assert_eq!(cpu["process.cpu.total_pct"], 18.0);
+        let io = parse_pidstat_io_metrics(
+            "Linux 6.1\n12:00:00 UID PID kB_rd/s kB_wr/s kB_ccwr/s iodelay Command\n12:00:01 1000 42 1.0 2.0 0.5 3 agent\n",
+        );
+        assert_eq!(io["process.io.read_kib_per_s"], 1.0);
+        assert_eq!(io["process.io.write_kib_per_s"], 2.0);
+        assert_eq!(io["process.io.delay_ticks"], 3.0);
+        let series = parse_collector_series(
+            "mpstat",
+            "Linux 6.1\n12:00:00 UID PID %usr %system %guest %wait %CPU CPU Command\n12:00:01 1000 42 10.00 2.00 0.00 1.00 12.00 3 agent\n12:00:02 1000 42 20.00 4.00 0.00 0.00 24.00 3 agent\n",
+        );
+        assert_eq!(series["process.cpu.user_pct"], vec![10.0, 20.0]);
+        assert_eq!(series["process.cpu.total_pct"], vec![12.0, 24.0]);
+        let io_series = parse_collector_series(
+            "iostat",
+            "Linux 6.1\n12:00:01 UID PID kB_rd/s kB_wr/s kB_ccwr/s iodelay Command\n12:00:01 1000 42 1.0 2.0 0.5 3 agent\n12:00:02 1000 42 2.0 4.0 1.0 5 agent\n",
+        );
+        assert_eq!(io_series["process.io.read_kib_per_s"], vec![1.0, 2.0]);
+    }
+
+    #[test]
     fn parses_iostat_cpu_and_device_throughput_and_latency() {
         let metrics = parse_iostat_metrics(
             "avg-cpu:  %user   %nice %system %iowait  %steal   %idle\n           1.00    2.00    3.00    4.00    5.00   85.00\n\nDevice            r/s     rkB/s   r_await w/s     wkB/s   w_await aqu-sz %util\nvda              10.00   20.00   1.50    30.00   40.00   2.50    0.10   7.00\n",
@@ -1709,5 +2944,116 @@ mod tests {
         assert_eq!(metrics["device.read_await_ms"], 1.5);
         assert_eq!(metrics["device.write_kib_per_s"], 40.0);
         assert_eq!(metrics["device.util_pct"], 7.0);
+    }
+
+    #[test]
+    fn parses_perf_stat_counters_into_stable_metrics() {
+        let metrics = parse_perf_stat_metrics(
+            "12.34,msec,task-clock,100.00,\n8,,context-switches,100.00,\n2,,cpu-migrations,100.00,\n4,,page-faults,100.00,\n1234,,cycles,100.00,\n567,,instructions,100.00,\n",
+        );
+        assert_eq!(metrics["perf.task_clock_ms"], 12.34);
+        assert_eq!(metrics["perf.context_switches"], 8.0);
+        assert_eq!(metrics["perf.cpu_migrations"], 2.0);
+        assert_eq!(metrics["perf.page_faults"], 4.0);
+        assert_eq!(metrics["perf.cycles"], 1234.0);
+        assert_eq!(metrics["perf.instructions"], 567.0);
+        let series = parse_perf_stat_series(
+            "0.000,12.34,msec,task-clock,100.00,\n1.000,20.00,msec,task-clock,100.00,\n0.000,8,,context-switches,100.00,\n",
+        );
+        assert_eq!(series["perf.task_clock_ms"], vec![12.34, 20.0]);
+        assert_eq!(series["perf.context_switches"], vec![8.0]);
+    }
+
+    #[test]
+    fn bpftrace_profiles_are_target_scoped_and_parse_only_asb_metrics() {
+        assert_eq!(
+            bpftrace_profile_names().collect::<Vec<_>>(),
+            vec![
+                "sched-latency",
+                "cpu-migrations",
+                "futex-wait",
+                "syscall-rate",
+                "lock-contention"
+            ]
+        );
+        let profiles = selected_bpftrace_profiles(&[
+            "bpftrace:sched-latency".into(),
+            "bpftrace:futex-wait".into(),
+        ])
+        .expect("profile selection");
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(
+            selected_bpftrace_profiles(&["bpftrace".into()])
+                .expect("generic bpftrace selects built-ins")
+                .len(),
+            bpftrace_profile_names().count()
+        );
+        assert!(
+            profiles
+                .iter()
+                .all(|profile| profile.program.contains("$1"))
+        );
+        assert!(
+            profiles
+                .iter()
+                .all(|profile| profile.program.contains("interval:s:1"))
+        );
+        let metrics = parse_bpftrace_metrics(
+            "sched-latency",
+            "@asb_wakeup_latency_events: 7\n@asb_wakeup_latency_total_ns: 420\n@other: 99\n",
+        );
+        assert_eq!(metrics["bpftrace.sched-latency.wakeup_latency_events"], 7.0);
+        assert_eq!(
+            metrics["bpftrace.sched-latency.wakeup_latency_total_ns"],
+            420.0
+        );
+        assert_eq!(metrics.len(), 2);
+        let series = parse_collector_series(
+            "bpftrace-sched-latency",
+            "@asb_wakeup_latency_events: 2\n@asb_wakeup_latency_events: 5\n",
+        );
+        assert_eq!(
+            series["bpftrace.sched-latency.wakeup_latency_events"],
+            vec![2.0, 5.0]
+        );
+    }
+
+    #[test]
+    fn perfetto_config_collects_scheduler_process_and_trace_marker_events() {
+        let config = perfetto_config(None);
+        for event in [
+            "sched/sched_switch",
+            "sched/sched_waking",
+            "sched/sched_wakeup_new",
+            "sched/sched_process_exit",
+            "task/task_newtask",
+            "ftrace/print",
+        ] {
+            assert!(config.contains(event), "missing {event}");
+        }
+        assert!(config.contains("linux.process_stats"));
+        assert!(config.contains("compact_sched"));
+    }
+
+    #[test]
+    fn project_local_perfetto_uses_tracebox_binary_name() {
+        assert_eq!(tool_binary_name("perfetto"), "tracebox");
+        assert_eq!(tool_binary_name("perf"), "perf");
+    }
+
+    #[test]
+    fn perfetto_configuration_uses_supported_tracebox_schema() {
+        let config = perfetto_config(Some(42));
+        assert!(!config.contains("pid_filter"));
+        assert!(config.contains("scan_all_processes_on_start: false"));
+    }
+
+    #[test]
+    fn parses_perfetto_csv_series_with_trace_timestamps() {
+        let (timestamps, values) = parse_perfetto_series_output(
+            "\"timestamp_s\",\"value\"\n\"12\",\"3\"\n\"13.5\",\"7\"\n",
+        );
+        assert_eq!(timestamps, vec![12_000.0, 13_500.0]);
+        assert_eq!(values, vec![3.0, 7.0]);
     }
 }

@@ -1,0 +1,20 @@
+// Kernel lock contention attributable to the agent process. This profile needs
+// a kernel built with lock contention tracepoints. $1 is the agent TGID.
+tracepoint:lock:contention_begin /pid == $1/ {
+  @asb_lock_start[tid] = nsecs;
+}
+
+tracepoint:lock:contention_end /@asb_lock_start[tid]/ {
+  $latency = nsecs - @asb_lock_start[tid];
+  @asb_lock_contention_events = count();
+  @asb_lock_contention_total_ns = sum($latency);
+  @asb_lock_contention_max_ns = max($latency);
+  delete(@asb_lock_start[tid]);
+}
+
+// Emit cumulative interval samples without clearing the final aggregate maps.
+interval:s:1 {
+  print(@asb_lock_contention_events);
+  print(@asb_lock_contention_total_ns);
+  print(@asb_lock_contention_max_ns);
+}

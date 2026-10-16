@@ -1,11 +1,16 @@
 # Architecture
 
+The maintained overview below explains ASB's runtime boundaries. It is
+supplemented—not replaced—by the generated [Rust type diagram](asb-type-diagram.mmd)
+and its [SVG rendering](asb-type-diagram.svg). Regenerate both with `make uml`.
+Private implementation items are documented by `make rust-doc` under `target/doc/`.
+
 ASB is deliberately split into a small CLI and a file-backed workload directory:
 
 - `benchmark`: the configuration record and workload prompt catalogue;
 - `config`: the `setup` command and TOML writer;
 - `tui`: the Ratatui setup wizard. It composes reusable selection panes for
-  agents, providers, models, workloads, and measurements, with filtering and
+  agents, providers, models, workloads, measurements, and concurrency, with filtering and
   keyboard navigation. Its model pane uses the existing provider discovery
   path and falls back only when a catalog is unavailable, then writes test
   configurations and a sweep manifest;
@@ -13,7 +18,11 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
 - `providers`: a concise provider-name and environment-variable registry;
 - `models`: bounded live model-catalog discovery using provider-specific
   endpoints and response shapes;
-- `prepare`: provider-specific, pre-launch environment preparation hooks;
+- `prepare`: provider-wide, target-neutral pre-launch environment preparation;
+- `agents/`, `tools/`, and `workloads/workload_adapters/`: owning adapters for
+  target-specific command construction, setup, installation identity, source
+  materialization, and result artifacts; the generic agent runner dispatches
+  only through these registries;
 - `project`: `.asb/project.toml` and shared project paths. `init` creates the
   file, copies the bundled workload prompts and fixture trees, and creates its
   configured `tools_dir`, `workloads_dir`, and `workspace_dir`;
@@ -22,15 +31,35 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   process execution;
 - `compare`: offline sweep-result loading, numeric aggregation, and dependency-free
   SVG bar/line chart generation;
-- `measurements`: opt-in system/runtime collection. It writes bounded JSON
+- `measurements`: opt-in process-scoped runtime collection. It writes bounded JSON
   records for host facts, elapsed time, success rate, and normalized input,
   output, cached, and total token usage, and
-  owns optional `mpstat`, `iostat`, `perf`, BPFTrace, and FlameGraph adapters;
-  mpstat and iostat retain their bounded raw output and also expose averaged,
-  unit-named CPU, throughput, latency, queue, and utilization metrics under a
-  machine-readable `metrics` object. Comparisons consume that object rather
-  than scraping arbitrary output, so one canonical runtime result is plotted
-  instead of repeated collector samples;
+  owns optional `mpstat`, `iostat`, `perf`, Perfetto, BPFTrace, and FlameGraph adapters;
+  the mpstat/iostat result names use process-scoped `pidstat` sampling for the
+  agent process and its child tasks, retaining bounded raw output and exposing
+  averaged, unit-named CPU and I/O metrics under a machine-readable `metrics`
+  object plus bounded per-sample `series` arrays. `perf stat` uses the same
+  interval contract. `ASB_MEASURE_INTERVAL_MS` accepts 100--60000 ms and
+  defaults to 1000 ms; pidstat rounds sub-second requests to whole seconds,
+  while perf supports millisecond periods. Comparisons emit line SVGs for
+  series with at least two points and expose the same hover, zoom, pan, reset,
+  and enlarge controls as bar charts. Built-in BPFTrace profiles remain
+  bounded cumulative one-second snapshots and final aggregates (custom
+  interval programs may add series), while Perfetto retains its timestamped
+  trace and extracts timestamped scheduler-event and scheduler-duration
+  series; those trace timestamps are used as line-chart x coordinates;
+  the Perfetto adapter validates tracefs/ftrace access before the agent process,
+  then starts project-local Tracebox after the agent PID is known, filters
+  scheduler events to that PID, disables process-wide scans, and records fixed
+  non-secret ASB lifecycle tracepoints. The project-local trace processor
+  extracts stable aggregates,
+  and ASB preserves the native `.perfetto-trace`, a bounded JSON record, and
+  one portable SVG per extracted metric for the comparison report;
+  the perf adapter records both call stacks and stable `perf stat` counters
+  (task clock, context switches, migrations, faults, cycles, instructions) with
+  `-p <agent-pid>` for both modes; built-in BPFTrace profiles use the same
+  target PID and custom programs receive `-p <agent-pid>` but must still keep
+  tracepoint predicates target-scoped;
   each adapter is isolated from the runner and can be extended without adding
   provider-specific fields to the benchmark configuration;
 - `workloads/`: one UTF-8 `.txt` prompt per workload name. Built-in supporting
@@ -38,7 +67,10 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   workspace without overwriting existing edits.
 
 The CLI is the stable user boundary. A benchmark configuration names an agent,
-workload, provider, model, workspace, and log file. Provider credentials are never stored
+workload, provider, model, concurrency, workspace, and log file. `concurrency`
+defaults to `1`; values greater than one run isolated replicas of the same
+agent/model/workload in parallel, with separate workspaces, logs, measurements,
+and record cassettes. Provider credentials are never stored
 in that file. The runner passes provider/model selection through environment
 variables and gives the selected agent one bounded workload prompt.
 Provider credentials are not stored in benchmark configuration. Known providers
@@ -61,21 +93,29 @@ Token usage is collected from generic/provider/agent environment variables,
 structured agent JSON events (including JSON embedded in human-readable agent
 output), and recorded cassette responses, then normalized without inferring
 counts from text size. The parser accepts usage shapes emitted by every
-supported agent family and maps provider aliases such as `prompt_tokens`,
-`inputTokens`, `promptTokenCount`, `cacheRead`, and `total` to the stable input,
-output, cached, and total fields. OpenHands and OpenJiuwen are invoked in
+supported agent family, including Claude Code, Goose, Cline, and Continue,
+and maps provider aliases such as `prompt_tokens`, `inputTokens`,
+`promptTokenCount`, `cacheRead`, and `total` to the stable input, output, cached,
+and total fields. When input and output are present, total is canonicalized to
+their sum because cached input is a subset of input. OpenHands and OpenJiuwen are invoked in
 machine-readable JSON modes; mini-SWE writes a project-local trajectory that
 is parsed for nested provider usage before it is removed. Their terminal output is intentionally limited to success
 rate, elapsed time, and token usage; `--json` changes only the representation
 of those metrics.
+Pass `--show-output` to stream the agent's stdout and stderr live for interactive
+debugging when `concurrency = 1`; concurrent replicas buffer each bounded stream
+and emit it in replica order after completion so output cannot interleave
+unreadably. The same output remains in the configured log.
+The same flag is accepted by `asb sweep` and is forwarded to each underlying
+`run`, so sweeps do not maintain a second output path.
 An agent is not considered successful solely because its process exits with
 status zero: known authentication, unsupported-endpoint, and provider-error
 messages are treated as failures so sweeps cannot report a false success.
 
 `asb tool install` installs a pinned package recipe into the configured tools
 directory for supported agents and support tools, or downloads/copies an
-executable supplied with `--source`. The `llmtape` support tool is project-local
-and is automatically preferred by record/replay when installed. npm recipes are
+executable supplied with `--source`. Record/replay instead uses ASB's embedded
+tape proxy automatically and has no tool-catalog entry. npm recipes are
 project-local; Python recipes use a
 project-local virtual environment. `asb workload install` downloads a prompt
 URL, resolves a pinned external workload alias, or copies a local prompt into
@@ -95,6 +135,23 @@ host binary or source build prerequisites are unavailable, the failure prints
 typical copy-paste commands for Red Hat/Fedora, Debian/Ubuntu, and openEuler
 so the user can install either the matching host tool or the needed development
 packages before retrying.
+Built-in BPFTrace profiles are small, separate source files under
+`crates/asb-cli/src/bpftrace_profiles/`. They start only after ASB knows the
+agent PID and therefore scope their probes to the benchmarked process. The
+portable catalog covers scheduler wakeup latency, CPU migration, futex waits,
+syscall rate, and kernel lock contention. Each profile has its own JSON result
+and SVG; comparison consumes only its `@asb_*` aggregate maps, embeds that
+profile SVG in the HTML artifact view, and emits one cross-run chart per
+numeric metric. NUMA topology and language-runtime data-structure probes remain
+custom profiles because their event layouts are neither portable nor stable.
+The `perfetto` recipe downloads SHA-256-pinned official Tracebox and trace
+processor binaries into the project tool directory. It supports Linux x86_64
+and aarch64. Ftrace itself is a tracefs interface provided by the running host
+kernel, rather than an executable to copy into the project. Before a selected
+collector can start, ASB probes that exact interface; it retries the collector
+through `sudo -n` only when the direct probe fails, and rejects the run before
+the agent starts when the needed passwordless authorization is absent. Normal
+commands and CI do not require kernel tracing access.
 The `pi` agent uses the pinned `@mariozechner/pi-coding-agent` npm package and
 its non-interactive print mode. For `cli2key`, the preparation layer maps Pi to
 the bridge's OpenAI-compatible endpoint without storing credentials.
@@ -110,16 +167,22 @@ The ASB source checkout is not a benchmark project: `init` rejects its
 distinctive workspace layout before creating any files.
 
 Recording and replay are implemented as a separate `tape` module behind the
-runner boundary. The `run --record` and `run --replay` flags start the project-local `llmtape` loopback proxy,
-routes provider endpoints to that proxy, and tears it down after the child
-exits. `--record` writes a JSONL cassette; `--replay` requires that cassette and
-never starts cli2key or a live provider. This keeps the benchmark
-configuration contract unchanged and keeps llmtape an optional, project-local
-development tool rather than a runtime dependency. Installation includes the
-llmtape npm library and a small project-local proxy wrapper because the npm
-package itself does not publish a CLI. ASB never falls back to a
-host `PATH` lookup; use `asb tool install llmtape` in the benchmark project or
-set `ASB_LLM_TAPE` explicitly. Measurement collection remains
+runner boundary. The `run --record` and `run --replay` flags materialize and start
+ASB's built-in loopback tape proxy, while provider adapters supply endpoint
+routing, record-mode upstream resolution, and optional local-bridge lifecycle.
+The runner and sweep executor retain no provider-specific proxy knowledge and
+tear the session down after the child exits. `--record` writes a JSONL cassette with a bounded `delay_ms` response
+latency for every interaction; `--replay` requires that cassette and never
+starts cli2key or a live provider. Passing `--respect-record-timings` with
+`--replay` makes llmtape match each request first, then wait for its recorded
+delay before returning the response. The same option is available on
+`asb sweep`. This keeps the benchmark
+configuration contract unchanged and keeps the tape component an optional,
+project-local development capability rather than a runtime dependency. The
+proxy is embedded in ASB and requires only Node.js; it does not use or install
+an external recorder package. ASB never falls back to an unqualified host `PATH`
+lookup; set `ASB_LLM_TAPE` explicitly to use another compatible executable.
+Measurement collection remains
 explicitly opt-in through `asb run --measurements DIR`; CI does not start live
 agents, llmtape, or host collectors.
 
@@ -127,11 +190,16 @@ Finite human-entered names use bounded edit-distance suggestions on failure.
 The original value is never replaced automatically; provider model IDs remain
 provider-specific unless a finite local catalog is available.
 
-The preparation stage is deliberately separate from command construction. Its
-cli2key hook starts or connects to the OpenAI-compatible bridge, supplies the
-bridge endpoint and API key to the selected agent, and tears down a bridge
-process owned by ASB after the run. Additional preparation operations can be
-added without changing `run` or the benchmark configuration format.
+The provider baseline stage is deliberately separate from command construction.
+It installs only protocol-wide environment variables. Provider-owned local
+bridge lifecycle and target-specific configuration are delegated through their
+respective registries and adapters, so adding an integration does not add a
+target-name branch to `run` or the benchmark configuration format.
+
+Claude Code, Goose, Cline, and Continue receive OpenRouter's
+OpenAI-compatible endpoint (with Claude's Anthropic-compatible path derived
+from the same base) or the equivalent cli2key bridge endpoint. Continue
+receives a project-local model YAML generated for the selected model.
 
 `asb compare SWEEP.toml` reads the isolated `<sweep>-results/` directories
 created by `asb sweep`. It writes bounded `comparison.json` data, an offline

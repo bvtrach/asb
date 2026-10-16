@@ -25,8 +25,12 @@ impl Default for ProjectConfig {
     }
 }
 
-pub fn init(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Error> {
-    let (root, reset) = parse_init_args(args)?;
+pub fn init(
+    root: Option<PathBuf>,
+    reset: bool,
+    output: &mut dyn std::io::Write,
+) -> Result<(), Error> {
+    let root = root.unwrap_or_else(|| PathBuf::from("."));
     if is_asb_source_checkout(&root) {
         return Err(Error::Usage(
             "refusing to initialize the ASB source checkout; choose a separate benchmark project directory",
@@ -69,26 +73,6 @@ pub fn init(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Erro
         path.display()
     )
     .map_err(super::io_error)
-}
-
-fn parse_init_args(args: &[String]) -> Result<(PathBuf, bool), Error> {
-    let mut root = None;
-    let mut reset = false;
-    for arg in args {
-        if arg == "--reset" {
-            if reset {
-                return Err(Error::Usage("init accepts --reset at most once"));
-            }
-            reset = true;
-        } else if root.is_none() {
-            root = Some(PathBuf::from(arg));
-        } else {
-            return Err(Error::Usage(
-                "init accepts an optional project directory and --reset",
-            ));
-        }
-    }
-    Ok((root.unwrap_or_else(|| PathBuf::from(".")), reset))
 }
 
 fn reset_project(root: &Path, config_path: &Path) -> Result<(), Error> {
@@ -187,7 +171,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("asb-project-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let mut output = Vec::new();
-        init(&[root.to_string_lossy().into_owned()], &mut output).expect("init succeeds");
+        init(Some(root.clone()), false, &mut output).expect("init succeeds");
         let (loaded_root, config) = load(&root).expect("config loads");
         assert_eq!(loaded_root, root);
         assert!(root.join(".asb/project.toml").is_file());
@@ -211,7 +195,7 @@ mod tests {
         fs::create_dir_all(root.join("workloads")).unwrap();
         fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
         fs::write(root.join("crates/asb-cli/Cargo.toml"), "[package]\n").unwrap();
-        let error = init(&[root.to_string_lossy().into_owned()], &mut Vec::new())
+        let error = init(Some(root.clone()), false, &mut Vec::new())
             .expect_err("source checkout must be rejected");
         assert!(error.to_string().contains("source checkout"));
         assert!(!root.join(".asb").exists());
@@ -223,10 +207,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!("asb-init-warning-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let mut output = Vec::new();
-        init(&[root.to_string_lossy().into_owned()], &mut output).expect("initial init succeeds");
+        init(Some(root.clone()), false, &mut output).expect("initial init succeeds");
         fs::write(root.join("workloads/custom.txt"), "keep").unwrap();
-        let error = init(&[root.to_string_lossy().into_owned()], &mut output)
-            .expect_err("second init requires reset");
+        let error =
+            init(Some(root.clone()), false, &mut output).expect_err("second init requires reset");
         assert!(error.to_string().contains("already initialized"));
         let text = String::from_utf8(output).unwrap();
         assert!(text.contains("Warning:"));
@@ -242,11 +226,10 @@ mod tests {
     fn init_reset_removes_managed_state_before_recreating_it() {
         let root = std::env::temp_dir().join(format!("asb-init-reset-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let root_arg = root.to_string_lossy().into_owned();
-        init(std::slice::from_ref(&root_arg), &mut Vec::new()).expect("initial init succeeds");
+        init(Some(root.clone()), false, &mut Vec::new()).expect("initial init succeeds");
         fs::write(root.join("workloads/custom.txt"), "remove").unwrap();
         let mut output = Vec::new();
-        init(&[root_arg, "--reset".into()], &mut output).expect("reset succeeds");
+        init(Some(root.clone()), true, &mut output).expect("reset succeeds");
         assert!(!root.join("workloads/custom.txt").exists());
         assert!(root.join("workloads/bug-fix.txt").is_file());
         assert!(
