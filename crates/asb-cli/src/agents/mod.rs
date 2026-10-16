@@ -20,12 +20,15 @@ mod workbuddy;
 
 use crate::benchmark::BenchmarkConfig;
 use crate::project;
+use crate::{Error, prepare};
 use std::path::Path;
+use std::process::Command;
 
 pub(crate) trait AgentAdapter: Sync {
     fn id(&self) -> &'static str;
     fn executable(&self) -> &'static str;
     fn command(&self, context: &CommandContext<'_>) -> CommandSpec;
+    fn prepare(&self, context: &mut PreparationContext<'_>) -> Result<(), Error>;
 
     /// Hook for adapter-owned result or artifact extraction. The generic runner
     /// calls this after output is captured; built-ins currently need no extra
@@ -33,6 +36,17 @@ pub(crate) trait AgentAdapter: Sync {
     fn collect(&self, _output: &str) -> AgentArtifacts {
         AgentArtifacts::default()
     }
+}
+
+/// Adapter-owned details that remain after provider-wide preparation.
+pub(crate) struct PreparationContext<'a> {
+    pub command: &'a mut Command,
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub cli2key: Option<(&'a str, &'a str)>,
+    pub pi_config_dir: Option<&'a Path>,
+    pub workbuddy_config_dir: Option<&'a Path>,
+    pub continue_config_dir: Option<&'a Path>,
 }
 
 pub(crate) struct CommandContext<'a> {
@@ -252,6 +266,165 @@ impl AgentAdapter for BuiltinAdapter {
             },
         }
     }
+
+    fn prepare(&self, context: &mut PreparationContext<'_>) -> Result<(), Error> {
+        let is_cli2key = context.provider.eq_ignore_ascii_case("cli2key");
+        let is_openrouter = context.provider.eq_ignore_ascii_case("openrouter");
+        let credentials = context.cli2key;
+        match self.kind {
+            CommandKind::Pi if is_cli2key || is_openrouter => {
+                let directory = context.pi_config_dir.ok_or_else(|| Error::Run(
+                    "cannot configure Pi without a project-local provider configuration directory".into(),
+                ))?;
+                let (provider, api, key_name) = if is_cli2key {
+                    ("cli2key", "openai-responses", "CLI2KEY_API_KEY")
+                } else {
+                    ("openrouter", "openai-completions", "OPENROUTER_API_KEY")
+                };
+                let base_url = if let Some((_, base_url)) = credentials {
+                    base_url.to_owned()
+                } else {
+                    std::env::var("OPENROUTER_BASE_URL")
+                        .unwrap_or_else(|_| "https://openrouter.ai/api/v1".into())
+                };
+                prepare::configure_pi_provider(
+                    context.command,
+                    directory,
+                    provider,
+                    context.model,
+                    &base_url,
+                    api,
+                    key_name,
+                )
+            }
+            CommandKind::Opencode if is_cli2key => {
+                let (_, base_url) = credentials
+                    .ok_or_else(|| Error::Run("cli2key provider has no API endpoint".into()))?;
+                context.command.env(
+                    "OPENCODE_CONFIG_CONTENT",
+                    prepare::opencode_config(context.model, base_url)?,
+                );
+                Ok(())
+            }
+            CommandKind::QwenCode if is_cli2key => {
+                context
+                    .command
+                    .env_remove("OPENAI_API_KEY")
+                    .env_remove("OPENAI_BASE_URL")
+                    .env_remove("OPENAI_API_BASE")
+                    .env_remove("OPENAI_MODEL");
+                Ok(())
+            }
+            CommandKind::MiniSwe if is_cli2key => {
+                context
+                    .command
+                    .env("MSWEA_CONFIGURED", "true")
+                    .env("MSWEA_MODEL_NAME", format!("anthropic/{}", context.model))
+                    .env("MSWEA_SILENT_STARTUP", "1")
+                    .env("MSWEA_COST_TRACKING", "ignore_errors");
+                Ok(())
+            }
+            CommandKind::Openhands if is_cli2key => {
+                let (key, base_url) = credentials
+                    .ok_or_else(|| Error::Run("cli2key provider has no API endpoint".into()))?;
+                context
+                    .command
+                    .env("LLM_API_KEY", key)
+                    .env("LLM_BASE_URL", base_url.trim_end_matches("/v1"))
+                    .env("LLM_MODEL", format!("anthropic/{}", context.model))
+                    .env("OPENHANDS_SUPPRESS_BANNER", "1");
+                Ok(())
+            }
+            CommandKind::Workbuddy if is_cli2key => {
+                let (key, base_url) = credentials
+                    .ok_or_else(|| Error::Run("cli2key provider has no API endpoint".into()))?;
+                let directory = context.workbuddy_config_dir.ok_or_else(|| Error::Run("cannot configure WorkBuddy without a project-local configuration directory".into()))?;
+                prepare::configure_workbuddy(directory, context.model, base_url)?;
+                context
+                    .command
+                    .env("CODEBUDDY_API_KEY", key)
+                    .env("CODEBUDDY_AUTH_TOKEN", key)
+                    .env("CODEBUDDY_BASE_URL", base_url)
+                    .env("CODEBUDDY_MODEL", context.model)
+                    .env("CODEBUDDY_CONFIG_DIR", directory)
+                    .env("CODEBUDDY_API_KEY_HELPER_DISABLED", "1");
+                Ok(())
+            }
+            CommandKind::Openjiuwen if is_cli2key => {
+                if let Some((key, _)) = credentials {
+                    context.command.env("OPENJIUWEN_API_KEY", key);
+                }
+                Ok(())
+            }
+            CommandKind::Goose if is_cli2key => {
+                if let Some((key, base_url)) = credentials {
+                    context
+                        .command
+                        .env("GOOSE_PROVIDER", "openai")
+                        .env("GOOSE_MODEL", context.model)
+                        .env("OPENAI_HOST", base_url.trim_end_matches("/v1"))
+                        .env("OPENAI_BASE_PATH", "/v1/chat/completions")
+                        .env("OPENAI_API_KEY", key);
+                }
+                Ok(())
+            }
+            CommandKind::Cline if is_cli2key => {
+                if let Some((key, base_url)) = credentials {
+                    context
+                        .command
+                        .env("OPENAI_API_KEY", key)
+                        .env("OPENAI_BASE_URL", base_url)
+                        .env("OPENAI_API_BASE", base_url)
+                        .env("OPENAI_MODEL", context.model)
+                        .env("CLINE_API_KEY", key);
+                }
+                Ok(())
+            }
+            CommandKind::Continue if is_cli2key || is_openrouter => {
+                let directory = context.continue_config_dir.ok_or_else(|| {
+                    Error::Run(
+                        "cannot configure Continue without a project-local configuration directory"
+                            .into(),
+                    )
+                })?;
+                let base_url = credentials
+                    .map(|(_, url)| url.to_owned())
+                    .or_else(|| std::env::var("OPENROUTER_BASE_URL").ok())
+                    .unwrap_or_else(|| "https://openrouter.ai/api/v1".into());
+                prepare::configure_continue(directory, context.model, &base_url)?;
+                context
+                    .command
+                    .env("CONTINUE_CONFIG", directory.join("config.yaml"))
+                    .env("CONTINUE_GLOBAL_DIR", directory);
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+pub(crate) fn prepare(
+    command: &mut Command,
+    agent: &str,
+    provider: &str,
+    model: &str,
+    cli2key: Option<(&str, &str)>,
+    pi_config_dir: Option<&Path>,
+    workbuddy_config_dir: Option<&Path>,
+    continue_config_dir: Option<&Path>,
+) -> Result<(), Error> {
+    let Some(adapter) = find(agent) else {
+        return Ok(());
+    };
+    adapter.prepare(&mut PreparationContext {
+        command,
+        provider,
+        model,
+        cli2key,
+        pi_config_dir,
+        workbuddy_config_dir,
+        continue_config_dir,
+    })
 }
 
 fn opencode_model(config: &BenchmarkConfig) -> String {

@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
+mod workload_adapters;
+
 const MAX_PROMPT_BYTES: u64 = 64 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -263,6 +265,18 @@ pub(crate) fn prepare_external(
     workload_directory: &Path,
     workspace: &Path,
 ) -> Result<usize, String> {
+    if let Some(adapter) = workload_adapters::find(name) {
+        return adapter.prepare_source(workload_directory, workspace);
+    }
+    Ok(0)
+}
+
+/// Generic source materialization shared by external-suite adapters.
+pub(crate) fn prepare_external_source(
+    name: &str,
+    workload_directory: &Path,
+    workspace: &Path,
+) -> Result<usize, String> {
     let source = workload_directory.join(name).join("source");
     if !source.is_dir() {
         return Ok(0);
@@ -441,26 +455,10 @@ pub fn read_trial_set(path: &Path) -> Result<TrialSet, String> {
 }
 
 pub fn trial_ids(name: &str) -> Vec<Trial> {
+    if let Some(adapter) = workload_adapters::find(name) {
+        return adapter.trial_ids();
+    }
     let ids: &[(&str, &str)] = match name {
-        "terminal-bench" => &[
-            (
-                "smoke",
-                "Short terminal task suitable for a local smoke run.",
-            ),
-            (
-                "shell",
-                "Shell and filesystem task from the local Terminal-Bench checkout.",
-            ),
-            (
-                "debug",
-                "Debugging task from the local Terminal-Bench checkout.",
-            ),
-        ],
-        name if name.starts_with("swe-bench") => &[
-            ("bug-fix", "One repository bug-fix trial."),
-            ("regression", "Regression-focused repository repair trial."),
-            ("tests", "Test-focused repository repair trial."),
-        ],
         _ => &[
             ("smoke", "Small local smoke trial."),
             ("standard", "Standard workload trial."),
@@ -473,6 +471,12 @@ pub fn trial_ids(name: &str) -> Vec<Trial> {
             description: (*description).into(),
         })
         .collect()
+}
+
+/// Names backed by first-class external-suite adapters.
+#[cfg(test)]
+pub(crate) fn external_adapter_names() -> impl Iterator<Item = &'static str> {
+    workload_adapters::names()
 }
 
 pub fn write_default_trial_set(name: &str, directory: &Path) -> Result<(), std::io::Error> {

@@ -17,6 +17,7 @@ mod runner;
 mod suggestions;
 mod sweep;
 mod tape;
+mod tools;
 mod tui;
 mod workloads;
 
