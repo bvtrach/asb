@@ -6737,6 +6737,14 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   });
   const pointerDistance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
   const pointerMidpoint = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+  function graphElementFromTarget(target) {
+    let current = target;
+    while (current && current !== viewport) {
+      if (current.classList?.contains('node') || current.classList?.contains('edge') || current.classList?.contains('cluster')) return current;
+      current = current.parentElement;
+    }
+    return null;
+  }
   function startPinch() {
     const points = [...state.pointers.values()];
     if (points.length < 2) return;
@@ -6747,7 +6755,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     state.pinch = { distance: Math.max(1, pointerDistance(points[0], points[1])), midpoint, scale: state.scale, graphX: (startX - state.tx) / state.scale, graphY: (startY - state.ty) / state.scale, moved: false };
     state.drag = null;
   }
-  viewport.addEventListener('pointerdown', (event) => { if (event.button !== 0) return; state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY }); state.pressTarget = event.target.closest?.('.node, .edge, .cluster') || null; viewport.setPointerCapture(event.pointerId); if (state.pointers.size >= 2) { state.pressTarget = null; startPinch(); } else { state.drag = { x: event.clientX, y: event.clientY, tx: state.tx, ty: state.ty, moved: false }; } viewport.classList.add('dragging'); });
+  viewport.addEventListener('pointerdown', (event) => { if (event.button !== 0) return; viewport.classList.remove('dragging'); state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY }); state.pressTarget = graphElementFromTarget(event.target); viewport.setPointerCapture(event.pointerId); if (state.pointers.size >= 2) { state.pressTarget = null; startPinch(); viewport.classList.add('dragging'); } else { state.drag = { x: event.clientX, y: event.clientY, tx: state.tx, ty: state.ty, moved: false }; } });
   viewport.addEventListener('pointermove', (event) => {
     if (!state.pointers.has(event.pointerId)) return;
     state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -6770,7 +6778,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     if (!state.drag) return;
     const dx = event.clientX - state.drag.x;
     const dy = event.clientY - state.drag.y;
-    if (Math.hypot(dx, dy) > 4) state.drag.moved = true;
+    if (Math.hypot(dx, dy) > 4) { state.drag.moved = true; viewport.classList.add('dragging'); }
     state.drag.nextTx = state.drag.tx + dx;
     state.drag.nextTy = state.drag.ty + dy;
     if (!state.drag.frame) state.drag.frame = requestAnimationFrame(() => { state.tx = state.drag?.nextTx ?? state.tx; state.ty = state.drag?.nextTy ?? state.ty; state.drag.frame = 0; applyTransform(); });
@@ -6804,6 +6812,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   }
   viewport.addEventListener('pointerup', finishPointer);
   viewport.addEventListener('pointercancel', finishPointer);
+  viewport.addEventListener('lostpointercapture', () => { if (state.pointers.size === 0) { state.drag = null; state.pinch = null; state.pressTarget = null; viewport.classList.remove('dragging'); } });
   viewport.addEventListener('click', (event) => { if (state.suppressClickUntil > performance.now()) return; if (event.target === viewport || event.target === canvas) clearSelection(); });
   viewport.addEventListener('wheel', (event) => { event.preventDefault(); const rect = viewport.getBoundingClientRect(); const x = event.clientX - rect.left; const y = event.clientY - rect.top; const next = Math.max(.02, Math.min(4, state.scale * Math.pow(1.0018, -event.deltaY))); state.tx = x - (x - state.tx) * next / state.scale; state.ty = y - (y - state.ty) * next / state.scale; state.scale = next; applyTransform(); }, { passive: false });
   document.getElementById('fit').addEventListener('click', () => { clearSelection(); fit(); });
