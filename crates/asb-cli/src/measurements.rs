@@ -326,10 +326,11 @@ impl Session {
             let status = match collector.child.try_wait() {
                 Ok(Some(status)) => status,
                 Ok(None) => {
-                    // Tracebox writes its protobuf trace on an orderly interrupt.  Do not
-                    // SIGKILL it like the streaming text collectors, otherwise a short
-                    // benchmark can leave an incomplete trace file behind.
-                    if collector.name == "perfetto" {
+                    // Tracebox writes its protobuf trace and bpftrace writes its map
+                    // summaries on an orderly interrupt. Do not SIGKILL either collector:
+                    // a short benchmark would otherwise lose the very artifacts ASB is
+                    // meant to report.
+                    if collector.name == "perfetto" || collector.name.starts_with("bpftrace-") {
                         let interrupted = Command::new("kill")
                             .arg("-INT")
                             .arg(collector.child.id().to_string())
@@ -1919,6 +1920,31 @@ fn preflight_collectors(
             }
         }
     }
+    let bpftrace_profiles = selected_bpftrace_profiles(selected)?;
+    if !bpftrace_profiles.is_empty() {
+        let executable = resolve_executable(tool_dir, "bpftrace");
+        if !executable.is_file() {
+            return Err(format!(
+                "selected bpftrace profiles need a project-local bpftrace executable. What to do: run `asb tool install bpftrace` in this project, then rerun the benchmark."
+            ));
+        }
+        for profile in bpftrace_profiles {
+            if bpftrace_profile_probe(&executable, profile, false)? {
+                continue;
+            }
+            if bpftrace_profile_probe(&executable, profile, true)? {
+                sudo_collectors.insert("bpftrace".to_owned());
+                continue;
+            }
+            if passwordless_sudo_available() {
+                return Err(format!(
+                    "bpftrace profile `{}` cannot attach on this kernel. It is not a sudo authorization failure; inspect the kernel tracepoint support and the profile's JSON/SVG documentation before rerunning.",
+                    profile.name
+                ));
+            }
+            return Err(passwordless_sudo_error("bpftrace", &executable));
+        }
+    }
     if selected_or_env("perfetto", "ASB_MEASURE_PERFETTO", selected) {
         let executable = resolve_executable(tool_dir, "perfetto");
         // A missing optional collector is reported as unavailable when the
@@ -1940,6 +1966,41 @@ fn preflight_collectors(
         }
     }
     Ok(sudo_collectors)
+}
+
+/// Compile and attach a concrete profile before the agent starts. The appended
+/// BEGIN exit keeps the probe bounded while exercising the exact tracepoints,
+/// predicates, and target-PID parameter form used during the run.
+fn bpftrace_profile_probe(
+    executable: &Path,
+    profile: BpftraceProfile,
+    sudo: bool,
+) -> Result<bool, String> {
+    let program = format!("{}\nBEGIN {{ exit(); }}", profile.program);
+    let mut command = if sudo {
+        let mut command = Command::new("sudo");
+        command.args(["-n", "--"]);
+        command.arg(executable);
+        command
+    } else {
+        Command::new(executable)
+    };
+    command
+        .args(["-e", &program, "0"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .map_err(|error| format!("cannot probe bpftrace profile {}: {error}", profile.name))
+}
+
+fn passwordless_sudo_available() -> bool {
+    Command::new("sudo")
+        .args(["-n", "true"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 /// Probe the exact ftrace configuration used by ASB. `--background-wait`
