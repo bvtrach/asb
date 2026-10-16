@@ -135,6 +135,35 @@ function normalizeRequestBody(url, body) {
   }
 }
 
+// Result workspaces are intentionally different for record and replay.  Keep
+// absolute project paths out of cassette keys while forwarding the normalized
+// request body unchanged to the live provider during recording.
+function normalizeCassetteBody(body) {
+  if (!body) return body;
+  const normalized = body
+    .replace(
+    /\/(?:srv\/data\/projects|tmp)\/[A-Za-z0-9._~+%-]+(?:\/[A-Za-z0-9._~+%-]+)*/g,
+    "<asb-path>",
+    )
+    // Agent SDKs generate fresh message/session IDs for every invocation;
+    // those identifiers are not provider semantics and must not prevent a
+    // cassette recorded in one process from replaying in another.
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<asb-uuid>")
+    .replace(/\b1[0-9]{12,}\b/g, "<asb-timestamp>");
+  try {
+    const sort = (value) => {
+      if (Array.isArray(value)) return value.map(sort);
+      if (value && typeof value === "object") {
+        return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sort(value[key])]));
+      }
+      return value;
+    };
+    return JSON.stringify(sort(JSON.parse(normalized)));
+  } catch {
+    return normalized;
+  }
+}
+
 function requestKey(request) {
   return JSON.stringify([request.method, request.url, request.body]);
 }
@@ -143,7 +172,14 @@ const interactions = mode === "replay"
   ? readFileSync(cassette, "utf8")
       .split(/\r?\n/)
       .filter(Boolean)
-      .map((line) => JSON.parse(line))
+      .map((line) => {
+        const interaction = JSON.parse(line);
+        if (interaction.request) {
+          interaction.request.url = requestPath(interaction.request.url);
+          interaction.request.body = normalizeCassetteBody(interaction.request.body);
+        }
+        return interaction;
+      })
   : [];
 let cursor = 0;
 
@@ -163,7 +199,7 @@ async function handle(request, response) {
     // recorder and makes separate-directory replay path-stable.
     url: requestPath(request.url),
     headers: redactHeaders(Object.fromEntries(Object.entries(request.headers))),
-    body: body.length ? normalizedBody : null,
+    body: body.length ? normalizeCassetteBody(normalizedBody) : null,
   };
 
   if (mode === "replay") {
@@ -174,8 +210,30 @@ async function handle(request, response) {
       return;
     }
     if (requestKey(recordedRequest) !== requestKey(interaction.request)) {
+      if (process.env.ASB_TAPE_DEBUG === "1") {
+        writeFileSync("/tmp/asb-tape-expected.json", interaction.request.body || "");
+        writeFileSync("/tmp/asb-tape-actual.json", recordedRequest.body || "");
+      }
       response.writeHead(409, { "content-type": "application/json" });
-      response.end(JSON.stringify({ error: "request does not match cassette" }));
+      response.end(JSON.stringify({
+        error: "request does not match cassette",
+        ...(process.env.ASB_TAPE_DEBUG === "1"
+          ? {
+              expected: {
+                method: interaction.request.method,
+                url: interaction.request.url,
+                body_length: interaction.request.body?.length ?? 0,
+                body_prefix: interaction.request.body?.slice(0, 500) ?? null,
+              },
+              actual: {
+                method: recordedRequest.method,
+                url: recordedRequest.url,
+                body_length: recordedRequest.body?.length ?? 0,
+                body_prefix: recordedRequest.body?.slice(0, 500) ?? null,
+              },
+            }
+          : {}),
+      }));
       return;
     }
     cursor += 1;
