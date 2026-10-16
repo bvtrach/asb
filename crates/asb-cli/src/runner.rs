@@ -21,6 +21,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 const MAX_OUTPUT: usize = 1024 * 1024;
+const MAX_AGENT_RUNTIME: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Serialize)]
 struct RunResult<'a> {
@@ -616,9 +617,6 @@ fn wait_with_output(
     show_output: bool,
     output: &mut dyn Write,
 ) -> std::io::Result<Output> {
-    if !show_output {
-        return child.wait_with_output();
-    }
     let stdout = child
         .stdout
         .take()
@@ -636,16 +634,22 @@ fn wait_with_output(
     let mut stderr_capture = Vec::new();
     let mut finished_streams = 0;
     let mut status = None;
-    while finished_streams < 2 || status.is_none() {
+    let deadline = Instant::now() + MAX_AGENT_RUNTIME;
+    let mut timed_out = false;
+    while (finished_streams < 2 || status.is_none()) && !timed_out {
         match receiver.recv_timeout(Duration::from_millis(50)) {
             Ok(OutputChunk::Stdout(chunk)) => {
-                output.write_all(&chunk)?;
-                output.flush()?;
+                if show_output {
+                    output.write_all(&chunk)?;
+                    output.flush()?;
+                }
                 stdout_capture.extend_from_slice(&chunk);
             }
             Ok(OutputChunk::Stderr(chunk)) => {
-                output.write_all(&chunk)?;
-                output.flush()?;
+                if show_output {
+                    output.write_all(&chunk)?;
+                    output.flush()?;
+                }
                 stderr_capture.extend_from_slice(&chunk);
             }
             Ok(OutputChunk::Finished) => finished_streams += 1,
@@ -655,8 +659,22 @@ fn wait_with_output(
         if status.is_none() {
             status = child.try_wait()?;
         }
+        if status.is_none() && Instant::now() >= deadline {
+            timed_out = true;
+            let _ = child.kill();
+            status = Some(child.wait()?);
+        }
     }
     let status = status.unwrap_or(child.wait()?);
+    if timed_out {
+        stderr_capture.extend_from_slice(
+            format!(
+                "agent execution exceeded {} seconds\n",
+                MAX_AGENT_RUNTIME.as_secs()
+            )
+            .as_bytes(),
+        );
+    }
     Ok(Output {
         status,
         stdout: stdout_capture,

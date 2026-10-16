@@ -12,10 +12,11 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_CAPTURE: usize = 256 * 1024;
 const MAX_RUNS: usize = 10_000;
+const FLAMEGRAPH_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// A bounded, target-PID-scoped bpftrace program. Profiles use only stable
 /// kernel tracepoint families where possible; users can still supply a
@@ -814,64 +815,61 @@ impl Session {
                 "install stackcollapse-perf.pl and flamegraph in the project tool directory",
             );
         };
-        let script = self
+        let mut script = self
             .command("perf")
             .args(["script", "-i"])
             .arg(data)
-            .output()
-            .map_err(|e| format!("cannot run perf script for flamegraph: {e}"))?;
-        if !script.status.success() {
-            return write_flamegraph_status(
-                &self.dir,
-                "unavailable",
-                None,
-                "perf script failed; check perf.json and host perf permissions",
-            );
-        }
-        let collapsed = Command::new(collapse)
-            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("cannot start perf script for flamegraph: {e}"))?;
+        let script_stdout = script
+            .stdout
+            .take()
+            .ok_or_else(|| "perf script stdout was not piped".to_owned())?;
+        let folded_path = self.dir.join("flamegraph.folded");
+        let mut collapsed = Command::new(collapse)
+            .stdin(Stdio::from(script_stdout))
+            .stdout(Stdio::from(File::create(&folded_path).map_err(|e| {
+                format!("cannot create flamegraph folded output: {e}")
+            })?))
+            .stderr(Stdio::null())
             .spawn()
             .map_err(|e| format!("cannot start flamegraph stack collapse script: {e}"))?;
-        let mut collapsed = collapsed;
-        if let Some(mut input) = collapsed.stdin.take() {
-            input
-                .write_all(&script.stdout)
-                .map_err(|e| format!("cannot feed stack collapse script: {e}"))?;
-        }
-        let collapsed_output = collapsed
-            .wait_with_output()
-            .map_err(|e| format!("cannot finish stack collapse script: {e}"))?;
-        if !collapsed_output.status.success() {
+        if !wait_bounded(&mut script, FLAMEGRAPH_TIMEOUT)? {
             return write_flamegraph_status(
                 &self.dir,
                 "unavailable",
                 None,
-                "the stack collapse script failed to process perf output",
+                "perf script exceeded the 60 second flamegraph deadline or failed",
+            );
+        }
+        if !wait_bounded(&mut collapsed, FLAMEGRAPH_TIMEOUT)? {
+            return write_flamegraph_status(
+                &self.dir,
+                "unavailable",
+                None,
+                "the stack collapse script exceeded the 60 second flamegraph deadline or failed",
             );
         }
         let mut render = Command::new(render);
-        render.stdin(Stdio::piped()).stdout(Stdio::from(
-            File::create(self.dir.join("flamegraph.svg"))
-                .map_err(|e| format!("cannot create flamegraph.svg: {e}"))?,
-        ));
+        render
+            .stdin(Stdio::from(File::open(&folded_path).map_err(|e| {
+                format!("cannot open collapsed flamegraph output: {e}")
+            })?))
+            .stdout(Stdio::from(
+                File::create(self.dir.join("flamegraph.svg"))
+                    .map_err(|e| format!("cannot create flamegraph.svg: {e}"))?,
+            ));
         let mut render = render
             .spawn()
             .map_err(|e| format!("cannot start flamegraph renderer: {e}"))?;
-        if let Some(mut input) = render.stdin.take() {
-            input
-                .write_all(&collapsed_output.stdout)
-                .map_err(|e| format!("cannot feed flamegraph renderer: {e}"))?;
-        }
-        let status = render
-            .wait()
-            .map_err(|e| format!("cannot finish flamegraph renderer: {e}"))?;
-        if !status.success() {
+        if !wait_bounded(&mut render, FLAMEGRAPH_TIMEOUT)? {
             return write_flamegraph_status(
                 &self.dir,
                 "unavailable",
                 None,
-                "the flamegraph renderer failed",
+                "the flamegraph renderer exceeded the 60 second deadline or failed",
             );
         }
         write_flamegraph_status(&self.dir, "completed", Some("flamegraph.svg"), "")
@@ -1563,6 +1561,24 @@ struct FlamegraphStatus<'a> {
     status: &'a str,
     artifact: Option<&'a str>,
     reason: Option<&'a str>,
+}
+
+fn wait_bounded(child: &mut Child, timeout: Duration) -> Result<bool, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child
+            .try_wait()
+            .map_err(|error| format!("cannot poll collector process: {error}"))?
+        {
+            Some(status) => return Ok(status.success()),
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(false);
+            }
+            None => std::thread::sleep(Duration::from_millis(25)),
+        }
+    }
 }
 
 fn write_flamegraph_status(
