@@ -23,20 +23,16 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
     {
         return Ok(());
     }
-    let directory = context.continue_config_dir.ok_or_else(|| {
-        Error::Run(
-            "cannot configure Continue without a project-local configuration directory".into(),
-        )
-    })?;
+    let directory = context.tools_dir.join("continue/config");
     let url = context
         .cli2key
         .map(|(_, url)| url.to_owned())
         .or_else(|| std::env::var("OPENROUTER_BASE_URL").ok())
         .unwrap_or_else(|| "https://openrouter.ai/api/v1".into());
-    prepare::configure_continue(directory, context.model, &url)?;
+    prepare::configure_continue(&directory, context.model, &url)?;
     context
         .command
         .env("CONTINUE_CONFIG", directory.join("config.yaml"))
-        .env("CONTINUE_GLOBAL_DIR", directory);
+        .env("CONTINUE_GLOBAL_DIR", &directory);
     Ok(())
 }

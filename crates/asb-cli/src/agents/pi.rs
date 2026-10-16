@@ -22,11 +22,7 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
     if !cli2key && !openrouter {
         return Ok(());
     }
-    let directory = context.pi_config_dir.ok_or_else(|| {
-        Error::Run(
-            "cannot configure Pi without a project-local provider configuration directory".into(),
-        )
-    })?;
+    let directory = context.tools_dir.join("pi/config");
     let (provider, api, key_name) = if cli2key {
         ("cli2key", "openai-responses", "CLI2KEY_API_KEY")
     } else {
@@ -41,7 +37,7 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
         });
     prepare::configure_pi_provider(
         context.command,
-        directory,
+        &directory,
         provider,
         context.model,
         &base_url,

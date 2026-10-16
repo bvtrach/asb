@@ -14,31 +14,22 @@ pub fn apply_with_tape(
     agent: &str,
     provider: &str,
     model: &str,
-    codex_executable: Option<&str>,
     cli2key: Option<(&str, &str)>,
-    pi_config_dir: Option<&Path>,
-    workbuddy_config_dir: Option<&Path>,
-    continue_config_dir: Option<&Path>,
-    cline_data_dir: Option<&Path>,
+    tools_dir: &Path,
     tape_base_url: Option<&str>,
     replay: bool,
 ) -> Result<(), Error> {
     if provider.eq_ignore_ascii_case("cli2key") {
-        prepare_cli2key(command, model, codex_executable, cli2key)?;
+        prepare_cli2key(
+            command,
+            model,
+            crate::agents::resolve_from_tools("codex", tools_dir).as_deref(),
+            cli2key,
+        )?;
     } else if provider.eq_ignore_ascii_case("openrouter") {
         prepare_openrouter(command, model, tape_base_url, replay)?;
     }
-    crate::agents::prepare(
-        command,
-        agent,
-        provider,
-        model,
-        cli2key,
-        pi_config_dir,
-        workbuddy_config_dir,
-        continue_config_dir,
-        cline_data_dir,
-    )
+    crate::agents::prepare(command, agent, provider, model, cli2key, tools_dir)
 }
 
 fn prepare_openrouter(
@@ -298,12 +289,8 @@ mod tests {
             "opencode",
             "cli2key",
             "gpt-test",
-            Some("/project/codex"),
             Some(("cb_test", "http://127.0.0.1:3456/v1")),
-            None,
-            None,
-            None,
-            None,
+            Path::new("/project/tools"),
             None,
             false,
         )
@@ -318,10 +305,6 @@ mod tests {
         assert_eq!(
             values.get("CLI2KEY_MODEL").map(|value| value.as_ref()),
             Some("gpt-test")
-        );
-        assert_eq!(
-            values.get("CLI2KEY_CODEX_BIN").map(|value| value.as_ref()),
-            Some("/project/codex")
         );
         assert_eq!(
             values.get("OPENAI_API_KEY").map(|value| value.as_ref()),
@@ -364,18 +347,15 @@ mod tests {
             "pi",
             "cli2key",
             "gpt-6.1-sol",
-            None,
             Some(("cb_test", "http://127.0.0.1:3456/v1")),
-            Some(&directory),
-            None,
-            None,
-            None,
+            &directory,
             None,
             false,
         )
         .expect("Pi preparation succeeds");
         let config: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(directory.join("models.json")).expect("Pi config exists"),
+            &std::fs::read_to_string(directory.join("pi/config/models.json"))
+                .expect("Pi config exists"),
         )
         .expect("Pi config is JSON");
         assert_eq!(config["providers"]["cli2key"]["api"], "openai-responses");
@@ -396,12 +376,8 @@ mod tests {
             "workbuddy",
             "cli2key",
             "gpt-6.1-sol",
-            None,
             Some(("cb_test", "http://127.0.0.1:3456/v1")),
-            None,
-            Some(&directory),
-            None,
-            None,
+            &directory,
             None,
             false,
         )
@@ -437,7 +413,8 @@ mod tests {
             Some("1")
         );
         let config: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(directory.join("models.json")).expect("models config exists"),
+            &std::fs::read_to_string(directory.join("workbuddy/config/models.json"))
+                .expect("models config exists"),
         )
         .expect("models config is JSON");
         assert_eq!(config[0]["id"], "gpt-6.1-sol");
@@ -456,17 +433,14 @@ mod tests {
             "continue",
             "cli2key",
             "gpt-test",
-            None,
             Some(("cb_test", "http://127.0.0.1:3456/v1")),
-            None,
-            None,
-            Some(&directory),
-            None,
+            &directory,
             None,
             false,
         )
         .expect("Continue preparation succeeds");
-        let config = std::fs::read_to_string(directory.join("config.yaml")).expect("config");
+        let config =
+            std::fs::read_to_string(directory.join("continue/config/config.yaml")).expect("config");
         assert!(config.contains("provider: openai"));
         assert!(config.contains("model: gpt-test"));
         assert!(config.contains("apiBase: http://127.0.0.1:3456/v1"));
@@ -559,11 +533,7 @@ mod tests {
             "openrouter",
             "tool-model",
             None,
-            None,
-            Some(&directory),
-            None,
-            None,
-            None,
+            &directory,
             Some("http://127.0.0.1:4567/v1"),
             true,
         )
@@ -579,7 +549,8 @@ mod tests {
             Some("asb-replay")
         );
         let config: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(directory.join("models.json")).expect("Pi config exists"),
+            &std::fs::read_to_string(directory.join("pi/config/models.json"))
+                .expect("Pi config exists"),
         )
         .expect("Pi config is JSON");
         assert_eq!(
