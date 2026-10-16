@@ -237,14 +237,31 @@ fn run_mode(
         })
         .transpose()
         .map_err(Error::Run)?;
-    let child = command
-        .spawn()
-        .map_err(|error| Error::Run(format!("could not start {program}: {error}")))?;
     if let Some(session) = measurement_session.as_mut() {
+        session.trace_instant("asb.measurements.ready");
+        session.trace_instant("asb.agent.spawn");
+        session.trace_begin("asb.agent.execute");
+    }
+    let child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            if let Some(session) = measurement_session.as_mut() {
+                session.trace_end();
+                session.trace_instant("asb.agent.spawn_failed");
+            }
+            return Err(Error::Run(format!("could not start {program}: {error}")));
+        }
+    };
+    if let Some(session) = measurement_session.as_mut() {
+        session.trace_instant("asb.agent.started");
         session.attach_pid(child.id()).map_err(Error::Run)?;
     }
     let child = wait_with_output(child, show_output, output)
         .map_err(|error| Error::Run(format!("could not wait for {program}: {error}")))?;
+    if let Some(session) = measurement_session.as_mut() {
+        session.trace_end();
+        session.trace_instant("asb.agent.exited");
+    }
     if let Some(session) = tape_session.take() {
         session.stop()?;
     }

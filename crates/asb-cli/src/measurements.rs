@@ -7,7 +7,7 @@
 
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -33,6 +33,7 @@ pub fn available_collectors() -> Vec<String> {
         "mpstat",
         "iostat",
         "perf",
+        "perfetto",
         "flamegraph",
         "bpftrace",
         "token_usage",
@@ -82,6 +83,8 @@ struct CollectorResult {
     elapsed_ms: u128,
     stdout: String,
     stderr: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    artifact: Option<String>,
     /// Parsed, stable metrics. Raw stdout/stderr remain available for detail,
     /// but comparison must consume this bounded machine-readable map instead.
     metrics: BTreeMap<String, f64>,
@@ -103,6 +106,10 @@ pub struct Session {
     collectors: Vec<Collector>,
     perf_data: Option<PathBuf>,
     perf_enabled: bool,
+    perfetto_trace: Option<PathBuf>,
+    perfetto_enabled: bool,
+    trace_marker: Option<PathBuf>,
+    tracepoint_count: u64,
     sudo_collectors: BTreeSet<String>,
 }
 
@@ -143,8 +150,13 @@ impl Session {
             collectors: Vec::new(),
             perf_data: None,
             perf_enabled: selected_or_env("perf", "ASB_MEASURE_PERF", selected),
+            perfetto_trace: None,
+            perfetto_enabled: selected_or_env("perfetto", "ASB_MEASURE_PERFETTO", selected),
+            trace_marker: None,
+            tracepoint_count: 0,
             sudo_collectors,
         };
+        session.start_perfetto()?;
         session.start_snapshot(
             "mpstat",
             "ASB_MEASURE_MPSTAT",
@@ -158,6 +170,23 @@ impl Session {
             session.start_bpftrace()?;
         }
         Ok(session)
+    }
+
+    /// Emit a fixed-name userspace Perfetto/ftrace instant. Names are constant
+    /// ASB lifecycle markers only; configurations, prompts, credentials, and
+    /// provider responses are never written to the kernel trace buffer.
+    pub fn trace_instant(&mut self, name: &str) {
+        self.write_trace_marker(&format!("I|{}|{name}", std::process::id()));
+    }
+
+    /// Begin a fixed-name ASB lifecycle span in the Perfetto timeline.
+    pub fn trace_begin(&mut self, name: &str) {
+        self.write_trace_marker(&format!("B|{}|{name}", std::process::id()));
+    }
+
+    /// End the most recently opened ASB lifecycle span.
+    pub fn trace_end(&mut self) {
+        self.write_trace_marker("E");
     }
 
     /// Attach perf to the selected child after it has been spawned.
@@ -201,6 +230,39 @@ impl Session {
             stdout_path,
             stderr_path,
         });
+        let stat_stdout_path = self.dir.join("perf-stat.stdout");
+        let stat_stderr_path = self.dir.join("perf-stat.stderr");
+        let stat_stdout = File::create(&stat_stdout_path)
+            .map_err(|e| format!("cannot create perf stat output: {e}"))?;
+        let stat_stderr = File::create(&stat_stderr_path)
+            .map_err(|e| format!("cannot create perf stat error output: {e}"))?;
+        let stat = self
+            .command("perf")
+            .args([
+                "stat",
+                "-x,",
+                "-e",
+                "task-clock,context-switches,cpu-migrations,page-faults,cycles,instructions",
+                "-p",
+            ])
+            .arg(pid.to_string())
+            .stdout(Stdio::from(stat_stdout))
+            .stderr(Stdio::from(stat_stderr))
+            .spawn();
+        match stat {
+            Ok(child) => self.collectors.push(Collector {
+                name: "perf-stat".into(),
+                child,
+                started: Instant::now(),
+                stdout_path: stat_stdout_path,
+                stderr_path: stat_stderr_path,
+            }),
+            Err(error) => write_unavailable(
+                &self.dir.join("perf-stat.json"),
+                "perf-stat",
+                error.to_string(),
+            )?,
+        }
         Ok(())
     }
 
@@ -210,7 +272,21 @@ impl Session {
             let status = match collector.child.try_wait() {
                 Ok(Some(status)) => status,
                 Ok(None) => {
-                    let _ = collector.child.kill();
+                    // Tracebox writes its protobuf trace on an orderly interrupt.  Do not
+                    // SIGKILL it like the streaming text collectors, otherwise a short
+                    // benchmark can leave an incomplete trace file behind.
+                    if collector.name == "perfetto" {
+                        let interrupted = Command::new("kill")
+                            .arg("-INT")
+                            .arg(collector.child.id().to_string())
+                            .status()
+                            .is_ok_and(|status| status.success());
+                        if !interrupted {
+                            let _ = collector.child.kill();
+                        }
+                    } else {
+                        let _ = collector.child.kill();
+                    }
                     collector
                         .child
                         .wait()
@@ -228,19 +304,37 @@ impl Session {
             let _ = fs::remove_file(&collector.stdout_path);
             let _ = fs::remove_file(&collector.stderr_path);
             let stopped_by_runner = status.code().is_none();
-            let metrics = parse_collector_metrics(&collector.name, &stdout);
+            let metrics_source = if collector.name == "perf-stat" {
+                &stderr
+            } else {
+                &stdout
+            };
+            let metrics = parse_collector_metrics(&collector.name, metrics_source);
+            let artifact = match collector.name.as_str() {
+                "perf" => self
+                    .perf_data
+                    .as_ref()
+                    .filter(|path| path.is_file())
+                    .map(|path| file_name(path)),
+                "perfetto" => self
+                    .perfetto_trace
+                    .as_ref()
+                    .filter(|path| path.is_file())
+                    .map(|path| file_name(path)),
+                _ => None,
+            };
             let result = CollectorResult {
                 schema_version: 1,
                 collector: collector.name.clone(),
                 status: if status.success()
                     || (stopped_by_runner && collector.name != "perf" && !stdout.is_empty())
+                    || (stopped_by_runner && collector.name == "perf-stat" && !stderr.is_empty())
                     || (stopped_by_runner
-                        && collector.name == "perf"
-                        && self
-                            .perf_data
-                            .as_ref()
-                            .is_some_and(|path| path.metadata().is_ok_and(|m| m.len() > 0)))
-                {
+                        && collector_artifact_exists(
+                            &collector.name,
+                            self.perf_data.as_deref(),
+                            self.perfetto_trace.as_deref(),
+                        )) {
                     "completed"
                 } else {
                     "failed"
@@ -250,13 +344,89 @@ impl Session {
                 elapsed_ms: collector.started.elapsed().as_millis(),
                 stdout,
                 stderr,
+                artifact,
                 metrics,
             };
             write_json(&self.dir.join(format!("{}.json", collector.name)), &result)?;
         }
         write_json(&self.dir.join("run.json"), &measurement)?;
         self.write_flamegraph()?;
+        if self.perfetto_enabled {
+            write_json(
+                &self.dir.join("perfetto-tracepoints.json"),
+                &serde_json::json!({
+                    "schema_version": 1,
+                    "collector": "perfetto",
+                    "tracepoint_count": self.tracepoint_count,
+                    "trace_marker": self.trace_marker.as_ref().map(|path| path.display().to_string()),
+                    "trace": self.perfetto_trace.as_ref().map(|path| file_name(path)),
+                }),
+            )?;
+        }
         update_summary(&self.dir, &measurement)
+    }
+
+    fn start_perfetto(&mut self) -> Result<(), String> {
+        if !self.perfetto_enabled {
+            return Ok(());
+        }
+        let config = self.dir.join("perfetto-scheduling.pbtx");
+        fs::write(&config, perfetto_config())
+            .map_err(|error| format!("cannot write Perfetto trace configuration: {error}"))?;
+        let trace = self.dir.join("perfetto-scheduling.perfetto-trace");
+        let stdout_path = self.dir.join("perfetto.stdout");
+        let stderr_path = self.dir.join("perfetto.stderr");
+        let child = self
+            .command("perfetto")
+            .args(["--txt", "-c"])
+            .arg(&config)
+            .args(["-o"])
+            .arg(&trace)
+            .stdout(Stdio::from(File::create(&stdout_path).map_err(
+                |error| format!("cannot create Perfetto output: {error}"),
+            )?))
+            .stderr(Stdio::from(File::create(&stderr_path).map_err(
+                |error| format!("cannot create Perfetto error output: {error}"),
+            )?))
+            .spawn();
+        match child {
+            Ok(child) => {
+                self.perfetto_trace = Some(trace);
+                self.trace_marker = trace_marker_path();
+                self.collectors.push(Collector {
+                    name: "perfetto".into(),
+                    child,
+                    started: Instant::now(),
+                    stdout_path,
+                    stderr_path,
+                });
+            }
+            Err(error) if !env_true("ASB_MEASURE_PERFETTO") => write_unavailable(
+                &self.dir.join("perfetto.json"),
+                "perfetto",
+                format!("{error}; install it with `asb tool install perfetto` in this project"),
+            )?,
+            Err(error) => {
+                return Err(format!(
+                    "cannot start Perfetto Tracebox (disable with ASB_MEASURE_PERFETTO=0): {error}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn write_trace_marker(&mut self, event: &str) {
+        let Some(path) = self.trace_marker.as_ref() else {
+            return;
+        };
+        if OpenOptions::new()
+            .write(true)
+            .open(path)
+            .and_then(|mut file| file.write_all(event.as_bytes()))
+            .is_ok()
+        {
+            self.tracepoint_count = self.tracepoint_count.saturating_add(1);
+        }
     }
 
     fn start_snapshot(
@@ -476,12 +646,17 @@ impl Session {
 
     fn executable(&self, name: &str) -> PathBuf {
         if let Some(tool_dir) = &self.tool_dir {
-            let local = tool_dir.join("bin").join(name);
-            if local.is_file() {
-                return local;
+            let binary = tool_binary_name(name);
+            for local in [
+                tool_dir.join(name).join("bin").join(binary),
+                tool_dir.join("bin").join(binary),
+            ] {
+                if local.is_file() {
+                    return local;
+                }
             }
         }
-        PathBuf::from(name)
+        PathBuf::from(tool_binary_name(name))
     }
 }
 
@@ -1091,6 +1266,7 @@ fn write_unavailable(path: &Path, collector: &str, error: String) -> Result<(), 
             elapsed_ms: 0,
             stdout: String::new(),
             stderr: error,
+            artifact: None,
             metrics: BTreeMap::new(),
         },
     )
@@ -1125,8 +1301,96 @@ fn parse_collector_metrics(name: &str, output: &str) -> BTreeMap<String, f64> {
     match name {
         "mpstat" => parse_mpstat_metrics(output),
         "iostat" => parse_iostat_metrics(output),
+        "perf-stat" => parse_perf_stat_metrics(output),
         _ => BTreeMap::new(),
     }
+}
+
+/// Parse `perf stat -x,` output into stable unit-named fields. Unsupported
+/// counters remain absent instead of being inferred from unrelated values.
+fn parse_perf_stat_metrics(output: &str) -> BTreeMap<String, f64> {
+    let mut metrics = BTreeMap::new();
+    for line in output.lines() {
+        let fields = line.split(',').map(str::trim).collect::<Vec<_>>();
+        let Some(value) = fields.first().and_then(|value| parse_float(value)) else {
+            continue;
+        };
+        let Some(event) = fields.get(2).copied().filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        let name = match event {
+            "task-clock" => "task_clock_ms",
+            "context-switches" => "context_switches",
+            "cpu-migrations" => "cpu_migrations",
+            "page-faults" => "page_faults",
+            "cycles" => "cycles",
+            "instructions" => "instructions",
+            _ => continue,
+        };
+        metrics.insert(format!("perf.{name}"), value);
+    }
+    metrics
+}
+
+fn tool_binary_name(name: &str) -> &str {
+    if name == "perfetto" { "tracebox" } else { name }
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("artifact")
+        .to_owned()
+}
+
+fn collector_artifact_exists(
+    name: &str,
+    perf_data: Option<&Path>,
+    perfetto_trace: Option<&Path>,
+) -> bool {
+    let path = match name {
+        "perf" => perf_data,
+        "perfetto" => perfetto_trace,
+        _ => None,
+    };
+    path.is_some_and(|path| path.metadata().is_ok_and(|metadata| metadata.len() > 0))
+}
+
+fn trace_marker_path() -> Option<PathBuf> {
+    [
+        PathBuf::from("/sys/kernel/tracing/trace_marker"),
+        PathBuf::from("/sys/kernel/debug/tracing/trace_marker"),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+}
+
+fn perfetto_config() -> &'static str {
+    r#"duration_ms: 3600000
+buffers { size_kb: 65536 fill_policy: RING_BUFFER }
+data_sources {
+  config {
+    name: "linux.ftrace"
+    ftrace_config {
+      compact_sched { enabled: true }
+      ftrace_events: "sched/sched_switch"
+      ftrace_events: "sched/sched_waking"
+      ftrace_events: "sched/sched_wakeup_new"
+      ftrace_events: "sched/sched_process_exit"
+      ftrace_events: "sched/sched_process_free"
+      ftrace_events: "task/task_newtask"
+      ftrace_events: "task/task_rename"
+      ftrace_events: "ftrace/print"
+    }
+  }
+}
+data_sources {
+  config {
+    name: "linux.process_stats"
+    process_stats_config { scan_all_processes_on_start: true }
+  }
+}
+"#
 }
 
 fn parse_mpstat_metrics(output: &str) -> BTreeMap<String, f64> {
@@ -1376,9 +1640,14 @@ fn preflight_collectors(
 
 fn resolve_executable(tool_dir: Option<&Path>, name: &str) -> PathBuf {
     if let Some(tool_dir) = tool_dir {
-        let local = tool_dir.join("bin").join(name);
-        if local.is_file() {
-            return local;
+        let binary = tool_binary_name(name);
+        for local in [
+            tool_dir.join(name).join("bin").join(binary),
+            tool_dir.join("bin").join(binary),
+        ] {
+            if local.is_file() {
+                return local;
+            }
         }
     }
     if let Some(path) = std::env::var_os("PATH") {
@@ -1389,7 +1658,7 @@ fn resolve_executable(tool_dir: Option<&Path>, name: &str) -> PathBuf {
             }
         }
     }
-    PathBuf::from(name)
+    PathBuf::from(tool_binary_name(name))
 }
 
 fn passwordless_sudo_error(name: &str, executable: &Path) -> String {
@@ -1709,5 +1978,41 @@ mod tests {
         assert_eq!(metrics["device.read_await_ms"], 1.5);
         assert_eq!(metrics["device.write_kib_per_s"], 40.0);
         assert_eq!(metrics["device.util_pct"], 7.0);
+    }
+
+    #[test]
+    fn parses_perf_stat_counters_into_stable_metrics() {
+        let metrics = parse_perf_stat_metrics(
+            "12.34,msec,task-clock,100.00,\n8,,context-switches,100.00,\n2,,cpu-migrations,100.00,\n4,,page-faults,100.00,\n1234,,cycles,100.00,\n567,,instructions,100.00,\n",
+        );
+        assert_eq!(metrics["perf.task_clock_ms"], 12.34);
+        assert_eq!(metrics["perf.context_switches"], 8.0);
+        assert_eq!(metrics["perf.cpu_migrations"], 2.0);
+        assert_eq!(metrics["perf.page_faults"], 4.0);
+        assert_eq!(metrics["perf.cycles"], 1234.0);
+        assert_eq!(metrics["perf.instructions"], 567.0);
+    }
+
+    #[test]
+    fn perfetto_config_collects_scheduler_process_and_trace_marker_events() {
+        let config = perfetto_config();
+        for event in [
+            "sched/sched_switch",
+            "sched/sched_waking",
+            "sched/sched_wakeup_new",
+            "sched/sched_process_exit",
+            "task/task_newtask",
+            "ftrace/print",
+        ] {
+            assert!(config.contains(event), "missing {event}");
+        }
+        assert!(config.contains("linux.process_stats"));
+        assert!(config.contains("compact_sched"));
+    }
+
+    #[test]
+    fn project_local_perfetto_uses_tracebox_binary_name() {
+        assert_eq!(tool_binary_name("perfetto"), "tracebox");
+        assert_eq!(tool_binary_name("perf"), "perf");
     }
 }

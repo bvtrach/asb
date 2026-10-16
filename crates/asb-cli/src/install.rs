@@ -12,6 +12,14 @@ use std::process::{Command, ExitStatus, Stdio};
 const LLMTAPE_WRAPPER: &str = include_str!("../../../scripts/llmtape.mjs");
 const BPFTRACE_SOURCE: &str =
     "https://github.com/bpftrace/bpftrace/archive/refs/tags/v0.20.2.tar.gz";
+const PERFETTO_LINUX_X86_64_URL: &str =
+    "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v58.2/linux-amd64/tracebox";
+const PERFETTO_LINUX_X86_64_SHA256: &str =
+    "5348e5f3513dec2e70f02d3e4296cfed546e6ebc7f9a7cc6b5499f363b4aea03";
+const PERFETTO_LINUX_AARCH64_URL: &str =
+    "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v58.2/linux-arm64/tracebox";
+const PERFETTO_LINUX_AARCH64_SHA256: &str =
+    "2d21883e9c55818f851fd8c391afb9b366032b3110076b4fd41f31f30b5849fa";
 
 trait LoggedStatus {
     fn logged_status(&mut self) -> io::Result<ExitStatus>;
@@ -48,6 +56,7 @@ enum Recipe {
         executable: &'static str,
     },
     Bpftrace,
+    Perfetto,
     Flamegraph,
 }
 
@@ -79,6 +88,7 @@ const BUILTIN_TOOLS: &[&str] = &[
     "iostat",
     "perf",
     "bpftrace",
+    "perfetto",
     "flamegraph",
 ];
 
@@ -250,6 +260,7 @@ fn recipe(name: &str) -> Option<Recipe> {
         }),
         "perf" => Some(Recipe::Host { executable: "perf" }),
         "bpftrace" => Some(Recipe::Bpftrace),
+        "perfetto" => Some(Recipe::Perfetto),
         "flamegraph" => Some(Recipe::Flamegraph),
         _ => None,
     }
@@ -315,7 +326,14 @@ pub fn tool_with_progress(
             .map_err(super::io_error)?;
     }
     progress(100, "ready");
-    let kind = if id == "llmtape" { "tool" } else { "agent" };
+    let kind = if matches!(
+        id.as_str(),
+        "llmtape" | "mpstat" | "iostat" | "perf" | "bpftrace" | "perfetto" | "flamegraph"
+    ) {
+        "tool"
+    } else {
+        "agent"
+    };
     writeln!(output, "Installed {kind} {id} at {}", executable.display())
         .map_err(super::io_error)?;
     Ok(())
@@ -637,6 +655,7 @@ fn install_recipe(
             return Ok(destination);
         }
         Recipe::Bpftrace => return install_bpftrace(root, progress),
+        Recipe::Perfetto => return install_perfetto(root, progress),
         Recipe::Flamegraph => {
             progress(25, "downloading FlameGraph scripts");
             let bin = root.join("bin");
@@ -667,6 +686,7 @@ fn install_recipe(
                 Recipe::Python { .. } => "python3",
                 Recipe::Host { .. } => "host measurement binary",
                 Recipe::Bpftrace => "bpftrace and uname",
+                Recipe::Perfetto => "curl and sha256sum",
                 Recipe::Flamegraph => "curl",
             };
             missing_dependency(dependency, "agent installation", error)
@@ -690,6 +710,52 @@ fn install_recipe(
         make_executable(&executable)?;
     }
     Ok(executable)
+}
+
+/// Download a pinned official Perfetto Tracebox binary into the benchmark
+/// project. Tracebox is the Linux Perfetto collector used by the optional
+/// scheduler and userspace tracepoint measurement adapter.
+fn install_perfetto(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
+    let (url, expected_hash) = match std::env::consts::ARCH {
+        "x86_64" => (PERFETTO_LINUX_X86_64_URL, PERFETTO_LINUX_X86_64_SHA256),
+        "aarch64" => (PERFETTO_LINUX_AARCH64_URL, PERFETTO_LINUX_AARCH64_SHA256),
+        architecture => {
+            return Err(Error::Input(format!(
+                "Perfetto Tracebox is currently packaged by ASB only for Linux x86_64 and aarch64; this project is running on {architecture}"
+            )));
+        }
+    };
+    let bin = root.join("bin");
+    fs::create_dir_all(&bin)
+        .map_err(|error| Error::Io(format!("cannot create {}: {error}", bin.display())))?;
+    let destination = bin.join("tracebox");
+    progress(20, "downloading pinned Perfetto Tracebox");
+    install_source(url, &destination, "Perfetto Tracebox")?;
+    progress(75, "verifying Perfetto checksum");
+    let digest = command_output(
+        &PathBuf::from("sha256sum"),
+        &[destination.to_string_lossy().as_ref()],
+        "Perfetto checksum",
+    )?;
+    let actual_hash = digest.split_whitespace().next().unwrap_or_default();
+    if actual_hash != expected_hash {
+        let _ = fs::remove_file(&destination);
+        return Err(Error::Io(format!(
+            "Perfetto Tracebox checksum mismatch: expected {expected_hash}, got {actual_hash}"
+        )));
+    }
+    make_executable(&destination)?;
+    progress(95, "checking Perfetto Tracebox");
+    let version = Command::new(&destination)
+        .arg("--version")
+        .logged_status()
+        .map_err(|error| Error::Io(format!("cannot start installed Perfetto Tracebox: {error}")))?;
+    if !version.success() {
+        return Err(Error::Io(
+            "installed Perfetto Tracebox did not report a usable version".into(),
+        ));
+    }
+    Ok(destination)
 }
 
 /// Copy the host bpftrace binary and persist the kernel pairing used to
@@ -903,6 +969,7 @@ fn executable(recipe: Recipe, root: &Path) -> PathBuf {
         Recipe::Python { executable, .. } => root.join("venv/bin").join(executable),
         Recipe::Host { executable } => root.join("bin").join(executable),
         Recipe::Bpftrace => root.join("bin").join("bpftrace"),
+        Recipe::Perfetto => root.join("bin").join("tracebox"),
         Recipe::Flamegraph => root.join("bin").join("flamegraph"),
     }
 }
@@ -931,6 +998,10 @@ fn describe(recipe: Recipe, root: &Path) -> String {
             "copy the host-compatible bpftrace into {}/bin and record uname metadata",
             root.display()
         ),
+        Recipe::Perfetto => format!(
+            "download pinned Perfetto Tracebox into {}/bin/tracebox and verify its SHA-256",
+            root.display()
+        ),
         Recipe::Flamegraph => format!(
             "download pinned FlameGraph scripts into {}/bin",
             root.display()
@@ -952,6 +1023,7 @@ fn tool_summary(recipe: Recipe) -> String {
         } => format!("python {package} -> {executable}"),
         Recipe::Host { executable } => format!("host binary -> {executable}"),
         Recipe::Bpftrace => "host-compatible bpftrace + kernel metadata".into(),
+        Recipe::Perfetto => "pinned Perfetto Tracebox -> tracebox".into(),
         Recipe::Flamegraph => "pinned FlameGraph scripts -> flamegraph".into(),
     }
 }
@@ -1176,6 +1248,7 @@ mod tests {
             "iostat",
             "perf",
             "bpftrace",
+            "perfetto",
             "flamegraph",
         ] {
             let recipe = recipe(agent).expect("documented agent has a recipe");
@@ -1194,6 +1267,16 @@ mod tests {
         );
         assert!(LLMTAPE_WRAPPER.contains("llmtape record"));
         assert!(LLMTAPE_WRAPPER.contains("llmtape replay"));
+    }
+
+    #[test]
+    fn perfetto_recipe_uses_project_local_tracebox() {
+        let recipe = recipe("perfetto").expect("perfetto recipe");
+        assert_eq!(
+            executable(recipe, Path::new(".asb-tools/perfetto")),
+            Path::new(".asb-tools/perfetto/bin/tracebox")
+        );
+        assert!(describe(recipe, Path::new(".asb-tools/perfetto")).contains("SHA-256"));
     }
 
     #[test]
