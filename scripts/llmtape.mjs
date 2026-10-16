@@ -74,18 +74,30 @@ function responseHeaders(headers) {
 // the request deterministic for recording and replay.  This does not invent
 // tool calls; it only supplies the empty schema required for validation.
 function normalizeRequestBody(url, body) {
-  if (!body || !url.includes("/messages")) return body;
+  if (!body || (!url.includes("/messages") && !url.includes("/responses"))) return body;
   try {
     const parsed = JSON.parse(body);
     if (!Array.isArray(parsed.tools)) return body;
     let changed = false;
-    parsed.tools = parsed.tools.map((tool) => {
+    parsed.tools = parsed.tools
+      .filter((tool) => {
+        // The local bridge supports function tools.  Cline's Responses
+        // adapter may add native web/image tools that the bridge cannot
+        // execute; omit those optional tools while retaining agent tools.
+        if (url.includes("/responses") && tool &&
+            (tool.type === "web_search" || tool.type === "image_generation")) {
+          changed = true;
+          return false;
+        }
+        return true;
+      })
+      .map((tool) => {
       if (tool && tool.type === "web_search_20250305" && !tool.input_schema) {
         changed = true;
         return { ...tool, input_schema: { type: "object", properties: {} } };
       }
       return tool;
-    });
+      });
     return changed ? JSON.stringify(parsed) : body;
   } catch {
     return body;

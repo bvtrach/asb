@@ -150,6 +150,10 @@ fn configure_openai_compatible(
                 .env(
                     "CLINE_PROVIDER_SETTINGS_PATH",
                     directory.join("data/settings/providers.json"),
+                )
+                .env(
+                    "CLINE_GLOBAL_SETTINGS_PATH",
+                    directory.join("data/settings/global-settings.json"),
                 );
         }
     }
@@ -267,6 +271,10 @@ fn prepare_cli2key(
                 .env(
                     "CLINE_PROVIDER_SETTINGS_PATH",
                     directory.join("data/settings/providers.json"),
+                )
+                .env(
+                    "CLINE_GLOBAL_SETTINGS_PATH",
+                    directory.join("data/settings/global-settings.json"),
                 );
         }
     }
@@ -422,7 +430,22 @@ fn configure_cline(
         Error::Run(format!(
             "cannot write Cline provider configuration: {error}"
         ))
-    })
+    })?;
+    // Cline's native web-search descriptor is not part of the OpenAI
+    // Responses compatibility surface used by the local bridge.  Disable it
+    // in the project-local settings so normal file/shell tools remain enabled
+    // without sending an unsupported server tool.
+    let global = serde_json::json!({
+        "disabledTools": ["web_search", "image_generation"],
+        "tools": {
+            "web_search": {"enabled": false},
+            "image_generation": {"enabled": false}
+        }
+    });
+    let global_content = serde_json::to_vec_pretty(&global)
+        .map_err(|error| Error::Run(format!("cannot render Cline global settings: {error}")))?;
+    std::fs::write(settings_dir.join("global-settings.json"), global_content)
+        .map_err(|error| Error::Run(format!("cannot write Cline global settings: {error}")))
 }
 
 fn opencode_config(model: &str, base_url: &str) -> Result<String, Error> {
