@@ -94,9 +94,10 @@ values up to its whole-second interface, while perf supports the requested
 millisecond period. `asb compare` turns every series with at least two points
 into a line SVG with the same hover, zoom, pan, reset, and enlarge controls as
 bar charts. BPFTrace custom programs can provide additional series when they
-print interval-scoped `@asb_*` values; built-in profiles remain bounded event
-aggregates, and Perfetto remains a timestamped native trace plus extracted
-aggregate metrics. If perf permissions,
+print interval-scoped `@asb_*` values; the built-in profiles now emit
+cumulative one-second `@asb_*` snapshots as well as their final aggregates.
+Perfetto remains a timestamped native trace plus extracted aggregate metrics.
+If perf permissions,
 samples, or FlameGraph tools are unavailable, `flamegraph.json` records the
 reason and status as `unavailable`; an ordinary `asb run` is unaffected.
 Before a run starts, perf and configured BPFTrace collectors are probed without

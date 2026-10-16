@@ -2,3 +2,8 @@
 tracepoint:raw_syscalls:sys_enter /pid == $1/ {
   @asb_syscalls = count();
 }
+
+// Emit a cumulative interval sample; the final aggregate remains available on exit.
+interval:s:1 {
+  print(@asb_syscalls);
+}

@@ -11,3 +11,10 @@ tracepoint:lock:contention_end /@asb_lock_start[tid]/ {
   @asb_lock_contention_max_ns = max($latency);
   delete(@asb_lock_start[tid]);
 }
+
+// Emit cumulative interval samples without clearing the final aggregate maps.
+interval:s:1 {
+  print(@asb_lock_contention_events);
+  print(@asb_lock_contention_total_ns);
+  print(@asb_lock_contention_max_ns);
+}
