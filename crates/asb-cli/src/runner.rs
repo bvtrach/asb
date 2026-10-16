@@ -368,25 +368,30 @@ fn run_mode(
         session.trace_end();
         session.trace_instant("asb.agent.exited");
     }
-    if let Some(session) = tape_session.take() {
-        session.stop()?;
-    }
+    let mut run_error = tape_session
+        .take()
+        .and_then(|session| session.stop().err())
+        .map(|error| error.to_string());
     if let Some((tape::Mode::Record, cassette)) = tape_cassette.as_ref() {
-        let metadata = std::fs::metadata(cassette).map_err(|error| {
-            Error::Run(format!(
-                "record completed without creating cassette {}; verify the provider endpoint and llmtape installation: {error}",
-                cassette.display()
-            ))
-        })?;
-        if metadata.len() == 0 {
-            return Err(Error::Run(format!(
-                "record created an empty cassette {}; the agent made no provider request; verify its provider base URL and credentials",
-                cassette.display()
-            )));
+        match std::fs::metadata(cassette) {
+            Ok(metadata) if metadata.len() > 0 => {}
+            Ok(_) => {
+                run_error = Some(format!(
+                    "record created an empty cassette {}; the agent made no provider request; verify its provider base URL and credentials",
+                    cassette.display()
+                ));
+            }
+            Err(error) => {
+                run_error = Some(format!(
+                    "record completed without creating cassette {}; verify the provider endpoint and llmtape installation: {error}",
+                    cassette.display()
+                ));
+            }
         }
     }
     let elapsed_ms = started.elapsed().as_millis();
-    let success = process_successful(&child.status, &child.stdout, &child.stderr);
+    let success =
+        run_error.is_none() && process_successful(&child.status, &child.stdout, &child.stderr);
     let adapter_artifacts = agents::find(&config.agent)
         .map(|adapter| {
             adapter.collect(&agents::CollectionContext {
@@ -416,6 +421,12 @@ fn run_mode(
         &bounded(&child.stdout),
         &bounded(&child.stderr),
     );
+    let mut stderr = bounded(&child.stderr);
+    if let Some(error) = run_error.as_deref() {
+        stderr.push_str("\nASB run error: ");
+        stderr.push_str(error);
+        stderr.push('\n');
+    }
     let result = RunResult {
         status: if success { "completed" } else { "failed" },
         agent: &config.agent,
@@ -431,7 +442,7 @@ fn run_mode(
             .as_ref()
             .map(|(_, cassette)| cassette.display().to_string()),
         stdout: bounded(&child.stdout),
-        stderr: bounded(&child.stderr),
+        stderr,
     };
     write_log(config_path, &config.log_file, &result)?;
     if let Some(session) = measurement_session {
@@ -458,7 +469,9 @@ fn run_mode(
     } else {
         render_human(&result, output)?;
     }
-    if success {
+    if let Some(error) = run_error {
+        Err(Error::Run(error))
+    } else if success {
         Ok(())
     } else {
         Err(Error::Run("agent exited unsuccessfully".into()))
