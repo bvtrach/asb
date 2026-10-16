@@ -516,7 +516,25 @@ fn write_bar_svg(path: &Path, title: &str, values: &[(String, f64)]) -> Result<(
         let x = left + index as f64 * bar_width + 4.0;
         let bar_height = value.max(0.0) / max * (bottom - PLOT_TOP);
         let y = bottom - bar_height;
-        svg.push_str(&format!("<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{:.1}\" height=\"{bar_height:.1}\" fill=\"#4472c4\"><title>{}: {value}</title></rect>", (bar_width - 8.0).max(2.0), escape(label)));
+        let width = (bar_width - 8.0).max(2.0);
+        svg.push_str(&format!(
+            "<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{width:.1}\" height=\"{bar_height:.1}\" fill=\"#4472c4\"><title>{}: {value}</title></rect>",
+            escape(label)
+        ));
+        let value_label = format_tick(*value);
+        let (label_y, placement, color) = if bar_height >= 24.0 {
+            // Keep a small top inset while retaining enough contrast against
+            // the bar fill for the value to remain readable.
+            (y + 16.0, "inside", "#ffffff")
+        } else {
+            // Short and zero-height bars cannot contain a label. Place the
+            // baseline just above the bar with the same small spacing.
+            (y - 5.0, "above", "#18212b")
+        };
+        svg.push_str(&format!(
+            "<text x=\"{:.1}\" y=\"{label_y:.1}\" text-anchor=\"middle\" class=\"bar-value\" data-placement=\"{placement}\" font-size=\"11\" font-weight=\"600\" fill=\"{color}\">{value_label}</text>",
+            x + width / 2.0
+        ));
         svg.push_str(&format!("<text x=\"{:.1}\" y=\"410\" transform=\"rotate(35 {:.1} 410)\" font-size=\"11\">{}</text>", x, x, escape(label)));
     }
     svg.push_str("</svg>\n");
@@ -750,6 +768,30 @@ mod tests {
         assert!(svg.contains("unit: tokens"));
         assert!(svg.contains(">0</text>"));
         assert!(svg.contains(">100</text>"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bar_graph_labels_values_inside_or_above_each_bar() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-compare-bars-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        super::write_bar_svg(
+            &root.join("values.svg"),
+            "elapsed_ms",
+            &[("tall".into(), 100.0), ("short".into(), 1.0)],
+        )
+        .unwrap();
+        let svg = std::fs::read_to_string(root.join("values.svg")).unwrap();
+        assert!(svg.contains("class=\"bar-value\" data-placement=\"inside\""));
+        assert!(svg.contains("class=\"bar-value\" data-placement=\"above\""));
+        assert!(svg.contains(">100</text>"));
+        assert!(svg.contains(">1</text>"));
         let _ = std::fs::remove_dir_all(root);
     }
 
