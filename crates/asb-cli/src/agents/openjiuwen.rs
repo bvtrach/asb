@@ -14,6 +14,7 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "openjiuwen".into(),
         args: [
+            "-v",
             "--model",
             context.config.model.as_str(),
             "--provider",
@@ -34,6 +35,36 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
         append_prompt: false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::command;
+    use crate::agents::CommandContext;
+    use crate::benchmark::BenchmarkConfig;
+
+    #[test]
+    fn enables_verbose_mode_for_deterministic_noninteractive_runs() {
+        let config = BenchmarkConfig {
+            agent: "openjiuwen".into(),
+            workload: "bug-fix".into(),
+            provider: "cli2key".into(),
+            model: "test-model".into(),
+            concurrency: 1,
+            trial_set: None,
+            trial: None,
+            workspace: "workspace".into(),
+            log_file: "run.log".into(),
+            measurements: None,
+        };
+        let spec = command(&CommandContext {
+            config: &config,
+            endpoint: Some("http://127.0.0.1:3000/v1"),
+            prompt: "repair",
+        });
+        assert_eq!(spec.args.first().map(String::as_str), Some("-v"));
+    }
+}
+
 fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
     if context.provider.eq_ignore_ascii_case("cli2key") {
         if let Some((key, _)) = context.cli2key {
