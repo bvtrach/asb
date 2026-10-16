@@ -1,9 +1,7 @@
 //! Extensible adapters for benchmark agents.
 //!
-//! Generic runner code owns process lifecycle, output capture, measurements,
-//! and provider wiring. Each adapter owns its stable identity, executable and
-//! non-interactive command shape; adding an agent is therefore a new module
-//! and registry entry instead of another runner branch.
+//! The runner owns only process lifecycle and output capture. Every command
+//! shape and provider-specific adjustment lives in the owning adapter module.
 
 mod claude_code;
 mod cline;
@@ -18,9 +16,9 @@ mod pi;
 mod qwen_code;
 mod workbuddy;
 
+use crate::Error;
 use crate::benchmark::BenchmarkConfig;
 use crate::project;
-use crate::{Error, prepare, providers};
 use std::path::Path;
 use std::process::Command;
 
@@ -29,16 +27,11 @@ pub(crate) trait AgentAdapter: Sync {
     fn executable(&self) -> &'static str;
     fn command(&self, context: &CommandContext<'_>) -> CommandSpec;
     fn prepare(&self, context: &mut PreparationContext<'_>) -> Result<(), Error>;
-
-    /// Hook for adapter-owned result or artifact extraction. The generic runner
-    /// calls this after output is captured; built-ins currently need no extra
-    /// artifact extraction but custom adapters can opt in without runner edits.
     fn collect(&self, _output: &str) -> AgentArtifacts {
         AgentArtifacts::default()
     }
 }
 
-/// Adapter-owned details that remain after provider-wide preparation.
 pub(crate) struct PreparationContext<'a> {
     pub command: &'a mut Command,
     pub provider: &'a str,
@@ -61,398 +54,52 @@ pub(crate) struct CommandSpec {
     pub args: Vec<String>,
     pub append_prompt: bool,
 }
-
 #[derive(Default)]
 pub(crate) struct AgentArtifacts {
     pub paths: Vec<String>,
 }
 
-#[derive(Clone, Copy)]
-pub(super) enum CommandKind {
-    Codex,
-    Pi,
-    Opencode,
-    Workbuddy,
-    QwenCode,
-    MiniSwe,
-    Openhands,
-    Openjiuwen,
-    ClaudeCode,
-    Goose,
-    Cline,
-    Continue,
-}
+type CommandBuilder = for<'a> fn(&CommandContext<'a>) -> CommandSpec;
+type PreparationHook = for<'a> fn(&mut PreparationContext<'a>) -> Result<(), Error>;
 
-pub(super) struct BuiltinAdapter {
+/// Trait-object implementation whose behavior is supplied by individual files.
+pub(super) struct StaticAdapter {
     id: &'static str,
     executable: &'static str,
-    kind: CommandKind,
+    command: CommandBuilder,
+    prepare: PreparationHook,
 }
-
-impl BuiltinAdapter {
-    pub(super) const fn new(id: &'static str, executable: &'static str, kind: CommandKind) -> Self {
+impl StaticAdapter {
+    pub(super) const fn new(
+        id: &'static str,
+        executable: &'static str,
+        command: CommandBuilder,
+        prepare: PreparationHook,
+    ) -> Self {
         Self {
             id,
             executable,
-            kind,
+            command,
+            prepare,
         }
     }
 }
-
-impl AgentAdapter for BuiltinAdapter {
+impl AgentAdapter for StaticAdapter {
     fn id(&self) -> &'static str {
         self.id
     }
     fn executable(&self) -> &'static str {
         self.executable
     }
-
     fn command(&self, context: &CommandContext<'_>) -> CommandSpec {
-        let config = context.config;
-        match self.kind {
-            CommandKind::Codex => CommandSpec {
-                program: self.executable.into(),
-                args: vec![
-                    "exec".into(),
-                    "--skip-git-repo-check".into(),
-                    "--json".into(),
-                    "--model".into(),
-                    config.model.clone(),
-                ],
-                append_prompt: true,
-            },
-            CommandKind::Pi => CommandSpec {
-                program: self.executable.into(),
-                args: vec![
-                    "--provider".into(),
-                    config.provider.clone(),
-                    "--model".into(),
-                    config.model.clone(),
-                    "--mode".into(),
-                    "json".into(),
-                    "--print".into(),
-                ],
-                append_prompt: true,
-            },
-            CommandKind::Opencode => CommandSpec {
-                program: self.executable.into(),
-                args: vec![
-                    "run".into(),
-                    "--model".into(),
-                    opencode_model(config),
-                    "--format".into(),
-                    "json".into(),
-                ],
-                append_prompt: true,
-            },
-            CommandKind::Workbuddy => CommandSpec {
-                program: self.executable.into(),
-                args: vec![
-                    "--print".into(),
-                    "--output-format".into(),
-                    "json".into(),
-                    "--model".into(),
-                    config.model.clone(),
-                    "-y".into(),
-                ],
-                append_prompt: true,
-            },
-            CommandKind::QwenCode => CommandSpec {
-                program: self.executable.into(),
-                args: vec![
-                    "--model".into(),
-                    config.model.clone(),
-                    "--output-format".into(),
-                    "json".into(),
-                    "--yolo".into(),
-                ],
-                append_prompt: true,
-            },
-            CommandKind::MiniSwe => CommandSpec {
-                program: self.executable.into(),
-                args: vec![
-                    "--model".into(),
-                    format!("anthropic/{}", config.model),
-                    "--task".into(),
-                    context.prompt.into(),
-                    "--yolo".into(),
-                    "--exit-immediately".into(),
-                    "--output".into(),
-                    ".asb-mini-swe.traj.json".into(),
-                ],
-                append_prompt: false,
-            },
-            CommandKind::Openhands => CommandSpec {
-                program: self.executable.into(),
-                args: vec![
-                    "--headless".into(),
-                    "--json".into(),
-                    "--yolo".into(),
-                    "--override-with-envs".into(),
-                    "--task".into(),
-                    context.prompt.into(),
-                ],
-                append_prompt: false,
-            },
-            CommandKind::Openjiuwen => CommandSpec {
-                program: self.executable.into(),
-                args: [
-                    "--model",
-                    config.model.as_str(),
-                    "--provider",
-                    "anthropic",
-                    "--api-base",
-                    context.endpoint.unwrap_or_default(),
-                    "run",
-                    "-f",
-                    "json",
-                    context.prompt,
-                ]
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-                append_prompt: false,
-            },
-            CommandKind::ClaudeCode => CommandSpec {
-                program: self.executable.into(),
-                args: vec![
-                    "-p".into(),
-                    "--output-format".into(),
-                    "json".into(),
-                    "--model".into(),
-                    config.model.clone(),
-                    "--dangerously-skip-permissions".into(),
-                    context.prompt.into(),
-                ],
-                append_prompt: false,
-            },
-            CommandKind::Goose => CommandSpec {
-                program: self.executable.into(),
-                args: vec![
-                    "run".into(),
-                    "--no-session".into(),
-                    "--output-format".into(),
-                    "json".into(),
-                    "-t".into(),
-                    context.prompt.into(),
-                ],
-                append_prompt: false,
-            },
-            CommandKind::Cline => CommandSpec {
-                program: self.executable.into(),
-                args: vec![
-                    "--json".into(),
-                    "--auto-approve".into(),
-                    "true".into(),
-                    "--provider".into(),
-                    if config.provider.eq_ignore_ascii_case("openrouter") {
-                        "openrouter".into()
-                    } else {
-                        "openai-native".into()
-                    },
-                    "--model".into(),
-                    config.model.clone(),
-                    context.prompt.into(),
-                ],
-                append_prompt: false,
-            },
-            CommandKind::Continue => CommandSpec {
-                program: self.executable.into(),
-                args: vec![
-                    "-p".into(),
-                    context.prompt.into(),
-                    "--model".into(),
-                    config.model.clone(),
-                    "--format".into(),
-                    "json".into(),
-                    "--auto".into(),
-                ],
-                append_prompt: false,
-            },
-        }
+        (self.command)(context)
     }
-
     fn prepare(&self, context: &mut PreparationContext<'_>) -> Result<(), Error> {
-        let is_cli2key = context.provider.eq_ignore_ascii_case("cli2key");
-        let is_openrouter = context.provider.eq_ignore_ascii_case("openrouter");
-        let credentials = context.cli2key;
-        match self.kind {
-            CommandKind::Pi if is_cli2key || is_openrouter => {
-                let directory = context.pi_config_dir.ok_or_else(|| Error::Run(
-                    "cannot configure Pi without a project-local provider configuration directory".into(),
-                ))?;
-                let (provider, api, key_name) = if is_cli2key {
-                    ("cli2key", "openai-responses", "CLI2KEY_API_KEY")
-                } else {
-                    ("openrouter", "openai-completions", "OPENROUTER_API_KEY")
-                };
-                let base_url = if let Some((_, base_url)) = credentials {
-                    base_url.to_owned()
-                } else {
-                    std::env::var("OPENROUTER_BASE_URL")
-                        .unwrap_or_else(|_| "https://openrouter.ai/api/v1".into())
-                };
-                prepare::configure_pi_provider(
-                    context.command,
-                    directory,
-                    provider,
-                    context.model,
-                    &base_url,
-                    api,
-                    key_name,
-                )
-            }
-            CommandKind::Opencode if is_cli2key => {
-                let (_, base_url) = credentials
-                    .ok_or_else(|| Error::Run("cli2key provider has no API endpoint".into()))?;
-                context.command.env(
-                    "OPENCODE_CONFIG_CONTENT",
-                    prepare::opencode_config(context.model, base_url)?,
-                );
-                Ok(())
-            }
-            CommandKind::QwenCode if is_cli2key => {
-                context
-                    .command
-                    .env_remove("OPENAI_API_KEY")
-                    .env_remove("OPENAI_BASE_URL")
-                    .env_remove("OPENAI_API_BASE")
-                    .env_remove("OPENAI_MODEL");
-                Ok(())
-            }
-            CommandKind::MiniSwe if is_cli2key => {
-                context
-                    .command
-                    .env("MSWEA_CONFIGURED", "true")
-                    .env("MSWEA_MODEL_NAME", format!("anthropic/{}", context.model))
-                    .env("MSWEA_SILENT_STARTUP", "1")
-                    .env("MSWEA_COST_TRACKING", "ignore_errors");
-                Ok(())
-            }
-            CommandKind::Openhands if is_cli2key => {
-                let (key, base_url) = credentials
-                    .ok_or_else(|| Error::Run("cli2key provider has no API endpoint".into()))?;
-                context
-                    .command
-                    .env("LLM_API_KEY", key)
-                    .env("LLM_BASE_URL", base_url.trim_end_matches("/v1"))
-                    .env("LLM_MODEL", format!("anthropic/{}", context.model))
-                    .env("OPENHANDS_SUPPRESS_BANNER", "1");
-                Ok(())
-            }
-            CommandKind::Workbuddy if is_cli2key => {
-                let (key, base_url) = credentials
-                    .ok_or_else(|| Error::Run("cli2key provider has no API endpoint".into()))?;
-                let directory = context.workbuddy_config_dir.ok_or_else(|| Error::Run("cannot configure WorkBuddy without a project-local configuration directory".into()))?;
-                prepare::configure_workbuddy(directory, context.model, base_url)?;
-                context
-                    .command
-                    .env("CODEBUDDY_API_KEY", key)
-                    .env("CODEBUDDY_AUTH_TOKEN", key)
-                    .env("CODEBUDDY_BASE_URL", base_url)
-                    .env("CODEBUDDY_MODEL", context.model)
-                    .env("CODEBUDDY_CONFIG_DIR", directory)
-                    .env("CODEBUDDY_API_KEY_HELPER_DISABLED", "1");
-                Ok(())
-            }
-            CommandKind::Openjiuwen if is_cli2key => {
-                if let Some((key, _)) = credentials {
-                    context.command.env("OPENJIUWEN_API_KEY", key);
-                }
-                Ok(())
-            }
-            CommandKind::Goose if is_cli2key => {
-                if let Some((key, base_url)) = credentials {
-                    context
-                        .command
-                        .env("GOOSE_PROVIDER", "openai")
-                        .env("GOOSE_MODEL", context.model)
-                        .env("OPENAI_HOST", base_url.trim_end_matches("/v1"))
-                        .env("OPENAI_BASE_PATH", "/v1/chat/completions")
-                        .env("OPENAI_API_KEY", key);
-                }
-                Ok(())
-            }
-            CommandKind::Cline if is_cli2key => {
-                if let Some((key, base_url)) = credentials {
-                    let directory = context.cline_data_dir.ok_or_else(|| Error::Run(
-                        "cannot configure Cline without a project-local provider configuration directory".into(),
-                    ))?;
-                    prepare::configure_cline(
-                        directory,
-                        "openai-native",
-                        context.model,
-                        base_url,
-                        key,
-                    )?;
-                    context
-                        .command
-                        .env("OPENAI_API_KEY", key)
-                        .env("OPENAI_BASE_URL", base_url)
-                        .env("OPENAI_API_BASE", base_url)
-                        .env("OPENAI_MODEL", context.model)
-                        .env("CLINE_API_KEY", key)
-                        .env("CLINE_DIR", directory)
-                        .env("CLINE_DATA_DIR", directory.join("data"))
-                        .env(
-                            "CLINE_PROVIDER_SETTINGS_PATH",
-                            directory.join("data/settings/providers.json"),
-                        )
-                        .env(
-                            "CLINE_GLOBAL_SETTINGS_PATH",
-                            directory.join("data/settings/global-settings.json"),
-                        );
-                }
-                Ok(())
-            }
-            CommandKind::Cline if is_openrouter => {
-                let directory = context.cline_data_dir.ok_or_else(|| Error::Run(
-                    "cannot configure Cline without a project-local provider configuration directory".into(),
-                ))?;
-                let base_url = std::env::var("OPENROUTER_BASE_URL")
-                    .unwrap_or_else(|_| "https://openrouter.ai/api/v1".into());
-                let key = providers::credential("openrouter").ok_or_else(|| {
-                    Error::Run(
-                        "openrouter provider requires OPENROUTER_API_KEY or ~/.api_key_openrouter"
-                            .into(),
-                    )
-                })?;
-                prepare::configure_cline(directory, "openrouter", context.model, &base_url, &key)?;
-                context
-                    .command
-                    .env("CLINE_DIR", directory)
-                    .env("CLINE_DATA_DIR", directory.join("data"))
-                    .env(
-                        "CLINE_PROVIDER_SETTINGS_PATH",
-                        directory.join("data/settings/providers.json"),
-                    )
-                    .env(
-                        "CLINE_GLOBAL_SETTINGS_PATH",
-                        directory.join("data/settings/global-settings.json"),
-                    );
-                Ok(())
-            }
-            CommandKind::Continue if is_cli2key || is_openrouter => {
-                let directory = context.continue_config_dir.ok_or_else(|| {
-                    Error::Run(
-                        "cannot configure Continue without a project-local configuration directory"
-                            .into(),
-                    )
-                })?;
-                let base_url = credentials
-                    .map(|(_, url)| url.to_owned())
-                    .or_else(|| std::env::var("OPENROUTER_BASE_URL").ok())
-                    .unwrap_or_else(|| "https://openrouter.ai/api/v1".into());
-                prepare::configure_continue(directory, context.model, &base_url)?;
-                context
-                    .command
-                    .env("CONTINUE_CONFIG", directory.join("config.yaml"))
-                    .env("CONTINUE_GLOBAL_DIR", directory);
-                Ok(())
-            }
-            _ => Ok(()),
-        }
+        (self.prepare)(context)
     }
+}
+pub(super) fn no_prepare(_context: &mut PreparationContext<'_>) -> Result<(), Error> {
+    Ok(())
 }
 
 pub(crate) fn prepare(
@@ -481,19 +128,6 @@ pub(crate) fn prepare(
     })
 }
 
-fn opencode_model(config: &BenchmarkConfig) -> String {
-    if config.model.contains('/') {
-        return config.model.clone();
-    }
-    if config.provider.eq_ignore_ascii_case("cli2key") {
-        format!("cli2key/{}", config.model)
-    } else if config.provider.eq_ignore_ascii_case("opencode-zen") {
-        format!("opencode/{}", config.model)
-    } else {
-        config.model.clone()
-    }
-}
-
 static REGISTRY: &[&dyn AgentAdapter] = &[
     &codex::ADAPTER,
     &pi::ADAPTER,
@@ -508,7 +142,6 @@ static REGISTRY: &[&dyn AgentAdapter] = &[
     &cline::ADAPTER,
     &continue_agent::ADAPTER,
 ];
-
 pub(crate) fn all() -> &'static [&'static dyn AgentAdapter] {
     REGISTRY
 }
@@ -542,8 +175,46 @@ pub(crate) fn resolve_executable(
         .and_then(|candidate| candidate.canonicalize().ok())
         .map(|candidate| candidate.to_string_lossy().into_owned())
 }
-
 pub(crate) fn resolve(id: &str, project_root: &Path, tools_dir: &str) -> Option<String> {
     let adapter = find(id)?;
     resolve_executable(adapter.id(), adapter.executable(), project_root, tools_dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_registered_adapter_builds_a_noninteractive_command() {
+        let config = BenchmarkConfig {
+            agent: "unused".into(),
+            workload: "bug-fix".into(),
+            provider: "cli2key".into(),
+            model: "test-model".into(),
+            concurrency: 1,
+            trial_set: None,
+            trial: None,
+            workspace: "workspace".into(),
+            log_file: "run.log".into(),
+            measurements: None,
+        };
+        for adapter in all() {
+            let command = adapter.command(&CommandContext {
+                config: &config,
+                endpoint: Some("http://127.0.0.1:3000/v1"),
+                prompt: "repair",
+            });
+            assert!(!command.program.is_empty(), "{}", adapter.id());
+            assert!(!command.args.is_empty(), "{}", adapter.id());
+            assert!(!adapter.executable().is_empty(), "{}", adapter.id());
+        }
+    }
+
+    #[test]
+    fn registry_has_unique_stable_ids() {
+        let ids = names().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(ids.len(), all().len());
+        assert!(ids.contains("codex"));
+        assert!(ids.contains("continue"));
+    }
 }
