@@ -10,7 +10,7 @@
   const edges = [...canvas.querySelectorAll('.edge')];
   const clusters = [...canvas.querySelectorAll('.cluster')];
   const allElements = [...nodes, ...edges, ...clusters];
-  const state = { scale: 1, tx: 0, ty: 0, drag: null, pinch: null, pointers: new Map(), pressTarget: null, pinned: null, pinnedParts: new Set(), hovered: null, animation: null, suppressClickUntil: 0 };
+  const state = { scale: 1, tx: 0, ty: 0, pressTarget: null, pinned: null, pinnedParts: new Set(), hovered: null, hoverRect: null, drag: null, pinch: null, pointers: new Map(), animation: null, suppressClickUntil: 0 };
   const viewBox = svg.viewBox.baseVal;
   // Establish the first useful viewport synchronously, then yield one frame
   // before preparing metadata, listeners, and accessibility state. This lets
@@ -244,6 +244,13 @@
     const candidates = document.elementsFromPoint(x, y).map((item) => graphElementFromTarget(item)).filter(Boolean);
     return candidates.find((item) => item.classList.contains('node')) || candidates[0] || null;
   }
+  function withinExpandedHoverArea(element, x, y) {
+    if (!element?.classList.contains('edge')) return false;
+    const rect = state.hoverRect || element.getBoundingClientRect();
+    state.hoverRect = rect;
+    const padding = 8;
+    return x >= rect.left - padding && x <= rect.right + padding && y >= rect.top - padding && y <= rect.bottom + padding;
+  }
   function startPinch() {
     const points = [...state.pointers.values()];
     if (points.length < 2) return;
@@ -317,17 +324,20 @@
   viewport.addEventListener('lostpointercapture', () => { if (state.pointers.size === 0) { state.drag = null; state.pinch = null; state.pressTarget = null; viewport.classList.remove('dragging'); } });
   viewport.addEventListener('pointermove', (event) => {
     if (viewport.classList.contains('dragging')) return;
-    const hovered = graphElementFromTarget(event.target) || graphElementAtPoint(event.clientX, event.clientY);
+    let hovered = graphElementFromTarget(event.target) || graphElementAtPoint(event.clientX, event.clientY);
+    if (!hovered && withinExpandedHoverArea(state.hovered, event.clientX, event.clientY)) hovered = state.hovered;
     if (hovered) {
       if (state.hovered !== hovered) {
         if (state.hovered && !state.hovered.classList.contains('is-pinned')) state.hovered.classList.remove('is-hovered');
         state.hovered = hovered;
+        state.hoverRect = hovered.classList.contains('edge') ? hovered.getBoundingClientRect() : null;
         state.hovered.classList.add('is-hovered');
       }
       showTooltip(hovered, event);
     } else {
       if (state.hovered && !state.hovered.classList.contains('is-pinned')) state.hovered.classList.remove('is-hovered');
       state.hovered = null;
+      state.hoverRect = null;
       tooltipElement = null;
       tooltipEvent = null;
       tooltip.style.display = 'none';
@@ -336,6 +346,7 @@
   viewport.addEventListener('pointerleave', () => {
     if (state.hovered && !state.hovered.classList.contains('is-pinned')) state.hovered.classList.remove('is-hovered');
     state.hovered = null;
+    state.hoverRect = null;
     tooltipElement = null;
     tooltipEvent = null;
     tooltip.style.display = 'none';
