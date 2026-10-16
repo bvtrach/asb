@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := build
 
-.PHONY: update build test install clean rust-doc uml
+.PHONY: update build test install clean rust-doc uml flows
 
 BASH_COMPLETION := target/asb.bash
 ZSH_COMPLETION := target/_asb
@@ -10,13 +10,18 @@ AUTO_UML := $(AUTO_UML_ROOT)/bin/auto-uml
 UML_RAW_DOT := target/asb-type-diagram.raw.dot
 UML_DOT := docs/asb-type-diagram.dot
 UML_SVG := docs/asb-type-diagram.svg
+FLOW_SCRIPT := scripts/generate_function_flows.py
+DATAFLOW_DOT := docs/asb-dataflow.dot
+DATAFLOW_SVG := docs/asb-dataflow.svg
+CONTROLFLOW_DOT := docs/asb-control-flow.dot
+CONTROLFLOW_SVG := docs/asb-control-flow.svg
 
 update:
 	git pull --ff-only origin main
 
 build:
 	cargo build --locked
-	$(MAKE) rust-doc uml
+	$(MAKE) rust-doc uml flows
 	target/debug/asb --__generate-completion bash > "$(BASH_COMPLETION)"
 	target/debug/asb --__generate-completion zsh > "$(ZSH_COMPLETION)"
 
@@ -32,6 +37,12 @@ uml: $(AUTO_UML)
 	$(AUTO_UML) --lang rust --source-code crates --format graphviz --destination "$(UML_RAW_DOT)"
 	python3 scripts/organize_uml_dot.py "$(UML_RAW_DOT)" "$(UML_DOT)"
 	dot -Tsvg -o "$(UML_SVG)" "$(UML_DOT)"
+
+flows:
+	command -v dot >/dev/null || (echo "Graphviz 'dot' is required for flow-diagram generation (install the graphviz package)." >&2; exit 1)
+	python3 "$(FLOW_SCRIPT)" crates "$(DATAFLOW_DOT)" "$(CONTROLFLOW_DOT)"
+	dot -Tsvg -o "$(DATAFLOW_SVG)" "$(DATAFLOW_DOT)"
+	dot -Tsvg -o "$(CONTROLFLOW_SVG)" "$(CONTROLFLOW_DOT)"
 
 test:
 	cargo test --locked
