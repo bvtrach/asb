@@ -1,5 +1,6 @@
 //! Small command line front end for configuring and running ASB benchmarks.
 
+mod agents;
 mod benchmark;
 mod cli2key;
 mod compare;

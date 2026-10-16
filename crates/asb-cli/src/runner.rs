@@ -1,6 +1,7 @@
 //! Live execution of one configured benchmark.
 
 use super::{Error, io_error, read_config};
+use crate::agents;
 use crate::benchmark::BenchmarkConfig;
 use crate::cli2key;
 use crate::measurements;
@@ -20,20 +21,6 @@ use std::time::Duration;
 use std::time::Instant;
 
 const MAX_OUTPUT: usize = 1024 * 1024;
-const BUILTIN_AGENTS: &[&str] = &[
-    "codex",
-    "pi",
-    "opencode",
-    "workbuddy",
-    "qwen-code",
-    "mini-swe",
-    "openhands",
-    "openjiuwen",
-    "claude-code",
-    "goose",
-    "cline",
-    "continue",
-];
 
 #[derive(Serialize)]
 struct RunResult<'a> {
@@ -261,13 +248,19 @@ fn run_mode(
     workloads::prepare_fixture(&config.workload, &workspace).map_err(Error::Run)?;
     workloads::prepare_external(&config.workload, &workload_directory, &workspace)
         .map_err(Error::Run)?;
-    let codex_executable = local_agent("codex", &project_root, &project_config.tools_dir);
+    let codex_executable = agents::resolve("codex", &project_root, &project_config.tools_dir);
     let tape_mode = tape_request.map(|(mode, _)| mode);
     let bridge = if config.provider.eq_ignore_ascii_case("cli2key")
         && tape_mode != Some(tape::Mode::Replay)
     {
         cli2key::Bridge::connect(
-            local_agent("cli2key", &project_root, &project_config.tools_dir).as_deref(),
+            agents::resolve_executable(
+                "cli2key",
+                "codex-bridge",
+                &project_root,
+                &project_config.tools_dir,
+            )
+            .as_deref(),
         )
         .map(Some)?
     } else {
@@ -294,7 +287,7 @@ fn run_mode(
         &prompt,
     )?;
     let mut program = specification.program;
-    if let Some(local) = local_agent(&config.agent, &project_root, &project_config.tools_dir) {
+    if let Some(local) = agents::resolve(&config.agent, &project_root, &project_config.tools_dir) {
         program = local;
     }
     let started = Instant::now();
@@ -430,6 +423,9 @@ fn run_mode(
     }
     let elapsed_ms = started.elapsed().as_millis();
     let success = process_successful(&child.status, &child.stdout, &child.stderr);
+    let adapter_artifacts = agents::find(&config.agent)
+        .map(|adapter| adapter.collect(&bounded(&child.stdout)))
+        .unwrap_or_default();
     let mut token_usage = measurements::token_usage_from_sources(
         &config.provider,
         &config.agent,
@@ -471,6 +467,9 @@ fn run_mode(
         stdout: bounded(&child.stdout),
         stderr: bounded(&child.stderr),
     };
+    // Keep adapter artifacts available for future result serializers while the
+    // generic runner remains the single owner of result output.
+    let _artifact_count = adapter_artifacts.paths.len();
     write_log(config_path, &config.log_file, &result)?;
     if let Some(session) = measurement_session {
         let measured = measurements::RunMeasurement {
@@ -718,18 +717,22 @@ fn read_stream<R: Read>(mut stream: R, kind: OutputStream, sender: mpsc::Sender<
     let _ = sender.send(OutputChunk::Finished);
 }
 
-struct CommandSpec {
-    program: String,
-    args: Vec<String>,
-    append_prompt: bool,
-}
+type CommandSpec = agents::CommandSpec;
 
 fn command_for(
     config: &BenchmarkConfig,
     cli2key_base_url: Option<&str>,
     prompt: &str,
 ) -> Result<CommandSpec, Error> {
-    if let Some(candidate) = suggestions::closest(&config.agent, BUILTIN_AGENTS) {
+    if let Some(adapter) = agents::find(&config.agent) {
+        return Ok(adapter.command(&agents::CommandContext {
+            config,
+            endpoint: cli2key_base_url,
+            prompt,
+        }));
+    }
+    let agent_names = agents::names().collect::<Vec<_>>();
+    if let Some(candidate) = suggestions::closest(&config.agent, &agent_names) {
         return Err(Error::Input(format!(
             "unknown agent `{}`; did you mean `{candidate}`?",
             config.agent
@@ -931,54 +934,6 @@ fn opencode_model(config: &BenchmarkConfig) -> String {
 
 fn pi_provider(config: &BenchmarkConfig) -> String {
     config.provider.clone()
-}
-
-fn local_agent(agent: &str, project_root: &Path, tools_dir: &str) -> Option<String> {
-    let executable = match agent {
-        "qwen-code" => "qwen",
-        "mini-swe" => "mini",
-        "cli2key" => "codex-bridge",
-        "workbuddy" => "codebuddy",
-        "claude-code" => "claude",
-        "continue" => "cn",
-        other => other,
-    };
-    let mut candidates = Vec::new();
-    if let Some(directory) = std::env::var_os("ASB_TOOL_DIR") {
-        candidates.push(std::path::PathBuf::from(directory).join(executable));
-    }
-    candidates.push(
-        project::resolve(project_root, tools_dir)
-            .join(agent)
-            .join("bin")
-            .join(executable),
-    );
-    candidates.push(
-        project::resolve(project_root, tools_dir)
-            .join(agent)
-            .join("node_modules/.bin")
-            .join(executable),
-    );
-    candidates.push(
-        project::resolve(project_root, tools_dir)
-            .join(agent)
-            .join("venv/bin")
-            .join(executable),
-    );
-    candidates.push(Path::new(".asb-tools/bin").join(executable));
-    if executable != agent {
-        candidates.push(
-            project::resolve(project_root, tools_dir)
-                .join(agent)
-                .join("bin")
-                .join(agent),
-        );
-    }
-    candidates
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-        .and_then(|candidate| candidate.canonicalize().ok())
-        .map(|candidate| candidate.to_string_lossy().into_owned())
 }
 
 fn bounded(bytes: &[u8]) -> String {
