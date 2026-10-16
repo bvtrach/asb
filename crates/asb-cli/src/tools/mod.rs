@@ -1,6 +1,8 @@
 //! Single-source registry for every `asb tool install` target.
 
 use crate::install::Recipe;
+use crate::project;
+use std::path::Path;
 
 mod bpftrace;
 mod cli2key;
@@ -75,4 +77,21 @@ pub(crate) fn find(id: &str) -> Option<&'static dyn ToolAdapter> {
 }
 pub(crate) fn names() -> impl Iterator<Item = &'static str> {
     REGISTRY.iter().map(|tool| tool.id())
+}
+
+/// Resolve a tool executable through its registered project-local layout.
+pub(crate) fn resolve(id: &str, project_root: &Path, tools_dir: &str) -> Option<String> {
+    let tool = find(id)?;
+    let executable = tool.executable()?;
+    let root = project::resolve(project_root, tools_dir).join(tool.id());
+    [
+        root.join("bin").join(executable),
+        root.join("node_modules/.bin").join(executable),
+        root.join("venv/bin").join(executable),
+        Path::new(".asb-tools/bin").join(executable),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.is_file())
+    .and_then(|candidate| candidate.canonicalize().ok())
+    .map(|candidate| candidate.to_string_lossy().into_owned())
 }

@@ -352,6 +352,50 @@ pub fn configure(command: &mut std::process::Command, provider: &str, model: &st
     }
 }
 
+/// Start a provider-owned local bridge when that provider requires one.
+///
+/// The runner deliberately does not know bridge executable names or tool IDs;
+/// that relationship is owned by the provider integration.
+pub(crate) fn start_local_bridge(
+    provider: &str,
+    project_root: &Path,
+    tools_dir: &str,
+    replay: bool,
+) -> Result<Option<crate::cli2key::Bridge>, crate::Error> {
+    if replay || !provider.eq_ignore_ascii_case("cli2key") {
+        return Ok(None);
+    }
+    let executable = crate::tools::resolve("cli2key", project_root, tools_dir);
+    crate::cli2key::Bridge::connect(executable.as_deref()).map(Some)
+}
+
+/// Return local-bridge credentials only for the provider that owns the bridge.
+pub(crate) fn local_bridge_credentials<'a>(
+    provider: &str,
+    bridge: Option<&'a crate::cli2key::Bridge>,
+    endpoint: Option<&'a str>,
+) -> Option<(&'a str, &'a str)> {
+    if !provider.eq_ignore_ascii_case("cli2key") {
+        return None;
+    }
+    Some((
+        bridge.map_or("asb-replay", crate::cli2key::Bridge::api_key),
+        endpoint.unwrap_or("http://127.0.0.1:0/v1"),
+    ))
+}
+
+/// Return the endpoint of a provider-owned bridge without exposing its tool
+/// implementation to the runner.
+pub(crate) fn local_bridge_endpoint<'a>(
+    provider: &str,
+    bridge: Option<&'a crate::cli2key::Bridge>,
+) -> Option<&'a str> {
+    provider
+        .eq_ignore_ascii_case("cli2key")
+        .then(|| bridge.map(crate::cli2key::Bridge::base_url))
+        .flatten()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ProviderSpec, read_key_file, spec};
