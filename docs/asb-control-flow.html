@@ -32,15 +32,16 @@ h1 { font-size: clamp(20px, 3vw, 32px); line-height: 1.1; margin: 0; }
 .statusbar { align-items: center; background: #f8fafc; border-bottom: 1px solid var(--line); color: var(--muted); display: flex; font-size: 12px; gap: 18px; justify-content: space-between; min-height: 33px; padding: 7px 24px; }
 .viewport { -webkit-user-select: none; background: radial-gradient(circle at 50% 35%, #f8fbff 0, #e9eff7 55%, #e1e9f3 100%); border: 1px solid #d3ddea; cursor: grab; margin: 14px; overflow: hidden; position: relative; touch-action: none; user-select: none; box-shadow: inset 0 1px 4px rgba(15, 23, 42, .05), 0 5px 18px rgba(15, 23, 42, .08); }
 .viewport.dragging { cursor: grabbing; }
-.canvas { height: 100%; left: 0; position: absolute; top: 0; transform-origin: 0 0; user-select: none; }
-.canvas svg { display: block; max-width: none; }
-.canvas .node, .canvas .edge, .canvas .cluster { cursor: pointer; transition: filter .14s ease, opacity .14s ease; }
+.canvas { contain: layout paint; height: 100%; left: 0; position: absolute; top: 0; transform-origin: 0 0; user-select: none; will-change: transform; }
+.canvas svg { display: block; max-width: none; text-rendering: optimizeSpeed; }
+.viewport.dragging .canvas svg { pointer-events: none; }
+.canvas .node, .canvas .edge, .canvas .cluster { cursor: pointer; transition: opacity .1s ease; }
 .canvas .node.is-hovered > polygon, .canvas .node.is-hovered > ellipse, .canvas .node.is-hovered > path { fill: #eff6ff !important; stroke: #3b82f6 !important; stroke-width: 2px !important; }
 .canvas .edge.is-hovered > path, .canvas .edge.is-hovered > polygon { stroke: #2563eb !important; stroke-width: 2.4px !important; }
 .canvas .cluster.is-hovered > path { stroke: #60a5fa !important; stroke-width: 2px !important; }
-.canvas .node:hover, .canvas .edge:hover, .canvas .cluster:hover { filter: drop-shadow(0 2px 5px rgba(37, 99, 235, .26)); }
+.canvas .node:hover, .canvas .edge:hover, .canvas .cluster:hover { opacity: .94; }
 .canvas .is-dimmed { opacity: .18; }
-.canvas .is-selected { filter: drop-shadow(0 0 8px rgba(37, 99, 235, .9)); }
+.canvas .is-selected { opacity: .96; }
 .canvas .is-related path, .canvas .is-related polygon { stroke: #2563eb !important; stroke-width: 2.5px !important; }
 .tooltip { background: rgba(15, 23, 42, .97); border: 1px solid #475569; border-radius: 8px; box-shadow: 0 8px 24px rgba(15, 23, 42, .24); color: #f8fafc; display: none; font-size: 12px; line-height: 1.45; max-width: 360px; padding: 9px 11px; pointer-events: none; position: fixed; white-space: pre-wrap; z-index: 10; }
 .sr-only { clip: rect(0, 0, 0, 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
@@ -8018,7 +8019,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   svg.setAttribute('width', viewBox.width);
   svg.setAttribute('height', viewBox.height);
 
-  function applyTransform() { canvas.style.transform = `translate(${state.tx}px, ${state.ty}px) scale(${state.scale})`; }
+  function applyTransform() { canvas.style.transform = `translate3d(${state.tx}px, ${state.ty}px, 0) scale(${state.scale})`; }
   function fit(animated = true) {
     const width = viewport.clientWidth;
     const height = viewport.clientHeight;
@@ -8122,8 +8123,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     element.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(element); } });
   });
   viewport.addEventListener('pointerdown', (event) => { if (event.button !== 0) return; state.drag = { x: event.clientX, y: event.clientY, tx: state.tx, ty: state.ty, moved: false }; viewport.classList.add('dragging'); viewport.setPointerCapture(event.pointerId); });
-  viewport.addEventListener('pointermove', (event) => { if (!state.drag) return; const dx = event.clientX - state.drag.x; const dy = event.clientY - state.drag.y; if (Math.hypot(dx, dy) > 4) state.drag.moved = true; state.tx = state.drag.tx + dx; state.ty = state.drag.ty + dy; applyTransform(); });
-  viewport.addEventListener('pointerup', () => { if (state.drag?.moved) state.suppressClickUntil = performance.now() + 120; state.drag = null; viewport.classList.remove('dragging'); });
+  viewport.addEventListener('pointermove', (event) => { if (!state.drag) return; const dx = event.clientX - state.drag.x; const dy = event.clientY - state.drag.y; if (Math.hypot(dx, dy) > 4) state.drag.moved = true; state.drag.nextTx = state.drag.tx + dx; state.drag.nextTy = state.drag.ty + dy; if (!state.drag.frame) state.drag.frame = requestAnimationFrame(() => { state.tx = state.drag?.nextTx ?? state.tx; state.ty = state.drag?.nextTy ?? state.ty; state.drag.frame = 0; applyTransform(); }); });
+  viewport.addEventListener('pointerup', () => { if (state.drag?.frame) cancelAnimationFrame(state.drag.frame); if (state.drag?.nextTx !== undefined) { state.tx = state.drag.nextTx; state.ty = state.drag.nextTy; applyTransform(); } if (state.drag?.moved) state.suppressClickUntil = performance.now() + 120; state.drag = null; viewport.classList.remove('dragging'); });
   viewport.addEventListener('pointercancel', () => { state.drag = null; viewport.classList.remove('dragging'); });
   viewport.addEventListener('click', (event) => { if (state.suppressClickUntil > performance.now()) return; if (event.target === viewport || event.target === canvas) clearSelection(); });
   viewport.addEventListener('wheel', (event) => { event.preventDefault(); const rect = viewport.getBoundingClientRect(); const x = event.clientX - rect.left; const y = event.clientY - rect.top; const next = Math.max(.02, Math.min(4, state.scale * Math.pow(1.0018, -event.deltaY))); state.tx = x - (x - state.tx) * next / state.scale; state.ty = y - (y - state.ty) * next / state.scale; state.scale = next; applyTransform(); }, { passive: false });
