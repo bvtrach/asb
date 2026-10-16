@@ -1,6 +1,7 @@
 //! Pre-run environment preparation hooks.
 
 use crate::Error;
+use crate::providers;
 use std::path::Path;
 use std::process::Command;
 
@@ -27,6 +28,69 @@ pub fn apply(
             workbuddy_config_dir,
             continue_config_dir,
         )?;
+    } else if provider.eq_ignore_ascii_case("openrouter") {
+        prepare_openrouter(command, agent, model, continue_config_dir)?;
+    }
+    Ok(())
+}
+
+fn prepare_openrouter(
+    command: &mut Command,
+    agent: &str,
+    model: &str,
+    continue_config_dir: Option<&Path>,
+) -> Result<(), Error> {
+    let key = providers::credential("openrouter").ok_or_else(|| {
+        Error::Run(
+            "openrouter provider requires OPENROUTER_API_KEY or ~/.api_key_openrouter".into(),
+        )
+    })?;
+    let base_url = std::env::var("OPENROUTER_BASE_URL")
+        .unwrap_or_else(|_| "https://openrouter.ai/api/v1".into());
+    configure_openai_compatible(command, agent, model, &key, &base_url, continue_config_dir)?;
+    Ok(())
+}
+
+fn configure_openai_compatible(
+    command: &mut Command,
+    agent: &str,
+    model: &str,
+    key: &str,
+    base_url: &str,
+    continue_config_dir: Option<&Path>,
+) -> Result<(), Error> {
+    let root = base_url.trim_end_matches('/');
+    let api_root = root.strip_suffix("/v1").unwrap_or(root);
+    command
+        .env("OPENAI_API_KEY", key)
+        .env("OPENAI_BASE_URL", root)
+        .env("OPENAI_API_BASE", root)
+        .env("OPENAI_MODEL", model)
+        .env("ANTHROPIC_API_KEY", key)
+        .env("ANTHROPIC_BASE_URL", api_root)
+        .env("GOOSE_PROVIDER", "openai")
+        .env("GOOSE_MODEL", model)
+        .env("OPENAI_HOST", api_root)
+        .env("OPENAI_BASE_PATH", "/v1/chat/completions")
+        .env("CLINE_API_KEY", key)
+        .env("CONTINUE_API_KEY", key)
+        .env("CONTINUE_API_BASE", root)
+        .env("CONTINUE_MODEL", model);
+    if agent.eq_ignore_ascii_case("continue") {
+        let directory = continue_config_dir.ok_or_else(|| {
+            Error::Run(
+                "cannot configure Continue without a project-local configuration directory".into(),
+            )
+        })?;
+        configure_continue(directory, model, root)?;
+        command
+            .env("CONTINUE_CONFIG", directory.join("config.yaml"))
+            .env("CONTINUE_GLOBAL_DIR", directory);
+    }
+    if agent.eq_ignore_ascii_case("kiro") {
+        return Err(Error::Input(
+            "Kiro CLI uses Kiro-hosted authentication and does not support OpenRouter or OpenAI-compatible endpoints; choose another agent or provider".into(),
+        ));
     }
     Ok(())
 }
@@ -137,16 +201,15 @@ fn prepare_cli2key(
                 "cannot configure Continue without a project-local configuration directory".into(),
             )
         })?;
-        configure_continue(directory, model, base_url, key)?;
+        configure_continue(directory, model, base_url)?;
         command
             .env("CONTINUE_CONFIG", directory.join("config.yaml"))
             .env("CONTINUE_GLOBAL_DIR", directory);
     }
     if agent.eq_ignore_ascii_case("kiro") {
-        command
-            .env("KIRO_API_KEY", key)
-            .env("KIRO_MODEL", model)
-            .env("KIRO_API_BASE", base_url);
+        return Err(Error::Input(
+            "Kiro CLI uses Kiro-hosted authentication and does not support cli2key or OpenAI-compatible endpoints; choose another agent or provider".into(),
+        ));
     }
     if let Some(executable) = codex_executable {
         command.env("CLI2KEY_CODEX_BIN", executable);
@@ -217,19 +280,14 @@ fn configure_workbuddy(directory: &Path, model: &str, base_url: &str) -> Result<
     Ok(())
 }
 
-fn configure_continue(
-    directory: &Path,
-    model: &str,
-    base_url: &str,
-    key: &str,
-) -> Result<(), Error> {
+fn configure_continue(directory: &Path, model: &str, base_url: &str) -> Result<(), Error> {
     std::fs::create_dir_all(directory).map_err(|error| {
         Error::Run(format!(
             "cannot create Continue provider configuration directory: {error}"
         ))
     })?;
     let configuration = format!(
-        "name: ASB cli2key\nversion: 1.0.0\nmodels:\n  - name: {model}\n    provider: openai\n    model: {model}\n    apiBase: {base_url}\n    apiKey: {key}\n"
+        "name: ASB provider\nversion: 1.0.0\nmodels:\n  - name: {model}\n    provider: openai\n    model: {model}\n    apiBase: {base_url}\n"
     );
     std::fs::write(directory.join("config.yaml"), configuration).map_err(|error| {
         Error::Run(format!(
@@ -435,5 +493,60 @@ mod tests {
         assert!(config.contains("model: gpt-test"));
         assert!(config.contains("apiBase: http://127.0.0.1:3456/v1"));
         let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn openrouter_preparation_maps_new_agents_to_compatible_endpoints() {
+        let directory =
+            std::env::temp_dir().join(format!("asb-openrouter-config-{}", std::process::id()));
+        let mut command = Command::new("cn");
+        configure_openai_compatible(
+            &mut command,
+            "continue",
+            "deepseek/deepseek-chat-v3-0324:free",
+            "or-test",
+            "https://openrouter.ai/api/v1",
+            Some(&directory),
+        )
+        .expect("OpenRouter preparation succeeds");
+        let values = command
+            .get_envs()
+            .filter_map(|(name, value)| {
+                value.map(|value| (name.to_string_lossy(), value.to_string_lossy()))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            values.get("OPENAI_API_KEY").map(|v| v.as_ref()),
+            Some("or-test")
+        );
+        assert_eq!(
+            values.get("OPENAI_BASE_URL").map(|v| v.as_ref()),
+            Some("https://openrouter.ai/api/v1")
+        );
+        assert_eq!(
+            values.get("ANTHROPIC_BASE_URL").map(|v| v.as_ref()),
+            Some("https://openrouter.ai/api")
+        );
+        assert!(
+            std::fs::read_to_string(directory.join("config.yaml"))
+                .expect("Continue config")
+                .contains("provider: openai")
+        );
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn external_provider_preparation_rejects_kiro_without_faking_compatibility() {
+        let mut command = Command::new("kiro-cli");
+        let error = configure_openai_compatible(
+            &mut command,
+            "kiro",
+            "some-model",
+            "not-a-kiro-key",
+            "https://openrouter.ai/api/v1",
+            None,
+        )
+        .expect_err("Kiro must reject OpenRouter compatibility");
+        assert!(error.to_string().contains("does not support OpenRouter"));
     }
 }

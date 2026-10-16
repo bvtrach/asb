@@ -207,10 +207,13 @@ fn run_mode(
             project::resolve(&project_root, &project_config.tools_dir).join("workbuddy/config")
         })
         .as_deref(),
-        (config.agent.eq_ignore_ascii_case("continue")
-            && config.provider.eq_ignore_ascii_case("cli2key"))
-        .then(|| project::resolve(&project_root, &project_config.tools_dir).join("continue/config"))
-        .as_deref(),
+        config
+            .agent
+            .eq_ignore_ascii_case("continue")
+            .then(|| {
+                project::resolve(&project_root, &project_config.tools_dir).join("continue/config")
+            })
+            .as_deref(),
     )?;
     if let Some(url) = tape_url {
         tape::configure_command(

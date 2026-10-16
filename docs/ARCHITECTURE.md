@@ -164,6 +164,15 @@ bridge endpoint and API key to the selected agent, and tears down a bridge
 process owned by ASB after the run. Additional preparation operations can be
 added without changing `run` or the benchmark configuration format.
 
+Claude Code, Goose, Cline, and Continue receive OpenRouter's
+OpenAI-compatible endpoint (with Claude's Anthropic-compatible path derived
+from the same base) or the equivalent cli2key bridge endpoint. Continue
+receives a project-local model YAML generated for the selected model. Kiro CLI
+is intentionally fail-closed for these providers: its documented headless API
+key authenticates against Kiro's hosted service and it does not expose a custom
+OpenAI-compatible endpoint; ASB reports that mismatch instead of sending an
+OpenRouter key to an unsupported endpoint.
+
 `asb compare SWEEP.toml` reads the isolated `<sweep>-results/` directories
 created by `asb sweep`. It writes bounded `comparison.json` data, an offline
 `report.html`, and SVG charts to `results/<sweep>-comparison/`; no provider or

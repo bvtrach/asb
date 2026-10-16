@@ -205,6 +205,12 @@ virtual environment. `goose` uses a SHA-256-pinned upstream binary and `kiro`
 uses a SHA-256-pinned official installer redirected into the project. Any
 other agent can be installed from a local executable or URL with `--source`.
 
+Claude Code, Goose, Cline, and Continue can use OpenRouter or the cli2key
+OpenAI-compatible bridge; ASB writes the required endpoint/model environment
+and Continue project configuration automatically. Kiro CLI remains tied to its
+Kiro-hosted API-key service and fails clearly if selected with OpenRouter or
+cli2key rather than treating an incompatible key as valid.
+
 If npm, Python, curl, or tar is unavailable, the failed command prints a
 copy-paste repair command. The npm repair uses user-local `fnm`; the Python
 repair uses user-local `uv`; after running the printed command, retry ASB.
