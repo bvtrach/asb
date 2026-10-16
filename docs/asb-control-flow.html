@@ -8166,6 +8166,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     function clearPinned() { state.pinnedParts.forEach((item) => item.classList.remove('is-pinned')); state.pinnedParts.clear(); state.pinned = null; }
     function select(element, reverseEdge = false) {
       if (!element) return;
+      elements.forEach((item) => item.classList.remove('is-hovered'));
+      state.hover = null;
+      hideTooltip();
       if (state.pinned === element) { clearPinned(); selection.textContent = 'Hover an element for details. Drag to pan; scroll to zoom.'; return; }
       clearPinned(); state.pinned = element; state.pinnedParts = new Set(relatedTo(element)); state.pinnedParts.forEach((item) => item.classList.add('is-pinned')); selection.textContent = titleOf(element);
       if (element.classList.contains('edge')) { const ends = edgeEnds(element), target = ends[reverseEdge ? 0 : 1]; centerElements([...state.pinnedParts, ...(target ? [target] : [])]); } else centerElements([...state.pinnedParts]);
