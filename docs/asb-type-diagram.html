@@ -656,6 +656,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   const titleCache = new Map();
   const edgeEndsCache = new Map();
   const relatedCache = new Map();
+  const hoverTimers = new WeakMap();
   let transformFrame = 0;
   let navigationTimer = 0;
   let tooltipFrame = 0;
@@ -841,9 +842,15 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     if (!tooltipFrame) tooltipFrame = requestAnimationFrame(renderTooltip);
   }
   allElements.forEach((element) => {
-    element.addEventListener('pointerenter', (event) => { element.classList.add('is-hovered'); showTooltip(element, event); });
+    element.addEventListener('pointerenter', (event) => { clearTimeout(hoverTimers.get(element)); element.classList.add('is-hovered'); showTooltip(element, event); });
     element.addEventListener('pointermove', (event) => { if (tooltip.style.display !== 'none') showTooltip(element, event); });
-    element.addEventListener('pointerleave', () => { if (!element.classList.contains('is-pinned')) element.classList.remove('is-hovered'); tooltipElement = null; tooltipEvent = null; tooltip.style.display = 'none'; });
+    element.addEventListener('pointerleave', () => {
+      clearTimeout(hoverTimers.get(element));
+      hoverTimers.set(element, setTimeout(() => {
+        if (!element.classList.contains('is-pinned')) element.classList.remove('is-hovered');
+        if (tooltipElement === element) { tooltipElement = null; tooltipEvent = null; tooltip.style.display = 'none'; }
+      }, 80));
+    });
     element.addEventListener('click', (event) => {
       if (state.suppressClickUntil > performance.now()) return;
       event.stopPropagation();
@@ -864,6 +871,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
       current = current.parentElement;
     }
     return null;
+  }
+  function graphElementAtPoint(x, y) {
+    const candidates = document.elementsFromPoint(x, y).map((item) => graphElementFromTarget(item)).filter(Boolean);
+    return candidates.find((item) => item.classList.contains('node')) || candidates[0] || null;
   }
   function startPinch() {
     const points = [...state.pointers.values()];
@@ -905,7 +916,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     if (!state.drag.frame) state.drag.frame = requestAnimationFrame(() => { state.tx = state.drag?.nextTx ?? state.tx; state.ty = state.drag?.nextTy ?? state.ty; state.drag.frame = 0; beginNavigation(); applyTransform(); });
   });
   function finishPointer(event) {
-    const pressTarget = state.pressTarget || graphElementFromTarget(event.target);
+    const pointTarget = graphElementAtPoint(event.clientX, event.clientY);
+    const pressTarget = pointTarget?.classList.contains('node') ? pointTarget : (state.pressTarget || pointTarget || graphElementFromTarget(event.target));
     const wasPinching = Boolean(state.pinch);
     state.pointers.delete(event.pointerId);
     if (state.pinch) {
