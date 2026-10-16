@@ -10,7 +10,7 @@
   const edges = [...canvas.querySelectorAll('.edge')];
   const clusters = [...canvas.querySelectorAll('.cluster')];
   const allElements = [...nodes, ...edges, ...clusters];
-  const state = { scale: 1, tx: 0, ty: 0, drag: null, pinch: null, pointers: new Map(), pinned: null, animation: null, suppressClickUntil: 0 };
+  const state = { scale: 1, tx: 0, ty: 0, drag: null, pinch: null, pointers: new Map(), pinned: null, pinnedParts: new Set(), animation: null, suppressClickUntil: 0 };
   const viewBox = svg.viewBox.baseVal;
   const titles = new Map();
 
@@ -122,7 +122,8 @@
     return related;
   }
   function clearSelection() {
-    state.pinned?.classList.remove('is-pinned', 'is-hovered');
+    state.pinnedParts.forEach((item) => item.classList.remove('is-pinned', 'is-hovered'));
+    state.pinnedParts.clear();
     state.pinned = null;
     allElements.forEach((item) => item.classList.remove('is-dimmed', 'is-selected', 'is-related'));
     selection.textContent = 'Hover an element for details. Drag to pan; scroll to zoom.';
@@ -131,8 +132,10 @@
     if (state.pinned === element) { clearSelection(); return; }
     clearSelection();
     state.pinned = element;
-    element.classList.add('is-pinned', 'is-hovered');
     const related = relatedTo(element);
+    const pinnedParts = [element, ...related.filter((item) => item.classList.contains('edge'))];
+    state.pinnedParts = new Set(pinnedParts);
+    state.pinnedParts.forEach((item) => item.classList.add('is-pinned', 'is-hovered'));
     selection.textContent = titleOf(element);
     if (element.classList.contains('edge')) followEdge(element, reverseEdge); else centerElements([...related]);
   }
