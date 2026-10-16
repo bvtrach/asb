@@ -13,6 +13,7 @@ pub struct SetupOptions {
     pub workload: Option<String>,
     pub provider: Option<String>,
     pub model: Option<String>,
+    pub concurrency: Option<usize>,
     pub workspace: Option<String>,
     pub output: Option<String>,
 }
@@ -24,6 +25,7 @@ pub fn setup(options: SetupOptions, output: &mut dyn Write) -> Result<(), Error>
         workload,
         provider,
         model,
+        concurrency,
         workspace,
         output: destination,
     } = options;
@@ -69,11 +71,16 @@ pub fn setup(options: SetupOptions, output: &mut dyn Write) -> Result<(), Error>
             )));
         }
     }
+    let concurrency = concurrency.unwrap_or(1);
+    if concurrency == 0 {
+        return Err(Error::Input("concurrency must be at least 1".into()));
+    }
     let config = BenchmarkConfig {
         agent,
         workload: required(workload)?,
         provider,
         model,
+        concurrency,
         trial_set: None,
         trial: None,
         workspace: workspace.unwrap_or(project_config.workspace_dir),
@@ -141,12 +148,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn setup_writes_default_concurrency() {
+        let mut output = Vec::new();
+        setup(options("pi", "cli2key", "gpt-6.1-sol"), &mut output).expect("setup succeeds");
+        let text = String::from_utf8(output).expect("setup is UTF-8");
+        assert!(text.contains("concurrency = 1"));
+    }
+
     fn options(agent: &str, provider: &str, model: &str) -> SetupOptions {
         SetupOptions {
             agent: Some(agent.into()),
             workload: Some("bug-fix".into()),
             provider: Some(provider.into()),
             model: Some(model.into()),
+            concurrency: None,
             workspace: None,
             output: None,
         }

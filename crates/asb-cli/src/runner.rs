@@ -63,9 +63,25 @@ pub fn run_with_tape(
     cassette: Option<&str>,
     output: &mut dyn Write,
 ) -> Result<(), Error> {
+    let config_path = Path::new(path);
+    let text = read_config(config_path)?;
+    let config: BenchmarkConfig = toml::from_str(&text)
+        .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
     let tape_request = mode.map(|value| (value, cassette));
+    if config.concurrency > 1 {
+        return run_concurrent(
+            config_path,
+            &config,
+            json,
+            show_output,
+            measurement_dir,
+            tape_request,
+            output,
+        );
+    }
     run_mode(
-        path,
+        config_path,
+        config,
         json,
         show_output,
         measurement_dir,
@@ -74,18 +90,127 @@ pub fn run_with_tape(
     )
 }
 
-fn run_mode(
-    path: &str,
+/// Execute identical replicas concurrently. Each replica gets an isolated
+/// workspace, log, measurement directory, and record cassette so agents never
+/// mutate one another's files. Output is buffered per replica and emitted in
+/// replica order after completion to keep the terminal readable.
+fn run_concurrent(
+    config_path: &Path,
+    config: &BenchmarkConfig,
     json: bool,
     show_output: bool,
     measurement_dir: Option<&str>,
     tape_request: Option<(tape::Mode, Option<&str>)>,
     output: &mut dyn Write,
 ) -> Result<(), Error> {
-    let config_path = Path::new(path);
-    let text = read_config(config_path)?;
-    let config: BenchmarkConfig = toml::from_str(&text)
-        .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
+    let mut jobs = Vec::with_capacity(config.concurrency);
+    for index in 1..=config.concurrency {
+        let mut replica = config.clone();
+        replica.concurrency = 1;
+        replica.workspace = parallel_path(&replica.workspace, index);
+        replica.log_file = parallel_path(&replica.log_file, index);
+        if let Some(measurements) = replica.measurements.as_mut() {
+            measurements.directory = parallel_path(&measurements.directory, index);
+        }
+        let cassette = tape_request.and_then(|(mode, requested)| {
+            requested
+                .map(|path| append_path_suffix(Path::new(path), index))
+                .or_else(|| {
+                    (mode == tape::Mode::Record).then(|| {
+                        append_path_suffix(&default_cassette(config_path, &replica), index)
+                    })
+                })
+                .map(|path| (mode, path))
+        });
+        let measurement = measurement_dir.map(|path| PathBuf::from(parallel_path(path, index)));
+        jobs.push((replica, measurement, cassette));
+    }
+
+    let mut completed = Vec::with_capacity(jobs.len());
+    std::thread::scope(|scope| {
+        let handles =
+            jobs.into_iter()
+                .enumerate()
+                .map(|(index, (replica, measurement, cassette))| {
+                    scope.spawn(move || {
+                        let mut buffer = Vec::new();
+                        let mode = cassette.as_ref().map(|(mode, _)| *mode);
+                        let cassette_path =
+                            cassette.as_ref().map(|(_, path)| path.to_string_lossy());
+                        let cassette_path = cassette_path.as_deref();
+                        let measurement_path = measurement.as_deref().and_then(Path::to_str);
+                        let result = run_mode(
+                            config_path,
+                            replica,
+                            json,
+                            show_output,
+                            measurement_path,
+                            mode.map(|mode| (mode, cassette_path)),
+                            &mut buffer,
+                        );
+                        (index, result, buffer)
+                    })
+                });
+        for handle in handles {
+            completed.push(
+                handle
+                    .join()
+                    .expect("benchmark concurrency worker panicked"),
+            );
+        }
+    });
+
+    completed.sort_by_key(|(index, _, _)| *index);
+    let mut failures = Vec::new();
+    for (index, result, buffer) in completed {
+        output.write_all(&buffer).map_err(io_error)?;
+        if let Err(error) = result {
+            failures.push(format!("replica {index}: {error}"));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::Run(format!(
+            "{} concurrent benchmark replica(s) failed: {}",
+            failures.len(),
+            failures.join("; ")
+        )))
+    }
+}
+
+fn parallel_path(value: &str, index: usize) -> String {
+    append_path_suffix(Path::new(value), index)
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn append_path_suffix(path: &Path, index: usize) -> PathBuf {
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("benchmark");
+    let extension = path.extension().and_then(|value| value.to_str());
+    let name = match extension {
+        Some(extension) => format!("{stem}-concurrency-{index}.{extension}"),
+        None => format!("{stem}-concurrency-{index}"),
+    };
+    if let Some(parent) = path.parent() {
+        parent.join(name)
+    } else {
+        PathBuf::from(name)
+    }
+}
+
+fn run_mode(
+    config_path: &Path,
+    config: BenchmarkConfig,
+    json: bool,
+    show_output: bool,
+    measurement_dir: Option<&str>,
+    tape_request: Option<(tape::Mode, Option<&str>)>,
+    output: &mut dyn Write,
+) -> Result<(), Error> {
     let tape_cassette = tape_request.map(|(mode, requested)| {
         (
             mode,
@@ -935,6 +1060,7 @@ mod tests {
             workload: "bug-fix".into(),
             provider: "cli2key".into(),
             model: "gpt-test".into(),
+            concurrency: 1,
             trial_set: None,
             trial: None,
             workspace: "workspace".into(),
@@ -956,6 +1082,7 @@ mod tests {
             workload: "bug-fix".into(),
             provider: "cli2key".into(),
             model: "gpt-test".into(),
+            concurrency: 1,
             trial_set: None,
             trial: None,
             workspace: "workspace".into(),
@@ -993,6 +1120,7 @@ mod tests {
                 workload: "bug-fix".into(),
                 provider: "cli2key".into(),
                 model: "gpt-test".into(),
+                concurrency: 1,
                 trial_set: None,
                 trial: None,
                 workspace: "workspace".into(),
@@ -1017,6 +1145,7 @@ mod tests {
             workload: "bug-fix".into(),
             provider: "cli2key".into(),
             model: "gpt-6.1-sol".into(),
+            concurrency: 1,
             trial_set: None,
             trial: None,
             workspace: "workspace".into(),
@@ -1064,6 +1193,7 @@ mod tests {
             workload: "bug-fix".into(),
             provider: "opencode-zen".into(),
             model: "mimo-v2.6-flash-free".into(),
+            concurrency: 1,
             trial_set: None,
             trial: None,
             workspace: "workspace".into(),
@@ -1080,6 +1210,7 @@ mod tests {
             workload: "bug-fix".into(),
             provider: "local".into(),
             model: "test-model".into(),
+            concurrency: 1,
             trial_set: None,
             trial: None,
             workspace: "workspace".into(),

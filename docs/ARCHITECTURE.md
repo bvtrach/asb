@@ -5,7 +5,7 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
 - `benchmark`: the configuration record and workload prompt catalogue;
 - `config`: the `setup` command and TOML writer;
 - `tui`: the Ratatui setup wizard. It composes reusable selection panes for
-  agents, providers, models, workloads, and measurements, with filtering and
+  agents, providers, models, workloads, measurements, and concurrency, with filtering and
   keyboard navigation. Its model pane uses the existing provider discovery
   path and falls back only when a catalog is unavailable, then writes test
   configurations and a sweep manifest;
@@ -51,7 +51,10 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   workspace without overwriting existing edits.
 
 The CLI is the stable user boundary. A benchmark configuration names an agent,
-workload, provider, model, workspace, and log file. Provider credentials are never stored
+workload, provider, model, concurrency, workspace, and log file. `concurrency`
+defaults to `1`; values greater than one run isolated replicas of the same
+agent/model/workload in parallel, with separate workspaces, logs, measurements,
+and record cassettes. Provider credentials are never stored
 in that file. The runner passes provider/model selection through environment
 variables and gives the selected agent one bounded workload prompt.
 Provider credentials are not stored in benchmark configuration. Known providers

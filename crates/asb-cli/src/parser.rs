@@ -184,6 +184,8 @@ struct SetupArgs {
     provider: Option<String>,
     #[arg(long)]
     model: Option<String>,
+    #[arg(long, value_name = "N")]
+    concurrency: Option<usize>,
     #[arg(long)]
     workspace: Option<String>,
     #[arg(long)]
@@ -197,6 +199,7 @@ impl From<SetupArgs> for config::SetupOptions {
             workload: value.workload,
             provider: value.provider,
             model: value.model,
+            concurrency: value.concurrency,
             workspace: value.workspace,
             output: value.output,
         }

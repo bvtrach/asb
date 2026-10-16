@@ -42,6 +42,7 @@ const DESCRIPTIONS: &[&str] = &[
     "Choose tool-capable models available in the selected providers.",
     "Choose one or more workload prompts installed in this project.",
     "Choose the measurement collectors; host tools are installed project-locally when possible.",
+    "Choose how many identical executions run in parallel for each generated benchmark.",
 ];
 
 // U+2139 is commonly rendered as a blue/white emoji. Use the text-style
@@ -127,6 +128,16 @@ impl Pane {
         }
     }
 
+    fn toggle_single(&mut self) {
+        self.search_changed();
+        if self.cursor >= self.selected.len() {
+            return;
+        }
+        let enabled = !self.selected[self.cursor];
+        self.selected.fill(false);
+        self.selected[self.cursor] = enabled;
+    }
+
     fn search_changed(&mut self) {
         let visible = self.visible();
         if let Some(first) = visible.first() {
@@ -209,6 +220,16 @@ impl App {
             .collect();
         let mut measure_pane = Pane::new(measures);
         measure_pane.selected.fill(true);
+        let concurrency_choices = (1..=16)
+            .map(|value| Choice {
+                label: value.to_string(),
+                provider: None,
+                model: None,
+                availability: Availability::Available,
+            })
+            .collect();
+        let mut concurrency_pane = Pane::new(concurrency_choices);
+        concurrency_pane.selected[0] = true;
         let mut app = Self {
             root,
             project,
@@ -218,6 +239,7 @@ impl App {
                 Pane::new(Vec::new()),
                 workload_pane,
                 measure_pane,
+                concurrency_pane,
             ],
             step: 0,
             message: "Space selects; arrows move; Tab or Enter advances; Esc cancels.".into(),
@@ -950,6 +972,10 @@ fn run_loop(
                     return Ok(generated);
                 }
             }
+            KeyEvent {
+                code: KeyCode::Char(' '),
+                ..
+            } if app.step == 5 => app.panes[5].toggle_single(),
             key if handle_pane_key(&mut app.panes[app.step], key) => {}
             _ => {}
         }
@@ -966,7 +992,14 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
             Constraint::Length(2),
         ])
         .split(frame.area());
-    let steps = ["agent", "provider", "model", "workload", "measures"];
+    let steps = [
+        "agent",
+        "provider",
+        "model",
+        "workload",
+        "measures",
+        "concurrency",
+    ];
     let step_line = steps
         .iter()
         .enumerate()
@@ -1003,15 +1036,15 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
         vertical[1],
     );
     let pane = &app.panes[app.step];
-    render_choice_pane(frame, vertical[2], pane, !matches!(app.step, 1 | 2));
+    render_choice_pane(frame, vertical[2], pane, !matches!(app.step, 1 | 2 | 5));
     frame.render_widget(
         Paragraph::new(Text::from(Line::from(vec![
-            if matches!(app.step, 1 | 2) {
+            if matches!(app.step, 1 | 2 | 5) {
                 Span::styled("Discovery only", Style::default().fg(Color::Yellow))
             } else {
                 Span::styled("Ctrl-I install", Style::default().fg(Color::Cyan))
             },
-            if matches!(app.step, 1 | 2) {
+            if matches!(app.step, 1 | 2 | 5) {
                 Span::raw(" | Enter next | ")
             } else {
                 Span::raw(" | ⓘ green=ready red=missing yellow=unknown | Tab fallback install | Enter next | ")
@@ -1376,6 +1409,11 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
         .selected_choices()
         .map(|choice| choice.label.clone())
         .collect::<Vec<_>>();
+    let concurrency = app.panes[5]
+        .selected_choices()
+        .next()
+        .and_then(|choice| choice.label.parse::<usize>().ok())
+        .unwrap_or(1);
     let initial_stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| Error::Io(format!("cannot create setup name: {error}")))?
@@ -1404,6 +1442,7 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
                             workload: workload.clone(),
                             provider: provider.clone(),
                             model: model.clone(),
+                            concurrency,
                             trial_set: trial_set.clone(),
                             trial,
                             workspace: app.project.workspace_dir.clone(),
@@ -1685,9 +1724,23 @@ mod tests {
                     .is_some_and(|name| name.starts_with("asb-test-") && name.ends_with(".toml"))
             })
             .expect("generated test config");
-        assert!(std::fs::read_to_string(test_path).is_ok());
+        let config_text = std::fs::read_to_string(test_path).expect("generated config");
+        let config: crate::benchmark::BenchmarkConfig =
+            toml::from_str(&config_text).expect("generated config parses");
+        assert_eq!(config.concurrency, 1);
         let sweep = std::fs::read_to_string(&generated.sweep).expect("sweep written");
         assert!(sweep.contains("asb-test-"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn concurrency_pane_selects_one_positive_value() {
+        let root = std::env::temp_dir().join(format!("asb-tui-concurrency-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("test root");
+        let app = App::new(root.clone(), ProjectConfig::default());
+        assert_eq!(app.panes.len(), 6);
+        assert_eq!(app.panes[5].selected_choices().count(), 1);
+        assert_eq!(app.panes[5].choices[0].label, "1");
         let _ = std::fs::remove_dir_all(root);
     }
 
