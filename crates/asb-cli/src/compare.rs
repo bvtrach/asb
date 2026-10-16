@@ -350,7 +350,10 @@ fn write_html_report(
     let mut html = String::from(HTML_HEAD);
     html = html.replacen(
         "</style></head>",
-        &format!("{}\n{}\n</style></head>", INTERACTIVE_STYLE, MODAL_STYLE),
+        &format!(
+            "{}\n{}\n{}\n</style></head>",
+            INTERACTIVE_STYLE, MODAL_STYLE, INLINE_SVG_STYLE
+        ),
         1,
     );
     html.push_str("<main class=\"shell\">");
@@ -407,42 +410,49 @@ fn write_html_report(
             let perfetto_svgs = benchmark
                 .artifacts
                 .iter()
-                .filter(|artifact| artifact.contains("/perfetto-metric-") && artifact.ends_with(".svg"))
+                .filter(|artifact| {
+                    artifact.contains("/perfetto-metric-") && artifact.ends_with(".svg")
+                })
                 .map(|artifact| {
-                    format!(
-                        "<object class=\"perfetto-metric\" type=\"image/svg+xml\" data=\"{}\">Perfetto metric SVG</object>",
-                        escape(artifact)
+                    inline_svg_artifact(
+                        comparison_dir,
+                        artifact,
+                        "perfetto-metric",
+                        "Perfetto metric SVG",
                     )
                 })
-                .collect::<String>();
+                .collect::<Result<String, Error>>()?;
             let bpftrace_svgs = benchmark
                 .artifacts
                 .iter()
                 .filter(|artifact| {
-                    artifact.rsplit('/').next().is_some_and(|name| {
-                        name.starts_with("bpftrace-") && name.ends_with(".svg")
-                    })
+                    artifact
+                        .rsplit('/')
+                        .next()
+                        .is_some_and(|name| name.starts_with("bpftrace-") && name.ends_with(".svg"))
                 })
                 .map(|artifact| {
-                    format!(
-                        "<object class=\"bpftrace-profile\" type=\"image/svg+xml\" data=\"{}\">bpftrace profile SVG</object>",
-                        escape(artifact)
+                    inline_svg_artifact(
+                        comparison_dir,
+                        artifact,
+                        "bpftrace-profile",
+                        "bpftrace profile SVG",
                     )
                 })
-                .collect::<String>();
+                .collect::<Result<String, Error>>()?;
             let flamegraph_svgs = benchmark
                 .artifacts
                 .iter()
                 .filter(|artifact| {
-                    artifact.rsplit('/').next().is_some_and(|name| name == "flamegraph.svg")
+                    artifact
+                        .rsplit('/')
+                        .next()
+                        .is_some_and(|name| name == "flamegraph.svg")
                 })
                 .map(|artifact| {
-                    format!(
-                        "<object class=\"flamegraph\" type=\"image/svg+xml\" data=\"{}\">Flamegraph SVG</object>",
-                        escape(artifact)
-                    )
+                    inline_svg_artifact(comparison_dir, artifact, "flamegraph", "Flamegraph SVG")
                 })
-                .collect::<String>();
+                .collect::<Result<String, Error>>()?;
             let flamegraph_status = benchmark
                 .artifacts
                 .iter()
@@ -509,6 +519,40 @@ fn chart_figure(comparison_dir: &Path, graph: &str) -> Result<String, Error> {
     ))
 }
 
+fn inline_svg_artifact(
+    comparison_dir: &Path,
+    artifact: &str,
+    class: &str,
+    fallback: &str,
+) -> Result<String, Error> {
+    let path = comparison_dir.join(artifact);
+    let metadata = fs::metadata(&path).map_err(|error| {
+        Error::Run(format!(
+            "cannot read embedded SVG artifact {artifact}: {error}"
+        ))
+    })?;
+    if metadata.len() > MAX_BYTES {
+        return Err(Error::Run(format!(
+            "embedded SVG artifact {artifact} exceeds 16 MiB"
+        )));
+    }
+    let svg = fs::read_to_string(&path).map_err(|error| {
+        Error::Run(format!(
+            "cannot read embedded SVG artifact {artifact}: {error}"
+        ))
+    })?;
+    let trimmed = svg.trim_start();
+    if !trimmed.starts_with("<svg") && !trimmed.starts_with("<?xml") {
+        return Err(Error::Run(format!(
+            "embedded SVG artifact {artifact} does not contain an SVG document"
+        )));
+    }
+    Ok(format!(
+        "<div class=\"embedded-svg {class}\" aria-label=\"{}\">{svg}</div>",
+        escape(fallback)
+    ))
+}
+
 fn title_case(value: &str) -> String {
     let mut chars = value.chars();
     chars.next().map_or_else(String::new, |first| {
@@ -523,6 +567,8 @@ const HTML_HEAD: &str = r#"<!doctype html><html lang="en"><head><meta charset="u
 const INTERACTIVE_STYLE: &str = r#".interactive-chart{position:relative;overflow:hidden}.chart-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 8px;color:var(--ink);font-size:12px}.chart-toolbar strong{overflow-wrap:anywhere}.chart-toolbar button{margin:0;font-size:12px}.chart-stage{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:8px;background:linear-gradient(180deg,#fff,#f7fbfe)}.chart-stage svg{display:block;width:100%;height:auto;min-height:260px;cursor:grab;touch-action:none;user-select:none}.chart-stage svg.is-panning{cursor:grabbing}.chart-stage .bar{transition:fill .12s,opacity .12s}.chart-stage .bar.hovered{fill:#d95f02;stroke:#8f3f00;stroke-width:1.5}.chart-stage .series{transition:stroke-width .12s,opacity .12s}.chart-stage .series.hovered{stroke-width:4;filter:drop-shadow(0 2px 2px #18212b44)}.chart-stage .series-point{pointer-events:all;transition:fill .12s,r .12s}.chart-stage .series-point.hovered{fill:#d95f02;stroke:#fff;stroke-width:2;r:7}.chart-tooltip{position:absolute;z-index:2;pointer-events:none;opacity:0;transform:translateY(-3px);padding:7px 10px;border:1px solid #17324d33;border-radius:7px;background:#18212bf2;color:#fff;box-shadow:0 6px 16px #17324d44;font-size:12px;line-height:1.3;white-space:nowrap;transition:opacity .12s}.chart-tooltip.visible{opacity:1}.interactive-chart figcaption{display:flex;justify-content:space-between;gap:8px}.interactive-chart figcaption::after{content:'Hover values · wheel zoom · drag pan';color:var(--muted);font-size:11px}.bpftrace-profile{display:block;width:min(760px,100%);height:220px;border:0;margin:8px 0}.flamegraph{display:block;width:min(1100px,100%);height:420px;border:1px solid var(--line);border-radius:8px;margin:10px 0;background:#fff}.flamegraph-status{color:var(--muted);font-size:12px;margin:8px 0}"#;
 
 const MODAL_STYLE: &str = r#"body.chart-open{overflow:hidden}.chart-backdrop{display:none;position:fixed;inset:0;background:#081522c9;z-index:30}.interactive-chart.expanded{position:fixed;z-index:31;left:10vw;top:10vh;width:80vw;height:80vh;margin:0;padding:18px;background:var(--panel);border:1px solid #b9c9d8;border-radius:16px;box-shadow:0 24px 80px #08152299}.interactive-chart.expanded .chart-backdrop{display:block}.interactive-chart.expanded .chart-toolbar{position:relative;z-index:32}.interactive-chart.expanded .chart-stage{height:calc(80vh - 92px);min-height:0}.interactive-chart.expanded .chart-stage svg{height:100%;min-height:0}.interactive-chart.expanded figcaption{position:relative;z-index:32}@media(max-width:700px){.interactive-chart.expanded{left:3vw;top:3vh;width:94vw;height:94vh;padding:10px}.interactive-chart.expanded .chart-stage{height:calc(94vh - 78px)}}"#;
+
+const INLINE_SVG_STYLE: &str = r#".embedded-svg{display:block;overflow:auto;border:1px solid var(--line);border-radius:8px;background:#fff;margin:8px 0}.embedded-svg svg{display:block;width:100%;height:auto}.embedded-svg.perfetto-metric{width:min(760px,100%);max-height:260px}.embedded-svg.bpftrace-profile{width:min(760px,100%);max-height:300px}.embedded-svg.flamegraph{width:100%;max-height:520px}.embedded-svg.flamegraph svg{min-width:900px}"#;
 
 const INTERACTIVE_SCRIPT: &str = r#"<script>
 document.querySelectorAll('.interactive-chart').forEach(chart=>{
@@ -1000,11 +1046,19 @@ mod tests {
         assert!(!report.contains("run.json"));
         assert!(report.contains("Perfetto metric SVG"));
         assert!(report.contains("perfetto-metric-scheduler_events.svg"));
+        assert!(report.contains("<div class=\"embedded-svg perfetto-metric\""));
         assert!(report.contains("bpftrace profile SVG"));
         assert!(report.contains("bpftrace-sched-latency.svg"));
+        assert!(report.contains(
+            "<div class=\"embedded-svg bpftrace-profile\" aria-label=\"bpftrace profile SVG\"><svg>"
+        ));
         assert!(report.contains("bpftrace profiles"));
-        assert!(report.contains("class=\"flamegraph\""));
+        assert!(report.contains("class=\"embedded-svg flamegraph\""));
         assert!(report.contains("flamegraph.svg"));
+        assert!(report.contains(
+            "<div class=\"embedded-svg flamegraph\" aria-label=\"Flamegraph SVG\"><svg>"
+        ));
+        assert!(!report.contains("<object class=\"flamegraph\""));
         assert!(report.contains("Flamegraph collector status"));
         assert!(report.contains("class=\"interactive-chart\""));
         assert!(report.contains("chart-tooltip"));
