@@ -84,9 +84,10 @@ profiles deliberately do not include a generic NUMA or language-runtime data
 structure probe: neither has a portable kernel ABI, so such measurements stay
 available through the custom-program interface. Flamegraphs use the local tools named by
 `ASB_FLAMEGRAPH_STACKCOLLAPSE` and `ASB_FLAMEGRAPH_RENDER`; the SVG is paired
-with machine-readable `flamegraph.json` metadata. The mpstat and iostat files
-retain bounded raw samples and add averaged machine-readable CPU, I/O
-throughput, latency, queue-depth, and utilization metrics. `asb compare` uses
+with machine-readable `flamegraph.json` metadata. The mpstat and iostat result
+files use process-scoped `pidstat` sampling for the agent process and its child
+tasks; they retain bounded raw samples and add averaged machine-readable CPU
+and I/O metrics. `asb compare` uses
 those metrics rather than scraping every raw sample, so it emits one canonical
 runtime graph plus useful unit-labelled resource graphs. If perf permissions,
 samples, or FlameGraph tools are unavailable, `flamegraph.json` records the
@@ -100,8 +101,9 @@ repair command.
 Install Perfetto locally with `asb tool install perfetto`. It installs both the
 project-local Tracebox collector and the project-local Perfetto trace processor.
 When the `perfetto` collector is selected (or `ASB_MEASURE_PERFETTO=1` is set),
-ASB validates the exact ftrace configuration before the agent starts, then starts
-Tracebox and writes
+ASB validates the exact ftrace configuration before the agent starts, then
+starts Tracebox after the agent PID is known, filters scheduler events to that
+PID, and writes
 `perfetto-scheduling.perfetto-trace`, the generated trace configuration, and
 `perfetto-tracepoints.json` to the measurement directory. It also writes one
 portable `perfetto-metric-*.svg` per extracted metric; `asb compare` embeds

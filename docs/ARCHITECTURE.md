@@ -22,23 +22,28 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   process execution;
 - `compare`: offline sweep-result loading, numeric aggregation, and dependency-free
   SVG bar/line chart generation;
-- `measurements`: opt-in system/runtime collection. It writes bounded JSON
+- `measurements`: opt-in process-scoped runtime collection. It writes bounded JSON
   records for host facts, elapsed time, success rate, and normalized input,
   output, cached, and total token usage, and
   owns optional `mpstat`, `iostat`, `perf`, Perfetto, BPFTrace, and FlameGraph adapters;
-  mpstat and iostat retain their bounded raw output and also expose averaged,
-  unit-named CPU, throughput, latency, queue, and utilization metrics under a
-  machine-readable `metrics` object. Comparisons consume that object rather
+  the mpstat/iostat result names use process-scoped `pidstat` sampling for the
+  agent process and its child tasks, retaining bounded raw output and exposing
+  averaged, unit-named CPU and I/O metrics under a machine-readable `metrics`
+  object. Comparisons consume that object rather
   than scraping arbitrary output, so one canonical runtime result is plotted
   instead of repeated collector samples;
   the Perfetto adapter validates tracefs/ftrace access before the agent process,
-  then starts project-local Tracebox and records scheduler switches/wakeups,
-  thread lifecycle, process names, and fixed non-secret ASB lifecycle
-  tracepoints. The project-local trace processor extracts stable aggregates,
+  then starts project-local Tracebox after the agent PID is known, filters
+  scheduler events to that PID, disables process-wide scans, and records fixed
+  non-secret ASB lifecycle tracepoints. The project-local trace processor
+  extracts stable aggregates,
   and ASB preserves the native `.perfetto-trace`, a bounded JSON record, and
   one portable SVG per extracted metric for the comparison report;
   the perf adapter records both call stacks and stable `perf stat` counters
-  (task clock, context switches, migrations, faults, cycles, instructions);
+  (task clock, context switches, migrations, faults, cycles, instructions) with
+  `-p <agent-pid>` for both modes; built-in BPFTrace profiles use the same
+  target PID and custom programs receive `-p <agent-pid>` but must still keep
+  tracepoint predicates target-scoped;
   each adapter is isolated from the runner and can be extended without adding
   provider-specific fields to the benchmark configuration;
 - `workloads/`: one UTF-8 `.txt` prompt per workload name. Built-in supporting

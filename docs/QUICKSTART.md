@@ -104,6 +104,9 @@ Source-installed agents use `.asb-tools/<agent>/bin/`; workloads are stored in
 changes every command consistently. Add `--dir DIR` only when you need a
 one-off destination.
 
+All runtime collectors are process-scoped: mpstat/iostat result names use
+pidstat for the agent and child tasks, perf uses `-p`, built-in bpftrace
+profiles use the agent PID, and Perfetto filters scheduler events to that PID.
 To collect scheduler and process-lifecycle evidence for a run, install the
 project-local Perfetto Tracebox tool above, enable the `perfetto` measurement
 collector in the generated run configuration, and run normally. ASB stores its

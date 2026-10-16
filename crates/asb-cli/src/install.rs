@@ -672,6 +672,25 @@ fn install_recipe(
                 ))
             })?;
             make_executable(&destination)?;
+            if executable == "mpstat" {
+                // Process-scoped CPU/I/O collection uses pidstat from the
+                // same sysstat package; retain it beside the copied mpstat
+                // tool so runs do not silently fall back to host-wide data.
+                let pidstat = host_executable("pidstat").map_err(|_| {
+                    Error::Io(
+                        "mpstat installation also needs the matching sysstat `pidstat` binary for process-scoped collection; install sysstat and rerun `asb tool install mpstat`".into(),
+                    )
+                })?;
+                let pidstat_destination = root.join("bin").join("pidstat");
+                fs::copy(&pidstat, &pidstat_destination).map_err(|error| {
+                    Error::Io(format!(
+                        "cannot copy process-scoped pidstat tool {} to {}: {error}",
+                        pidstat.display(),
+                        pidstat_destination.display()
+                    ))
+                })?;
+                make_executable(&pidstat_destination)?;
+            }
             return Ok(destination);
         }
         Recipe::Bpftrace => return install_bpftrace(root, progress),

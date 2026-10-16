@@ -156,6 +156,9 @@ pub struct Session {
     tracepoint_count: u64,
     perfetto_metrics: BTreeMap<String, f64>,
     bpftrace_profiles: Vec<BpftraceProfile>,
+    mpstat_enabled: bool,
+    iostat_enabled: bool,
+    bpftrace_enabled: bool,
     sudo_collectors: BTreeSet<String>,
 }
 
@@ -191,7 +194,7 @@ impl Session {
         };
         write_json(&dir.join("system.json"), &info)?;
 
-        let mut session = Self {
+        let session = Self {
             dir: dir.to_path_buf(),
             tool_dir: tool_dir.map(Path::to_path_buf),
             started_unix_ms,
@@ -204,21 +207,11 @@ impl Session {
             tracepoint_count: 0,
             perfetto_metrics: BTreeMap::new(),
             bpftrace_profiles: selected_bpftrace_profiles(selected)?,
+            mpstat_enabled: selected_or_env("mpstat", "ASB_MEASURE_MPSTAT", selected),
+            iostat_enabled: selected_or_env("iostat", "ASB_MEASURE_IOSTAT", selected),
+            bpftrace_enabled: selected_or_env("bpftrace", "ASB_MEASURE_BPFTRACE", selected),
             sudo_collectors,
         };
-        session.start_perfetto()?;
-        session.start_snapshot(
-            "mpstat",
-            "ASB_MEASURE_MPSTAT",
-            &["-P", "ALL", "1"],
-            selected,
-        )?;
-        session.start_snapshot("iostat", "ASB_MEASURE_IOSTAT", &["-x", "1"], selected)?;
-        if selected_or_env("bpftrace", "ASB_MEASURE_BPFTRACE", selected)
-            && std::env::var_os("ASB_BPFTRACE_PROGRAMS").is_some()
-        {
-            session.start_bpftrace()?;
-        }
         Ok(session)
     }
 
@@ -241,6 +234,14 @@ impl Session {
 
     /// Attach perf to the selected child after it has been spawned.
     pub fn attach_pid(&mut self, pid: u32) -> Result<(), String> {
+        // PID-sensitive collectors start only after the agent exists. This
+        // prevents scheduler/process traces and process statistics from
+        // including unrelated agents running on the host.
+        self.start_perfetto(pid)?;
+        self.start_process_snapshots(pid)?;
+        if self.bpftrace_enabled && std::env::var_os("ASB_BPFTRACE_PROGRAMS").is_some() {
+            self.start_bpftrace(pid)?;
+        }
         if !self.perf_enabled {
             self.start_bpftrace_profiles(pid)?;
             return Ok(());
@@ -434,12 +435,12 @@ impl Session {
         update_summary(&self.dir, &measurement)
     }
 
-    fn start_perfetto(&mut self) -> Result<(), String> {
+    fn start_perfetto(&mut self, pid: u32) -> Result<(), String> {
         if !self.perfetto_enabled {
             return Ok(());
         }
         let config = self.dir.join("perfetto-scheduling.pbtx");
-        fs::write(&config, perfetto_config())
+        fs::write(&config, perfetto_config(Some(pid)))
             .map_err(|error| format!("cannot write Perfetto trace configuration: {error}"))?;
         let trace = self.dir.join("perfetto-scheduling.perfetto-trace");
         // A sudo-launched Tracebox otherwise creates a root-only 0600 trace.
@@ -548,15 +549,16 @@ impl Session {
         name: &str,
         variable: &str,
         args: &[&str],
-        selected: &[String],
+        enabled: bool,
+        command_name: &str,
     ) -> Result<(), String> {
-        if !selected_or_env(name, variable, selected) {
+        if !enabled {
             return Ok(());
         }
         let stdout_path = self.dir.join(format!("{name}.stdout"));
         let stderr_path = self.dir.join(format!("{name}.stderr"));
         let child = match self
-            .command(name)
+            .command(command_name)
             .args(args)
             .stdout(Stdio::from(
                 File::create(&stdout_path)
@@ -592,7 +594,25 @@ impl Session {
         Ok(())
     }
 
-    fn start_bpftrace(&mut self) -> Result<(), String> {
+    fn start_process_snapshots(&mut self, pid: u32) -> Result<(), String> {
+        self.start_snapshot(
+            "mpstat",
+            "ASB_MEASURE_MPSTAT",
+            &["-u", "-T", "ALL", "-p", &pid.to_string(), "1"],
+            self.mpstat_enabled,
+            "pidstat",
+        )?;
+        self.start_snapshot(
+            "iostat",
+            "ASB_MEASURE_IOSTAT",
+            &["-d", "-T", "ALL", "-p", &pid.to_string(), "1"],
+            self.iostat_enabled,
+            "pidstat",
+        )?;
+        Ok(())
+    }
+
+    fn start_bpftrace(&mut self, pid: u32) -> Result<(), String> {
         let specs = std::env::var("ASB_BPFTRACE_PROGRAMS")
             .map_err(|_| "ASB_MEASURE_BPFTRACE=1 requires ASB_BPFTRACE_PROGRAMS".to_owned())?;
         for (index, spec) in specs
@@ -602,6 +622,7 @@ impl Session {
         {
             let (program, params) = spec.split_once('?').map_or((spec, ""), |parts| parts);
             let mut command = self.command("bpftrace");
+            command.args(["-p", &pid.to_string()]);
             command.arg(program);
             for parameter in params.split('&').filter(|s| !s.is_empty()) {
                 let (key, value) = parameter.split_once('=').ok_or_else(|| {
@@ -1571,8 +1592,22 @@ fn safe_svg_name(value: &str) -> String {
 
 fn parse_collector_metrics(name: &str, output: &str) -> BTreeMap<String, f64> {
     match name {
-        "mpstat" => parse_mpstat_metrics(output),
-        "iostat" => parse_iostat_metrics(output),
+        "mpstat" => {
+            let metrics = parse_pidstat_cpu_metrics(output);
+            if metrics.is_empty() {
+                parse_mpstat_metrics(output)
+            } else {
+                metrics
+            }
+        }
+        "iostat" => {
+            let metrics = parse_pidstat_io_metrics(output);
+            if metrics.is_empty() {
+                parse_iostat_metrics(output)
+            } else {
+                metrics
+            }
+        }
         "perf-stat" => parse_perf_stat_metrics(output),
         profile if profile.starts_with("bpftrace-") => {
             parse_bpftrace_metrics(profile.trim_start_matches("bpftrace-"), output)
@@ -1660,13 +1695,15 @@ fn trace_marker_path() -> Option<PathBuf> {
     .find(|path| path.is_file())
 }
 
-fn perfetto_config() -> &'static str {
+fn perfetto_config(pid: Option<u32>) -> String {
+    let pid_filter = pid.map_or_else(String::new, |pid| format!("      pid_filter: {pid}\n"));
     r#"duration_ms: 3600000
 buffers { size_kb: 65536 fill_policy: RING_BUFFER }
 data_sources {
   config {
     name: "linux.ftrace"
     ftrace_config {
+{pid_filter}
       compact_sched { enabled: true }
       ftrace_events: "sched/sched_switch"
       ftrace_events: "sched/sched_waking"
@@ -1682,14 +1719,15 @@ data_sources {
 data_sources {
   config {
     name: "linux.process_stats"
-    process_stats_config { scan_all_processes_on_start: true }
+    process_stats_config { scan_all_processes_on_start: false }
   }
 }
 "#
+    .replace("{pid_filter}", &pid_filter)
 }
 
 fn perfetto_probe_config() -> String {
-    perfetto_config().replacen("duration_ms: 3600000", "duration_ms: 250", 1)
+    perfetto_config(None).replacen("duration_ms: 3600000", "duration_ms: 250", 1)
 }
 
 fn parse_mpstat_metrics(output: &str) -> BTreeMap<String, f64> {
@@ -1729,6 +1767,93 @@ fn parse_mpstat_metrics(output: &str) -> BTreeMap<String, f64> {
         .filter_map(|(name, (sum, count))| {
             (count > 0).then_some((format!("cpu.{name}"), sum / count as f64))
         })
+        .collect()
+}
+
+/// Parse process-scoped `pidstat -u` output. The collector is retained under
+/// the stable `mpstat` result name for compatibility, but it no longer uses
+/// host-wide mpstat CPU totals.
+fn parse_pidstat_cpu_metrics(output: &str) -> BTreeMap<String, f64> {
+    parse_pidstat_columns(
+        output,
+        &["%usr", "%system", "%guest", "%wait", "%CPU"],
+        |name| {
+            format!(
+                "process.cpu.{}",
+                match name {
+                    "%usr" => "user_pct",
+                    "%system" => "system_pct",
+                    "%guest" => "guest_pct",
+                    "%wait" => "wait_pct",
+                    "%CPU" => "total_pct",
+                    _ => "unknown",
+                }
+            )
+        },
+    )
+}
+
+/// Parse process-scoped `pidstat -d` output. Values are averaged over the
+/// selected agent process and its child tasks, excluding unrelated processes.
+fn parse_pidstat_io_metrics(output: &str) -> BTreeMap<String, f64> {
+    parse_pidstat_columns(
+        output,
+        &["kB_rd/s", "kB_wr/s", "kB_ccwr/s", "iodelay"],
+        |name| {
+            format!(
+                "process.io.{}",
+                match name {
+                    "kB_rd/s" => "read_kib_per_s",
+                    "kB_wr/s" => "write_kib_per_s",
+                    "kB_ccwr/s" => "cancelled_write_kib_per_s",
+                    "iodelay" => "delay_ticks",
+                    _ => "unknown",
+                }
+            )
+        },
+    )
+}
+
+fn parse_pidstat_columns(
+    output: &str,
+    wanted: &[&str],
+    name: impl Fn(&str) -> String,
+) -> BTreeMap<String, f64> {
+    let mut header = None;
+    let mut totals: BTreeMap<String, (f64, usize)> = BTreeMap::new();
+    for line in output.lines() {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.first().is_some_and(|field| *field == "Average:") {
+            continue;
+        }
+        if fields.iter().any(|field| wanted.contains(field)) {
+            header = Some(fields);
+            continue;
+        }
+        let Some(header_fields) = header.as_ref() else {
+            continue;
+        };
+        if fields.len() != header_fields.len()
+            || fields.first().is_some_and(|field| *field == "Linux")
+        {
+            continue;
+        }
+        for wanted_name in wanted {
+            let Some(index) = header_fields.iter().position(|field| field == wanted_name) else {
+                continue;
+            };
+            let Some(value) = fields.get(index).and_then(|field| parse_float(field)) else {
+                continue;
+            };
+            let entry = totals.entry((*wanted_name).to_owned()).or_default();
+            entry.0 += value;
+            entry.1 += 1;
+        }
+    }
+    totals
+        .into_iter()
+        .filter(|(_, (_, count))| *count > 0)
+        .map(|(metric, (sum, count))| (name(&metric), sum / count as f64))
         .collect()
 }
 
@@ -2457,6 +2582,22 @@ mod tests {
     }
 
     #[test]
+    fn parses_process_scoped_pidstat_cpu_and_io_metrics() {
+        let cpu = parse_pidstat_cpu_metrics(
+            "Linux 6.1\n12:00:00 UID PID %usr %system %guest %wait %CPU CPU Command\n12:00:01 1000 42 10.00 2.00 0.00 1.00 12.00 3 agent\n12:00:02 1000 42 20.00 4.00 0.00 0.00 24.00 3 agent\n",
+        );
+        assert_eq!(cpu["process.cpu.user_pct"], 15.0);
+        assert_eq!(cpu["process.cpu.system_pct"], 3.0);
+        assert_eq!(cpu["process.cpu.total_pct"], 18.0);
+        let io = parse_pidstat_io_metrics(
+            "Linux 6.1\n12:00:00 UID PID kB_rd/s kB_wr/s kB_ccwr/s iodelay Command\n12:00:01 1000 42 1.0 2.0 0.5 3 agent\n",
+        );
+        assert_eq!(io["process.io.read_kib_per_s"], 1.0);
+        assert_eq!(io["process.io.write_kib_per_s"], 2.0);
+        assert_eq!(io["process.io.delay_ticks"], 3.0);
+    }
+
+    #[test]
     fn parses_iostat_cpu_and_device_throughput_and_latency() {
         let metrics = parse_iostat_metrics(
             "avg-cpu:  %user   %nice %system %iowait  %steal   %idle\n           1.00    2.00    3.00    4.00    5.00   85.00\n\nDevice            r/s     rkB/s   r_await w/s     wkB/s   w_await aqu-sz %util\nvda              10.00   20.00   1.50    30.00   40.00   2.50    0.10   7.00\n",
@@ -2519,7 +2660,7 @@ mod tests {
 
     #[test]
     fn perfetto_config_collects_scheduler_process_and_trace_marker_events() {
-        let config = perfetto_config();
+        let config = perfetto_config(None);
         for event in [
             "sched/sched_switch",
             "sched/sched_waking",
@@ -2538,5 +2679,12 @@ mod tests {
     fn project_local_perfetto_uses_tracebox_binary_name() {
         assert_eq!(tool_binary_name("perfetto"), "tracebox");
         assert_eq!(tool_binary_name("perf"), "perf");
+    }
+
+    #[test]
+    fn perfetto_configuration_filters_scheduler_events_to_agent_pid() {
+        let config = perfetto_config(Some(42));
+        assert!(config.contains("pid_filter: 42"));
+        assert!(config.contains("scan_all_processes_on_start: false"));
     }
 }
