@@ -256,7 +256,7 @@ fn run_mode(
         tape_mode == Some(tape::Mode::Replay),
     )?;
     let mut tape_session = if let Some((mode, cassette)) = tape_cassette.as_ref() {
-        let upstream = tape::upstream(
+        let upstream = providers::tape_upstream(
             &config.provider,
             providers::local_bridge_endpoint(&config.provider, bridge.as_ref()),
         );
@@ -312,7 +312,7 @@ fn run_mode(
         &project::resolve(&project_root, &project_config.tools_dir),
     )?;
     if let Some(url) = tape_url {
-        tape::configure_command(
+        providers::configure_tape(
             &mut command,
             &config.provider,
             url,

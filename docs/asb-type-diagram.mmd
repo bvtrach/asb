@@ -191,6 +191,9 @@ classDiagram
         +name: &'static str
         +credential: Option~&'static str~
         +endpoint: Option~&'static str~
+        +model_env: Option~&'static str~
+        +tape_endpoint_envs: &'static [&'static str]
+        +bridge_tool: Option~&'static str~
     }
     class C032["ProxyExecutable"] {
         +command() Command
