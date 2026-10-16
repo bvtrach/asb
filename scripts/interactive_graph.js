@@ -10,7 +10,7 @@
   const edges = [...canvas.querySelectorAll('.edge')];
   const clusters = [...canvas.querySelectorAll('.cluster')];
   const allElements = [...nodes, ...edges, ...clusters];
-  const state = { scale: 1, tx: 0, ty: 0, drag: null, pinch: null, pointers: new Map(), pressTarget: null, pinned: null, pinnedParts: new Set(), animation: null, suppressClickUntil: 0 };
+  const state = { scale: 1, tx: 0, ty: 0, drag: null, pinch: null, pointers: new Map(), pressTarget: null, pinned: null, pinnedParts: new Set(), animation: null, suppressClickUntil: 0, ignoreNextClick: false };
   const viewBox = svg.viewBox.baseVal;
   const titles = new Map();
 
@@ -149,7 +149,12 @@
     element.addEventListener('pointerenter', (event) => { element.classList.add('is-hovered'); showTooltip(element, event); });
     element.addEventListener('pointermove', (event) => { if (tooltip.style.display !== 'none') showTooltip(element, event); });
     element.addEventListener('pointerleave', () => { if (!element.classList.contains('is-pinned')) element.classList.remove('is-hovered'); tooltip.style.display = 'none'; });
-    element.addEventListener('click', (event) => { if (state.suppressClickUntil > performance.now()) return; event.stopPropagation(); select(element, element.classList.contains('edge') && (event.ctrlKey || event.metaKey)); });
+    element.addEventListener('click', (event) => {
+      if (state.ignoreNextClick) { state.ignoreNextClick = false; return; }
+      if (state.suppressClickUntil > performance.now()) return;
+      event.stopPropagation();
+      select(element, element.classList.contains('edge') && (event.ctrlKey || event.metaKey));
+    });
     element.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(element); } });
   });
   const pointerDistance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -220,7 +225,8 @@
     if (!wasPinching && !wasDragged && pressTarget) {
       // Pointer capture retargets the browser click to the viewport. Activate
       // the original graph element explicitly so click and drag remain distinct.
-      state.suppressClickUntil = performance.now() + 250;
+      state.ignoreNextClick = true;
+      setTimeout(() => { state.ignoreNextClick = false; }, 600);
       select(pressTarget, pressTarget.classList.contains('edge') && (event.ctrlKey || event.metaKey));
     } else if (wasDragged) state.suppressClickUntil = performance.now() + 120;
     state.drag = null;
@@ -230,7 +236,11 @@
   viewport.addEventListener('pointerup', finishPointer);
   viewport.addEventListener('pointercancel', finishPointer);
   viewport.addEventListener('lostpointercapture', () => { if (state.pointers.size === 0) { state.drag = null; state.pinch = null; state.pressTarget = null; viewport.classList.remove('dragging'); } });
-  viewport.addEventListener('click', (event) => { if (state.suppressClickUntil > performance.now()) return; if (event.target === viewport || event.target === canvas) clearSelection(); });
+  viewport.addEventListener('click', (event) => {
+    if (state.ignoreNextClick) { state.ignoreNextClick = false; return; }
+    if (state.suppressClickUntil > performance.now()) return;
+    if (event.target === viewport || event.target === canvas) clearSelection();
+  });
   viewport.addEventListener('wheel', (event) => { event.preventDefault(); const rect = viewport.getBoundingClientRect(); const x = event.clientX - rect.left; const y = event.clientY - rect.top; const next = Math.max(.02, Math.min(4, state.scale * Math.pow(1.0018, -event.deltaY))); state.tx = x - (x - state.tx) * next / state.scale; state.ty = y - (y - state.ty) * next / state.scale; state.scale = next; applyTransform(); }, { passive: false });
   document.getElementById('fit').addEventListener('click', () => { clearSelection(); fit(); });
   document.getElementById('reset').addEventListener('click', () => { clearSelection(); fit(false); });
