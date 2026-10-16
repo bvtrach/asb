@@ -23,7 +23,7 @@
     hover: null, pinned: null, pinnedParts: new Set(), pointers: new Map(),
     gesture: null, pressTarget: null, transformFrame: 0, animation: 0,
     suppressClickUntil: 0, tooltipFrame: 0, tooltipElement: null,
-    tooltipEvent: null,
+    tooltipEvent: null, hoverSwitchTimer: 0, pendingHover: null, pendingEvent: null,
   };
   canvas.style.transform = `translate3d(${state.tx}px, ${state.ty}px, 0) scale(${state.scale})`;
   requestAnimationFrame(initialize);
@@ -153,12 +153,36 @@
     }
     function showTooltip(element, event) { state.tooltipElement = element; state.tooltipEvent = event; if (!state.tooltipFrame) state.tooltipFrame = requestAnimationFrame(drawTooltip); }
     function setHover(element, event) {
+      clearTimeout(state.hoverSwitchTimer);
+      state.pendingHover = null;
+      state.pendingEvent = null;
       if (state.hover !== element) {
         if (state.hover && !state.hover.classList.contains('is-pinned')) state.hover.classList.remove('is-hovered');
         state.hover = element;
         if (element) element.classList.add('is-hovered');
       }
       if (element) showTooltip(element, event); else hideTooltip();
+    }
+    function requestHover(element, event) {
+      if (element === state.hover) {
+        clearTimeout(state.hoverSwitchTimer);
+        state.pendingHover = null;
+        state.pendingEvent = null;
+        if (element) showTooltip(element, event);
+        return;
+      }
+      if (!state.hover) { setHover(element, event); return; }
+      state.pendingHover = element;
+      state.pendingEvent = event;
+      clearTimeout(state.hoverSwitchTimer);
+      state.hoverSwitchTimer = setTimeout(() => {
+        const next = state.pendingHover;
+        const nextEvent = state.pendingEvent;
+        state.pendingHover = null;
+        state.pendingEvent = null;
+        if (next !== state.hover) setHover(next, nextEvent || event);
+      }, 140);
+      showTooltip(state.hover, event);
     }
     function clearPinned() { state.pinnedParts.forEach((item) => item.classList.remove('is-pinned')); state.pinnedParts.clear(); state.pinned = null; }
     function select(element, reverseEdge = false) {
@@ -173,7 +197,7 @@
     viewport.addEventListener('pointermove', (event) => {
       if (state.gesture?.dragging) return;
       const target = hitAt(event.clientX, event.clientY);
-      setHover(target, event);
+      requestHover(target, event);
     });
     viewport.addEventListener('pointerleave', () => { if (!state.gesture?.dragging) setHover(null); });
     viewport.addEventListener('pointerdown', (event) => {
