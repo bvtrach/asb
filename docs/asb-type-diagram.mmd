@@ -400,6 +400,7 @@ classDiagram
     class C057["«trait» agents::AgentAdapter"] {
         +id() &'static str
         +executable() &'static str
+        +recipe() Recipe
         +command(context: &CommandContext~'_~) agents::CommandSpec
         +prepare(context: &mut PreparationContext~'_~) Result~(), Error~
         +collect(context: &CollectionContext~'_~) agents::AgentArtifacts
@@ -431,10 +432,11 @@ classDiagram
     class C063["agents::StaticAdapter"] {
         -id: &'static str
         -executable: &'static str
+        -recipe: Recipe
         -command: CommandBuilder
         -prepare: PreparationHook
         -collect: Option~CollectionHook~
-        +new(id: &'static str, executable: &'static str, command: CommandBuilder, prepare: PreparationHook) Self
+        +new(id: &'static str, executable: &'static str, recipe: Recipe, command: CommandBuilder, prepare: PreparationHook) Self
         +with_collection(self, collect: CollectionHook) Self
     }
     class C064["tools::StaticTool"] {

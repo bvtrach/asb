@@ -1,7 +1,15 @@
 use super::{CommandContext, CommandSpec, PreparationContext, StaticAdapter};
-use crate::{Error, prepare};
-pub(super) static ADAPTER: StaticAdapter =
-    StaticAdapter::new("continue", "cn", command, prepare_adapter);
+use crate::{Error, install::Recipe, prepare};
+pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
+    "continue",
+    "cn",
+    Recipe::Npm {
+        package: "@continuedev/cli@1.5.47",
+        executable: "cn",
+    },
+    command,
+    prepare_adapter,
+);
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "cn".into(),

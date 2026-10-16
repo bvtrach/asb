@@ -1,7 +1,15 @@
 use super::{CommandContext, CommandSpec, PreparationContext, StaticAdapter};
-use crate::{Error, prepare};
-pub(super) static ADAPTER: StaticAdapter =
-    StaticAdapter::new("codex", "codex", command, prepare_adapter);
+use crate::{Error, install::Recipe, prepare};
+pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
+    "codex",
+    "codex",
+    Recipe::Npm {
+        package: "@openai/codex@0.162.1",
+        executable: "codex",
+    },
+    command,
+    prepare_adapter,
+);
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "codex".into(),

@@ -3,28 +3,15 @@
 use crate::install::Recipe;
 
 mod bpftrace;
-mod claude_code;
 mod cli2key;
-mod cline;
-mod codex;
-mod continue_agent;
 mod flamegraph;
-mod goose;
 mod iostat;
-mod mini_swe;
 mod mpstat;
-mod opencode;
-mod openhands;
-mod openjiuwen;
 mod perf;
 mod perfetto;
-mod pi;
-mod qwen_code;
-mod workbuddy;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum ToolKind {
-    Agent,
     Collector,
     Support,
 }
@@ -72,18 +59,6 @@ impl ToolAdapter for StaticTool {
 }
 
 static REGISTRY: &[&dyn ToolAdapter] = &[
-    &codex::ADAPTER,
-    &pi::ADAPTER,
-    &opencode::ADAPTER,
-    &workbuddy::ADAPTER,
-    &qwen_code::ADAPTER,
-    &mini_swe::ADAPTER,
-    &openhands::ADAPTER,
-    &openjiuwen::ADAPTER,
-    &claude_code::ADAPTER,
-    &goose::ADAPTER,
-    &cline::ADAPTER,
-    &continue_agent::ADAPTER,
     &cli2key::ADAPTER,
     &mpstat::ADAPTER,
     &iostat::ADAPTER,

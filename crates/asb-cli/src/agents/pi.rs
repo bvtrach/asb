@@ -1,6 +1,15 @@
 use super::{CommandContext, CommandSpec, PreparationContext, StaticAdapter};
-use crate::{Error, prepare};
-pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new("pi", "pi", command, prepare_adapter);
+use crate::{Error, install::Recipe, prepare};
+pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
+    "pi",
+    "pi",
+    Recipe::Npm {
+        package: "@mariozechner/pi-coding-agent@0.73.1",
+        executable: "pi",
+    },
+    command,
+    prepare_adapter,
+);
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "pi".into(),

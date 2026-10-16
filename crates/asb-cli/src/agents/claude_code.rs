@@ -1,7 +1,16 @@
 use super::{CommandContext, CommandSpec, PreparationContext, StaticAdapter};
 use crate::Error;
-pub(super) static ADAPTER: StaticAdapter =
-    StaticAdapter::new("claude-code", "claude", command, prepare_adapter);
+use crate::install::Recipe;
+pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
+    "claude-code",
+    "claude",
+    Recipe::Npm {
+        package: "@anthropic-ai/claude-code@2.1.301",
+        executable: "claude",
+    },
+    command,
+    prepare_adapter,
+);
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "claude".into(),

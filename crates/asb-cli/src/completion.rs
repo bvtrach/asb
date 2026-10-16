@@ -1,6 +1,6 @@
 //! Shell completion script generation.
 
-use crate::{Error, io_error, tools};
+use crate::{Error, install, io_error};
 use std::fmt::Write as FmtWrite;
 use std::io::Write;
 
@@ -163,7 +163,7 @@ fn generate_zsh() -> String {
 }
 
 fn tool_install_values() -> Vec<&'static str> {
-    let mut values = tools::names().collect::<Vec<_>>();
+    let mut values = install::tool_names().collect::<Vec<_>>();
     values.extend(["--source", "--dir", "--dry-run"]);
     values
 }

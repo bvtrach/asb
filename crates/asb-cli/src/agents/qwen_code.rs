@@ -1,7 +1,15 @@
 use super::{CommandContext, CommandSpec, PreparationContext, StaticAdapter};
-use crate::Error;
-pub(super) static ADAPTER: StaticAdapter =
-    StaticAdapter::new("qwen-code", "qwen", command, prepare_adapter);
+use crate::{Error, install::Recipe};
+pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
+    "qwen-code",
+    "qwen",
+    Recipe::Npm {
+        package: "@qwen-code/qwen-code@0.25.1",
+        executable: "qwen",
+    },
+    command,
+    prepare_adapter,
+);
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "qwen".into(),

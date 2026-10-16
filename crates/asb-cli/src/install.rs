@@ -1,6 +1,7 @@
 //! Project-local installers for agents and workload prompt files.
 
 use crate::Error;
+use crate::agents;
 use crate::project;
 use crate::suggestions;
 use crate::tools;
@@ -237,11 +238,11 @@ pub fn tool_with_progress(
         .unwrap_or_else(|| project::resolve(&project_root, &project_config.tools_dir));
     progress(2, "preparing");
     let root = root.join(&id);
-    let adapter = tools::find(&id);
+    let built_in = built_in_tool(&id);
     if let Some(source) = source {
         let destination = root
             .join("bin")
-            .join(adapter.and_then(|tool| tool.executable()).unwrap_or(&id));
+            .join(built_in.map_or(id.as_str(), |(_, executable, _)| executable));
         if dry_run {
             writeln!(output, "download {source} -> {}", destination.display())
                 .map_err(super::io_error)?;
@@ -257,12 +258,12 @@ pub fn tool_with_progress(
             .map_err(super::io_error)?;
         return Ok(());
     }
-    let plan = match adapter {
-        Some(adapter) => adapter.recipe(),
+    let plan = match built_in {
+        Some((recipe, _, _)) => recipe,
         None => {
             return Err(Error::Input(format!(
                 "{}; pass --source URL or PATH",
-                suggestions::unknown("tool", &id, &tools::names().collect::<Vec<_>>())
+                suggestions::unknown("tool", &id, &tool_names().collect::<Vec<_>>())
             )));
         }
     };
@@ -286,10 +287,7 @@ pub fn tool_with_progress(
             .map_err(super::io_error)?;
     }
     progress(100, "ready");
-    let kind = match adapter.expect("known tool has adapter").kind() {
-        tools::ToolKind::Agent => "agent",
-        tools::ToolKind::Collector | tools::ToolKind::Support => "tool",
-    };
+    let kind = built_in.expect("known tool has metadata").2;
     writeln!(output, "Installed {kind} {id} at {}", executable.display())
         .map_err(super::io_error)?;
     Ok(())
@@ -298,6 +296,15 @@ pub fn tool_with_progress(
 /// List every built-in tool recipe and its project-local executable.
 pub fn tool_list(output: &mut dyn std::io::Write) -> Result<(), Error> {
     writeln!(output, "Available tools:").map_err(super::io_error)?;
+    for agent in agents::all() {
+        writeln!(
+            output,
+            "  {:<12} {}",
+            agent.id(),
+            tool_summary(agent.recipe())
+        )
+        .map_err(super::io_error)?;
+    }
     for tool in tools::all() {
         writeln!(
             output,
@@ -314,15 +321,33 @@ pub fn tool_list(output: &mut dyn std::io::Write) -> Result<(), Error> {
 /// This is intentionally side-effect free so TUIs can refresh status on every
 /// navigation or after a Ctrl-I installation attempt.
 pub fn tool_available(name: &str, tools_root: &Path) -> bool {
-    let Some(tool) = tools::find(name) else {
+    let Some((plan, _, _)) = built_in_tool(name) else {
         return false;
     };
-    let plan = tool.recipe();
     let local = executable(plan, &tools_root.join(name));
     if local.is_file() {
         return true;
     }
     matches!(plan, Recipe::Host { executable } if host_executable(executable).is_ok())
+}
+
+/// All installable IDs, composed from the agent and non-agent registries.
+/// Keeping this here ensures completions, listings, and installation share the
+/// same catalogue rather than duplicating agent identifiers.
+pub(crate) fn tool_names() -> impl Iterator<Item = &'static str> {
+    agents::names().chain(tools::names())
+}
+
+fn built_in_tool(id: &str) -> Option<(Recipe, &'static str, &'static str)> {
+    if let Some(agent) = agents::find(id) {
+        return Some((agent.recipe(), agent.executable(), "agent"));
+    }
+    let tool = tools::find(id)?;
+    let kind = match tool.kind() {
+        tools::ToolKind::Collector => "collector",
+        tools::ToolKind::Support => "tool",
+    };
+    Some((tool.recipe(), tool.executable()?, kind))
 }
 
 pub fn workload(
@@ -1238,33 +1263,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn built_in_recipes_cover_all_documented_agents() {
-        for agent in [
-            "codex",
-            "pi",
-            "opencode",
-            "workbuddy",
-            "qwen-code",
-            "mini-swe",
-            "openhands",
-            "openjiuwen",
-            "claude-code",
-            "goose",
-            "cline",
-            "continue",
-            "cli2key",
-            "mpstat",
-            "iostat",
-            "perf",
-            "bpftrace",
-            "perfetto",
-            "flamegraph",
-        ] {
-            let tool = tools::find(agent).expect("documented tool has a registry entry");
-            let recipe = tool.recipe();
+    fn installer_catalogue_is_composed_from_adapter_registries() {
+        let names = tool_names().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(names.len(), agents::all().len() + tools::all().len());
+        for id in &names {
+            let (recipe, executable, _) = built_in_tool(id).expect("registered install target");
             assert!(!describe(recipe, Path::new(".asb-tools")).is_empty());
-            assert!(!tool.executable().unwrap().is_empty());
+            assert!(!executable.is_empty());
         }
+        assert!(agents::all().iter().all(|agent| names.contains(agent.id())));
     }
 
     #[test]
