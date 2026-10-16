@@ -111,6 +111,7 @@
       const clone = svg.cloneNode(true);
       clone.querySelectorAll('.edge-hitbox').forEach((item) => item.remove());
       clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      clone.style.visibility = 'visible';
       const blob = new Blob([new XMLSerializer().serializeToString(clone)], { type: 'image/svg+xml' });
       const url = URL.createObjectURL(blob);
       const image = new Image();
