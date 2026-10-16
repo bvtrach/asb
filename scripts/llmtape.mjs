@@ -193,6 +193,13 @@ const interactions = mode === "replay"
       })
   : [];
 let cursor = 0;
+const progressPath = `${cassette}.progress.json`;
+function writeProgress() {
+  if (mode === "replay") {
+    writeFileSync(progressPath, JSON.stringify({ schema_version: 1, consumed: cursor, total: interactions.length }));
+  }
+}
+writeProgress();
 
 async function handle(request, response) {
   const startedAt = performance.now();
@@ -248,6 +255,7 @@ async function handle(request, response) {
       return;
     }
     cursor += 1;
+    writeProgress();
     const delayMs = Number(interaction.delay_ms);
     if (respectRecordTimings && Number.isFinite(delayMs) && delayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, Math.min(delayMs, MAX_DELAY_MS)));
