@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>__TITLE__</title>
+  <style>__CSS__</style>
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">ASB architecture</p>
+        <h1>__TITLE__</h1>
+        <p class="subtitle">Generated from the Rust source during <code>make build</code>.</p>
+      </div>
+      <div class="toolbar" aria-label="Graph controls">
+        <label class="search-wrap"><span class="sr-only">Search elements</span><input id="search" type="search" placeholder="Search functions or modules"></label>
+        <button id="fit" type="button">Fit</button>
+        <button id="reset" type="button">Reset</button>
+        <button id="zoom-out" type="button" aria-label="Zoom out">−</button>
+        <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
+      </div>
+    </header>
+    <section class="statusbar"><span id="selection">Hover an element for details. Drag to pan; scroll to zoom.</span><span id="counts"></span></section>
+    <section id="viewport" class="viewport" aria-label="Interactive graph">
+      <div id="canvas" class="canvas">__SVG__</div>
+      <div id="tooltip" class="tooltip" role="status" aria-live="polite"></div>
+    </section>
+  </main>
+  <script>__JS__</script>
+</body>
+</html>

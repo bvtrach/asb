@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := build
 
-.PHONY: update build test install clean rust-doc uml flows
+.PHONY: update build test install clean rust-doc uml flows interactive
 
 BASH_COMPLETION := target/asb.bash
 ZSH_COMPLETION := target/_asb
@@ -15,13 +15,19 @@ DATAFLOW_DOT := docs/asb-dataflow.dot
 DATAFLOW_SVG := docs/asb-dataflow.svg
 CONTROLFLOW_DOT := docs/asb-control-flow.dot
 CONTROLFLOW_SVG := docs/asb-control-flow.svg
+INTERACTIVE_TEMPLATE := scripts/interactive_graph_template.html
+INTERACTIVE_CSS := scripts/interactive_graph.css
+INTERACTIVE_JS := scripts/interactive_graph.js
+TYPE_HTML := docs/asb-type-diagram.html
+DATAFLOW_HTML := docs/asb-dataflow.html
+CONTROLFLOW_HTML := docs/asb-control-flow.html
 
 update:
 	git pull --ff-only origin main
 
 build:
 	cargo build --locked
-	$(MAKE) rust-doc uml flows
+	$(MAKE) rust-doc uml flows interactive
 	target/debug/asb --__generate-completion bash > "$(BASH_COMPLETION)"
 	target/debug/asb --__generate-completion zsh > "$(ZSH_COMPLETION)"
 
@@ -43,6 +49,11 @@ flows:
 	python3 "$(FLOW_SCRIPT)" crates "$(DATAFLOW_DOT)" "$(CONTROLFLOW_DOT)"
 	dot -Tsvg -o "$(DATAFLOW_SVG)" "$(DATAFLOW_DOT)"
 	dot -Tsvg -o "$(CONTROLFLOW_SVG)" "$(CONTROLFLOW_DOT)"
+
+interactive: flows
+	python3 scripts/render_interactive_graph.py "$(INTERACTIVE_TEMPLATE)" "$(INTERACTIVE_CSS)" "$(INTERACTIVE_JS)" "$(UML_SVG)" "$(TYPE_HTML)" "ASB Rust type diagram"
+	python3 scripts/render_interactive_graph.py "$(INTERACTIVE_TEMPLATE)" "$(INTERACTIVE_CSS)" "$(INTERACTIVE_JS)" "$(DATAFLOW_SVG)" "$(DATAFLOW_HTML)" "ASB Rust dataflow diagram"
+	python3 scripts/render_interactive_graph.py "$(INTERACTIVE_TEMPLATE)" "$(INTERACTIVE_CSS)" "$(INTERACTIVE_JS)" "$(CONTROLFLOW_SVG)" "$(CONTROLFLOW_HTML)" "ASB Rust control-flow diagram"
 
 test:
 	cargo test --locked
