@@ -6766,7 +6766,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
         state.pendingHover = null;
         state.pendingEvent = null;
         if (next !== state.hover) setHover(next, nextEvent || event);
-      }, 140);
+      }, 60);
       showTooltip(state.hover, event);
     }
     function clearPinned() { state.pinnedParts.forEach((item) => item.classList.remove('is-pinned')); state.pinnedParts.clear(); state.pinned = null; }
