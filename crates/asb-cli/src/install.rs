@@ -286,18 +286,47 @@ fn recipe(name: &str) -> Option<Recipe> {
     }
 }
 
-pub fn tool(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Error> {
+pub struct ToolInstallOptions {
+    pub name: String,
+    pub source: Option<String>,
+    pub dir: Option<PathBuf>,
+    pub dry_run: bool,
+}
+
+pub struct WorkloadInstallOptions {
+    pub source: String,
+    pub name: Option<String>,
+    pub dir: Option<PathBuf>,
+}
+
+pub struct WorkloadListOptions {
+    pub dir: Option<PathBuf>,
+}
+
+pub fn tool(options: ToolInstallOptions, output: &mut dyn std::io::Write) -> Result<(), Error> {
     let mut progress = |_percent: u8, _stage: &str| {};
-    tool_with_progress(args, output, &mut progress)
+    tool_with_progress(options, output, &mut progress)
 }
 
 /// Install a project-local tool and report concrete installer stages.
 pub fn tool_with_progress(
-    args: &[String],
+    options: ToolInstallOptions,
     output: &mut dyn std::io::Write,
     progress: &mut dyn FnMut(u8, &str),
 ) -> Result<(), Error> {
-    let (id, source, root, dry_run) = parse_tool(args)?;
+    let ToolInstallOptions {
+        name: id,
+        source,
+        dir,
+        dry_run,
+    } = options;
+    if !valid_name(&id) {
+        return Err(Error::Input(format!("invalid tool name `{id}`")));
+    }
+    let (project_root, project_config) = project::load(Path::new("."))?;
+    let root = dir
+        .map(|value| project::resolve(&project_root, &value.to_string_lossy()))
+        .unwrap_or_else(|| project::resolve(&project_root, &project_config.tools_dir));
     progress(2, "preparing");
     let root = root.join(&id);
     if let Some(source) = source {
@@ -383,18 +412,39 @@ pub fn tool_available(name: &str, tools_root: &Path) -> bool {
     matches!(plan, Recipe::Host { executable } if host_executable(executable).is_ok())
 }
 
-pub fn workload(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Error> {
+pub fn workload(
+    options: WorkloadInstallOptions,
+    output: &mut dyn std::io::Write,
+) -> Result<(), Error> {
     let mut progress = |_percent: u8, _stage: &str| {};
-    workload_with_progress(args, output, &mut progress)
+    workload_with_progress(options, output, &mut progress)
 }
 
 /// Install a workload and report concrete download/extraction stages.
 pub fn workload_with_progress(
-    args: &[String],
+    options: WorkloadInstallOptions,
     output: &mut dyn std::io::Write,
     progress: &mut dyn FnMut(u8, &str),
 ) -> Result<(), Error> {
-    let (source, name, directory) = parse_workload(args)?;
+    let WorkloadInstallOptions {
+        source: requested,
+        name: requested_name,
+        dir: requested_dir,
+    } = options;
+    let (source, default_name, project_root, project_config) = workload_source(&requested)?;
+    let name = requested_name.unwrap_or(default_name);
+    if !valid_name(&name) {
+        return Err(Error::Input(
+            "workload name must contain only letters, numbers, '.', '_' or '-'".into(),
+        ));
+    }
+    let directory = requested_dir
+        .map(|value| project::resolve(&project_root, &value.to_string_lossy()))
+        .unwrap_or_else(|| {
+            std::env::var_os("ASB_WORKLOAD_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir))
+        });
     progress(2, "preparing");
     fs::create_dir_all(&directory)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", directory.display())))?;
@@ -548,23 +598,16 @@ fn install_bundle(
 }
 
 /// List prompt workloads and configurable external workload trial sets.
-pub fn workload_list(args: &[String], output: &mut dyn std::io::Write) -> Result<(), Error> {
+pub fn workload_list(
+    options: WorkloadListOptions,
+    output: &mut dyn std::io::Write,
+) -> Result<(), Error> {
     let (project_root, project_config) = project::load(Path::new("."))?;
-    let mut directory = std::env::var_os("ASB_WORKLOAD_DIR")
-        .map(PathBuf::from)
+    let directory = options
+        .dir
+        .map(|value| project::resolve(&project_root, &value.to_string_lossy()))
+        .or_else(|| std::env::var_os("ASB_WORKLOAD_DIR").map(PathBuf::from))
         .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir));
-    let mut index = 0;
-    while index < args.len() {
-        if args[index] != "--dir" {
-            return Err(Error::Usage("workload list accepts --dir DIR"));
-        }
-        directory = project::resolve(
-            &project_root,
-            args.get(index + 1)
-                .ok_or(Error::Usage("--dir requires a directory"))?,
-        );
-        index += 2;
-    }
     let mut names = fs::read_dir(&directory)
         .map_err(|error| Error::Io(format!("cannot read {}: {error}", directory.display())))?
         .filter_map(Result::ok)
@@ -1180,43 +1223,21 @@ fn host_executable(name: &str) -> Result<PathBuf, Error> {
     Ok(path)
 }
 
-fn parse_tool(args: &[String]) -> Result<(String, Option<String>, PathBuf, bool), Error> {
-    let id = args
-        .first()
-        .filter(|value| valid_name(value))
-        .cloned()
-        .ok_or(Error::Usage("tool install requires a tool name"))?;
-    let mut source = None;
-    let (project_root, project_config) = project::load(Path::new("."))?;
-    let mut root = project::resolve(&project_root, &project_config.tools_dir);
-    let mut dry_run = false;
-    parse_options(&args[1..], |flag, value| match flag {
-        "--source" => Ok(source = Some(value.to_owned())),
-        "--dir" => Ok(root = project::resolve(&project_root, value)),
-        "--dry-run" if value.is_empty() => Ok(dry_run = true),
-        _ => Err(Error::Usage(
-            "tool install accepts --source URL|PATH, --dir DIR, and --dry-run",
-        )),
-    })?;
-    Ok((id, source, root, dry_run))
-}
-
-fn parse_workload(args: &[String]) -> Result<(String, String, PathBuf), Error> {
-    let requested = args.first().cloned().ok_or(Error::Usage(
-        "workload install requires a local path or URL",
-    ))?;
-    let source = external_workload(&requested)
+fn workload_source(
+    requested: &str,
+) -> Result<(String, String, PathBuf, project::ProjectConfig), Error> {
+    let source = external_workload(requested)
         .map(|workload| workload.source.to_owned())
-        .unwrap_or_else(|| requested.clone());
-    if external_workload(&requested).is_none()
-        && valid_name(&requested)
-        && !Path::new(&requested).is_file()
+        .unwrap_or_else(|| requested.to_owned());
+    if external_workload(requested).is_none()
+        && valid_name(requested)
+        && !Path::new(requested).is_file()
     {
         let aliases = EXTERNAL_WORKLOADS
             .iter()
             .map(|workload| workload.name)
             .collect::<Vec<_>>();
-        if let Some(candidate) = suggestions::closest(&requested, &aliases) {
+        if let Some(candidate) = suggestions::closest(requested, &aliases) {
             return Err(Error::Input(format!(
                 "workload source `{requested}` was not found; did you mean external workload `{candidate}`?"
             )));
@@ -1235,21 +1256,11 @@ fn parse_workload(args: &[String]) -> Result<(String, String, PathBuf), Error> {
             "workload source must have a simple file name".into(),
         ))?
         .to_owned();
-    let mut name = external_workload(&requested)
+    let name = external_workload(requested)
         .map(|workload| workload.name.to_owned())
         .unwrap_or(default_name);
     let (project_root, project_config) = project::load(Path::new("."))?;
-    let mut directory = std::env::var_os("ASB_WORKLOAD_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir));
-    parse_options(&args[1..], |flag, value| match flag {
-        "--name" if valid_name(value) => Ok(name = value.to_owned()),
-        "--dir" => Ok(directory = project::resolve(&project_root, value)),
-        _ => Err(Error::Usage(
-            "workload install accepts --name NAME and --dir DIR",
-        )),
-    })?;
-    Ok((source, name, directory))
+    Ok((source, name, project_root, project_config))
 }
 
 fn executable_name(agent: &str) -> &str {
@@ -1260,27 +1271,6 @@ fn executable_name(agent: &str) -> &str {
         "continue" => "cn",
         other => other,
     }
-}
-
-fn parse_options(
-    args: &[String],
-    mut apply: impl FnMut(&str, &str) -> Result<(), Error>,
-) -> Result<(), Error> {
-    let mut index = 0;
-    while index < args.len() {
-        let flag = args[index].as_str();
-        if flag == "--dry-run" {
-            apply(flag, "")?;
-            index += 1;
-            continue;
-        }
-        let value = args
-            .get(index + 1)
-            .ok_or(Error::Usage("install options require values"))?;
-        apply(flag, value)?;
-        index += 2;
-    }
-    Ok(())
 }
 
 fn valid_name(value: &str) -> bool {
@@ -1446,11 +1436,11 @@ mod tests {
         let mut progress = |percent: u8, stage: &str| events.push((percent, stage.to_owned()));
         let mut output = Vec::new();
         workload_with_progress(
-            &[
-                source.to_string_lossy().into_owned(),
-                "--dir".into(),
-                root.join("workloads").to_string_lossy().into_owned(),
-            ],
+            WorkloadInstallOptions {
+                source: source.to_string_lossy().into_owned(),
+                name: None,
+                dir: Some(root.join("workloads")),
+            },
             &mut output,
             &mut progress,
         )
@@ -1544,7 +1534,9 @@ mod tests {
         fs::write(directory.join("ignored.md"), "ignored").expect("other file");
         let mut output = Vec::new();
         workload_list(
-            &["--dir".into(), directory.to_string_lossy().into_owned()],
+            WorkloadListOptions {
+                dir: Some(directory.clone()),
+            },
             &mut output,
         )
         .expect("workload list succeeds");
@@ -1604,7 +1596,16 @@ mod tests {
 
     #[test]
     fn unknown_agent_install_suggests_the_closest_builtin() {
-        let error = tool(&["opencod".into()], &mut Vec::new()).expect_err("typo rejected");
+        let error = tool(
+            ToolInstallOptions {
+                name: "opencod".into(),
+                source: None,
+                dir: None,
+                dry_run: false,
+            },
+            &mut Vec::new(),
+        )
+        .expect_err("typo rejected");
         assert!(error.to_string().contains("did you mean `opencode`?"));
     }
 }

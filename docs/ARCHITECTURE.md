@@ -5,7 +5,7 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
 - `benchmark`: the configuration record and workload prompt catalogue;
 - `config`: the `setup` command and TOML writer;
 - `tui`: the Ratatui setup wizard. It composes reusable selection panes for
-  agents, providers, models, workloads, and measurements, with filtering and
+  agents, providers, models, workloads, measurements, and concurrency, with filtering and
   keyboard navigation. Its model pane uses the existing provider discovery
   path and falls back only when a catalog is unavailable, then writes test
   configurations and a sweep manifest;
@@ -51,7 +51,10 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   workspace without overwriting existing edits.
 
 The CLI is the stable user boundary. A benchmark configuration names an agent,
-workload, provider, model, workspace, and log file. Provider credentials are never stored
+workload, provider, model, concurrency, workspace, and log file. `concurrency`
+defaults to `1`; values greater than one run isolated replicas of the same
+agent/model/workload in parallel, with separate workspaces, logs, measurements,
+and record cassettes. Provider credentials are never stored
 in that file. The runner passes provider/model selection through environment
 variables and gives the selected agent one bounded workload prompt.
 Provider credentials are not stored in benchmark configuration. Known providers
@@ -84,7 +87,9 @@ is parsed for nested provider usage before it is removed. Their terminal output 
 rate, elapsed time, and token usage; `--json` changes only the representation
 of those metrics.
 Pass `--show-output` to stream the agent's stdout and stderr live for interactive
-debugging; the same output remains in the configured log.
+debugging when `concurrency = 1`; concurrent replicas buffer each bounded stream
+and emit it in replica order after completion so output cannot interleave
+unreadably. The same output remains in the configured log.
 The same flag is accepted by `asb sweep` and is forwarded to each underlying
 `run`, so sweeps do not maintain a second output path.
 An agent is not considered successful solely because its process exits with
@@ -148,8 +153,12 @@ distinctive workspace layout before creating any files.
 Recording and replay are implemented as a separate `tape` module behind the
 runner boundary. The `run --record` and `run --replay` flags start the project-local `llmtape` loopback proxy,
 routes provider endpoints to that proxy, and tears it down after the child
-exits. `--record` writes a JSONL cassette; `--replay` requires that cassette and
-never starts cli2key or a live provider. This keeps the benchmark
+exits. `--record` writes a JSONL cassette with a bounded `delay_ms` response
+latency for every interaction; `--replay` requires that cassette and never
+starts cli2key or a live provider. Passing `--respect-record-timings` with
+`--replay` makes llmtape match each request first, then wait for its recorded
+delay before returning the response. The same option is available on
+`asb sweep`. This keeps the benchmark
 configuration contract unchanged and keeps llmtape an optional, project-local
 development tool rather than a runtime dependency. Installation includes the
 llmtape npm library and a small project-local proxy wrapper because the npm

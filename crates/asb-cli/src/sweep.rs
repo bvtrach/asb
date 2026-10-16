@@ -22,6 +22,7 @@ pub fn run(
     json: bool,
     show_output: bool,
     mode: Option<crate::tape::Mode>,
+    respect_record_timings: bool,
     output: &mut dyn Write,
 ) -> Result<(), Error> {
     let sweep_path = Path::new(path);
@@ -122,6 +123,7 @@ pub fn run(
             None,
             mode,
             cassette,
+            respect_record_timings,
             output,
         ) {
             failures.push(format!("{}: {error}", config_path.display()));
@@ -239,6 +241,7 @@ mod tests {
             false,
             false,
             None,
+            false,
             &mut Vec::new(),
         )
         .expect_err("normal benchmark must be rejected");
@@ -253,6 +256,7 @@ mod tests {
             false,
             false,
             None,
+            false,
             &mut Vec::new(),
         )
         .expect_err("parent traversal must be rejected");
@@ -273,6 +277,7 @@ mod tests {
             false,
             false,
             None,
+            false,
             &mut Vec::new(),
         )
         .expect_err("invalid agent leaves a failed sweep");

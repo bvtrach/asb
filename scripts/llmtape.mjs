@@ -6,8 +6,10 @@
 
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import { performance } from "node:perf_hooks";
 
 const MAX_BODY = 16 * 1024 * 1024;
+const MAX_DELAY_MS = 60 * 60 * 1000;
 
 function usage(message) {
   if (message) console.error(`llmtape: ${message}`);
@@ -34,6 +36,10 @@ const port = Number(option(args, "--port"));
 if (!Number.isInteger(port) || port < 1 || port > 65535) usage("--port must be a valid TCP port");
 const cassette = mode === "record" ? option(args, "--out") : option(args, "--cassette");
 const upstream = mode === "record" ? option(args, "--upstream") : undefined;
+const respectRecordTimings = args.includes("--respect-record-timings");
+if (respectRecordTimings && mode !== "replay") {
+  usage("--respect-record-timings is only valid with replay");
+}
 
 function boundedBody(chunks) {
   const body = Buffer.concat(chunks);
@@ -76,6 +82,7 @@ const interactions = mode === "replay"
 let cursor = 0;
 
 async function handle(request, response) {
+  const startedAt = performance.now();
   const chunks = [];
   for await (const chunk of request) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -89,7 +96,7 @@ async function handle(request, response) {
   };
 
   if (mode === "replay") {
-    const interaction = interactions[cursor++];
+    const interaction = interactions[cursor];
     if (!interaction) {
       response.writeHead(409, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "cassette has no more recorded requests" }));
@@ -99,6 +106,11 @@ async function handle(request, response) {
       response.writeHead(409, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "request does not match cassette" }));
       return;
+    }
+    cursor += 1;
+    const delayMs = Number(interaction.delay_ms);
+    if (respectRecordTimings && Number.isFinite(delayMs) && delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, Math.min(delayMs, MAX_DELAY_MS)));
     }
     response.writeHead(interaction.response.status, interaction.response.headers || {});
     response.end(interaction.response.body || "");
@@ -121,7 +133,8 @@ async function handle(request, response) {
     headers: responseHeaders(upstreamResponse.headers),
     body: responseBody,
   };
-  appendFileSync(cassette, `${JSON.stringify({ request: recordedRequest, response: recordedResponse })}\n`);
+  const delayMs = Math.min(Math.max(0, Math.round(performance.now() - startedAt)), MAX_DELAY_MS);
+  appendFileSync(cassette, `${JSON.stringify({ request: recordedRequest, response: recordedResponse, delay_ms: delayMs })}\n`);
   response.writeHead(recordedResponse.status, recordedResponse.headers);
   response.end(responseBody);
 }

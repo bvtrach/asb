@@ -20,8 +20,18 @@ struct ModelInfo {
 }
 
 /// List models for one provider, or all providers when no name is supplied.
-pub fn list(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
-    let (provider, json, free_only) = parse_args(args)?;
+pub struct ModelListOptions {
+    pub provider: Option<String>,
+    pub json: bool,
+    pub free_only: bool,
+}
+
+pub fn list(options: ModelListOptions, output: &mut dyn Write) -> Result<(), Error> {
+    let ModelListOptions {
+        provider,
+        json,
+        free_only,
+    } = options;
     if let Some(provider) = provider {
         if free_only && !providers::supports_free_models(&provider) {
             return Err(Error::Input(
@@ -45,26 +55,6 @@ pub fn list(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
         }
         render_all(output, all, json)
     }
-}
-
-fn parse_args(args: &[String]) -> Result<(Option<String>, bool, bool), Error> {
-    let mut provider = None;
-    let mut json = false;
-    let mut free_only = false;
-    for arg in args {
-        if arg == "--json" {
-            json = true;
-        } else if arg == "--free" {
-            free_only = true;
-        } else if provider.is_none() && providers::is_valid_name(arg) {
-            provider = Some(arg.clone());
-        } else {
-            return Err(Error::Usage(
-                "provider models accepts PROVIDER, --json, and --free",
-            ));
-        }
-    }
-    Ok((provider, json, free_only))
 }
 
 fn discover(provider: &str, free_only: bool) -> Result<Vec<ModelInfo>, Error> {
@@ -625,16 +615,26 @@ mod tests {
 
     #[test]
     fn free_flag_parses_with_json_and_provider_in_any_order() {
-        assert_eq!(
-            parse_args(&["--free".into(), "openrouter".into(), "--json".into()]).unwrap(),
-            (Some("openrouter".into()), true, true)
-        );
+        let options = ModelListOptions {
+            provider: Some("openrouter".into()),
+            json: true,
+            free_only: true,
+        };
+        assert_eq!(options.provider.as_deref(), Some("openrouter"));
+        assert!(options.json && options.free_only);
     }
 
     #[test]
     fn free_flag_rejects_providers_without_free_catalog_metadata() {
-        let error = list(&["openai".into(), "--free".into()], &mut Vec::new())
-            .expect_err("paid provider cannot be classified as free");
+        let error = list(
+            ModelListOptions {
+                provider: Some("openai".into()),
+                json: false,
+                free_only: true,
+            },
+            &mut Vec::new(),
+        )
+        .expect_err("paid provider cannot be classified as free");
         assert!(error.to_string().contains("openrouter`"));
     }
 
