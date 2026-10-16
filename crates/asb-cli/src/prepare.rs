@@ -5,8 +5,13 @@ use crate::providers;
 use std::path::Path;
 use std::process::Command;
 
-/// Apply provider-specific preparation immediately before launching an agent.
-pub fn apply(
+/// Apply preparation with an optional local tape endpoint.
+///
+/// A tape endpoint must be passed explicitly because Pi resolves providers from
+/// its project-local `models.json`; generic OpenAI environment variables do not
+/// override Pi's provider base URL. Replay also deliberately uses a sentinel
+/// credential so it never needs a live provider key.
+pub fn apply_with_tape(
     command: &mut Command,
     agent: &str,
     provider: &str,
@@ -16,6 +21,8 @@ pub fn apply(
     pi_config_dir: Option<&Path>,
     workbuddy_config_dir: Option<&Path>,
     continue_config_dir: Option<&Path>,
+    tape_base_url: Option<&str>,
+    replay: bool,
 ) -> Result<(), Error> {
     if provider.eq_ignore_ascii_case("cli2key") {
         prepare_cli2key(
@@ -29,7 +36,15 @@ pub fn apply(
             continue_config_dir,
         )?;
     } else if provider.eq_ignore_ascii_case("openrouter") {
-        prepare_openrouter(command, agent, model, continue_config_dir)?;
+        prepare_openrouter(
+            command,
+            agent,
+            model,
+            pi_config_dir,
+            continue_config_dir,
+            tape_base_url,
+            replay,
+        )?;
     }
     Ok(())
 }
@@ -38,16 +53,42 @@ fn prepare_openrouter(
     command: &mut Command,
     agent: &str,
     model: &str,
+    pi_config_dir: Option<&Path>,
     continue_config_dir: Option<&Path>,
+    tape_base_url: Option<&str>,
+    replay: bool,
 ) -> Result<(), Error> {
-    let key = providers::credential("openrouter").ok_or_else(|| {
-        Error::Run(
-            "openrouter provider requires OPENROUTER_API_KEY or ~/.api_key_openrouter".into(),
-        )
-    })?;
-    let base_url = std::env::var("OPENROUTER_BASE_URL")
-        .unwrap_or_else(|_| "https://openrouter.ai/api/v1".into());
+    let key = if replay {
+        "asb-replay".to_owned()
+    } else {
+        providers::credential("openrouter").ok_or_else(|| {
+            Error::Run(
+                "openrouter provider requires OPENROUTER_API_KEY or ~/.api_key_openrouter; set one before a live or record run".into(),
+            )
+        })?
+    };
+    let base_url = tape_base_url
+        .map(str::to_owned)
+        .or_else(|| std::env::var("OPENROUTER_BASE_URL").ok())
+        .unwrap_or_else(|| "https://openrouter.ai/api/v1".into());
     configure_openai_compatible(command, agent, model, &key, &base_url, continue_config_dir)?;
+    command.env("OPENROUTER_API_KEY", &key);
+    if agent.eq_ignore_ascii_case("pi") {
+        let directory = pi_config_dir.ok_or_else(|| {
+            Error::Run(
+                "cannot configure Pi OpenRouter provider without a project-local Pi config directory".into(),
+            )
+        })?;
+        configure_pi_provider(
+            command,
+            directory,
+            "openrouter",
+            model,
+            &base_url,
+            "openai-completions",
+            "OPENROUTER_API_KEY",
+        )?;
+    }
     Ok(())
 }
 
@@ -127,7 +168,15 @@ fn prepare_cli2key(
                     .into(),
             )
         })?;
-        configure_pi(command, directory, model, base_url)?;
+        configure_pi_provider(
+            command,
+            directory,
+            "cli2key",
+            model,
+            base_url,
+            "openai-responses",
+            "CLI2KEY_API_KEY",
+        )?;
     }
     if agent.eq_ignore_ascii_case("qwen-code") {
         command
@@ -207,11 +256,14 @@ fn prepare_cli2key(
     Ok(())
 }
 
-fn configure_pi(
+fn configure_pi_provider(
     command: &mut Command,
     directory: &Path,
+    provider: &str,
     model: &str,
     base_url: &str,
+    api: &str,
+    api_key: &str,
 ) -> Result<(), Error> {
     std::fs::create_dir_all(directory).map_err(|error| {
         Error::Run(format!(
@@ -220,10 +272,10 @@ fn configure_pi(
     })?;
     let configuration = serde_json::json!({
         "providers": {
-            "cli2key": {
+            provider: {
                 "baseUrl": base_url,
-                "api": "openai-responses",
-                "apiKey": "CLI2KEY_API_KEY",
+                "api": api,
+                "apiKey": api_key,
                 "models": [{
                     "id": model,
                     "name": model,
@@ -317,7 +369,7 @@ mod tests {
     #[test]
     fn cli2key_preparation_configures_the_selected_agent_api() {
         let mut command = Command::new("cli2key");
-        apply(
+        apply_with_tape(
             &mut command,
             "opencode",
             "cli2key",
@@ -327,6 +379,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            false,
         )
         .expect("preparation succeeds");
         let values = command
@@ -380,7 +434,7 @@ mod tests {
     fn pi_cli2key_preparation_writes_project_local_provider_config() {
         let directory = std::env::temp_dir().join(format!("asb-pi-config-{}", std::process::id()));
         let mut command = Command::new("pi");
-        apply(
+        apply_with_tape(
             &mut command,
             "pi",
             "cli2key",
@@ -390,6 +444,8 @@ mod tests {
             Some(&directory),
             None,
             None,
+            None,
+            false,
         )
         .expect("Pi preparation succeeds");
         let config: serde_json::Value = serde_json::from_str(
@@ -409,7 +465,7 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("asb-workbuddy-config-{}", std::process::id()));
         let mut command = Command::new("codebuddy");
-        apply(
+        apply_with_tape(
             &mut command,
             "workbuddy",
             "cli2key",
@@ -419,6 +475,8 @@ mod tests {
             None,
             Some(&directory),
             None,
+            None,
+            false,
         )
         .expect("WorkBuddy preparation succeeds");
         let values = command
@@ -466,7 +524,7 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("asb-continue-config-{}", std::process::id()));
         let mut command = Command::new("cn");
-        apply(
+        apply_with_tape(
             &mut command,
             "continue",
             "cli2key",
@@ -476,6 +534,8 @@ mod tests {
             None,
             None,
             Some(&directory),
+            None,
+            false,
         )
         .expect("Continue preparation succeeds");
         let config = std::fs::read_to_string(directory.join("config.yaml")).expect("config");
@@ -521,6 +581,87 @@ mod tests {
             std::fs::read_to_string(directory.join("config.yaml"))
                 .expect("Continue config")
                 .contains("provider: openai")
+        );
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn pi_openrouter_record_uses_tape_provider_configuration() {
+        let directory =
+            std::env::temp_dir().join(format!("asb-pi-openrouter-config-{}", std::process::id()));
+        let mut command = Command::new("pi");
+        configure_pi_provider(
+            &mut command,
+            &directory,
+            "openrouter",
+            "deepseek/deepseek-chat-v3-0324:free",
+            "http://127.0.0.1:4567/v1",
+            "openai-completions",
+            "OPENROUTER_API_KEY",
+        )
+        .expect("Pi OpenRouter preparation succeeds");
+        let config: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(directory.join("models.json")).expect("Pi config exists"),
+        )
+        .expect("Pi config is JSON");
+        assert_eq!(
+            config["providers"]["openrouter"]["baseUrl"],
+            "http://127.0.0.1:4567/v1"
+        );
+        assert_eq!(
+            config["providers"]["openrouter"]["api"],
+            "openai-completions"
+        );
+        assert_eq!(
+            config["providers"]["openrouter"]["apiKey"],
+            "OPENROUTER_API_KEY"
+        );
+        let values = command
+            .get_envs()
+            .filter_map(|(name, value)| {
+                value.map(|value| (name.to_string_lossy(), value.to_string_lossy()))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert!(!values.contains_key("OPENROUTER_API_KEY"));
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn pi_openrouter_replay_uses_no_live_credential() {
+        let directory =
+            std::env::temp_dir().join(format!("asb-pi-openrouter-replay-{}", std::process::id()));
+        let mut command = Command::new("pi");
+        apply_with_tape(
+            &mut command,
+            "pi",
+            "openrouter",
+            "tool-model",
+            None,
+            None,
+            Some(&directory),
+            None,
+            None,
+            Some("http://127.0.0.1:4567/v1"),
+            true,
+        )
+        .expect("replay preparation succeeds without a provider key");
+        let values = command
+            .get_envs()
+            .filter_map(|(name, value)| {
+                value.map(|value| (name.to_string_lossy(), value.to_string_lossy()))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            values.get("OPENROUTER_API_KEY").map(|value| value.as_ref()),
+            Some("asb-replay")
+        );
+        let config: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(directory.join("models.json")).expect("Pi config exists"),
+        )
+        .expect("Pi config is JSON");
+        assert_eq!(
+            config["providers"]["openrouter"]["api"],
+            "openai-completions"
         );
         let _ = std::fs::remove_dir_all(directory);
     }

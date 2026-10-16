@@ -180,7 +180,7 @@ fn run_mode(
         .stderr(Stdio::piped());
     providers::configure(&mut command, &config.provider, &config.model);
     let cli2key_endpoint = tape_url.or_else(|| bridge.as_ref().map(cli2key::Bridge::base_url));
-    prepare::apply(
+    prepare::apply_with_tape(
         &mut command,
         &config.agent,
         &config.provider,
@@ -197,7 +197,8 @@ fn run_mode(
             None
         },
         (config.agent.eq_ignore_ascii_case("pi")
-            && config.provider.eq_ignore_ascii_case("cli2key"))
+            && (config.provider.eq_ignore_ascii_case("cli2key")
+                || config.provider.eq_ignore_ascii_case("openrouter")))
         .then(|| project::resolve(&project_root, &project_config.tools_dir).join("pi/config"))
         .as_deref(),
         (config.agent.eq_ignore_ascii_case("workbuddy")
@@ -213,6 +214,8 @@ fn run_mode(
                 project::resolve(&project_root, &project_config.tools_dir).join("continue/config")
             })
             .as_deref(),
+        tape_url,
+        tape_mode == Some(tape::Mode::Replay),
     )?;
     if let Some(url) = tape_url {
         tape::configure_command(
