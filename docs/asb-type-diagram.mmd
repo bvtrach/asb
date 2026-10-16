@@ -104,6 +104,7 @@ classDiagram
     class C015["Drop"] {
         +drop() void
         +drop() void
+        +drop() void
     }
     class C016["ExternalWorkload"] {
         -name: &'static str
@@ -242,6 +243,8 @@ classDiagram
     class C036["Session"] {
         -child: Child
         -url: String
+        -mode: Mode
+        -cassette: PathBuf
         +start(mode: Mode, cassette: &Path, upstream: Option~&str~, respect_record_timings: bool) Result~Self, Error~
         +url() &str
         +stop(self) Result~(), Error~
