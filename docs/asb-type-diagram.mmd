@@ -1,4 +1,59 @@
 classDiagram
+    class asb-cli_src_tools_StaticTool {
+        -id: &'static str
+        -recipe: Recipe
+        -kind: ToolKind
+        +new(id: &'static str, recipe: Recipe, kind: ToolKind) Self
+    }
+    class asb-cli_src_tools_ToolAdapter {
+        +id() &'static str
+        +recipe() Recipe
+        +kind() ToolKind
+    }
+    class asb-cli_src_workloads_workload_adapters_StaticExternalAdapter {
+        -id: &'static str
+        -trials: &'static [(&'static str, &'static str)]
+        +new(id: &'static str, trials: &'static [(&'static str, &'static str)]) Self
+    }
+    class asb-cli_src_workloads_workload_adapters_WorkloadAdapter {
+        +id() &'static str
+        +trial_ids() Vec~asb-cli_src_Trial~
+        +prepare_source(workloads: &Path, workspace: &Path) Result~usize, String~
+    }
+    class asb-cli_src_agents_PreparationContext~'a~ {
+        +command: &'a mut Command
+        +provider: &'a str
+        +model: &'a str
+        +cli2key: Option~(&'a str, &'a str)~
+        +pi_config_dir: Option~&'a Path~
+        +workbuddy_config_dir: Option~&'a Path~
+        +continue_config_dir: Option~&'a Path~
+    }
+    class asb-cli_src_agents_CommandContext~'a~ {
+        +config: &'a BenchmarkConfig
+        +endpoint: Option~&'a str~
+        +prompt: &'a str
+    }
+    class asb-cli_src_agents_CommandSpec {
+        +program: String
+        +args: Vec~String~
+        +append_prompt: bool
+    }
+    class asb-cli_src_agents_AgentArtifacts {
+        +paths: Vec~String~
+    }
+    class asb-cli_src_agents_BuiltinAdapter {
+        -id: &'static str
+        -executable: &'static str
+        -kind: CommandKind
+        +new(id: &'static str, executable: &'static str, kind: CommandKind) Self
+    }
+    class asb-cli_src_agents_AgentAdapter {
+        +id() &'static str
+        +executable() &'static str
+        +command(context: &CommandContext~'_~) asb-cli_src_agents_CommandSpec
+        +prepare(context: &mut PreparationContext~'_~) Result~(), Error~
+    }
     class asb-cli_src_TrialSet {
         +workload: String
         +trials: Vec~asb-cli_src_Trial~
@@ -47,11 +102,6 @@ classDiagram
         -cassette: Option~String~
         -stdout: String
         -stderr: String
-    }
-    class asb-cli_src_CommandSpec {
-        -program: String
-        -args: Vec~String~
-        -append_prompt: bool
     }
     class asb-cli_src_Session {
         -child: Child
@@ -399,6 +449,8 @@ classDiagram
     class asb-cli_src_Default {
         +default() Self
     }
+    asb-cli_src_workloads_workload_adapters_WorkloadAdapter ..> asb-cli_src_Trial
+    asb-cli_src_agents_AgentAdapter ..> asb-cli_src_agents_CommandSpec
     asb-cli_src_TrialSet --> asb-cli_src_Trial
     asb-cli_src_BenchmarkData --> asb-cli_src_TimeSeries
     asb-cli_src_RunResult --> asb-cli_src_TokenUsage
