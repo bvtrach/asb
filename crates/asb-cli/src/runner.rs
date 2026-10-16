@@ -346,6 +346,13 @@ fn run_mode(
                 project::resolve(&project_root, &project_config.tools_dir).join("continue/config")
             })
             .as_deref(),
+        config
+            .agent
+            .eq_ignore_ascii_case("cline")
+            .then(|| {
+                project::resolve(&project_root, &project_config.tools_dir).join("cline/config")
+            })
+            .as_deref(),
         tape_url,
         tape_mode == Some(tape::Mode::Replay),
     )?;
@@ -874,7 +881,7 @@ fn command_for(
                 "--auto-approve".into(),
                 "true".into(),
                 "--provider".into(),
-                "openai".into(),
+                cline_provider(config).into(),
                 "--model".into(),
                 config.model.clone(),
                 prompt.into(),
@@ -901,6 +908,14 @@ fn command_for(
         },
     };
     Ok(spec)
+}
+
+fn cline_provider(config: &BenchmarkConfig) -> &'static str {
+    if config.provider.eq_ignore_ascii_case("openrouter") {
+        "openrouter"
+    } else {
+        "openai-native"
+    }
 }
 
 fn opencode_model(config: &BenchmarkConfig) -> String {
@@ -1143,6 +1158,37 @@ mod tests {
             );
             assert!(!command.append_prompt, "{agent} embeds prompt exactly once");
         }
+    }
+
+    #[test]
+    fn cline_uses_native_openai_or_openrouter_provider_without_anthropic_server_tools() {
+        let mut config = BenchmarkConfig {
+            agent: "cline".into(),
+            workload: "bug-fix".into(),
+            provider: "cli2key".into(),
+            model: "gpt-test".into(),
+            concurrency: 1,
+            trial_set: None,
+            trial: None,
+            workspace: "workspace".into(),
+            log_file: "run.log".into(),
+            measurements: None,
+        };
+        let cli2key = command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt").unwrap();
+        assert!(
+            cli2key
+                .args
+                .windows(2)
+                .any(|pair| pair[0] == "--provider" && pair[1] == "openai-native")
+        );
+        config.provider = "openrouter".into();
+        let openrouter = command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt").unwrap();
+        assert!(
+            openrouter
+                .args
+                .windows(2)
+                .any(|pair| pair[0] == "--provider" && pair[1] == "openrouter")
+        );
     }
 
     #[test]

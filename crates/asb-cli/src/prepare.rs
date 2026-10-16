@@ -21,6 +21,7 @@ pub fn apply_with_tape(
     pi_config_dir: Option<&Path>,
     workbuddy_config_dir: Option<&Path>,
     continue_config_dir: Option<&Path>,
+    cline_data_dir: Option<&Path>,
     tape_base_url: Option<&str>,
     replay: bool,
 ) -> Result<(), Error> {
@@ -34,6 +35,7 @@ pub fn apply_with_tape(
             pi_config_dir,
             workbuddy_config_dir,
             continue_config_dir,
+            cline_data_dir,
         )?;
     } else if provider.eq_ignore_ascii_case("openrouter") {
         prepare_openrouter(
@@ -42,6 +44,7 @@ pub fn apply_with_tape(
             model,
             pi_config_dir,
             continue_config_dir,
+            cline_data_dir,
             tape_base_url,
             replay,
         )?;
@@ -55,6 +58,7 @@ fn prepare_openrouter(
     model: &str,
     pi_config_dir: Option<&Path>,
     continue_config_dir: Option<&Path>,
+    cline_data_dir: Option<&Path>,
     tape_base_url: Option<&str>,
     replay: bool,
 ) -> Result<(), Error> {
@@ -71,7 +75,15 @@ fn prepare_openrouter(
         .map(str::to_owned)
         .or_else(|| std::env::var("OPENROUTER_BASE_URL").ok())
         .unwrap_or_else(|| "https://openrouter.ai/api/v1".into());
-    configure_openai_compatible(command, agent, model, &key, &base_url, continue_config_dir)?;
+    configure_openai_compatible(
+        command,
+        agent,
+        model,
+        &key,
+        &base_url,
+        continue_config_dir,
+        cline_data_dir,
+    )?;
     command.env("OPENROUTER_API_KEY", &key);
     if agent.eq_ignore_ascii_case("pi") {
         let directory = pi_config_dir.ok_or_else(|| {
@@ -99,6 +111,7 @@ fn configure_openai_compatible(
     key: &str,
     base_url: &str,
     continue_config_dir: Option<&Path>,
+    cline_data_dir: Option<&Path>,
 ) -> Result<(), Error> {
     let root = base_url.trim_end_matches('/');
     let api_root = root.strip_suffix("/v1").unwrap_or(root);
@@ -123,10 +136,22 @@ fn configure_openai_compatible(
                 "cannot configure Continue without a project-local configuration directory".into(),
             )
         })?;
-        configure_continue(directory, model, root)?;
+        configure_continue(directory, model, "openai", root, key)?;
         command
             .env("CONTINUE_CONFIG", directory.join("config.yaml"))
             .env("CONTINUE_GLOBAL_DIR", directory);
+    }
+    if agent.eq_ignore_ascii_case("cline") {
+        if let Some(directory) = cline_data_dir {
+            configure_cline(directory, "openrouter", model, root, &key)?;
+            command
+                .env("CLINE_DIR", directory)
+                .env("CLINE_DATA_DIR", directory.join("data"))
+                .env(
+                    "CLINE_PROVIDER_SETTINGS_PATH",
+                    directory.join("data/settings/providers.json"),
+                );
+        }
     }
     Ok(())
 }
@@ -140,6 +165,7 @@ fn prepare_cli2key(
     pi_config_dir: Option<&Path>,
     workbuddy_config_dir: Option<&Path>,
     continue_config_dir: Option<&Path>,
+    cline_data_dir: Option<&Path>,
 ) -> Result<(), Error> {
     let (key, base_url) = cli2key.ok_or_else(|| {
         Error::Run(
@@ -157,6 +183,7 @@ fn prepare_cli2key(
         .env("ANTHROPIC_MODEL", model)
         .env("QWEN_DEFAULT_AUTH_TYPE", "anthropic")
         .env("ANTHROPIC_API_KEY", key)
+        .env("ANTHROPIC_AUTH_TOKEN", key)
         .env("ANTHROPIC_BASE_URL", base_url.trim_end_matches("/v1"));
     if agent.eq_ignore_ascii_case("opencode") {
         command.env("OPENCODE_CONFIG_CONTENT", opencode_config(model, base_url)?);
@@ -219,11 +246,11 @@ fn prepare_cli2key(
     }
     if agent.eq_ignore_ascii_case("goose") {
         command
-            .env("GOOSE_PROVIDER", "openai")
+            .env("GOOSE_PROVIDER", "anthropic")
             .env("GOOSE_MODEL", model)
-            .env("OPENAI_HOST", base_url.trim_end_matches("/v1"))
-            .env("OPENAI_BASE_PATH", "/v1/chat/completions")
-            .env("OPENAI_API_KEY", key);
+            .env("ANTHROPIC_HOST", base_url.trim_end_matches("/v1"))
+            .env("ANTHROPIC_API_KEY", key)
+            .env("ANTHROPIC_AUTH_TOKEN", key);
     }
     if agent.eq_ignore_ascii_case("cline") {
         command
@@ -232,6 +259,16 @@ fn prepare_cli2key(
             .env("OPENAI_API_BASE", base_url)
             .env("OPENAI_MODEL", model)
             .env("CLINE_API_KEY", key);
+        if let Some(directory) = cline_data_dir {
+            configure_cline(directory, "openai-native", model, base_url, key)?;
+            command
+                .env("CLINE_DIR", directory)
+                .env("CLINE_DATA_DIR", directory.join("data"))
+                .env(
+                    "CLINE_PROVIDER_SETTINGS_PATH",
+                    directory.join("data/settings/providers.json"),
+                );
+        }
     }
     if agent.eq_ignore_ascii_case("continue") {
         command
@@ -245,7 +282,7 @@ fn prepare_cli2key(
                 "cannot configure Continue without a project-local configuration directory".into(),
             )
         })?;
-        configure_continue(directory, model, base_url)?;
+        configure_continue(directory, model, "anthropic", base_url, key)?;
         command
             .env("CONTINUE_CONFIG", directory.join("config.yaml"))
             .env("CONTINUE_GLOBAL_DIR", directory);
@@ -322,18 +359,68 @@ fn configure_workbuddy(directory: &Path, model: &str, base_url: &str) -> Result<
     Ok(())
 }
 
-fn configure_continue(directory: &Path, model: &str, base_url: &str) -> Result<(), Error> {
+fn configure_continue(
+    directory: &Path,
+    model: &str,
+    provider: &str,
+    base_url: &str,
+    key: &str,
+) -> Result<(), Error> {
     std::fs::create_dir_all(directory).map_err(|error| {
         Error::Run(format!(
             "cannot create Continue provider configuration directory: {error}"
         ))
     })?;
     let configuration = format!(
-        "name: ASB provider\nversion: 1.0.0\nmodels:\n  - name: {model}\n    provider: openai\n    model: {model}\n    apiBase: {base_url}\n"
+        "name: ASB provider\nversion: 1.0.0\nmodels:\n  - name: {model}\n    provider: {provider}\n    model: {model}\n    apiBase: {base_url}\n    apiKey: {key}\n"
     );
     std::fs::write(directory.join("config.yaml"), configuration).map_err(|error| {
         Error::Run(format!(
             "cannot write Continue provider configuration: {error}"
+        ))
+    })
+}
+
+fn configure_cline(
+    directory: &Path,
+    provider: &str,
+    model: &str,
+    base_url: &str,
+    key: &str,
+) -> Result<(), Error> {
+    let settings_dir = directory.join("data/settings");
+    std::fs::create_dir_all(&settings_dir).map_err(|error| {
+        Error::Run(format!(
+            "cannot create Cline provider configuration directory: {error}"
+        ))
+    })?;
+    let configuration = serde_json::json!({
+        "version": 1,
+        "lastUsedProvider": provider,
+        "modes": {},
+        "providers": {
+            provider: {
+                "settings": {
+                    "provider": provider,
+                    "model": model,
+                    "baseUrl": base_url,
+                    "apiKey": key,
+                    "protocol": "openai-responses",
+                    "client": "openai"
+                },
+                "updatedAt": "1970-01-01T00:00:00.000Z",
+                "tokenSource": "manual"
+            }
+        }
+    });
+    let content = serde_json::to_vec_pretty(&configuration).map_err(|error| {
+        Error::Run(format!(
+            "cannot render Cline provider configuration: {error}"
+        ))
+    })?;
+    std::fs::write(settings_dir.join("providers.json"), content).map_err(|error| {
+        Error::Run(format!(
+            "cannot write Cline provider configuration: {error}"
         ))
     })
 }
@@ -376,6 +463,7 @@ mod tests {
             "gpt-test",
             Some("/project/codex"),
             Some(("cb_test", "http://127.0.0.1:3456/v1")),
+            None,
             None,
             None,
             None,
@@ -445,6 +533,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             false,
         )
         .expect("Pi preparation succeeds");
@@ -474,6 +563,7 @@ mod tests {
             Some(("cb_test", "http://127.0.0.1:3456/v1")),
             None,
             Some(&directory),
+            None,
             None,
             None,
             false,
@@ -535,11 +625,12 @@ mod tests {
             None,
             Some(&directory),
             None,
+            None,
             false,
         )
         .expect("Continue preparation succeeds");
         let config = std::fs::read_to_string(directory.join("config.yaml")).expect("config");
-        assert!(config.contains("provider: openai"));
+        assert!(config.contains("provider: anthropic"));
         assert!(config.contains("model: gpt-test"));
         assert!(config.contains("apiBase: http://127.0.0.1:3456/v1"));
         let _ = std::fs::remove_dir_all(directory);
@@ -557,6 +648,7 @@ mod tests {
             "or-test",
             "https://openrouter.ai/api/v1",
             Some(&directory),
+            None,
         )
         .expect("OpenRouter preparation succeeds");
         let values = command
@@ -639,6 +731,7 @@ mod tests {
             None,
             None,
             Some(&directory),
+            None,
             None,
             None,
             Some("http://127.0.0.1:4567/v1"),
