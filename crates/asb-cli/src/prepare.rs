@@ -19,6 +19,7 @@ pub fn apply_with_tape(
     pi_config_dir: Option<&Path>,
     workbuddy_config_dir: Option<&Path>,
     continue_config_dir: Option<&Path>,
+    cline_data_dir: Option<&Path>,
     tape_base_url: Option<&str>,
     replay: bool,
 ) -> Result<(), Error> {
@@ -36,6 +37,7 @@ pub fn apply_with_tape(
         pi_config_dir,
         workbuddy_config_dir,
         continue_config_dir,
+        cline_data_dir,
     )
 }
 
@@ -208,6 +210,58 @@ pub(crate) fn configure_continue(
     })
 }
 
+pub(crate) fn configure_cline(
+    directory: &Path,
+    provider: &str,
+    model: &str,
+    base_url: &str,
+    key: &str,
+) -> Result<(), Error> {
+    let settings_dir = directory.join("data/settings");
+    std::fs::create_dir_all(&settings_dir).map_err(|error| {
+        Error::Run(format!(
+            "cannot create Cline provider configuration directory: {error}"
+        ))
+    })?;
+    let configuration = serde_json::json!({
+        "version": 1,
+        "lastUsedProvider": provider,
+        "providers": { provider: {
+            "settings": {
+                "provider": provider,
+                "model": model,
+                "baseUrl": base_url,
+                "apiKey": key,
+                "protocol": "openai-responses",
+                "client": "openai"
+            },
+            "updatedAt": "1970-01-01T00:00:00.000Z",
+            "tokenSource": "manual"
+        }}
+    });
+    let content = serde_json::to_vec_pretty(&configuration).map_err(|error| {
+        Error::Run(format!(
+            "cannot render Cline provider configuration: {error}"
+        ))
+    })?;
+    std::fs::write(settings_dir.join("providers.json"), content).map_err(|error| {
+        Error::Run(format!(
+            "cannot write Cline provider configuration: {error}"
+        ))
+    })?;
+    let global = serde_json::json!({
+        "disabledTools": ["web_search", "image_generation"],
+        "tools": {
+            "web_search": {"enabled": false},
+            "image_generation": {"enabled": false}
+        }
+    });
+    let global_content = serde_json::to_vec_pretty(&global)
+        .map_err(|error| Error::Run(format!("cannot render Cline global settings: {error}")))?;
+    std::fs::write(settings_dir.join("global-settings.json"), global_content)
+        .map_err(|error| Error::Run(format!("cannot write Cline global settings: {error}")))
+}
+
 pub(crate) fn opencode_config(model: &str, base_url: &str) -> Result<String, Error> {
     let mut models = serde_json::Map::new();
     models.insert(model.to_owned(), serde_json::json!({"name": model}));
@@ -246,6 +300,7 @@ mod tests {
             "gpt-test",
             Some("/project/codex"),
             Some(("cb_test", "http://127.0.0.1:3456/v1")),
+            None,
             None,
             None,
             None,
@@ -315,6 +370,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             false,
         )
         .expect("Pi preparation succeeds");
@@ -344,6 +400,7 @@ mod tests {
             Some(("cb_test", "http://127.0.0.1:3456/v1")),
             None,
             Some(&directory),
+            None,
             None,
             None,
             false,
@@ -404,6 +461,7 @@ mod tests {
             None,
             None,
             Some(&directory),
+            None,
             None,
             false,
         )
@@ -503,6 +561,7 @@ mod tests {
             None,
             None,
             Some(&directory),
+            None,
             None,
             None,
             Some("http://127.0.0.1:4567/v1"),

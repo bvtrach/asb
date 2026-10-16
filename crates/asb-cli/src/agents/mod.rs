@@ -20,7 +20,7 @@ mod workbuddy;
 
 use crate::benchmark::BenchmarkConfig;
 use crate::project;
-use crate::{Error, prepare};
+use crate::{Error, prepare, providers};
 use std::path::Path;
 use std::process::Command;
 
@@ -47,6 +47,7 @@ pub(crate) struct PreparationContext<'a> {
     pub pi_config_dir: Option<&'a Path>,
     pub workbuddy_config_dir: Option<&'a Path>,
     pub continue_config_dir: Option<&'a Path>,
+    pub cline_data_dir: Option<&'a Path>,
 }
 
 pub(crate) struct CommandContext<'a> {
@@ -244,7 +245,11 @@ impl AgentAdapter for BuiltinAdapter {
                     "--auto-approve".into(),
                     "true".into(),
                     "--provider".into(),
-                    "openai".into(),
+                    if config.provider.eq_ignore_ascii_case("openrouter") {
+                        "openrouter".into()
+                    } else {
+                        "openai-native".into()
+                    },
                     "--model".into(),
                     config.model.clone(),
                     context.prompt.into(),
@@ -370,14 +375,61 @@ impl AgentAdapter for BuiltinAdapter {
             }
             CommandKind::Cline if is_cli2key => {
                 if let Some((key, base_url)) = credentials {
+                    let directory = context.cline_data_dir.ok_or_else(|| Error::Run(
+                        "cannot configure Cline without a project-local provider configuration directory".into(),
+                    ))?;
+                    prepare::configure_cline(
+                        directory,
+                        "openai-native",
+                        context.model,
+                        base_url,
+                        key,
+                    )?;
                     context
                         .command
                         .env("OPENAI_API_KEY", key)
                         .env("OPENAI_BASE_URL", base_url)
                         .env("OPENAI_API_BASE", base_url)
                         .env("OPENAI_MODEL", context.model)
-                        .env("CLINE_API_KEY", key);
+                        .env("CLINE_API_KEY", key)
+                        .env("CLINE_DIR", directory)
+                        .env("CLINE_DATA_DIR", directory.join("data"))
+                        .env(
+                            "CLINE_PROVIDER_SETTINGS_PATH",
+                            directory.join("data/settings/providers.json"),
+                        )
+                        .env(
+                            "CLINE_GLOBAL_SETTINGS_PATH",
+                            directory.join("data/settings/global-settings.json"),
+                        );
                 }
+                Ok(())
+            }
+            CommandKind::Cline if is_openrouter => {
+                let directory = context.cline_data_dir.ok_or_else(|| Error::Run(
+                    "cannot configure Cline without a project-local provider configuration directory".into(),
+                ))?;
+                let base_url = std::env::var("OPENROUTER_BASE_URL")
+                    .unwrap_or_else(|_| "https://openrouter.ai/api/v1".into());
+                let key = providers::credential("openrouter").ok_or_else(|| {
+                    Error::Run(
+                        "openrouter provider requires OPENROUTER_API_KEY or ~/.api_key_openrouter"
+                            .into(),
+                    )
+                })?;
+                prepare::configure_cline(directory, "openrouter", context.model, &base_url, &key)?;
+                context
+                    .command
+                    .env("CLINE_DIR", directory)
+                    .env("CLINE_DATA_DIR", directory.join("data"))
+                    .env(
+                        "CLINE_PROVIDER_SETTINGS_PATH",
+                        directory.join("data/settings/providers.json"),
+                    )
+                    .env(
+                        "CLINE_GLOBAL_SETTINGS_PATH",
+                        directory.join("data/settings/global-settings.json"),
+                    );
                 Ok(())
             }
             CommandKind::Continue if is_cli2key || is_openrouter => {
@@ -412,6 +464,7 @@ pub(crate) fn prepare(
     pi_config_dir: Option<&Path>,
     workbuddy_config_dir: Option<&Path>,
     continue_config_dir: Option<&Path>,
+    cline_data_dir: Option<&Path>,
 ) -> Result<(), Error> {
     let Some(adapter) = find(agent) else {
         return Ok(());
@@ -424,6 +477,7 @@ pub(crate) fn prepare(
         pi_config_dir,
         workbuddy_config_dir,
         continue_config_dir,
+        cline_data_dir,
     })
 }
 

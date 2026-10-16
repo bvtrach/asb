@@ -322,6 +322,7 @@ fn run_mode(
         Some(&project::resolve(&project_root, &project_config.tools_dir).join("pi/config")),
         Some(&project::resolve(&project_root, &project_config.tools_dir).join("workbuddy/config")),
         Some(&project::resolve(&project_root, &project_config.tools_dir).join("continue/config")),
+        Some(&project::resolve(&project_root, &project_config.tools_dir).join("cline/config")),
         tape_url,
         tape_mode == Some(tape::Mode::Replay),
     )?;
