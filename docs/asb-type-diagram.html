@@ -632,7 +632,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   const edges = [...canvas.querySelectorAll('.edge')];
   const clusters = [...canvas.querySelectorAll('.cluster')];
   const allElements = [...nodes, ...edges, ...clusters];
-  const state = { scale: 1, tx: 0, ty: 0, drag: null, pinch: null, pointers: new Map(), pinned: null, pinnedParts: new Set(), animation: null, suppressClickUntil: 0 };
+  const state = { scale: 1, tx: 0, ty: 0, drag: null, pinch: null, pointers: new Map(), pressTarget: null, pinned: null, pinnedParts: new Set(), animation: null, suppressClickUntil: 0 };
   const viewBox = svg.viewBox.baseVal;
   const titles = new Map();
 
@@ -786,7 +786,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     state.pinch = { distance: Math.max(1, pointerDistance(points[0], points[1])), midpoint, scale: state.scale, graphX: (startX - state.tx) / state.scale, graphY: (startY - state.ty) / state.scale, moved: false };
     state.drag = null;
   }
-  viewport.addEventListener('pointerdown', (event) => { if (event.button !== 0) return; state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY }); viewport.setPointerCapture(event.pointerId); if (state.pointers.size >= 2) { startPinch(); } else { state.drag = { x: event.clientX, y: event.clientY, tx: state.tx, ty: state.ty, moved: false }; } viewport.classList.add('dragging'); });
+  viewport.addEventListener('pointerdown', (event) => { if (event.button !== 0) return; state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY }); state.pressTarget = event.target.closest?.('.node, .edge, .cluster') || null; viewport.setPointerCapture(event.pointerId); if (state.pointers.size >= 2) { state.pressTarget = null; startPinch(); } else { state.drag = { x: event.clientX, y: event.clientY, tx: state.tx, ty: state.ty, moved: false }; } viewport.classList.add('dragging'); });
   viewport.addEventListener('pointermove', (event) => {
     if (!state.pointers.has(event.pointerId)) return;
     state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -815,6 +815,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     if (!state.drag.frame) state.drag.frame = requestAnimationFrame(() => { state.tx = state.drag?.nextTx ?? state.tx; state.ty = state.drag?.nextTy ?? state.ty; state.drag.frame = 0; applyTransform(); });
   });
   function finishPointer(event) {
+    const pressTarget = state.pressTarget;
+    const wasPinching = Boolean(state.pinch);
     state.pointers.delete(event.pointerId);
     if (state.pinch) {
       if (state.pinch.moved) state.suppressClickUntil = performance.now() + 180;
@@ -828,8 +830,15 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     if (state.pointers.size > 0) return;
     if (state.drag?.frame) cancelAnimationFrame(state.drag.frame);
     if (state.drag?.nextTx !== undefined) { state.tx = state.drag.nextTx; state.ty = state.drag.nextTy; applyTransform(); }
-    if (state.drag?.moved) state.suppressClickUntil = performance.now() + 120;
+    const wasDragged = state.drag?.moved;
+    if (!wasPinching && !wasDragged && pressTarget) {
+      // Pointer capture retargets the browser click to the viewport. Activate
+      // the original graph element explicitly so click and drag remain distinct.
+      state.suppressClickUntil = performance.now() + 250;
+      select(pressTarget, pressTarget.classList.contains('edge') && (event.ctrlKey || event.metaKey));
+    } else if (wasDragged) state.suppressClickUntil = performance.now() + 120;
     state.drag = null;
+    state.pressTarget = null;
     viewport.classList.remove('dragging');
   }
   viewport.addEventListener('pointerup', finishPointer);
