@@ -168,9 +168,10 @@ distinctive workspace layout before creating any files.
 
 Recording and replay are implemented as a separate `tape` module behind the
 runner boundary. The `run --record` and `run --replay` flags materialize and start
-ASB's built-in loopback tape proxy,
-routes provider endpoints to that proxy, and tears it down after the child
-exits. `--record` writes a JSONL cassette with a bounded `delay_ms` response
+ASB's built-in loopback tape proxy, while provider adapters supply endpoint
+routing, record-mode upstream resolution, and optional local-bridge lifecycle.
+The runner and sweep executor retain no provider-specific proxy knowledge and
+tear the session down after the child exits. `--record` writes a JSONL cassette with a bounded `delay_ms` response
 latency for every interaction; `--replay` requires that cassette and never
 starts cli2key or a live provider. Passing `--respect-record-timings` with
 `--replay` makes llmtape match each request first, then wait for its recorded

@@ -14,7 +14,28 @@ pub struct ProviderSpec {
     pub credential: Option<&'static str>,
     /// Environment variable commonly used to override the provider endpoint.
     pub endpoint: Option<&'static str>,
+    /// Provider-specific model selection environment variable.
+    pub model_env: Option<&'static str>,
+    /// Endpoint variables that must route through the local tape proxy.
+    pub tape_endpoint_envs: &'static [&'static str],
+    /// Project-local bridge tool used by this provider, when required.
+    pub bridge_tool: Option<&'static str>,
 }
+
+const TAPE_ENDPOINT_ENVS: &[&str] = &[
+    "OPENAI_BASE_URL",
+    "OPENAI_API_BASE",
+    "OPENROUTER_BASE_URL",
+    "GROQ_BASE_URL",
+    "MISTRAL_BASE_URL",
+    "DEEPSEEK_BASE_URL",
+    "XAI_BASE_URL",
+    "TOGETHER_BASE_URL",
+    "FIREWORKS_BASE_URL",
+    "GOOGLE_GEMINI_BASE_URL",
+    "OLLAMA_HOST",
+    "CLI2KEY_BASE_URL",
+];
 
 /// Response shape used by a provider's model-list endpoint.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,71 +82,113 @@ const PROVIDERS: &[ProviderSpec] = &[
         name: "openai",
         credential: Some("OPENAI_API_KEY"),
         endpoint: Some("OPENAI_BASE_URL"),
+        model_env: Some("OPENAI_MODEL"),
+        tape_endpoint_envs: TAPE_ENDPOINT_ENVS,
+        bridge_tool: None,
     },
     ProviderSpec {
         name: "openrouter",
         credential: Some("OPENROUTER_API_KEY"),
         endpoint: Some("OPENROUTER_BASE_URL"),
+        model_env: Some("OPENROUTER_MODEL"),
+        tape_endpoint_envs: TAPE_ENDPOINT_ENVS,
+        bridge_tool: None,
     },
     ProviderSpec {
         name: "opencode-zen",
         credential: Some("OPENCODE_API_KEY"),
         endpoint: Some("OPENCODE_ZEN_BASE_URL"),
+        model_env: None,
+        tape_endpoint_envs: TAPE_ENDPOINT_ENVS,
+        bridge_tool: None,
     },
     ProviderSpec {
         name: "anthropic",
         credential: Some("ANTHROPIC_API_KEY"),
         endpoint: Some("ANTHROPIC_BASE_URL"),
+        model_env: None,
+        tape_endpoint_envs: TAPE_ENDPOINT_ENVS,
+        bridge_tool: None,
     },
     ProviderSpec {
         name: "gemini",
         credential: Some("GEMINI_API_KEY"),
         endpoint: Some("GOOGLE_GEMINI_BASE_URL"),
+        model_env: None,
+        tape_endpoint_envs: TAPE_ENDPOINT_ENVS,
+        bridge_tool: None,
     },
     ProviderSpec {
         name: "ollama",
         credential: None,
         endpoint: Some("OLLAMA_HOST"),
+        model_env: Some("OLLAMA_MODEL"),
+        tape_endpoint_envs: TAPE_ENDPOINT_ENVS,
+        bridge_tool: None,
     },
     ProviderSpec {
         name: "groq",
         credential: Some("GROQ_API_KEY"),
         endpoint: Some("GROQ_BASE_URL"),
+        model_env: None,
+        tape_endpoint_envs: TAPE_ENDPOINT_ENVS,
+        bridge_tool: None,
     },
     ProviderSpec {
         name: "mistral",
         credential: Some("MISTRAL_API_KEY"),
         endpoint: Some("MISTRAL_BASE_URL"),
+        model_env: None,
+        tape_endpoint_envs: TAPE_ENDPOINT_ENVS,
+        bridge_tool: None,
     },
     ProviderSpec {
         name: "deepseek",
         credential: Some("DEEPSEEK_API_KEY"),
         endpoint: Some("DEEPSEEK_BASE_URL"),
+        model_env: None,
+        tape_endpoint_envs: TAPE_ENDPOINT_ENVS,
+        bridge_tool: None,
     },
     ProviderSpec {
         name: "xai",
         credential: Some("XAI_API_KEY"),
         endpoint: Some("XAI_BASE_URL"),
+        model_env: None,
+        tape_endpoint_envs: TAPE_ENDPOINT_ENVS,
+        bridge_tool: None,
     },
     ProviderSpec {
         name: "together",
         credential: Some("TOGETHER_API_KEY"),
         endpoint: Some("TOGETHER_BASE_URL"),
+        model_env: None,
+        tape_endpoint_envs: TAPE_ENDPOINT_ENVS,
+        bridge_tool: None,
     },
     ProviderSpec {
         name: "fireworks",
         credential: Some("FIREWORKS_API_KEY"),
         endpoint: Some("FIREWORKS_BASE_URL"),
+        model_env: None,
+        tape_endpoint_envs: TAPE_ENDPOINT_ENVS,
+        bridge_tool: None,
     },
     ProviderSpec {
         name: "cli2key",
         credential: Some("CLI2KEY_API_KEY"),
         endpoint: Some("CLI2KEY_BASE_URL"),
+        model_env: Some("CLI2KEY_MODEL"),
+        tape_endpoint_envs: TAPE_ENDPOINT_ENVS,
+        bridge_tool: Some("cli2key"),
     },
     ProviderSpec {
         name: "local",
         credential: None,
         endpoint: None,
+        model_env: None,
+        tape_endpoint_envs: TAPE_ENDPOINT_ENVS,
+        bridge_tool: None,
     },
 ];
 
@@ -139,6 +202,9 @@ pub fn spec(name: &str) -> ProviderSpec {
             name: "custom",
             credential: None,
             endpoint: None,
+            model_env: None,
+            tape_endpoint_envs: TAPE_ENDPOINT_ENVS,
+            bridge_tool: None,
         })
 }
 
@@ -335,20 +401,8 @@ pub fn configure(command: &mut std::process::Command, provider: &str, model: &st
     if let Some(name) = selected.endpoint {
         command.env("ASB_PROVIDER_ENDPOINT_ENV", name);
     }
-    match provider.to_ascii_lowercase().as_str() {
-        "openrouter" => {
-            command.env("OPENROUTER_MODEL", model);
-        }
-        "openai" => {
-            command.env("OPENAI_MODEL", model);
-        }
-        "ollama" => {
-            command.env("OLLAMA_MODEL", model);
-        }
-        "cli2key" => {
-            command.env("CLI2KEY_MODEL", model);
-        }
-        _ => {}
+    if let Some(name) = selected.model_env {
+        command.env(name, model);
     }
 }
 
@@ -362,10 +416,15 @@ pub(crate) fn start_local_bridge(
     tools_dir: &str,
     replay: bool,
 ) -> Result<Option<crate::cli2key::Bridge>, crate::Error> {
-    if replay || !provider.eq_ignore_ascii_case("cli2key") {
+    let selected = spec(provider);
+    if replay || selected.bridge_tool.is_none() {
         return Ok(None);
     }
-    let executable = crate::tools::resolve("cli2key", project_root, tools_dir);
+    let executable = crate::tools::resolve(
+        selected.bridge_tool.expect("bridge tool"),
+        project_root,
+        tools_dir,
+    );
     crate::cli2key::Bridge::connect(executable.as_deref()).map(Some)
 }
 
@@ -375,7 +434,7 @@ pub(crate) fn local_bridge_credentials<'a>(
     bridge: Option<&'a crate::cli2key::Bridge>,
     endpoint: Option<&'a str>,
 ) -> Option<(&'a str, &'a str)> {
-    if !provider.eq_ignore_ascii_case("cli2key") {
+    if spec(provider).bridge_tool.is_none() {
         return None;
     }
     Some((
@@ -390,15 +449,67 @@ pub(crate) fn local_bridge_endpoint<'a>(
     provider: &str,
     bridge: Option<&'a crate::cli2key::Bridge>,
 ) -> Option<&'a str> {
-    provider
-        .eq_ignore_ascii_case("cli2key")
-        .then(|| bridge.map(crate::cli2key::Bridge::base_url))
-        .flatten()
+    spec(provider)
+        .bridge_tool
+        .and_then(|_| bridge.map(crate::cli2key::Bridge::base_url))
+}
+
+/// Configure a child to route this provider through the tape proxy.
+pub(crate) fn configure_tape(
+    command: &mut std::process::Command,
+    provider: &str,
+    url: &str,
+    mode: crate::tape::Mode,
+) {
+    let selected = spec(provider);
+    let anthropic_url = url.trim_end_matches("/v1");
+    for name in selected.tape_endpoint_envs {
+        command.env(name, url);
+    }
+    command
+        .env("ANTHROPIC_BASE_URL", anthropic_url)
+        .env("LLM_BASE_URL", anthropic_url)
+        .env("ASB_PROVIDER_BASE_URL", url)
+        .env(
+            "ASB_TAPE_MODE",
+            match mode {
+                crate::tape::Mode::Record => "record",
+                crate::tape::Mode::Replay => "replay",
+            },
+        );
+}
+
+/// Resolve a record-mode upstream through provider-owned metadata.
+pub(crate) fn tape_upstream(provider: &str, bridge_base_url: Option<&str>) -> Option<String> {
+    if spec(provider).bridge_tool.is_some() {
+        return bridge_base_url.map(strip_api_version);
+    }
+    std::env::var_os("ASB_PROVIDER_BASE_URL")
+        .map(|value| value.to_string_lossy().trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            model_spec(provider).and_then(|spec| spec.url()).map(|url| {
+                ["/models", "/tags"]
+                    .iter()
+                    .find_map(|suffix| url.strip_suffix(suffix))
+                    .unwrap_or(&url)
+                    .to_owned()
+            })
+        })
+        .map(|url| strip_api_version(&url))
+}
+
+fn strip_api_version(value: &str) -> String {
+    value
+        .trim_end_matches('/')
+        .trim_end_matches("/v1")
+        .to_owned()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ProviderSpec, read_key_file, spec};
+    use super::{ProviderSpec, configure_tape, read_key_file, spec, tape_upstream};
+    use crate::tape::Mode;
     use std::fs;
 
     #[test]
@@ -409,6 +520,9 @@ mod tests {
                 name: "cli2key",
                 credential: Some("CLI2KEY_API_KEY"),
                 endpoint: Some("CLI2KEY_BASE_URL"),
+                model_env: Some("CLI2KEY_MODEL"),
+                tape_endpoint_envs: super::TAPE_ENDPOINT_ENVS,
+                bridge_tool: Some("cli2key"),
             }
         );
         assert_eq!(spec("my-provider").name, "custom");
@@ -424,5 +538,40 @@ mod tests {
         fs::write(&path, "first\nsecond").expect("invalid key writes");
         assert!(read_key_file(path.clone()).is_none());
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn tape_routing_is_owned_by_the_provider_adapter() {
+        assert_eq!(
+            tape_upstream("cli2key", Some("http://127.0.0.1:3456/v1")).as_deref(),
+            Some("http://127.0.0.1:3456")
+        );
+        assert_eq!(
+            tape_upstream("openrouter", None).as_deref(),
+            Some("https://openrouter.ai/api")
+        );
+        let mut command = std::process::Command::new("agent");
+        configure_tape(
+            &mut command,
+            "openrouter",
+            "http://127.0.0.1:3456/v1",
+            Mode::Replay,
+        );
+        let values = command
+            .get_envs()
+            .filter_map(|(name, value)| {
+                value.map(|value| {
+                    (
+                        name.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            values.get("OPENROUTER_BASE_URL"),
+            Some(&"http://127.0.0.1:3456/v1".to_owned())
+        );
+        assert_eq!(values.get("ASB_TAPE_MODE"), Some(&"replay".to_owned()));
     }
 }

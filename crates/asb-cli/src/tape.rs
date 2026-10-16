@@ -1,7 +1,6 @@
 //! Local llmtape proxy lifecycle for deterministic LLM recording and replay.
 
 use crate::Error;
-use crate::providers;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -63,7 +62,7 @@ impl Session {
             Mode::Record => {
                 let upstream = upstream.ok_or_else(|| {
                     Error::Run(
-                        "record requires a provider API endpoint; set the provider base URL or use cli2key".into(),
+                        "record requires a provider API endpoint; set the provider base URL or use its configured local bridge".into(),
                     )
                 })?;
                 command.args(["--upstream", upstream, "--out"]);
@@ -193,71 +192,6 @@ impl Drop for Session {
     }
 }
 
-/// Point common provider clients at the local tape proxy.
-pub fn configure_command(command: &mut Command, provider: &str, url: &str, mode: Mode) {
-    let anthropic_url = url.trim_end_matches("/v1");
-    for name in [
-        "OPENAI_BASE_URL",
-        "OPENAI_API_BASE",
-        "OPENROUTER_BASE_URL",
-        "GROQ_BASE_URL",
-        "MISTRAL_BASE_URL",
-        "DEEPSEEK_BASE_URL",
-        "XAI_BASE_URL",
-        "TOGETHER_BASE_URL",
-        "FIREWORKS_BASE_URL",
-        "GOOGLE_GEMINI_BASE_URL",
-        "OLLAMA_HOST",
-        "CLI2KEY_BASE_URL",
-    ] {
-        command.env(name, url);
-    }
-    command
-        .env("ANTHROPIC_BASE_URL", anthropic_url)
-        .env("LLM_BASE_URL", anthropic_url)
-        .env("ASB_PROVIDER_BASE_URL", url)
-        .env(
-            "ASB_TAPE_MODE",
-            match mode {
-                Mode::Record => "record",
-                Mode::Replay => "replay",
-            },
-        );
-    if provider.eq_ignore_ascii_case("cli2key") {
-        command.env("CLI2KEY_BASE_URL", url);
-    }
-}
-
-/// Resolve the upstream API base used by llmtape in record mode.
-pub fn upstream(provider: &str, bridge_base_url: Option<&str>) -> Option<String> {
-    if provider.eq_ignore_ascii_case("cli2key") {
-        return bridge_base_url.map(strip_api_version);
-    }
-    if let Some(value) = std::env::var_os("ASB_PROVIDER_BASE_URL") {
-        let value = value.to_string_lossy().trim().to_owned();
-        if !value.is_empty() {
-            return Some(strip_api_version(&value));
-        }
-    }
-    providers::model_spec(provider)
-        .and_then(|spec| spec.url())
-        .map(|url| {
-            ["/models", "/tags"]
-                .iter()
-                .find_map(|suffix| url.strip_suffix(suffix))
-                .unwrap_or(&url)
-                .to_owned()
-        })
-        .map(|url| strip_api_version(&url))
-}
-
-fn strip_api_version(value: &str) -> String {
-    value
-        .trim_end_matches('/')
-        .trim_end_matches("/v1")
-        .to_owned()
-}
-
 fn free_port() -> Result<u16, Error> {
     TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .map(|listener| listener.local_addr().map(|address| address.port()))
@@ -267,47 +201,7 @@ fn free_port() -> Result<u16, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mode, ProxyExecutable, configure_command, resolve_executable, upstream};
-    use std::process::Command;
-
-    #[test]
-    fn upstream_uses_bridge_for_cli2key_and_known_provider_defaults() {
-        assert_eq!(
-            upstream("cli2key", Some("http://127.0.0.1:3456/v1")).as_deref(),
-            Some("http://127.0.0.1:3456")
-        );
-        assert_eq!(
-            upstream("openrouter", None).as_deref(),
-            Some("https://openrouter.ai/api")
-        );
-    }
-
-    #[test]
-    fn endpoint_configuration_is_local_and_mode_explicit() {
-        let mut command = Command::new("agent");
-        configure_command(
-            &mut command,
-            "openrouter",
-            "http://127.0.0.1:3456/v1",
-            Mode::Replay,
-        );
-        let values = command
-            .get_envs()
-            .filter_map(|(name, value)| {
-                value.map(|value| (name.to_string_lossy(), value.to_string_lossy()))
-            })
-            .collect::<std::collections::HashMap<_, _>>();
-        assert_eq!(
-            values
-                .get("OPENROUTER_BASE_URL")
-                .map(|value| value.as_ref()),
-            Some("http://127.0.0.1:3456/v1")
-        );
-        assert_eq!(
-            values.get("ASB_TAPE_MODE").map(|value| value.as_ref()),
-            Some("replay")
-        );
-    }
+    use super::{ProxyExecutable, resolve_executable};
 
     #[test]
     fn built_in_proxy_is_materialized_beside_the_cassette() {
