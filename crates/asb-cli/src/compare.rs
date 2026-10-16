@@ -1,7 +1,7 @@
 //! Offline comparison and SVG chart generation for completed sweeps.
 
 use crate::{Error, read_config};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs;
@@ -29,9 +29,15 @@ struct BenchmarkData {
     provider: String,
     model: String,
     metrics: BTreeMap<String, f64>,
-    series: BTreeMap<String, Vec<f64>>,
+    series: BTreeMap<String, TimeSeries>,
     status: Option<String>,
     artifacts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TimeSeries {
+    values: Vec<f64>,
+    timestamps_ms: Option<Vec<f64>>,
 }
 
 /// Compare all completed benchmark measurements referenced by a sweep.
@@ -138,9 +144,35 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             // numerical series: scraping its last token created noisy and
             // misleading graphs for repeated mpstat/iostat samples.
             if let Some(collector_series) = collector.get("series") {
-                let points = series_values(collector_series);
-                if points.len() >= 2 {
-                    series.insert(name.to_owned(), points);
+                let collector_timestamps = collector.get("series_timestamps");
+                let timestamp_map = collector_timestamps.and_then(Value::as_object);
+                if let Some(series_map) = collector_series.as_object() {
+                    for (metric, raw_values) in series_map {
+                        let points = series_values(raw_values);
+                        if points.len() < 2 {
+                            continue;
+                        }
+                        series.insert(
+                            metric.clone(),
+                            TimeSeries {
+                                values: points,
+                                timestamps_ms: timestamp_map
+                                    .and_then(|map| map.get(metric))
+                                    .map(series_values),
+                            },
+                        );
+                    }
+                } else {
+                    let points = series_values(collector_series);
+                    if points.len() >= 2 {
+                        series.insert(
+                            name.to_owned(),
+                            TimeSeries {
+                                values: points,
+                                timestamps_ms: None,
+                            },
+                        );
+                    }
                 }
             }
         }
@@ -159,7 +191,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
     }
 
     let mut metric_values: BTreeMap<String, Vec<(String, f64)>> = BTreeMap::new();
-    let mut series_values: BTreeMap<String, Vec<(String, Vec<f64>)>> = BTreeMap::new();
+    let mut series_values: BTreeMap<String, Vec<(String, TimeSeries)>> = BTreeMap::new();
     for benchmark in &benchmark_data {
         for (name, value) in &benchmark.metrics {
             metric_values
@@ -199,7 +231,8 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             "provider": benchmark.provider,
             "model": benchmark.model,
             "metrics": benchmark.metrics,
-            "series": benchmark.series,
+            "series": benchmark.series.iter().map(|(name, series)| (name, &series.values)).collect::<BTreeMap<_, _>>(),
+            "series_timestamps": benchmark.series.iter().filter_map(|(name, series)| series.timestamps_ms.as_ref().map(|timestamps| (name, timestamps))).collect::<BTreeMap<_, _>>(),
             "status": benchmark.status,
             "artifacts": benchmark.artifacts,
         })).collect::<Vec<_>>(),
@@ -597,7 +630,7 @@ document.querySelectorAll('.interactive-chart').forEach(chart=>{
       const series=svg.querySelector(`.series[data-series-index="${item.dataset.seriesIndex}"]`);
       if(series)series.classList.add('hovered');
     }
-    tooltip.textContent=`${item.dataset.label}: ${item.dataset.value}`;
+    tooltip.textContent=item.dataset.timestamp?`${item.dataset.label}: ${item.dataset.value} @ ${item.dataset.timestamp} ms`:`${item.dataset.label}: ${item.dataset.value}`;
     tooltip.classList.add('visible');
     positionTooltip(event);
   };
@@ -778,12 +811,22 @@ fn write_bar_svg(path: &Path, title: &str, values: &[(String, f64)]) -> Result<(
         .map_err(|error| Error::Run(format!("cannot write {}: {error}", path.display())))
 }
 
-fn write_line_svg(path: &Path, title: &str, values: &[(String, Vec<f64>)]) -> Result<(), Error> {
+fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> Result<(), Error> {
     let max = values
         .iter()
-        .flat_map(|(_, points)| points.iter().copied())
+        .flat_map(|(_, points)| points.values.iter().copied())
         .fold(0.0_f64, f64::max)
         .max(1.0);
+    let timestamp_bounds = values
+        .iter()
+        .filter_map(|(_, points)| points.timestamps_ms.as_ref())
+        .flat_map(|timestamps| timestamps.iter().copied())
+        .fold(None, |bounds: Option<(f64, f64)>, timestamp| {
+            Some(match bounds {
+                Some((min, max)) => (min.min(timestamp), max.max(timestamp)),
+                None => (timestamp, timestamp),
+            })
+        });
     let mut svg = svg_header(900.0, 460.0, title);
     append_y_axis(
         &mut svg,
@@ -797,10 +840,16 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, Vec<f64>)]) -> Re
     for (series_index, (label, points)) in values.iter().enumerate() {
         let color = ["#4472c4", "#ed7d31", "#70ad47", "#a5a5a5", "#ffc000"][series_index % 5];
         let coordinates = points
+            .values
             .iter()
             .enumerate()
             .map(|(index, value)| {
-                let x = 75.0 + index as f64 / points.len().max(1) as f64 * 800.0;
+                let x = line_x(
+                    index,
+                    points.timestamps_ms.as_deref(),
+                    timestamp_bounds,
+                    points.values.len(),
+                );
                 let y = PLOT_BOTTOM - value.max(0.0) / max * (PLOT_BOTTOM - PLOT_TOP);
                 format!("{x:.1},{y:.1}")
             })
@@ -810,11 +859,23 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, Vec<f64>)]) -> Re
             "<polyline class=\"series\" data-series-index=\"{series_index}\" data-label=\"{}\" points=\"{coordinates}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"2\"/>",
             escape(label)
         ));
-        for (index, value) in points.iter().enumerate() {
-            let x = 75.0 + index as f64 / points.len().max(1) as f64 * 800.0;
+        for (index, value) in points.values.iter().enumerate() {
+            let x = line_x(
+                index,
+                points.timestamps_ms.as_deref(),
+                timestamp_bounds,
+                points.values.len(),
+            );
             let y = PLOT_BOTTOM - value.max(0.0) / max * (PLOT_BOTTOM - PLOT_TOP);
+            let timestamp = points
+                .timestamps_ms
+                .as_ref()
+                .and_then(|timestamps| timestamps.get(index))
+                .map_or_else(String::new, |timestamp| {
+                    format!(" data-timestamp=\"{timestamp}\"")
+                });
             svg.push_str(&format!(
-                "<circle class=\"series-point\" data-series-index=\"{series_index}\" data-label=\"{}\" data-value=\"{value}\" cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"6\" fill=\"transparent\" stroke=\"none\"/>",
+                "<circle class=\"series-point\" data-series-index=\"{series_index}\" data-label=\"{}\" data-value=\"{value}\"{timestamp} cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"6\" fill=\"transparent\" stroke=\"none\"/>",
                 escape(label)
             ));
         }
@@ -827,6 +888,28 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, Vec<f64>)]) -> Re
     svg.push_str("</svg>\n");
     fs::write(path, svg)
         .map_err(|error| Error::Run(format!("cannot write {}: {error}", path.display())))
+}
+
+fn line_x(
+    index: usize,
+    timestamps: Option<&[f64]>,
+    bounds: Option<(f64, f64)>,
+    length: usize,
+) -> f64 {
+    let fraction = timestamps
+        .and_then(|timestamps| timestamps.get(index))
+        .zip(bounds)
+        .map_or_else(
+            || index as f64 / length.saturating_sub(1).max(1) as f64,
+            |(timestamp, (min, max))| {
+                if max > min {
+                    (*timestamp - min) / (max - min)
+                } else {
+                    index as f64 / length.saturating_sub(1).max(1) as f64
+                }
+            },
+        );
+    75.0 + fraction.clamp(0.0, 1.0) * 800.0
 }
 
 fn append_y_axis(
@@ -976,7 +1059,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             root.join("sweep-results/000-one/measurements/perfetto.json"),
-            r#"{"metrics":{"perfetto.scheduler_events":24,"perfetto.tracepoints":4}}"#,
+            r#"{"metrics":{"perfetto.scheduler_events":24,"perfetto.tracepoints":4},"series":{"perfetto.scheduler_events_per_s":[3,7]},"series_timestamps":{"perfetto.scheduler_events_per_s":[12000,13000]}}"#,
         )
         .unwrap();
         std::fs::write(
@@ -1029,6 +1112,10 @@ mod tests {
                 .is_file()
         );
         assert!(
+            root.join("results/sweep-comparison/series-perfetto.scheduler_events_per_s.svg")
+                .is_file()
+        );
+        assert!(
             root.join("results/sweep-comparison/metric-bpftrace-sched-latency.bpftrace.sched-latency.wakeup_latency_events.svg")
                 .is_file()
         );
@@ -1061,6 +1148,8 @@ mod tests {
         assert!(!report.contains("<object class=\"flamegraph\""));
         assert!(report.contains("Flamegraph collector status"));
         assert!(report.contains("class=\"interactive-chart\""));
+        assert!(report.contains("series-perfetto.scheduler_events_per_s.svg"));
+        assert!(report.contains("data-timestamp=\"12000\""));
         assert!(report.contains("chart-tooltip"));
         assert!(report.contains("wheel zoom"));
         assert!(report.contains("chart-expand"));
@@ -1083,13 +1172,20 @@ mod tests {
         super::write_line_svg(
             &root.join("tokens.svg"),
             "token_usage.total_tokens",
-            &[("run".into(), vec![0.0, 100.0])],
+            &[(
+                "run".into(),
+                super::TimeSeries {
+                    values: vec![0.0, 100.0],
+                    timestamps_ms: Some(vec![10.0, 20.0]),
+                },
+            )],
         )
         .unwrap();
         let svg = std::fs::read_to_string(root.join("tokens.svg")).unwrap();
         assert!(svg.contains("unit: tokens"));
         assert!(svg.contains(">0</text>"));
         assert!(svg.contains(">100</text>"));
+        assert!(svg.contains("data-timestamp=\"10\""));
         let _ = std::fs::remove_dir_all(root);
     }
 

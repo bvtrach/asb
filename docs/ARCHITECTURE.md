@@ -37,8 +37,8 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   and enlarge controls as bar charts. Built-in BPFTrace profiles remain
   bounded cumulative one-second snapshots and final aggregates (custom
   interval programs may add series), while Perfetto retains its timestamped
-  trace and aggregate extracted metrics; neither is misrepresented as a
-  sampled series;
+  trace and extracts timestamped scheduler-event and scheduler-duration
+  series; those trace timestamps are used as line-chart x coordinates;
   the Perfetto adapter validates tracefs/ftrace access before the agent process,
   then starts project-local Tracebox after the agent PID is known, filters
   scheduler events to that PID, disables process-wide scans, and records fixed
