@@ -1,7 +1,7 @@
 //! Interactive, modular setup wizard built with Ratatui.
 
 use crate::benchmark::{BenchmarkConfig, MeasurementConfig};
-use crate::{Error, install, measurements, models, project, providers, workloads};
+use crate::{Error, agents, install, measurements, models, project, providers, workloads};
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -20,21 +20,6 @@ use std::fs;
 use std::io::{self, Stdout, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-
-const AGENTS: &[&str] = &[
-    "codex",
-    "pi",
-    "opencode",
-    "workbuddy",
-    "qwen-code",
-    "mini-swe",
-    "openhands",
-    "openjiuwen",
-    "claude-code",
-    "goose",
-    "cline",
-    "continue",
-];
 
 const DESCRIPTIONS: &[&str] = &[
     "Choose one or more agents that will execute each benchmark.",
@@ -173,8 +158,7 @@ struct App {
 
 impl App {
     fn new(root: PathBuf, project: project::ProjectConfig) -> Self {
-        let agents = AGENTS
-            .iter()
+        let agents = agents::names()
             .map(|name| Choice {
                 label: (*name).into(),
                 provider: None,

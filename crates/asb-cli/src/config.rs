@@ -1,6 +1,7 @@
 //! The setup command and its small file format.
 
 use super::{Error, io_error};
+use crate::agents;
 use crate::benchmark::{BenchmarkConfig, MeasurementConfig};
 use crate::measurements;
 use crate::project;
@@ -31,23 +32,11 @@ pub fn setup(options: SetupOptions, output: &mut dyn Write) -> Result<(), Error>
     } = options;
     let (_, project_config) = project::load(std::path::Path::new("."))?;
     let agent = required(agent)?;
-    if let Some(candidate) = suggestions::closest(
-        &agent,
-        &[
-            "codex",
-            "pi",
-            "opencode",
-            "workbuddy",
-            "qwen-code",
-            "mini-swe",
-            "openhands",
-            "openjiuwen",
-            "claude-code",
-            "goose",
-            "cline",
-            "continue",
-        ],
-    ) {
+    let known_agents = agents::all()
+        .iter()
+        .map(|adapter| adapter.id())
+        .collect::<Vec<_>>();
+    if let Some(candidate) = suggestions::closest(&agent, &known_agents) {
         return Err(Error::Input(format!(
             "unknown agent `{agent}`; did you mean `{candidate}`?"
         )));
