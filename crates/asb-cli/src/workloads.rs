@@ -199,6 +199,11 @@ const FIXTURES: &[Fixture] = &[
 
 /// Populate a new project with the prompts shipped in the ASB binary.
 pub(crate) fn populate(directory: &Path) -> Result<usize, std::io::Error> {
+    workload_adapters::populate_prompts(directory)
+}
+
+/// Generic prompt materialization used by the prompt-family adapter.
+pub(super) fn populate_builtin_prompts(directory: &Path) -> Result<usize, std::io::Error> {
     let mut added = 0;
     for (name, prompt) in BUILTIN {
         let path = directory.join(format!("{name}.txt"));
@@ -212,6 +217,11 @@ pub(crate) fn populate(directory: &Path) -> Result<usize, std::io::Error> {
 
 /// Copy all bundled fixture templates into a project's managed fixture area.
 pub(crate) fn populate_fixtures(directory: &Path) -> Result<usize, std::io::Error> {
+    workload_adapters::populate_fixtures(directory)
+}
+
+/// Generic fixture materialization used by the prompt-family adapter.
+pub(super) fn populate_builtin_fixtures(directory: &Path) -> Result<usize, std::io::Error> {
     let mut added = 0;
     for fixture in FIXTURES {
         for (relative, contents) in fixture.files {
@@ -233,6 +243,15 @@ pub(crate) fn populate_fixtures(directory: &Path) -> Result<usize, std::io::Erro
 
 /// Materialize the selected fixture into the run workspace without overwriting edits.
 pub(crate) fn prepare_fixture(name: &str, directory: &Path) -> Result<usize, String> {
+    workload_adapters::find(name).map_or(Ok(0), |adapter| adapter.prepare_fixture(name, directory))
+}
+
+pub(super) fn is_builtin_prompt(name: &str) -> bool {
+    BUILTIN.iter().any(|(id, _)| *id == name)
+}
+
+/// Generic fixture setup used by the prompt-family adapter.
+pub(super) fn prepare_builtin_fixture(name: &str, directory: &Path) -> Result<usize, String> {
     let Some(fixture) = FIXTURES.iter().find(|fixture| fixture.name == name) else {
         return Ok(0);
     };
