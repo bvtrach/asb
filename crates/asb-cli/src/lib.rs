@@ -103,7 +103,9 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
             Err(error) => Err(error),
         },
         [command, rest @ ..] if command == "sweep" => match parse_sweep_args(rest) {
-            Ok((path, json, mode)) => sweep::run(&path, json, mode, stdout),
+            Ok((path, json, show_output, mode)) => {
+                sweep::run(&path, json, show_output, mode, stdout)
+            }
             Err(error) => Err(error),
         },
         [command, rest @ ..] if command == "compare" => match rest {
@@ -245,14 +247,16 @@ fn parse_run_args_named(
         .ok_or(CliError::Usage("Usage: asb run CONFIG [--record|--replay] [--cassette FILE] [--json] [--show-output] [--measurements DIR]"))
 }
 
-fn parse_sweep_args(args: &[String]) -> Result<(String, bool, Option<tape::Mode>), CliError> {
+fn parse_sweep_args(args: &[String]) -> Result<(String, bool, bool, Option<tape::Mode>), CliError> {
     let mut path = None;
     let mut json = false;
+    let mut show_output = false;
     let mut mode = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
             "--json" => json = true,
+            "--show-output" => show_output = true,
             "--record" => {
                 if mode.replace(tape::Mode::Record).is_some() {
                     return Err(CliError::Input(
@@ -281,9 +285,10 @@ fn parse_sweep_args(args: &[String]) -> Result<(String, bool, Option<tape::Mode>
         }
         index += 1;
     }
-    path.map(|value| (value, json, mode)).ok_or(CliError::Usage(
-        "Usage: asb sweep SWEEP.toml [--record|--replay] [--json]",
-    ))
+    path.map(|value| (value, json, show_output, mode))
+        .ok_or(CliError::Usage(
+            "Usage: asb sweep SWEEP.toml [--record|--replay] [--json] [--show-output]",
+        ))
 }
 
 fn write_help(output: &mut dyn Write) -> Result<(), CliError> {
@@ -484,6 +489,14 @@ mod tests {
     fn run_accepts_live_output_flag() {
         let parsed =
             super::parse_run_args(&["benchmark.toml".into(), "--show-output".into()]).unwrap();
+        assert!(parsed.2);
+    }
+
+    #[test]
+    fn sweep_accepts_live_output_flag() {
+        let parsed =
+            super::parse_sweep_args(&["sweep.toml".into(), "--show-output".into()]).unwrap();
+        assert_eq!(parsed.0, "sweep.toml");
         assert!(parsed.2);
     }
 

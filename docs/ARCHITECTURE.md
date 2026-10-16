@@ -70,6 +70,8 @@ rate, elapsed time, and token usage; `--json` changes only the representation
 of those metrics.
 Pass `--show-output` to stream the agent's stdout and stderr live for interactive
 debugging; the same output remains in the configured log.
+The same flag is accepted by `asb sweep` and is forwarded to each underlying
+`run`, so sweeps do not maintain a second output path.
 An agent is not considered successful solely because its process exits with
 status zero: known authentication, unsupported-endpoint, and provider-error
 messages are treated as failures so sweeps cannot report a false success.
