@@ -6594,7 +6594,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   const edges = [...canvas.querySelectorAll('.edge')];
   const clusters = [...canvas.querySelectorAll('.cluster')];
   const allElements = [...nodes, ...edges, ...clusters];
-  const state = { scale: 1, tx: 0, ty: 0, drag: null, selected: null, animation: null, suppressClickUntil: 0 };
+  const state = { scale: 1, tx: 0, ty: 0, drag: null, pinch: null, pointers: new Map(), selected: null, animation: null, suppressClickUntil: 0 };
   const viewBox = svg.viewBox.baseVal;
   const titles = new Map();
 
@@ -6728,10 +6728,66 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     element.addEventListener('click', (event) => { if (state.suppressClickUntil > performance.now()) return; event.stopPropagation(); select(element, element.classList.contains('edge') && (event.ctrlKey || event.metaKey)); });
     element.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(element); } });
   });
-  viewport.addEventListener('pointerdown', (event) => { if (event.button !== 0) return; state.drag = { x: event.clientX, y: event.clientY, tx: state.tx, ty: state.ty, moved: false }; viewport.classList.add('dragging'); viewport.setPointerCapture(event.pointerId); });
-  viewport.addEventListener('pointermove', (event) => { if (!state.drag) return; const dx = event.clientX - state.drag.x; const dy = event.clientY - state.drag.y; if (Math.hypot(dx, dy) > 4) state.drag.moved = true; state.drag.nextTx = state.drag.tx + dx; state.drag.nextTy = state.drag.ty + dy; if (!state.drag.frame) state.drag.frame = requestAnimationFrame(() => { state.tx = state.drag?.nextTx ?? state.tx; state.ty = state.drag?.nextTy ?? state.ty; state.drag.frame = 0; applyTransform(); }); });
-  viewport.addEventListener('pointerup', () => { if (state.drag?.frame) cancelAnimationFrame(state.drag.frame); if (state.drag?.nextTx !== undefined) { state.tx = state.drag.nextTx; state.ty = state.drag.nextTy; applyTransform(); } if (state.drag?.moved) state.suppressClickUntil = performance.now() + 120; state.drag = null; viewport.classList.remove('dragging'); });
-  viewport.addEventListener('pointercancel', () => { state.drag = null; viewport.classList.remove('dragging'); });
+  const pointerDistance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const pointerMidpoint = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
+  function startPinch() {
+    const points = [...state.pointers.values()];
+    if (points.length < 2) return;
+    const midpoint = pointerMidpoint(points[0], points[1]);
+    const viewportRect = viewport.getBoundingClientRect();
+    const startX = midpoint.x - viewportRect.left;
+    const startY = midpoint.y - viewportRect.top;
+    state.pinch = { distance: Math.max(1, pointerDistance(points[0], points[1])), midpoint, scale: state.scale, graphX: (startX - state.tx) / state.scale, graphY: (startY - state.ty) / state.scale, moved: false };
+    state.drag = null;
+  }
+  viewport.addEventListener('pointerdown', (event) => { if (event.button !== 0) return; state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY }); viewport.setPointerCapture(event.pointerId); if (state.pointers.size >= 2) { startPinch(); } else { state.drag = { x: event.clientX, y: event.clientY, tx: state.tx, ty: state.ty, moved: false }; } viewport.classList.add('dragging'); });
+  viewport.addEventListener('pointermove', (event) => {
+    if (!state.pointers.has(event.pointerId)) return;
+    state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (state.pointers.size >= 2) {
+      if (!state.pinch) startPinch();
+      const points = [...state.pointers.values()];
+      const midpoint = pointerMidpoint(points[0], points[1]);
+      const ratio = pointerDistance(points[0], points[1]) / state.pinch.distance;
+      const nextScale = Math.max(.02, Math.min(4, state.pinch.scale * ratio));
+      const viewportRect = viewport.getBoundingClientRect();
+      const x = midpoint.x - viewportRect.left;
+      const y = midpoint.y - viewportRect.top;
+      state.scale = nextScale;
+      state.tx = x - state.pinch.graphX * nextScale;
+      state.ty = y - state.pinch.graphY * nextScale;
+      state.pinch.moved = true;
+      applyTransform();
+      return;
+    }
+    if (!state.drag) return;
+    const dx = event.clientX - state.drag.x;
+    const dy = event.clientY - state.drag.y;
+    if (Math.hypot(dx, dy) > 4) state.drag.moved = true;
+    state.drag.nextTx = state.drag.tx + dx;
+    state.drag.nextTy = state.drag.ty + dy;
+    if (!state.drag.frame) state.drag.frame = requestAnimationFrame(() => { state.tx = state.drag?.nextTx ?? state.tx; state.ty = state.drag?.nextTy ?? state.ty; state.drag.frame = 0; applyTransform(); });
+  });
+  function finishPointer(event) {
+    state.pointers.delete(event.pointerId);
+    if (state.pinch) {
+      if (state.pinch.moved) state.suppressClickUntil = performance.now() + 180;
+      state.pinch = null;
+      if (state.pointers.size === 1) {
+        const point = [...state.pointers.values()][0];
+        state.drag = { x: point.x, y: point.y, tx: state.tx, ty: state.ty, moved: true };
+        return;
+      }
+    }
+    if (state.pointers.size > 0) return;
+    if (state.drag?.frame) cancelAnimationFrame(state.drag.frame);
+    if (state.drag?.nextTx !== undefined) { state.tx = state.drag.nextTx; state.ty = state.drag.nextTy; applyTransform(); }
+    if (state.drag?.moved) state.suppressClickUntil = performance.now() + 120;
+    state.drag = null;
+    viewport.classList.remove('dragging');
+  }
+  viewport.addEventListener('pointerup', finishPointer);
+  viewport.addEventListener('pointercancel', finishPointer);
   viewport.addEventListener('click', (event) => { if (state.suppressClickUntil > performance.now()) return; if (event.target === viewport || event.target === canvas) clearSelection(); });
   viewport.addEventListener('wheel', (event) => { event.preventDefault(); const rect = viewport.getBoundingClientRect(); const x = event.clientX - rect.left; const y = event.clientY - rect.top; const next = Math.max(.02, Math.min(4, state.scale * Math.pow(1.0018, -event.deltaY))); state.tx = x - (x - state.tx) * next / state.scale; state.ty = y - (y - state.ty) * next / state.scale; state.scale = next; applyTransform(); }, { passive: false });
   document.getElementById('fit').addEventListener('click', () => { clearSelection(); fit(); });
