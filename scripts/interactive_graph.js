@@ -225,7 +225,6 @@
       clearTimeout(hoverTimers.get(element));
       hoverTimers.set(element, setTimeout(() => {
         if (!element.classList.contains('is-pinned')) element.classList.remove('is-hovered');
-        if (tooltipElement === element) { tooltipElement = null; tooltipEvent = null; tooltip.style.display = 'none'; }
       }, 80));
     });
     element.addEventListener('click', (event) => {
@@ -324,6 +323,18 @@
   viewport.addEventListener('pointerup', finishPointer);
   viewport.addEventListener('pointercancel', finishPointer);
   viewport.addEventListener('lostpointercapture', () => { if (state.pointers.size === 0) { state.drag = null; state.pinch = null; state.pressTarget = null; viewport.classList.remove('dragging'); } });
+  viewport.addEventListener('pointermove', (event) => {
+    if (!graphElementFromTarget(event.target)) {
+      tooltipElement = null;
+      tooltipEvent = null;
+      tooltip.style.display = 'none';
+    }
+  });
+  viewport.addEventListener('pointerleave', () => {
+    tooltipElement = null;
+    tooltipEvent = null;
+    tooltip.style.display = 'none';
+  });
   viewport.addEventListener('click', (event) => {
     if (state.suppressClickUntil > performance.now()) return;
     if (event.target === viewport || event.target === canvas) clearSelection();
