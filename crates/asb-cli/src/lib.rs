@@ -171,5 +171,19 @@ mod tests {
             2
         );
         assert!(String::from_utf8_lossy(&stderr).contains("cannot be used with"));
+        stderr.clear();
+        assert_eq!(
+            run(
+                &[
+                    "run".into(),
+                    "a.toml".into(),
+                    "--respect-record-timings".into()
+                ],
+                &mut Vec::new(),
+                &mut stderr,
+            ),
+            2
+        );
+        assert!(String::from_utf8_lossy(&stderr).contains("requires --replay"));
     }
 }

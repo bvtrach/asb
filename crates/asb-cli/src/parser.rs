@@ -55,6 +55,12 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
                     "--cassette requires --record or --replay; choose a tape mode first",
                 );
             }
+            if options.respect_record_timings && mode != Some(tape::Mode::Replay) {
+                return fail(
+                    stderr,
+                    "--respect-record-timings requires --replay; recording always stores response delays",
+                );
+            }
             runner::run_with_tape(
                 &options.path,
                 options.json,
@@ -62,6 +68,7 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
                 options.measurements.as_deref(),
                 mode,
                 options.cassette.as_deref(),
+                options.respect_record_timings,
                 stdout,
             )
         }
@@ -70,11 +77,18 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
                 Ok(mode) => mode,
                 Err(error) => return fail(stderr, &error.to_string()),
             };
+            if options.respect_record_timings && mode != Some(tape::Mode::Replay) {
+                return fail(
+                    stderr,
+                    "--respect-record-timings requires --replay; recording always stores response delays",
+                );
+            }
             sweep::run(
                 &options.path,
                 options.json,
                 options.show_output,
                 mode,
+                options.respect_record_timings,
                 stdout,
             )
         }
@@ -215,6 +229,8 @@ struct RunArgs {
     record: bool,
     #[arg(long)]
     replay: bool,
+    #[arg(long, help = "replay each response after its recorded response delay")]
+    respect_record_timings: bool,
     #[arg(long)]
     cassette: Option<String>,
     #[arg(long)]
@@ -234,6 +250,8 @@ struct SweepArgs {
     record: bool,
     #[arg(long)]
     replay: bool,
+    #[arg(long, help = "replay each response after its recorded response delay")]
+    respect_record_timings: bool,
     #[arg(long)]
     json: bool,
     #[arg(long = "show-output")]

@@ -152,7 +152,9 @@ does not search the host `PATH` implicitly. To deliberately use another
 executable, set `ASB_LLM_TAPE`. Use `--cassette FILE` to choose an explicit
 path. `asb run CONFIG --replay` starts llmtape's cassette server and routes
 all supported provider endpoints to it; it refuses a missing cassette and does
-not start cli2key or connect to any live provider. Cassettes are local test
+not start cli2key or connect to any live provider. Add
+`--respect-record-timings` to `run --replay` or `sweep --replay` to reproduce
+the bounded response delays recorded in each cassette entry. Cassettes are local test
 artifacts and should not be committed when they contain provider responses.
 
 `provider models` queries live provider model catalogs. Pass a provider to query one,

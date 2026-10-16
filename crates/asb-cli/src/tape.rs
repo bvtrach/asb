@@ -29,6 +29,7 @@ impl Session {
         cassette: &Path,
         upstream: Option<&str>,
         project_executable: Option<&Path>,
+        respect_record_timings: bool,
     ) -> Result<Self, Error> {
         if mode == Mode::Replay && !cassette.is_file() {
             return Err(Error::Input(format!(
@@ -69,6 +70,9 @@ impl Session {
             Mode::Replay => {
                 command.args(["--cassette"]);
                 command.arg(cassette);
+                if respect_record_timings {
+                    command.arg("--respect-record-timings");
+                }
             }
         }
         command

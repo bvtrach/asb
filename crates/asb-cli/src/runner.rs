@@ -61,6 +61,7 @@ pub fn run_with_tape(
     measurement_dir: Option<&str>,
     mode: Option<tape::Mode>,
     cassette: Option<&str>,
+    respect_record_timings: bool,
     output: &mut dyn Write,
 ) -> Result<(), Error> {
     let config_path = Path::new(path);
@@ -76,6 +77,7 @@ pub fn run_with_tape(
             show_output,
             measurement_dir,
             tape_request,
+            respect_record_timings,
             output,
         );
     }
@@ -86,6 +88,7 @@ pub fn run_with_tape(
         show_output,
         measurement_dir,
         tape_request,
+        respect_record_timings,
         output,
     )
 }
@@ -101,6 +104,7 @@ fn run_concurrent(
     show_output: bool,
     measurement_dir: Option<&str>,
     tape_request: Option<(tape::Mode, Option<&str>)>,
+    respect_record_timings: bool,
     output: &mut dyn Write,
 ) -> Result<(), Error> {
     let mut jobs = Vec::with_capacity(config.concurrency);
@@ -146,6 +150,7 @@ fn run_concurrent(
                             show_output,
                             measurement_path,
                             mode.map(|mode| (mode, cassette_path)),
+                            respect_record_timings,
                             &mut buffer,
                         );
                         (index, result, buffer)
@@ -209,6 +214,7 @@ fn run_mode(
     show_output: bool,
     measurement_dir: Option<&str>,
     tape_request: Option<(tape::Mode, Option<&str>)>,
+    respect_record_timings: bool,
     output: &mut dyn Write,
 ) -> Result<(), Error> {
     let tape_cassette = tape_request.map(|(mode, requested)| {
@@ -278,6 +284,7 @@ fn run_mode(
             cassette,
             upstream.as_deref(),
             tape_executable.as_deref().map(Path::new),
+            respect_record_timings,
         )?)
     } else {
         None
