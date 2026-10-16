@@ -10,7 +10,7 @@
   const edges = [...canvas.querySelectorAll('.edge')];
   const clusters = [...canvas.querySelectorAll('.cluster')];
   const allElements = [...nodes, ...edges, ...clusters];
-  const state = { scale: 1, tx: 0, ty: 0, drag: null, selected: null, animation: null };
+  const state = { scale: 1, tx: 0, ty: 0, drag: null, selected: null, animation: null, suppressClickUntil: 0 };
   const viewBox = svg.viewBox.baseVal;
   const titles = new Map();
 
@@ -138,13 +138,14 @@
     element.addEventListener('pointerenter', (event) => { element.classList.add('is-hovered'); showTooltip(element, event); });
     element.addEventListener('pointermove', (event) => { if (tooltip.style.display !== 'none') showTooltip(element, event); });
     element.addEventListener('pointerleave', () => { element.classList.remove('is-hovered'); tooltip.style.display = 'none'; });
-    element.addEventListener('click', (event) => { event.stopPropagation(); select(element, element.classList.contains('edge') && (event.ctrlKey || event.metaKey)); });
+    element.addEventListener('click', (event) => { if (state.suppressClickUntil > performance.now()) return; event.stopPropagation(); select(element, element.classList.contains('edge') && (event.ctrlKey || event.metaKey)); });
     element.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(element); } });
   });
-  viewport.addEventListener('pointerdown', (event) => { if (event.button !== 0 || event.target.closest('.node, .edge, .cluster')) return; state.drag = { x: event.clientX, y: event.clientY, tx: state.tx, ty: state.ty }; viewport.classList.add('dragging'); viewport.setPointerCapture(event.pointerId); });
-  viewport.addEventListener('pointermove', (event) => { if (!state.drag) return; state.tx = state.drag.tx + event.clientX - state.drag.x; state.ty = state.drag.ty + event.clientY - state.drag.y; applyTransform(); });
-  viewport.addEventListener('pointerup', () => { state.drag = null; viewport.classList.remove('dragging'); });
-  viewport.addEventListener('click', (event) => { if (event.target === viewport || event.target === canvas) clearSelection(); });
+  viewport.addEventListener('pointerdown', (event) => { if (event.button !== 0) return; state.drag = { x: event.clientX, y: event.clientY, tx: state.tx, ty: state.ty, moved: false }; viewport.classList.add('dragging'); viewport.setPointerCapture(event.pointerId); });
+  viewport.addEventListener('pointermove', (event) => { if (!state.drag) return; const dx = event.clientX - state.drag.x; const dy = event.clientY - state.drag.y; if (Math.hypot(dx, dy) > 4) state.drag.moved = true; state.tx = state.drag.tx + dx; state.ty = state.drag.ty + dy; applyTransform(); });
+  viewport.addEventListener('pointerup', () => { if (state.drag?.moved) state.suppressClickUntil = performance.now() + 120; state.drag = null; viewport.classList.remove('dragging'); });
+  viewport.addEventListener('pointercancel', () => { state.drag = null; viewport.classList.remove('dragging'); });
+  viewport.addEventListener('click', (event) => { if (state.suppressClickUntil > performance.now()) return; if (event.target === viewport || event.target === canvas) clearSelection(); });
   viewport.addEventListener('wheel', (event) => { event.preventDefault(); const rect = viewport.getBoundingClientRect(); const x = event.clientX - rect.left; const y = event.clientY - rect.top; const next = Math.max(.02, Math.min(4, state.scale * Math.pow(1.0018, -event.deltaY))); state.tx = x - (x - state.tx) * next / state.scale; state.ty = y - (y - state.ty) * next / state.scale; state.scale = next; applyTransform(); }, { passive: false });
   document.getElementById('fit').addEventListener('click', () => { clearSelection(); fit(); });
   document.getElementById('reset').addEventListener('click', () => { clearSelection(); fit(false); });
