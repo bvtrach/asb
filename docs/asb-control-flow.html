@@ -8148,7 +8148,25 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     }
     function clearAll() { clearPinned(); setHover(null); elements.forEach((item) => item.classList.remove('is-dimmed', 'is-selected', 'is-related')); selection.textContent = 'Hover an element for details. Drag to pan; scroll to zoom.'; }
 
-    viewport.addEventListener('pointermove', (event) => { if (!state.gesture?.dragging) setHover(hitAt(event.clientX, event.clientY), event); });
+    viewport.addEventListener('pointerover', (event) => {
+      if (state.gesture?.dragging) return;
+      const target = graphAncestor(event.target);
+      if (target) setHover(target, event);
+    });
+    viewport.addEventListener('pointerout', (event) => {
+      if (state.gesture?.dragging) return;
+      const from = graphAncestor(event.target);
+      const to = graphAncestor(event.relatedTarget);
+      if (from && from === to) return;
+      if (to) setHover(to, event);
+      else if (state.hover === from) setHover(null);
+    });
+    viewport.addEventListener('pointermove', (event) => {
+      if (state.gesture?.dragging) return;
+      if (state.hover) { showTooltip(state.hover, event); return; }
+      const target = graphAncestor(event.target) || edgeTargetAtPoint(event.clientX, event.clientY);
+      if (target) setHover(target, event);
+    });
     viewport.addEventListener('pointerleave', () => { if (!state.gesture?.dragging) setHover(null); });
     viewport.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return;
