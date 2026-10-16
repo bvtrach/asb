@@ -133,7 +133,7 @@
     clearSelection();
     state.pinned = element;
     const related = relatedTo(element);
-    const pinnedParts = [element, ...related.filter((item) => item.classList.contains('edge'))];
+    const pinnedParts = element.classList.contains('edge') ? [...related] : [element, ...related.filter((item) => item.classList.contains('edge'))];
     state.pinnedParts = new Set(pinnedParts);
     state.pinnedParts.forEach((item) => item.classList.add('is-pinned', 'is-hovered'));
     selection.textContent = titleOf(element);
