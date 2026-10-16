@@ -679,6 +679,21 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     const targetScale = Math.max(.08, Math.min(2.5, Math.min(viewport.clientWidth / Math.max(box.width * 4, 420), viewport.clientHeight / Math.max(box.height * 4, 260))));
     moveTo(targetScale, viewport.clientWidth / 2 - (box.x + box.width / 2) * targetScale, viewport.clientHeight / 2 - (box.y + box.height / 2) * targetScale, true);
   }
+  function edgeEnds(edge) {
+    const parts = titleOf(edge).split('->').map((part) => part.trim());
+    if (parts.length !== 2) return [];
+    return parts.map((part) => titles.get(part)).filter(Boolean);
+  }
+  function followEdge(edge, reverse = false) {
+    const ends = edgeEnds(edge);
+    const target = ends[reverse ? 0 : 1];
+    if (target) {
+      selection.textContent = `${titleOf(edge)} → ${titleOf(target)}`;
+      center(target);
+    } else {
+      center(edge);
+    }
+  }
   function relatedTo(element) {
     const title = titleOf(element);
     const related = new Set([element]);
@@ -686,14 +701,14 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     edges.forEach((edge) => { const text = titleOf(edge); if (text.includes(title) || text.includes(element.id)) related.add(edge); });
     return related;
   }
-  function select(element) {
+  function select(element, reverseEdge = false) {
     state.selected = element;
     const related = relatedTo(element);
     allElements.forEach((item) => item.classList.toggle('is-dimmed', element.classList.contains('node') && !related.has(item)));
     allElements.forEach((item) => item.classList.toggle('is-selected', item === element));
     related.forEach((item) => item.classList.add('is-related'));
     selection.textContent = titleOf(element);
-    center(element);
+    if (element.classList.contains('edge')) followEdge(element, reverseEdge); else center(element);
   }
   function showTooltip(element, event) {
     tooltip.textContent = titleOf(element);
@@ -703,10 +718,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   }
   function clearSelection() { state.selected = null; allElements.forEach((item) => item.classList.remove('is-dimmed', 'is-selected', 'is-related')); selection.textContent = 'Hover an element for details. Drag to pan; scroll to zoom.'; }
   allElements.forEach((element) => {
-    element.addEventListener('pointerenter', (event) => { element.classList.add('is-hovered'); showTooltip(element, event); });
+    element.addEventListener('pointerenter', (event) => { element.classList.add('is-hovered'); showTooltip(element, event); if (element.classList.contains('edge')) followEdge(element); });
     element.addEventListener('pointermove', (event) => { if (tooltip.style.display !== 'none') showTooltip(element, event); });
     element.addEventListener('pointerleave', () => { element.classList.remove('is-hovered'); tooltip.style.display = 'none'; });
-    element.addEventListener('click', (event) => { event.stopPropagation(); select(element); });
+    element.addEventListener('click', (event) => { event.stopPropagation(); select(element, element.classList.contains('edge') && (event.ctrlKey || event.metaKey)); });
     element.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(element); } });
   });
   viewport.addEventListener('pointerdown', (event) => { if (event.button !== 0 || event.target.closest('.node, .edge, .cluster')) return; state.drag = { x: event.clientX, y: event.clientY, tx: state.tx, ty: state.ty }; viewport.classList.add('dragging'); viewport.setPointerCapture(event.pointerId); });
