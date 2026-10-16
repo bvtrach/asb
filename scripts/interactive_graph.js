@@ -14,7 +14,7 @@
   const viewBox = svg.viewBox.baseVal;
   const titles = new Map();
 
-  const rawTitleOf = (element) => element.querySelector(':scope > title')?.textContent?.trim() || element.querySelector('title')?.textContent?.trim() || element.id || 'graph element';
+  const rawTitleOf = (element) => element.dataset.graphTitle || element.querySelector(':scope > title')?.textContent?.trim() || element.querySelector('title')?.textContent?.trim() || element.id || 'graph element';
   const visibleNameOf = (element) => {
     const text = [...element.querySelectorAll(':scope > text, :scope > g text')].map((item) => item.textContent.trim()).filter(Boolean).join(' · ');
     return text || rawTitleOf(element);
@@ -32,6 +32,9 @@
     element.setAttribute('role', element.classList.contains('node') ? 'button' : 'img');
     element.dataset.graphTitle = title;
   });
+  // Keep Graphviz titles in data attributes for navigation, but remove the
+  // native SVG title popups so they cannot compete with the styled tooltip.
+  svg.querySelectorAll('title').forEach((title) => title.remove());
   counts.textContent = `${nodes.length} nodes · ${edges.length} edges · ${clusters.length} modules`;
   canvas.style.width = `${viewBox.width}px`;
   canvas.style.height = `${viewBox.height}px`;
