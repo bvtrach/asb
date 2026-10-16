@@ -135,6 +135,9 @@ struct CollectorResult {
     /// Bounded samples emitted by collectors that support interval output.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     series: BTreeMap<String, Vec<f64>>,
+    /// Timestamp in milliseconds for each Perfetto series sample.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    series_timestamps: BTreeMap<String, Vec<f64>>,
 }
 
 struct Collector {
@@ -373,6 +376,13 @@ impl Session {
             };
             let mut metrics = parse_collector_metrics(&collector.name, metrics_source);
             let series = parse_collector_series(&collector.name, metrics_source);
+            let (series, series_timestamps) = if collector.name == "perfetto" {
+                let (mut trace_series, timestamps) = self.perfetto_trace_series();
+                trace_series.extend(series);
+                (trace_series, timestamps)
+            } else {
+                (series, BTreeMap::new())
+            };
             if collector.name == "perfetto" {
                 self.perfetto_metrics = self.perfetto_trace_metrics();
                 metrics.extend(self.perfetto_metrics.clone());
@@ -417,6 +427,7 @@ impl Session {
                 artifact,
                 metrics,
                 series,
+                series_timestamps,
             };
             write_json(&self.dir.join(format!("{}.json", collector.name)), &result)?;
         }
@@ -550,6 +561,53 @@ impl Session {
             }
         }
         metrics
+    }
+
+    /// Extract timestamped scheduler samples directly from the Perfetto trace.
+    /// The timestamp column is retained in milliseconds so comparison graphs
+    /// use trace time rather than synthetic point indexes.
+    fn perfetto_trace_series(&self) -> (BTreeMap<String, Vec<f64>>, BTreeMap<String, Vec<f64>>) {
+        let mut series = BTreeMap::new();
+        let mut timestamps = BTreeMap::new();
+        let Some(trace) = self.perfetto_trace.as_ref().filter(|path| path.is_file()) else {
+            return (series, timestamps);
+        };
+        let Some(tool_dir) = self.tool_dir.as_ref() else {
+            return (series, timestamps);
+        };
+        let processor = tool_dir.join("perfetto/bin/trace_processor_shell");
+        if !processor.is_file() {
+            return (series, timestamps);
+        }
+        for (name, query) in [
+            (
+                "perfetto.scheduler_events_per_s",
+                "SELECT ts/1000000000 AS timestamp_s, COUNT(*) AS value FROM sched GROUP BY timestamp_s ORDER BY timestamp_s",
+            ),
+            (
+                "perfetto.scheduler_duration_ms_per_s",
+                "SELECT ts/1000000000 AS timestamp_s, SUM(dur)/1000000.0 AS value FROM sched GROUP BY timestamp_s ORDER BY timestamp_s",
+            ),
+        ] {
+            let Ok(output) = Command::new(&processor)
+                .args(["query"])
+                .arg(trace)
+                .arg(query)
+                .output()
+            else {
+                continue;
+            };
+            if !output.status.success() {
+                continue;
+            }
+            let (sample_timestamps, values) =
+                parse_perfetto_series_output(&bounded(&output.stdout));
+            if values.len() >= 2 {
+                timestamps.insert(name.into(), sample_timestamps);
+                series.insert(name.into(), values);
+            }
+        }
+        (series, timestamps)
     }
 
     fn start_snapshot(
@@ -844,6 +902,30 @@ impl Session {
         }
         PathBuf::from(tool_binary_name(name))
     }
+}
+
+fn parse_perfetto_series_output(output: &str) -> (Vec<f64>, Vec<f64>) {
+    let mut timestamps = Vec::new();
+    let mut values = Vec::new();
+    for line in output.lines() {
+        let fields = line
+            .split(',')
+            .map(|field| field.trim().trim_matches('"'))
+            .collect::<Vec<_>>();
+        if fields.len() < 2 {
+            continue;
+        }
+        let (Some(timestamp_s), Some(value)) = (parse_float(fields[0]), parse_float(fields[1]))
+        else {
+            continue;
+        };
+        timestamps.push(timestamp_s * 1_000.0);
+        values.push(value);
+        if values.len() >= 2_048 {
+            break;
+        }
+    }
+    (timestamps, values)
 }
 
 /// Extract token usage from environment conventions, agent output, and an
@@ -1471,6 +1553,7 @@ fn write_unavailable(path: &Path, collector: &str, error: String) -> Result<(), 
             artifact: None,
             metrics: BTreeMap::new(),
             series: BTreeMap::new(),
+            series_timestamps: BTreeMap::new(),
         },
     )
 }
@@ -2896,5 +2979,14 @@ mod tests {
         let config = perfetto_config(Some(42));
         assert!(config.contains("pid_filter: 42"));
         assert!(config.contains("scan_all_processes_on_start: false"));
+    }
+
+    #[test]
+    fn parses_perfetto_csv_series_with_trace_timestamps() {
+        let (timestamps, values) = parse_perfetto_series_output(
+            "\"timestamp_s\",\"value\"\n\"12\",\"3\"\n\"13.5\",\"7\"\n",
+        );
+        assert_eq!(timestamps, vec![12_000.0, 13_500.0]);
+        assert_eq!(values, vec![3.0, 7.0]);
     }
 }

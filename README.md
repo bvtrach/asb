@@ -96,7 +96,9 @@ into a line SVG with the same hover, zoom, pan, reset, and enlarge controls as
 bar charts. BPFTrace custom programs can provide additional series when they
 print interval-scoped `@asb_*` values; the built-in profiles now emit
 cumulative one-second `@asb_*` snapshots as well as their final aggregates.
-Perfetto remains a timestamped native trace plus extracted aggregate metrics.
+Perfetto remains the authoritative timestamped native trace and now also
+extracts timestamped scheduler-event and scheduler-duration series from the
+trace processor; those timestamps are used as the line-chart x coordinates.
 If perf permissions,
 samples, or FlameGraph tools are unavailable, `flamegraph.json` records the
 reason and status as `unavailable`; an ordinary `asb run` is unaffected.
