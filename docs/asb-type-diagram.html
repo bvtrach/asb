@@ -635,6 +635,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   const state = { scale: 1, tx: 0, ty: 0, drag: null, pinch: null, pointers: new Map(), pressTarget: null, pinned: null, pinnedParts: new Set(), animation: null, suppressClickUntil: 0, ignoreNextClick: false };
   const viewBox = svg.viewBox.baseVal;
   const titles = new Map();
+  let tooltipFrame = 0;
+  let tooltipEvent = null;
+  let tooltipElement = null;
 
   const rawTitleOf = (element) => element.dataset.graphTitle || element.querySelector(':scope > title')?.textContent?.trim() || element.querySelector('title')?.textContent?.trim() || element.id || 'graph element';
   const visibleNameOf = (element) => {
@@ -761,16 +764,26 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     selection.textContent = titleOf(element);
     if (element.classList.contains('edge')) followEdge(element, reverseEdge); else centerElements([...related]);
   }
-  function showTooltip(element, event) {
-    tooltip.textContent = titleOf(element);
+  function renderTooltip() {
+    tooltipFrame = 0;
+    if (!tooltipElement || !tooltipEvent) return;
+    const event = tooltipEvent;
+    tooltip.textContent = titleOf(tooltipElement);
     tooltip.style.display = 'block';
-    tooltip.style.left = `${Math.min(event.clientX + 14, window.innerWidth - tooltip.offsetWidth - 12)}px`;
-    tooltip.style.top = `${Math.min(event.clientY + 14, window.innerHeight - tooltip.offsetHeight - 12)}px`;
+    // Keep positioning independent of offsetWidth/offsetHeight reads. Those
+    // synchronous layout queries are expensive on the large SVG flow graphs.
+    tooltip.style.left = `${Math.max(12, Math.min(event.clientX + 14, window.innerWidth - 372))}px`;
+    tooltip.style.top = `${Math.max(12, Math.min(event.clientY + 14, window.innerHeight - 84))}px`;
+  }
+  function showTooltip(element, event) {
+    tooltipElement = element;
+    tooltipEvent = event;
+    if (!tooltipFrame) tooltipFrame = requestAnimationFrame(renderTooltip);
   }
   allElements.forEach((element) => {
     element.addEventListener('pointerenter', (event) => { element.classList.add('is-hovered'); showTooltip(element, event); });
     element.addEventListener('pointermove', (event) => { if (tooltip.style.display !== 'none') showTooltip(element, event); });
-    element.addEventListener('pointerleave', () => { if (!element.classList.contains('is-pinned')) element.classList.remove('is-hovered'); tooltip.style.display = 'none'; });
+    element.addEventListener('pointerleave', () => { if (!element.classList.contains('is-pinned')) element.classList.remove('is-hovered'); tooltipElement = null; tooltipEvent = null; tooltip.style.display = 'none'; });
     element.addEventListener('click', (event) => {
       if (state.ignoreNextClick) { state.ignoreNextClick = false; return; }
       if (state.suppressClickUntil > performance.now()) return;
@@ -782,6 +795,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   const pointerDistance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
   const pointerMidpoint = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
   function graphElementFromTarget(target) {
+    if (target?.closest) {
+      const closest = target.closest('.node, .edge, .cluster');
+      if (closest) return closest;
+    }
     let current = target;
     while (current && current !== viewport) {
       if (current.classList?.contains('node') || current.classList?.contains('edge') || current.classList?.contains('cluster')) return current;
@@ -828,7 +845,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     if (!state.drag.frame) state.drag.frame = requestAnimationFrame(() => { state.tx = state.drag?.nextTx ?? state.tx; state.ty = state.drag?.nextTy ?? state.ty; state.drag.frame = 0; applyTransform(); });
   });
   function finishPointer(event) {
-    const pressTarget = state.pressTarget;
+    const pressTarget = state.pressTarget || graphElementFromTarget(event.target);
     const wasPinching = Boolean(state.pinch);
     state.pointers.delete(event.pointerId);
     if (state.pinch) {
