@@ -68,6 +68,30 @@ function responseHeaders(headers) {
   return result;
 }
 
+// Some agent CLIs emit Anthropic server-tool descriptors without the
+// input_schema required by the Anthropic wire format.  The loopback bridge is
+// deliberately provider-neutral, so make that descriptor valid while keeping
+// the request deterministic for recording and replay.  This does not invent
+// tool calls; it only supplies the empty schema required for validation.
+function normalizeRequestBody(url, body) {
+  if (!body || !url.includes("/messages")) return body;
+  try {
+    const parsed = JSON.parse(body);
+    if (!Array.isArray(parsed.tools)) return body;
+    let changed = false;
+    parsed.tools = parsed.tools.map((tool) => {
+      if (tool && tool.type === "web_search_20250305" && !tool.input_schema) {
+        changed = true;
+        return { ...tool, input_schema: { type: "object", properties: {} } };
+      }
+      return tool;
+    });
+    return changed ? JSON.stringify(parsed) : body;
+  } catch {
+    return body;
+  }
+}
+
 function requestKey(request) {
   return JSON.stringify([request.method, request.url, request.body]);
 }
@@ -87,11 +111,12 @@ async function handle(request, response) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
   }
   const body = boundedBody(chunks);
+  const normalizedBody = normalizeRequestBody(request.url || "/", body.toString("utf8"));
   const recordedRequest = {
     method: request.method || "GET",
     url: request.url || "/",
     headers: redactHeaders(Object.fromEntries(Object.entries(request.headers))),
-    body: body.length ? body.toString("utf8") : null,
+    body: body.length ? normalizedBody : null,
   };
 
   if (mode === "replay") {
@@ -124,7 +149,7 @@ async function handle(request, response) {
   const upstreamResponse = await fetch(target, {
     method: recordedRequest.method,
     headers: forwardedHeaders,
-    body: body.length ? body : undefined,
+    body: body.length ? Buffer.from(normalizedBody) : undefined,
   });
   const responseBody = await upstreamResponse.text();
   const recordedResponse = {
