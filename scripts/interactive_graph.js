@@ -84,7 +84,7 @@
         const hit = path.cloneNode(false);
         hit.classList.add('edge-hitbox');
         hit.removeAttribute('marker-start'); hit.removeAttribute('marker-mid'); hit.removeAttribute('marker-end');
-        hit.setAttribute('stroke', 'transparent'); hit.setAttribute('stroke-width', '10'); hit.setAttribute('fill', 'none'); hit.setAttribute('pointer-events', 'stroke');
+        hit.setAttribute('stroke', 'transparent'); hit.setAttribute('stroke-width', '12'); hit.setAttribute('fill', 'none'); hit.setAttribute('pointer-events', 'bounding-box');
         element.appendChild(hit);
       });
     });
