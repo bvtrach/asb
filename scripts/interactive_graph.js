@@ -25,7 +25,7 @@
     suppressClickUntil: 0, tooltipFrame: 0, tooltipElement: null,
     tooltipEvent: null, hoverSwitchTimer: 0, pendingHover: null, pendingEvent: null,
   };
-  canvas.style.transform = `translate3d(${state.tx}px, ${state.ty}px, 0) scale(${state.scale})`;
+  canvas.style.transform = `translate(${state.tx}px, ${state.ty}px) scale(${state.scale})`;
   requestAnimationFrame(initialize);
   return;
 
@@ -93,7 +93,7 @@
     svg.querySelectorAll('title').forEach((title) => title.remove());
     document.getElementById('counts').textContent = `${nodes.length} nodes · ${edges.length} edges · ${clusters.length} modules`;
 
-    function applyTransform() { canvas.style.transform = `translate3d(${state.tx}px, ${state.ty}px, 0) scale(${state.scale})`; }
+    function applyTransform() { canvas.style.transform = `translate(${state.tx}px, ${state.ty}px) scale(${state.scale})`; }
     function scheduleTransform() { if (!state.transformFrame) state.transformFrame = requestAnimationFrame(() => { state.transformFrame = 0; applyTransform(); }); }
     function moveTo(scale, tx, ty, animated = true) {
       cancelAnimationFrame(state.animation);
