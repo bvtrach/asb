@@ -122,7 +122,7 @@
     return related;
   }
   function clearSelection() {
-    state.pinned?.classList.remove('is-pinned');
+    state.pinned?.classList.remove('is-pinned', 'is-hovered');
     state.pinned = null;
     allElements.forEach((item) => item.classList.remove('is-dimmed', 'is-selected', 'is-related'));
     selection.textContent = 'Hover an element for details. Drag to pan; scroll to zoom.';
@@ -131,7 +131,7 @@
     if (state.pinned === element) { clearSelection(); return; }
     clearSelection();
     state.pinned = element;
-    element.classList.add('is-pinned');
+    element.classList.add('is-pinned', 'is-hovered');
     const related = relatedTo(element);
     selection.textContent = titleOf(element);
     if (element.classList.contains('edge')) followEdge(element, reverseEdge); else centerElements([...related]);
@@ -145,7 +145,7 @@
   allElements.forEach((element) => {
     element.addEventListener('pointerenter', (event) => { element.classList.add('is-hovered'); showTooltip(element, event); });
     element.addEventListener('pointermove', (event) => { if (tooltip.style.display !== 'none') showTooltip(element, event); });
-    element.addEventListener('pointerleave', () => { element.classList.remove('is-hovered'); tooltip.style.display = 'none'; });
+    element.addEventListener('pointerleave', () => { if (!element.classList.contains('is-pinned')) element.classList.remove('is-hovered'); tooltip.style.display = 'none'; });
     element.addEventListener('click', (event) => { if (state.suppressClickUntil > performance.now()) return; event.stopPropagation(); select(element, element.classList.contains('edge') && (event.ctrlKey || event.metaKey)); });
     element.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); select(element); } });
   });
