@@ -77,8 +77,21 @@ function normalizeRequestBody(url, body) {
   if (!body || (!url.includes("/messages") && !url.includes("/responses"))) return body;
   try {
     const parsed = JSON.parse(body);
-    if (!Array.isArray(parsed.tools)) return body;
     let changed = false;
+    // Codex 0.162 emits an internal Responses input item named
+    // `additional_tools`. The local bridge intentionally does not expose that
+    // internal server-tool type. It is optional metadata, so omit it at the
+    // tape boundary while retaining the actual agent tools and prompt. The
+    // normalized body is used for both forwarding and cassette keys, making
+    // record/replay deterministic.
+    if (url.includes("/responses") && Array.isArray(parsed.input)) {
+      const filtered = parsed.input.filter((item) => item?.type !== "additional_tools");
+      if (filtered.length !== parsed.input.length) {
+        parsed.input = filtered;
+        changed = true;
+      }
+    }
+    if (!Array.isArray(parsed.tools)) return changed ? JSON.stringify(parsed) : body;
     parsed.tools = parsed.tools
       .filter((tool) => {
         // The local bridge supports function tools.  Cline's Responses

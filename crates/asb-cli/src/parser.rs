@@ -89,6 +89,7 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
                 options.show_output,
                 mode,
                 options.respect_record_timings,
+                options.cassette_root.as_deref().map(std::path::Path::new),
                 stdout,
             )
         }
@@ -256,6 +257,9 @@ struct SweepArgs {
     json: bool,
     #[arg(long = "show-output")]
     show_output: bool,
+    /// Separate cassette root for recording, or the record root when replaying.
+    #[arg(long, value_name = "DIR")]
+    cassette_root: Option<String>,
 }
 
 #[derive(Debug, Args)]

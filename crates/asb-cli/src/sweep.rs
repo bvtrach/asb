@@ -23,6 +23,7 @@ pub fn run(
     show_output: bool,
     mode: Option<crate::tape::Mode>,
     respect_record_timings: bool,
+    cassette_root: Option<&Path>,
     output: &mut dyn Write,
 ) -> Result<(), Error> {
     let sweep_path = Path::new(path);
@@ -114,14 +115,23 @@ pub fn run(
         std::fs::write(&isolated_path, serialized).map_err(|error| {
             Error::Run(format!("cannot write {}: {error}", isolated_path.display()))
         })?;
-        let cassette = None;
+        let cassette = cassette_root.map(|root| {
+            root.join(format!("{index:03}-{}", safe_name(&config_path)))
+                .join("cassettes")
+                .join(format!(
+                    "benchmark-{}-{}-{}.jsonl",
+                    safe_component(&config.agent),
+                    safe_component(&config.workload),
+                    safe_component(&config.model)
+                ))
+        });
         if let Err(error) = runner::run_with_tape(
             isolated_path.to_string_lossy().as_ref(),
             json,
             show_output,
             None,
             mode,
-            cassette,
+            cassette.as_deref().and_then(|path| path.to_str()),
             respect_record_timings,
             output,
         ) {
@@ -212,6 +222,19 @@ fn safe_name(path: &Path) -> String {
         .collect()
 }
 
+fn safe_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::run;
@@ -241,6 +264,7 @@ mod tests {
             false,
             None,
             false,
+            None,
             &mut Vec::new(),
         )
         .expect_err("normal benchmark must be rejected");
@@ -256,6 +280,7 @@ mod tests {
             false,
             None,
             false,
+            None,
             &mut Vec::new(),
         )
         .expect_err("parent traversal must be rejected");
@@ -277,6 +302,7 @@ mod tests {
             false,
             None,
             false,
+            None,
             &mut Vec::new(),
         )
         .expect_err("invalid agent leaves a failed sweep");
