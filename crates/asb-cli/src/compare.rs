@@ -256,8 +256,29 @@ fn benchmark_identity(path: &Path) -> Result<(String, String, String, String), E
 
 fn artifact_links(sweep_parent: &Path, result_dir: &Path) -> Vec<String> {
     let mut files = Vec::new();
+    // Measurement artifacts are the primary evidence for a comparison. Add
+    // them before the bounded recursive inventory so a large external
+    // workload workspace cannot crowd the bpftrace/perfetto SVGs out of the
+    // HTML report's artifact links.
+    let measurement_dir = result_dir.join("measurements");
+    if let Ok(entries) = fs::read_dir(&measurement_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with("bpftrace-") || name.starts_with("perfetto-metric-")
+                    })
+            {
+                files.push(path);
+            }
+        }
+    }
     collect_artifacts(result_dir, 0, &mut files);
     files.sort();
+    files.dedup();
     files
         .into_iter()
         .filter(|path| path.file_name().and_then(|name| name.to_str()) != Some("run.json"))
@@ -419,23 +440,44 @@ fn write_html_report(
             benchmark.status.as_ref().map_or(String::new(), |status| format!("<span class=\"status\">{}</span>", escape(status))),
             ));
     }
-    html.push_str("</tbody></table></div></section><section><div class=\"section-title\"><h2>Charts</h2><p class=\"muted\">SVG files are linked below and remain available for download.</p></div><div class=\"charts\">");
-    for graph in graphs {
-        let svg = fs::read_to_string(comparison_dir.join(graph)).map_err(|error| {
-            Error::Run(format!("cannot read generated chart {}: {error}", graph))
-        })?;
-        html.push_str(&format!(
-            "<figure class=\"interactive-chart\" data-graph=\"{}\"><div class=\"chart-backdrop\" aria-hidden=\"true\"></div><div class=\"chart-toolbar\"><strong>{}</strong><span><button type=\"button\" class=\"chart-reset\">Reset view</button><button type=\"button\" class=\"chart-expand\" aria-label=\"Enlarge chart\">Enlarge</button><button type=\"button\" class=\"chart-close\" aria-label=\"Close enlarged chart\" hidden>Close</button></span></div><div class=\"chart-stage\"><div class=\"chart-tooltip\" role=\"status\" aria-live=\"polite\"></div>{svg}</div><figcaption><a href=\"{}\" download>Download SVG</a></figcaption></figure>",
-            escape(graph),
-            escape(graph.strip_suffix(".svg").unwrap_or(graph)),
-            escape(graph),
-        ));
+    let bpftrace_graphs = graphs
+        .iter()
+        .filter(|graph| {
+            graph.starts_with("metric-bpftrace-") || graph.starts_with("series-bpftrace-")
+        })
+        .collect::<Vec<_>>();
+    if !bpftrace_graphs.is_empty() {
+        html.push_str("</tbody></table></div></section><section><div class=\"section-title\"><h2>bpftrace profiles</h2><p class=\"muted\">Cross-run SVG graphs for every bpftrace aggregate emitted by the selected profiles.</p></div><div class=\"charts\">");
+        for graph in &bpftrace_graphs {
+            html.push_str(&chart_figure(&comparison_dir, graph)?);
+        }
+        html.push_str("</div></section>");
+    } else {
+        html.push_str("</tbody></table></div></section>");
+    }
+    html.push_str("<section><div class=\"section-title\"><h2>Charts</h2><p class=\"muted\">SVG files are linked below and remain available for download.</p></div><div class=\"charts\">");
+    for graph in graphs
+        .iter()
+        .filter(|graph| !bpftrace_graphs.iter().any(|bpf| *bpf == *graph))
+    {
+        html.push_str(&chart_figure(&comparison_dir, graph)?);
     }
     html.push_str("</div></section><footer>Generated locally by <code>asb compare</code>. No provider or agent was contacted.</footer></main>");
     html.push_str(INTERACTIVE_SCRIPT);
     html.push_str(HTML_SCRIPT);
     fs::write(comparison_dir.join("report.html"), html)
         .map_err(|error| Error::Run(format!("cannot write HTML report: {error}")))
+}
+
+fn chart_figure(comparison_dir: &Path, graph: &str) -> Result<String, Error> {
+    let svg = fs::read_to_string(comparison_dir.join(graph))
+        .map_err(|error| Error::Run(format!("cannot read generated chart {}: {error}", graph)))?;
+    Ok(format!(
+        "<figure class=\"interactive-chart\" data-graph=\"{}\"><div class=\"chart-backdrop\" aria-hidden=\"true\"></div><div class=\"chart-toolbar\"><strong>{}</strong><span><button type=\"button\" class=\"chart-reset\">Reset view</button><button type=\"button\" class=\"chart-expand\" aria-label=\"Enlarge chart\">Enlarge</button><button type=\"button\" class=\"chart-close\" aria-label=\"Close enlarged chart\" hidden>Close</button></span></div><div class=\"chart-stage\"><div class=\"chart-tooltip\" role=\"status\" aria-live=\"polite\"></div>{svg}</div><figcaption><a href=\"{}\" download>Download SVG</a></figcaption></figure>",
+        escape(graph),
+        escape(graph.strip_suffix(".svg").unwrap_or(graph)),
+        escape(graph),
+    ))
 }
 
 fn title_case(value: &str) -> String {
@@ -833,6 +875,14 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir_all(root.join("sweep-results/000-one/measurements")).unwrap();
+        std::fs::create_dir_all(root.join("sweep-results/000-one/workspace")).unwrap();
+        for index in 0..300 {
+            std::fs::write(
+                root.join(format!("sweep-results/000-one/workspace/file-{index}.txt")),
+                "external workload evidence",
+            )
+            .unwrap();
+        }
         std::fs::write(
             root.join("one.toml"),
             "agent=\"codex\"\nworkload=\"bug-fix\"\nprovider=\"local\"\nmodel=\"m\"\n",
@@ -913,6 +963,7 @@ mod tests {
         assert!(report.contains("perfetto-metric-scheduler_events.svg"));
         assert!(report.contains("bpftrace profile SVG"));
         assert!(report.contains("bpftrace-sched-latency.svg"));
+        assert!(report.contains("bpftrace profiles"));
         assert!(report.contains("class=\"interactive-chart\""));
         assert!(report.contains("chart-tooltip"));
         assert!(report.contains("wheel zoom"));
