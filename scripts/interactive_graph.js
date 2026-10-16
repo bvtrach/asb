@@ -96,7 +96,7 @@
   }
   function clearSelection() { state.selected = null; allElements.forEach((item) => item.classList.remove('is-dimmed', 'is-selected', 'is-related')); selection.textContent = 'Hover an element for details. Drag to pan; scroll to zoom.'; }
   allElements.forEach((element) => {
-    element.addEventListener('pointerenter', (event) => { element.classList.add('is-hovered'); showTooltip(element, event); if (element.classList.contains('edge')) followEdge(element); });
+    element.addEventListener('pointerenter', (event) => { element.classList.add('is-hovered'); showTooltip(element, event); });
     element.addEventListener('pointermove', (event) => { if (tooltip.style.display !== 'none') showTooltip(element, event); });
     element.addEventListener('pointerleave', () => { element.classList.remove('is-hovered'); tooltip.style.display = 'none'; });
     element.addEventListener('click', (event) => { event.stopPropagation(); select(element, element.classList.contains('edge') && (event.ctrlKey || event.metaKey)); });
