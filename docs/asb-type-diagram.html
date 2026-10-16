@@ -35,13 +35,11 @@ h1 { font-size: clamp(20px, 3vw, 32px); line-height: 1.1; margin: 0; }
 .canvas { contain: layout paint; height: 100%; left: 0; position: absolute; top: 0; transform-origin: 0 0; user-select: none; will-change: transform; }
 .canvas svg { display: block; max-width: none; text-rendering: optimizeSpeed; }
 .viewport.dragging .canvas svg { pointer-events: none; }
-.canvas .node, .canvas .edge, .canvas .cluster { cursor: pointer; transition: opacity .1s ease; }
+.canvas .node, .canvas .edge, .canvas .cluster { cursor: pointer; }
 .canvas .node.is-hovered > polygon, .canvas .node.is-hovered > ellipse, .canvas .node.is-hovered > path { fill: #eff6ff !important; stroke: #3b82f6 !important; stroke-width: 2px !important; }
 .canvas .edge.is-hovered > path, .canvas .edge.is-hovered > polygon { stroke: #2563eb !important; stroke-width: 2.4px !important; }
 .canvas .cluster.is-hovered > path { stroke: #60a5fa !important; stroke-width: 2px !important; }
-.canvas .node:hover, .canvas .edge:hover, .canvas .cluster:hover { opacity: .94; }
 .canvas .is-dimmed { opacity: .18; }
-.canvas .is-selected { opacity: .96; }
 .canvas .is-related path, .canvas .is-related polygon { stroke: #2563eb !important; stroke-width: 2.5px !important; }
 .tooltip { background: rgba(15, 23, 42, .97); border: 1px solid #475569; border-radius: 8px; box-shadow: 0 8px 24px rgba(15, 23, 42, .24); color: #f8fafc; display: none; font-size: 12px; line-height: 1.45; max-width: 360px; padding: 9px 11px; pointer-events: none; position: fixed; white-space: pre-wrap; z-index: 10; }
 .sr-only { clip: rect(0, 0, 0, 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
