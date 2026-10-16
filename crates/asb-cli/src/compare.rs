@@ -323,6 +323,11 @@ fn write_html_report(
     }
 
     let mut html = String::from(HTML_HEAD);
+    html = html.replacen(
+        "</style></head>",
+        &format!("{}\n</style></head>", INTERACTIVE_STYLE),
+        1,
+    );
     html.push_str("<main class=\"shell\">");
     html.push_str("<header class=\"hero\"><p class=\"eyebrow\">ASB BENCHMARK REPORT</p><h1>Sweep comparison</h1><p>Explore benchmark results and measurements from this sweep. Use the filters to focus the report without rerunning anything.</p></header>");
     html.push_str("<section class=\"explain\"><strong>How to read this report</strong><p>Each row is one agent/provider/model/workload combination. Runtime, success rate, token usage, and structured system measurements are summarized in the table and charts. The complete machine-readable evidence inventory is available in comparison.json.</p></section>");
@@ -370,9 +375,18 @@ fn write_html_report(
     }
     html.push_str("</tbody></table></div></section><section><div class=\"section-title\"><h2>Charts</h2><p class=\"muted\">SVG files are linked below and remain available for download.</p></div><div class=\"charts\">");
     for graph in graphs {
-        html.push_str(&format!("<figure><a href=\"{}\"><img src=\"{}\" loading=\"lazy\" alt=\"{}\"></a><figcaption><a href=\"{}\">{}</a></figcaption></figure>", escape(graph), escape(graph), escape(graph), escape(graph), escape(graph)));
+        let svg = fs::read_to_string(comparison_dir.join(graph)).map_err(|error| {
+            Error::Run(format!("cannot read generated chart {}: {error}", graph))
+        })?;
+        html.push_str(&format!(
+            "<figure class=\"interactive-chart\" data-graph=\"{}\"><div class=\"chart-toolbar\"><strong>{}</strong><button type=\"button\" class=\"chart-reset\">Reset view</button></div><div class=\"chart-stage\"><div class=\"chart-tooltip\" role=\"status\" aria-live=\"polite\"></div>{svg}</div><figcaption><a href=\"{}\" download>Download SVG</a></figcaption></figure>",
+            escape(graph),
+            escape(graph.strip_suffix(".svg").unwrap_or(graph)),
+            escape(graph),
+        ));
     }
     html.push_str("</div></section><footer>Generated locally by <code>asb compare</code>. No provider or agent was contacted.</footer></main>");
+    html.push_str(INTERACTIVE_SCRIPT);
     html.push_str(HTML_SCRIPT);
     fs::write(comparison_dir.join("report.html"), html)
         .map_err(|error| Error::Run(format!("cannot write HTML report: {error}")))
@@ -388,6 +402,69 @@ fn title_case(value: &str) -> String {
 const HTML_HEAD: &str = r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ASB sweep report</title><style>
 :root{color-scheme:light;--ink:#18212b;--muted:#61707f;--line:#dce4ec;--panel:#fff;--accent:#1769aa;--accent-soft:#e8f2fa;--bg:#f4f7fa}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.shell{max-width:1500px;margin:auto;padding:36px 28px 56px}.hero{background:linear-gradient(135deg,#12344d,#1769aa);color:#fff;border-radius:18px;padding:42px 46px;box-shadow:0 14px 32px #12344d33}.hero h1{font-size:clamp(2rem,4vw,3.4rem);line-height:1.05;margin:4px 0 14px;letter-spacing:-.04em}.hero p{max-width:760px;margin:0;color:#e5f2fb;font-size:16px}.eyebrow{font-size:11px!important;letter-spacing:.16em;font-weight:700}.explain,.filters,section{background:var(--panel);border:1px solid var(--line);border-radius:14px;margin-top:20px;padding:24px;box-shadow:0 4px 14px #17324d0b}.explain{border-left:4px solid var(--accent)}h2{font-size:19px;margin:0}.section-title{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}.filter-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px}fieldset{border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:0}legend{font-weight:700;color:var(--accent);padding:0 5px}label{display:flex;gap:8px;align-items:flex-start;margin:6px 0;color:var(--muted);overflow-wrap:anywhere}input{accent-color:var(--accent);margin-top:4px}.filter-count,.muted{color:var(--muted);margin:14px 0 0}.text-link,a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}button{background:#fff;border:1px solid #b9c9d8;border-radius:7px;color:var(--accent);cursor:pointer;padding:7px 11px;margin-left:6px}button:hover{background:var(--accent-soft)}.table-wrap{overflow:auto}table{border-collapse:collapse;min-width:100%;white-space:nowrap}th{text-align:left;background:#eef4f8;color:#405466;font-size:12px;letter-spacing:.04em;text-transform:uppercase}th,td{border-bottom:1px solid var(--line);padding:12px 10px;vertical-align:top}.links{white-space:normal;min-width:170px}.links a{display:inline-block;margin:0 8px 5px 0;font-size:12px}.status{display:block;color:#9a4b00;background:#fff4e5;border-radius:5px;font-size:11px;padding:3px 6px;margin-top:4px;max-width:260px;white-space:normal}.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px}.charts figure{margin:0;border:1px solid var(--line);border-radius:10px;padding:10px;background:#fbfdff}.charts img{width:100%;height:auto;display:block}.charts figcaption{padding:8px 2px 2px;font-size:12px;overflow-wrap:anywhere}footer{color:var(--muted);text-align:center;padding:28px 0 0}code{background:#e9eef3;border-radius:4px;padding:2px 5px}@media(max-width:700px){.shell{padding:18px 12px}.hero{padding:30px 24px}.section-title{align-items:flex-start;flex-direction:column}.section-title button{margin:0 6px 0 0}}
 </style></head><body>"#;
+
+const INTERACTIVE_STYLE: &str = r#".interactive-chart{position:relative;overflow:hidden}.chart-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 8px;color:var(--ink);font-size:12px}.chart-toolbar strong{overflow-wrap:anywhere}.chart-toolbar button{margin:0;font-size:12px}.chart-stage{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:8px;background:linear-gradient(180deg,#fff,#f7fbfe)}.chart-stage svg{display:block;width:100%;height:auto;min-height:260px;cursor:grab;touch-action:none;user-select:none}.chart-stage svg.is-panning{cursor:grabbing}.chart-stage .bar{transition:fill .12s,opacity .12s}.chart-stage .bar.hovered{fill:#d95f02;stroke:#8f3f00;stroke-width:1.5}.chart-stage .series{transition:stroke-width .12s,opacity .12s}.chart-stage .series.hovered{stroke-width:4;filter:drop-shadow(0 2px 2px #18212b44)}.chart-stage .series-point{pointer-events:all;transition:fill .12s,r .12s}.chart-stage .series-point.hovered{fill:#d95f02;stroke:#fff;stroke-width:2;r:7}.chart-tooltip{position:absolute;z-index:2;pointer-events:none;opacity:0;transform:translateY(-3px);padding:7px 10px;border:1px solid #17324d33;border-radius:7px;background:#18212bf2;color:#fff;box-shadow:0 6px 16px #17324d44;font-size:12px;line-height:1.3;white-space:nowrap;transition:opacity .12s}.chart-tooltip.visible{opacity:1}.interactive-chart figcaption{display:flex;justify-content:space-between;gap:8px}.interactive-chart figcaption::after{content:'Hover values · wheel zoom · drag pan';color:var(--muted);font-size:11px}"#;
+
+const INTERACTIVE_SCRIPT: &str = r#"<script>
+document.querySelectorAll('.interactive-chart').forEach(chart=>{
+  const stage=chart.querySelector('.chart-stage');
+  const svg=stage.querySelector('svg');
+  const tooltip=chart.querySelector('.chart-tooltip');
+  const reset=chart.querySelector('.chart-reset');
+  const original=svg.getAttribute('viewBox').split(/\s+/).map(Number);
+  let view={x:original[0],y:original[1],w:original[2],h:original[3]};
+  let drag=null;
+  const interactive=[...svg.querySelectorAll('.bar,.series,.series-point')];
+  const clearHover=()=>interactive.forEach(item=>item.classList.remove('hovered'));
+  const positionTooltip=(event)=>{
+    const bounds=stage.getBoundingClientRect();
+    const left=Math.min(Math.max(8,event.clientX-bounds.left+12),Math.max(8,bounds.width-tooltip.offsetWidth-8));
+    const top=Math.min(Math.max(8,event.clientY-bounds.top-42),Math.max(8,bounds.height-tooltip.offsetHeight-8));
+    tooltip.style.left=`${left}px`;tooltip.style.top=`${top}px`;
+  };
+  const show=(item,event)=>{
+    clearHover();
+    item.classList.add('hovered');
+    if(item.classList.contains('series-point')){
+      const series=svg.querySelector(`.series[data-series-index="${item.dataset.seriesIndex}"]`);
+      if(series)series.classList.add('hovered');
+    }
+    tooltip.textContent=`${item.dataset.label}: ${item.dataset.value}`;
+    tooltip.classList.add('visible');
+    positionTooltip(event);
+  };
+  interactive.forEach(item=>item.addEventListener('pointerenter',event=>show(item,event)));
+  stage.addEventListener('pointermove',event=>{if(!drag)positionTooltip(event)});
+  stage.addEventListener('pointerleave',()=>{clearHover();tooltip.classList.remove('visible')});
+  const applyView=()=>svg.setAttribute('viewBox',`${view.x} ${view.y} ${view.w} ${view.h}`);
+  svg.addEventListener('wheel',event=>{
+    event.preventDefault();
+    const bounds=svg.getBoundingClientRect();
+    const factor=event.deltaY<0?.85:1.15;
+    const mx=view.x+(event.clientX-bounds.left)/bounds.width*view.w;
+    const my=view.y+(event.clientY-bounds.top)/bounds.height*view.h;
+    const w=Math.min(original[2],Math.max(original[2]/8,view.w*factor));
+    const h=Math.min(original[3],Math.max(original[3]/8,view.h*factor));
+    view.x=Math.max(0,Math.min(original[2]-w,mx-(mx-view.x)*w/view.w));
+    view.y=Math.max(0,Math.min(original[3]-h,my-(my-view.y)*h/view.h));
+    view.w=w;view.h=h;applyView();
+  },{passive:false});
+  svg.addEventListener('pointerdown',event=>{
+    if(event.target.closest('.bar,.series-point'))return;
+    drag={x:event.clientX,y:event.clientY,view:{...view}};svg.classList.add('is-panning');svg.setPointerCapture(event.pointerId);
+  });
+  svg.addEventListener('pointermove',event=>{
+    if(!drag)return;
+    const bounds=svg.getBoundingClientRect();
+    view.x=Math.max(0,Math.min(original[2]-view.w,drag.view.x-(event.clientX-drag.x)/bounds.width*view.w));
+    view.y=Math.max(0,Math.min(original[3]-view.h,drag.view.y-(event.clientY-drag.y)/bounds.height*view.h));
+    applyView();
+  });
+  const stopDrag=event=>{if(!drag)return;drag=null;svg.classList.remove('is-panning');if(svg.hasPointerCapture(event.pointerId))svg.releasePointerCapture(event.pointerId)};
+  svg.addEventListener('pointerup',stopDrag);svg.addEventListener('pointercancel',stopDrag);
+  reset.addEventListener('click',()=>{view={x:original[0],y:original[1],w:original[2],h:original[3]};applyView()});
+});
+</script>"#;
 
 const HTML_SCRIPT: &str = r#"<script>
 const groups=[...document.querySelectorAll('input[data-group]')];const rows=[...document.querySelectorAll('#results tr')];const count=document.querySelector('#filter-count');
@@ -498,8 +575,9 @@ fn write_bar_svg(path: &Path, title: &str, values: &[(String, f64)]) -> Result<(
         let y = bottom - bar_height;
         let width = (bar_width - 8.0).max(2.0);
         svg.push_str(&format!(
-            "<rect x=\"{x:.1}\" y=\"{y:.1}\" width=\"{width:.1}\" height=\"{bar_height:.1}\" fill=\"#4472c4\"><title>{}: {value}</title></rect>",
-            escape(label)
+            "<rect class=\"bar\" data-label=\"{}\" data-value=\"{value}\" x=\"{x:.1}\" y=\"{y:.1}\" width=\"{width:.1}\" height=\"{bar_height:.1}\" fill=\"#4472c4\"><title>{}: {value}</title></rect>",
+            escape(label),
+            escape(label),
         ));
         let value_label = format_tick(*value);
         let (label_y, placement, color) = if bar_height >= 24.0 {
@@ -550,7 +628,23 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, Vec<f64>)]) -> Re
             })
             .collect::<Vec<_>>()
             .join(" ");
-        svg.push_str(&format!("<polyline points=\"{coordinates}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"2\"/><text x=\"{}\" y=\"55\" font-size=\"12\" fill=\"{color}\">{}</text>", 80 + series_index * 150, escape(label)));
+        svg.push_str(&format!(
+            "<polyline class=\"series\" data-series-index=\"{series_index}\" data-label=\"{}\" points=\"{coordinates}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"2\"/>",
+            escape(label)
+        ));
+        for (index, value) in points.iter().enumerate() {
+            let x = 75.0 + index as f64 / points.len().max(1) as f64 * 800.0;
+            let y = PLOT_BOTTOM - value.max(0.0) / max * (PLOT_BOTTOM - PLOT_TOP);
+            svg.push_str(&format!(
+                "<circle class=\"series-point\" data-series-index=\"{series_index}\" data-label=\"{}\" data-value=\"{value}\" cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"6\" fill=\"transparent\" stroke=\"none\"/>",
+                escape(label)
+            ));
+        }
+        svg.push_str(&format!(
+            "<text x=\"{}\" y=\"55\" font-size=\"12\" fill=\"{color}\">{}</text>",
+            80 + series_index * 150,
+            escape(label)
+        ));
     }
     svg.push_str("</svg>\n");
     fs::write(path, svg)
@@ -628,7 +722,7 @@ fn metric_unit(title: &str) -> &'static str {
 
 fn svg_header(width: f64, height: f64, title: &str) -> String {
     format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\"><title>{}</title><text x=\"20\" y=\"30\" font-size=\"18\">{}</text>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width}\" height=\"{height}\" viewBox=\"0 0 {width} {height}\"><title>{}</title><text x=\"20\" y=\"30\" font-size=\"18\">{}</text>",
         escape(title),
         escape(title)
     )
@@ -726,6 +820,9 @@ mod tests {
         assert!(report.contains(">Details</th>"));
         assert!(report.contains("All metrics"));
         assert!(!report.contains("run.json"));
+        assert!(report.contains("class=\"interactive-chart\""));
+        assert!(report.contains("chart-tooltip"));
+        assert!(report.contains("wheel zoom"));
         assert!(report.contains("Select all"));
         let _ = std::fs::remove_dir_all(root);
     }
