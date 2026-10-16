@@ -35,6 +35,17 @@
     const edgeEndsCache = new Map();
     const relatedCache = new Map();
     const edgeHitPaths = [];
+    const rasterScale = .22;
+    const rasterLayer = document.createElement('canvas');
+    rasterLayer.className = 'raster-layer';
+    rasterLayer.width = Math.max(1, Math.round(viewBox.width * rasterScale));
+    rasterLayer.height = Math.max(1, Math.round(viewBox.height * rasterScale));
+    rasterLayer.style.width = `${viewBox.width}px`;
+    rasterLayer.style.height = `${viewBox.height}px`;
+    rasterLayer.setAttribute('aria-hidden', 'true');
+    canvas.appendChild(rasterLayer);
+    let rasterReady = false;
+    let rasterTimer = 0;
     const rawTitle = (element) => element.dataset.graphTitle || element.querySelector(':scope > title')?.textContent?.trim() || element.querySelector('title')?.textContent?.trim() || element.id || 'graph element';
     const visibleName = (element) => {
       if (names.has(element)) return names.get(element);
@@ -94,15 +105,35 @@
     document.getElementById('counts').textContent = `${nodes.length} nodes · ${edges.length} edges · ${clusters.length} modules`;
 
     function applyTransform() { canvas.style.transform = `translate(${state.tx}px, ${state.ty}px) scale(${state.scale})`; }
+    function useRaster() { if (rasterReady) { svg.style.visibility = 'hidden'; rasterLayer.style.display = 'block'; } }
+    function stopRaster() { clearTimeout(rasterTimer); rasterTimer = setTimeout(() => { rasterLayer.style.display = 'none'; svg.style.visibility = ''; }, 90); }
+    function refreshRaster() {
+      const clone = svg.cloneNode(true);
+      clone.querySelectorAll('.edge-hitbox').forEach((item) => item.remove());
+      clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      const blob = new Blob([new XMLSerializer().serializeToString(clone)], { type: 'image/svg+xml' });
+      const url = URL.createObjectURL(blob);
+      const image = new Image();
+      image.onload = () => {
+        const context = rasterLayer.getContext('2d');
+        context.clearRect(0, 0, rasterLayer.width, rasterLayer.height);
+        context.drawImage(image, 0, 0, rasterLayer.width, rasterLayer.height);
+        rasterReady = true;
+        URL.revokeObjectURL(url);
+      };
+      image.onerror = () => URL.revokeObjectURL(url);
+      image.src = url;
+    }
     function scheduleTransform() { if (!state.transformFrame) state.transformFrame = requestAnimationFrame(() => { state.transformFrame = 0; applyTransform(); }); }
     function moveTo(scale, tx, ty, animated = true) {
       cancelAnimationFrame(state.animation);
       if (!animated) { state.scale = scale; state.tx = tx; state.ty = ty; applyTransform(); return; }
+      useRaster();
       const start = { scale: state.scale, tx: state.tx, ty: state.ty }, started = performance.now();
       const frame = (now) => {
         const p = Math.min(1, (now - started) / 360), eased = 1 - Math.pow(1 - p, 3);
         state.scale = start.scale + (scale - start.scale) * eased; state.tx = start.tx + (tx - start.tx) * eased; state.ty = start.ty + (ty - start.ty) * eased; applyTransform();
-        if (p < 1) state.animation = requestAnimationFrame(frame);
+        if (p < 1) state.animation = requestAnimationFrame(frame); else stopRaster();
       };
       state.animation = requestAnimationFrame(frame);
     }
@@ -197,6 +228,7 @@
       clearPinned(); state.pinned = element; state.pinnedParts = new Set(relatedTo(element)); state.pinnedParts.forEach((item) => item.classList.add('is-pinned')); selection.textContent = titleOf(element);
       if (element.classList.contains('edge')) { const ends = edgeEnds(element), target = ends[reverseEdge ? 0 : 1]; centerElements([...state.pinnedParts, ...(target ? [target] : [])]); } else centerElements([...state.pinnedParts]);
       state.hover = null;
+      refreshRaster();
     }
     function clearAll() { clearPinned(); setHover(null); elements.forEach((item) => item.classList.remove('is-dimmed', 'is-selected', 'is-related')); selection.textContent = 'Hover an element for details. Drag to pan; scroll to zoom.'; }
 
@@ -220,11 +252,11 @@
       if (state.pointers.size >= 2 && state.gesture?.type === 'pinch') {
         const points = [...state.pointers.values()], mid = { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 }, vr = viewport.getBoundingClientRect();
         const scale = Math.max(.02, Math.min(4, state.gesture.scale * Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y) / state.gesture.distance));
-        state.scale = scale; state.tx = mid.x - vr.left - state.gesture.graphX * scale; state.ty = mid.y - vr.top - state.gesture.graphY * scale; state.gesture.moved = true; viewport.classList.add('dragging'); scheduleTransform(); return;
+        state.scale = scale; state.tx = mid.x - vr.left - state.gesture.graphX * scale; state.ty = mid.y - vr.top - state.gesture.graphY * scale; state.gesture.moved = true; viewport.classList.add('dragging'); useRaster(); scheduleTransform(); return;
       }
       if (state.gesture?.type !== 'pointer') return;
       const dx = event.clientX - state.gesture.x, dy = event.clientY - state.gesture.y;
-      if (Math.hypot(dx, dy) > 4) { state.gesture.moved = true; state.gesture.dragging = true; viewport.classList.add('dragging'); }
+      if (Math.hypot(dx, dy) > 4) { state.gesture.moved = true; state.gesture.dragging = true; viewport.classList.add('dragging'); useRaster(); }
       state.gesture.nextTx = state.gesture.tx + dx; state.gesture.nextTy = state.gesture.ty + dy;
       if (!state.gesture.frame) state.gesture.frame = requestAnimationFrame(() => { state.tx = state.gesture?.nextTx ?? state.tx; state.ty = state.gesture?.nextTy ?? state.ty; state.gesture.frame = 0; applyTransform(); });
     });
@@ -232,12 +264,12 @@
       const gesture = state.gesture; state.pointers.delete(event.pointerId); if (state.pointers.size) return;
       if (gesture?.frame) cancelAnimationFrame(gesture.frame); if (gesture?.nextTx !== undefined) { state.tx = gesture.nextTx; state.ty = gesture.nextTy; applyTransform(); }
       if (gesture?.type === 'pointer' && !gesture.moved && state.pressTarget) { state.suppressClickUntil = performance.now() + 500; event.preventDefault(); select(hitAt(event.clientX, event.clientY) || state.pressTarget, event.ctrlKey || event.metaKey); } else state.suppressClickUntil = performance.now() + 150;
-      state.gesture = null; state.pressTarget = null; viewport.classList.remove('dragging');
+      state.gesture = null; state.pressTarget = null; viewport.classList.remove('dragging'); stopRaster();
     }
     viewport.addEventListener('pointerup', finish); viewport.addEventListener('pointercancel', finish);
     viewport.addEventListener('lostpointercapture', () => { if (!state.pointers.size) { state.gesture = null; state.pressTarget = null; viewport.classList.remove('dragging'); } });
     viewport.addEventListener('click', (event) => { if (state.suppressClickUntil > performance.now()) { event.preventDefault(); event.stopPropagation(); return; } if (event.target === viewport || event.target === canvas) clearAll(); });
-    viewport.addEventListener('wheel', (event) => { event.preventDefault(); const rect = viewport.getBoundingClientRect(), x = event.clientX - rect.left, y = event.clientY - rect.top, scale = Math.max(.02, Math.min(4, state.scale * Math.pow(1.0018, -event.deltaY))); state.tx = x - (x - state.tx) * scale / state.scale; state.ty = y - (y - state.ty) * scale / state.scale; state.scale = scale; scheduleTransform(); }, { passive: false });
+    viewport.addEventListener('wheel', (event) => { event.preventDefault(); const rect = viewport.getBoundingClientRect(), x = event.clientX - rect.left, y = event.clientY - rect.top, scale = Math.max(.02, Math.min(4, state.scale * Math.pow(1.0018, -event.deltaY))); state.tx = x - (x - state.tx) * scale / state.scale; state.ty = y - (y - state.ty) * scale / state.scale; state.scale = scale; useRaster(); scheduleTransform(); stopRaster(); }, { passive: false });
     viewport.addEventListener('keydown', (event) => { if (event.key !== 'Enter' && event.key !== ' ') return; const target = graphAncestor(event.target); if (target) { event.preventDefault(); select(target); } });
     document.getElementById('fit').addEventListener('click', () => { clearAll(); fit(); });
     document.getElementById('reset').addEventListener('click', () => { clearAll(); fit(false); });
@@ -246,5 +278,6 @@
     search.addEventListener('input', () => { const query = search.value.trim().toLowerCase(); elements.forEach((item) => item.classList.toggle('is-dimmed', Boolean(query) && !titleOf(item).toLowerCase().includes(query))); });
     window.addEventListener('resize', () => { if (!state.pinned) fit(false); });
     fit(false);
+    refreshRaster();
   }
 })();
