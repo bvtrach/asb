@@ -52,6 +52,15 @@ function headersObject(headers) {
   return result;
 }
 
+function requestPath(raw) {
+  try {
+    const parsed = new URL(raw || "/", "http://asb-tape.invalid");
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return raw || "/";
+  }
+}
+
 function redactHeaders(headers) {
   return Object.fromEntries(
     Object.entries(headers).map(([name, value]) =>
@@ -148,7 +157,11 @@ async function handle(request, response) {
   const normalizedBody = normalizeRequestBody(request.url || "/", body.toString("utf8"));
   const recordedRequest = {
     method: request.method || "GET",
-    url: request.url || "/",
+    // Some SDKs send an absolute URL even when configured for a proxy. Keep
+    // only the path in the cassette and always route the request to the
+    // selected upstream; this prevents a client from bypassing the loopback
+    // recorder and makes separate-directory replay path-stable.
+    url: requestPath(request.url),
     headers: redactHeaders(Object.fromEntries(Object.entries(request.headers))),
     body: body.length ? normalizedBody : null,
   };
@@ -175,7 +188,7 @@ async function handle(request, response) {
     return;
   }
 
-  const target = new URL(request.url || "/", upstream);
+  const target = new URL(recordedRequest.url, upstream);
   const forwardedHeaders = { ...request.headers };
   delete forwardedHeaders.host;
   delete forwardedHeaders.connection;
