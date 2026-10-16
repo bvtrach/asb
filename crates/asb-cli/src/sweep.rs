@@ -117,6 +117,7 @@ pub fn run(
         if let Err(error) = runner::run_with_tape(
             isolated_path.to_string_lossy().as_ref(),
             json,
+            false,
             None,
             mode,
             cassette,

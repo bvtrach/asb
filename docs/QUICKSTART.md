@@ -110,6 +110,13 @@ structured result for scripts:
 ./target/debug/asb run benchmark.toml --json
 ```
 
+For live debugging, also stream the agent's stdout and stderr while the run is
+active:
+
+```sh
+./target/debug/asb run benchmark.toml --show-output
+```
+
 Use `asb COMMAND --help` for concise help on every command and subcommand.
 `asb tool list` enumerates all built-in agent and support-tool installers; `asb workload list`
 enumerates local prompt files and installable external aliases. The

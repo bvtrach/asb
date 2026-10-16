@@ -91,9 +91,10 @@ pub fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) ->
         [command, rest @ ..] if command == "setup" => config::setup(rest, stdout),
         [command, rest @ ..] if command == "init" => project::init(rest, stdout),
         [command, rest @ ..] if command == "run" => match parse_run_args(rest) {
-            Ok((path, json, measurements, mode, cassette)) => runner::run_with_tape(
+            Ok((path, json, show_output, measurements, mode, cassette)) => runner::run_with_tape(
                 &path,
                 json,
+                show_output,
                 measurements.as_deref(),
                 mode,
                 cassette.as_deref(),
@@ -158,6 +159,7 @@ fn parse_run_args(
     (
         String,
         bool,
+        bool,
         Option<String>,
         Option<tape::Mode>,
         Option<String>,
@@ -174,6 +176,7 @@ fn parse_run_args_named(
     (
         String,
         bool,
+        bool,
         Option<String>,
         Option<tape::Mode>,
         Option<String>,
@@ -183,12 +186,14 @@ fn parse_run_args_named(
     let mut path = None;
     let mut json = false;
     let mut measurements = None;
+    let mut show_output = false;
     let mut cassette = None;
     let mut mode = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
             "--json" => json = true,
+            "--show-output" => show_output = true,
             "--record" => {
                 if mode.replace(tape::Mode::Record).is_some() {
                     return Err(CliError::Input(
@@ -206,14 +211,14 @@ fn parse_run_args_named(
             "--measurements" => {
                 index += 1;
                 let value = args.get(index).ok_or(CliError::Usage(
-                    "Usage: asb run CONFIG [--record|--replay] [--cassette FILE] [--json] [--measurements DIR]",
+                    "Usage: asb run CONFIG [--record|--replay] [--cassette FILE] [--json] [--show-output] [--measurements DIR]",
                 ))?;
                 measurements = Some(value.clone());
             }
             "--cassette" => {
                 index += 1;
                 let value = args.get(index).ok_or(CliError::Usage(
-                    "Usage: asb run CONFIG [--record|--replay] [--cassette FILE] [--json] [--measurements DIR]",
+                    "Usage: asb run CONFIG [--record|--replay] [--cassette FILE] [--json] [--show-output] [--measurements DIR]",
                 ))?;
                 cassette = Some(value.clone());
             }
@@ -236,8 +241,8 @@ fn parse_run_args_named(
             "--cassette requires --record or --replay; choose a tape mode first".into(),
         ));
     }
-    path.map(|value| (value, json, measurements, mode, cassette))
-        .ok_or(CliError::Usage("Usage: asb run CONFIG [--record|--replay] [--cassette FILE] [--json] [--measurements DIR]"))
+    path.map(|value| (value, json, show_output, measurements, mode, cassette))
+        .ok_or(CliError::Usage("Usage: asb run CONFIG [--record|--replay] [--cassette FILE] [--json] [--show-output] [--measurements DIR]"))
 }
 
 fn parse_sweep_args(args: &[String]) -> Result<(String, bool, Option<tape::Mode>), CliError> {
@@ -435,8 +440,9 @@ mod tests {
         .unwrap();
         assert_eq!(first.0, "benchmark.toml");
         assert!(first.1);
-        assert_eq!(first.2.as_deref(), Some("measurements"));
-        assert!(first.3.is_none());
+        assert!(!first.2);
+        assert_eq!(first.3.as_deref(), Some("measurements"));
+        assert!(first.4.is_none());
         let second = super::parse_run_args(&[
             "--measurements".into(),
             "measurements".into(),
@@ -444,8 +450,9 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(second.0, "benchmark.toml");
-        assert_eq!(second.2.as_deref(), Some("measurements"));
-        assert!(second.3.is_none());
+        assert!(!second.2);
+        assert_eq!(second.3.as_deref(), Some("measurements"));
+        assert!(second.4.is_none());
     }
 
     #[test]
@@ -460,8 +467,9 @@ mod tests {
         .expect("cassette options parse");
         assert_eq!(parsed.0, "benchmark.toml");
         assert!(parsed.1);
-        assert_eq!(parsed.3, Some(crate::tape::Mode::Record));
-        assert_eq!(parsed.4.as_deref(), Some("cassettes/demo.jsonl"));
+        assert!(!parsed.2);
+        assert_eq!(parsed.4, Some(crate::tape::Mode::Record));
+        assert_eq!(parsed.5.as_deref(), Some("cassettes/demo.jsonl"));
         assert!(
             super::parse_run_args(&[
                 "benchmark.toml".into(),
@@ -470,6 +478,13 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn run_accepts_live_output_flag() {
+        let parsed =
+            super::parse_run_args(&["benchmark.toml".into(), "--show-output".into()]).unwrap();
+        assert!(parsed.2);
     }
 
     #[test]
