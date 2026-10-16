@@ -30,6 +30,11 @@ const AGENTS: &[&str] = &[
     "mini-swe",
     "openhands",
     "openjiuwen",
+    "claude-code",
+    "goose",
+    "cline",
+    "kiro",
+    "continue",
 ];
 
 const DESCRIPTIONS: &[&str] = &[

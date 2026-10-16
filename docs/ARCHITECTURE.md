@@ -69,9 +69,11 @@ Token usage is collected from generic/provider/agent environment variables,
 structured agent JSON events (including JSON embedded in human-readable agent
 output), and recorded cassette responses, then normalized without inferring
 counts from text size. The parser accepts usage shapes emitted by every
-supported agent family and maps provider aliases such as `prompt_tokens`,
-`inputTokens`, `promptTokenCount`, `cacheRead`, and `total` to the stable input,
-output, cached, and total fields. OpenHands and OpenJiuwen are invoked in
+supported agent family, including Claude Code, Goose, Cline, Kiro, and Continue,
+and maps provider aliases such as `prompt_tokens`, `inputTokens`,
+`promptTokenCount`, `cacheRead`, and `total` to the stable input, output, cached,
+and total fields. When input and output are present, total is canonicalized to
+their sum because cached input is a subset of input. OpenHands and OpenJiuwen are invoked in
 machine-readable JSON modes; mini-SWE writes a project-local trajectory that
 is parsed for nested provider usage before it is removed. Their terminal output is intentionally limited to success
 rate, elapsed time, and token usage; `--json` changes only the representation

@@ -70,6 +70,11 @@ pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
             "mini-swe",
             "openhands",
             "openjiuwen",
+            "claude-code",
+            "goose",
+            "cline",
+            "kiro",
+            "continue",
         ],
     ) {
         return Err(Error::Input(format!(

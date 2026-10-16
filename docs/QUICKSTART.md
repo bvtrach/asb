@@ -150,6 +150,11 @@ The built-in recipes are:
 | `mini-swe` | pinned Python package | `mini` |
 | `openhands` | pinned Python package | `openhands` |
 | `openjiuwen` | pinned Python package | `openjiuwen` |
+| `claude-code` | pinned npm package | `claude` |
+| `goose` | pinned upstream Linux binary | `goose` |
+| `cline` | pinned npm package | `cline` |
+| `kiro` | pinned official installer | `kiro-cli` |
+| `continue` | pinned npm package | `cn` |
 | `cli2key` | pinned npm bridge package | `codex-bridge` |
 | `llmtape` | pinned npm package | `llmtape` |
 

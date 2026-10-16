@@ -929,7 +929,16 @@ impl TokenUsage {
             input_tokens: self.input_tokens.or(other.input_tokens),
             output_tokens: self.output_tokens.or(other.output_tokens),
             cached_tokens: self.cached_tokens.or(other.cached_tokens),
-            total_tokens: self.total_tokens.or(other.total_tokens),
+            // Agent artifacts occasionally report a partial or stale total
+            // (mini-SWE has emitted a small per-step total).  Keep the
+            // largest observed total until the canonical input+output total
+            // is derived below instead of letting a later artifact overwrite
+            // the complete run.
+            total_tokens: match (self.total_tokens, other.total_tokens) {
+                (Some(left), Some(right)) => Some(left.max(right)),
+                (Some(value), None) | (None, Some(value)) => Some(value),
+                (None, None) => None,
+            },
             source: self.source.or(other.source),
         }
     }
@@ -956,12 +965,12 @@ impl TokenUsage {
         merged
     }
 
-    fn with_derived_total(mut self) -> Self {
-        if self.total_tokens.is_none() {
-            self.total_tokens = self
-                .input_tokens
-                .zip(self.output_tokens)
-                .map(|(input, output)| input + output);
+    pub(crate) fn with_derived_total(mut self) -> Self {
+        // Cached input is a subset of input tokens, so total is input+output
+        // rather than input+output+cached.  Prefer this canonical value over
+        // provider-specific totals whenever both components are available.
+        if let Some((input, output)) = self.input_tokens.zip(self.output_tokens) {
+            self.total_tokens = Some(input.saturating_add(output));
         }
         self
     }
@@ -1161,11 +1170,13 @@ fn usage_from_json(value: &serde_json::Value) -> TokenUsage {
             &[
                 "cached_tokens",
                 "cache_read_input_tokens",
+                "cache_creation_input_tokens",
                 "cachedTokens",
                 "cache_read_tokens",
                 "cacheRead",
                 "cache_read",
                 "cacheReadInputTokens",
+                "cacheCreationInputTokens",
                 "cachedContentTokenCount",
             ],
         )
@@ -1211,11 +1222,13 @@ fn usage_from_json(value: &serde_json::Value) -> TokenUsage {
                 "outputTokenCount",
                 "cached_tokens",
                 "cache_read_input_tokens",
+                "cache_creation_input_tokens",
                 "cachedTokens",
                 "cache_read_tokens",
                 "cacheRead",
                 "cache_read",
                 "cacheReadInputTokens",
+                "cacheCreationInputTokens",
                 "cachedContentTokenCount",
                 "total_tokens",
                 "totalTokens",
@@ -1227,6 +1240,8 @@ fn usage_from_json(value: &serde_json::Value) -> TokenUsage {
                 "output",
                 "completion",
                 "cached",
+                "cache_creation_input_tokens",
+                "cacheCreationInputTokens",
                 "total",
             ]
             .contains(&name.as_str())
@@ -1343,6 +1358,7 @@ fn usage_from_key_values(line: &str) -> TokenUsage {
             | "cachedtokens"
             | "cacheread"
             | "cachereadinputtokens"
+            | "cachecreationinputtokens"
             | "cachedcontenttokencount" => usage.cached_tokens = Some(number),
             "total" | "totaltokens" | "totaltokencount" | "tokencount" | "tokensused" => {
                 usage.total_tokens = Some(number)
@@ -2232,38 +2248,108 @@ mod tests {
             (
                 "codex",
                 r#"response.completed {"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}"#,
+                7,
+                3,
+                10,
             ),
             (
                 "pi",
                 r#"event: {"type":"turn_end","usage":{"input":7,"output":3,"total":10,"cacheRead":2}}"#,
+                7,
+                3,
+                10,
             ),
             (
                 "qwen-code",
                 r#"{"type":"result","stats":{"total_tokens":10,"input_tokens":7,"output_tokens":3,"cached":2}}"#,
+                7,
+                3,
+                10,
             ),
             (
                 "workbuddy",
                 r#"done {"usage":{"inputTokens":7,"outputTokens":3,"totalTokens":10}}"#,
+                7,
+                3,
+                10,
             ),
             (
                 "openjiuwen",
                 r#"{"benchmark_usage":{"task_summary":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}}"#,
+                7,
+                3,
+                10,
             ),
             (
                 "openhands",
                 r#"llm response {"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}"#,
+                7,
+                3,
+                10,
             ),
             (
                 "mini-swe",
                 r#"result {"usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}"#,
+                7,
+                3,
+                10,
+            ),
+            (
+                "claude-code",
+                r#"{"type":"result","usage":{"input_tokens":17,"output_tokens":4,"cache_read_input_tokens":2,"total_tokens":21}}"#,
+                17,
+                4,
+                21,
+            ),
+            (
+                "goose",
+                r#"{"message":{"usage":{"prompt_tokens":19,"completion_tokens":6,"total_tokens":25}}}"#,
+                19,
+                6,
+                25,
+            ),
+            (
+                "cline",
+                r#"event {"usage":{"inputTokens":23,"outputTokens":8,"cachedTokens":3,"totalTokens":31}}"#,
+                23,
+                8,
+                31,
+            ),
+            (
+                "kiro",
+                r#"{"event":"assistant","inputTokens":29,"outputTokens":9,"cacheReadInputTokens":5,"totalTokens":38}"#,
+                29,
+                9,
+                38,
+            ),
+            (
+                "continue",
+                r#"{"usage":{"input":31,"output":10,"cached":4,"total":41}}"#,
+                31,
+                10,
+                41,
             ),
         ];
-        for (agent, output) in cases {
+        for (agent, output, input, response, total) in cases {
             let usage = token_usage_from_sources("cli2key", agent, output, "", None);
-            assert_eq!(usage.input_tokens, Some(7), "{agent} input");
-            assert_eq!(usage.output_tokens, Some(3), "{agent} output");
-            assert_eq!(usage.total_tokens, Some(10), "{agent} total");
+            assert_eq!(usage.input_tokens, Some(input), "{agent} input");
+            assert_eq!(usage.output_tokens, Some(response), "{agent} output");
+            assert_eq!(usage.total_tokens, Some(total), "{agent} total");
         }
+    }
+
+    #[test]
+    fn derives_mini_swe_total_from_complete_input_and_output() {
+        let usage = token_usage_from_sources(
+            "cli2key",
+            "mini-swe",
+            r#"{"usage":{"input_tokens":182398,"output_tokens":4189,"total_tokens":116}}"#,
+            "",
+            None,
+        );
+        assert_eq!(usage.input_tokens, Some(182398));
+        assert_eq!(usage.output_tokens, Some(4189));
+        assert_eq!(usage.total_tokens, Some(186587));
     }
 
     #[test]

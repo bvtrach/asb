@@ -29,6 +29,11 @@ const BUILTIN_AGENTS: &[&str] = &[
     "mini-swe",
     "openhands",
     "openjiuwen",
+    "claude-code",
+    "goose",
+    "cline",
+    "kiro",
+    "continue",
 ];
 
 #[derive(Serialize)]
@@ -202,6 +207,10 @@ fn run_mode(
             project::resolve(&project_root, &project_config.tools_dir).join("workbuddy/config")
         })
         .as_deref(),
+        (config.agent.eq_ignore_ascii_case("continue")
+            && config.provider.eq_ignore_ascii_case("cli2key"))
+        .then(|| project::resolve(&project_root, &project_config.tools_dir).join("continue/config"))
+        .as_deref(),
     )?;
     if let Some(url) = tape_url {
         tape::configure_command(
@@ -290,10 +299,12 @@ fn run_mode(
     );
     if config.agent.eq_ignore_ascii_case("mini-swe") {
         let trajectory = workspace.join(".asb-mini-swe.traj.json");
-        token_usage = token_usage.merge_with_source(
-            measurements::token_usage_from_path(&trajectory),
-            "agent-artifact",
-        );
+        token_usage = token_usage
+            .merge_with_source(
+                measurements::token_usage_from_path(&trajectory),
+                "agent-artifact",
+            )
+            .with_derived_total();
         let _ = std::fs::remove_file(trajectory);
     }
     let steps = measurements::steps_from_sources(
@@ -694,6 +705,72 @@ fn command_for(
             ],
             append_prompt: true,
         },
+        "claude-code" => CommandSpec {
+            program: "claude".into(),
+            args: vec![
+                "-p".into(),
+                "--output-format".into(),
+                "json".into(),
+                "--model".into(),
+                config.model.clone(),
+                "--dangerously-skip-permissions".into(),
+                prompt.into(),
+            ],
+            append_prompt: false,
+        },
+        "goose" => CommandSpec {
+            program: "goose".into(),
+            args: vec![
+                "run".into(),
+                "--no-session".into(),
+                "--output-format".into(),
+                "json".into(),
+                "-t".into(),
+                prompt.into(),
+            ],
+            append_prompt: false,
+        },
+        "cline" => CommandSpec {
+            program: "cline".into(),
+            args: vec![
+                "--json".into(),
+                "--auto-approve".into(),
+                "true".into(),
+                "--provider".into(),
+                "openai".into(),
+                "--model".into(),
+                config.model.clone(),
+                prompt.into(),
+            ],
+            append_prompt: false,
+        },
+        "kiro" => CommandSpec {
+            program: "kiro-cli".into(),
+            args: vec![
+                "chat".into(),
+                "--no-interactive".into(),
+                "--trust-all-tools".into(),
+                "--output-format".into(),
+                "stream-json".into(),
+                "--model".into(),
+                config.model.clone(),
+                prompt.into(),
+            ],
+            append_prompt: false,
+        },
+        "continue" => CommandSpec {
+            program: "cn".into(),
+            args: vec![
+                "-p".into(),
+                prompt.into(),
+                "--model".into(),
+                config.model.clone(),
+                "--format".into(),
+                "json".into(),
+                "--auto".into(),
+            ],
+            append_prompt: false,
+        },
         other => CommandSpec {
             program: other.into(),
             args: Vec::new(),
@@ -726,6 +803,9 @@ fn local_agent(agent: &str, project_root: &Path, tools_dir: &str) -> Option<Stri
         "mini-swe" => "mini",
         "cli2key" => "codex-bridge",
         "workbuddy" => "codebuddy",
+        "claude-code" => "claude",
+        "kiro" => "kiro-cli",
+        "continue" => "cn",
         other => other,
     };
     let mut candidates = Vec::new();
@@ -908,6 +988,37 @@ mod tests {
                 .windows(2)
                 .any(|pair| pair[0] == "-f" && pair[1] == "json")
         );
+    }
+
+    #[test]
+    fn newly_supported_agent_commands_are_noninteractive_and_machine_readable() {
+        for (agent, program, marker) in [
+            ("claude-code", "claude", "--output-format"),
+            ("goose", "goose", "--output-format"),
+            ("cline", "cline", "--json"),
+            ("kiro", "kiro-cli", "--output-format"),
+            ("continue", "cn", "--auto"),
+        ] {
+            let config = BenchmarkConfig {
+                agent: agent.into(),
+                workload: "bug-fix".into(),
+                provider: "cli2key".into(),
+                model: "gpt-test".into(),
+                trial_set: None,
+                trial: None,
+                workspace: "workspace".into(),
+                log_file: "run.log".into(),
+                measurements: None,
+            };
+            let command = command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt")
+                .expect("new agent command");
+            assert_eq!(command.program, program, "{agent} program");
+            assert!(
+                command.args.iter().any(|value| value == marker),
+                "{agent} marker"
+            );
+            assert!(!command.append_prompt, "{agent} embeds prompt exactly once");
+        }
     }
 
     #[test]

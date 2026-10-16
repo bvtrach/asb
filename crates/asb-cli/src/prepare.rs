@@ -14,6 +14,7 @@ pub fn apply(
     cli2key: Option<(&str, &str)>,
     pi_config_dir: Option<&Path>,
     workbuddy_config_dir: Option<&Path>,
+    continue_config_dir: Option<&Path>,
 ) -> Result<(), Error> {
     if provider.eq_ignore_ascii_case("cli2key") {
         prepare_cli2key(
@@ -24,6 +25,7 @@ pub fn apply(
             cli2key,
             pi_config_dir,
             workbuddy_config_dir,
+            continue_config_dir,
         )?;
     }
     Ok(())
@@ -37,6 +39,7 @@ fn prepare_cli2key(
     cli2key: Option<(&str, &str)>,
     pi_config_dir: Option<&Path>,
     workbuddy_config_dir: Option<&Path>,
+    continue_config_dir: Option<&Path>,
 ) -> Result<(), Error> {
     let (key, base_url) = cli2key.ok_or_else(|| {
         Error::Run(
@@ -105,6 +108,45 @@ fn prepare_cli2key(
     }
     if agent.eq_ignore_ascii_case("openjiuwen") {
         command.env("OPENJIUWEN_API_KEY", key);
+    }
+    if agent.eq_ignore_ascii_case("goose") {
+        command
+            .env("GOOSE_PROVIDER", "openai")
+            .env("GOOSE_MODEL", model)
+            .env("OPENAI_HOST", base_url.trim_end_matches("/v1"))
+            .env("OPENAI_BASE_PATH", "/v1/chat/completions")
+            .env("OPENAI_API_KEY", key);
+    }
+    if agent.eq_ignore_ascii_case("cline") {
+        command
+            .env("OPENAI_API_KEY", key)
+            .env("OPENAI_BASE_URL", base_url)
+            .env("OPENAI_API_BASE", base_url)
+            .env("OPENAI_MODEL", model)
+            .env("CLINE_API_KEY", key);
+    }
+    if agent.eq_ignore_ascii_case("continue") {
+        command
+            .env("CONTINUE_API_KEY", key)
+            .env("OPENAI_API_KEY", key)
+            .env("OPENAI_BASE_URL", base_url)
+            .env("OPENAI_API_BASE", base_url)
+            .env("CONTINUE_MODEL", model);
+        let directory = continue_config_dir.ok_or_else(|| {
+            Error::Run(
+                "cannot configure Continue without a project-local configuration directory".into(),
+            )
+        })?;
+        configure_continue(directory, model, base_url, key)?;
+        command
+            .env("CONTINUE_CONFIG", directory.join("config.yaml"))
+            .env("CONTINUE_GLOBAL_DIR", directory);
+    }
+    if agent.eq_ignore_ascii_case("kiro") {
+        command
+            .env("KIRO_API_KEY", key)
+            .env("KIRO_MODEL", model)
+            .env("KIRO_API_BASE", base_url);
     }
     if let Some(executable) = codex_executable {
         command.env("CLI2KEY_CODEX_BIN", executable);
@@ -175,6 +217,27 @@ fn configure_workbuddy(directory: &Path, model: &str, base_url: &str) -> Result<
     Ok(())
 }
 
+fn configure_continue(
+    directory: &Path,
+    model: &str,
+    base_url: &str,
+    key: &str,
+) -> Result<(), Error> {
+    std::fs::create_dir_all(directory).map_err(|error| {
+        Error::Run(format!(
+            "cannot create Continue provider configuration directory: {error}"
+        ))
+    })?;
+    let configuration = format!(
+        "name: ASB cli2key\nversion: 1.0.0\nmodels:\n  - name: {model}\n    provider: openai\n    model: {model}\n    apiBase: {base_url}\n    apiKey: {key}\n"
+    );
+    std::fs::write(directory.join("config.yaml"), configuration).map_err(|error| {
+        Error::Run(format!(
+            "cannot write Continue provider configuration: {error}"
+        ))
+    })
+}
+
 fn opencode_config(model: &str, base_url: &str) -> Result<String, Error> {
     let mut models = serde_json::Map::new();
     models.insert(model.to_owned(), serde_json::json!({"name": model}));
@@ -213,6 +276,7 @@ mod tests {
             "gpt-test",
             Some("/project/codex"),
             Some(("cb_test", "http://127.0.0.1:3456/v1")),
+            None,
             None,
             None,
         )
@@ -277,6 +341,7 @@ mod tests {
             Some(("cb_test", "http://127.0.0.1:3456/v1")),
             Some(&directory),
             None,
+            None,
         )
         .expect("Pi preparation succeeds");
         let config: serde_json::Value = serde_json::from_str(
@@ -305,6 +370,7 @@ mod tests {
             Some(("cb_test", "http://127.0.0.1:3456/v1")),
             None,
             Some(&directory),
+            None,
         )
         .expect("WorkBuddy preparation succeeds");
         let values = command
@@ -344,6 +410,30 @@ mod tests {
         assert_eq!(config[0]["id"], "gpt-6.1-sol");
         assert_eq!(config[0]["api"], "openai-responses");
         assert_eq!(config[0]["url"], "http://127.0.0.1:3456/v1");
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn continue_cli2key_preparation_writes_project_local_yaml() {
+        let directory =
+            std::env::temp_dir().join(format!("asb-continue-config-{}", std::process::id()));
+        let mut command = Command::new("cn");
+        apply(
+            &mut command,
+            "continue",
+            "cli2key",
+            "gpt-test",
+            None,
+            Some(("cb_test", "http://127.0.0.1:3456/v1")),
+            None,
+            None,
+            Some(&directory),
+        )
+        .expect("Continue preparation succeeds");
+        let config = std::fs::read_to_string(directory.join("config.yaml")).expect("config");
+        assert!(config.contains("provider: openai"));
+        assert!(config.contains("model: gpt-test"));
+        assert!(config.contains("apiBase: http://127.0.0.1:3456/v1"));
         let _ = std::fs::remove_dir_all(directory);
     }
 }
