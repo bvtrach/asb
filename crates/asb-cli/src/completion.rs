@@ -39,7 +39,6 @@ const TOOL_INSTALL_VALUES: &[&str] = &[
     "claude-code",
     "goose",
     "cline",
-    "kiro",
     "continue",
     "cli2key",
     "llmtape",

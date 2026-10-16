@@ -2316,13 +2316,6 @@ mod tests {
                 31,
             ),
             (
-                "kiro",
-                r#"{"event":"assistant","inputTokens":29,"outputTokens":9,"cacheReadInputTokens":5,"totalTokens":38}"#,
-                29,
-                9,
-                38,
-            ),
-            (
                 "continue",
                 r#"{"usage":{"input":31,"output":10,"cached":4,"total":41}}"#,
                 31,

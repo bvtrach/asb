@@ -69,7 +69,7 @@ Token usage is collected from generic/provider/agent environment variables,
 structured agent JSON events (including JSON embedded in human-readable agent
 output), and recorded cassette responses, then normalized without inferring
 counts from text size. The parser accepts usage shapes emitted by every
-supported agent family, including Claude Code, Goose, Cline, Kiro, and Continue,
+supported agent family, including Claude Code, Goose, Cline, and Continue,
 and maps provider aliases such as `prompt_tokens`, `inputTokens`,
 `promptTokenCount`, `cacheRead`, and `total` to the stable input, output, cached,
 and total fields. When input and output are present, total is canonicalized to
@@ -167,11 +167,7 @@ added without changing `run` or the benchmark configuration format.
 Claude Code, Goose, Cline, and Continue receive OpenRouter's
 OpenAI-compatible endpoint (with Claude's Anthropic-compatible path derived
 from the same base) or the equivalent cli2key bridge endpoint. Continue
-receives a project-local model YAML generated for the selected model. Kiro CLI
-is intentionally fail-closed for these providers: its documented headless API
-key authenticates against Kiro's hosted service and it does not expose a custom
-OpenAI-compatible endpoint; ASB reports that mismatch instead of sending an
-OpenRouter key to an unsupported endpoint.
+receives a project-local model YAML generated for the selected model.
 
 `asb compare SWEEP.toml` reads the isolated `<sweep>-results/` directories
 created by `asb sweep`. It writes bounded `comparison.json` data, an offline

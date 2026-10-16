@@ -33,7 +33,6 @@ const AGENTS: &[&str] = &[
     "claude-code",
     "goose",
     "cline",
-    "kiro",
     "continue",
 ];
 

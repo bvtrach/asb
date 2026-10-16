@@ -32,9 +32,6 @@ const GOOSE_X86_64_SHA256: &str =
 const GOOSE_AARCH64_URL: &str = "https://github.com/aaif-goose/goose/releases/download/v1.54.0/goose-aarch64-unknown-linux-gnu.tar.gz";
 const GOOSE_AARCH64_SHA256: &str =
     "0f174b5118a53888cd4e65b7ca9a4b72dd0b887e89142c8ce41e2409205e40d5";
-const KIRO_INSTALL_URL: &str = "https://cli.kiro.dev/install";
-const KIRO_INSTALL_SHA256: &str =
-    "d8dd659c11c156002942f09443b6cb7904959004d4e7f1f73777fdbb2d909b54";
 
 trait LoggedStatus {
     fn logged_status(&mut self) -> io::Result<ExitStatus>;
@@ -74,7 +71,6 @@ enum Recipe {
     Perfetto,
     Flamegraph,
     Goose,
-    Kiro,
 }
 
 struct ExternalWorkload {
@@ -100,7 +96,6 @@ const BUILTIN_TOOLS: &[&str] = &[
     "claude-code",
     "goose",
     "cline",
-    "kiro",
     "continue",
     "cli2key",
     "llmtape",
@@ -269,7 +264,6 @@ fn recipe(name: &str) -> Option<Recipe> {
             executable: "cn",
         }),
         "goose" => Some(Recipe::Goose),
-        "kiro" => Some(Recipe::Kiro),
         "cli2key" => Some(Recipe::Npm {
             package: "codex-anthropic-bridge@0.1.10",
             executable: "codex-bridge",
@@ -683,7 +677,6 @@ fn install_recipe(
         Recipe::Bpftrace => return install_bpftrace(root, progress),
         Recipe::Perfetto => return install_perfetto(root, progress),
         Recipe::Goose => return install_goose(root, progress),
-        Recipe::Kiro => return install_kiro(root, progress),
         Recipe::Flamegraph => {
             progress(25, "downloading FlameGraph scripts");
             let bin = root.join("bin");
@@ -716,7 +709,7 @@ fn install_recipe(
                 Recipe::Bpftrace => "bpftrace and uname",
                 Recipe::Perfetto => "curl and sha256sum",
                 Recipe::Flamegraph => "curl",
-                Recipe::Goose | Recipe::Kiro => "curl, tar, and sha256sum",
+                Recipe::Goose => "curl, tar, and sha256sum",
             };
             missing_dependency(dependency, "agent installation", error)
         } else {
@@ -790,47 +783,6 @@ fn install_goose(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<Path
     make_executable(&destination)?;
     let _ = fs::remove_file(archive);
     let _ = fs::remove_dir_all(extract);
-    progress(100, "ready");
-    Ok(destination)
-}
-
-fn install_kiro(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
-    let installer = root.join("kiro-install.sh");
-    progress(20, "downloading pinned Kiro installer");
-    install_source(KIRO_INSTALL_URL, &installer, "Kiro installer")?;
-    progress(35, "verifying Kiro installer checksum");
-    verify_sha256(&installer, KIRO_INSTALL_SHA256, "Kiro installer")?;
-    let home = root.join("home");
-    let tmp = root.join("tmp");
-    fs::create_dir_all(&home)
-        .and_then(|_| fs::create_dir_all(&tmp))
-        .map_err(|error| Error::Io(format!("cannot create Kiro project-local home: {error}")))?;
-    progress(45, "installing Kiro CLI into project directory");
-    let status = Command::new("bash")
-        .arg(&installer)
-        .env("HOME", &home)
-        .env("TMPDIR", &tmp)
-        .env("CI", "1")
-        .logged_status()
-        .map_err(|error| missing_dependency("bash", "Kiro installation", error))?;
-    if !status.success() {
-        return Err(Error::Io(
-            "the pinned Kiro installer failed; see .asb/install.log and retry after fixing its reported prerequisite".into(),
-        ));
-    }
-    let source = home.join(".local/bin/kiro-cli");
-    if !source.is_file() {
-        return Err(Error::Io(
-            "Kiro installer completed without producing kiro-cli in the project-local home".into(),
-        ));
-    }
-    let destination = root.join("bin/kiro-cli");
-    fs::create_dir_all(destination.parent().expect("Kiro bin parent"))
-        .map_err(|error| Error::Io(format!("cannot create Kiro bin directory: {error}")))?;
-    fs::copy(&source, &destination)
-        .map_err(|error| Error::Io(format!("cannot install Kiro CLI: {error}")))?;
-    make_executable(&destination)?;
-    let _ = fs::remove_file(installer);
     progress(100, "ready");
     Ok(destination)
 }
@@ -1132,7 +1084,6 @@ fn executable(recipe: Recipe, root: &Path) -> PathBuf {
         Recipe::Perfetto => root.join("bin").join("tracebox"),
         Recipe::Flamegraph => root.join("bin").join("flamegraph"),
         Recipe::Goose => root.join("bin").join("goose"),
-        Recipe::Kiro => root.join("bin").join("kiro-cli"),
     }
 }
 
@@ -1172,10 +1123,6 @@ fn describe(recipe: Recipe, root: &Path) -> String {
             "download and verify pinned Goose binary into {}/bin",
             root.display()
         ),
-        Recipe::Kiro => format!(
-            "download and verify the pinned Kiro installer, then install kiro-cli under {}/bin",
-            root.display()
-        ),
     }
 }
 
@@ -1196,7 +1143,6 @@ fn tool_summary(recipe: Recipe) -> String {
         Recipe::Perfetto => "pinned Perfetto Tracebox + trace processor".into(),
         Recipe::Flamegraph => "pinned FlameGraph scripts -> flamegraph".into(),
         Recipe::Goose => "pinned Goose binary (x86_64/aarch64) -> goose".into(),
-        Recipe::Kiro => "pinned Kiro CLI installer -> kiro-cli".into(),
     }
 }
 
@@ -1293,7 +1239,6 @@ fn executable_name(agent: &str) -> &str {
         "qwen-code" => "qwen",
         "mini-swe" => "mini",
         "continue" => "cn",
-        "kiro" => "kiro-cli",
         other => other,
     }
 }
@@ -1417,7 +1362,6 @@ mod tests {
             "claude-code",
             "goose",
             "cline",
-            "kiro",
             "continue",
             "cli2key",
             "llmtape",

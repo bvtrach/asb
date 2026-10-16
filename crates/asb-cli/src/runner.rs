@@ -32,7 +32,6 @@ const BUILTIN_AGENTS: &[&str] = &[
     "claude-code",
     "goose",
     "cline",
-    "kiro",
     "continue",
 ];
 
@@ -747,20 +746,6 @@ fn command_for(
             ],
             append_prompt: false,
         },
-        "kiro" => CommandSpec {
-            program: "kiro-cli".into(),
-            args: vec![
-                "chat".into(),
-                "--no-interactive".into(),
-                "--trust-all-tools".into(),
-                "--output-format".into(),
-                "stream-json".into(),
-                "--model".into(),
-                config.model.clone(),
-                prompt.into(),
-            ],
-            append_prompt: false,
-        },
         "continue" => CommandSpec {
             program: "cn".into(),
             args: vec![
@@ -807,7 +792,6 @@ fn local_agent(agent: &str, project_root: &Path, tools_dir: &str) -> Option<Stri
         "cli2key" => "codex-bridge",
         "workbuddy" => "codebuddy",
         "claude-code" => "claude",
-        "kiro" => "kiro-cli",
         "continue" => "cn",
         other => other,
     };
@@ -999,7 +983,6 @@ mod tests {
             ("claude-code", "claude", "--output-format"),
             ("goose", "goose", "--output-format"),
             ("cline", "cline", "--json"),
-            ("kiro", "kiro-cli", "--output-format"),
             ("continue", "cn", "--auto"),
         ] {
             let config = BenchmarkConfig {

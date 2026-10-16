@@ -73,7 +73,6 @@ pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
             "claude-code",
             "goose",
             "cline",
-            "kiro",
             "continue",
         ],
     ) {

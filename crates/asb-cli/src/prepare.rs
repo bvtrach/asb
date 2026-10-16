@@ -87,11 +87,6 @@ fn configure_openai_compatible(
             .env("CONTINUE_CONFIG", directory.join("config.yaml"))
             .env("CONTINUE_GLOBAL_DIR", directory);
     }
-    if agent.eq_ignore_ascii_case("kiro") {
-        return Err(Error::Input(
-            "Kiro CLI uses Kiro-hosted authentication and does not support OpenRouter or OpenAI-compatible endpoints; choose another agent or provider".into(),
-        ));
-    }
     Ok(())
 }
 
@@ -205,11 +200,6 @@ fn prepare_cli2key(
         command
             .env("CONTINUE_CONFIG", directory.join("config.yaml"))
             .env("CONTINUE_GLOBAL_DIR", directory);
-    }
-    if agent.eq_ignore_ascii_case("kiro") {
-        return Err(Error::Input(
-            "Kiro CLI uses Kiro-hosted authentication and does not support cli2key or OpenAI-compatible endpoints; choose another agent or provider".into(),
-        ));
     }
     if let Some(executable) = codex_executable {
         command.env("CLI2KEY_CODEX_BIN", executable);
@@ -533,20 +523,5 @@ mod tests {
                 .contains("provider: openai")
         );
         let _ = std::fs::remove_dir_all(directory);
-    }
-
-    #[test]
-    fn external_provider_preparation_rejects_kiro_without_faking_compatibility() {
-        let mut command = Command::new("kiro-cli");
-        let error = configure_openai_compatible(
-            &mut command,
-            "kiro",
-            "some-model",
-            "not-a-kiro-key",
-            "https://openrouter.ai/api/v1",
-            None,
-        )
-        .expect_err("Kiro must reject OpenRouter compatibility");
-        assert!(error.to_string().contains("does not support OpenRouter"));
     }
 }
