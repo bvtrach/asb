@@ -251,7 +251,9 @@ impl Session {
             .map_err(|e| format!("cannot create perf standard output: {e}"))?;
         let child = match self
             .command("perf")
-            .args(["record", "-g", "-p"])
+            // Keep perf data bounded enough for the offline flamegraph
+            // renderer while retaining process-scoped call samples.
+            .args(["record", "-g", "-F", "19", "-p"])
             .arg(pid.to_string())
             .args(["-o"])
             .arg(&data)
@@ -402,6 +404,14 @@ impl Session {
                 "completed"
             } else {
                 "failed"
+            };
+            let collector_status = if collector.name == "perfetto"
+                && (stderr.contains("Failed to create FtraceController")
+                    || stderr.contains("FtraceController"))
+            {
+                "unavailable"
+            } else {
+                collector_status
             };
             if let Some(profile) = collector.name.strip_prefix("bpftrace-") {
                 write_bpftrace_profile_svg(&self.dir, profile, collector_status, &metrics)?;
@@ -2540,6 +2550,13 @@ fn selected_bpftrace_profiles(selected: &[String]) -> Result<Vec<BpftraceProfile
                 .map(str::to_owned),
         );
     }
+    if selected.iter().any(|value| value == "bpftrace") && requested.is_empty() {
+        requested.extend(
+            BPFTRACE_PROFILES
+                .iter()
+                .map(|profile| profile.name.to_owned()),
+        );
+    }
     if requested.iter().any(|value| value == "all") {
         return Ok(BPFTRACE_PROFILES.to_vec());
     }
@@ -2949,6 +2966,12 @@ mod tests {
         ])
         .expect("profile selection");
         assert_eq!(profiles.len(), 2);
+        assert_eq!(
+            selected_bpftrace_profiles(&["bpftrace".into()])
+                .expect("generic bpftrace selects built-ins")
+                .len(),
+            bpftrace_profile_names().count()
+        );
         assert!(
             profiles
                 .iter()

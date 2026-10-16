@@ -21,6 +21,8 @@ pub enum Mode {
 pub struct Session {
     child: Child,
     url: String,
+    mode: Mode,
+    cassette: PathBuf,
 }
 
 impl Session {
@@ -91,6 +93,8 @@ impl Session {
                 return Ok(Self {
                     child,
                     url: format!("http://127.0.0.1:{port}/v1"),
+                    mode,
+                    cassette: cassette.to_path_buf(),
                 });
             }
             thread::sleep(Duration::from_millis(50));
@@ -111,8 +115,34 @@ impl Session {
         let _ = self.child.kill();
         self.child
             .wait()
-            .map(|_| ())
-            .map_err(|error| Error::Run(format!("could not stop llmtape: {error}")))
+            .map_err(|error| Error::Run(format!("could not stop llmtape: {error}")))?;
+        if self.mode == Mode::Replay {
+            let progress = self.cassette.with_extension("jsonl.progress.json");
+            let text = std::fs::read_to_string(&progress).map_err(|error| {
+                Error::Run(format!(
+                    "replay did not produce cassette progress for {}; verify the tape proxy: {error}",
+                    self.cassette.display()
+                ))
+            })?;
+            let value: serde_json::Value = serde_json::from_str(&text).map_err(|error| {
+                Error::Run(format!("replay cassette progress is malformed: {error}"))
+            })?;
+            let consumed = value
+                .get("consumed")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let total = value
+                .get("total")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            if consumed != total {
+                return Err(Error::Run(format!(
+                    "replay consumed {consumed} of {total} cassette requests for {}; refusing partial replay",
+                    self.cassette.display()
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
