@@ -158,6 +158,19 @@ pub struct Session {
     sudo_collectors: BTreeSet<String>,
 }
 
+impl Drop for Session {
+    fn drop(&mut self) {
+        // An early runner error (for example, an incomplete replay cassette)
+        // must not orphan process-scoped collectors. `finish` takes ownership
+        // of the collector list, so this only handles paths that return before
+        // normal finalization.
+        for mut collector in self.collectors.drain(..) {
+            let _ = collector.child.kill();
+            let _ = collector.child.wait();
+        }
+    }
+}
+
 impl Session {
     pub fn started_unix_ms(&self) -> u128 {
         self.started_unix_ms
