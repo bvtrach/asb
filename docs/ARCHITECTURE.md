@@ -29,9 +29,15 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   the mpstat/iostat result names use process-scoped `pidstat` sampling for the
   agent process and its child tasks, retaining bounded raw output and exposing
   averaged, unit-named CPU and I/O metrics under a machine-readable `metrics`
-  object. Comparisons consume that object rather
-  than scraping arbitrary output, so one canonical runtime result is plotted
-  instead of repeated collector samples;
+  object plus bounded per-sample `series` arrays. `perf stat` uses the same
+  interval contract. `ASB_MEASURE_INTERVAL_MS` accepts 100--60000 ms and
+  defaults to 1000 ms; pidstat rounds sub-second requests to whole seconds,
+  while perf supports millisecond periods. Comparisons emit line SVGs for
+  series with at least two points and expose the same hover, zoom, pan, reset,
+  and enlarge controls as bar charts. Built-in BPFTrace profiles remain
+  bounded aggregates (custom interval programs may add series), while
+  Perfetto retains its timestamped trace and aggregate extracted metrics;
+  neither is misrepresented as a sampled series;
   the Perfetto adapter validates tracefs/ftrace access before the agent process,
   then starts project-local Tracebox after the agent PID is known, filters
   scheduler events to that PID, disables process-wide scans, and records fixed

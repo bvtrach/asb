@@ -86,10 +86,17 @@ available through the custom-program interface. Flamegraphs use the local tools 
 `ASB_FLAMEGRAPH_STACKCOLLAPSE` and `ASB_FLAMEGRAPH_RENDER`; the SVG is paired
 with machine-readable `flamegraph.json` metadata. The mpstat and iostat result
 files use process-scoped `pidstat` sampling for the agent process and its child
-tasks; they retain bounded raw samples and add averaged machine-readable CPU
-and I/O metrics. `asb compare` uses
-those metrics rather than scraping every raw sample, so it emits one canonical
-runtime graph plus useful unit-labelled resource graphs. If perf permissions,
+tasks; they retain bounded raw samples, averaged machine-readable CPU and I/O
+metrics, and per-sample `series` arrays. `perf stat` is run in interval mode
+and emits the same bounded series. Set `ASB_MEASURE_INTERVAL_MS` to choose the
+sampling period (100--60000 ms, default 1000 ms); pidstat rounds sub-second
+values up to its whole-second interface, while perf supports the requested
+millisecond period. `asb compare` turns every series with at least two points
+into a line SVG with the same hover, zoom, pan, reset, and enlarge controls as
+bar charts. BPFTrace custom programs can provide additional series when they
+print interval-scoped `@asb_*` values; built-in profiles remain bounded event
+aggregates, and Perfetto remains a timestamped native trace plus extracted
+aggregate metrics. If perf permissions,
 samples, or FlameGraph tools are unavailable, `flamegraph.json` records the
 reason and status as `unavailable`; an ordinary `asb run` is unaffected.
 Before a run starts, perf and configured BPFTrace collectors are probed without
