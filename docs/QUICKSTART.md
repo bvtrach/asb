@@ -119,6 +119,12 @@ active:
 ./target/debug/asb run benchmark.toml --show-output
 ```
 
+For a generated sweep, use the same option:
+
+```sh
+./target/debug/asb sweep sweep.toml --show-output
+```
+
 Use `asb COMMAND --help` for concise help on every command and subcommand.
 `asb tool list` enumerates all built-in agent and support-tool installers; `asb workload list`
 enumerates local prompt files and installable external aliases. The

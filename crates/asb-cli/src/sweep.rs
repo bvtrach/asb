@@ -20,6 +20,7 @@ struct SweepFile {
 pub fn run(
     path: &str,
     json: bool,
+    show_output: bool,
     mode: Option<crate::tape::Mode>,
     output: &mut dyn Write,
 ) -> Result<(), Error> {
@@ -117,7 +118,7 @@ pub fn run(
         if let Err(error) = runner::run_with_tape(
             isolated_path.to_string_lossy().as_ref(),
             json,
-            false,
+            show_output,
             None,
             mode,
             cassette,
@@ -233,16 +234,28 @@ mod tests {
             "benchmark.toml",
             "agent = \"codex\"\nworkload = \"bug-fix\"\nprovider = \"openrouter\"\nmodel = \"tool-model\"\n",
         );
-        let error = run(path.to_str().expect("path"), false, None, &mut Vec::new())
-            .expect_err("normal benchmark must be rejected");
+        let error = run(
+            path.to_str().expect("path"),
+            false,
+            false,
+            None,
+            &mut Vec::new(),
+        )
+        .expect_err("normal benchmark must be rejected");
         assert!(error.to_string().contains("not a sweep TOML"));
     }
 
     #[test]
     fn rejects_unsafe_references_before_execution() {
         let path = temp_file("sweep.toml", "configs = [\"../benchmark.toml\"]\n");
-        let error = run(path.to_str().expect("path"), false, None, &mut Vec::new())
-            .expect_err("parent traversal must be rejected");
+        let error = run(
+            path.to_str().expect("path"),
+            false,
+            false,
+            None,
+            &mut Vec::new(),
+        )
+        .expect_err("parent traversal must be rejected");
         assert!(error.to_string().contains("unsafe benchmark path"));
     }
 
@@ -255,8 +268,14 @@ mod tests {
             "agent = \"not-installed\"\nworkload = \"bug-fix\"\nprovider = \"local\"\nmodel = \"test-model\"\n",
         )
         .expect("benchmark");
-        let error = run(path.to_str().expect("path"), false, None, &mut Vec::new())
-            .expect_err("invalid agent leaves a failed sweep");
+        let error = run(
+            path.to_str().expect("path"),
+            false,
+            false,
+            None,
+            &mut Vec::new(),
+        )
+        .expect_err("invalid agent leaves a failed sweep");
         assert!(error.to_string().contains("failed benchmark"));
         let report = path
             .parent()
