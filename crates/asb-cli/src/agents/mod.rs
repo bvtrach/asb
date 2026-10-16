@@ -19,7 +19,7 @@ mod workbuddy;
 use crate::Error;
 use crate::benchmark::BenchmarkConfig;
 use crate::project;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub(crate) trait AgentAdapter: Sync {
@@ -27,7 +27,7 @@ pub(crate) trait AgentAdapter: Sync {
     fn executable(&self) -> &'static str;
     fn command(&self, context: &CommandContext<'_>) -> CommandSpec;
     fn prepare(&self, context: &mut PreparationContext<'_>) -> Result<(), Error>;
-    fn collect(&self, _output: &str) -> AgentArtifacts {
+    fn collect(&self, _context: &CollectionContext<'_>) -> AgentArtifacts {
         AgentArtifacts::default()
     }
 }
@@ -37,10 +37,9 @@ pub(crate) struct PreparationContext<'a> {
     pub provider: &'a str,
     pub model: &'a str,
     pub cli2key: Option<(&'a str, &'a str)>,
-    pub pi_config_dir: Option<&'a Path>,
-    pub workbuddy_config_dir: Option<&'a Path>,
-    pub continue_config_dir: Option<&'a Path>,
-    pub cline_data_dir: Option<&'a Path>,
+    /// The project-local tool root. Adapters choose their own configuration
+    /// layout below this root instead of teaching the runner agent names.
+    pub tools_dir: &'a Path,
 }
 
 pub(crate) struct CommandContext<'a> {
@@ -56,11 +55,19 @@ pub(crate) struct CommandSpec {
 }
 #[derive(Default)]
 pub(crate) struct AgentArtifacts {
-    pub paths: Vec<String>,
+    pub token_usage: Option<crate::measurements::TokenUsage>,
+    /// Files that were consumed by this adapter and can be removed once their
+    /// data has been incorporated into the generic run result.
+    pub cleanup_paths: Vec<PathBuf>,
+}
+
+pub(crate) struct CollectionContext<'a> {
+    pub workspace: &'a Path,
 }
 
 type CommandBuilder = for<'a> fn(&CommandContext<'a>) -> CommandSpec;
 type PreparationHook = for<'a> fn(&mut PreparationContext<'a>) -> Result<(), Error>;
+type CollectionHook = for<'a> fn(&CollectionContext<'a>) -> AgentArtifacts;
 
 /// Trait-object implementation whose behavior is supplied by individual files.
 pub(super) struct StaticAdapter {
@@ -68,6 +75,7 @@ pub(super) struct StaticAdapter {
     executable: &'static str,
     command: CommandBuilder,
     prepare: PreparationHook,
+    collect: Option<CollectionHook>,
 }
 impl StaticAdapter {
     pub(super) const fn new(
@@ -81,7 +89,13 @@ impl StaticAdapter {
             executable,
             command,
             prepare,
+            collect: None,
         }
+    }
+
+    pub(super) const fn with_collection(mut self, collect: CollectionHook) -> Self {
+        self.collect = Some(collect);
+        self
     }
 }
 impl AgentAdapter for StaticAdapter {
@@ -97,6 +111,11 @@ impl AgentAdapter for StaticAdapter {
     fn prepare(&self, context: &mut PreparationContext<'_>) -> Result<(), Error> {
         (self.prepare)(context)
     }
+    fn collect(&self, context: &CollectionContext<'_>) -> AgentArtifacts {
+        self.collect
+            .map(|collect| collect(context))
+            .unwrap_or_default()
+    }
 }
 pub(super) fn no_prepare(_context: &mut PreparationContext<'_>) -> Result<(), Error> {
     Ok(())
@@ -108,10 +127,7 @@ pub(crate) fn prepare(
     provider: &str,
     model: &str,
     cli2key: Option<(&str, &str)>,
-    pi_config_dir: Option<&Path>,
-    workbuddy_config_dir: Option<&Path>,
-    continue_config_dir: Option<&Path>,
-    cline_data_dir: Option<&Path>,
+    tools_dir: &Path,
 ) -> Result<(), Error> {
     let Some(adapter) = find(agent) else {
         return Ok(());
@@ -121,10 +137,7 @@ pub(crate) fn prepare(
         provider,
         model,
         cli2key,
-        pi_config_dir,
-        workbuddy_config_dir,
-        continue_config_dir,
-        cline_data_dir,
+        tools_dir,
     })
 }
 
@@ -162,18 +175,35 @@ pub(crate) fn resolve_executable(
     if let Some(directory) = std::env::var_os("ASB_TOOL_DIR") {
         candidates.push(std::path::PathBuf::from(directory).join(executable));
     }
-    let root = project::resolve(project_root, tools_dir).join(id);
-    candidates.extend([
-        root.join("bin").join(executable),
-        root.join("node_modules/.bin").join(executable),
-        root.join("venv/bin").join(executable),
-        Path::new(".asb-tools/bin").join(executable),
-    ]);
+    let tools_root = project::resolve(project_root, tools_dir);
+    candidates.extend(executable_candidates(id, executable, &tools_root));
     candidates
         .into_iter()
         .find(|candidate| candidate.is_file())
         .and_then(|candidate| candidate.canonicalize().ok())
         .map(|candidate| candidate.to_string_lossy().into_owned())
+}
+
+/// Resolve an adapter's executable from a known project-local tools root.
+/// Provider preparation uses this to find provider support tools without
+/// leaking those tool names into the runner.
+pub(crate) fn resolve_from_tools(id: &str, tools_root: &Path) -> Option<String> {
+    let adapter = find(id)?;
+    executable_candidates(adapter.id(), adapter.executable(), tools_root)
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .and_then(|candidate| candidate.canonicalize().ok())
+        .map(|candidate| candidate.to_string_lossy().into_owned())
+}
+
+fn executable_candidates(id: &str, executable: &str, tools_root: &Path) -> Vec<PathBuf> {
+    let root = tools_root.join(id);
+    vec![
+        root.join("bin").join(executable),
+        root.join("node_modules/.bin").join(executable),
+        root.join("venv/bin").join(executable),
+        Path::new(".asb-tools/bin").join(executable),
+    ]
 }
 pub(crate) fn resolve(id: &str, project_root: &Path, tools_dir: &str) -> Option<String> {
     let adapter = find(id)?;

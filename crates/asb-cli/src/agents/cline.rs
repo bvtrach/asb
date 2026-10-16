@@ -23,17 +23,12 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
     }
 }
 fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
-    let directory = context.cline_data_dir.ok_or_else(|| {
-        Error::Run(
-            "cannot configure Cline without a project-local provider configuration directory"
-                .into(),
-        )
-    })?;
+    let directory = context.tools_dir.join("cline/config");
     if context.provider.eq_ignore_ascii_case("cli2key") {
         let (key, url) = context
             .cli2key
             .ok_or_else(|| Error::Run("cli2key provider has no API endpoint".into()))?;
-        prepare::configure_cline(directory, "openai-native", context.model, url, key)?;
+        prepare::configure_cline(&directory, "openai-native", context.model, url, key)?;
         context
             .command
             .env("OPENAI_API_KEY", key)
@@ -49,13 +44,13 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
                 "openrouter provider requires OPENROUTER_API_KEY or ~/.api_key_openrouter".into(),
             )
         })?;
-        prepare::configure_cline(directory, "openrouter", context.model, &url, &key)?;
+        prepare::configure_cline(&directory, "openrouter", context.model, &url, &key)?;
     } else {
         return Ok(());
     }
     context
         .command
-        .env("CLINE_DIR", directory)
+        .env("CLINE_DIR", &directory)
         .env("CLINE_DATA_DIR", directory.join("data"))
         .env(
             "CLINE_PROVIDER_SETTINGS_PATH",

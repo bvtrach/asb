@@ -248,7 +248,6 @@ fn run_mode(
     workloads::prepare_fixture(&config.workload, &workspace).map_err(Error::Run)?;
     workloads::prepare_external(&config.workload, &workload_directory, &workspace)
         .map_err(Error::Run)?;
-    let codex_executable = agents::resolve("codex", &project_root, &project_config.tools_dir);
     let tape_mode = tape_request.map(|(mode, _)| mode);
     let bridge = if config.provider.eq_ignore_ascii_case("cli2key")
         && tape_mode != Some(tape::Mode::Replay)
@@ -308,7 +307,6 @@ fn run_mode(
         &config.agent,
         &config.provider,
         &config.model,
-        codex_executable.as_deref(),
         if config.provider.eq_ignore_ascii_case("cli2key") {
             Some((
                 bridge
@@ -319,10 +317,7 @@ fn run_mode(
         } else {
             None
         },
-        Some(&project::resolve(&project_root, &project_config.tools_dir).join("pi/config")),
-        Some(&project::resolve(&project_root, &project_config.tools_dir).join("workbuddy/config")),
-        Some(&project::resolve(&project_root, &project_config.tools_dir).join("continue/config")),
-        Some(&project::resolve(&project_root, &project_config.tools_dir).join("cline/config")),
+        &project::resolve(&project_root, &project_config.tools_dir),
         tape_url,
         tape_mode == Some(tape::Mode::Replay),
     )?;
@@ -403,7 +398,11 @@ fn run_mode(
     let elapsed_ms = started.elapsed().as_millis();
     let success = process_successful(&child.status, &child.stdout, &child.stderr);
     let adapter_artifacts = agents::find(&config.agent)
-        .map(|adapter| adapter.collect(&bounded(&child.stdout)))
+        .map(|adapter| {
+            adapter.collect(&agents::CollectionContext {
+                workspace: &workspace,
+            })
+        })
         .unwrap_or_default();
     let mut token_usage = measurements::token_usage_from_sources(
         &config.provider,
@@ -414,15 +413,13 @@ fn run_mode(
             .as_ref()
             .map(|(_, cassette)| cassette.as_path()),
     );
-    let trajectory = workspace.join(".asb-mini-swe.traj.json");
-    if trajectory.is_file() {
+    if let Some(artifact_usage) = adapter_artifacts.token_usage {
         token_usage = token_usage
-            .merge_with_source(
-                measurements::token_usage_from_path(&trajectory),
-                "agent-artifact",
-            )
+            .merge_with_source(artifact_usage, "agent-artifact")
             .with_derived_total();
-        let _ = std::fs::remove_file(trajectory);
+    }
+    for path in adapter_artifacts.cleanup_paths {
+        let _ = std::fs::remove_file(path);
     }
     let steps = measurements::steps_from_sources(
         &config.agent,
@@ -446,9 +443,6 @@ fn run_mode(
         stdout: bounded(&child.stdout),
         stderr: bounded(&child.stderr),
     };
-    // Keep adapter artifacts available for future result serializers while the
-    // generic runner remains the single owner of result output.
-    let _artifact_count = adapter_artifacts.paths.len();
     write_log(config_path, &config.log_file, &result)?;
     if let Some(session) = measurement_session {
         let measured = measurements::RunMeasurement {
