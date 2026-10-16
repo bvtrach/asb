@@ -1229,8 +1229,8 @@ fn env_true(name: &str) -> bool {
 
 /// Probe privileged collectors before the benchmark starts. A direct probe is
 /// preferred; only collectors that actually fail the probe are retried with
-/// non-interactive sudo. This prevents a password prompt or a half-collected
-/// run from occurring after an agent has already started.
+/// non-interactive sudo. Perf is intentionally not granted a sudoers rule:
+/// its kernel policy has a narrower, user-applied repair path below.
 fn preflight_collectors(
     selected: &[String],
     tool_dir: Option<&Path>,
@@ -1263,6 +1263,9 @@ fn preflight_collectors(
         match direct {
             Ok(status) if status.success() => continue,
             Ok(_) => {
+                if name == "perf" {
+                    return Err(perf_permission_error());
+                }
                 let sudo = Command::new("sudo")
                     .args(["-n", "--"])
                     .arg(&executable)
@@ -1309,6 +1312,10 @@ fn passwordless_sudo_error(name: &str, executable: &Path) -> String {
         "{name} collector needs elevated access, but its direct probe failed and passwordless sudo is unavailable.\nWhat to do: grant only this executable passwordless sudo, then rerun:\n  {command}\nThe generated rule should authorize `{}` for the current user; ASB never prompts for a sudo password.",
         executable.display()
     )
+}
+
+fn perf_permission_error() -> String {
+    "perf cannot access performance counters because kernel.perf_event_paranoid is too restrictive.\nWhat to do: allow user-space perf access, then rerun the benchmark:\n  sudo sysctl -w kernel.perf_event_paranoid=-1\nTo persist the setting across reboots:\n  printf 'kernel.perf_event_paranoid=-1\\n' | sudo tee /etc/sysctl.d/99-asb-perf.conf\nASB does not create sudoers rules for perf.".into()
 }
 
 fn sudoers_repair_command(name: &str, executable: &Path) -> String {
@@ -1493,13 +1500,13 @@ mod tests {
     }
 
     #[test]
-    fn passwordless_sudo_error_contains_a_scoped_repair_command() {
-        let message = passwordless_sudo_error("perf", Path::new("/usr/bin/perf"));
-        assert!(message.contains("passwordless sudo is unavailable"));
-        assert!(message.contains("sudo sh -c"));
-        assert!(message.contains("/etc/sudoers.d/asb-perf"));
-        assert!(message.contains("visudo -cf"));
-        assert!(message.contains("/usr/bin/perf"));
+    fn perf_permission_error_suggests_kernel_policy_not_sudoers() {
+        let message = perf_permission_error();
+        assert!(message.contains("kernel.perf_event_paranoid=-1"));
+        assert!(message.contains("sudo sysctl -w kernel.perf_event_paranoid=-1"));
+        assert!(message.contains("/etc/sysctl.d/99-asb-perf.conf"));
+        assert!(message.contains("does not create sudoers rules"));
+        assert!(!message.contains("sudoers.d"));
     }
 
     #[test]
