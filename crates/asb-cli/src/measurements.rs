@@ -345,7 +345,10 @@ impl Session {
                     // summaries on an orderly interrupt. Do not SIGKILL either collector:
                     // a short benchmark would otherwise lose the very artifacts ASB is
                     // meant to report.
-                    if collector.name == "perfetto" || collector.name.starts_with("bpftrace-") {
+                    if collector.name == "perf"
+                        || collector.name == "perfetto"
+                        || collector.name.starts_with("bpftrace-")
+                    {
                         let interrupted = Command::new("kill")
                             .arg("-INT")
                             .arg(collector.child.id().to_string())
