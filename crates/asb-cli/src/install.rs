@@ -20,6 +20,12 @@ const PERFETTO_LINUX_AARCH64_URL: &str =
     "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v58.2/linux-arm64/tracebox";
 const PERFETTO_LINUX_AARCH64_SHA256: &str =
     "2d21883e9c55818f851fd8c391afb9b366032b3110076b4fd41f31f30b5849fa";
+const PERFETTO_PROCESSOR_LINUX_X86_64_URL: &str = "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v58.2/linux-amd64/trace_processor_shell";
+const PERFETTO_PROCESSOR_LINUX_X86_64_SHA256: &str =
+    "58042408e6cc861fb1a731c26bb082dc222285561eaa4e12a48a8b2b90dca7b9";
+const PERFETTO_PROCESSOR_LINUX_AARCH64_URL: &str = "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v58.2/linux-arm64/trace_processor_shell";
+const PERFETTO_PROCESSOR_LINUX_AARCH64_SHA256: &str =
+    "0e6e0c5452c505c8d46fe472fd196a0d17d963460727e2ce2013b02aa1309555";
 
 trait LoggedStatus {
     fn logged_status(&mut self) -> io::Result<ExitStatus>;
@@ -716,36 +722,44 @@ fn install_recipe(
 /// project. Tracebox is the Linux Perfetto collector used by the optional
 /// scheduler and userspace tracepoint measurement adapter.
 fn install_perfetto(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
-    let (url, expected_hash) = match std::env::consts::ARCH {
-        "x86_64" => (PERFETTO_LINUX_X86_64_URL, PERFETTO_LINUX_X86_64_SHA256),
-        "aarch64" => (PERFETTO_LINUX_AARCH64_URL, PERFETTO_LINUX_AARCH64_SHA256),
-        architecture => {
-            return Err(Error::Input(format!(
-                "Perfetto Tracebox is currently packaged by ASB only for Linux x86_64 and aarch64; this project is running on {architecture}"
-            )));
-        }
-    };
+    let ((tracebox_url, tracebox_hash), (processor_url, processor_hash)) =
+        match std::env::consts::ARCH {
+            "x86_64" => (
+                (PERFETTO_LINUX_X86_64_URL, PERFETTO_LINUX_X86_64_SHA256),
+                (
+                    PERFETTO_PROCESSOR_LINUX_X86_64_URL,
+                    PERFETTO_PROCESSOR_LINUX_X86_64_SHA256,
+                ),
+            ),
+            "aarch64" => (
+                (PERFETTO_LINUX_AARCH64_URL, PERFETTO_LINUX_AARCH64_SHA256),
+                (
+                    PERFETTO_PROCESSOR_LINUX_AARCH64_URL,
+                    PERFETTO_PROCESSOR_LINUX_AARCH64_SHA256,
+                ),
+            ),
+            architecture => {
+                return Err(Error::Input(format!(
+                    "Perfetto Tracebox is currently packaged by ASB only for Linux x86_64 and aarch64; this project is running on {architecture}"
+                )));
+            }
+        };
     let bin = root.join("bin");
     fs::create_dir_all(&bin)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", bin.display())))?;
     let destination = bin.join("tracebox");
     progress(20, "downloading pinned Perfetto Tracebox");
-    install_source(url, &destination, "Perfetto Tracebox")?;
-    progress(75, "verifying Perfetto checksum");
-    let digest = command_output(
-        &PathBuf::from("sha256sum"),
-        &[destination.to_string_lossy().as_ref()],
-        "Perfetto checksum",
-    )?;
-    let actual_hash = digest.split_whitespace().next().unwrap_or_default();
-    if actual_hash != expected_hash {
-        let _ = fs::remove_file(&destination);
-        return Err(Error::Io(format!(
-            "Perfetto Tracebox checksum mismatch: expected {expected_hash}, got {actual_hash}"
-        )));
-    }
+    install_source(tracebox_url, &destination, "Perfetto Tracebox")?;
+    progress(45, "verifying Perfetto Tracebox checksum");
+    verify_sha256(&destination, tracebox_hash, "Perfetto Tracebox")?;
     make_executable(&destination)?;
-    progress(95, "checking Perfetto Tracebox");
+    let processor = bin.join("trace_processor_shell");
+    progress(60, "downloading pinned Perfetto trace processor");
+    install_source(processor_url, &processor, "Perfetto trace processor")?;
+    progress(80, "verifying Perfetto trace processor checksum");
+    verify_sha256(&processor, processor_hash, "Perfetto trace processor")?;
+    make_executable(&processor)?;
+    progress(90, "checking project-local Perfetto tools");
     let version = Command::new(&destination)
         .arg("--version")
         .logged_status()
@@ -755,7 +769,36 @@ fn install_perfetto(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<P
             "installed Perfetto Tracebox did not report a usable version".into(),
         ));
     }
+    let processor_version = Command::new(&processor)
+        .arg("--version")
+        .logged_status()
+        .map_err(|error| {
+            Error::Io(format!(
+                "cannot start installed Perfetto trace processor: {error}"
+            ))
+        })?;
+    if !processor_version.success() {
+        return Err(Error::Io(
+            "installed Perfetto trace processor did not report a usable version".into(),
+        ));
+    }
     Ok(destination)
+}
+
+fn verify_sha256(destination: &Path, expected_hash: &str, label: &str) -> Result<(), Error> {
+    let digest = command_output(
+        &PathBuf::from("sha256sum"),
+        &[destination.to_string_lossy().as_ref()],
+        &format!("{label} checksum"),
+    )?;
+    let actual_hash = digest.split_whitespace().next().unwrap_or_default();
+    if actual_hash != expected_hash {
+        let _ = fs::remove_file(destination);
+        return Err(Error::Io(format!(
+            "{label} checksum mismatch: expected {expected_hash}, got {actual_hash}"
+        )));
+    }
+    Ok(())
 }
 
 /// Copy the host bpftrace binary and persist the kernel pairing used to
@@ -999,7 +1042,7 @@ fn describe(recipe: Recipe, root: &Path) -> String {
             root.display()
         ),
         Recipe::Perfetto => format!(
-            "download pinned Perfetto Tracebox into {}/bin/tracebox and verify its SHA-256",
+            "download pinned Perfetto Tracebox and trace processor into {}/bin and verify their SHA-256 checksums",
             root.display()
         ),
         Recipe::Flamegraph => format!(
@@ -1023,7 +1066,7 @@ fn tool_summary(recipe: Recipe) -> String {
         } => format!("python {package} -> {executable}"),
         Recipe::Host { executable } => format!("host binary -> {executable}"),
         Recipe::Bpftrace => "host-compatible bpftrace + kernel metadata".into(),
-        Recipe::Perfetto => "pinned Perfetto Tracebox -> tracebox".into(),
+        Recipe::Perfetto => "pinned Perfetto Tracebox + trace processor".into(),
         Recipe::Flamegraph => "pinned FlameGraph scripts -> flamegraph".into(),
     }
 }
@@ -1275,6 +1318,10 @@ mod tests {
         assert_eq!(
             executable(recipe, Path::new(".asb-tools/perfetto")),
             Path::new(".asb-tools/perfetto/bin/tracebox")
+        );
+        assert_eq!(
+            Path::new(".asb-tools/perfetto/bin").join("trace_processor_shell"),
+            Path::new(".asb-tools/perfetto/bin/trace_processor_shell")
         );
         assert!(describe(recipe, Path::new(".asb-tools/perfetto")).contains("SHA-256"));
     }

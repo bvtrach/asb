@@ -110,6 +110,7 @@ pub struct Session {
     perfetto_enabled: bool,
     trace_marker: Option<PathBuf>,
     tracepoint_count: u64,
+    perfetto_metrics: BTreeMap<String, f64>,
     sudo_collectors: BTreeSet<String>,
 }
 
@@ -127,9 +128,11 @@ impl Session {
         selected: &[String],
         tool_dir: Option<&Path>,
     ) -> Result<Self, String> {
-        let sudo_collectors = preflight_collectors(selected, tool_dir)?;
         fs::create_dir_all(dir)
             .map_err(|e| format!("cannot create measurements directory: {e}"))?;
+        // Privilege and tracefs checks must complete before any agent process
+        // is prepared. This prevents a partially measured benchmark run.
+        let sudo_collectors = preflight_collectors(dir, selected, tool_dir)?;
         let started_unix_ms = unix_ms();
         let info = SystemInfo {
             schema_version: 1,
@@ -154,6 +157,7 @@ impl Session {
             perfetto_enabled: selected_or_env("perfetto", "ASB_MEASURE_PERFETTO", selected),
             trace_marker: None,
             tracepoint_count: 0,
+            perfetto_metrics: BTreeMap::new(),
             sudo_collectors,
         };
         session.start_perfetto()?;
@@ -268,7 +272,8 @@ impl Session {
 
     /// Finish collectors and write the run record and aggregate summary.
     pub fn finish<'a>(mut self, measurement: RunMeasurement<'a>) -> Result<(), String> {
-        for mut collector in self.collectors.drain(..) {
+        let collectors = std::mem::take(&mut self.collectors);
+        for mut collector in collectors {
             let status = match collector.child.try_wait() {
                 Ok(Some(status)) => status,
                 Ok(None) => {
@@ -309,7 +314,11 @@ impl Session {
             } else {
                 &stdout
             };
-            let metrics = parse_collector_metrics(&collector.name, metrics_source);
+            let mut metrics = parse_collector_metrics(&collector.name, metrics_source);
+            if collector.name == "perfetto" {
+                self.perfetto_metrics = self.perfetto_trace_metrics();
+                metrics.extend(self.perfetto_metrics.clone());
+            }
             let artifact = match collector.name.as_str() {
                 "perf" => self
                     .perf_data
@@ -362,6 +371,12 @@ impl Session {
                     "trace": self.perfetto_trace.as_ref().map(|path| file_name(path)),
                 }),
             )?;
+            write_perfetto_summary(
+                &self.dir,
+                self.perfetto_trace.as_deref(),
+                self.tracepoint_count,
+                &self.perfetto_metrics,
+            )?;
         }
         update_summary(&self.dir, &measurement)
     }
@@ -374,6 +389,10 @@ impl Session {
         fs::write(&config, perfetto_config())
             .map_err(|error| format!("cannot write Perfetto trace configuration: {error}"))?;
         let trace = self.dir.join("perfetto-scheduling.perfetto-trace");
+        // A sudo-launched Tracebox otherwise creates a root-only 0600 trace.
+        // Precreating the artifact keeps its ownership with the benchmark user.
+        File::create(&trace)
+            .map_err(|error| format!("cannot create Perfetto trace artifact: {error}"))?;
         let stdout_path = self.dir.join("perfetto.stdout");
         let stderr_path = self.dir.join("perfetto.stderr");
         let child = self
@@ -427,6 +446,48 @@ impl Session {
         {
             self.tracepoint_count = self.tracepoint_count.saturating_add(1);
         }
+    }
+
+    /// Summarize the native trace with the installer-provided trace processor.
+    /// The trace itself remains the authoritative artifact; these aggregates
+    /// make scheduler activity comparable in ASB's offline SVG and HTML views.
+    fn perfetto_trace_metrics(&self) -> BTreeMap<String, f64> {
+        let mut metrics = BTreeMap::new();
+        let Some(trace) = self.perfetto_trace.as_ref().filter(|path| path.is_file()) else {
+            return metrics;
+        };
+        metrics.insert(
+            "perfetto.trace_bytes".into(),
+            trace.metadata().map_or(0, |metadata| metadata.len()) as f64,
+        );
+        metrics.insert("perfetto.tracepoints".into(), self.tracepoint_count as f64);
+        let Some(tool_dir) = self.tool_dir.as_ref() else {
+            return metrics;
+        };
+        let processor = tool_dir.join("perfetto/bin/trace_processor_shell");
+        if !processor.is_file() {
+            return metrics;
+        }
+        for (metric, query) in [
+            ("perfetto.scheduler_events", "SELECT COUNT(*) FROM sched"),
+            ("perfetto.processes", "SELECT COUNT(*) FROM process"),
+            ("perfetto.threads", "SELECT COUNT(*) FROM thread"),
+        ] {
+            let Ok(output) = Command::new(&processor)
+                .args(["query"])
+                .arg(trace)
+                .arg(query)
+                .output()
+            else {
+                continue;
+            };
+            if output.status.success() {
+                if let Some(value) = bounded(&output.stdout).lines().rev().find_map(parse_float) {
+                    metrics.insert(metric.into(), value);
+                }
+            }
+        }
+        metrics
     }
 
     fn start_snapshot(
@@ -1297,6 +1358,57 @@ fn write_flamegraph_status(
     )
 }
 
+/// Write a dependency-free visual summary for the native Perfetto artifact.
+/// Raw traces are intentionally not converted to text: they can contain host
+/// process names, while this SVG contains only ASB's fixed aggregate metrics.
+fn write_perfetto_summary(
+    dir: &Path,
+    trace: Option<&Path>,
+    tracepoint_count: u64,
+    metrics: &BTreeMap<String, f64>,
+) -> Result<(), String> {
+    let trace_state = trace
+        .filter(|path| path.is_file())
+        .map_or("native trace unavailable", |_| "native trace recorded");
+    let mut lines = vec![
+        "Perfetto scheduler summary".to_owned(),
+        trace_state.to_owned(),
+        format!("ASB lifecycle markers: {tracepoint_count}"),
+    ];
+    for (name, value) in metrics {
+        lines.push(format!(
+            "{}: {:.0}",
+            name.trim_start_matches("perfetto."),
+            value
+        ));
+    }
+    let height = 70 + lines.len() * 28;
+    let mut svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"760\" height=\"{height}\" viewBox=\"0 0 760 {height}\"><title>Perfetto scheduler summary</title><rect width=\"760\" height=\"{height}\" fill=\"#101827\"/><rect x=\"16\" y=\"16\" width=\"728\" height=\"{}\" rx=\"10\" fill=\"#182334\"/><text x=\"36\" y=\"46\" fill=\"#e5edf8\" font-family=\"sans-serif\" font-size=\"20\" font-weight=\"bold\">{}</text>",
+        height - 32,
+        escape_svg(&lines[0])
+    );
+    for (index, line) in lines.iter().enumerate().skip(1) {
+        let color = if index == 1 { "#78dba9" } else { "#b9c7dc" };
+        svg.push_str(&format!(
+            "<text x=\"36\" y=\"{}\" fill=\"{color}\" font-family=\"monospace\" font-size=\"15\">{}</text>",
+            46 + index * 28,
+            escape_svg(line)
+        ));
+    }
+    svg.push_str("</svg>\n");
+    fs::write(dir.join("perfetto-summary.svg"), svg)
+        .map_err(|error| format!("cannot write Perfetto SVG summary: {error}"))
+}
+
+fn escape_svg(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 fn parse_collector_metrics(name: &str, output: &str) -> BTreeMap<String, f64> {
     match name {
         "mpstat" => parse_mpstat_metrics(output),
@@ -1391,6 +1503,10 @@ data_sources {
   }
 }
 "#
+}
+
+fn perfetto_probe_config() -> String {
+    perfetto_config().replacen("duration_ms: 3600000", "duration_ms: 250", 1)
 }
 
 fn parse_mpstat_metrics(output: &str) -> BTreeMap<String, f64> {
@@ -1582,6 +1698,7 @@ fn env_true(name: &str) -> bool {
 /// non-interactive sudo. Perf is intentionally not granted a sudoers rule:
 /// its kernel policy has a narrower, user-applied repair path below.
 fn preflight_collectors(
+    measurement_dir: &Path,
     selected: &[String],
     tool_dir: Option<&Path>,
 ) -> Result<BTreeSet<String>, String> {
@@ -1635,7 +1752,65 @@ fn preflight_collectors(
             }
         }
     }
+    if selected_or_env("perfetto", "ASB_MEASURE_PERFETTO", selected) {
+        let executable = resolve_executable(tool_dir, "perfetto");
+        // A missing optional collector is reported as unavailable when the
+        // session starts, preserving the existing opt-in behavior. Once it is
+        // installed, however, validate the real tracefs/ftrace path before
+        // starting an agent.
+        if executable.is_file() {
+            if trace_marker_path().is_none() {
+                return Err(perfetto_tracefs_error());
+            }
+            if perfetto_probe(&executable, measurement_dir, false)? {
+                return Ok(sudo_collectors);
+            }
+            if perfetto_probe(&executable, measurement_dir, true)? {
+                sudo_collectors.insert("perfetto".to_owned());
+            } else {
+                return Err(passwordless_sudo_error("perfetto", &executable));
+            }
+        }
+    }
     Ok(sudo_collectors)
+}
+
+/// Probe the exact ftrace configuration used by ASB. `--background-wait`
+/// waits for Perfetto to acknowledge every data source, so a successful
+/// process launch cannot mask an unavailable tracefs instance.
+fn perfetto_probe(executable: &Path, measurement_dir: &Path, sudo: bool) -> Result<bool, String> {
+    let config = measurement_dir.join(".perfetto-preflight.pbtx");
+    let trace = measurement_dir.join(".perfetto-preflight.perfetto-trace");
+    fs::write(&config, perfetto_probe_config())
+        .map_err(|error| format!("cannot write Perfetto preflight configuration: {error}"))?;
+    let mut command = if sudo {
+        let mut command = Command::new("sudo");
+        command.args(["-n", "--"]);
+        command.arg(executable);
+        command
+    } else {
+        Command::new(executable)
+    };
+    let result = command
+        .args(["--txt", "-c"])
+        .arg(&config)
+        .args(["-o"])
+        .arg(&trace)
+        .arg("--background-wait")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = fs::remove_file(&config);
+    let _ = fs::remove_file(&trace);
+    match result {
+        Ok(status) => Ok(status.success()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && sudo => Ok(false),
+        Err(error) => Err(format!("cannot probe Perfetto ftrace collector: {error}")),
+    }
+}
+
+fn perfetto_tracefs_error() -> String {
+    "Perfetto needs the Linux tracefs ftrace interface, but ASB could not find trace_marker under /sys/kernel/tracing or /sys/kernel/debug/tracing. This is a host kernel interface, not an installable project tool. What to do: mount tracefs or enable kernel tracing, then rerun. If mounting tracefs requires privileges, grant the required passwordless sudo access before starting the benchmark; ASB never prompts for a password.".into()
 }
 
 fn resolve_executable(tool_dir: Option<&Path>, name: &str) -> PathBuf {
