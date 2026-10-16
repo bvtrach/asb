@@ -68,6 +68,8 @@ machine-readable JSON modes; mini-SWE writes a project-local trajectory that
 is parsed for nested provider usage before it is removed. Their terminal output is intentionally limited to success
 rate, elapsed time, and token usage; `--json` changes only the representation
 of those metrics.
+Pass `--show-output` to stream the agent's stdout and stderr live for interactive
+debugging; the same output remains in the configured log.
 An agent is not considered successful solely because its process exits with
 status zero: known authentication, unsupported-endpoint, and provider-error
 messages are treated as failures so sweeps cannot report a false success.

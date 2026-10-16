@@ -12,9 +12,11 @@ use crate::suggestions;
 use crate::tape;
 use crate::workloads;
 use serde::Serialize;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::Duration;
 use std::time::Instant;
 
 const MAX_OUTPUT: usize = 1024 * 1024;
@@ -54,18 +56,27 @@ struct RunResult<'a> {
 pub fn run_with_tape(
     path: &str,
     json: bool,
+    show_output: bool,
     measurement_dir: Option<&str>,
     mode: Option<tape::Mode>,
     cassette: Option<&str>,
     output: &mut dyn Write,
 ) -> Result<(), Error> {
     let tape_request = mode.map(|value| (value, cassette));
-    run_mode(path, json, measurement_dir, tape_request, output)
+    run_mode(
+        path,
+        json,
+        show_output,
+        measurement_dir,
+        tape_request,
+        output,
+    )
 }
 
 fn run_mode(
     path: &str,
     json: bool,
+    show_output: bool,
     measurement_dir: Option<&str>,
     tape_request: Option<(tape::Mode, Option<&str>)>,
     output: &mut dyn Write,
@@ -233,8 +244,7 @@ fn run_mode(
     if let Some(session) = measurement_session.as_mut() {
         session.attach_pid(child.id()).map_err(Error::Run)?;
     }
-    let child = child
-        .wait_with_output()
+    let child = wait_with_output(child, show_output, output)
         .map_err(|error| Error::Run(format!("could not wait for {program}: {error}")))?;
     if let Some(session) = tape_session.take() {
         session.stop()?;
@@ -450,6 +460,95 @@ fn process_successful(status: &std::process::ExitStatus, stdout: &[u8], stderr: 
     ]
     .iter()
     .any(|marker| output.contains(marker))
+}
+
+enum OutputChunk {
+    Stdout(Vec<u8>),
+    Stderr(Vec<u8>),
+    Finished,
+}
+
+/// Wait for an agent while optionally forwarding both output streams live.
+/// Readers run independently so a verbose agent cannot deadlock on a full
+/// stdout or stderr pipe. The complete bounded-by-the-existing-runner capture
+/// is still returned for logging and token parsing.
+fn wait_with_output(
+    mut child: Child,
+    show_output: bool,
+    output: &mut dyn Write,
+) -> std::io::Result<Output> {
+    if !show_output {
+        return child.wait_with_output();
+    }
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| std::io::Error::other("agent stdout was not piped"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| std::io::Error::other("agent stderr was not piped"))?;
+    let (sender, receiver) = mpsc::channel();
+    let stdout_sender = sender.clone();
+    std::thread::spawn(move || read_stream(stdout, OutputStream::Stdout, stdout_sender));
+    std::thread::spawn(move || read_stream(stderr, OutputStream::Stderr, sender));
+
+    let mut stdout_capture = Vec::new();
+    let mut stderr_capture = Vec::new();
+    let mut finished_streams = 0;
+    let mut status = None;
+    while finished_streams < 2 || status.is_none() {
+        match receiver.recv_timeout(Duration::from_millis(50)) {
+            Ok(OutputChunk::Stdout(chunk)) => {
+                output.write_all(&chunk)?;
+                output.flush()?;
+                stdout_capture.extend_from_slice(&chunk);
+            }
+            Ok(OutputChunk::Stderr(chunk)) => {
+                output.write_all(&chunk)?;
+                output.flush()?;
+                stderr_capture.extend_from_slice(&chunk);
+            }
+            Ok(OutputChunk::Finished) => finished_streams += 1,
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        if status.is_none() {
+            status = child.try_wait()?;
+        }
+    }
+    let status = status.unwrap_or(child.wait()?);
+    Ok(Output {
+        status,
+        stdout: stdout_capture,
+        stderr: stderr_capture,
+    })
+}
+
+enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
+fn read_stream<R: Read>(mut stream: R, kind: OutputStream, sender: mpsc::Sender<OutputChunk>) {
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(size) => {
+                let chunk = buffer[..size].to_vec();
+                let message = match kind {
+                    OutputStream::Stdout => OutputChunk::Stdout(chunk),
+                    OutputStream::Stderr => OutputChunk::Stderr(chunk),
+                };
+                if sender.send(message).is_err() {
+                    return;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let _ = sender.send(OutputChunk::Finished);
 }
 
 struct CommandSpec {
