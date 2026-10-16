@@ -8,8 +8,8 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_BenchmarkConfig" [label="{asb-cli_src_BenchmarkConfig|+agent: String\l+workload: String\l+provider: String\l+model: String\l+trial_set: Option\<String\>\l+trial: Option\<String\>\l+workspace: String\l+log_file: String\l+measurements: Option\<asb-cli_src_MeasurementConfig\>\l}", shape=record];
-        "asb-cli_src_MeasurementConfig" [label="{asb-cli_src_MeasurementConfig|+enabled: bool\l+directory: String\l+collectors: Vec\<String\>\l}", shape=record];
+        "asb-cli_src_BenchmarkConfig" [label="{BenchmarkConfig|+agent: String\l+workload: String\l+provider: String\l+model: String\l+trial_set: Option\<String\>\l+trial: Option\<String\>\l+workspace: String\l+log_file: String\l+measurements: Option\<MeasurementConfig\>\l}", shape=record];
+        "asb-cli_src_MeasurementConfig" [label="{MeasurementConfig|+enabled: bool\l+directory: String\l+collectors: Vec\<String\>\l}", shape=record];
     }
 
     subgraph "cluster_cli2key" {
@@ -17,7 +17,7 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_Bridge" [label="{asb-cli_src_Bridge|-api_key: String\l-base_url: String\l-process: Option\<Child\>\l|+connect(executable: Option\<&str\>) Result\<Self, Error\>\l+api_key() &str\l+base_url() &str\l}", shape=record];
+        "asb-cli_src_Bridge" [label="{Bridge|-api_key: String\l-base_url: String\l-process: Option\<Child\>\l|+connect(executable: Option\<&str\>) Result\<Self, Error\>\l+api_key() &str\l+base_url() &str\l}", shape=record];
     }
 
     subgraph "cluster_compare" {
@@ -25,7 +25,7 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_BenchmarkData" [label="{asb-cli_src_BenchmarkData|-label: String\l-directory: PathBuf\l-agent: String\l-workload: String\l-provider: String\l-model: String\l-metrics: BTreeMap\<String, f64\>\l-series: BTreeMap\<String, Vec\<f64\>\>\l-status: Option\<String\>\l-artifacts: Vec\<String\>\l}", shape=record];
+        "asb-cli_src_BenchmarkData" [label="{BenchmarkData|-label: String\l-directory: PathBuf\l-agent: String\l-workload: String\l-provider: String\l-model: String\l-metrics: BTreeMap\<String, f64\>\l-series: BTreeMap\<String, Vec\<f64\>\>\l-status: Option\<String\>\l-artifacts: Vec\<String\>\l}", shape=record];
     }
 
     subgraph "cluster_core" {
@@ -33,11 +33,11 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_CliError" [label="{asb-cli_src_CliError||+fmt(formatter: Formatter\<'_\>) Result\l}", shape=record];
-        "asb-cli_src_Default" [label="{asb-cli_src_Default||+default() Self\l}", shape=record];
-        "asb-cli_src_Drop" [label="{asb-cli_src_Drop||+drop() void\l}", shape=record];
-        "asb-cli_src_Session" [label="{asb-cli_src_Session|-dir: PathBuf\l-tool_dir: Option\<PathBuf\>\l-started_unix_ms: u128\l-collectors: Vec\<asb-cli_src_Collector\>\l-perf_data: Option\<PathBuf\>\l-perf_enabled: bool\l-sudo_collectors: BTreeSet\<String\>\l|+started_unix_ms() u128\l+start_with_collectors(dir: &Path, selected: &[String], tool_dir: Option\<&Path\>) Result\<Self, String\>\l+attach_pid(pid: u32) Result\<(), String\>\l+finish(self, measurement: asb-cli_src_RunMeasurement\<'a\>) Result\<(), String\>\l+start_snapshot(name: &str, variable: &str, args: &[&str], selected: &[String]) Result\<(), String\>\l+start_bpftrace() Result\<(), String\>\l+write_flamegraph() Result\<(), String\>\l+command(name: &str) Command\l+executable(name: &str) PathBuf\l}", shape=record];
-        "asb-cli_src_SweepFile" [label="{asb-cli_src_SweepFile|-configs: Vec\<String\>\l}", shape=record];
+        "asb-cli_src_CliError" [label="{CliError||+fmt(formatter: Formatter\<'_\>) Result\l}", shape=record];
+        "asb-cli_src_Default" [label="{Default||+default() Self\l}", shape=record];
+        "asb-cli_src_Drop" [label="{Drop||+drop() void\l}", shape=record];
+        "asb-cli_src_Session" [label="{Session|-dir: PathBuf\l-tool_dir: Option\<PathBuf\>\l-started_unix_ms: u128\l-collectors: Vec\<Collector\>\l-perf_data: Option\<PathBuf\>\l-perf_enabled: bool\l-sudo_collectors: BTreeSet\<String\>\l|+started_unix_ms() u128\l+start_with_collectors(dir: &Path, selected: &[String], tool_dir: Option\<&Path\>) Result\<Self, String\>\l+attach_pid(pid: u32) Result\<(), String\>\l+finish(self, measurement: RunMeasurement\<'a\>) Result\<(), String\>\l+start_snapshot(name: &str, variable: &str, args: &[&str], selected: &[String]) Result\<(), String\>\l+start_bpftrace() Result\<(), String\>\l+write_flamegraph() Result\<(), String\>\l+command(name: &str) Command\l+executable(name: &str) PathBuf\l}", shape=record];
+        "asb-cli_src_SweepFile" [label="{SweepFile|-configs: Vec\<String\>\l}", shape=record];
     }
 
     subgraph "cluster_install" {
@@ -45,9 +45,9 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_BundleSpec" [label="{asb-cli_src_BundleSpec|-archive: &'static str\l-marker: &'static str\l-prompt: &'static str\l}", shape=record];
-        "asb-cli_src_ExternalWorkload" [label="{asb-cli_src_ExternalWorkload|-name: &'static str\l-source: &'static str\l}", shape=record];
-        "asb-cli_src_LoggedStatus" [label="{asb-cli_src_LoggedStatus||+logged_status() Result\<ExitStatus\>\l}", shape=record];
+        "asb-cli_src_BundleSpec" [label="{BundleSpec|-archive: &'static str\l-marker: &'static str\l-prompt: &'static str\l}", shape=record];
+        "asb-cli_src_ExternalWorkload" [label="{ExternalWorkload|-name: &'static str\l-source: &'static str\l}", shape=record];
+        "asb-cli_src_LoggedStatus" [label="{LoggedStatus||+logged_status() Result\<ExitStatus\>\l}", shape=record];
     }
 
     subgraph "cluster_measurements" {
@@ -55,12 +55,12 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_Collector" [label="{asb-cli_src_Collector|-name: String\l-child: Child\l-started: Instant\l-stdout_path: PathBuf\l-stderr_path: PathBuf\l}", shape=record];
-        "asb-cli_src_CollectorResult" [label="{asb-cli_src_CollectorResult|-schema_version: u32\l-collector: String\l-status: String\l-exit_code: Option\<i32\>\l-elapsed_ms: u128\l-stdout: String\l-stderr: String\l-metrics: BTreeMap\<String, f64\>\l}", shape=record];
-        "asb-cli_src_FlamegraphStatus" [label="{asb-cli_src_FlamegraphStatus|-schema_version: u32\l-status: &'a str\l-artifact: Option\<&'a str\>\l-reason: Option\<&'a str\>\l}", shape=record];
-        "asb-cli_src_RunMeasurement" [label="{asb-cli_src_RunMeasurement|+schema_version: u32\l+run_id: String\l+status: &'a str\l+success: bool\l+success_rate: f64\l+agent: &'a str\l+workload: &'a str\l+provider: &'a str\l+model: &'a str\l+elapsed_ms: u128\l+exit_code: Option\<i32\>\l+token_usage: asb-cli_src_TokenUsage\l+steps: u64\l+started_unix_ms: u128\l}", shape=record];
-        "asb-cli_src_SystemInfo" [label="{asb-cli_src_SystemInfo|-schema_version: u32\l-collected_unix_ms: u128\l-os: &'static str\l-architecture: &'static str\l-logical_cpus: usize\l-kernel_release: Option\<String\>\l-memory_total_kib: Option\<u64\>\l}", shape=record];
-        "asb-cli_src_TokenUsage" [label="{asb-cli_src_TokenUsage|+input_tokens: Option\<u64\>\l+output_tokens: Option\<u64\>\l+cached_tokens: Option\<u64\>\l+total_tokens: Option\<u64\>\l+source: Option\<String\>\l|+merge(self, other: Self) Self\l+add(self, other: Self) Self\l+merge_with_source(self, other: Self, source: &str) Self\l+with_derived_total(self) Self\l+any() bool\l}", shape=record];
+        "asb-cli_src_Collector" [label="{Collector|-name: String\l-child: Child\l-started: Instant\l-stdout_path: PathBuf\l-stderr_path: PathBuf\l}", shape=record];
+        "asb-cli_src_CollectorResult" [label="{CollectorResult|-schema_version: u32\l-collector: String\l-status: String\l-exit_code: Option\<i32\>\l-elapsed_ms: u128\l-stdout: String\l-stderr: String\l-metrics: BTreeMap\<String, f64\>\l}", shape=record];
+        "asb-cli_src_FlamegraphStatus" [label="{FlamegraphStatus|-schema_version: u32\l-status: &'a str\l-artifact: Option\<&'a str\>\l-reason: Option\<&'a str\>\l}", shape=record];
+        "asb-cli_src_RunMeasurement" [label="{RunMeasurement|+schema_version: u32\l+run_id: String\l+status: &'a str\l+success: bool\l+success_rate: f64\l+agent: &'a str\l+workload: &'a str\l+provider: &'a str\l+model: &'a str\l+elapsed_ms: u128\l+exit_code: Option\<i32\>\l+token_usage: TokenUsage\l+steps: u64\l+started_unix_ms: u128\l}", shape=record];
+        "asb-cli_src_SystemInfo" [label="{SystemInfo|-schema_version: u32\l-collected_unix_ms: u128\l-os: &'static str\l-architecture: &'static str\l-logical_cpus: usize\l-kernel_release: Option\<String\>\l-memory_total_kib: Option\<u64\>\l}", shape=record];
+        "asb-cli_src_TokenUsage" [label="{TokenUsage|+input_tokens: Option\<u64\>\l+output_tokens: Option\<u64\>\l+cached_tokens: Option\<u64\>\l+total_tokens: Option\<u64\>\l+source: Option\<String\>\l|+merge(self, other: Self) Self\l+add(self, other: Self) Self\l+merge_with_source(self, other: Self, source: &str) Self\l+with_derived_total(self) Self\l+any() bool\l}", shape=record];
     }
 
     subgraph "cluster_models" {
@@ -68,7 +68,7 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_ModelInfo" [label="{asb-cli_src_ModelInfo|-id: String\l-tool_calling: bool\l}", shape=record];
+        "asb-cli_src_ModelInfo" [label="{ModelInfo|-id: String\l-tool_calling: bool\l}", shape=record];
     }
 
     subgraph "cluster_project" {
@@ -76,7 +76,7 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_ProjectConfig" [label="{asb-cli_src_ProjectConfig|+tools_dir: String\l+workloads_dir: String\l+workspace_dir: String\l}", shape=record];
+        "asb-cli_src_ProjectConfig" [label="{ProjectConfig|+tools_dir: String\l+workloads_dir: String\l+workspace_dir: String\l}", shape=record];
     }
 
     subgraph "cluster_providers" {
@@ -84,8 +84,8 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_ModelSpec" [label="{asb-cli_src_ModelSpec|+name: &'static str\l+credential: Option\<&'static str\>\l+endpoint: Option\<&'static str\>\l+default_url: Option\<&'static str\>\l+kind: ModelKind\l|+url(self) Option\<String\>\l}", shape=record];
-        "asb-cli_src_ProviderSpec" [label="{asb-cli_src_ProviderSpec|+name: &'static str\l+credential: Option\<&'static str\>\l+endpoint: Option\<&'static str\>\l}", shape=record];
+        "asb-cli_src_ModelSpec" [label="{ModelSpec|+name: &'static str\l+credential: Option\<&'static str\>\l+endpoint: Option\<&'static str\>\l+default_url: Option\<&'static str\>\l+kind: ModelKind\l|+url(self) Option\<String\>\l}", shape=record];
+        "asb-cli_src_ProviderSpec" [label="{ProviderSpec|+name: &'static str\l+credential: Option\<&'static str\>\l+endpoint: Option\<&'static str\>\l}", shape=record];
     }
 
     subgraph "cluster_runner" {
@@ -93,8 +93,8 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_CommandSpec" [label="{asb-cli_src_CommandSpec|-program: String\l-args: Vec\<String\>\l-append_prompt: bool\l}", shape=record];
-        "asb-cli_src_RunResult" [label="{asb-cli_src_RunResult|-status: &'a str\l-agent: &'a str\l-workload: &'a str\l-provider: &'a str\l-model: &'a str\l-success_rate: f64\l-elapsed_ms: u128\l-exit_code: Option\<i32\>\l-token_usage: asb-cli_src_TokenUsage\l-steps: u64\l-cassette: Option\<String\>\l-stdout: String\l-stderr: String\l}", shape=record];
+        "asb-cli_src_CommandSpec" [label="{CommandSpec|-program: String\l-args: Vec\<String\>\l-append_prompt: bool\l}", shape=record];
+        "asb-cli_src_RunResult" [label="{RunResult|-status: &'a str\l-agent: &'a str\l-workload: &'a str\l-provider: &'a str\l-model: &'a str\l-success_rate: f64\l-elapsed_ms: u128\l-exit_code: Option\<i32\>\l-token_usage: TokenUsage\l-steps: u64\l-cassette: Option\<String\>\l-stdout: String\l-stderr: String\l}", shape=record];
     }
 
     subgraph "cluster_tui" {
@@ -102,11 +102,11 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_App" [label="{asb-cli_src_App|-root: PathBuf\l-project: asb-cli_src_ProjectConfig\l-panes: Vec\<asb-cli_src_Pane\>\l-step: usize\l-message: String\l-message_color: Color\l-message_until: Option\<std::time::Instant\>\l|+new(root: PathBuf, project: asb-cli_src_ProjectConfig) Self\l+refresh_availability() void\l+refresh_models() void\l+advance() Result\<Option\<Generated\>, Error\>\l+back() void\l}", shape=record];
-        "asb-cli_src_Choice" [label="{asb-cli_src_Choice|-label: String\l-provider: Option\<String\>\l-model: Option\<String\>\l-availability: Availability\l}", shape=record];
-        "asb-cli_src_Generated" [label="{asb-cli_src_Generated|-tests: usize\l-sweep: PathBuf\l}", shape=record];
-        "asb-cli_src_Pane" [label="{asb-cli_src_Pane|-choices: Vec\<asb-cli_src_Choice\>\l-selected: Vec\<bool\>\l-cursor: usize\l-search: String\l-sections: Vec\<Option\<&'static str\>\>\l|+new(choices: Vec\<asb-cli_src_Choice\>) Self\l+visible() Vec\<usize\>\l+move_cursor(delta: i32) void\l+toggle() void\l+search_changed() void\l+selected_choices() impl Iterator\<Item = &Choice\>\l+has_selection() bool\l}", shape=record];
-        "asb-cli_src_WorkloadApp" [label="{asb-cli_src_WorkloadApp|-root: PathBuf\l-project: asb-cli_src_ProjectConfig\l-workloads: asb-cli_src_Pane\l-trials: asb-cli_src_Pane\l-level: usize\l-selected_workload: Option\<String\>\l-selections: BTreeSet\<String\>\l-message: String\l-message_color: Color\l-message_until: Option\<std::time::Instant\>\l}", shape=record];
+        "asb-cli_src_App" [label="{App|-root: PathBuf\l-project: ProjectConfig\l-panes: Vec\<Pane\>\l-step: usize\l-message: String\l-message_color: Color\l-message_until: Option\<std::time::Instant\>\l|+new(root: PathBuf, project: ProjectConfig) Self\l+refresh_availability() void\l+refresh_models() void\l+advance() Result\<Option\<Generated\>, Error\>\l+back() void\l}", shape=record];
+        "asb-cli_src_Choice" [label="{Choice|-label: String\l-provider: Option\<String\>\l-model: Option\<String\>\l-availability: Availability\l}", shape=record];
+        "asb-cli_src_Generated" [label="{Generated|-tests: usize\l-sweep: PathBuf\l}", shape=record];
+        "asb-cli_src_Pane" [label="{Pane|-choices: Vec\<Choice\>\l-selected: Vec\<bool\>\l-cursor: usize\l-search: String\l-sections: Vec\<Option\<&'static str\>\>\l|+new(choices: Vec\<Choice\>) Self\l+visible() Vec\<usize\>\l+move_cursor(delta: i32) void\l+toggle() void\l+search_changed() void\l+selected_choices() impl Iterator\<Item = &Choice\>\l+has_selection() bool\l}", shape=record];
+        "asb-cli_src_WorkloadApp" [label="{WorkloadApp|-root: PathBuf\l-project: ProjectConfig\l-workloads: Pane\l-trials: Pane\l-level: usize\l-selected_workload: Option\<String\>\l-selections: BTreeSet\<String\>\l-message: String\l-message_color: Color\l-message_until: Option\<std::time::Instant\>\l}", shape=record];
     }
 
     subgraph "cluster_workloads" {
@@ -114,9 +114,9 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_Fixture" [label="{asb-cli_src_Fixture|-name: &'static str\l-files: &'static [(&'static str, &'static str)]\l}", shape=record];
-        "asb-cli_src_Trial" [label="{asb-cli_src_Trial|+id: String\l+description: String\l}", shape=record];
-        "asb-cli_src_TrialSet" [label="{asb-cli_src_TrialSet|+workload: String\l+trials: Vec\<asb-cli_src_Trial\>\l}", shape=record];
+        "asb-cli_src_Fixture" [label="{Fixture|-name: &'static str\l-files: &'static [(&'static str, &'static str)]\l}", shape=record];
+        "asb-cli_src_Trial" [label="{Trial|+id: String\l+description: String\l}", shape=record];
+        "asb-cli_src_TrialSet" [label="{TrialSet|+workload: String\l+trials: Vec\<Trial\>\l}", shape=record];
     }
 
     "asb-cli_src_App" -> "asb-cli_src_Pane" [arrowhead="vee"];

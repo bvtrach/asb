@@ -78,7 +78,13 @@ def main() -> int:
         if match := NODE.match(line):
             # AutoUML double-escapes Graphviz record-label escapes (for
             # example ``\\\\l``). Collapse that layer before rendering.
-            nodes[match.group(1)] = line.strip().replace("\\\\", "\\")
+            normalized = line.strip().replace("\\\\", "\\")
+            # Keep the generated node IDs stable for edges, but make the
+            # published diagram readable by hiding AutoUML's source prefix.
+            if " [label=" in normalized:
+                node_id, label = normalized.split(" [label=", 1)
+                normalized = node_id + " [label=" + label.replace("asb-cli_src_", "")
+            nodes[match.group(1)] = normalized
         elif match := EDGE.match(line):
             edges.add((match.group(1), match.group(2), line.strip()))
 
