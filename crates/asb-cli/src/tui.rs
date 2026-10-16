@@ -379,10 +379,7 @@ fn visible_message(message: &str, until: Option<std::time::Instant>) -> &str {
 }
 
 /// Launch the setup wizard and write one TOML per selected combination.
-pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
-    if !args.is_empty() {
-        return Err(Error::Usage("setup tui does not accept options"));
-    }
+pub fn setup(output: &mut dyn Write) -> Result<(), Error> {
     let (root, project) = project::load(Path::new("."))?;
     let mut app = App::new(root, project);
     let mut terminal =
@@ -401,10 +398,7 @@ pub fn setup(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
 
 /// Launch the tree-shaped workload/trial selector. It reuses the setup TUI's
 /// Pane, terminal lifecycle, search, selection, and keyboard conventions.
-pub fn workload_tui(args: &[String], output: &mut dyn Write) -> Result<(), Error> {
-    if !args.is_empty() {
-        return Err(Error::Usage("workload tui does not accept options"));
-    }
+pub fn workload_tui(output: &mut dyn Write) -> Result<(), Error> {
     let (root, project) = project::load(Path::new("."))?;
     let workload_dir = project::resolve(&root, &project.workloads_dir);
     let choices = external_workload_choices(&workload_dir);
@@ -655,7 +649,15 @@ fn install_workload_selection(
                 *state = (percent, stage.to_owned());
             }
         };
-        let result = install::workload_with_progress(&[install_name], &mut output, &mut progress);
+        let result = install::workload_with_progress(
+            install::WorkloadInstallOptions {
+                source: install_name,
+                name: None,
+                dir: None,
+            },
+            &mut output,
+            &mut progress,
+        );
         let _ = sender.send(result);
     });
     let started = Instant::now();
@@ -1189,12 +1191,29 @@ fn install_setup_selection(
             }
         };
         let result = match step {
-            0 | 4 => install::tool_with_progress(&[install_label], &mut output, &mut progress),
+            0 | 4 => install::tool_with_progress(
+                install::ToolInstallOptions {
+                    name: install_label,
+                    source: None,
+                    dir: None,
+                    dry_run: false,
+                },
+                &mut output,
+                &mut progress,
+            ),
             3 => {
                 let workload = install_label
                     .strip_suffix(" [trial set]")
                     .unwrap_or(&install_label);
-                install::workload_with_progress(&[workload.to_owned()], &mut output, &mut progress)
+                install::workload_with_progress(
+                    install::WorkloadInstallOptions {
+                        source: workload.to_owned(),
+                        name: None,
+                        dir: None,
+                    },
+                    &mut output,
+                    &mut progress,
+                )
             }
             _ => unreachable!("installable setup steps were checked above"),
         };

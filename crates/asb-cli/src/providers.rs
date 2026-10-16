@@ -183,13 +183,6 @@ pub fn known_models(provider: &str) -> Option<&'static [&'static str]> {
 }
 
 /// Validate a user-facing provider or agent identifier.
-pub fn is_valid_name(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-}
-
 /// Return the endpoint and credential information for live discovery.
 pub fn model_spec(name: &str) -> Option<ModelSpec> {
     let lower = name.to_ascii_lowercase();
