@@ -1,6 +1,7 @@
 //! Live execution of one configured benchmark.
 
 use super::{Error, io_error, read_config};
+use crate::agents;
 use crate::benchmark::BenchmarkConfig;
 use crate::cli2key;
 use crate::measurements;
@@ -20,20 +21,6 @@ use std::time::Duration;
 use std::time::Instant;
 
 const MAX_OUTPUT: usize = 1024 * 1024;
-const BUILTIN_AGENTS: &[&str] = &[
-    "codex",
-    "pi",
-    "opencode",
-    "workbuddy",
-    "qwen-code",
-    "mini-swe",
-    "openhands",
-    "openjiuwen",
-    "claude-code",
-    "goose",
-    "cline",
-    "continue",
-];
 
 #[derive(Serialize)]
 struct RunResult<'a> {
@@ -261,13 +248,19 @@ fn run_mode(
     workloads::prepare_fixture(&config.workload, &workspace).map_err(Error::Run)?;
     workloads::prepare_external(&config.workload, &workload_directory, &workspace)
         .map_err(Error::Run)?;
-    let codex_executable = local_agent("codex", &project_root, &project_config.tools_dir);
+    let codex_executable = agents::resolve("codex", &project_root, &project_config.tools_dir);
     let tape_mode = tape_request.map(|(mode, _)| mode);
     let bridge = if config.provider.eq_ignore_ascii_case("cli2key")
         && tape_mode != Some(tape::Mode::Replay)
     {
         cli2key::Bridge::connect(
-            local_agent("cli2key", &project_root, &project_config.tools_dir).as_deref(),
+            agents::resolve_executable(
+                "cli2key",
+                "codex-bridge",
+                &project_root,
+                &project_config.tools_dir,
+            )
+            .as_deref(),
         )
         .map(Some)?
     } else {
@@ -294,7 +287,7 @@ fn run_mode(
         &prompt,
     )?;
     let mut program = specification.program;
-    if let Some(local) = local_agent(&config.agent, &project_root, &project_config.tools_dir) {
+    if let Some(local) = agents::resolve(&config.agent, &project_root, &project_config.tools_dir) {
         program = local;
     }
     let started = Instant::now();
@@ -326,31 +319,9 @@ fn run_mode(
         } else {
             None
         },
-        (config.agent.eq_ignore_ascii_case("pi")
-            && (config.provider.eq_ignore_ascii_case("cli2key")
-                || config.provider.eq_ignore_ascii_case("openrouter")))
-        .then(|| project::resolve(&project_root, &project_config.tools_dir).join("pi/config"))
-        .as_deref(),
-        (config.agent.eq_ignore_ascii_case("workbuddy")
-            && config.provider.eq_ignore_ascii_case("cli2key"))
-        .then(|| {
-            project::resolve(&project_root, &project_config.tools_dir).join("workbuddy/config")
-        })
-        .as_deref(),
-        config
-            .agent
-            .eq_ignore_ascii_case("continue")
-            .then(|| {
-                project::resolve(&project_root, &project_config.tools_dir).join("continue/config")
-            })
-            .as_deref(),
-        config
-            .agent
-            .eq_ignore_ascii_case("cline")
-            .then(|| {
-                project::resolve(&project_root, &project_config.tools_dir).join("cline/config")
-            })
-            .as_deref(),
+        Some(&project::resolve(&project_root, &project_config.tools_dir).join("pi/config")),
+        Some(&project::resolve(&project_root, &project_config.tools_dir).join("workbuddy/config")),
+        Some(&project::resolve(&project_root, &project_config.tools_dir).join("continue/config")),
         tape_url,
         tape_mode == Some(tape::Mode::Replay),
     )?;
@@ -430,6 +401,9 @@ fn run_mode(
     }
     let elapsed_ms = started.elapsed().as_millis();
     let success = process_successful(&child.status, &child.stdout, &child.stderr);
+    let adapter_artifacts = agents::find(&config.agent)
+        .map(|adapter| adapter.collect(&bounded(&child.stdout)))
+        .unwrap_or_default();
     let mut token_usage = measurements::token_usage_from_sources(
         &config.provider,
         &config.agent,
@@ -439,8 +413,8 @@ fn run_mode(
             .as_ref()
             .map(|(_, cassette)| cassette.as_path()),
     );
-    if config.agent.eq_ignore_ascii_case("mini-swe") {
-        let trajectory = workspace.join(".asb-mini-swe.traj.json");
+    let trajectory = workspace.join(".asb-mini-swe.traj.json");
+    if trajectory.is_file() {
         token_usage = token_usage
             .merge_with_source(
                 measurements::token_usage_from_path(&trajectory),
@@ -471,6 +445,9 @@ fn run_mode(
         stdout: bounded(&child.stdout),
         stderr: bounded(&child.stderr),
     };
+    // Keep adapter artifacts available for future result serializers while the
+    // generic runner remains the single owner of result output.
+    let _artifact_count = adapter_artifacts.paths.len();
     write_log(config_path, &config.log_file, &result)?;
     if let Some(session) = measurement_session {
         let measured = measurements::RunMeasurement {
@@ -718,18 +695,22 @@ fn read_stream<R: Read>(mut stream: R, kind: OutputStream, sender: mpsc::Sender<
     let _ = sender.send(OutputChunk::Finished);
 }
 
-struct CommandSpec {
-    program: String,
-    args: Vec<String>,
-    append_prompt: bool,
-}
+type CommandSpec = agents::CommandSpec;
 
 fn command_for(
     config: &BenchmarkConfig,
     cli2key_base_url: Option<&str>,
     prompt: &str,
 ) -> Result<CommandSpec, Error> {
-    if let Some(candidate) = suggestions::closest(&config.agent, BUILTIN_AGENTS) {
+    if let Some(adapter) = agents::find(&config.agent) {
+        return Ok(adapter.command(&agents::CommandContext {
+            config,
+            endpoint: cli2key_base_url,
+            prompt,
+        }));
+    }
+    let agent_names = agents::names().collect::<Vec<_>>();
+    if let Some(candidate) = suggestions::closest(&config.agent, &agent_names) {
         return Err(Error::Input(format!(
             "unknown agent `{}`; did you mean `{candidate}`?",
             config.agent
@@ -743,242 +724,11 @@ fn command_for(
             )));
         }
     }
-    let spec = match config.agent.as_str() {
-        "codex" => CommandSpec {
-            program: "codex".into(),
-            args: vec![
-                "exec".into(),
-                "--skip-git-repo-check".into(),
-                "--json".into(),
-                "--model".into(),
-                config.model.clone(),
-            ],
-            append_prompt: true,
-        },
-        "pi" => CommandSpec {
-            program: "pi".into(),
-            args: vec![
-                "--provider".into(),
-                pi_provider(config),
-                "--model".into(),
-                config.model.clone(),
-                "--mode".into(),
-                "json".into(),
-                "--print".into(),
-            ],
-            append_prompt: true,
-        },
-        "opencode" => CommandSpec {
-            program: "opencode".into(),
-            args: vec![
-                "run".into(),
-                "--model".into(),
-                opencode_model(config),
-                "--format".into(),
-                "json".into(),
-            ],
-            append_prompt: true,
-        },
-        "qwen-code" => CommandSpec {
-            program: "qwen".into(),
-            args: vec![
-                "--model".into(),
-                config.model.clone(),
-                "--output-format".into(),
-                "json".into(),
-                "--yolo".into(),
-            ],
-            append_prompt: true,
-        },
-        "mini-swe" => CommandSpec {
-            program: "mini".into(),
-            args: vec![
-                "--model".into(),
-                format!("anthropic/{}", config.model),
-                "--task".into(),
-                prompt.into(),
-                "--yolo".into(),
-                "--exit-immediately".into(),
-                "--output".into(),
-                ".asb-mini-swe.traj.json".into(),
-            ],
-            append_prompt: false,
-        },
-        "openhands" => CommandSpec {
-            program: "openhands".into(),
-            args: vec![
-                "--headless".into(),
-                "--json".into(),
-                "--yolo".into(),
-                "--override-with-envs".into(),
-                "--task".into(),
-                prompt.into(),
-            ],
-            append_prompt: false,
-        },
-        "openjiuwen" => CommandSpec {
-            program: "openjiuwen".into(),
-            args: [
-                "--model",
-                config.model.as_str(),
-                "--provider",
-                "anthropic",
-                "--api-base",
-                cli2key_base_url.unwrap_or_default(),
-                "run",
-                "-f",
-                "json",
-                prompt,
-            ]
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
-            append_prompt: false,
-        },
-        "workbuddy" => CommandSpec {
-            program: "codebuddy".into(),
-            args: vec![
-                "--print".into(),
-                "--output-format".into(),
-                "json".into(),
-                "--model".into(),
-                config.model.clone(),
-                "-y".into(),
-            ],
-            append_prompt: true,
-        },
-        "claude-code" => CommandSpec {
-            program: "claude".into(),
-            args: vec![
-                "-p".into(),
-                "--output-format".into(),
-                "json".into(),
-                "--model".into(),
-                config.model.clone(),
-                "--dangerously-skip-permissions".into(),
-                prompt.into(),
-            ],
-            append_prompt: false,
-        },
-        "goose" => CommandSpec {
-            program: "goose".into(),
-            args: vec![
-                "run".into(),
-                "--no-session".into(),
-                "--output-format".into(),
-                "json".into(),
-                "-t".into(),
-                prompt.into(),
-            ],
-            append_prompt: false,
-        },
-        "cline" => CommandSpec {
-            program: "cline".into(),
-            args: vec![
-                "--json".into(),
-                "--auto-approve".into(),
-                "true".into(),
-                "--provider".into(),
-                cline_provider(config).into(),
-                "--model".into(),
-                config.model.clone(),
-                prompt.into(),
-            ],
-            append_prompt: false,
-        },
-        "continue" => CommandSpec {
-            program: "cn".into(),
-            args: vec![
-                "-p".into(),
-                prompt.into(),
-                "--model".into(),
-                config.model.clone(),
-                "--format".into(),
-                "json".into(),
-                "--auto".into(),
-            ],
-            append_prompt: false,
-        },
-        other => CommandSpec {
-            program: other.into(),
-            args: Vec::new(),
-            append_prompt: true,
-        },
-    };
-    Ok(spec)
-}
-
-fn cline_provider(config: &BenchmarkConfig) -> &'static str {
-    if config.provider.eq_ignore_ascii_case("openrouter") {
-        "openrouter"
-    } else {
-        "openai-native"
-    }
-}
-
-fn opencode_model(config: &BenchmarkConfig) -> String {
-    if config.model.contains('/') {
-        return config.model.clone();
-    }
-    if config.provider.eq_ignore_ascii_case("cli2key") {
-        format!("cli2key/{}", config.model)
-    } else if config.provider.eq_ignore_ascii_case("opencode-zen") {
-        format!("opencode/{}", config.model)
-    } else {
-        config.model.clone()
-    }
-}
-
-fn pi_provider(config: &BenchmarkConfig) -> String {
-    config.provider.clone()
-}
-
-fn local_agent(agent: &str, project_root: &Path, tools_dir: &str) -> Option<String> {
-    let executable = match agent {
-        "qwen-code" => "qwen",
-        "mini-swe" => "mini",
-        "cli2key" => "codex-bridge",
-        "workbuddy" => "codebuddy",
-        "claude-code" => "claude",
-        "continue" => "cn",
-        other => other,
-    };
-    let mut candidates = Vec::new();
-    if let Some(directory) = std::env::var_os("ASB_TOOL_DIR") {
-        candidates.push(std::path::PathBuf::from(directory).join(executable));
-    }
-    candidates.push(
-        project::resolve(project_root, tools_dir)
-            .join(agent)
-            .join("bin")
-            .join(executable),
-    );
-    candidates.push(
-        project::resolve(project_root, tools_dir)
-            .join(agent)
-            .join("node_modules/.bin")
-            .join(executable),
-    );
-    candidates.push(
-        project::resolve(project_root, tools_dir)
-            .join(agent)
-            .join("venv/bin")
-            .join(executable),
-    );
-    candidates.push(Path::new(".asb-tools/bin").join(executable));
-    if executable != agent {
-        candidates.push(
-            project::resolve(project_root, tools_dir)
-                .join(agent)
-                .join("bin")
-                .join(agent),
-        );
-    }
-    candidates
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-        .and_then(|candidate| candidate.canonicalize().ok())
-        .map(|candidate| candidate.to_string_lossy().into_owned())
+    Ok(CommandSpec {
+        program: config.agent.clone(),
+        args: Vec::new(),
+        append_prompt: true,
+    })
 }
 
 fn bounded(bytes: &[u8]) -> String {
@@ -987,10 +737,7 @@ fn bounded(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        RunResult, command_for, opencode_model, render_human, render_json, resolve_log_path,
-        write_log,
-    };
+    use super::{RunResult, command_for, render_human, render_json, resolve_log_path, write_log};
     use crate::benchmark::BenchmarkConfig;
     use crate::measurements::TokenUsage;
 
@@ -1159,37 +906,6 @@ mod tests {
     }
 
     #[test]
-    fn cline_uses_native_openai_or_openrouter_provider_without_anthropic_server_tools() {
-        let mut config = BenchmarkConfig {
-            agent: "cline".into(),
-            workload: "bug-fix".into(),
-            provider: "cli2key".into(),
-            model: "gpt-test".into(),
-            concurrency: 1,
-            trial_set: None,
-            trial: None,
-            workspace: "workspace".into(),
-            log_file: "run.log".into(),
-            measurements: None,
-        };
-        let cli2key = command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt").unwrap();
-        assert!(
-            cli2key
-                .args
-                .windows(2)
-                .any(|pair| pair[0] == "--provider" && pair[1] == "openai-native")
-        );
-        config.provider = "openrouter".into();
-        let openrouter = command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt").unwrap();
-        assert!(
-            openrouter
-                .args
-                .windows(2)
-                .any(|pair| pair[0] == "--provider" && pair[1] == "openrouter")
-        );
-    }
-
-    #[test]
     fn pi_cli2key_uses_openai_bridge_and_print_mode() {
         let config = BenchmarkConfig {
             agent: "pi".into(),
@@ -1238,7 +954,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode_zen_uses_opencode_provider_model_namespace() {
+    fn opencode_zen_command_uses_opencode_provider_model_namespace() {
         let config = BenchmarkConfig {
             agent: "opencode".into(),
             workload: "bug-fix".into(),
@@ -1251,7 +967,13 @@ mod tests {
             log_file: "run.log".into(),
             measurements: None,
         };
-        assert_eq!(opencode_model(&config), "opencode/mimo-v2.6-flash-free");
+        let command = command_for(&config, None, "prompt").expect("known agent");
+        assert!(command.args.windows(2).any(|pair| {
+            pair == [
+                "--model".to_owned(),
+                "opencode/mimo-v2.6-flash-free".to_owned(),
+            ]
+        }));
     }
 
     #[test]

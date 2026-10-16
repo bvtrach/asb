@@ -3,6 +3,7 @@
 use crate::Error;
 use crate::project;
 use crate::suggestions;
+use crate::tools;
 use crate::workloads;
 use std::fs::{self, OpenOptions};
 use std::io;
@@ -54,7 +55,7 @@ impl LoggedStatus for Command {
 }
 
 #[derive(Clone, Copy)]
-enum Recipe {
+pub(crate) enum Recipe {
     Npm {
         package: &'static str,
         executable: &'static str,
@@ -82,28 +83,6 @@ struct BundleSpec {
     marker: &'static str,
     prompt: &'static str,
 }
-
-const BUILTIN_TOOLS: &[&str] = &[
-    "codex",
-    "pi",
-    "opencode",
-    "workbuddy",
-    "qwen-code",
-    "mini-swe",
-    "openhands",
-    "openjiuwen",
-    "claude-code",
-    "goose",
-    "cline",
-    "continue",
-    "cli2key",
-    "mpstat",
-    "iostat",
-    "perf",
-    "bpftrace",
-    "perfetto",
-    "flamegraph",
-];
 
 const EXTERNAL_WORKLOADS: &[ExternalWorkload] = &[
     ExternalWorkload {
@@ -215,71 +194,6 @@ fn bundle_spec(name: &str) -> Option<BundleSpec> {
     }
 }
 
-fn recipe(name: &str) -> Option<Recipe> {
-    match name {
-        "codex" => Some(Recipe::Npm {
-            package: "@openai/codex@0.162.1",
-            executable: "codex",
-        }),
-        "pi" => Some(Recipe::Npm {
-            package: "@mariozechner/pi-coding-agent@0.73.1",
-            executable: "pi",
-        }),
-        "opencode" => Some(Recipe::Npm {
-            package: "opencode-ai@1.19.0",
-            executable: "opencode",
-        }),
-        "workbuddy" => Some(Recipe::Npm {
-            package: "@tencent-ai/codebuddy-code@2.167.0",
-            executable: "codebuddy",
-        }),
-        "qwen-code" => Some(Recipe::Npm {
-            package: "@qwen-code/qwen-code@0.25.1",
-            executable: "qwen",
-        }),
-        "mini-swe" => Some(Recipe::Python {
-            package: "mini-swe-agent==2.4.6",
-            executable: "mini",
-        }),
-        "openhands" => Some(Recipe::Python {
-            package: "openhands==1.16.0",
-            executable: "openhands",
-        }),
-        "openjiuwen" => Some(Recipe::Python {
-            package: "openjiuwen[cli]==0.1.19.post2",
-            executable: "openjiuwen",
-        }),
-        "claude-code" => Some(Recipe::Npm {
-            package: "@anthropic-ai/claude-code@2.1.301",
-            executable: "claude",
-        }),
-        "cline" => Some(Recipe::Npm {
-            package: "cline@3.0.72",
-            executable: "cline",
-        }),
-        "continue" => Some(Recipe::Npm {
-            package: "@continuedev/cli@1.5.47",
-            executable: "cn",
-        }),
-        "goose" => Some(Recipe::Goose),
-        "cli2key" => Some(Recipe::Npm {
-            package: "codex-anthropic-bridge@0.1.10",
-            executable: "codex-bridge",
-        }),
-        "mpstat" => Some(Recipe::Host {
-            executable: "mpstat",
-        }),
-        "iostat" => Some(Recipe::Host {
-            executable: "iostat",
-        }),
-        "perf" => Some(Recipe::Host { executable: "perf" }),
-        "bpftrace" => Some(Recipe::Bpftrace),
-        "perfetto" => Some(Recipe::Perfetto),
-        "flamegraph" => Some(Recipe::Flamegraph),
-        _ => None,
-    }
-}
-
 pub struct ToolInstallOptions {
     pub name: String,
     pub source: Option<String>,
@@ -323,8 +237,11 @@ pub fn tool_with_progress(
         .unwrap_or_else(|| project::resolve(&project_root, &project_config.tools_dir));
     progress(2, "preparing");
     let root = root.join(&id);
+    let adapter = tools::find(&id);
     if let Some(source) = source {
-        let destination = root.join("bin").join(executable_name(&id));
+        let destination = root
+            .join("bin")
+            .join(adapter.and_then(|tool| tool.executable()).unwrap_or(&id));
         if dry_run {
             writeln!(output, "download {source} -> {}", destination.display())
                 .map_err(super::io_error)?;
@@ -340,12 +257,12 @@ pub fn tool_with_progress(
             .map_err(super::io_error)?;
         return Ok(());
     }
-    let plan = match recipe(&id) {
-        Some(plan) => plan,
+    let plan = match adapter {
+        Some(adapter) => adapter.recipe(),
         None => {
             return Err(Error::Input(format!(
                 "{}; pass --source URL or PATH",
-                suggestions::unknown("tool", &id, BUILTIN_TOOLS)
+                suggestions::unknown("tool", &id, &tools::names().collect::<Vec<_>>())
             )));
         }
     };
@@ -369,13 +286,9 @@ pub fn tool_with_progress(
             .map_err(super::io_error)?;
     }
     progress(100, "ready");
-    let kind = if matches!(
-        id.as_str(),
-        "mpstat" | "iostat" | "perf" | "bpftrace" | "perfetto" | "flamegraph"
-    ) {
-        "tool"
-    } else {
-        "agent"
+    let kind = match adapter.expect("known tool has adapter").kind() {
+        tools::ToolKind::Agent => "agent",
+        tools::ToolKind::Collector | tools::ToolKind::Support => "tool",
     };
     writeln!(output, "Installed {kind} {id} at {}", executable.display())
         .map_err(super::io_error)?;
@@ -385,9 +298,14 @@ pub fn tool_with_progress(
 /// List every built-in tool recipe and its project-local executable.
 pub fn tool_list(output: &mut dyn std::io::Write) -> Result<(), Error> {
     writeln!(output, "Available tools:").map_err(super::io_error)?;
-    for &name in BUILTIN_TOOLS {
-        let plan = recipe(name).expect("listed tool has a recipe");
-        writeln!(output, "  {name:<12} {}", tool_summary(plan)).map_err(super::io_error)?;
+    for tool in tools::all() {
+        writeln!(
+            output,
+            "  {:<12} {}",
+            tool.id(),
+            tool_summary(tool.recipe())
+        )
+        .map_err(super::io_error)?;
     }
     writeln!(output, "  custom       --source URL|PATH").map_err(super::io_error)
 }
@@ -396,9 +314,10 @@ pub fn tool_list(output: &mut dyn std::io::Write) -> Result<(), Error> {
 /// This is intentionally side-effect free so TUIs can refresh status on every
 /// navigation or after a Ctrl-I installation attempt.
 pub fn tool_available(name: &str, tools_root: &Path) -> bool {
-    let Some(plan) = recipe(name) else {
+    let Some(tool) = tools::find(name) else {
         return false;
     };
+    let plan = tool.recipe();
     let local = executable(plan, &tools_root.join(name));
     if local.is_file() {
         return true;
@@ -1234,16 +1153,6 @@ fn workload_source(
     Ok((source, name, project_root, project_config))
 }
 
-fn executable_name(agent: &str) -> &str {
-    match agent {
-        "workbuddy" => "codebuddy",
-        "qwen-code" => "qwen",
-        "mini-swe" => "mini",
-        "continue" => "cn",
-        other => other,
-    }
-}
-
 fn valid_name(value: &str) -> bool {
     !value.is_empty()
         && value
@@ -1351,15 +1260,16 @@ mod tests {
             "perfetto",
             "flamegraph",
         ] {
-            let recipe = recipe(agent).expect("documented agent has a recipe");
+            let tool = tools::find(agent).expect("documented tool has a registry entry");
+            let recipe = tool.recipe();
             assert!(!describe(recipe, Path::new(".asb-tools")).is_empty());
-            assert!(!executable_name(agent).is_empty());
+            assert!(!tool.executable().unwrap().is_empty());
         }
     }
 
     #[test]
     fn perfetto_recipe_uses_project_local_tracebox() {
-        let recipe = recipe("perfetto").expect("perfetto recipe");
+        let recipe = tools::find("perfetto").expect("perfetto recipe").recipe();
         assert_eq!(
             executable(recipe, Path::new(".asb-tools/perfetto")),
             Path::new(".asb-tools/perfetto/bin/tracebox")
@@ -1425,7 +1335,7 @@ mod tests {
         assert!(text.contains("mpstat"));
         assert!(text.contains("bpftrace"));
         assert!(text.contains("custom"));
-        assert!(recipe("llmtape").is_none());
+        assert!(tools::find("llmtape").is_none());
     }
 
     #[test]
@@ -1522,6 +1432,16 @@ mod tests {
         assert!(bundle_spec("swe-bench").is_some());
         assert!(bundle_spec("terminal-bench").is_some());
         assert!(external_workload("methodology-only").is_none());
+        let installed = EXTERNAL_WORKLOADS
+            .iter()
+            .map(|workload| workload.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        let adapters =
+            workloads::external_adapter_names().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            adapters, installed,
+            "every external workload needs an adapter"
+        );
     }
 
     #[test]
