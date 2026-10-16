@@ -6862,8 +6862,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     function finish(event) {
       const gesture = state.gesture; state.pointers.delete(event.pointerId); if (state.pointers.size) return;
       if (gesture?.frame) cancelAnimationFrame(gesture.frame); if (gesture?.nextTx !== undefined) { state.tx = gesture.nextTx; state.ty = gesture.nextTy; applyTransform(); }
-      if (gesture?.type === 'pointer' && !gesture.moved && state.pressTarget) { state.suppressClickUntil = performance.now() + 500; event.preventDefault(); select(hitAt(event.clientX, event.clientY) || state.pressTarget, event.ctrlKey || event.metaKey); } else state.suppressClickUntil = performance.now() + 150;
-      state.gesture = null; state.pressTarget = null; viewport.classList.remove('dragging'); stopRaster();
+      if (gesture?.type === 'pointer' && !gesture.moved && state.pressTarget) { state.suppressClickUntil = performance.now() + 500; event.preventDefault(); select(hitAt(event.clientX, event.clientY) || state.pressTarget, event.ctrlKey || event.metaKey); } else { state.suppressClickUntil = performance.now() + 150; stopRaster(); }
+      state.gesture = null; state.pressTarget = null; viewport.classList.remove('dragging');
     }
     viewport.addEventListener('pointerup', finish); viewport.addEventListener('pointercancel', finish);
     viewport.addEventListener('lostpointercapture', () => { if (!state.pointers.size) { state.gesture = null; state.pressTarget = null; viewport.classList.remove('dragging'); } });
