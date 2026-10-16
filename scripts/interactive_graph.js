@@ -125,9 +125,10 @@
       const candidates = document.elementsFromPoint(x, y).map(graphAncestor).filter(Boolean);
       return candidates.find((item) => item.classList.contains('node')) || candidates[0] || null;
     }
-    function edgeTargetAtPoint(x, y) {
+    function edgeTargetAtPoint(x, y, onlyEdge = null) {
       const screenPoint = svg.createSVGPoint(); screenPoint.x = x; screenPoint.y = y;
       for (const item of edgeHitPaths) {
+        if (onlyEdge && item.edge !== onlyEdge) continue;
         const rect = item.path.getBoundingClientRect();
         if (x < rect.left - 3 || x > rect.right + 3 || y < rect.top - 3 || y > rect.bottom + 3) continue;
         const ctm = item.path.getScreenCTM();
@@ -137,7 +138,13 @@
       }
       return null;
     }
-    function hitAt(x, y) { return pointTarget(x, y) || edgeTargetAtPoint(x, y); }
+    function hitAt(x, y) {
+      // Keep the current edge authoritative while the pointer remains inside
+      // its actual enlarged stroke. This avoids boundary flicker without
+      // using a broad bounding rectangle that could mask nearby nodes.
+      const currentEdge = state.hover?.classList.contains('edge') ? edgeTargetAtPoint(x, y, state.hover) : null;
+      return currentEdge || pointTarget(x, y) || edgeTargetAtPoint(x, y);
+    }
     function hideTooltip() { state.tooltipElement = null; state.tooltipEvent = null; tooltip.style.display = 'none'; }
     function drawTooltip() {
       state.tooltipFrame = 0; if (!state.tooltipElement || !state.tooltipEvent) return;
