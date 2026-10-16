@@ -170,11 +170,6 @@
     }
     function clearAll() { clearPinned(); setHover(null); elements.forEach((item) => item.classList.remove('is-dimmed', 'is-selected', 'is-related')); selection.textContent = 'Hover an element for details. Drag to pan; scroll to zoom.'; }
 
-    viewport.addEventListener('pointerover', (event) => {
-      if (state.gesture?.dragging) return;
-      const target = graphAncestor(event.target);
-      if (target) setHover(target, event);
-    });
     viewport.addEventListener('pointermove', (event) => {
       if (state.gesture?.dragging) return;
       const target = graphAncestor(event.target) || pointTarget(event.clientX, event.clientY) || edgeTargetAtPoint(event.clientX, event.clientY);
