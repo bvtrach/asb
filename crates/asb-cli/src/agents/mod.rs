@@ -190,8 +190,7 @@ pub(crate) fn resolve_executable(
 }
 
 /// Resolve an adapter's executable from a known project-local tools root.
-/// Provider preparation uses this to find provider support tools without
-/// leaking those tool names into the runner.
+/// The owning adapter uses this for its target-specific support executable.
 pub(crate) fn resolve_from_tools(id: &str, tools_root: &Path) -> Option<String> {
     let adapter = find(id)?;
     executable_candidates(adapter.id(), adapter.executable(), tools_root)

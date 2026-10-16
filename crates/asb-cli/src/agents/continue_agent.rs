@@ -1,5 +1,5 @@
 use super::{CommandContext, CommandSpec, PreparationContext, StaticAdapter};
-use crate::{Error, install::Recipe, prepare};
+use crate::{Error, install::Recipe};
 pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     "continue",
     "cn",
@@ -37,15 +37,72 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
         .map(|(_, url)| url.to_owned())
         .or_else(|| std::env::var("OPENROUTER_BASE_URL").ok())
         .unwrap_or_else(|| "https://openrouter.ai/api/v1".into());
-    let (provider, key_name) = if context.provider.eq_ignore_ascii_case("cli2key") {
-        ("anthropic", "CLI2KEY_API_KEY")
+    let (provider, key_name, key) = if context.provider.eq_ignore_ascii_case("cli2key") {
+        let (key, _) = context
+            .cli2key
+            .ok_or_else(|| Error::Run("cli2key provider has no API endpoint".into()))?;
+        ("anthropic", "CLI2KEY_API_KEY", key.to_owned())
     } else {
-        ("openai", "OPENROUTER_API_KEY")
+        let key = crate::providers::credential("openrouter").ok_or_else(|| {
+            Error::Run(
+                "openrouter provider requires OPENROUTER_API_KEY or ~/.api_key_openrouter".into(),
+            )
+        })?;
+        ("openai", "OPENROUTER_API_KEY", key)
     };
-    prepare::configure_continue(&directory, provider, context.model, &url, key_name)?;
+    configure(&directory, provider, context.model, &url, key_name)?;
     context
         .command
         .env("CONTINUE_CONFIG", directory.join("config.yaml"))
-        .env("CONTINUE_GLOBAL_DIR", &directory);
+        .env("CONTINUE_GLOBAL_DIR", &directory)
+        .env("CONTINUE_API_KEY", key)
+        .env("CONTINUE_API_BASE", &url)
+        .env("CONTINUE_MODEL", context.model);
     Ok(())
+}
+
+fn configure(
+    directory: &std::path::Path,
+    provider: &str,
+    model: &str,
+    base_url: &str,
+    api_key_env: &str,
+) -> Result<(), Error> {
+    std::fs::create_dir_all(directory).map_err(|error| {
+        Error::Run(format!(
+            "cannot create Continue provider configuration directory: {error}"
+        ))
+    })?;
+    let configuration = format!(
+        "name: ASB provider\nversion: 1.0.0\nmodels:\n  - name: {model}\n    provider: {provider}\n    model: {model}\n    apiBase: {base_url}\n    apiKey: ${{{{ secrets.//{api_key_env} }}}}\n"
+    );
+    std::fs::write(directory.join("config.yaml"), configuration).map_err(|error| {
+        Error::Run(format!(
+            "cannot write Continue provider configuration: {error}"
+        ))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_configuration_is_owned_by_the_continue_adapter() {
+        let directory =
+            std::env::temp_dir().join(format!("asb-continue-config-{}", std::process::id()));
+        configure(
+            &directory,
+            "anthropic",
+            "test-model",
+            "http://127.0.0.1:3456/v1",
+            "CLI2KEY_API_KEY",
+        )
+        .expect("configuration succeeds");
+        let text =
+            std::fs::read_to_string(directory.join("config.yaml")).expect("configuration exists");
+        assert!(text.contains("test-model"));
+        assert!(text.contains("CLI2KEY_API_KEY"));
+        let _ = std::fs::remove_dir_all(directory);
+    }
 }

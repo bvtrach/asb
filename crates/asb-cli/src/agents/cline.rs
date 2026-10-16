@@ -1,5 +1,5 @@
 use super::{CommandContext, CommandSpec, PreparationContext, StaticAdapter};
-use crate::{Error, install::Recipe, prepare, providers};
+use crate::{Error, install::Recipe, providers};
 pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     "cline",
     "cline",
@@ -36,7 +36,7 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
         let (key, url) = context
             .cli2key
             .ok_or_else(|| Error::Run("cli2key provider has no API endpoint".into()))?;
-        prepare::configure_cline(&directory, "openai-native", context.model, url, key)?;
+        configure(&directory, "openai-native", context.model, url, key)?;
         context
             .command
             .env("OPENAI_API_KEY", key)
@@ -52,7 +52,7 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
                 "openrouter provider requires OPENROUTER_API_KEY or ~/.api_key_openrouter".into(),
             )
         })?;
-        prepare::configure_cline(&directory, "openrouter", context.model, &url, &key)?;
+        configure(&directory, "openrouter", context.model, &url, &key)?;
     } else {
         return Ok(());
     }
@@ -69,4 +69,67 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
             directory.join("data/settings/global-settings.json"),
         );
     Ok(())
+}
+
+fn configure(
+    directory: &std::path::Path,
+    provider: &str,
+    model: &str,
+    base_url: &str,
+    key: &str,
+) -> Result<(), Error> {
+    let settings_dir = directory.join("data/settings");
+    std::fs::create_dir_all(&settings_dir).map_err(|error| {
+        Error::Run(format!(
+            "cannot create Cline provider configuration directory: {error}"
+        ))
+    })?;
+    let configuration = serde_json::json!({
+        "version": 1, "lastUsedProvider": provider,
+        "providers": { provider: { "settings": {
+            "provider": provider, "model": model, "baseUrl": base_url, "apiKey": key,
+            "protocol": "openai-responses", "client": "openai"
+        }, "updatedAt": "1970-01-01T00:00:00.000Z", "tokenSource": "manual"}}
+    });
+    let content = serde_json::to_vec_pretty(&configuration).map_err(|error| {
+        Error::Run(format!(
+            "cannot render Cline provider configuration: {error}"
+        ))
+    })?;
+    std::fs::write(settings_dir.join("providers.json"), content).map_err(|error| {
+        Error::Run(format!(
+            "cannot write Cline provider configuration: {error}"
+        ))
+    })?;
+    let global = serde_json::json!({
+        "disabledTools": ["web_search", "image_generation"],
+        "tools": {"web_search": {"enabled": false}, "image_generation": {"enabled": false}}
+    });
+    let global_content = serde_json::to_vec_pretty(&global)
+        .map_err(|error| Error::Run(format!("cannot render Cline global settings: {error}")))?;
+    std::fs::write(settings_dir.join("global-settings.json"), global_content)
+        .map_err(|error| Error::Run(format!("cannot write Cline global settings: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_configuration_is_owned_by_the_cline_adapter() {
+        let directory =
+            std::env::temp_dir().join(format!("asb-cline-config-{}", std::process::id()));
+        configure(
+            &directory,
+            "openai-native",
+            "test-model",
+            "http://127.0.0.1:3456/v1",
+            "test-key",
+        )
+        .expect("configuration succeeds");
+        let text = std::fs::read_to_string(directory.join("data/settings/providers.json"))
+            .expect("configuration exists");
+        assert!(text.contains("test-model"));
+        let _ = std::fs::remove_dir_all(directory);
+    }
 }

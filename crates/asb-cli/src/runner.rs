@@ -3,7 +3,6 @@
 use super::{Error, io_error, read_config};
 use crate::agents;
 use crate::benchmark::BenchmarkConfig;
-use crate::cli2key;
 use crate::measurements;
 use crate::models;
 use crate::prepare;
@@ -250,26 +249,16 @@ fn run_mode(
     workloads::prepare_external(&config.workload, &workload_directory, &workspace)
         .map_err(Error::Run)?;
     let tape_mode = tape_request.map(|(mode, _)| mode);
-    let bridge = if config.provider.eq_ignore_ascii_case("cli2key")
-        && tape_mode != Some(tape::Mode::Replay)
-    {
-        cli2key::Bridge::connect(
-            agents::resolve_executable(
-                "cli2key",
-                "codex-bridge",
-                &project_root,
-                &project_config.tools_dir,
-            )
-            .as_deref(),
-        )
-        .map(Some)?
-    } else {
-        None
-    };
+    let bridge = providers::start_local_bridge(
+        &config.provider,
+        &project_root,
+        &project_config.tools_dir,
+        tape_mode == Some(tape::Mode::Replay),
+    )?;
     let mut tape_session = if let Some((mode, cassette)) = tape_cassette.as_ref() {
         let upstream = tape::upstream(
             &config.provider,
-            bridge.as_ref().map(cli2key::Bridge::base_url),
+            providers::local_bridge_endpoint(&config.provider, bridge.as_ref()),
         );
         Some(tape::Session::start(
             *mode,
@@ -283,7 +272,7 @@ fn run_mode(
     let tape_url = tape_session.as_ref().map(|session| session.url());
     let specification = command_for(
         &config,
-        tape_url.or_else(|| bridge.as_ref().map(cli2key::Bridge::base_url)),
+        tape_url.or_else(|| providers::local_bridge_endpoint(&config.provider, bridge.as_ref())),
         &prompt,
     )?;
     let mut program = specification.program;
@@ -302,25 +291,25 @@ fn run_mode(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     providers::configure(&mut command, &config.provider, &config.model);
-    let cli2key_endpoint = tape_url.or_else(|| bridge.as_ref().map(cli2key::Bridge::base_url));
+    let provider_endpoint =
+        tape_url.or_else(|| providers::local_bridge_endpoint(&config.provider, bridge.as_ref()));
+    let provider_credentials =
+        providers::local_bridge_credentials(&config.provider, bridge.as_ref(), provider_endpoint);
     prepare::apply_with_tape(
+        &mut command,
+        &config.provider,
+        &config.model,
+        provider_credentials,
+        tape_url,
+        tape_mode == Some(tape::Mode::Replay),
+    )?;
+    agents::prepare(
         &mut command,
         &config.agent,
         &config.provider,
         &config.model,
-        if config.provider.eq_ignore_ascii_case("cli2key") {
-            Some((
-                bridge
-                    .as_ref()
-                    .map_or("asb-replay", cli2key::Bridge::api_key),
-                cli2key_endpoint.unwrap_or("http://127.0.0.1:0/v1"),
-            ))
-        } else {
-            None
-        },
+        provider_credentials,
         &project::resolve(&project_root, &project_config.tools_dir),
-        tape_url,
-        tape_mode == Some(tape::Mode::Replay),
     )?;
     if let Some(url) = tape_url {
         tape::configure_command(
@@ -712,13 +701,13 @@ type CommandSpec = agents::CommandSpec;
 
 fn command_for(
     config: &BenchmarkConfig,
-    cli2key_base_url: Option<&str>,
+    provider_base_url: Option<&str>,
     prompt: &str,
 ) -> Result<CommandSpec, Error> {
     if let Some(adapter) = agents::find(&config.agent) {
         return Ok(adapter.command(&agents::CommandContext {
             config,
-            endpoint: cli2key_base_url,
+            endpoint: provider_base_url,
             prompt,
         }));
     }

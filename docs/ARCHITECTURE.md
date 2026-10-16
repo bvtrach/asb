@@ -18,7 +18,11 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
 - `providers`: a concise provider-name and environment-variable registry;
 - `models`: bounded live model-catalog discovery using provider-specific
   endpoints and response shapes;
-- `prepare`: provider-specific, pre-launch environment preparation hooks;
+- `prepare`: provider-wide, target-neutral pre-launch environment preparation;
+- `agents/`, `tools/`, and `workloads/workload_adapters/`: owning adapters for
+  target-specific command construction, setup, installation identity, source
+  materialization, and result artifacts; the generic agent runner dispatches
+  only through these registries;
 - `project`: `.asb/project.toml` and shared project paths. `init` creates the
   file, copies the bundled workload prompts and fixture trees, and creates its
   configured `tools_dir`, `workloads_dir`, and `workspace_dir`;
@@ -185,11 +189,11 @@ Finite human-entered names use bounded edit-distance suggestions on failure.
 The original value is never replaced automatically; provider model IDs remain
 provider-specific unless a finite local catalog is available.
 
-The preparation stage is deliberately separate from command construction. Its
-cli2key hook starts or connects to the OpenAI-compatible bridge, supplies the
-bridge endpoint and API key to the selected agent, and tears down a bridge
-process owned by ASB after the run. Additional preparation operations can be
-added without changing `run` or the benchmark configuration format.
+The provider baseline stage is deliberately separate from command construction.
+It installs only protocol-wide environment variables. Provider-owned local
+bridge lifecycle and target-specific configuration are delegated through their
+respective registries and adapters, so adding an integration does not add a
+target-name branch to `run` or the benchmark configuration format.
 
 Claude Code, Goose, Cline, and Continue receive OpenRouter's
 OpenAI-compatible endpoint (with Claude's Anthropic-compatible path derived
