@@ -1,24 +1,25 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1998" viewBox="0 0 1120 1998">
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="2116" viewBox="0 0 1120 2116">
 <title>ASB Rust type diagram</title>
 <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#4f5d75"/></marker></defs>
 <rect width="100%" height="100%" fill="#f8fafc"/>
 <text x="40" y="38" font-family="sans-serif" font-size="24" font-weight="700" fill="#172033">ASB Rust type diagram</text>
 <text x="40" y="58" font-family="sans-serif" font-size="13" fill="#526277">Generated from docs/asb-type-diagram.mmd by AutoUML</text>
-<line x1="975" y1="111" x2="975" y2="347" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
-<line x1="435" y1="347" x2="705" y2="229" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
-<line x1="705" y1="347" x2="975" y2="347" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
-<line x1="705" y1="465" x2="975" y2="465" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
-<line x1="165" y1="583" x2="435" y2="819" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
-<line x1="705" y1="701" x2="975" y2="701" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
-<line x1="705" y1="819" x2="435" y2="819" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
-<line x1="435" y1="583" x2="435" y2="937" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
-<line x1="435" y1="583" x2="165" y2="819" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
-<line x1="705" y1="1763" x2="435" y2="1763" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
-<line x1="975" y1="1763" x2="975" y2="1881" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
-<line x1="975" y1="1763" x2="705" y2="1763" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
-<line x1="435" y1="1881" x2="975" y2="1881" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
-<line x1="435" y1="1881" x2="705" y2="1763" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
-<line x1="435" y1="1881" x2="705" y2="1763" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
+<line x1="975" y1="111" x2="165" y2="465" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
+<line x1="975" y1="111" x2="165" y2="465" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
+<line x1="705" y1="347" x2="975" y2="229" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
+<line x1="975" y1="347" x2="165" y2="465" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
+<line x1="975" y1="465" x2="165" y2="583" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
+<line x1="435" y1="583" x2="705" y2="819" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
+<line x1="975" y1="701" x2="165" y2="819" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
+<line x1="975" y1="819" x2="705" y2="819" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
+<line x1="705" y1="583" x2="705" y2="937" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
+<line x1="705" y1="583" x2="435" y2="819" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
+<line x1="435" y1="1881" x2="165" y2="1881" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
+<line x1="705" y1="1881" x2="705" y2="1999" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
+<line x1="705" y1="1881" x2="435" y2="1881" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
+<line x1="165" y1="1999" x2="705" y2="1999" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
+<line x1="165" y1="1999" x2="435" y2="1881" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
+<line x1="165" y1="1999" x2="435" y2="1881" stroke="#64748b" stroke-width="1.25" marker-end="url(#arrow)"/>
 <rect x="40" y="70" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
 <text x="54" y="108" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src tools StaticTool</text>
 <rect x="310" y="70" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
@@ -28,123 +29,129 @@
 <rect x="850" y="70" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
 <text x="864" y="108" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src workloads workload adapters WorkloadAdapter</text>
 <rect x="40" y="188" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="54" y="226" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src agents PreparationContext</text>
+<text x="54" y="226" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src workloads workload adapters PromptAdapter</text>
 <rect x="310" y="188" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="324" y="226" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src agents CommandContext</text>
+<text x="324" y="226" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src agents PreparationContext</text>
 <rect x="580" y="188" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="594" y="226" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src agents CommandSpec</text>
+<text x="594" y="226" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src agents CommandContext</text>
 <rect x="850" y="188" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="864" y="226" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src agents AgentArtifacts</text>
+<text x="864" y="226" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src agents CommandSpec</text>
 <rect x="40" y="306" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="54" y="344" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src agents BuiltinAdapter</text>
+<text x="54" y="344" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src agents AgentArtifacts</text>
 <rect x="310" y="306" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="324" y="344" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src agents AgentAdapter</text>
+<text x="324" y="344" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src agents StaticAdapter</text>
 <rect x="580" y="306" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="594" y="344" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src TrialSet</text>
+<text x="594" y="344" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src agents AgentAdapter</text>
 <rect x="850" y="306" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="864" y="344" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Trial</text>
+<text x="864" y="344" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src TrialSet</text>
 <rect x="40" y="424" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="54" y="462" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Fixture</text>
+<text x="54" y="462" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Trial</text>
 <rect x="310" y="424" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="324" y="462" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src SweepFile</text>
+<text x="324" y="462" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Fixture</text>
 <rect x="580" y="424" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="594" y="462" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src BenchmarkData</text>
+<text x="594" y="462" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src SweepFile</text>
 <rect x="850" y="424" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="864" y="462" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src TimeSeries</text>
+<text x="864" y="462" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src BenchmarkData</text>
 <rect x="40" y="542" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="54" y="580" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src RunResult</text>
+<text x="54" y="580" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src TimeSeries</text>
 <rect x="310" y="542" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="324" y="580" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Session</text>
+<text x="324" y="580" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src RunResult</text>
 <rect x="580" y="542" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="594" y="580" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ProxyExecutable</text>
+<text x="594" y="580" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Session</text>
 <rect x="850" y="542" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="864" y="580" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Drop</text>
+<text x="864" y="580" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ProxyExecutable</text>
 <rect x="40" y="660" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="54" y="698" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ProviderSpec</text>
+<text x="54" y="698" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Drop</text>
 <rect x="310" y="660" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="324" y="698" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ModelSpec</text>
+<text x="324" y="698" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ProviderSpec</text>
 <rect x="580" y="660" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="594" y="698" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src BenchmarkConfig</text>
+<text x="594" y="698" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ModelSpec</text>
 <rect x="850" y="660" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="864" y="698" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src MeasurementConfig</text>
+<text x="864" y="698" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src BenchmarkConfig</text>
 <rect x="40" y="778" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="54" y="816" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src BpftraceProfile</text>
+<text x="54" y="816" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src MeasurementConfig</text>
 <rect x="310" y="778" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="324" y="816" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src TokenUsage</text>
+<text x="324" y="816" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src BpftraceProfile</text>
 <rect x="580" y="778" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="594" y="816" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src RunMeasurement</text>
+<text x="594" y="816" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src TokenUsage</text>
 <rect x="850" y="778" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="864" y="816" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src SystemInfo</text>
+<text x="864" y="816" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src RunMeasurement</text>
 <rect x="40" y="896" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="54" y="934" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src CollectorResult</text>
+<text x="54" y="934" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src SystemInfo</text>
 <rect x="310" y="896" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="324" y="934" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Collector</text>
+<text x="324" y="934" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src CollectorResult</text>
 <rect x="580" y="896" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="594" y="934" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Default</text>
+<text x="594" y="934" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Collector</text>
 <rect x="850" y="896" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="864" y="934" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src FlamegraphStatus</text>
+<text x="864" y="934" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Default</text>
 <rect x="40" y="1014" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="54" y="1052" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src LoggedStatus</text>
+<text x="54" y="1052" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src FlamegraphStatus</text>
 <rect x="310" y="1014" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="324" y="1052" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ExternalWorkload</text>
+<text x="324" y="1052" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src LoggedStatus</text>
 <rect x="580" y="1014" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="594" y="1052" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src BundleSpec</text>
+<text x="594" y="1052" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ExternalWorkload</text>
 <rect x="850" y="1014" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="864" y="1052" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ToolInstallOptions</text>
+<text x="864" y="1052" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src BundleSpec</text>
 <rect x="40" y="1132" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="54" y="1170" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src WorkloadInstallOptions</text>
+<text x="54" y="1170" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ToolInstallOptions</text>
 <rect x="310" y="1132" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="324" y="1170" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src WorkloadListOptions</text>
+<text x="324" y="1170" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src WorkloadInstallOptions</text>
 <rect x="580" y="1132" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="594" y="1170" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src CliError</text>
+<text x="594" y="1170" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src WorkloadListOptions</text>
 <rect x="850" y="1132" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="864" y="1170" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src SetupOptions</text>
+<text x="864" y="1170" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src StaticCollector</text>
 <rect x="40" y="1250" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="54" y="1288" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ModelInfo</text>
+<text x="54" y="1288" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src CollectorAdapter</text>
 <rect x="310" y="1250" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="324" y="1288" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ModelListOptions</text>
+<text x="324" y="1288" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src CliError</text>
 <rect x="580" y="1250" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="594" y="1288" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Cli</text>
+<text x="594" y="1288" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src SetupOptions</text>
 <rect x="850" y="1250" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="864" y="1288" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src InitArgs</text>
+<text x="864" y="1288" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ModelInfo</text>
 <rect x="40" y="1368" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="54" y="1406" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src SetupArgs</text>
+<text x="54" y="1406" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ModelListOptions</text>
 <rect x="310" y="1368" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="324" y="1406" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src From</text>
+<text x="324" y="1406" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Cli</text>
 <rect x="580" y="1368" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="594" y="1406" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src RunArgs</text>
+<text x="594" y="1406" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src InitArgs</text>
 <rect x="850" y="1368" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="864" y="1406" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src SweepArgs</text>
+<text x="864" y="1406" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src SetupArgs</text>
 <rect x="40" y="1486" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="54" y="1524" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src CompareArgs</text>
+<text x="54" y="1524" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src From</text>
 <rect x="310" y="1486" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="324" y="1524" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ProviderArgs</text>
+<text x="324" y="1524" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src RunArgs</text>
 <rect x="580" y="1486" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="594" y="1524" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ToolArgs</text>
+<text x="594" y="1524" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src SweepArgs</text>
 <rect x="850" y="1486" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="864" y="1524" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ToolListArgs</text>
+<text x="864" y="1524" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src CompareArgs</text>
 <rect x="40" y="1604" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="54" y="1642" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src WorkloadArgs</text>
+<text x="54" y="1642" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ProviderArgs</text>
 <rect x="310" y="1604" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="324" y="1642" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src WorkloadListArgs</text>
+<text x="324" y="1642" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ToolArgs</text>
 <rect x="580" y="1604" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="594" y="1642" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src WorkloadInstallArgs</text>
+<text x="594" y="1642" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ToolListArgs</text>
 <rect x="850" y="1604" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="864" y="1642" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ModelArgs</text>
+<text x="864" y="1642" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src WorkloadArgs</text>
 <rect x="40" y="1722" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="54" y="1760" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ToolInstallArgs</text>
+<text x="54" y="1760" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src WorkloadListArgs</text>
 <rect x="310" y="1722" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="324" y="1760" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Choice</text>
+<text x="324" y="1760" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src WorkloadInstallArgs</text>
 <rect x="580" y="1722" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="594" y="1760" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Pane</text>
+<text x="594" y="1760" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ModelArgs</text>
 <rect x="850" y="1722" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="864" y="1760" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src App</text>
+<text x="864" y="1760" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ToolInstallArgs</text>
 <rect x="40" y="1840" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="54" y="1878" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Generated</text>
+<text x="54" y="1878" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Choice</text>
 <rect x="310" y="1840" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="324" y="1878" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src WorkloadApp</text>
+<text x="324" y="1878" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Pane</text>
 <rect x="580" y="1840" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="594" y="1878" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Bridge</text>
+<text x="594" y="1878" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src App</text>
 <rect x="850" y="1840" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
-<text x="864" y="1878" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ProjectConfig</text>
+<text x="864" y="1878" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Generated</text>
+<rect x="40" y="1958" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="54" y="1996" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src WorkloadApp</text>
+<rect x="310" y="1958" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="324" y="1996" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src Bridge</text>
+<rect x="580" y="1958" width="250" height="82" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+<text x="594" y="1996" font-family="sans-serif" font-size="15" font-weight="600" fill="#172033">asb-cli src ProjectConfig</text>
 </svg>

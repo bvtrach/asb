@@ -19,6 +19,15 @@ classDiagram
         +id() &'static str
         +trial_ids() Vec~asb-cli_src_Trial~
         +prepare_source(workloads: &Path, workspace: &Path) Result~usize, String~
+        +id() &'static str
+        +matches(name: &str) bool
+        +trial_ids() Vec~asb-cli_src_Trial~
+        +populate_prompts(directory: &Path) Result~usize, std::io::Error~
+        +populate_fixtures(directory: &Path) Result~usize, std::io::Error~
+        +prepare_fixture(name: &str, workspace: &Path) Result~usize, String~
+        +prepare_source(_workloads: &Path, _workspace: &Path) Result~usize, String~
+    }
+    class asb-cli_src_workloads_workload_adapters_PromptAdapter {
     }
     class asb-cli_src_agents_PreparationContext~'a~ {
         +command: &'a mut Command
@@ -28,6 +37,7 @@ classDiagram
         +pi_config_dir: Option~&'a Path~
         +workbuddy_config_dir: Option~&'a Path~
         +continue_config_dir: Option~&'a Path~
+        +cline_data_dir: Option~&'a Path~
     }
     class asb-cli_src_agents_CommandContext~'a~ {
         +config: &'a BenchmarkConfig
@@ -42,11 +52,12 @@ classDiagram
     class asb-cli_src_agents_AgentArtifacts {
         +paths: Vec~String~
     }
-    class asb-cli_src_agents_BuiltinAdapter {
+    class asb-cli_src_agents_StaticAdapter {
         -id: &'static str
         -executable: &'static str
-        -kind: CommandKind
-        +new(id: &'static str, executable: &'static str, kind: CommandKind) Self
+        -command: CommandBuilder
+        -prepare: PreparationHook
+        +new(id: &'static str, executable: &'static str, command: CommandBuilder, prepare: PreparationHook) Self
     }
     class asb-cli_src_agents_AgentAdapter {
         +id() &'static str
@@ -279,6 +290,19 @@ classDiagram
     class asb-cli_src_WorkloadListOptions {
         +dir: Option~PathBuf~
     }
+    class asb-cli_src_StaticCollector {
+        -id: &'static str
+        -environment_flag: Option~&'static str~
+        -tool_id: Option~&'static str~
+        -requires_pid: bool
+        +new(id: &'static str, environment_flag: Option~&'static str~, tool_id: Option~&'static str~, requires_pid: bool) Self
+    }
+    class asb-cli_src_CollectorAdapter {
+        +id() &'static str
+        +environment_flag() Option~&'static str~
+        +tool_id() Option~&'static str~
+        +requires_pid() bool
+    }
     class asb-cli_src_CliError {
         +fmt(formatter: Formatter~'_~) Result
     }
@@ -449,6 +473,7 @@ classDiagram
     class asb-cli_src_Default {
         +default() Self
     }
+    asb-cli_src_workloads_workload_adapters_WorkloadAdapter ..> asb-cli_src_Trial
     asb-cli_src_workloads_workload_adapters_WorkloadAdapter ..> asb-cli_src_Trial
     asb-cli_src_agents_AgentAdapter ..> asb-cli_src_agents_CommandSpec
     asb-cli_src_TrialSet --> asb-cli_src_Trial
