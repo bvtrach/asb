@@ -132,6 +132,9 @@ struct CollectorResult {
     /// Parsed, stable metrics. Raw stdout/stderr remain available for detail,
     /// but comparison must consume this bounded machine-readable map instead.
     metrics: BTreeMap<String, f64>,
+    /// Bounded samples emitted by collectors that support interval output.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    series: BTreeMap<String, Vec<f64>>,
 }
 
 struct Collector {
@@ -289,10 +292,13 @@ impl Session {
             .map_err(|e| format!("cannot create perf stat output: {e}"))?;
         let stat_stderr = File::create(&stat_stderr_path)
             .map_err(|e| format!("cannot create perf stat error output: {e}"))?;
+        let interval_ms = measurement_interval_ms().to_string();
         let stat = self
             .command("perf")
             .args([
                 "stat",
+                "-I",
+                &interval_ms,
                 "-x,",
                 "-e",
                 "task-clock,context-switches,cpu-migrations,page-faults,cycles,instructions",
@@ -366,6 +372,7 @@ impl Session {
                 &stdout
             };
             let mut metrics = parse_collector_metrics(&collector.name, metrics_source);
+            let series = parse_collector_series(&collector.name, metrics_source);
             if collector.name == "perfetto" {
                 self.perfetto_metrics = self.perfetto_trace_metrics();
                 metrics.extend(self.perfetto_metrics.clone());
@@ -409,6 +416,7 @@ impl Session {
                 stderr,
                 artifact,
                 metrics,
+                series,
             };
             write_json(&self.dir.join(format!("{}.json", collector.name)), &result)?;
         }
@@ -595,17 +603,18 @@ impl Session {
     }
 
     fn start_process_snapshots(&mut self, pid: u32) -> Result<(), String> {
+        let interval = pidstat_interval_seconds();
         self.start_snapshot(
             "mpstat",
             "ASB_MEASURE_MPSTAT",
-            &["-u", "-T", "ALL", "-p", &pid.to_string(), "1"],
+            &["-u", "-T", "ALL", "-p", &pid.to_string(), &interval],
             self.mpstat_enabled,
             "pidstat",
         )?;
         self.start_snapshot(
             "iostat",
             "ASB_MEASURE_IOSTAT",
-            &["-d", "-T", "ALL", "-p", &pid.to_string(), "1"],
+            &["-d", "-T", "ALL", "-p", &pid.to_string(), &interval],
             self.iostat_enabled,
             "pidstat",
         )?;
@@ -1461,6 +1470,7 @@ fn write_unavailable(path: &Path, collector: &str, error: String) -> Result<(), 
             stderr: error,
             artifact: None,
             metrics: BTreeMap::new(),
+            series: BTreeMap::new(),
         },
     )
 }
@@ -1616,6 +1626,122 @@ fn parse_collector_metrics(name: &str, output: &str) -> BTreeMap<String, f64> {
     }
 }
 
+fn parse_collector_series(name: &str, output: &str) -> BTreeMap<String, Vec<f64>> {
+    match name {
+        "mpstat" => parse_pidstat_series(
+            output,
+            &["%usr", "%system", "%guest", "%wait", "%CPU"],
+            |name| {
+                format!(
+                    "process.cpu.{}",
+                    match name {
+                        "%usr" => "user_pct",
+                        "%system" => "system_pct",
+                        "%guest" => "guest_pct",
+                        "%wait" => "wait_pct",
+                        "%CPU" => "total_pct",
+                        _ => "unknown",
+                    }
+                )
+            },
+        ),
+        "iostat" => parse_pidstat_series(
+            output,
+            &["kB_rd/s", "kB_wr/s", "kB_ccwr/s", "iodelay"],
+            |name| {
+                format!(
+                    "process.io.{}",
+                    match name {
+                        "kB_rd/s" => "read_kib_per_s",
+                        "kB_wr/s" => "write_kib_per_s",
+                        "kB_ccwr/s" => "cancelled_write_kib_per_s",
+                        "iodelay" => "delay_ticks",
+                        _ => "unknown",
+                    }
+                )
+            },
+        ),
+        "perf-stat" => parse_perf_stat_series(output),
+        profile if profile.starts_with("bpftrace-") => {
+            parse_bpftrace_series(profile.trim_start_matches("bpftrace-"), output)
+        }
+        _ => BTreeMap::new(),
+    }
+}
+
+fn parse_pidstat_series(
+    output: &str,
+    wanted: &[&str],
+    name: impl Fn(&str) -> String,
+) -> BTreeMap<String, Vec<f64>> {
+    let mut header = None;
+    let mut samples: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    for line in output.lines() {
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.first().is_some_and(|field| *field == "Average:")
+            || fields.first().is_some_and(|field| *field == "Linux")
+        {
+            continue;
+        }
+        if fields.iter().any(|field| wanted.contains(field)) {
+            header = Some(fields);
+            continue;
+        }
+        let Some(header_fields) = header.as_ref() else {
+            continue;
+        };
+        if fields.len() != header_fields.len() {
+            continue;
+        }
+        for wanted_name in wanted {
+            let Some(index) = header_fields.iter().position(|field| field == wanted_name) else {
+                continue;
+            };
+            let Some(value) = fields.get(index).and_then(|field| parse_float(field)) else {
+                continue;
+            };
+            samples.entry(name(wanted_name)).or_default().push(value);
+        }
+    }
+    samples.retain(|_, values| !values.is_empty());
+    samples
+}
+
+fn parse_perf_stat_series(output: &str) -> BTreeMap<String, Vec<f64>> {
+    let mut series: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    for line in output.lines() {
+        let fields = line.split(',').map(str::trim).collect::<Vec<_>>();
+        let Some(event_index) = fields.iter().position(|field| {
+            matches!(
+                *field,
+                "task-clock"
+                    | "context-switches"
+                    | "cpu-migrations"
+                    | "page-faults"
+                    | "cycles"
+                    | "instructions"
+            )
+        }) else {
+            continue;
+        };
+        let Some(value) = fields[..event_index]
+            .iter()
+            .rev()
+            .find_map(|field| parse_float(field))
+        else {
+            continue;
+        };
+        let Some(name) = perf_metric_name(fields[event_index]) else {
+            continue;
+        };
+        series
+            .entry(format!("perf.{name}"))
+            .or_default()
+            .push(value);
+    }
+    series
+}
+
 /// bpftrace prints aggregation maps as `@asb_metric: value`. Only these
 /// ASB-owned map names are accepted, so arbitrary program output cannot create
 /// comparison metrics accidentally.
@@ -1636,30 +1762,70 @@ fn parse_bpftrace_metrics(profile: &str, output: &str) -> BTreeMap<String, f64> 
     metrics
 }
 
+fn parse_bpftrace_series(profile: &str, output: &str) -> BTreeMap<String, Vec<f64>> {
+    let mut series: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    for line in output.lines() {
+        let Some((name, value)) = line.trim().split_once(':') else {
+            continue;
+        };
+        let Some(name) = name.trim().strip_prefix("@asb_") else {
+            continue;
+        };
+        let Some(value) = parse_float(value) else {
+            continue;
+        };
+        series
+            .entry(format!("bpftrace.{profile}.{name}"))
+            .or_default()
+            .push(value);
+    }
+    series
+}
+
 /// Parse `perf stat -x,` output into stable unit-named fields. Unsupported
 /// counters remain absent instead of being inferred from unrelated values.
 fn parse_perf_stat_metrics(output: &str) -> BTreeMap<String, f64> {
     let mut metrics = BTreeMap::new();
     for line in output.lines() {
         let fields = line.split(',').map(str::trim).collect::<Vec<_>>();
-        let Some(value) = fields.first().and_then(|value| parse_float(value)) else {
+        let Some(event_index) = fields.iter().position(|field| {
+            matches!(
+                *field,
+                "task-clock"
+                    | "context-switches"
+                    | "cpu-migrations"
+                    | "page-faults"
+                    | "cycles"
+                    | "instructions"
+            )
+        }) else {
             continue;
         };
-        let Some(event) = fields.get(2).copied().filter(|value| !value.is_empty()) else {
+        let Some(value) = fields[..event_index]
+            .iter()
+            .rev()
+            .find_map(|field| parse_float(field))
+        else {
             continue;
         };
-        let name = match event {
-            "task-clock" => "task_clock_ms",
-            "context-switches" => "context_switches",
-            "cpu-migrations" => "cpu_migrations",
-            "page-faults" => "page_faults",
-            "cycles" => "cycles",
-            "instructions" => "instructions",
-            _ => continue,
+        let Some(name) = perf_metric_name(fields[event_index]) else {
+            continue;
         };
         metrics.insert(format!("perf.{name}"), value);
     }
     metrics
+}
+
+fn perf_metric_name(event: &str) -> Option<&'static str> {
+    match event {
+        "task-clock" => Some("task_clock_ms"),
+        "context-switches" => Some("context_switches"),
+        "cpu-migrations" => Some("cpu_migrations"),
+        "page-faults" => Some("page_faults"),
+        "cycles" => Some("cycles"),
+        "instructions" => Some("instructions"),
+        _ => None,
+    }
 }
 
 fn tool_binary_name(name: &str) -> &str {
@@ -1978,6 +2144,21 @@ fn parse_float(value: &str) -> Option<f64> {
         })
         .parse()
         .ok()
+}
+
+fn measurement_interval_ms() -> u64 {
+    std::env::var("ASB_MEASURE_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(1_000)
+        .clamp(100, 60_000)
+}
+
+fn pidstat_interval_seconds() -> String {
+    // pidstat accepts whole-second intervals. Preserve the requested lower
+    // bound while rounding sub-second requests up to the nearest supported
+    // interval; perf stat below supports the full millisecond range.
+    measurement_interval_ms().div_ceil(1_000).to_string()
 }
 
 fn bounded(bytes: &[u8]) -> String {
@@ -2595,6 +2776,17 @@ mod tests {
         assert_eq!(io["process.io.read_kib_per_s"], 1.0);
         assert_eq!(io["process.io.write_kib_per_s"], 2.0);
         assert_eq!(io["process.io.delay_ticks"], 3.0);
+        let series = parse_collector_series(
+            "mpstat",
+            "Linux 6.1\n12:00:00 UID PID %usr %system %guest %wait %CPU CPU Command\n12:00:01 1000 42 10.00 2.00 0.00 1.00 12.00 3 agent\n12:00:02 1000 42 20.00 4.00 0.00 0.00 24.00 3 agent\n",
+        );
+        assert_eq!(series["process.cpu.user_pct"], vec![10.0, 20.0]);
+        assert_eq!(series["process.cpu.total_pct"], vec![12.0, 24.0]);
+        let io_series = parse_collector_series(
+            "iostat",
+            "Linux 6.1\n12:00:01 UID PID kB_rd/s kB_wr/s kB_ccwr/s iodelay Command\n12:00:01 1000 42 1.0 2.0 0.5 3 agent\n12:00:02 1000 42 2.0 4.0 1.0 5 agent\n",
+        );
+        assert_eq!(io_series["process.io.read_kib_per_s"], vec![1.0, 2.0]);
     }
 
     #[test]
@@ -2621,6 +2813,11 @@ mod tests {
         assert_eq!(metrics["perf.page_faults"], 4.0);
         assert_eq!(metrics["perf.cycles"], 1234.0);
         assert_eq!(metrics["perf.instructions"], 567.0);
+        let series = parse_perf_stat_series(
+            "0.000,12.34,msec,task-clock,100.00,\n1.000,20.00,msec,task-clock,100.00,\n0.000,8,,context-switches,100.00,\n",
+        );
+        assert_eq!(series["perf.task_clock_ms"], vec![12.34, 20.0]);
+        assert_eq!(series["perf.context_switches"], vec![8.0]);
     }
 
     #[test]
@@ -2656,6 +2853,14 @@ mod tests {
             420.0
         );
         assert_eq!(metrics.len(), 2);
+        let series = parse_collector_series(
+            "bpftrace-sched-latency",
+            "@asb_wakeup_latency_events: 2\n@asb_wakeup_latency_events: 5\n",
+        );
+        assert_eq!(
+            series["bpftrace.sched-latency.wakeup_latency_events"],
+            vec![2.0, 5.0]
+        );
     }
 
     #[test]
