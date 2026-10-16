@@ -25,12 +25,20 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
 - `measurements`: opt-in system/runtime collection. It writes bounded JSON
   records for host facts, elapsed time, success rate, and normalized input,
   output, cached, and total token usage, and
-  owns optional `mpstat`, `iostat`, `perf`, BPFTrace, and FlameGraph adapters;
+  owns optional `mpstat`, `iostat`, `perf`, Perfetto, BPFTrace, and FlameGraph adapters;
   mpstat and iostat retain their bounded raw output and also expose averaged,
   unit-named CPU, throughput, latency, queue, and utilization metrics under a
   machine-readable `metrics` object. Comparisons consume that object rather
   than scraping arbitrary output, so one canonical runtime result is plotted
   instead of repeated collector samples;
+  the Perfetto adapter validates tracefs/ftrace access before the agent process,
+  then starts project-local Tracebox and records scheduler switches/wakeups,
+  thread lifecycle, process names, and fixed non-secret ASB lifecycle
+  tracepoints. The project-local trace processor extracts stable aggregates,
+  and ASB preserves the native `.perfetto-trace`, a bounded JSON record, and
+  one portable SVG per extracted metric for the comparison report;
+  the perf adapter records both call stacks and stable `perf stat` counters
+  (task clock, context switches, migrations, faults, cycles, instructions);
   each adapter is isolated from the runner and can be extended without adding
   provider-specific fields to the benchmark configuration;
 - `workloads/`: one UTF-8 `.txt` prompt per workload name. Built-in supporting
@@ -99,6 +107,14 @@ host binary or source build prerequisites are unavailable, the failure prints
 typical copy-paste commands for Red Hat/Fedora, Debian/Ubuntu, and openEuler
 so the user can install either the matching host tool or the needed development
 packages before retrying.
+The `perfetto` recipe downloads SHA-256-pinned official Tracebox and trace
+processor binaries into the project tool directory. It supports Linux x86_64
+and aarch64. Ftrace itself is a tracefs interface provided by the running host
+kernel, rather than an executable to copy into the project. Before a selected
+collector can start, ASB probes that exact interface; it retries the collector
+through `sudo -n` only when the direct probe fails, and rejects the run before
+the agent starts when the needed passwordless authorization is absent. Normal
+commands and CI do not require kernel tracing access.
 The `pi` agent uses the pinned `@mariozechner/pi-coding-agent` npm package and
 its non-interactive print mode. For `cli2key`, the preparation layer maps Pi to
 the bridge's OpenAI-compatible endpoint without storing credentials.

@@ -11,6 +11,7 @@ make install
 ./target/debug/asb tool list
 ./target/debug/asb tool install codex
 ./target/debug/asb tool install llmtape
+./target/debug/asb tool install perfetto
 ./target/debug/asb workload list
 ./target/debug/asb provider models openrouter
 ./target/debug/asb workload install \
@@ -102,6 +103,14 @@ Source-installed agents use `.asb-tools/<agent>/bin/`; workloads are stored in
 `workloads/`. These paths come from `.asb/project.toml`, so changing that file
 changes every command consistently. Add `--dir DIR` only when you need a
 one-off destination.
+
+To collect scheduler and process-lifecycle evidence for a run, install the
+project-local Perfetto Tracebox tool above, enable the `perfetto` measurement
+collector in the generated run configuration, and run normally. ASB stores its
+trace, configuration, and fixed lifecycle markers in that run's measurement
+directory; it never writes prompts, credentials, provider responses, or model
+configuration into the trace. The same run records `perf stat` counters when
+the host permits them.
 
 Run output is concise and human-readable by default. Add `--json` to emit the
 structured result for scripts:
