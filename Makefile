@@ -1,22 +1,35 @@
 .DEFAULT_GOAL := build
 
-.PHONY: update build test install clean rust-doc uml
+.PHONY: update build test install clean rust-doc uml flows interactive
 
 BASH_COMPLETION := target/asb.bash
 ZSH_COMPLETION := target/_asb
 AUTO_UML_VERSION := 0.7.2
 AUTO_UML_ROOT := target/tools/auto-uml
 AUTO_UML := $(AUTO_UML_ROOT)/bin/auto-uml
-UML_MERMAID := docs/asb-type-diagram.mmd
+UML_RAW_DOT := target/asb-type-diagram.raw.dot
+UML_DOT := docs/asb-type-diagram.dot
 UML_SVG := docs/asb-type-diagram.svg
-UML_RAW := target/asb-type-diagram.raw.mmd
+UML_RAW_MERMAID := target/asb-type-diagram.raw.mmd
+UML_MERMAID := docs/asb-type-diagram.mmd
+FLOW_SCRIPT := scripts/generate_function_flows.py
+DATAFLOW_DOT := docs/asb-dataflow.dot
+DATAFLOW_SVG := docs/asb-dataflow.svg
+CONTROLFLOW_DOT := docs/asb-control-flow.dot
+CONTROLFLOW_SVG := docs/asb-control-flow.svg
+INTERACTIVE_TEMPLATE := scripts/interactive_graph_template.html
+INTERACTIVE_CSS := scripts/interactive_graph.css
+INTERACTIVE_JS := scripts/interactive_graph.js
+TYPE_HTML := docs/asb-type-diagram.html
+DATAFLOW_HTML := docs/asb-dataflow.html
+CONTROLFLOW_HTML := docs/asb-control-flow.html
 
 update:
 	git pull --ff-only origin main
 
 build:
 	cargo build --locked
-	$(MAKE) rust-doc uml
+	$(MAKE) rust-doc uml flows interactive
 	target/debug/asb --__generate-completion bash > "$(BASH_COMPLETION)"
 	target/debug/asb --__generate-completion zsh > "$(ZSH_COMPLETION)"
 
@@ -28,9 +41,23 @@ $(AUTO_UML):
 	cargo install auto-uml --version "$(AUTO_UML_VERSION)" --locked --root "$(AUTO_UML_ROOT)"
 
 uml: $(AUTO_UML)
-	$(AUTO_UML) --lang rust --source-code crates --format mermaid --destination "$(UML_RAW)"
-	python3 scripts/normalize_uml.py "$(UML_RAW)" "$(UML_MERMAID)"
-	python3 scripts/render_mermaid_svg.py "$(UML_MERMAID)" "$(UML_SVG)"
+	command -v dot >/dev/null || (echo "Graphviz 'dot' is required for UML generation (install the graphviz package)." >&2; exit 1)
+	$(AUTO_UML) --lang rust --source-code crates --format graphviz --destination "$(UML_RAW_DOT)"
+	python3 scripts/organize_uml_dot.py "$(UML_RAW_DOT)" "$(UML_DOT)"
+	dot -Tsvg -o "$(UML_SVG)" "$(UML_DOT)"
+	$(AUTO_UML) --lang rust --source-code crates --format mermaid --destination "$(UML_RAW_MERMAID)"
+	python3 scripts/normalize_uml.py "$(UML_RAW_MERMAID)" "$(UML_MERMAID)"
+
+flows:
+	command -v dot >/dev/null || (echo "Graphviz 'dot' is required for flow-diagram generation (install the graphviz package)." >&2; exit 1)
+	python3 "$(FLOW_SCRIPT)" crates "$(DATAFLOW_DOT)" "$(CONTROLFLOW_DOT)"
+	dot -Tsvg -o "$(DATAFLOW_SVG)" "$(DATAFLOW_DOT)"
+	dot -Tsvg -o "$(CONTROLFLOW_SVG)" "$(CONTROLFLOW_DOT)"
+
+interactive: flows
+	python3 scripts/render_interactive_graph.py "$(INTERACTIVE_TEMPLATE)" "$(INTERACTIVE_CSS)" "$(INTERACTIVE_JS)" "$(UML_SVG)" "$(TYPE_HTML)" "ASB Rust type diagram"
+	python3 scripts/render_interactive_graph.py "$(INTERACTIVE_TEMPLATE)" "$(INTERACTIVE_CSS)" "$(INTERACTIVE_JS)" "$(DATAFLOW_SVG)" "$(DATAFLOW_HTML)" "ASB Rust dataflow diagram"
+	python3 scripts/render_interactive_graph.py "$(INTERACTIVE_TEMPLATE)" "$(INTERACTIVE_CSS)" "$(INTERACTIVE_JS)" "$(CONTROLFLOW_SVG)" "$(CONTROLFLOW_HTML)" "ASB Rust control-flow diagram"
 
 test:
 	cargo test --locked

@@ -1,0 +1,1381 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ASB Rust type diagram</title>
+  <style>:root {
+  color-scheme: light;
+  --ink: #172033;
+  --muted: #64748b;
+  --line: #dbe3ee;
+  --panel: #ffffff;
+  --background: #f3f6fa;
+  --accent: #2563eb;
+  --accent-soft: #dbeafe;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--background); color: var(--ink); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.app-shell { display: grid; grid-template-rows: auto auto 1fr; height: 100%; min-height: 520px; }
+.topbar { align-items: end; background: rgba(255, 255, 255, .96); border-bottom: 1px solid var(--line); box-shadow: 0 3px 14px rgba(15, 23, 42, .06); display: flex; gap: 24px; justify-content: space-between; padding: 18px 24px 15px; position: relative; z-index: 2; }
+.eyebrow { color: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: .12em; margin: 0 0 4px; text-transform: uppercase; }
+h1 { font-size: clamp(20px, 3vw, 32px); line-height: 1.1; margin: 0; }
+.subtitle { color: var(--muted); font-size: 13px; margin: 7px 0 0; }
+.toolbar { align-items: center; display: flex; flex-wrap: wrap; gap: 7px; justify-content: end; }
+.toolbar button, .search-wrap input { background: #fff; border: 1px solid #cbd5e1; border-radius: 7px; color: var(--ink); font: inherit; font-size: 13px; height: 34px; }
+.toolbar button { box-shadow: 0 1px 2px rgba(15, 23, 42, .05); cursor: pointer; min-width: 36px; padding: 0 11px; transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
+.toolbar button:active { box-shadow: none; transform: translateY(1px); }
+.toolbar button:hover, .toolbar button:focus-visible { background: var(--accent-soft); border-color: var(--accent); outline: none; }
+.search-wrap input { min-width: 220px; padding: 0 10px; }
+.search-wrap input:focus { border-color: var(--accent); outline: 2px solid #bfdbfe; }
+.statusbar { align-items: center; background: #f8fafc; border-bottom: 1px solid var(--line); color: var(--muted); display: flex; font-size: 12px; gap: 18px; justify-content: space-between; min-height: 33px; padding: 7px 24px; }
+.viewport { -webkit-user-select: none; background: radial-gradient(circle at 50% 35%, #f8fbff 0, #e9eff7 55%, #e1e9f3 100%); border: 1px solid #d3ddea; cursor: grab; margin: 14px; overflow: hidden; position: relative; touch-action: none; user-select: none; box-shadow: inset 0 1px 4px rgba(15, 23, 42, .05), 0 5px 18px rgba(15, 23, 42, .08); }
+.viewport.dragging { cursor: grabbing; }
+.canvas { contain: layout; height: 100%; left: 0; position: absolute; top: 0; transform-origin: 0 0; user-select: none; }
+.raster-layer { display: none; left: 0; pointer-events: none; position: absolute; top: 0; }
+.canvas svg { display: block; max-width: none; text-rendering: optimizeSpeed; }
+.viewport.dragging .canvas svg, .viewport.navigating .canvas svg { pointer-events: none; }
+.canvas .node, .canvas .edge, .canvas .cluster { cursor: pointer; }
+.canvas .edge > path:not(.edge-hitbox), .canvas .edge > polygon { pointer-events: none; }
+.canvas .node.is-hovered > polygon, .canvas .node.is-pinned > polygon, .canvas .node.is-hovered > ellipse, .canvas .node.is-pinned > ellipse, .canvas .node.is-hovered > path, .canvas .node.is-pinned > path { fill: #eff6ff !important; stroke: #3b82f6 !important; stroke-width: 2px !important; }
+.canvas .edge.is-hovered > path, .canvas .edge.is-pinned > path, .canvas .edge.is-hovered > polygon, .canvas .edge.is-pinned > polygon { stroke: #2563eb !important; stroke-width: 2.4px !important; }
+.canvas .edge > .edge-hitbox { opacity: 1 !important; pointer-events: stroke !important; stroke: rgba(0, 0, 0, .001) !important; stroke-width: 14px !important; }
+.canvas .cluster.is-hovered > path, .canvas .cluster.is-pinned > path { stroke: #60a5fa !important; stroke-width: 2px !important; }
+.canvas .node:focus, .canvas .edge:focus, .canvas .cluster:focus { outline: none; }
+.canvas .is-dimmed { opacity: .18; }
+.canvas .is-related path, .canvas .is-related polygon { stroke: #2563eb !important; stroke-width: 2.5px !important; }
+.tooltip { background: rgba(15, 23, 42, .97); border: 1px solid #475569; border-radius: 8px; box-shadow: 0 8px 24px rgba(15, 23, 42, .24); color: #f8fafc; display: none; font-size: 12px; line-height: 1.45; max-width: 360px; padding: 9px 11px; pointer-events: none; position: fixed; white-space: pre-wrap; z-index: 10; }
+.sr-only { clip: rect(0, 0, 0, 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+@media (max-width: 760px) { .topbar { align-items: start; flex-direction: column; padding: 14px; } .toolbar { justify-content: start; width: 100%; } .search-wrap { flex: 1; } .search-wrap input { min-width: 0; width: 100%; } .statusbar { padding: 7px 14px; } .viewport { margin: 8px; } }
+</style>
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">ASB architecture</p>
+        <h1>ASB Rust type diagram</h1>
+        <p class="subtitle">Generated from the Rust source during <code>make build</code>.</p>
+      </div>
+      <div class="toolbar" aria-label="Graph controls">
+        <label class="search-wrap"><span class="sr-only">Search elements</span><input id="search" type="search" placeholder="Search functions or modules"></label>
+        <button id="fit" type="button">Fit</button>
+        <button id="reset" type="button">Reset</button>
+        <button id="zoom-out" type="button" aria-label="Zoom out">−</button>
+        <button id="zoom-in" type="button" aria-label="Zoom in">+</button>
+      </div>
+    </header>
+    <section class="statusbar"><span id="selection">Hover an element for details. Drag to pan; scroll to zoom.</span><span id="counts"></span></section>
+    <section id="viewport" class="viewport" aria-label="Interactive graph">
+      <div id="canvas" class="canvas"><?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+ "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<!-- Generated by graphviz version 2.43.0 (0)
+ -->
+<!-- Title: ASB_Rust_UML Pages: 1 -->
+<svg width="1765pt" height="5217pt"
+ viewBox="0.00 0.00 1765.00 5217.00" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(18 5199)">
+<title>ASB_Rust_UML</title>
+<polygon fill="white" stroke="transparent" points="-18,18 -18,-5199 1747,-5199 1747,18 -18,18"/>
+<text text-anchor="middle" x="864.5" y="-5162.6" font-family="Helvetica,sans-Serif" font-size="18.00">ASB Rust architecture</text>
+<g id="clust1" class="cluster">
+<title>cluster_agents</title>
+<path fill="white" stroke="#cbd5e1" stroke-dasharray="5,2" d="M20,-8C20,-8 1396,-8 1396,-8 1402,-8 1408,-14 1408,-20 1408,-20 1408,-414 1408,-414 1408,-420 1402,-426 1396,-426 1396,-426 20,-426 20,-426 14,-426 8,-420 8,-414 8,-414 8,-20 8,-20 8,-14 14,-8 20,-8"/>
+<text text-anchor="middle" x="708" y="-407.6" font-family="Helvetica,sans-Serif" font-size="18.00" fill="#334155">agents</text>
+</g>
+<g id="clust2" class="cluster">
+<title>cluster_benchmark</title>
+<path fill="white" stroke="#cbd5e1" stroke-dasharray="5,2" d="M279.5,-434C279.5,-434 1313,-434 1313,-434 1319,-434 1325,-440 1325,-446 1325,-446 1325,-576 1325,-576 1325,-582 1319,-588 1313,-588 1313,-588 279.5,-588 279.5,-588 273.5,-588 267.5,-582 267.5,-576 267.5,-576 267.5,-446 267.5,-446 267.5,-440 273.5,-434 279.5,-434"/>
+<text text-anchor="middle" x="796.25" y="-569.6" font-family="Helvetica,sans-Serif" font-size="18.00" fill="#334155">benchmark</text>
+</g>
+<g id="clust3" class="cluster">
+<title>cluster_cli2key</title>
+<path fill="white" stroke="#cbd5e1" stroke-dasharray="5,2" d="M219,-596C219,-596 663,-596 663,-596 669,-596 675,-602 675,-608 675,-608 675,-668 675,-668 675,-674 669,-680 663,-680 663,-680 219,-680 219,-680 213,-680 207,-674 207,-668 207,-668 207,-608 207,-608 207,-602 213,-596 219,-596"/>
+<text text-anchor="middle" x="441" y="-661.6" font-family="Helvetica,sans-Serif" font-size="18.00" fill="#334155">cli2key</text>
+</g>
+<g id="clust4" class="cluster">
+<title>cluster_compare</title>
+<path fill="white" stroke="#cbd5e1" stroke-dasharray="5,2" d="M304.5,-3585C304.5,-3585 577.5,-3585 577.5,-3585 583.5,-3585 589.5,-3591 589.5,-3597 589.5,-3597 589.5,-3727 589.5,-3727 589.5,-3733 583.5,-3739 577.5,-3739 577.5,-3739 304.5,-3739 304.5,-3739 298.5,-3739 292.5,-3733 292.5,-3727 292.5,-3727 292.5,-3597 292.5,-3597 292.5,-3591 298.5,-3585 304.5,-3585"/>
+<text text-anchor="middle" x="441" y="-3720.6" font-family="Helvetica,sans-Serif" font-size="18.00" fill="#334155">compare</text>
+</g>
+<g id="clust5" class="cluster">
+<title>cluster_core</title>
+<path fill="white" stroke="#cbd5e1" stroke-dasharray="5,2" d="M35,-1403C35,-1403 1320.5,-1403 1320.5,-1403 1326.5,-1403 1332.5,-1409 1332.5,-1415 1332.5,-1415 1332.5,-3565 1332.5,-3565 1332.5,-3571 1326.5,-3577 1320.5,-3577 1320.5,-3577 35,-3577 35,-3577 29,-3577 23,-3571 23,-3565 23,-3565 23,-1415 23,-1415 23,-1409 29,-1403 35,-1403"/>
+<text text-anchor="middle" x="677.75" y="-3558.6" font-family="Helvetica,sans-Serif" font-size="18.00" fill="#334155">core</text>
+</g>
+<g id="clust6" class="cluster">
+<title>cluster_install</title>
+<path fill="white" stroke="#cbd5e1" stroke-dasharray="5,2" d="M302,-3747C302,-3747 580,-3747 580,-3747 586,-3747 592,-3753 592,-3759 592,-3759 592,-3943 592,-3943 592,-3949 586,-3955 580,-3955 580,-3955 302,-3955 302,-3955 296,-3955 290,-3949 290,-3943 290,-3943 290,-3759 290,-3759 290,-3753 296,-3747 302,-3747"/>
+<text text-anchor="middle" x="441" y="-3936.6" font-family="Helvetica,sans-Serif" font-size="18.00" fill="#334155">install</text>
+</g>
+<g id="clust7" class="cluster">
+<title>cluster_measurements</title>
+<path fill="white" stroke="#cbd5e1" stroke-dasharray="5,2" d="M280,-880C280,-880 1443,-880 1443,-880 1449,-880 1455,-886 1455,-892 1455,-892 1455,-1383 1455,-1383 1455,-1389 1449,-1395 1443,-1395 1443,-1395 280,-1395 280,-1395 274,-1395 268,-1389 268,-1383 268,-1383 268,-892 268,-892 268,-886 274,-880 280,-880"/>
+<text text-anchor="middle" x="861.5" y="-1376.6" font-family="Helvetica,sans-Serif" font-size="18.00" fill="#334155">measurements</text>
+</g>
+<g id="clust8" class="cluster">
+<title>cluster_models</title>
+<path fill="white" stroke="#cbd5e1" stroke-dasharray="5,2" d="M367.5,-3963C367.5,-3963 514.5,-3963 514.5,-3963 520.5,-3963 526.5,-3969 526.5,-3975 526.5,-3975 526.5,-4033 526.5,-4033 526.5,-4039 520.5,-4045 514.5,-4045 514.5,-4045 367.5,-4045 367.5,-4045 361.5,-4045 355.5,-4039 355.5,-4033 355.5,-4033 355.5,-3975 355.5,-3975 355.5,-3969 361.5,-3963 367.5,-3963"/>
+<text text-anchor="middle" x="441" y="-4026.6" font-family="Helvetica,sans-Serif" font-size="18.00" fill="#334155">models</text>
+</g>
+<g id="clust9" class="cluster">
+<title>cluster_project</title>
+<path fill="white" stroke="#cbd5e1" stroke-dasharray="5,2" d="M1102.5,-3961C1102.5,-3961 1293.5,-3961 1293.5,-3961 1299.5,-3961 1305.5,-3967 1305.5,-3973 1305.5,-3973 1305.5,-4033 1305.5,-4033 1305.5,-4039 1299.5,-4045 1293.5,-4045 1293.5,-4045 1102.5,-4045 1102.5,-4045 1096.5,-4045 1090.5,-4039 1090.5,-4033 1090.5,-4033 1090.5,-3973 1090.5,-3973 1090.5,-3967 1096.5,-3961 1102.5,-3961"/>
+<text text-anchor="middle" x="1198" y="-4026.6" font-family="Helvetica,sans-Serif" font-size="18.00" fill="#334155">project</text>
+</g>
+<g id="clust10" class="cluster">
+<title>cluster_providers</title>
+<path fill="white" stroke="#cbd5e1" stroke-dasharray="5,2" d="M259.5,-4381C259.5,-4381 622.5,-4381 622.5,-4381 628.5,-4381 634.5,-4387 634.5,-4393 634.5,-4393 634.5,-4567 634.5,-4567 634.5,-4573 628.5,-4579 622.5,-4579 622.5,-4579 259.5,-4579 259.5,-4579 253.5,-4579 247.5,-4573 247.5,-4567 247.5,-4567 247.5,-4393 247.5,-4393 247.5,-4387 253.5,-4381 259.5,-4381"/>
+<text text-anchor="middle" x="441" y="-4560.6" font-family="Helvetica,sans-Serif" font-size="18.00" fill="#334155">providers</text>
+</g>
+<g id="clust11" class="cluster">
+<title>cluster_runner</title>
+<path fill="white" stroke="#cbd5e1" stroke-dasharray="5,2" d="M346,-688C346,-688 536,-688 536,-688 542,-688 548,-694 548,-700 548,-700 548,-860 548,-860 548,-866 542,-872 536,-872 536,-872 346,-872 346,-872 340,-872 334,-866 334,-860 334,-860 334,-700 334,-700 334,-694 340,-688 346,-688"/>
+<text text-anchor="middle" x="441" y="-853.6" font-family="Helvetica,sans-Serif" font-size="18.00" fill="#334155">runner</text>
+</g>
+<g id="clust12" class="cluster">
+<title>cluster_tools</title>
+<path fill="white" stroke="#cbd5e1" stroke-dasharray="5,2" d="M225.5,-4587C225.5,-4587 656.5,-4587 656.5,-4587 662.5,-4587 668.5,-4593 668.5,-4599 668.5,-4599 668.5,-4723 668.5,-4723 668.5,-4729 662.5,-4735 656.5,-4735 656.5,-4735 225.5,-4735 225.5,-4735 219.5,-4735 213.5,-4729 213.5,-4723 213.5,-4723 213.5,-4599 213.5,-4599 213.5,-4593 219.5,-4587 225.5,-4587"/>
+<text text-anchor="middle" x="441" y="-4716.6" font-family="Helvetica,sans-Serif" font-size="18.00" fill="#334155">tools</text>
+</g>
+<g id="clust13" class="cluster">
+<title>cluster_tui</title>
+<path fill="white" stroke="#cbd5e1" stroke-dasharray="5,2" d="M202.5,-4053C202.5,-4053 1709,-4053 1709,-4053 1715,-4053 1721,-4059 1721,-4065 1721,-4065 1721,-4361 1721,-4361 1721,-4367 1715,-4373 1709,-4373 1709,-4373 202.5,-4373 202.5,-4373 196.5,-4373 190.5,-4367 190.5,-4361 190.5,-4361 190.5,-4065 190.5,-4065 190.5,-4059 196.5,-4053 202.5,-4053"/>
+<text text-anchor="middle" x="955.75" y="-4354.6" font-family="Helvetica,sans-Serif" font-size="18.00" fill="#334155">tui</text>
+</g>
+<g id="clust14" class="cluster">
+<title>cluster_workloads</title>
+<path fill="white" stroke="#cbd5e1" stroke-dasharray="5,2" d="M55,-4743C55,-4743 1265.5,-4743 1265.5,-4743 1271.5,-4743 1277.5,-4749 1277.5,-4755 1277.5,-4755 1277.5,-5133 1277.5,-5133 1277.5,-5139 1271.5,-5145 1265.5,-5145 1265.5,-5145 55,-5145 55,-5145 49,-5145 43,-5139 43,-5133 43,-5133 43,-4755 43,-4755 43,-4749 49,-4743 55,-4743"/>
+<text text-anchor="middle" x="660.25" y="-5126.6" font-family="Helvetica,sans-Serif" font-size="18.00" fill="#334155">workloads</text>
+</g>
+<!-- asb&#45;cli_src_agents_AgentAdapter -->
+<g id="node1" class="node">
+<title>asb&#45;cli_src_agents_AgentAdapter</title>
+<path fill="#f8fafc" stroke="#64748b" d="M218,-321C218,-321 664,-321 664,-321 670,-321 676,-327 676,-333 676,-333 676,-377 676,-377 676,-383 670,-389 664,-389 664,-389 218,-389 218,-389 212,-389 206,-383 206,-377 206,-377 206,-333 206,-333 206,-327 212,-321 218,-321"/>
+<text text-anchor="middle" x="263.5" y="-352.8" font-family="Helvetica,sans-Serif" font-size="9.00">agents_AgentAdapter</text>
+<polyline fill="none" stroke="#64748b" points="321,-321 321,-389 "/>
+<text text-anchor="middle" x="331" y="-352.8" font-family="Helvetica,sans-Serif" font-size="9.00"> </text>
+<polyline fill="none" stroke="#64748b" points="341,-321 341,-389 "/>
+<text text-anchor="start" x="349" y="-377.8" font-family="Helvetica,sans-Serif" font-size="9.00">+id() &amp;&#39;static str</text>
+<text text-anchor="start" x="349" y="-367.8" font-family="Helvetica,sans-Serif" font-size="9.00">+executable() &amp;&#39;static str</text>
+<text text-anchor="start" x="349" y="-357.8" font-family="Helvetica,sans-Serif" font-size="9.00">+recipe() Recipe</text>
+<text text-anchor="start" x="349" y="-347.8" font-family="Helvetica,sans-Serif" font-size="9.00">+command(context: &amp;CommandContext&lt;&#39;_&gt;) agents_CommandSpec</text>
+<text text-anchor="start" x="349" y="-337.8" font-family="Helvetica,sans-Serif" font-size="9.00">+prepare(context: &amp;mut PreparationContext&lt;&#39;_&gt;) Result&lt;(), Error&gt;</text>
+<text text-anchor="start" x="349" y="-327.8" font-family="Helvetica,sans-Serif" font-size="9.00">+collect(context: &amp;CollectionContext&lt;&#39;_&gt;) agents_AgentArtifacts</text>
+</g>
+<!-- asb&#45;cli_src_agents_AgentArtifacts -->
+<g id="node2" class="node">
+<title>asb&#45;cli_src_agents_AgentArtifacts</title>
+<path fill="#f8fafc" stroke="#64748b" d="M1008,-281C1008,-281 1388,-281 1388,-281 1394,-281 1400,-287 1400,-293 1400,-293 1400,-305 1400,-305 1400,-311 1394,-317 1388,-317 1388,-317 1008,-317 1008,-317 1002,-317 996,-311 996,-305 996,-305 996,-293 996,-293 996,-287 1002,-281 1008,-281"/>
+<text text-anchor="middle" x="1054" y="-296.8" font-family="Helvetica,sans-Serif" font-size="9.00">agents_AgentArtifacts</text>
+<polyline fill="none" stroke="#64748b" points="1112,-281 1112,-317 "/>
+<text text-anchor="start" x="1120" y="-301.8" font-family="Helvetica,sans-Serif" font-size="9.00">+token_usage: Option&lt;crate::measurements::TokenUsage&gt;</text>
+<text text-anchor="start" x="1120" y="-291.8" font-family="Helvetica,sans-Serif" font-size="9.00">+cleanup_paths: Vec&lt;PathBuf&gt;</text>
+</g>
+<!-- asb&#45;cli_src_agents_AgentAdapter&#45;&gt;asb&#45;cli_src_agents_AgentArtifacts -->
+<g id="edge13" class="edge">
+<title>asb&#45;cli_src_agents_AgentAdapter&#45;&gt;asb&#45;cli_src_agents_AgentArtifacts</title>
+<path fill="none" stroke="#94a3b8" stroke-dasharray="5,2" d="M676.23,-337.63C776.13,-330.22 891.75,-321.64 988.63,-314.46"/>
+<polygon fill="#94a3b8" stroke="#94a3b8" points="995.87,-313.92 989.12,-317.58 992.38,-314.18 988.89,-314.44 988.89,-314.44 988.89,-314.44 992.38,-314.18 988.65,-311.29 995.87,-313.92 995.87,-313.92"/>
+</g>
+<!-- asb&#45;cli_src_agents_CommandSpec -->
+<g id="node5" class="node">
+<title>asb&#45;cli_src_agents_CommandSpec</title>
+<path fill="#f8fafc" stroke="#64748b" d="M1088.5,-343C1088.5,-343 1307.5,-343 1307.5,-343 1313.5,-343 1319.5,-349 1319.5,-355 1319.5,-355 1319.5,-369 1319.5,-369 1319.5,-375 1313.5,-381 1307.5,-381 1307.5,-381 1088.5,-381 1088.5,-381 1082.5,-381 1076.5,-375 1076.5,-369 1076.5,-369 1076.5,-355 1076.5,-355 1076.5,-349 1082.5,-343 1088.5,-343"/>
+<text text-anchor="middle" x="1137" y="-359.8" font-family="Helvetica,sans-Serif" font-size="9.00">agents_CommandSpec</text>
+<polyline fill="none" stroke="#64748b" points="1197.5,-343 1197.5,-381 "/>
+<text text-anchor="start" x="1205.5" y="-369.8" font-family="Helvetica,sans-Serif" font-size="9.00">+program: String</text>
+<text text-anchor="start" x="1205.5" y="-359.8" font-family="Helvetica,sans-Serif" font-size="9.00">+args: Vec&lt;String&gt;</text>
+<text text-anchor="start" x="1205.5" y="-349.8" font-family="Helvetica,sans-Serif" font-size="9.00">+append_prompt: bool</text>
+</g>
+<!-- asb&#45;cli_src_agents_AgentAdapter&#45;&gt;asb&#45;cli_src_agents_CommandSpec -->
+<g id="edge14" class="edge">
+<title>asb&#45;cli_src_agents_AgentAdapter&#45;&gt;asb&#45;cli_src_agents_CommandSpec</title>
+<path fill="none" stroke="#94a3b8" stroke-dasharray="5,2" d="M676.23,-357.17C805.75,-358.37 961.68,-359.82 1068.96,-360.81"/>
+<polygon fill="#94a3b8" stroke="#94a3b8" points="1076.27,-360.88 1069.24,-363.97 1072.77,-360.85 1069.27,-360.82 1069.27,-360.82 1069.27,-360.82 1072.77,-360.85 1069.3,-357.67 1076.27,-360.88 1076.27,-360.88"/>
+</g>
+<!-- asb&#45;cli_src_agents_CollectionContext -->
+<g id="node3" class="node">
+<title>asb&#45;cli_src_agents_CollectionContext</title>
+<path fill="#f8fafc" stroke="#64748b" d="M329.5,-259C329.5,-259 552.5,-259 552.5,-259 558.5,-259 564.5,-265 564.5,-271 564.5,-271 564.5,-283 564.5,-283 564.5,-289 558.5,-295 552.5,-295 552.5,-295 329.5,-295 329.5,-295 323.5,-295 317.5,-289 317.5,-283 317.5,-283 317.5,-271 317.5,-271 317.5,-265 323.5,-259 329.5,-259"/>
+<text text-anchor="middle" x="383" y="-274.8" font-family="Helvetica,sans-Serif" font-size="9.00">agents_CollectionContext</text>
+<polyline fill="none" stroke="#64748b" points="448.5,-259 448.5,-295 "/>
+<text text-anchor="start" x="456.5" y="-274.8" font-family="Helvetica,sans-Serif" font-size="9.00">+workspace: &amp;&#39;a Path</text>
+</g>
+<!-- asb&#45;cli_src_agents_CommandContext -->
+<g id="node4" class="node">
+<title>asb&#45;cli_src_agents_CommandContext</title>
+<path fill="#f8fafc" stroke="#64748b" d="M307.5,-195C307.5,-195 574.5,-195 574.5,-195 580.5,-195 586.5,-201 586.5,-207 586.5,-207 586.5,-221 586.5,-221 586.5,-227 580.5,-233 574.5,-233 574.5,-233 307.5,-233 307.5,-233 301.5,-233 295.5,-227 295.5,-221 295.5,-221 295.5,-207 295.5,-207 295.5,-201 301.5,-195 307.5,-195"/>
+<text text-anchor="middle" x="362.5" y="-211.8" font-family="Helvetica,sans-Serif" font-size="9.00">agents_CommandContext</text>
+<polyline fill="none" stroke="#64748b" points="429.5,-195 429.5,-233 "/>
+<text text-anchor="start" x="437.5" y="-221.8" font-family="Helvetica,sans-Serif" font-size="9.00">+config: &amp;&#39;a BenchmarkConfig</text>
+<text text-anchor="start" x="437.5" y="-211.8" font-family="Helvetica,sans-Serif" font-size="9.00">+endpoint: Option&lt;&amp;&#39;a str&gt;</text>
+<text text-anchor="start" x="437.5" y="-201.8" font-family="Helvetica,sans-Serif" font-size="9.00">+prompt: &amp;&#39;a str</text>
+</g>
+<!-- asb&#45;cli_src_agents_PreparationContext -->
+<g id="node6" class="node">
+<title>asb&#45;cli_src_agents_PreparationContext</title>
+<path fill="#f8fafc" stroke="#64748b" d="M294.5,-111C294.5,-111 587.5,-111 587.5,-111 593.5,-111 599.5,-117 599.5,-123 599.5,-123 599.5,-157 599.5,-157 599.5,-163 593.5,-169 587.5,-169 587.5,-169 294.5,-169 294.5,-169 288.5,-169 282.5,-163 282.5,-157 282.5,-157 282.5,-123 282.5,-123 282.5,-117 288.5,-111 294.5,-111"/>
+<text text-anchor="middle" x="352" y="-137.8" font-family="Helvetica,sans-Serif" font-size="9.00">agents_PreparationContext</text>
+<polyline fill="none" stroke="#64748b" points="421.5,-111 421.5,-169 "/>
+<text text-anchor="start" x="429.5" y="-157.8" font-family="Helvetica,sans-Serif" font-size="9.00">+command: &amp;&#39;a mut Command</text>
+<text text-anchor="start" x="429.5" y="-147.8" font-family="Helvetica,sans-Serif" font-size="9.00">+provider: &amp;&#39;a str</text>
+<text text-anchor="start" x="429.5" y="-137.8" font-family="Helvetica,sans-Serif" font-size="9.00">+model: &amp;&#39;a str</text>
+<text text-anchor="start" x="429.5" y="-127.8" font-family="Helvetica,sans-Serif" font-size="9.00">+cli2key: Option&lt;(&amp;&#39;a str, &amp;&#39;a str)&gt;</text>
+<text text-anchor="start" x="429.5" y="-117.8" font-family="Helvetica,sans-Serif" font-size="9.00">+tools_dir: &amp;&#39;a Path</text>
+</g>
+<!-- asb&#45;cli_src_agents_StaticAdapter -->
+<g id="node7" class="node">
+<title>asb&#45;cli_src_agents_StaticAdapter</title>
+<path fill="#f8fafc" stroke="#64748b" d="M28,-17C28,-17 854,-17 854,-17 860,-17 866,-23 866,-29 866,-29 866,-73 866,-73 866,-79 860,-85 854,-85 854,-85 28,-85 28,-85 22,-85 16,-79 16,-73 16,-73 16,-29 16,-29 16,-23 22,-17 28,-17"/>
+<text text-anchor="middle" x="73" y="-48.8" font-family="Helvetica,sans-Serif" font-size="9.00">agents_StaticAdapter</text>
+<polyline fill="none" stroke="#64748b" points="130,-17 130,-85 "/>
+<text text-anchor="start" x="138" y="-73.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;id: &amp;&#39;static str</text>
+<text text-anchor="start" x="138" y="-63.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;executable: &amp;&#39;static str</text>
+<text text-anchor="start" x="138" y="-53.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;recipe: Recipe</text>
+<text text-anchor="start" x="138" y="-43.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;command: CommandBuilder</text>
+<text text-anchor="start" x="138" y="-33.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;prepare: PreparationHook</text>
+<text text-anchor="start" x="138" y="-23.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;collect: Option&lt;CollectionHook&gt;</text>
+<polyline fill="none" stroke="#64748b" points="296,-17 296,-85 "/>
+<text text-anchor="start" x="304" y="-53.8" font-family="Helvetica,sans-Serif" font-size="9.00">+new(id: &amp;&#39;static str, executable: &amp;&#39;static str, recipe: Recipe, command: CommandBuilder, prepare: PreparationHook) Self</text>
+<text text-anchor="start" x="304" y="-43.8" font-family="Helvetica,sans-Serif" font-size="9.00">+with_collection(self, collect: CollectionHook) Self</text>
+</g>
+<!-- asb&#45;cli_src_BenchmarkConfig -->
+<g id="node8" class="node">
+<title>asb&#45;cli_src_BenchmarkConfig</title>
+<path fill="#f8fafc" stroke="#64748b" d="M287.5,-443C287.5,-443 594.5,-443 594.5,-443 600.5,-443 606.5,-449 606.5,-455 606.5,-455 606.5,-539 606.5,-539 606.5,-545 600.5,-551 594.5,-551 594.5,-551 287.5,-551 287.5,-551 281.5,-551 275.5,-545 275.5,-539 275.5,-539 275.5,-455 275.5,-455 275.5,-449 281.5,-443 287.5,-443"/>
+<text text-anchor="middle" x="324.5" y="-494.8" font-family="Helvetica,sans-Serif" font-size="9.00">BenchmarkConfig</text>
+<polyline fill="none" stroke="#64748b" points="373.5,-443 373.5,-551 "/>
+<text text-anchor="start" x="381.5" y="-539.8" font-family="Helvetica,sans-Serif" font-size="9.00">+agent: String</text>
+<text text-anchor="start" x="381.5" y="-529.8" font-family="Helvetica,sans-Serif" font-size="9.00">+workload: String</text>
+<text text-anchor="start" x="381.5" y="-519.8" font-family="Helvetica,sans-Serif" font-size="9.00">+provider: String</text>
+<text text-anchor="start" x="381.5" y="-509.8" font-family="Helvetica,sans-Serif" font-size="9.00">+model: String</text>
+<text text-anchor="start" x="381.5" y="-499.8" font-family="Helvetica,sans-Serif" font-size="9.00">+concurrency: usize</text>
+<text text-anchor="start" x="381.5" y="-489.8" font-family="Helvetica,sans-Serif" font-size="9.00">+trial_set: Option&lt;String&gt;</text>
+<text text-anchor="start" x="381.5" y="-479.8" font-family="Helvetica,sans-Serif" font-size="9.00">+trial: Option&lt;String&gt;</text>
+<text text-anchor="start" x="381.5" y="-469.8" font-family="Helvetica,sans-Serif" font-size="9.00">+workspace: String</text>
+<text text-anchor="start" x="381.5" y="-459.8" font-family="Helvetica,sans-Serif" font-size="9.00">+log_file: String</text>
+<text text-anchor="start" x="381.5" y="-449.8" font-family="Helvetica,sans-Serif" font-size="9.00">+measurements: Option&lt;MeasurementConfig&gt;</text>
+</g>
+<!-- asb&#45;cli_src_MeasurementConfig -->
+<g id="node9" class="node">
+<title>asb&#45;cli_src_MeasurementConfig</title>
+<path fill="#f8fafc" stroke="#64748b" d="M1091,-478C1091,-478 1305,-478 1305,-478 1311,-478 1317,-484 1317,-490 1317,-490 1317,-504 1317,-504 1317,-510 1311,-516 1305,-516 1305,-516 1091,-516 1091,-516 1085,-516 1079,-510 1079,-504 1079,-504 1079,-490 1079,-490 1079,-484 1085,-478 1091,-478"/>
+<text text-anchor="middle" x="1132.5" y="-494.8" font-family="Helvetica,sans-Serif" font-size="9.00">MeasurementConfig</text>
+<polyline fill="none" stroke="#64748b" points="1186,-478 1186,-516 "/>
+<text text-anchor="start" x="1194" y="-504.8" font-family="Helvetica,sans-Serif" font-size="9.00">+enabled: bool</text>
+<text text-anchor="start" x="1194" y="-494.8" font-family="Helvetica,sans-Serif" font-size="9.00">+directory: String</text>
+<text text-anchor="start" x="1194" y="-484.8" font-family="Helvetica,sans-Serif" font-size="9.00">+collectors: Vec&lt;String&gt;</text>
+</g>
+<!-- asb&#45;cli_src_BenchmarkConfig&#45;&gt;asb&#45;cli_src_MeasurementConfig -->
+<g id="edge3" class="edge">
+<title>asb&#45;cli_src_BenchmarkConfig&#45;&gt;asb&#45;cli_src_MeasurementConfig</title>
+<path fill="none" stroke="#94a3b8" d="M606.75,-497C746.64,-497 944.4,-497 1071.68,-497"/>
+<polygon fill="#94a3b8" stroke="#94a3b8" points="1078.82,-497 1071.82,-500.15 1075.32,-497 1071.82,-497 1071.82,-497 1071.82,-497 1075.32,-497 1071.82,-493.85 1078.82,-497 1078.82,-497"/>
+</g>
+<!-- asb&#45;cli_src_Bridge -->
+<g id="node10" class="node">
+<title>asb&#45;cli_src_Bridge</title>
+<path fill="#f8fafc" stroke="#64748b" d="M227,-605C227,-605 655,-605 655,-605 661,-605 667,-611 667,-617 667,-617 667,-631 667,-631 667,-637 661,-643 655,-643 655,-643 227,-643 227,-643 221,-643 215,-637 215,-631 215,-631 215,-617 215,-617 215,-611 221,-605 227,-605"/>
+<text text-anchor="middle" x="238" y="-621.8" font-family="Helvetica,sans-Serif" font-size="9.00">Bridge</text>
+<polyline fill="none" stroke="#64748b" points="261,-605 261,-643 "/>
+<text text-anchor="start" x="269" y="-631.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;api_key: String</text>
+<text text-anchor="start" x="269" y="-621.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;base_url: String</text>
+<text text-anchor="start" x="269" y="-611.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;process: Option&lt;Child&gt;</text>
+<polyline fill="none" stroke="#64748b" points="389,-605 389,-643 "/>
+<text text-anchor="start" x="397" y="-631.8" font-family="Helvetica,sans-Serif" font-size="9.00">+connect(executable: Option&lt;&amp;str&gt;) Result&lt;Self, Error&gt;</text>
+<text text-anchor="start" x="397" y="-621.8" font-family="Helvetica,sans-Serif" font-size="9.00">+api_key() &amp;str</text>
+<text text-anchor="start" x="397" y="-611.8" font-family="Helvetica,sans-Serif" font-size="9.00">+base_url() &amp;str</text>
+</g>
+<!-- asb&#45;cli_src_BenchmarkData -->
+<g id="node11" class="node">
+<title>asb&#45;cli_src_BenchmarkData</title>
+<path fill="#f8fafc" stroke="#64748b" d="M312.5,-3594C312.5,-3594 569.5,-3594 569.5,-3594 575.5,-3594 581.5,-3600 581.5,-3606 581.5,-3606 581.5,-3690 581.5,-3690 581.5,-3696 575.5,-3702 569.5,-3702 569.5,-3702 312.5,-3702 312.5,-3702 306.5,-3702 300.5,-3696 300.5,-3690 300.5,-3690 300.5,-3606 300.5,-3606 300.5,-3600 306.5,-3594 312.5,-3594"/>
+<text text-anchor="middle" x="345" y="-3645.8" font-family="Helvetica,sans-Serif" font-size="9.00">BenchmarkData</text>
+<polyline fill="none" stroke="#64748b" points="389.5,-3594 389.5,-3702 "/>
+<text text-anchor="start" x="397.5" y="-3690.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;label: String</text>
+<text text-anchor="start" x="397.5" y="-3680.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;directory: PathBuf</text>
+<text text-anchor="start" x="397.5" y="-3670.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;agent: String</text>
+<text text-anchor="start" x="397.5" y="-3660.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;workload: String</text>
+<text text-anchor="start" x="397.5" y="-3650.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;provider: String</text>
+<text text-anchor="start" x="397.5" y="-3640.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;model: String</text>
+<text text-anchor="start" x="397.5" y="-3630.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;metrics: BTreeMap&lt;String, f64&gt;</text>
+<text text-anchor="start" x="397.5" y="-3620.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;series: BTreeMap&lt;String, TimeSeries&gt;</text>
+<text text-anchor="start" x="397.5" y="-3610.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;status: Option&lt;String&gt;</text>
+<text text-anchor="start" x="397.5" y="-3600.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;artifacts: Vec&lt;String&gt;</text>
+</g>
+<!-- asb&#45;cli_src_TimeSeries -->
+<g id="node32" class="node">
+<title>asb&#45;cli_src_TimeSeries</title>
+<path fill="#f8fafc" stroke="#64748b" d="M1083.5,-3504C1083.5,-3504 1312.5,-3504 1312.5,-3504 1318.5,-3504 1324.5,-3510 1324.5,-3516 1324.5,-3516 1324.5,-3528 1324.5,-3528 1324.5,-3534 1318.5,-3540 1312.5,-3540 1312.5,-3540 1083.5,-3540 1083.5,-3540 1077.5,-3540 1071.5,-3534 1071.5,-3528 1071.5,-3528 1071.5,-3516 1071.5,-3516 1071.5,-3510 1077.5,-3504 1083.5,-3504"/>
+<text text-anchor="middle" x="1104" y="-3519.8" font-family="Helvetica,sans-Serif" font-size="9.00">TimeSeries</text>
+<polyline fill="none" stroke="#64748b" points="1136.5,-3504 1136.5,-3540 "/>
+<text text-anchor="start" x="1144.5" y="-3524.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;values: Vec&lt;f64&gt;</text>
+<text text-anchor="start" x="1144.5" y="-3514.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;timestamps_ms: Option&lt;Vec&lt;f64&gt;&gt;</text>
+</g>
+<!-- asb&#45;cli_src_BenchmarkData&#45;&gt;asb&#45;cli_src_TimeSeries -->
+<g id="edge4" class="edge">
+<title>asb&#45;cli_src_BenchmarkData&#45;&gt;asb&#45;cli_src_TimeSeries</title>
+<path fill="none" stroke="#94a3b8" d="M581.71,-3626.58C705.26,-3607.64 866,-3583 866,-3583 866,-3583 995.15,-3559.2 1092.11,-3541.33"/>
+<polygon fill="#94a3b8" stroke="#94a3b8" points="1099.03,-3540.05 1092.72,-3544.42 1095.59,-3540.69 1092.15,-3541.32 1092.15,-3541.32 1092.15,-3541.32 1095.59,-3540.69 1091.58,-3538.23 1099.03,-3540.05 1099.03,-3540.05"/>
+</g>
+<!-- asb&#45;cli_src_BpftraceProfile -->
+<g id="node12" class="node">
+<title>asb&#45;cli_src_BpftraceProfile</title>
+<path fill="#f8fafc" stroke="#64748b" d="M1106,-2531C1106,-2531 1290,-2531 1290,-2531 1296,-2531 1302,-2537 1302,-2543 1302,-2543 1302,-2557 1302,-2557 1302,-2563 1296,-2569 1290,-2569 1290,-2569 1106,-2569 1106,-2569 1100,-2569 1094,-2563 1094,-2557 1094,-2557 1094,-2543 1094,-2543 1094,-2537 1100,-2531 1106,-2531"/>
+<text text-anchor="middle" x="1135.5" y="-2547.8" font-family="Helvetica,sans-Serif" font-size="9.00">BpftraceProfile</text>
+<polyline fill="none" stroke="#64748b" points="1177,-2531 1177,-2569 "/>
+<text text-anchor="start" x="1185" y="-2557.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;name: &amp;&#39;static str</text>
+<text text-anchor="start" x="1185" y="-2547.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;description: &amp;&#39;static str</text>
+<text text-anchor="start" x="1185" y="-2537.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;program: &amp;&#39;static str</text>
+</g>
+<!-- asb&#45;cli_src_Cli -->
+<g id="node13" class="node">
+<title>asb&#45;cli_src_Cli</title>
+<path fill="#f8fafc" stroke="#64748b" d="M348.5,-3504C348.5,-3504 533.5,-3504 533.5,-3504 539.5,-3504 545.5,-3510 545.5,-3516 545.5,-3516 545.5,-3528 545.5,-3528 545.5,-3534 539.5,-3540 533.5,-3540 533.5,-3540 348.5,-3540 348.5,-3540 342.5,-3540 336.5,-3534 336.5,-3528 336.5,-3528 336.5,-3516 336.5,-3516 336.5,-3510 342.5,-3504 348.5,-3504"/>
+<text text-anchor="middle" x="350" y="-3519.8" font-family="Helvetica,sans-Serif" font-size="9.00">Cli</text>
+<polyline fill="none" stroke="#64748b" points="363.5,-3504 363.5,-3540 "/>
+<text text-anchor="start" x="371.5" y="-3524.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;completion: Option&lt;String&gt;</text>
+<text text-anchor="start" x="371.5" y="-3514.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;command: Option&lt;CommandLine&gt;</text>
+</g>
+<!-- asb&#45;cli_src_CliError -->
+<g id="node14" class="node">
+<title>asb&#45;cli_src_CliError</title>
+<path fill="#f8fafc" stroke="#64748b" d="M321.5,-3442C321.5,-3442 560.5,-3442 560.5,-3442 566.5,-3442 572.5,-3448 572.5,-3454 572.5,-3454 572.5,-3466 572.5,-3466 572.5,-3472 566.5,-3478 560.5,-3478 560.5,-3478 321.5,-3478 321.5,-3478 315.5,-3478 309.5,-3472 309.5,-3466 309.5,-3466 309.5,-3454 309.5,-3454 309.5,-3448 315.5,-3442 321.5,-3442"/>
+<text text-anchor="middle" x="334.5" y="-3457.8" font-family="Helvetica,sans-Serif" font-size="9.00">CliError</text>
+<polyline fill="none" stroke="#64748b" points="359.5,-3442 359.5,-3478 "/>
+<text text-anchor="middle" x="369.5" y="-3457.8" font-family="Helvetica,sans-Serif" font-size="9.00"> </text>
+<polyline fill="none" stroke="#64748b" points="379.5,-3442 379.5,-3478 "/>
+<text text-anchor="start" x="387.5" y="-3457.8" font-family="Helvetica,sans-Serif" font-size="9.00">+fmt(formatter: Formatter&lt;&#39;_&gt;) Result</text>
+</g>
+<!-- asb&#45;cli_src_CollectorAdapter -->
+<g id="node15" class="node">
+<title>asb&#45;cli_src_CollectorAdapter</title>
+<path fill="#f8fafc" stroke="#64748b" d="M293,-3368C293,-3368 589,-3368 589,-3368 595,-3368 601,-3374 601,-3380 601,-3380 601,-3404 601,-3404 601,-3410 595,-3416 589,-3416 589,-3416 293,-3416 293,-3416 287,-3416 281,-3410 281,-3404 281,-3404 281,-3380 281,-3380 281,-3374 287,-3368 293,-3368"/>
+<text text-anchor="middle" x="327" y="-3389.8" font-family="Helvetica,sans-Serif" font-size="9.00">CollectorAdapter</text>
+<polyline fill="none" stroke="#64748b" points="373,-3368 373,-3416 "/>
+<text text-anchor="middle" x="383" y="-3389.8" font-family="Helvetica,sans-Serif" font-size="9.00"> </text>
+<polyline fill="none" stroke="#64748b" points="393,-3368 393,-3416 "/>
+<text text-anchor="start" x="401" y="-3404.8" font-family="Helvetica,sans-Serif" font-size="9.00">+id() &amp;&#39;static str</text>
+<text text-anchor="start" x="401" y="-3394.8" font-family="Helvetica,sans-Serif" font-size="9.00">+environment_flag() Option&lt;&amp;&#39;static str&gt;</text>
+<text text-anchor="start" x="401" y="-3384.8" font-family="Helvetica,sans-Serif" font-size="9.00">+tool_id() Option&lt;&amp;&#39;static str&gt;</text>
+<text text-anchor="start" x="401" y="-3374.8" font-family="Helvetica,sans-Serif" font-size="9.00">+requires_pid() bool</text>
+</g>
+<!-- asb&#45;cli_src_CompareArgs -->
+<g id="node16" class="node">
+<title>asb&#45;cli_src_CompareArgs</title>
+<path fill="#f8fafc" stroke="#64748b" d="M377.5,-3306C377.5,-3306 504.5,-3306 504.5,-3306 510.5,-3306 516.5,-3312 516.5,-3318 516.5,-3318 516.5,-3330 516.5,-3330 516.5,-3336 510.5,-3342 504.5,-3342 504.5,-3342 377.5,-3342 377.5,-3342 371.5,-3342 365.5,-3336 365.5,-3330 365.5,-3330 365.5,-3318 365.5,-3318 365.5,-3312 371.5,-3306 377.5,-3306"/>
+<text text-anchor="middle" x="404" y="-3321.8" font-family="Helvetica,sans-Serif" font-size="9.00">CompareArgs</text>
+<polyline fill="none" stroke="#64748b" points="442.5,-3306 442.5,-3342 "/>
+<text text-anchor="start" x="450.5" y="-3321.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;path: String</text>
+</g>
+<!-- asb&#45;cli_src_Default -->
+<g id="node17" class="node">
+<title>asb&#45;cli_src_Default</title>
+<path fill="#f8fafc" stroke="#64748b" d="M377,-3244C377,-3244 505,-3244 505,-3244 511,-3244 517,-3250 517,-3256 517,-3256 517,-3268 517,-3268 517,-3274 511,-3280 505,-3280 505,-3280 377,-3280 377,-3280 371,-3280 365,-3274 365,-3268 365,-3268 365,-3256 365,-3256 365,-3250 371,-3244 377,-3244"/>
+<text text-anchor="middle" x="389.5" y="-3259.8" font-family="Helvetica,sans-Serif" font-size="9.00">Default</text>
+<polyline fill="none" stroke="#64748b" points="414,-3244 414,-3280 "/>
+<text text-anchor="middle" x="424" y="-3259.8" font-family="Helvetica,sans-Serif" font-size="9.00"> </text>
+<polyline fill="none" stroke="#64748b" points="434,-3244 434,-3280 "/>
+<text text-anchor="start" x="442" y="-3259.8" font-family="Helvetica,sans-Serif" font-size="9.00">+default() Self</text>
+</g>
+<!-- asb&#45;cli_src_Drop -->
+<g id="node18" class="node">
+<title>asb&#45;cli_src_Drop</title>
+<path fill="#f8fafc" stroke="#64748b" d="M387,-3182C387,-3182 495,-3182 495,-3182 501,-3182 507,-3188 507,-3194 507,-3194 507,-3206 507,-3206 507,-3212 501,-3218 495,-3218 495,-3218 387,-3218 387,-3218 381,-3218 375,-3212 375,-3206 375,-3206 375,-3194 375,-3194 375,-3188 381,-3182 387,-3182"/>
+<text text-anchor="middle" x="394" y="-3197.8" font-family="Helvetica,sans-Serif" font-size="9.00">Drop</text>
+<polyline fill="none" stroke="#64748b" points="413,-3182 413,-3218 "/>
+<text text-anchor="middle" x="423" y="-3197.8" font-family="Helvetica,sans-Serif" font-size="9.00"> </text>
+<polyline fill="none" stroke="#64748b" points="433,-3182 433,-3218 "/>
+<text text-anchor="start" x="441" y="-3197.8" font-family="Helvetica,sans-Serif" font-size="9.00">+drop() void</text>
+</g>
+<!-- asb&#45;cli_src_From -->
+<g id="node19" class="node">
+<title>asb&#45;cli_src_From</title>
+<path fill="#f8fafc" stroke="#64748b" d="M328,-3098C328,-3098 554,-3098 554,-3098 560,-3098 566,-3104 566,-3110 566,-3110 566,-3144 566,-3144 566,-3150 560,-3156 554,-3156 554,-3156 328,-3156 328,-3156 322,-3156 316,-3150 316,-3144 316,-3144 316,-3110 316,-3110 316,-3104 322,-3098 328,-3098"/>
+<text text-anchor="middle" x="335.5" y="-3124.8" font-family="Helvetica,sans-Serif" font-size="9.00">From</text>
+<polyline fill="none" stroke="#64748b" points="355,-3098 355,-3156 "/>
+<text text-anchor="middle" x="365" y="-3124.8" font-family="Helvetica,sans-Serif" font-size="9.00"> </text>
+<polyline fill="none" stroke="#64748b" points="375,-3098 375,-3156 "/>
+<text text-anchor="start" x="383" y="-3144.8" font-family="Helvetica,sans-Serif" font-size="9.00">+from(value: SetupArgs) Self</text>
+<text text-anchor="start" x="383" y="-3134.8" font-family="Helvetica,sans-Serif" font-size="9.00">+from(value: ModelArgs) Self</text>
+<text text-anchor="start" x="383" y="-3124.8" font-family="Helvetica,sans-Serif" font-size="9.00">+from(value: ToolInstallArgs) Self</text>
+<text text-anchor="start" x="383" y="-3114.8" font-family="Helvetica,sans-Serif" font-size="9.00">+from(value: WorkloadInstallArgs) Self</text>
+<text text-anchor="start" x="383" y="-3104.8" font-family="Helvetica,sans-Serif" font-size="9.00">+from(value: WorkloadListArgs) Self</text>
+</g>
+<!-- asb&#45;cli_src_InitArgs -->
+<g id="node20" class="node">
+<title>asb&#45;cli_src_InitArgs</title>
+<path fill="#f8fafc" stroke="#64748b" d="M365,-3036C365,-3036 517,-3036 517,-3036 523,-3036 529,-3042 529,-3048 529,-3048 529,-3060 529,-3060 529,-3066 523,-3072 517,-3072 517,-3072 365,-3072 365,-3072 359,-3072 353,-3066 353,-3060 353,-3060 353,-3048 353,-3048 353,-3042 359,-3036 365,-3036"/>
+<text text-anchor="middle" x="379" y="-3051.8" font-family="Helvetica,sans-Serif" font-size="9.00">InitArgs</text>
+<polyline fill="none" stroke="#64748b" points="405,-3036 405,-3072 "/>
+<text text-anchor="start" x="413" y="-3056.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;root: Option&lt;PathBuf&gt;</text>
+<text text-anchor="start" x="413" y="-3046.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;reset: bool</text>
+</g>
+<!-- asb&#45;cli_src_ModelArgs -->
+<g id="node21" class="node">
+<title>asb&#45;cli_src_ModelArgs</title>
+<path fill="#f8fafc" stroke="#64748b" d="M353.5,-2972C353.5,-2972 528.5,-2972 528.5,-2972 534.5,-2972 540.5,-2978 540.5,-2984 540.5,-2984 540.5,-2998 540.5,-2998 540.5,-3004 534.5,-3010 528.5,-3010 528.5,-3010 353.5,-3010 353.5,-3010 347.5,-3010 341.5,-3004 341.5,-2998 341.5,-2998 341.5,-2984 341.5,-2984 341.5,-2978 347.5,-2972 353.5,-2972"/>
+<text text-anchor="middle" x="373" y="-2988.8" font-family="Helvetica,sans-Serif" font-size="9.00">ModelArgs</text>
+<polyline fill="none" stroke="#64748b" points="404.5,-2972 404.5,-3010 "/>
+<text text-anchor="start" x="412.5" y="-2998.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;provider: Option&lt;String&gt;</text>
+<text text-anchor="start" x="412.5" y="-2988.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;json: bool</text>
+<text text-anchor="start" x="412.5" y="-2978.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;free: bool</text>
+</g>
+<!-- asb&#45;cli_src_ModelListOptions -->
+<g id="node22" class="node">
+<title>asb&#45;cli_src_ModelListOptions</title>
+<path fill="#f8fafc" stroke="#64748b" d="M336.5,-2908C336.5,-2908 545.5,-2908 545.5,-2908 551.5,-2908 557.5,-2914 557.5,-2920 557.5,-2920 557.5,-2934 557.5,-2934 557.5,-2940 551.5,-2946 545.5,-2946 545.5,-2946 336.5,-2946 336.5,-2946 330.5,-2946 324.5,-2940 324.5,-2934 324.5,-2934 324.5,-2920 324.5,-2920 324.5,-2914 330.5,-2908 336.5,-2908"/>
+<text text-anchor="middle" x="371" y="-2924.8" font-family="Helvetica,sans-Serif" font-size="9.00">ModelListOptions</text>
+<polyline fill="none" stroke="#64748b" points="417.5,-2908 417.5,-2946 "/>
+<text text-anchor="start" x="425.5" y="-2934.8" font-family="Helvetica,sans-Serif" font-size="9.00">+provider: Option&lt;String&gt;</text>
+<text text-anchor="start" x="425.5" y="-2924.8" font-family="Helvetica,sans-Serif" font-size="9.00">+json: bool</text>
+<text text-anchor="start" x="425.5" y="-2914.8" font-family="Helvetica,sans-Serif" font-size="9.00">+free_only: bool</text>
+</g>
+<!-- asb&#45;cli_src_ProviderArgs -->
+<g id="node23" class="node">
+<title>asb&#45;cli_src_ProviderArgs</title>
+<path fill="#f8fafc" stroke="#64748b" d="M338.5,-2846C338.5,-2846 543.5,-2846 543.5,-2846 549.5,-2846 555.5,-2852 555.5,-2858 555.5,-2858 555.5,-2870 555.5,-2870 555.5,-2876 549.5,-2882 543.5,-2882 543.5,-2882 338.5,-2882 338.5,-2882 332.5,-2882 326.5,-2876 326.5,-2870 326.5,-2870 326.5,-2858 326.5,-2858 326.5,-2852 332.5,-2846 338.5,-2846"/>
+<text text-anchor="middle" x="363.5" y="-2861.8" font-family="Helvetica,sans-Serif" font-size="9.00">ProviderArgs</text>
+<polyline fill="none" stroke="#64748b" points="400.5,-2846 400.5,-2882 "/>
+<text text-anchor="start" x="408.5" y="-2861.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;command: ProviderCommand</text>
+</g>
+<!-- asb&#45;cli_src_ProxyExecutable -->
+<g id="node24" class="node">
+<title>asb&#45;cli_src_ProxyExecutable</title>
+<path fill="#f8fafc" stroke="#64748b" d="M333.5,-2784C333.5,-2784 548.5,-2784 548.5,-2784 554.5,-2784 560.5,-2790 560.5,-2796 560.5,-2796 560.5,-2808 560.5,-2808 560.5,-2814 554.5,-2820 548.5,-2820 548.5,-2820 333.5,-2820 333.5,-2820 327.5,-2820 321.5,-2814 321.5,-2808 321.5,-2808 321.5,-2796 321.5,-2796 321.5,-2790 327.5,-2784 333.5,-2784"/>
+<text text-anchor="middle" x="367.5" y="-2799.8" font-family="Helvetica,sans-Serif" font-size="9.00">ProxyExecutable</text>
+<polyline fill="none" stroke="#64748b" points="413.5,-2784 413.5,-2820 "/>
+<text text-anchor="middle" x="423.5" y="-2799.8" font-family="Helvetica,sans-Serif" font-size="9.00"> </text>
+<polyline fill="none" stroke="#64748b" points="433.5,-2784 433.5,-2820 "/>
+<text text-anchor="start" x="441.5" y="-2799.8" font-family="Helvetica,sans-Serif" font-size="9.00">+command() Command</text>
+</g>
+<!-- asb&#45;cli_src_RunArgs -->
+<g id="node25" class="node">
+<title>asb&#45;cli_src_RunArgs</title>
+<path fill="#f8fafc" stroke="#64748b" d="M342.5,-2670C342.5,-2670 539.5,-2670 539.5,-2670 545.5,-2670 551.5,-2676 551.5,-2682 551.5,-2682 551.5,-2746 551.5,-2746 551.5,-2752 545.5,-2758 539.5,-2758 539.5,-2758 342.5,-2758 342.5,-2758 336.5,-2758 330.5,-2752 330.5,-2746 330.5,-2746 330.5,-2682 330.5,-2682 330.5,-2676 336.5,-2670 342.5,-2670"/>
+<text text-anchor="middle" x="358" y="-2711.8" font-family="Helvetica,sans-Serif" font-size="9.00">RunArgs</text>
+<polyline fill="none" stroke="#64748b" points="385.5,-2670 385.5,-2758 "/>
+<text text-anchor="start" x="393.5" y="-2746.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;path: String</text>
+<text text-anchor="start" x="393.5" y="-2736.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;record: bool</text>
+<text text-anchor="start" x="393.5" y="-2726.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;replay: bool</text>
+<text text-anchor="start" x="393.5" y="-2716.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;respect_record_timings: bool</text>
+<text text-anchor="start" x="393.5" y="-2706.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;cassette: Option&lt;String&gt;</text>
+<text text-anchor="start" x="393.5" y="-2696.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;json: bool</text>
+<text text-anchor="start" x="393.5" y="-2686.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;show_output: bool</text>
+<text text-anchor="start" x="393.5" y="-2676.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;measurements: Option&lt;String&gt;</text>
+</g>
+<!-- asb&#45;cli_src_Session -->
+<g id="node26" class="node">
+<title>asb&#45;cli_src_Session</title>
+<path fill="#f8fafc" stroke="#64748b" d="M55,-2456C55,-2456 827,-2456 827,-2456 833,-2456 839,-2462 839,-2468 839,-2468 839,-2632 839,-2632 839,-2638 833,-2644 827,-2644 827,-2644 55,-2644 55,-2644 49,-2644 43,-2638 43,-2632 43,-2632 43,-2468 43,-2468 43,-2462 49,-2456 55,-2456"/>
+<text text-anchor="middle" x="68" y="-2547.8" font-family="Helvetica,sans-Serif" font-size="9.00">Session</text>
+<polyline fill="none" stroke="#64748b" points="93,-2456 93,-2644 "/>
+<text text-anchor="start" x="101" y="-2622.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;dir: PathBuf</text>
+<text text-anchor="start" x="101" y="-2612.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;tool_dir: Option&lt;PathBuf&gt;</text>
+<text text-anchor="start" x="101" y="-2602.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;started_unix_ms: u128</text>
+<text text-anchor="start" x="101" y="-2592.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;collectors: Vec&lt;Collector&gt;</text>
+<text text-anchor="start" x="101" y="-2582.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;perf_data: Option&lt;PathBuf&gt;</text>
+<text text-anchor="start" x="101" y="-2572.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;perf_enabled: bool</text>
+<text text-anchor="start" x="101" y="-2562.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;perfetto_trace: Option&lt;PathBuf&gt;</text>
+<text text-anchor="start" x="101" y="-2552.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;perfetto_enabled: bool</text>
+<text text-anchor="start" x="101" y="-2542.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;trace_marker: Option&lt;PathBuf&gt;</text>
+<text text-anchor="start" x="101" y="-2532.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;tracepoint_count: u64</text>
+<text text-anchor="start" x="101" y="-2522.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;perfetto_metrics: BTreeMap&lt;String, f64&gt;</text>
+<text text-anchor="start" x="101" y="-2512.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;bpftrace_profiles: Vec&lt;BpftraceProfile&gt;</text>
+<text text-anchor="start" x="101" y="-2502.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;mpstat_enabled: bool</text>
+<text text-anchor="start" x="101" y="-2492.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;iostat_enabled: bool</text>
+<text text-anchor="start" x="101" y="-2482.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;bpftrace_enabled: bool</text>
+<text text-anchor="start" x="101" y="-2472.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;sudo_collectors: BTreeSet&lt;String&gt;</text>
+<polyline fill="none" stroke="#64748b" points="300,-2456 300,-2644 "/>
+<text text-anchor="start" x="308" y="-2632.8" font-family="Helvetica,sans-Serif" font-size="9.00">+started_unix_ms() u128</text>
+<text text-anchor="start" x="308" y="-2622.8" font-family="Helvetica,sans-Serif" font-size="9.00">+start_with_collectors(dir: &amp;Path, selected: &amp;[String], tool_dir: Option&lt;&amp;Path&gt;) Result&lt;Self, String&gt;</text>
+<text text-anchor="start" x="308" y="-2612.8" font-family="Helvetica,sans-Serif" font-size="9.00">+trace_instant(name: &amp;str) void</text>
+<text text-anchor="start" x="308" y="-2602.8" font-family="Helvetica,sans-Serif" font-size="9.00">+trace_begin(name: &amp;str) void</text>
+<text text-anchor="start" x="308" y="-2592.8" font-family="Helvetica,sans-Serif" font-size="9.00">+trace_end() void</text>
+<text text-anchor="start" x="308" y="-2582.8" font-family="Helvetica,sans-Serif" font-size="9.00">+attach_pid(pid: u32) Result&lt;(), String&gt;</text>
+<text text-anchor="start" x="308" y="-2572.8" font-family="Helvetica,sans-Serif" font-size="9.00">+finish(self, measurement: RunMeasurement&lt;&#39;a&gt;) Result&lt;(), String&gt;</text>
+<text text-anchor="start" x="308" y="-2562.8" font-family="Helvetica,sans-Serif" font-size="9.00">+start_perfetto(pid: u32) Result&lt;(), String&gt;</text>
+<text text-anchor="start" x="308" y="-2552.8" font-family="Helvetica,sans-Serif" font-size="9.00">+write_trace_marker(event: &amp;str) void</text>
+<text text-anchor="start" x="308" y="-2542.8" font-family="Helvetica,sans-Serif" font-size="9.00">+perfetto_trace_metrics() BTreeMap&lt;String, f64&gt;</text>
+<text text-anchor="start" x="308" y="-2532.8" font-family="Helvetica,sans-Serif" font-size="9.00">+perfetto_trace_series() (BTreeMap&lt;String, Vec&lt;f64&gt;&gt;, BTreeMap&lt;String, Vec&lt;f64&gt;&gt;</text>
+<text text-anchor="start" x="308" y="-2522.8" font-family="Helvetica,sans-Serif" font-size="9.00">+start_snapshot(name: &amp;str, variable: &amp;str, args: &amp;[&amp;str], enabled: bool, command_name: &amp;str) Result&lt;(), String&gt;</text>
+<text text-anchor="start" x="308" y="-2512.8" font-family="Helvetica,sans-Serif" font-size="9.00">+start_process_snapshots(pid: u32) Result&lt;(), String&gt;</text>
+<text text-anchor="start" x="308" y="-2502.8" font-family="Helvetica,sans-Serif" font-size="9.00">+start_bpftrace(pid: u32) Result&lt;(), String&gt;</text>
+<text text-anchor="start" x="308" y="-2492.8" font-family="Helvetica,sans-Serif" font-size="9.00">+start_bpftrace_profiles(pid: u32) Result&lt;(), String&gt;</text>
+<text text-anchor="start" x="308" y="-2482.8" font-family="Helvetica,sans-Serif" font-size="9.00">+write_flamegraph() Result&lt;(), String&gt;</text>
+<text text-anchor="start" x="308" y="-2472.8" font-family="Helvetica,sans-Serif" font-size="9.00">+command(name: &amp;str) Command</text>
+<text text-anchor="start" x="308" y="-2462.8" font-family="Helvetica,sans-Serif" font-size="9.00">+executable(name: &amp;str) PathBuf</text>
+</g>
+<!-- asb&#45;cli_src_Session&#45;&gt;asb&#45;cli_src_BpftraceProfile -->
+<g id="edge8" class="edge">
+<title>asb&#45;cli_src_Session&#45;&gt;asb&#45;cli_src_BpftraceProfile</title>
+<path fill="none" stroke="#94a3b8" d="M839.12,-2550C930.18,-2550 1019.7,-2550 1086.44,-2550"/>
+<polygon fill="#94a3b8" stroke="#94a3b8" points="1093.64,-2550 1086.64,-2553.15 1090.14,-2550 1086.64,-2550 1086.64,-2550 1086.64,-2550 1090.14,-2550 1086.64,-2546.85 1093.64,-2550 1093.64,-2550"/>
+</g>
+<!-- asb&#45;cli_src_Collector -->
+<g id="node45" class="node">
+<title>asb&#45;cli_src_Collector</title>
+<path fill="#f8fafc" stroke="#64748b" d="M1124,-1300C1124,-1300 1272,-1300 1272,-1300 1278,-1300 1284,-1306 1284,-1312 1284,-1312 1284,-1346 1284,-1346 1284,-1352 1278,-1358 1272,-1358 1272,-1358 1124,-1358 1124,-1358 1118,-1358 1112,-1352 1112,-1346 1112,-1346 1112,-1312 1112,-1312 1112,-1306 1118,-1300 1124,-1300"/>
+<text text-anchor="middle" x="1140" y="-1326.8" font-family="Helvetica,sans-Serif" font-size="9.00">Collector</text>
+<polyline fill="none" stroke="#64748b" points="1168,-1300 1168,-1358 "/>
+<text text-anchor="start" x="1176" y="-1346.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;name: String</text>
+<text text-anchor="start" x="1176" y="-1336.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;child: Child</text>
+<text text-anchor="start" x="1176" y="-1326.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;started: Instant</text>
+<text text-anchor="start" x="1176" y="-1316.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;stdout_path: PathBuf</text>
+<text text-anchor="start" x="1176" y="-1306.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;stderr_path: PathBuf</text>
+</g>
+<!-- asb&#45;cli_src_Session&#45;&gt;asb&#45;cli_src_Collector -->
+<g id="edge9" class="edge">
+<title>asb&#45;cli_src_Session&#45;&gt;asb&#45;cli_src_Collector</title>
+<path fill="none" stroke="#94a3b8" d="M814.86,-2455.91C846.07,-2448.03 866,-2443 866,-2443 866,-2443 949,-1397 949,-1397 949,-1397 1034.6,-1373.53 1105.22,-1354.17"/>
+<polygon fill="#94a3b8" stroke="#94a3b8" points="1112,-1352.31 1106.08,-1357.2 1108.62,-1353.23 1105.25,-1354.16 1105.25,-1354.16 1105.25,-1354.16 1108.62,-1353.23 1104.42,-1351.12 1112,-1352.31 1112,-1352.31"/>
+</g>
+<!-- asb&#45;cli_src_SetupArgs -->
+<g id="node27" class="node">
+<title>asb&#45;cli_src_SetupArgs</title>
+<path fill="#f8fafc" stroke="#64748b" d="M346.5,-2342C346.5,-2342 535.5,-2342 535.5,-2342 541.5,-2342 547.5,-2348 547.5,-2354 547.5,-2354 547.5,-2418 547.5,-2418 547.5,-2424 541.5,-2430 535.5,-2430 535.5,-2430 346.5,-2430 346.5,-2430 340.5,-2430 334.5,-2424 334.5,-2418 334.5,-2418 334.5,-2354 334.5,-2354 334.5,-2348 340.5,-2342 346.5,-2342"/>
+<text text-anchor="middle" x="366.5" y="-2383.8" font-family="Helvetica,sans-Serif" font-size="9.00">SetupArgs</text>
+<polyline fill="none" stroke="#64748b" points="398.5,-2342 398.5,-2430 "/>
+<text text-anchor="start" x="406.5" y="-2418.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;mode: Option&lt;SetupMode&gt;</text>
+<text text-anchor="start" x="406.5" y="-2408.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;agent: Option&lt;String&gt;</text>
+<text text-anchor="start" x="406.5" y="-2398.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;workload: Option&lt;String&gt;</text>
+<text text-anchor="start" x="406.5" y="-2388.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;provider: Option&lt;String&gt;</text>
+<text text-anchor="start" x="406.5" y="-2378.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;model: Option&lt;String&gt;</text>
+<text text-anchor="start" x="406.5" y="-2368.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;concurrency: Option&lt;usize&gt;</text>
+<text text-anchor="start" x="406.5" y="-2358.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;workspace: Option&lt;String&gt;</text>
+<text text-anchor="start" x="406.5" y="-2348.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;output: Option&lt;String&gt;</text>
+</g>
+<!-- asb&#45;cli_src_SetupOptions -->
+<g id="node28" class="node">
+<title>asb&#45;cli_src_SetupOptions</title>
+<path fill="#f8fafc" stroke="#64748b" d="M337,-2238C337,-2238 545,-2238 545,-2238 551,-2238 557,-2244 557,-2250 557,-2250 557,-2304 557,-2304 557,-2310 551,-2316 545,-2316 545,-2316 337,-2316 337,-2316 331,-2316 325,-2310 325,-2304 325,-2304 325,-2250 325,-2250 325,-2244 331,-2238 337,-2238"/>
+<text text-anchor="middle" x="364" y="-2274.8" font-family="Helvetica,sans-Serif" font-size="9.00">SetupOptions</text>
+<polyline fill="none" stroke="#64748b" points="403,-2238 403,-2316 "/>
+<text text-anchor="start" x="411" y="-2304.8" font-family="Helvetica,sans-Serif" font-size="9.00">+agent: Option&lt;String&gt;</text>
+<text text-anchor="start" x="411" y="-2294.8" font-family="Helvetica,sans-Serif" font-size="9.00">+workload: Option&lt;String&gt;</text>
+<text text-anchor="start" x="411" y="-2284.8" font-family="Helvetica,sans-Serif" font-size="9.00">+provider: Option&lt;String&gt;</text>
+<text text-anchor="start" x="411" y="-2274.8" font-family="Helvetica,sans-Serif" font-size="9.00">+model: Option&lt;String&gt;</text>
+<text text-anchor="start" x="411" y="-2264.8" font-family="Helvetica,sans-Serif" font-size="9.00">+concurrency: Option&lt;usize&gt;</text>
+<text text-anchor="start" x="411" y="-2254.8" font-family="Helvetica,sans-Serif" font-size="9.00">+workspace: Option&lt;String&gt;</text>
+<text text-anchor="start" x="411" y="-2244.8" font-family="Helvetica,sans-Serif" font-size="9.00">+output: Option&lt;String&gt;</text>
+</g>
+<!-- asb&#45;cli_src_StaticCollector -->
+<g id="node29" class="node">
+<title>asb&#45;cli_src_StaticCollector</title>
+<path fill="#f8fafc" stroke="#64748b" d="M43,-2164C43,-2164 839,-2164 839,-2164 845,-2164 851,-2170 851,-2176 851,-2176 851,-2200 851,-2200 851,-2206 845,-2212 839,-2212 839,-2212 43,-2212 43,-2212 37,-2212 31,-2206 31,-2200 31,-2200 31,-2176 31,-2176 31,-2170 37,-2164 43,-2164"/>
+<text text-anchor="middle" x="72" y="-2185.8" font-family="Helvetica,sans-Serif" font-size="9.00">StaticCollector</text>
+<polyline fill="none" stroke="#64748b" points="113,-2164 113,-2212 "/>
+<text text-anchor="start" x="121" y="-2200.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;id: &amp;&#39;static str</text>
+<text text-anchor="start" x="121" y="-2190.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;environment_flag: Option&lt;&amp;&#39;static str&gt;</text>
+<text text-anchor="start" x="121" y="-2180.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;tool_id: Option&lt;&amp;&#39;static str&gt;</text>
+<text text-anchor="start" x="121" y="-2170.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;requires_pid: bool</text>
+<polyline fill="none" stroke="#64748b" points="312,-2164 312,-2212 "/>
+<text text-anchor="start" x="320" y="-2185.8" font-family="Helvetica,sans-Serif" font-size="9.00">+new(id: &amp;&#39;static str, environment_flag: Option&lt;&amp;&#39;static str&gt;, tool_id: Option&lt;&amp;&#39;static str&gt;, requires_pid: bool) Self</text>
+</g>
+<!-- asb&#45;cli_src_SweepArgs -->
+<g id="node30" class="node">
+<title>asb&#45;cli_src_SweepArgs</title>
+<path fill="#f8fafc" stroke="#64748b" d="M340.5,-2060C340.5,-2060 541.5,-2060 541.5,-2060 547.5,-2060 553.5,-2066 553.5,-2072 553.5,-2072 553.5,-2126 553.5,-2126 553.5,-2132 547.5,-2138 541.5,-2138 541.5,-2138 340.5,-2138 340.5,-2138 334.5,-2138 328.5,-2132 328.5,-2126 328.5,-2126 328.5,-2072 328.5,-2072 328.5,-2066 334.5,-2060 340.5,-2060"/>
+<text text-anchor="middle" x="362" y="-2096.8" font-family="Helvetica,sans-Serif" font-size="9.00">SweepArgs</text>
+<polyline fill="none" stroke="#64748b" points="395.5,-2060 395.5,-2138 "/>
+<text text-anchor="start" x="403.5" y="-2126.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;path: String</text>
+<text text-anchor="start" x="403.5" y="-2116.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;record: bool</text>
+<text text-anchor="start" x="403.5" y="-2106.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;replay: bool</text>
+<text text-anchor="start" x="403.5" y="-2096.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;respect_record_timings: bool</text>
+<text text-anchor="start" x="403.5" y="-2086.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;json: bool</text>
+<text text-anchor="start" x="403.5" y="-2076.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;show_output: bool</text>
+<text text-anchor="start" x="403.5" y="-2066.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;cassette_root: Option&lt;String&gt;</text>
+</g>
+<!-- asb&#45;cli_src_SweepFile -->
+<g id="node31" class="node">
+<title>asb&#45;cli_src_SweepFile</title>
+<path fill="#f8fafc" stroke="#64748b" d="M364,-1998C364,-1998 518,-1998 518,-1998 524,-1998 530,-2004 530,-2010 530,-2010 530,-2022 530,-2022 530,-2028 524,-2034 518,-2034 518,-2034 364,-2034 364,-2034 358,-2034 352,-2028 352,-2022 352,-2022 352,-2010 352,-2010 352,-2004 358,-1998 364,-1998"/>
+<text text-anchor="middle" x="382.5" y="-2013.8" font-family="Helvetica,sans-Serif" font-size="9.00">SweepFile</text>
+<polyline fill="none" stroke="#64748b" points="413,-1998 413,-2034 "/>
+<text text-anchor="start" x="421" y="-2013.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;configs: Vec&lt;String&gt;</text>
+</g>
+<!-- asb&#45;cli_src_ToolArgs -->
+<g id="node33" class="node">
+<title>asb&#45;cli_src_ToolArgs</title>
+<path fill="#f8fafc" stroke="#64748b" d="M359.5,-1936C359.5,-1936 522.5,-1936 522.5,-1936 528.5,-1936 534.5,-1942 534.5,-1948 534.5,-1948 534.5,-1960 534.5,-1960 534.5,-1966 528.5,-1972 522.5,-1972 522.5,-1972 359.5,-1972 359.5,-1972 353.5,-1972 347.5,-1966 347.5,-1960 347.5,-1960 347.5,-1948 347.5,-1948 347.5,-1942 353.5,-1936 359.5,-1936"/>
+<text text-anchor="middle" x="374" y="-1951.8" font-family="Helvetica,sans-Serif" font-size="9.00">ToolArgs</text>
+<polyline fill="none" stroke="#64748b" points="400.5,-1936 400.5,-1972 "/>
+<text text-anchor="start" x="408.5" y="-1951.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;command: ToolCommand</text>
+</g>
+<!-- asb&#45;cli_src_ToolInstallArgs -->
+<g id="node34" class="node">
+<title>asb&#45;cli_src_ToolInstallArgs</title>
+<path fill="#f8fafc" stroke="#64748b" d="M349,-1862C349,-1862 533,-1862 533,-1862 539,-1862 545,-1868 545,-1874 545,-1874 545,-1898 545,-1898 545,-1904 539,-1910 533,-1910 533,-1910 349,-1910 349,-1910 343,-1910 337,-1904 337,-1898 337,-1898 337,-1874 337,-1874 337,-1868 343,-1862 349,-1862"/>
+<text text-anchor="middle" x="377" y="-1883.8" font-family="Helvetica,sans-Serif" font-size="9.00">ToolInstallArgs</text>
+<polyline fill="none" stroke="#64748b" points="417,-1862 417,-1910 "/>
+<text text-anchor="start" x="425" y="-1898.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;name: String</text>
+<text text-anchor="start" x="425" y="-1888.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;source: Option&lt;String&gt;</text>
+<text text-anchor="start" x="425" y="-1878.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;dir: Option&lt;PathBuf&gt;</text>
+<text text-anchor="start" x="425" y="-1868.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;dry_run: bool</text>
+</g>
+<!-- asb&#45;cli_src_ToolInstallOptions -->
+<g id="node35" class="node">
+<title>asb&#45;cli_src_ToolInstallOptions</title>
+<path fill="#f8fafc" stroke="#64748b" d="M339,-1788C339,-1788 543,-1788 543,-1788 549,-1788 555,-1794 555,-1800 555,-1800 555,-1824 555,-1824 555,-1830 549,-1836 543,-1836 543,-1836 339,-1836 339,-1836 333,-1836 327,-1830 327,-1824 327,-1824 327,-1800 327,-1800 327,-1794 333,-1788 339,-1788"/>
+<text text-anchor="middle" x="374.5" y="-1809.8" font-family="Helvetica,sans-Serif" font-size="9.00">ToolInstallOptions</text>
+<polyline fill="none" stroke="#64748b" points="422,-1788 422,-1836 "/>
+<text text-anchor="start" x="430" y="-1824.8" font-family="Helvetica,sans-Serif" font-size="9.00">+name: String</text>
+<text text-anchor="start" x="430" y="-1814.8" font-family="Helvetica,sans-Serif" font-size="9.00">+source: Option&lt;String&gt;</text>
+<text text-anchor="start" x="430" y="-1804.8" font-family="Helvetica,sans-Serif" font-size="9.00">+dir: Option&lt;PathBuf&gt;</text>
+<text text-anchor="start" x="430" y="-1794.8" font-family="Helvetica,sans-Serif" font-size="9.00">+dry_run: bool</text>
+</g>
+<!-- asb&#45;cli_src_ToolListArgs -->
+<g id="node36" class="node">
+<title>asb&#45;cli_src_ToolListArgs</title>
+<path fill="#f8fafc" stroke="#64748b" d="M418.5,-1726C418.5,-1726 463.5,-1726 463.5,-1726 469.5,-1726 475.5,-1732 475.5,-1738 475.5,-1738 475.5,-1750 475.5,-1750 475.5,-1756 469.5,-1762 463.5,-1762 463.5,-1762 418.5,-1762 418.5,-1762 412.5,-1762 406.5,-1756 406.5,-1750 406.5,-1750 406.5,-1738 406.5,-1738 406.5,-1732 412.5,-1726 418.5,-1726"/>
+<text text-anchor="middle" x="441" y="-1741.8" font-family="Helvetica,sans-Serif" font-size="9.00">ToolListArgs</text>
+</g>
+<!-- asb&#45;cli_src_WorkloadArgs -->
+<g id="node37" class="node">
+<title>asb&#45;cli_src_WorkloadArgs</title>
+<path fill="#f8fafc" stroke="#64748b" d="M334.5,-1664C334.5,-1664 547.5,-1664 547.5,-1664 553.5,-1664 559.5,-1670 559.5,-1676 559.5,-1676 559.5,-1688 559.5,-1688 559.5,-1694 553.5,-1700 547.5,-1700 547.5,-1700 334.5,-1700 334.5,-1700 328.5,-1700 322.5,-1694 322.5,-1688 322.5,-1688 322.5,-1676 322.5,-1676 322.5,-1670 328.5,-1664 334.5,-1664"/>
+<text text-anchor="middle" x="361.5" y="-1679.8" font-family="Helvetica,sans-Serif" font-size="9.00">WorkloadArgs</text>
+<polyline fill="none" stroke="#64748b" points="400.5,-1664 400.5,-1700 "/>
+<text text-anchor="start" x="408.5" y="-1679.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;command: WorkloadCommand</text>
+</g>
+<!-- asb&#45;cli_src_WorkloadInstallArgs -->
+<g id="node38" class="node">
+<title>asb&#45;cli_src_WorkloadInstallArgs</title>
+<path fill="#f8fafc" stroke="#64748b" d="M338.5,-1600C338.5,-1600 543.5,-1600 543.5,-1600 549.5,-1600 555.5,-1606 555.5,-1612 555.5,-1612 555.5,-1626 555.5,-1626 555.5,-1632 549.5,-1638 543.5,-1638 543.5,-1638 338.5,-1638 338.5,-1638 332.5,-1638 326.5,-1632 326.5,-1626 326.5,-1626 326.5,-1612 326.5,-1612 326.5,-1606 332.5,-1600 338.5,-1600"/>
+<text text-anchor="middle" x="379" y="-1616.8" font-family="Helvetica,sans-Serif" font-size="9.00">WorkloadInstallArgs</text>
+<polyline fill="none" stroke="#64748b" points="431.5,-1600 431.5,-1638 "/>
+<text text-anchor="start" x="439.5" y="-1626.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;source: String</text>
+<text text-anchor="start" x="439.5" y="-1616.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;name: Option&lt;String&gt;</text>
+<text text-anchor="start" x="439.5" y="-1606.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;dir: Option&lt;PathBuf&gt;</text>
+</g>
+<!-- asb&#45;cli_src_WorkloadInstallOptions -->
+<g id="node39" class="node">
+<title>asb&#45;cli_src_WorkloadInstallOptions</title>
+<path fill="#f8fafc" stroke="#64748b" d="M329.5,-1536C329.5,-1536 552.5,-1536 552.5,-1536 558.5,-1536 564.5,-1542 564.5,-1548 564.5,-1548 564.5,-1562 564.5,-1562 564.5,-1568 558.5,-1574 552.5,-1574 552.5,-1574 329.5,-1574 329.5,-1574 323.5,-1574 317.5,-1568 317.5,-1562 317.5,-1562 317.5,-1548 317.5,-1548 317.5,-1542 323.5,-1536 329.5,-1536"/>
+<text text-anchor="middle" x="377" y="-1552.8" font-family="Helvetica,sans-Serif" font-size="9.00">WorkloadInstallOptions</text>
+<polyline fill="none" stroke="#64748b" points="436.5,-1536 436.5,-1574 "/>
+<text text-anchor="start" x="444.5" y="-1562.8" font-family="Helvetica,sans-Serif" font-size="9.00">+source: String</text>
+<text text-anchor="start" x="444.5" y="-1552.8" font-family="Helvetica,sans-Serif" font-size="9.00">+name: Option&lt;String&gt;</text>
+<text text-anchor="start" x="444.5" y="-1542.8" font-family="Helvetica,sans-Serif" font-size="9.00">+dir: Option&lt;PathBuf&gt;</text>
+</g>
+<!-- asb&#45;cli_src_WorkloadListArgs -->
+<g id="node40" class="node">
+<title>asb&#45;cli_src_WorkloadListArgs</title>
+<path fill="#f8fafc" stroke="#64748b" d="M347,-1474C347,-1474 535,-1474 535,-1474 541,-1474 547,-1480 547,-1486 547,-1486 547,-1498 547,-1498 547,-1504 541,-1510 535,-1510 535,-1510 347,-1510 347,-1510 341,-1510 335,-1504 335,-1498 335,-1498 335,-1486 335,-1486 335,-1480 341,-1474 347,-1474"/>
+<text text-anchor="middle" x="382" y="-1489.8" font-family="Helvetica,sans-Serif" font-size="9.00">WorkloadListArgs</text>
+<polyline fill="none" stroke="#64748b" points="429,-1474 429,-1510 "/>
+<text text-anchor="start" x="437" y="-1489.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;dir: Option&lt;PathBuf&gt;</text>
+</g>
+<!-- asb&#45;cli_src_WorkloadListOptions -->
+<g id="node41" class="node">
+<title>asb&#45;cli_src_WorkloadListOptions</title>
+<path fill="#f8fafc" stroke="#64748b" d="M338,-1412C338,-1412 544,-1412 544,-1412 550,-1412 556,-1418 556,-1424 556,-1424 556,-1436 556,-1436 556,-1442 550,-1448 544,-1448 544,-1448 338,-1448 338,-1448 332,-1448 326,-1442 326,-1436 326,-1436 326,-1424 326,-1424 326,-1418 332,-1412 338,-1412"/>
+<text text-anchor="middle" x="380" y="-1427.8" font-family="Helvetica,sans-Serif" font-size="9.00">WorkloadListOptions</text>
+<polyline fill="none" stroke="#64748b" points="434,-1412 434,-1448 "/>
+<text text-anchor="start" x="442" y="-1427.8" font-family="Helvetica,sans-Serif" font-size="9.00">+dir: Option&lt;PathBuf&gt;</text>
+</g>
+<!-- asb&#45;cli_src_BundleSpec -->
+<g id="node42" class="node">
+<title>asb&#45;cli_src_BundleSpec</title>
+<path fill="#f8fafc" stroke="#64748b" d="M363.5,-3880C363.5,-3880 518.5,-3880 518.5,-3880 524.5,-3880 530.5,-3886 530.5,-3892 530.5,-3892 530.5,-3906 530.5,-3906 530.5,-3912 524.5,-3918 518.5,-3918 518.5,-3918 363.5,-3918 363.5,-3918 357.5,-3918 351.5,-3912 351.5,-3906 351.5,-3906 351.5,-3892 351.5,-3892 351.5,-3886 357.5,-3880 363.5,-3880"/>
+<text text-anchor="middle" x="387" y="-3896.8" font-family="Helvetica,sans-Serif" font-size="9.00">BundleSpec</text>
+<polyline fill="none" stroke="#64748b" points="422.5,-3880 422.5,-3918 "/>
+<text text-anchor="start" x="430.5" y="-3906.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;archive: &amp;&#39;static str</text>
+<text text-anchor="start" x="430.5" y="-3896.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;marker: &amp;&#39;static str</text>
+<text text-anchor="start" x="430.5" y="-3886.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;prompt: &amp;&#39;static str</text>
+</g>
+<!-- asb&#45;cli_src_ExternalWorkload -->
+<g id="node43" class="node">
+<title>asb&#45;cli_src_ExternalWorkload</title>
+<path fill="#f8fafc" stroke="#64748b" d="M353.5,-3818C353.5,-3818 528.5,-3818 528.5,-3818 534.5,-3818 540.5,-3824 540.5,-3830 540.5,-3830 540.5,-3842 540.5,-3842 540.5,-3848 534.5,-3854 528.5,-3854 528.5,-3854 353.5,-3854 353.5,-3854 347.5,-3854 341.5,-3848 341.5,-3842 341.5,-3842 341.5,-3830 341.5,-3830 341.5,-3824 347.5,-3818 353.5,-3818"/>
+<text text-anchor="middle" x="389" y="-3833.8" font-family="Helvetica,sans-Serif" font-size="9.00">ExternalWorkload</text>
+<polyline fill="none" stroke="#64748b" points="436.5,-3818 436.5,-3854 "/>
+<text text-anchor="start" x="444.5" y="-3838.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;name: &amp;&#39;static str</text>
+<text text-anchor="start" x="444.5" y="-3828.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;source: &amp;&#39;static str</text>
+</g>
+<!-- asb&#45;cli_src_LoggedStatus -->
+<g id="node44" class="node">
+<title>asb&#45;cli_src_LoggedStatus</title>
+<path fill="#f8fafc" stroke="#64748b" d="M310,-3756C310,-3756 572,-3756 572,-3756 578,-3756 584,-3762 584,-3768 584,-3768 584,-3780 584,-3780 584,-3786 578,-3792 572,-3792 572,-3792 310,-3792 310,-3792 304,-3792 298,-3786 298,-3780 298,-3780 298,-3768 298,-3768 298,-3762 304,-3756 310,-3756"/>
+<text text-anchor="middle" x="337.5" y="-3771.8" font-family="Helvetica,sans-Serif" font-size="9.00">LoggedStatus</text>
+<polyline fill="none" stroke="#64748b" points="377,-3756 377,-3792 "/>
+<text text-anchor="middle" x="387" y="-3771.8" font-family="Helvetica,sans-Serif" font-size="9.00"> </text>
+<polyline fill="none" stroke="#64748b" points="397,-3756 397,-3792 "/>
+<text text-anchor="start" x="405" y="-3771.8" font-family="Helvetica,sans-Serif" font-size="9.00">+logged_status() Result&lt;ExitStatus&gt;</text>
+</g>
+<!-- asb&#45;cli_src_CollectorResult -->
+<g id="node46" class="node">
+<title>asb&#45;cli_src_CollectorResult</title>
+<path fill="#f8fafc" stroke="#64748b" d="M288,-1240C288,-1240 594,-1240 594,-1240 600,-1240 606,-1246 606,-1252 606,-1252 606,-1346 606,-1346 606,-1352 600,-1358 594,-1358 594,-1358 288,-1358 288,-1358 282,-1358 276,-1352 276,-1346 276,-1346 276,-1252 276,-1252 276,-1246 282,-1240 288,-1240"/>
+<text text-anchor="middle" x="317.5" y="-1296.8" font-family="Helvetica,sans-Serif" font-size="9.00">CollectorResult</text>
+<polyline fill="none" stroke="#64748b" points="359,-1240 359,-1358 "/>
+<text text-anchor="start" x="367" y="-1346.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;schema_version: u32</text>
+<text text-anchor="start" x="367" y="-1336.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;collector: String</text>
+<text text-anchor="start" x="367" y="-1326.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;status: String</text>
+<text text-anchor="start" x="367" y="-1316.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;exit_code: Option&lt;i32&gt;</text>
+<text text-anchor="start" x="367" y="-1306.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;elapsed_ms: u128</text>
+<text text-anchor="start" x="367" y="-1296.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;stdout: String</text>
+<text text-anchor="start" x="367" y="-1286.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;stderr: String</text>
+<text text-anchor="start" x="367" y="-1276.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;artifact: Option&lt;String&gt;</text>
+<text text-anchor="start" x="367" y="-1266.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;metrics: BTreeMap&lt;String, f64&gt;</text>
+<text text-anchor="start" x="367" y="-1256.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;series: BTreeMap&lt;String, Vec&lt;f64&gt;&gt;</text>
+<text text-anchor="start" x="367" y="-1246.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;series_timestamps: BTreeMap&lt;String, Vec&lt;f64&gt;&gt;</text>
+</g>
+<!-- asb&#45;cli_src_FlamegraphStatus -->
+<g id="node47" class="node">
+<title>asb&#45;cli_src_FlamegraphStatus</title>
+<path fill="#f8fafc" stroke="#64748b" d="M337,-1166C337,-1166 545,-1166 545,-1166 551,-1166 557,-1172 557,-1178 557,-1178 557,-1202 557,-1202 557,-1208 551,-1214 545,-1214 545,-1214 337,-1214 337,-1214 331,-1214 325,-1208 325,-1202 325,-1202 325,-1178 325,-1178 325,-1172 331,-1166 337,-1166"/>
+<text text-anchor="middle" x="375" y="-1187.8" font-family="Helvetica,sans-Serif" font-size="9.00">FlamegraphStatus</text>
+<polyline fill="none" stroke="#64748b" points="425,-1166 425,-1214 "/>
+<text text-anchor="start" x="433" y="-1202.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;schema_version: u32</text>
+<text text-anchor="start" x="433" y="-1192.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;status: &amp;&#39;a str</text>
+<text text-anchor="start" x="433" y="-1182.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;artifact: Option&lt;&amp;&#39;a str&gt;</text>
+<text text-anchor="start" x="433" y="-1172.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;reason: Option&lt;&amp;&#39;a str&gt;</text>
+</g>
+<!-- asb&#45;cli_src_RunMeasurement -->
+<g id="node48" class="node">
+<title>asb&#45;cli_src_RunMeasurement</title>
+<path fill="#f8fafc" stroke="#64748b" d="M335,-992C335,-992 547,-992 547,-992 553,-992 559,-998 559,-1004 559,-1004 559,-1128 559,-1128 559,-1134 553,-1140 547,-1140 547,-1140 335,-1140 335,-1140 329,-1140 323,-1134 323,-1128 323,-1128 323,-1004 323,-1004 323,-998 329,-992 335,-992"/>
+<text text-anchor="middle" x="371" y="-1063.8" font-family="Helvetica,sans-Serif" font-size="9.00">RunMeasurement</text>
+<polyline fill="none" stroke="#64748b" points="419,-992 419,-1140 "/>
+<text text-anchor="start" x="427" y="-1128.8" font-family="Helvetica,sans-Serif" font-size="9.00">+schema_version: u32</text>
+<text text-anchor="start" x="427" y="-1118.8" font-family="Helvetica,sans-Serif" font-size="9.00">+run_id: String</text>
+<text text-anchor="start" x="427" y="-1108.8" font-family="Helvetica,sans-Serif" font-size="9.00">+status: &amp;&#39;a str</text>
+<text text-anchor="start" x="427" y="-1098.8" font-family="Helvetica,sans-Serif" font-size="9.00">+success: bool</text>
+<text text-anchor="start" x="427" y="-1088.8" font-family="Helvetica,sans-Serif" font-size="9.00">+success_rate: f64</text>
+<text text-anchor="start" x="427" y="-1078.8" font-family="Helvetica,sans-Serif" font-size="9.00">+agent: &amp;&#39;a str</text>
+<text text-anchor="start" x="427" y="-1068.8" font-family="Helvetica,sans-Serif" font-size="9.00">+workload: &amp;&#39;a str</text>
+<text text-anchor="start" x="427" y="-1058.8" font-family="Helvetica,sans-Serif" font-size="9.00">+provider: &amp;&#39;a str</text>
+<text text-anchor="start" x="427" y="-1048.8" font-family="Helvetica,sans-Serif" font-size="9.00">+model: &amp;&#39;a str</text>
+<text text-anchor="start" x="427" y="-1038.8" font-family="Helvetica,sans-Serif" font-size="9.00">+elapsed_ms: u128</text>
+<text text-anchor="start" x="427" y="-1028.8" font-family="Helvetica,sans-Serif" font-size="9.00">+exit_code: Option&lt;i32&gt;</text>
+<text text-anchor="start" x="427" y="-1018.8" font-family="Helvetica,sans-Serif" font-size="9.00">+token_usage: TokenUsage</text>
+<text text-anchor="start" x="427" y="-1008.8" font-family="Helvetica,sans-Serif" font-size="9.00">+steps: u64</text>
+<text text-anchor="start" x="427" y="-998.8" font-family="Helvetica,sans-Serif" font-size="9.00">+started_unix_ms: u128</text>
+</g>
+<!-- asb&#45;cli_src_TokenUsage -->
+<g id="node50" class="node">
+<title>asb&#45;cli_src_TokenUsage</title>
+<path fill="#f8fafc" stroke="#64748b" d="M961,-963C961,-963 1435,-963 1435,-963 1441,-963 1447,-969 1447,-975 1447,-975 1447,-1009 1447,-1009 1447,-1015 1441,-1021 1435,-1021 1435,-1021 961,-1021 961,-1021 955,-1021 949,-1015 949,-1009 949,-1009 949,-975 949,-975 949,-969 955,-963 961,-963"/>
+<text text-anchor="middle" x="984" y="-989.8" font-family="Helvetica,sans-Serif" font-size="9.00">TokenUsage</text>
+<polyline fill="none" stroke="#64748b" points="1019,-963 1019,-1021 "/>
+<text text-anchor="start" x="1027" y="-1009.8" font-family="Helvetica,sans-Serif" font-size="9.00">+input_tokens: Option&lt;u64&gt;</text>
+<text text-anchor="start" x="1027" y="-999.8" font-family="Helvetica,sans-Serif" font-size="9.00">+output_tokens: Option&lt;u64&gt;</text>
+<text text-anchor="start" x="1027" y="-989.8" font-family="Helvetica,sans-Serif" font-size="9.00">+cached_tokens: Option&lt;u64&gt;</text>
+<text text-anchor="start" x="1027" y="-979.8" font-family="Helvetica,sans-Serif" font-size="9.00">+total_tokens: Option&lt;u64&gt;</text>
+<text text-anchor="start" x="1027" y="-969.8" font-family="Helvetica,sans-Serif" font-size="9.00">+source: Option&lt;String&gt;</text>
+<polyline fill="none" stroke="#64748b" points="1180,-963 1180,-1021 "/>
+<text text-anchor="start" x="1188" y="-1009.8" font-family="Helvetica,sans-Serif" font-size="9.00">+merge(self, other: Self) Self</text>
+<text text-anchor="start" x="1188" y="-999.8" font-family="Helvetica,sans-Serif" font-size="9.00">+add(self, other: Self) Self</text>
+<text text-anchor="start" x="1188" y="-989.8" font-family="Helvetica,sans-Serif" font-size="9.00">+merge_with_source(self, other: Self, source: &amp;str) Self</text>
+<text text-anchor="start" x="1188" y="-979.8" font-family="Helvetica,sans-Serif" font-size="9.00">+with_derived_total(self) Self</text>
+<text text-anchor="start" x="1188" y="-969.8" font-family="Helvetica,sans-Serif" font-size="9.00">+any() bool</text>
+</g>
+<!-- asb&#45;cli_src_RunMeasurement&#45;&gt;asb&#45;cli_src_TokenUsage -->
+<g id="edge6" class="edge">
+<title>asb&#45;cli_src_RunMeasurement&#45;&gt;asb&#45;cli_src_TokenUsage</title>
+<path fill="none" stroke="#94a3b8" d="M559.14,-1054.52C660.97,-1044.54 812.08,-1029.73 941.66,-1017.03"/>
+<polygon fill="#94a3b8" stroke="#94a3b8" points="948.99,-1016.31 942.33,-1020.13 945.51,-1016.65 942.02,-1016.99 942.02,-1016.99 942.02,-1016.99 945.51,-1016.65 941.72,-1013.86 948.99,-1016.31 948.99,-1016.31"/>
+</g>
+<!-- asb&#45;cli_src_SystemInfo -->
+<g id="node49" class="node">
+<title>asb&#45;cli_src_SystemInfo</title>
+<path fill="#f8fafc" stroke="#64748b" d="M334.5,-888C334.5,-888 547.5,-888 547.5,-888 553.5,-888 559.5,-894 559.5,-900 559.5,-900 559.5,-954 559.5,-954 559.5,-960 553.5,-966 547.5,-966 547.5,-966 334.5,-966 334.5,-966 328.5,-966 322.5,-960 322.5,-954 322.5,-954 322.5,-900 322.5,-900 322.5,-894 328.5,-888 334.5,-888"/>
+<text text-anchor="middle" x="356.5" y="-924.8" font-family="Helvetica,sans-Serif" font-size="9.00">SystemInfo</text>
+<polyline fill="none" stroke="#64748b" points="390.5,-888 390.5,-966 "/>
+<text text-anchor="start" x="398.5" y="-954.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;schema_version: u32</text>
+<text text-anchor="start" x="398.5" y="-944.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;collected_unix_ms: u128</text>
+<text text-anchor="start" x="398.5" y="-934.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;os: &amp;&#39;static str</text>
+<text text-anchor="start" x="398.5" y="-924.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;architecture: &amp;&#39;static str</text>
+<text text-anchor="start" x="398.5" y="-914.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;logical_cpus: usize</text>
+<text text-anchor="start" x="398.5" y="-904.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;kernel_release: Option&lt;String&gt;</text>
+<text text-anchor="start" x="398.5" y="-894.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;memory_total_kib: Option&lt;u64&gt;</text>
+</g>
+<!-- asb&#45;cli_src_ModelInfo -->
+<g id="node51" class="node">
+<title>asb&#45;cli_src_ModelInfo</title>
+<path fill="#f8fafc" stroke="#64748b" d="M375.5,-3972C375.5,-3972 506.5,-3972 506.5,-3972 512.5,-3972 518.5,-3978 518.5,-3984 518.5,-3984 518.5,-3996 518.5,-3996 518.5,-4002 512.5,-4008 506.5,-4008 506.5,-4008 375.5,-4008 375.5,-4008 369.5,-4008 363.5,-4002 363.5,-3996 363.5,-3996 363.5,-3984 363.5,-3984 363.5,-3978 369.5,-3972 375.5,-3972"/>
+<text text-anchor="middle" x="393.5" y="-3987.8" font-family="Helvetica,sans-Serif" font-size="9.00">ModelInfo</text>
+<polyline fill="none" stroke="#64748b" points="423.5,-3972 423.5,-4008 "/>
+<text text-anchor="start" x="431.5" y="-3992.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;id: String</text>
+<text text-anchor="start" x="431.5" y="-3982.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;tool_calling: bool</text>
+</g>
+<!-- asb&#45;cli_src_ProjectConfig -->
+<g id="node52" class="node">
+<title>asb&#45;cli_src_ProjectConfig</title>
+<path fill="#f8fafc" stroke="#64748b" d="M1110.5,-3970C1110.5,-3970 1285.5,-3970 1285.5,-3970 1291.5,-3970 1297.5,-3976 1297.5,-3982 1297.5,-3982 1297.5,-3996 1297.5,-3996 1297.5,-4002 1291.5,-4008 1285.5,-4008 1285.5,-4008 1110.5,-4008 1110.5,-4008 1104.5,-4008 1098.5,-4002 1098.5,-3996 1098.5,-3996 1098.5,-3982 1098.5,-3982 1098.5,-3976 1104.5,-3970 1110.5,-3970"/>
+<text text-anchor="middle" x="1137" y="-3986.8" font-family="Helvetica,sans-Serif" font-size="9.00">ProjectConfig</text>
+<polyline fill="none" stroke="#64748b" points="1175.5,-3970 1175.5,-4008 "/>
+<text text-anchor="start" x="1183.5" y="-3996.8" font-family="Helvetica,sans-Serif" font-size="9.00">+tools_dir: String</text>
+<text text-anchor="start" x="1183.5" y="-3986.8" font-family="Helvetica,sans-Serif" font-size="9.00">+workloads_dir: String</text>
+<text text-anchor="start" x="1183.5" y="-3976.8" font-family="Helvetica,sans-Serif" font-size="9.00">+workspace_dir: String</text>
+</g>
+<!-- asb&#45;cli_src_ModelSpec -->
+<g id="node53" class="node">
+<title>asb&#45;cli_src_ModelSpec</title>
+<path fill="#f8fafc" stroke="#64748b" d="M267.5,-4484C267.5,-4484 614.5,-4484 614.5,-4484 620.5,-4484 626.5,-4490 626.5,-4496 626.5,-4496 626.5,-4530 626.5,-4530 626.5,-4536 620.5,-4542 614.5,-4542 614.5,-4542 267.5,-4542 267.5,-4542 261.5,-4542 255.5,-4536 255.5,-4530 255.5,-4530 255.5,-4496 255.5,-4496 255.5,-4490 261.5,-4484 267.5,-4484"/>
+<text text-anchor="middle" x="288" y="-4510.8" font-family="Helvetica,sans-Serif" font-size="9.00">ModelSpec</text>
+<polyline fill="none" stroke="#64748b" points="320.5,-4484 320.5,-4542 "/>
+<text text-anchor="start" x="328.5" y="-4530.8" font-family="Helvetica,sans-Serif" font-size="9.00">+name: &amp;&#39;static str</text>
+<text text-anchor="start" x="328.5" y="-4520.8" font-family="Helvetica,sans-Serif" font-size="9.00">+credential: Option&lt;&amp;&#39;static str&gt;</text>
+<text text-anchor="start" x="328.5" y="-4510.8" font-family="Helvetica,sans-Serif" font-size="9.00">+endpoint: Option&lt;&amp;&#39;static str&gt;</text>
+<text text-anchor="start" x="328.5" y="-4500.8" font-family="Helvetica,sans-Serif" font-size="9.00">+default_url: Option&lt;&amp;&#39;static str&gt;</text>
+<text text-anchor="start" x="328.5" y="-4490.8" font-family="Helvetica,sans-Serif" font-size="9.00">+kind: ModelKind</text>
+<polyline fill="none" stroke="#64748b" points="492.5,-4484 492.5,-4542 "/>
+<text text-anchor="start" x="500.5" y="-4510.8" font-family="Helvetica,sans-Serif" font-size="9.00">+url(self) Option&lt;String&gt;</text>
+</g>
+<!-- asb&#45;cli_src_ProviderSpec -->
+<g id="node54" class="node">
+<title>asb&#45;cli_src_ProviderSpec</title>
+<path fill="#f8fafc" stroke="#64748b" d="M308,-4390C308,-4390 574,-4390 574,-4390 580,-4390 586,-4396 586,-4402 586,-4402 586,-4446 586,-4446 586,-4452 580,-4458 574,-4458 574,-4458 308,-4458 308,-4458 302,-4458 296,-4452 296,-4446 296,-4446 296,-4402 296,-4402 296,-4396 302,-4390 308,-4390"/>
+<text text-anchor="middle" x="334" y="-4421.8" font-family="Helvetica,sans-Serif" font-size="9.00">ProviderSpec</text>
+<polyline fill="none" stroke="#64748b" points="372,-4390 372,-4458 "/>
+<text text-anchor="start" x="380" y="-4446.8" font-family="Helvetica,sans-Serif" font-size="9.00">+name: &amp;&#39;static str</text>
+<text text-anchor="start" x="380" y="-4436.8" font-family="Helvetica,sans-Serif" font-size="9.00">+credential: Option&lt;&amp;&#39;static str&gt;</text>
+<text text-anchor="start" x="380" y="-4426.8" font-family="Helvetica,sans-Serif" font-size="9.00">+endpoint: Option&lt;&amp;&#39;static str&gt;</text>
+<text text-anchor="start" x="380" y="-4416.8" font-family="Helvetica,sans-Serif" font-size="9.00">+model_env: Option&lt;&amp;&#39;static str&gt;</text>
+<text text-anchor="start" x="380" y="-4406.8" font-family="Helvetica,sans-Serif" font-size="9.00">+tape_endpoint_envs: &amp;&#39;static [&amp;&#39;static str]</text>
+<text text-anchor="start" x="380" y="-4396.8" font-family="Helvetica,sans-Serif" font-size="9.00">+bridge_tool: Option&lt;&amp;&#39;static str&gt;</text>
+</g>
+<!-- asb&#45;cli_src_RunResult -->
+<g id="node55" class="node">
+<title>asb&#45;cli_src_RunResult</title>
+<path fill="#f8fafc" stroke="#64748b" d="M354,-697C354,-697 528,-697 528,-697 534,-697 540,-703 540,-709 540,-709 540,-823 540,-823 540,-829 534,-835 528,-835 528,-835 354,-835 354,-835 348,-835 342,-829 342,-823 342,-823 342,-709 342,-709 342,-703 348,-697 354,-697"/>
+<text text-anchor="middle" x="373" y="-763.8" font-family="Helvetica,sans-Serif" font-size="9.00">RunResult</text>
+<polyline fill="none" stroke="#64748b" points="404,-697 404,-835 "/>
+<text text-anchor="start" x="412" y="-823.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;status: &amp;&#39;a str</text>
+<text text-anchor="start" x="412" y="-813.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;agent: &amp;&#39;a str</text>
+<text text-anchor="start" x="412" y="-803.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;workload: &amp;&#39;a str</text>
+<text text-anchor="start" x="412" y="-793.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;provider: &amp;&#39;a str</text>
+<text text-anchor="start" x="412" y="-783.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;model: &amp;&#39;a str</text>
+<text text-anchor="start" x="412" y="-773.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;success_rate: f64</text>
+<text text-anchor="start" x="412" y="-763.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;elapsed_ms: u128</text>
+<text text-anchor="start" x="412" y="-753.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;exit_code: Option&lt;i32&gt;</text>
+<text text-anchor="start" x="412" y="-743.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;token_usage: TokenUsage</text>
+<text text-anchor="start" x="412" y="-733.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;steps: u64</text>
+<text text-anchor="start" x="412" y="-723.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;cassette: Option&lt;String&gt;</text>
+<text text-anchor="start" x="412" y="-713.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;stdout: String</text>
+<text text-anchor="start" x="412" y="-703.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;stderr: String</text>
+</g>
+<!-- asb&#45;cli_src_RunResult&#45;&gt;asb&#45;cli_src_TokenUsage -->
+<g id="edge7" class="edge">
+<title>asb&#45;cli_src_RunResult&#45;&gt;asb&#45;cli_src_TokenUsage</title>
+<path fill="none" stroke="#94a3b8" d="M540.07,-790.98C665.31,-822.88 866,-874 866,-874 866,-874 1010.86,-925.64 1108.92,-960.6"/>
+<polygon fill="#94a3b8" stroke="#94a3b8" points="1115.6,-962.98 1107.95,-963.6 1112.31,-961.81 1109.01,-960.63 1109.01,-960.63 1109.01,-960.63 1112.31,-961.81 1110.07,-957.67 1115.6,-962.98 1115.6,-962.98"/>
+</g>
+<!-- asb&#45;cli_src_tools_StaticTool -->
+<g id="node56" class="node">
+<title>asb&#45;cli_src_tools_StaticTool</title>
+<path fill="#f8fafc" stroke="#64748b" d="M233.5,-4660C233.5,-4660 648.5,-4660 648.5,-4660 654.5,-4660 660.5,-4666 660.5,-4672 660.5,-4672 660.5,-4686 660.5,-4686 660.5,-4692 654.5,-4698 648.5,-4698 648.5,-4698 233.5,-4698 233.5,-4698 227.5,-4698 221.5,-4692 221.5,-4686 221.5,-4686 221.5,-4672 221.5,-4672 221.5,-4666 227.5,-4660 233.5,-4660"/>
+<text text-anchor="middle" x="264" y="-4676.8" font-family="Helvetica,sans-Serif" font-size="9.00">tools_StaticTool</text>
+<polyline fill="none" stroke="#64748b" points="306.5,-4660 306.5,-4698 "/>
+<text text-anchor="start" x="314.5" y="-4686.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;id: &amp;&#39;static str</text>
+<text text-anchor="start" x="314.5" y="-4676.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;recipe: Recipe</text>
+<text text-anchor="start" x="314.5" y="-4666.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;kind: ToolKind</text>
+<polyline fill="none" stroke="#64748b" points="389.5,-4660 389.5,-4698 "/>
+<text text-anchor="start" x="397.5" y="-4676.8" font-family="Helvetica,sans-Serif" font-size="9.00">+new(id: &amp;&#39;static str, recipe: Recipe, kind: ToolKind) Self</text>
+</g>
+<!-- asb&#45;cli_src_tools_ToolAdapter -->
+<g id="node57" class="node">
+<title>asb&#45;cli_src_tools_ToolAdapter</title>
+<path fill="#f8fafc" stroke="#64748b" d="M349.5,-4596C349.5,-4596 532.5,-4596 532.5,-4596 538.5,-4596 544.5,-4602 544.5,-4608 544.5,-4608 544.5,-4622 544.5,-4622 544.5,-4628 538.5,-4634 532.5,-4634 532.5,-4634 349.5,-4634 349.5,-4634 343.5,-4634 337.5,-4628 337.5,-4622 337.5,-4622 337.5,-4608 337.5,-4608 337.5,-4602 343.5,-4596 349.5,-4596"/>
+<text text-anchor="middle" x="385" y="-4612.8" font-family="Helvetica,sans-Serif" font-size="9.00">tools_ToolAdapter</text>
+<polyline fill="none" stroke="#64748b" points="432.5,-4596 432.5,-4634 "/>
+<text text-anchor="middle" x="442.5" y="-4612.8" font-family="Helvetica,sans-Serif" font-size="9.00"> </text>
+<polyline fill="none" stroke="#64748b" points="452.5,-4596 452.5,-4634 "/>
+<text text-anchor="start" x="460.5" y="-4622.8" font-family="Helvetica,sans-Serif" font-size="9.00">+id() &amp;&#39;static str</text>
+<text text-anchor="start" x="460.5" y="-4612.8" font-family="Helvetica,sans-Serif" font-size="9.00">+recipe() Recipe</text>
+<text text-anchor="start" x="460.5" y="-4602.8" font-family="Helvetica,sans-Serif" font-size="9.00">+kind() ToolKind</text>
+</g>
+<!-- asb&#45;cli_src_App -->
+<g id="node58" class="node">
+<title>asb&#45;cli_src_App</title>
+<path fill="#f8fafc" stroke="#64748b" d="M210.5,-4258C210.5,-4258 671.5,-4258 671.5,-4258 677.5,-4258 683.5,-4264 683.5,-4270 683.5,-4270 683.5,-4324 683.5,-4324 683.5,-4330 677.5,-4336 671.5,-4336 671.5,-4336 210.5,-4336 210.5,-4336 204.5,-4336 198.5,-4330 198.5,-4324 198.5,-4324 198.5,-4270 198.5,-4270 198.5,-4264 204.5,-4258 210.5,-4258"/>
+<text text-anchor="middle" x="216" y="-4294.8" font-family="Helvetica,sans-Serif" font-size="9.00">App</text>
+<polyline fill="none" stroke="#64748b" points="233.5,-4258 233.5,-4336 "/>
+<text text-anchor="start" x="241.5" y="-4324.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;root: PathBuf</text>
+<text text-anchor="start" x="241.5" y="-4314.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;project: ProjectConfig</text>
+<text text-anchor="start" x="241.5" y="-4304.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;panes: Vec&lt;Pane&gt;</text>
+<text text-anchor="start" x="241.5" y="-4294.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;step: usize</text>
+<text text-anchor="start" x="241.5" y="-4284.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;message: String</text>
+<text text-anchor="start" x="241.5" y="-4274.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;message_color: Color</text>
+<text text-anchor="start" x="241.5" y="-4264.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;message_until: Option&lt;std::time::Instant&gt;</text>
+<polyline fill="none" stroke="#64748b" points="447.5,-4258 447.5,-4336 "/>
+<text text-anchor="start" x="455.5" y="-4314.8" font-family="Helvetica,sans-Serif" font-size="9.00">+new(root: PathBuf, project: ProjectConfig) Self</text>
+<text text-anchor="start" x="455.5" y="-4304.8" font-family="Helvetica,sans-Serif" font-size="9.00">+refresh_availability() void</text>
+<text text-anchor="start" x="455.5" y="-4294.8" font-family="Helvetica,sans-Serif" font-size="9.00">+refresh_models() void</text>
+<text text-anchor="start" x="455.5" y="-4284.8" font-family="Helvetica,sans-Serif" font-size="9.00">+advance() Result&lt;Option&lt;Generated&gt;, Error&gt;</text>
+<text text-anchor="start" x="455.5" y="-4274.8" font-family="Helvetica,sans-Serif" font-size="9.00">+back() void</text>
+</g>
+<!-- asb&#45;cli_src_App&#45;&gt;asb&#45;cli_src_ProjectConfig -->
+<g id="edge2" class="edge">
+<title>asb&#45;cli_src_App&#45;&gt;asb&#45;cli_src_ProjectConfig</title>
+<path fill="none" stroke="#94a3b8" d="M683.73,-4267.35C778.94,-4255.68 866,-4245 866,-4245 866,-4245 949,-4047 949,-4047 949,-4047 1037.38,-4026.33 1108.61,-4009.67"/>
+<polygon fill="#94a3b8" stroke="#94a3b8" points="1115.45,-4008.07 1109.35,-4012.73 1112.04,-4008.87 1108.64,-4009.67 1108.64,-4009.67 1108.64,-4009.67 1112.04,-4008.87 1107.92,-4006.6 1115.45,-4008.07 1115.45,-4008.07"/>
+</g>
+<!-- asb&#45;cli_src_Pane -->
+<g id="node61" class="node">
+<title>asb&#45;cli_src_Pane</title>
+<path fill="#f8fafc" stroke="#64748b" d="M971,-4160C971,-4160 1425,-4160 1425,-4160 1431,-4160 1437,-4166 1437,-4172 1437,-4172 1437,-4236 1437,-4236 1437,-4242 1431,-4248 1425,-4248 1425,-4248 971,-4248 971,-4248 965,-4248 959,-4242 959,-4236 959,-4236 959,-4172 959,-4172 959,-4166 965,-4160 971,-4160"/>
+<text text-anchor="middle" x="978" y="-4201.8" font-family="Helvetica,sans-Serif" font-size="9.00">Pane</text>
+<polyline fill="none" stroke="#64748b" points="997,-4160 997,-4248 "/>
+<text text-anchor="start" x="1005" y="-4221.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;choices: Vec&lt;Choice&gt;</text>
+<text text-anchor="start" x="1005" y="-4211.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;selected: Vec&lt;bool&gt;</text>
+<text text-anchor="start" x="1005" y="-4201.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;cursor: usize</text>
+<text text-anchor="start" x="1005" y="-4191.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;search: String</text>
+<text text-anchor="start" x="1005" y="-4181.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;sections: Vec&lt;Option&lt;&amp;&#39;static str&gt;&gt;</text>
+<polyline fill="none" stroke="#64748b" points="1184,-4160 1184,-4248 "/>
+<text text-anchor="start" x="1192" y="-4236.8" font-family="Helvetica,sans-Serif" font-size="9.00">+new(choices: Vec&lt;Choice&gt;) Self</text>
+<text text-anchor="start" x="1192" y="-4226.8" font-family="Helvetica,sans-Serif" font-size="9.00">+visible() Vec&lt;usize&gt;</text>
+<text text-anchor="start" x="1192" y="-4216.8" font-family="Helvetica,sans-Serif" font-size="9.00">+move_cursor(delta: i32) void</text>
+<text text-anchor="start" x="1192" y="-4206.8" font-family="Helvetica,sans-Serif" font-size="9.00">+toggle() void</text>
+<text text-anchor="start" x="1192" y="-4196.8" font-family="Helvetica,sans-Serif" font-size="9.00">+toggle_single() void</text>
+<text text-anchor="start" x="1192" y="-4186.8" font-family="Helvetica,sans-Serif" font-size="9.00">+search_changed() void</text>
+<text text-anchor="start" x="1192" y="-4176.8" font-family="Helvetica,sans-Serif" font-size="9.00">+selected_choices() impl Iterator&lt;Item = &amp;Choice&gt;</text>
+<text text-anchor="start" x="1192" y="-4166.8" font-family="Helvetica,sans-Serif" font-size="9.00">+has_selection() bool</text>
+</g>
+<!-- asb&#45;cli_src_App&#45;&gt;asb&#45;cli_src_Pane -->
+<g id="edge1" class="edge">
+<title>asb&#45;cli_src_App&#45;&gt;asb&#45;cli_src_Pane</title>
+<path fill="none" stroke="#94a3b8" d="M683.73,-4267.35C778.94,-4255.68 866,-4245 866,-4245 866,-4245 902.7,-4240.45 951.66,-4234.39"/>
+<polygon fill="#94a3b8" stroke="#94a3b8" points="958.64,-4233.52 952.08,-4237.51 955.17,-4233.95 951.7,-4234.39 951.7,-4234.39 951.7,-4234.39 955.17,-4233.95 951.31,-4231.26 958.64,-4233.52 958.64,-4233.52"/>
+</g>
+<!-- asb&#45;cli_src_Choice -->
+<g id="node59" class="node">
+<title>asb&#45;cli_src_Choice</title>
+<path fill="#f8fafc" stroke="#64748b" d="M1542,-4180C1542,-4180 1701,-4180 1701,-4180 1707,-4180 1713,-4186 1713,-4192 1713,-4192 1713,-4216 1713,-4216 1713,-4222 1707,-4228 1701,-4228 1701,-4228 1542,-4228 1542,-4228 1536,-4228 1530,-4222 1530,-4216 1530,-4216 1530,-4192 1530,-4192 1530,-4186 1536,-4180 1542,-4180"/>
+<text text-anchor="middle" x="1553.5" y="-4201.8" font-family="Helvetica,sans-Serif" font-size="9.00">Choice</text>
+<polyline fill="none" stroke="#64748b" points="1577,-4180 1577,-4228 "/>
+<text text-anchor="start" x="1585" y="-4216.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;label: String</text>
+<text text-anchor="start" x="1585" y="-4206.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;provider: Option&lt;String&gt;</text>
+<text text-anchor="start" x="1585" y="-4196.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;model: Option&lt;String&gt;</text>
+<text text-anchor="start" x="1585" y="-4186.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;availability: Availability</text>
+</g>
+<!-- asb&#45;cli_src_Generated -->
+<g id="node60" class="node">
+<title>asb&#45;cli_src_Generated</title>
+<path fill="#f8fafc" stroke="#64748b" d="M376.5,-4196C376.5,-4196 505.5,-4196 505.5,-4196 511.5,-4196 517.5,-4202 517.5,-4208 517.5,-4208 517.5,-4220 517.5,-4220 517.5,-4226 511.5,-4232 505.5,-4232 505.5,-4232 376.5,-4232 376.5,-4232 370.5,-4232 364.5,-4226 364.5,-4220 364.5,-4220 364.5,-4208 364.5,-4208 364.5,-4202 370.5,-4196 376.5,-4196"/>
+<text text-anchor="middle" x="396.5" y="-4211.8" font-family="Helvetica,sans-Serif" font-size="9.00">Generated</text>
+<polyline fill="none" stroke="#64748b" points="428.5,-4196 428.5,-4232 "/>
+<text text-anchor="start" x="436.5" y="-4216.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;tests: usize</text>
+<text text-anchor="start" x="436.5" y="-4206.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;sweep: PathBuf</text>
+</g>
+<!-- asb&#45;cli_src_Pane&#45;&gt;asb&#45;cli_src_Choice -->
+<g id="edge5" class="edge">
+<title>asb&#45;cli_src_Pane&#45;&gt;asb&#45;cli_src_Choice</title>
+<path fill="none" stroke="#94a3b8" d="M1437.16,-4204C1467.16,-4204 1496.41,-4204 1522.42,-4204"/>
+<polygon fill="#94a3b8" stroke="#94a3b8" points="1529.66,-4204 1522.67,-4207.15 1526.16,-4204 1522.66,-4204 1522.66,-4204 1522.66,-4204 1526.16,-4204 1522.66,-4200.85 1529.66,-4204 1529.66,-4204"/>
+</g>
+<!-- asb&#45;cli_src_WorkloadApp -->
+<g id="node62" class="node">
+<title>asb&#45;cli_src_WorkloadApp</title>
+<path fill="#f8fafc" stroke="#64748b" d="M308,-4062C308,-4062 574,-4062 574,-4062 580,-4062 586,-4068 586,-4074 586,-4074 586,-4158 586,-4158 586,-4164 580,-4170 574,-4170 574,-4170 308,-4170 308,-4170 302,-4170 296,-4164 296,-4158 296,-4158 296,-4074 296,-4074 296,-4068 302,-4062 308,-4062"/>
+<text text-anchor="middle" x="334" y="-4113.8" font-family="Helvetica,sans-Serif" font-size="9.00">WorkloadApp</text>
+<polyline fill="none" stroke="#64748b" points="372,-4062 372,-4170 "/>
+<text text-anchor="start" x="380" y="-4158.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;root: PathBuf</text>
+<text text-anchor="start" x="380" y="-4148.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;project: ProjectConfig</text>
+<text text-anchor="start" x="380" y="-4138.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;workloads: Pane</text>
+<text text-anchor="start" x="380" y="-4128.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;trials: Pane</text>
+<text text-anchor="start" x="380" y="-4118.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;level: usize</text>
+<text text-anchor="start" x="380" y="-4108.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;selected_workload: Option&lt;String&gt;</text>
+<text text-anchor="start" x="380" y="-4098.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;selections: BTreeSet&lt;String&gt;</text>
+<text text-anchor="start" x="380" y="-4088.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;message: String</text>
+<text text-anchor="start" x="380" y="-4078.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;message_color: Color</text>
+<text text-anchor="start" x="380" y="-4068.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;message_until: Option&lt;std::time::Instant&gt;</text>
+</g>
+<!-- asb&#45;cli_src_WorkloadApp&#45;&gt;asb&#45;cli_src_ProjectConfig -->
+<g id="edge12" class="edge">
+<title>asb&#45;cli_src_WorkloadApp&#45;&gt;asb&#45;cli_src_ProjectConfig</title>
+<path fill="none" stroke="#94a3b8" d="M586.14,-4093.9C709.06,-4075.06 866,-4051 866,-4051 866,-4051 994.37,-4026.96 1091.22,-4008.81"/>
+<polygon fill="#94a3b8" stroke="#94a3b8" points="1098.14,-4007.52 1091.84,-4011.9 1094.7,-4008.16 1091.26,-4008.81 1091.26,-4008.81 1091.26,-4008.81 1094.7,-4008.16 1090.68,-4005.71 1098.14,-4007.52 1098.14,-4007.52"/>
+</g>
+<!-- asb&#45;cli_src_WorkloadApp&#45;&gt;asb&#45;cli_src_Pane -->
+<g id="edge11" class="edge">
+<title>asb&#45;cli_src_WorkloadApp&#45;&gt;asb&#45;cli_src_Pane</title>
+<path fill="none" stroke="#94a3b8" d="M586.23,-4132.81C689.47,-4144.84 830.98,-4161.34 951.79,-4175.42"/>
+<polygon fill="#94a3b8" stroke="#94a3b8" points="958.99,-4176.26 951.67,-4178.58 955.51,-4175.85 952.04,-4175.45 952.04,-4175.45 952.04,-4175.45 955.51,-4175.85 952.4,-4172.32 958.99,-4176.26 958.99,-4176.26"/>
+</g>
+<!-- asb&#45;cli_src_Fixture -->
+<g id="node63" class="node">
+<title>asb&#45;cli_src_Fixture</title>
+<path fill="#f8fafc" stroke="#64748b" d="M330,-5072C330,-5072 552,-5072 552,-5072 558,-5072 564,-5078 564,-5084 564,-5084 564,-5096 564,-5096 564,-5102 558,-5108 552,-5108 552,-5108 330,-5108 330,-5108 324,-5108 318,-5102 318,-5096 318,-5096 318,-5084 318,-5084 318,-5078 324,-5072 330,-5072"/>
+<text text-anchor="middle" x="341.5" y="-5087.8" font-family="Helvetica,sans-Serif" font-size="9.00">Fixture</text>
+<polyline fill="none" stroke="#64748b" points="365,-5072 365,-5108 "/>
+<text text-anchor="start" x="373" y="-5092.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;name: &amp;&#39;static str</text>
+<text text-anchor="start" x="373" y="-5082.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;files: &amp;&#39;static [(&amp;&#39;static str, &amp;&#39;static str)]</text>
+</g>
+<!-- asb&#45;cli_src_Trial -->
+<g id="node64" class="node">
+<title>asb&#45;cli_src_Trial</title>
+<path fill="#f8fafc" stroke="#64748b" d="M1138.5,-4899C1138.5,-4899 1257.5,-4899 1257.5,-4899 1263.5,-4899 1269.5,-4905 1269.5,-4911 1269.5,-4911 1269.5,-4923 1269.5,-4923 1269.5,-4929 1263.5,-4935 1257.5,-4935 1257.5,-4935 1138.5,-4935 1138.5,-4935 1132.5,-4935 1126.5,-4929 1126.5,-4923 1126.5,-4923 1126.5,-4911 1126.5,-4911 1126.5,-4905 1132.5,-4899 1138.5,-4899"/>
+<text text-anchor="middle" x="1144" y="-4914.8" font-family="Helvetica,sans-Serif" font-size="9.00">Trial</text>
+<polyline fill="none" stroke="#64748b" points="1161.5,-4899 1161.5,-4935 "/>
+<text text-anchor="start" x="1169.5" y="-4919.8" font-family="Helvetica,sans-Serif" font-size="9.00">+id: String</text>
+<text text-anchor="start" x="1169.5" y="-4909.8" font-family="Helvetica,sans-Serif" font-size="9.00">+description: String</text>
+</g>
+<!-- asb&#45;cli_src_TrialSet -->
+<g id="node65" class="node">
+<title>asb&#45;cli_src_TrialSet</title>
+<path fill="#f8fafc" stroke="#64748b" d="M377.5,-5010C377.5,-5010 504.5,-5010 504.5,-5010 510.5,-5010 516.5,-5016 516.5,-5022 516.5,-5022 516.5,-5034 516.5,-5034 516.5,-5040 510.5,-5046 504.5,-5046 504.5,-5046 377.5,-5046 377.5,-5046 371.5,-5046 365.5,-5040 365.5,-5034 365.5,-5034 365.5,-5022 365.5,-5022 365.5,-5016 371.5,-5010 377.5,-5010"/>
+<text text-anchor="middle" x="390.5" y="-5025.8" font-family="Helvetica,sans-Serif" font-size="9.00">TrialSet</text>
+<polyline fill="none" stroke="#64748b" points="415.5,-5010 415.5,-5046 "/>
+<text text-anchor="start" x="423.5" y="-5030.8" font-family="Helvetica,sans-Serif" font-size="9.00">+workload: String</text>
+<text text-anchor="start" x="423.5" y="-5020.8" font-family="Helvetica,sans-Serif" font-size="9.00">+trials: Vec&lt;Trial&gt;</text>
+</g>
+<!-- asb&#45;cli_src_TrialSet&#45;&gt;asb&#45;cli_src_Trial -->
+<g id="edge10" class="edge">
+<title>asb&#45;cli_src_TrialSet&#45;&gt;asb&#45;cli_src_Trial</title>
+<path fill="none" stroke="#94a3b8" d="M516.83,-5022.53C638.55,-5013.63 866,-4997 866,-4997 866,-4997 1021.63,-4959.39 1119.46,-4935.74"/>
+<polygon fill="#94a3b8" stroke="#94a3b8" points="1126.4,-4934.06 1120.33,-4938.77 1123,-4934.89 1119.59,-4935.71 1119.59,-4935.71 1119.59,-4935.71 1123,-4934.89 1118.85,-4932.65 1126.4,-4934.06 1126.4,-4934.06"/>
+</g>
+<!-- asb&#45;cli_src_workloads_workload_adapters_PromptAdapter -->
+<g id="node66" class="node">
+<title>asb&#45;cli_src_workloads_workload_adapters_PromptAdapter</title>
+<path fill="#f8fafc" stroke="#64748b" d="M341,-4948C341,-4948 541,-4948 541,-4948 547,-4948 553,-4954 553,-4960 553,-4960 553,-4972 553,-4972 553,-4978 547,-4984 541,-4984 541,-4984 341,-4984 341,-4984 335,-4984 329,-4978 329,-4972 329,-4972 329,-4960 329,-4960 329,-4954 335,-4948 341,-4948"/>
+<text text-anchor="middle" x="441" y="-4963.8" font-family="Helvetica,sans-Serif" font-size="9.00">workloads_workload_adapters_PromptAdapter</text>
+</g>
+<!-- asb&#45;cli_src_workloads_workload_adapters_StaticExternalAdapter -->
+<g id="node67" class="node">
+<title>asb&#45;cli_src_workloads_workload_adapters_StaticExternalAdapter</title>
+<path fill="#f8fafc" stroke="#64748b" d="M63,-4886C63,-4886 819,-4886 819,-4886 825,-4886 831,-4892 831,-4898 831,-4898 831,-4910 831,-4910 831,-4916 825,-4922 819,-4922 819,-4922 63,-4922 63,-4922 57,-4922 51,-4916 51,-4910 51,-4910 51,-4898 51,-4898 51,-4892 57,-4886 63,-4886"/>
+<text text-anchor="middle" x="178.5" y="-4901.8" font-family="Helvetica,sans-Serif" font-size="9.00">workloads_workload_adapters_StaticExternalAdapter</text>
+<polyline fill="none" stroke="#64748b" points="306,-4886 306,-4922 "/>
+<text text-anchor="start" x="314" y="-4906.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;id: &amp;&#39;static str</text>
+<text text-anchor="start" x="314" y="-4896.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;trials: &amp;&#39;static [(&amp;&#39;static str, &amp;&#39;static str)]</text>
+<polyline fill="none" stroke="#64748b" points="509,-4886 509,-4922 "/>
+<text text-anchor="start" x="517" y="-4901.8" font-family="Helvetica,sans-Serif" font-size="9.00">+new(id: &amp;&#39;static str, trials: &amp;&#39;static [(&amp;&#39;static str, &amp;&#39;static str)]) Self</text>
+</g>
+<!-- asb&#45;cli_src_workloads_workload_adapters_WorkloadAdapter -->
+<g id="node68" class="node">
+<title>asb&#45;cli_src_workloads_workload_adapters_WorkloadAdapter</title>
+<path fill="#f8fafc" stroke="#64748b" d="M138,-4752C138,-4752 744,-4752 744,-4752 750,-4752 756,-4758 756,-4764 756,-4764 756,-4848 756,-4848 756,-4854 750,-4860 744,-4860 744,-4860 138,-4860 138,-4860 132,-4860 126,-4854 126,-4848 126,-4848 126,-4764 126,-4764 126,-4758 132,-4752 138,-4752"/>
+<text text-anchor="middle" x="242.5" y="-4803.8" font-family="Helvetica,sans-Serif" font-size="9.00">workloads_workload_adapters_WorkloadAdapter</text>
+<polyline fill="none" stroke="#64748b" points="359,-4752 359,-4860 "/>
+<text text-anchor="middle" x="369" y="-4803.8" font-family="Helvetica,sans-Serif" font-size="9.00"> </text>
+<polyline fill="none" stroke="#64748b" points="379,-4752 379,-4860 "/>
+<text text-anchor="start" x="387" y="-4848.8" font-family="Helvetica,sans-Serif" font-size="9.00">+id() &amp;&#39;static str</text>
+<text text-anchor="start" x="387" y="-4838.8" font-family="Helvetica,sans-Serif" font-size="9.00">+trial_ids() Vec&lt;Trial&gt;</text>
+<text text-anchor="start" x="387" y="-4828.8" font-family="Helvetica,sans-Serif" font-size="9.00">+prepare_source(workloads: &amp;Path, workspace: &amp;Path) Result&lt;usize, String&gt;</text>
+<text text-anchor="start" x="387" y="-4818.8" font-family="Helvetica,sans-Serif" font-size="9.00">+id() &amp;&#39;static str</text>
+<text text-anchor="start" x="387" y="-4808.8" font-family="Helvetica,sans-Serif" font-size="9.00">+matches(name: &amp;str) bool</text>
+<text text-anchor="start" x="387" y="-4798.8" font-family="Helvetica,sans-Serif" font-size="9.00">+trial_ids() Vec&lt;Trial&gt;</text>
+<text text-anchor="start" x="387" y="-4788.8" font-family="Helvetica,sans-Serif" font-size="9.00">+populate_prompts(directory: &amp;Path) Result&lt;usize, std::io::Error&gt;</text>
+<text text-anchor="start" x="387" y="-4778.8" font-family="Helvetica,sans-Serif" font-size="9.00">+populate_fixtures(directory: &amp;Path) Result&lt;usize, std::io::Error&gt;</text>
+<text text-anchor="start" x="387" y="-4768.8" font-family="Helvetica,sans-Serif" font-size="9.00">+prepare_fixture(name: &amp;str, workspace: &amp;Path) Result&lt;usize, String&gt;</text>
+<text text-anchor="start" x="387" y="-4758.8" font-family="Helvetica,sans-Serif" font-size="9.00">+prepare_source(_workloads: &amp;Path, _workspace: &amp;Path) Result&lt;usize, String&gt;</text>
+</g>
+<!-- asb&#45;cli_src_workloads_workload_adapters_WorkloadAdapter&#45;&gt;asb&#45;cli_src_Trial -->
+<g id="edge15" class="edge">
+<title>asb&#45;cli_src_workloads_workload_adapters_WorkloadAdapter&#45;&gt;asb&#45;cli_src_Trial</title>
+<path fill="none" stroke="#94a3b8" stroke-dasharray="5,2" d="M756.17,-4852.19C889.28,-4871.76 1033.2,-4892.92 1119.17,-4905.56"/>
+<polygon fill="#94a3b8" stroke="#94a3b8" points="1126.28,-4906.6 1118.9,-4908.7 1122.82,-4906.09 1119.36,-4905.58 1119.36,-4905.58 1119.36,-4905.58 1122.82,-4906.09 1119.82,-4902.47 1126.28,-4906.6 1126.28,-4906.6"/>
+</g>
+</g>
+</svg>
+</div>
+      <div id="tooltip" class="tooltip" role="status" aria-live="polite"></div>
+    </section>
+  </main>
+  <script>(() => {
+  const viewport = document.getElementById('viewport');
+  const canvas = document.getElementById('canvas');
+  const svg = canvas.querySelector('svg');
+  const tooltip = document.getElementById('tooltip');
+  const selection = document.getElementById('selection');
+  const search = document.getElementById('search');
+  const nodes = [...canvas.querySelectorAll('.node')];
+  const edges = [...canvas.querySelectorAll('.edge')];
+  const clusters = [...canvas.querySelectorAll('.cluster')];
+  const elements = [...nodes, ...edges, ...clusters];
+  const viewBox = svg.viewBox.baseVal;
+
+  canvas.style.width = `${viewBox.width}px`;
+  canvas.style.height = `${viewBox.height}px`;
+  svg.setAttribute('width', viewBox.width);
+  svg.setAttribute('height', viewBox.height);
+  const firstScale = Math.max(.02, Math.min(4, Math.min((viewport.clientWidth - 34) / viewBox.width, (viewport.clientHeight - 34) / viewBox.height)));
+  const state = {
+    scale: firstScale,
+    tx: (viewport.clientWidth - viewBox.width * firstScale) / 2,
+    ty: (viewport.clientHeight - viewBox.height * firstScale) / 2,
+    hover: null, pinned: null, pinnedParts: new Set(), pointers: new Map(),
+    gesture: null, pressTarget: null, transformFrame: 0, animation: 0,
+    suppressClickUntil: 0, tooltipFrame: 0, tooltipElement: null,
+    tooltipEvent: null, hoverSwitchTimer: 0, pendingHover: null, pendingEvent: null,
+  };
+  canvas.style.transform = `translate(${state.tx}px, ${state.ty}px) scale(${state.scale})`;
+  requestAnimationFrame(initialize);
+  return;
+
+  function initialize() {
+    const titles = new Map();
+    const names = new Map();
+    const edgeEndsCache = new Map();
+    const relatedCache = new Map();
+    const edgeHitPaths = [];
+    const rasterScale = .22;
+    const rasterLayer = document.createElement('canvas');
+    rasterLayer.className = 'raster-layer';
+    rasterLayer.width = Math.max(1, Math.round(viewBox.width * rasterScale));
+    rasterLayer.height = Math.max(1, Math.round(viewBox.height * rasterScale));
+    rasterLayer.style.width = `${viewBox.width}px`;
+    rasterLayer.style.height = `${viewBox.height}px`;
+    rasterLayer.setAttribute('aria-hidden', 'true');
+    canvas.appendChild(rasterLayer);
+    let rasterReady = false;
+    let rasterTimer = 0;
+    let rasterDirty = false;
+    const rawTitle = (element) => element.dataset.graphTitle || element.querySelector(':scope > title')?.textContent?.trim() || element.querySelector('title')?.textContent?.trim() || element.id || 'graph element';
+    const visibleName = (element) => {
+      if (names.has(element)) return names.get(element);
+      const text = [...element.querySelectorAll(':scope > text, :scope > g text')].map((item) => item.textContent.trim()).filter(Boolean).join(' · ');
+      const name = text || rawTitle(element);
+      names.set(element, name);
+      return name;
+    };
+    const titleOf = (element) => {
+      if (!element) return 'graph element';
+      if (!element.classList.contains('edge')) return visibleName(element);
+      const ends = rawTitle(element).split('->').map((part) => titles.get(part.trim())).filter(Boolean);
+      return ends.length === 2 ? `${visibleName(ends[0])} → ${visibleName(ends[1])}` : rawTitle(element);
+    };
+    const graphAncestor = (target) => {
+      let item = target;
+      while (item && item !== viewport) {
+        if (item.classList?.contains('node') || item.classList?.contains('edge') || item.classList?.contains('cluster')) return item;
+        item = item.parentElement;
+      }
+      return null;
+    };
+    const edgeEnds = (edge) => {
+      if (edgeEndsCache.has(edge)) return edgeEndsCache.get(edge);
+      const parts = rawTitle(edge).split('->').map((part) => part.trim());
+      const result = parts.length === 2 ? parts.map((part) => titles.get(part)).filter(Boolean) : [];
+      edgeEndsCache.set(edge, result);
+      return result;
+    };
+    const relatedTo = (element) => {
+      if (relatedCache.has(element)) return relatedCache.get(element);
+      const result = new Set([element]);
+      if (element.classList.contains('edge')) edgeEnds(element).forEach((end) => result.add(end));
+      else if (element.classList.contains('node')) edges.forEach((edge) => {
+        const ends = edgeEnds(edge);
+        if (ends.includes(element)) { result.add(edge); ends.forEach((end) => result.add(end)); }
+      });
+      relatedCache.set(element, result);
+      return result;
+    };
+    elements.forEach((element) => {
+      const title = rawTitle(element);
+      titles.set(title, element);
+      element.dataset.graphTitle = title;
+      element.setAttribute('tabindex', '0');
+      element.setAttribute('role', element.classList.contains('node') ? 'button' : 'img');
+      if (element.classList.contains('edge')) element.querySelectorAll(':scope > path').forEach((path) => {
+        const hit = path.cloneNode(false);
+        hit.classList.add('edge-hitbox');
+        hit.removeAttribute('marker-start'); hit.removeAttribute('marker-mid'); hit.removeAttribute('marker-end');
+        hit.setAttribute('stroke', 'transparent'); hit.setAttribute('stroke-width', '14'); hit.setAttribute('fill', 'none'); hit.setAttribute('pointer-events', 'stroke');
+        element.appendChild(hit);
+        edgeHitPaths.push({ edge: element, path: hit });
+      });
+    });
+    svg.querySelectorAll('title').forEach((title) => title.remove());
+    document.getElementById('counts').textContent = `${nodes.length} nodes · ${edges.length} edges · ${clusters.length} modules`;
+
+    function applyTransform() { canvas.style.transform = `translate(${state.tx}px, ${state.ty}px) scale(${state.scale})`; }
+    function useRaster() { if (rasterReady) { svg.style.visibility = 'hidden'; rasterLayer.style.display = 'block'; } }
+    function stopRaster() {
+      clearTimeout(rasterTimer);
+      rasterTimer = setTimeout(() => {
+        rasterLayer.style.display = 'none';
+        svg.style.visibility = '';
+        if (rasterDirty) {
+          rasterDirty = false;
+          const idle = window.requestIdleCallback || ((callback) => setTimeout(callback, 0));
+          idle(() => refreshRaster(), { timeout: 1200 });
+        }
+      }, 90);
+    }
+    function refreshRaster() {
+      const clone = svg.cloneNode(true);
+      clone.querySelectorAll('.edge-hitbox').forEach((item) => item.remove());
+      clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      clone.style.visibility = 'visible';
+      const blob = new Blob([new XMLSerializer().serializeToString(clone)], { type: 'image/svg+xml' });
+      const url = URL.createObjectURL(blob);
+      const image = new Image();
+      image.onload = () => {
+        const context = rasterLayer.getContext('2d');
+        context.clearRect(0, 0, rasterLayer.width, rasterLayer.height);
+        context.drawImage(image, 0, 0, rasterLayer.width, rasterLayer.height);
+        rasterReady = true;
+        URL.revokeObjectURL(url);
+      };
+      image.onerror = () => URL.revokeObjectURL(url);
+      image.src = url;
+    }
+    function scheduleTransform() { if (!state.transformFrame) state.transformFrame = requestAnimationFrame(() => { state.transformFrame = 0; applyTransform(); }); }
+    function moveTo(scale, tx, ty, animated = true) {
+      cancelAnimationFrame(state.animation);
+      if (!animated) { state.scale = scale; state.tx = tx; state.ty = ty; applyTransform(); return; }
+      useRaster();
+      const start = { scale: state.scale, tx: state.tx, ty: state.ty }, started = performance.now();
+      const frame = (now) => {
+        const p = Math.min(1, (now - started) / 360), eased = 1 - Math.pow(1 - p, 3);
+        state.scale = start.scale + (scale - start.scale) * eased; state.tx = start.tx + (tx - start.tx) * eased; state.ty = start.ty + (ty - start.ty) * eased; applyTransform();
+        if (p < 1) state.animation = requestAnimationFrame(frame); else stopRaster();
+      };
+      state.animation = requestAnimationFrame(frame);
+    }
+    function fit(animated = true) {
+      const scale = Math.max(.02, Math.min(4, Math.min((viewport.clientWidth - 34) / viewBox.width, (viewport.clientHeight - 34) / viewBox.height)));
+      moveTo(scale, (viewport.clientWidth - viewBox.width * scale) / 2, (viewport.clientHeight - viewBox.height * scale) / 2, animated);
+    }
+    function centerElements(items) {
+      const vr = viewport.getBoundingClientRect();
+      const rects = items.map((item) => item.getBoundingClientRect()).filter((rect) => rect.width && rect.height);
+      if (!rects.length) return;
+      const left = Math.min(...rects.map((rect) => rect.left - vr.left)), top = Math.min(...rects.map((rect) => rect.top - vr.top));
+      const right = Math.max(...rects.map((rect) => rect.right - vr.left)), bottom = Math.max(...rects.map((rect) => rect.bottom - vr.top));
+      const width = Math.max(1, right - left), height = Math.max(1, bottom - top);
+      const scale = Math.max(.05, Math.min(2.5, state.scale * Math.min(1.5, (viewport.clientWidth - 72) / width, (viewport.clientHeight - 72) / height)));
+      const graphX = ((left + right) / 2 - state.tx) / state.scale, graphY = ((top + bottom) / 2 - state.ty) / state.scale;
+      moveTo(scale, viewport.clientWidth / 2 - graphX * scale, viewport.clientHeight / 2 - graphY * scale, true);
+    }
+    function pointTarget(x, y) {
+      const candidates = document.elementsFromPoint(x, y).map(graphAncestor).filter(Boolean);
+      return candidates.find((item) => item.classList.contains('node')) || candidates.find((item) => item.classList.contains('edge')) || candidates.find((item) => item.classList.contains('cluster')) || null;
+    }
+    function edgeTargetAtPoint(x, y, onlyEdge = null) {
+      const screenPoint = svg.createSVGPoint(); screenPoint.x = x; screenPoint.y = y;
+      for (const item of edgeHitPaths) {
+        if (onlyEdge && item.edge !== onlyEdge) continue;
+        const rect = item.path.getBoundingClientRect();
+        if (x < rect.left - 3 || x > rect.right + 3 || y < rect.top - 3 || y > rect.bottom + 3) continue;
+        const ctm = item.path.getScreenCTM();
+        if (!ctm || typeof item.path.isPointInStroke !== 'function') continue;
+        const local = screenPoint.matrixTransform(ctm.inverse());
+        if (item.path.isPointInStroke(local)) return item.edge;
+      }
+      return null;
+    }
+    function hitAt(x, y) {
+      // Keep the current edge authoritative while the pointer remains inside
+      // its actual enlarged stroke. This avoids boundary flicker without
+      // using a broad bounding rectangle that could mask nearby nodes.
+      const currentEdge = state.hover?.classList.contains('edge') ? edgeTargetAtPoint(x, y, state.hover) : null;
+      if (currentEdge) return currentEdge;
+      const direct = pointTarget(x, y);
+      if (direct?.classList.contains('node')) return direct;
+      return edgeTargetAtPoint(x, y) || direct;
+    }
+    function hideTooltip() { state.tooltipElement = null; state.tooltipEvent = null; tooltip.style.display = 'none'; }
+    function drawTooltip() {
+      state.tooltipFrame = 0; if (!state.tooltipElement || !state.tooltipEvent) return;
+      const event = state.tooltipEvent; tooltip.textContent = titleOf(state.tooltipElement); tooltip.style.display = 'block';
+      tooltip.style.left = `${Math.max(12, Math.min(event.clientX + 14, window.innerWidth - 372))}px`; tooltip.style.top = `${Math.max(12, Math.min(event.clientY + 14, window.innerHeight - 84))}px`;
+    }
+    function showTooltip(element, event) { state.tooltipElement = element; state.tooltipEvent = event; if (!state.tooltipFrame) state.tooltipFrame = requestAnimationFrame(drawTooltip); }
+    function setHover(element, event) {
+      clearTimeout(state.hoverSwitchTimer);
+      state.pendingHover = null;
+      state.pendingEvent = null;
+      if (state.hover !== element) {
+        if (state.hover && !state.hover.classList.contains('is-pinned')) state.hover.classList.remove('is-hovered');
+        state.hover = element;
+        if (element) element.classList.add('is-hovered');
+      }
+      if (element) showTooltip(element, event); else hideTooltip();
+    }
+    function requestHover(element, event) {
+      if (element === state.hover) {
+        clearTimeout(state.hoverSwitchTimer);
+        state.pendingHover = null;
+        state.pendingEvent = null;
+        if (element) showTooltip(element, event);
+        return;
+      }
+      if (!state.hover) { setHover(element, event); return; }
+      state.pendingHover = element;
+      state.pendingEvent = event;
+      clearTimeout(state.hoverSwitchTimer);
+      state.hoverSwitchTimer = setTimeout(() => {
+        const next = state.pendingHover;
+        const nextEvent = state.pendingEvent;
+        state.pendingHover = null;
+        state.pendingEvent = null;
+        if (next !== state.hover) setHover(next, nextEvent || event);
+      }, 60);
+      showTooltip(state.hover, event);
+    }
+    function clearPinned() { state.pinnedParts.forEach((item) => item.classList.remove('is-pinned')); state.pinnedParts.clear(); state.pinned = null; }
+    function select(element, reverseEdge = false) {
+      if (!element) return;
+      elements.forEach((item) => item.classList.remove('is-hovered'));
+      state.hover = null;
+      hideTooltip();
+      if (state.pinned === element) { clearPinned(); selection.textContent = 'Hover an element for details. Drag to pan; scroll to zoom.'; return; }
+      clearPinned(); state.pinned = element; state.pinnedParts = new Set(relatedTo(element)); state.pinnedParts.forEach((item) => item.classList.add('is-pinned')); selection.textContent = titleOf(element);
+      if (element.classList.contains('edge')) { const ends = edgeEnds(element), target = ends[reverseEdge ? 0 : 1]; centerElements([...state.pinnedParts, ...(target ? [target] : [])]); } else centerElements([...state.pinnedParts]);
+      state.hover = null;
+      rasterDirty = true;
+    }
+    function clearAll() { clearPinned(); setHover(null); elements.forEach((item) => item.classList.remove('is-dimmed', 'is-selected', 'is-related')); selection.textContent = 'Hover an element for details. Drag to pan; scroll to zoom.'; }
+
+    viewport.addEventListener('pointermove', (event) => {
+      if (state.gesture?.dragging) return;
+      const target = hitAt(event.clientX, event.clientY);
+      requestHover(target, event);
+    });
+    viewport.addEventListener('pointerleave', () => { if (!state.gesture?.dragging) setHover(null); });
+    viewport.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY }); state.pressTarget = hitAt(event.clientX, event.clientY) || state.hover; viewport.setPointerCapture(event.pointerId);
+      if (state.pointers.size >= 2) {
+        const points = [...state.pointers.values()], mid = { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 }, vr = viewport.getBoundingClientRect();
+        state.gesture = { type: 'pinch', distance: Math.max(1, Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y)), scale: state.scale, graphX: (mid.x - vr.left - state.tx) / state.scale, graphY: (mid.y - vr.top - state.ty) / state.scale, moved: false }; state.pressTarget = null;
+      } else state.gesture = { type: 'pointer', x: event.clientX, y: event.clientY, tx: state.tx, ty: state.ty, moved: false };
+    });
+    viewport.addEventListener('pointermove', (event) => {
+      if (!state.pointers.has(event.pointerId)) return;
+      state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (state.pointers.size >= 2 && state.gesture?.type === 'pinch') {
+        const points = [...state.pointers.values()], mid = { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 }, vr = viewport.getBoundingClientRect();
+        const scale = Math.max(.02, Math.min(4, state.gesture.scale * Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y) / state.gesture.distance));
+        state.scale = scale; state.tx = mid.x - vr.left - state.gesture.graphX * scale; state.ty = mid.y - vr.top - state.gesture.graphY * scale; state.gesture.moved = true; viewport.classList.add('dragging'); useRaster(); scheduleTransform(); return;
+      }
+      if (state.gesture?.type !== 'pointer') return;
+      const dx = event.clientX - state.gesture.x, dy = event.clientY - state.gesture.y;
+      if (Math.hypot(dx, dy) > 4) { state.gesture.moved = true; state.gesture.dragging = true; viewport.classList.add('dragging'); useRaster(); }
+      state.gesture.nextTx = state.gesture.tx + dx; state.gesture.nextTy = state.gesture.ty + dy;
+      if (!state.gesture.frame) state.gesture.frame = requestAnimationFrame(() => { state.tx = state.gesture?.nextTx ?? state.tx; state.ty = state.gesture?.nextTy ?? state.ty; state.gesture.frame = 0; applyTransform(); });
+    });
+    function finish(event) {
+      const gesture = state.gesture; state.pointers.delete(event.pointerId); if (state.pointers.size) return;
+      if (gesture?.frame) cancelAnimationFrame(gesture.frame); if (gesture?.nextTx !== undefined) { state.tx = gesture.nextTx; state.ty = gesture.nextTy; applyTransform(); }
+      if (gesture?.type === 'pointer' && !gesture.moved && state.pressTarget) { state.suppressClickUntil = performance.now() + 500; event.preventDefault(); select(hitAt(event.clientX, event.clientY) || state.pressTarget, event.ctrlKey || event.metaKey); } else { state.suppressClickUntil = performance.now() + 150; stopRaster(); }
+      state.gesture = null; state.pressTarget = null; viewport.classList.remove('dragging');
+    }
+    viewport.addEventListener('pointerup', finish); viewport.addEventListener('pointercancel', finish);
+    viewport.addEventListener('lostpointercapture', () => { if (!state.pointers.size) { state.gesture = null; state.pressTarget = null; viewport.classList.remove('dragging'); } });
+    viewport.addEventListener('click', (event) => { if (state.suppressClickUntil > performance.now()) { event.preventDefault(); event.stopPropagation(); return; } if (event.target === viewport || event.target === canvas) clearAll(); });
+    viewport.addEventListener('wheel', (event) => { event.preventDefault(); const rect = viewport.getBoundingClientRect(), x = event.clientX - rect.left, y = event.clientY - rect.top, scale = Math.max(.02, Math.min(4, state.scale * Math.pow(1.0018, -event.deltaY))); state.tx = x - (x - state.tx) * scale / state.scale; state.ty = y - (y - state.ty) * scale / state.scale; state.scale = scale; useRaster(); scheduleTransform(); stopRaster(); }, { passive: false });
+    viewport.addEventListener('keydown', (event) => { if (event.key !== 'Enter' && event.key !== ' ') return; const target = graphAncestor(event.target); if (target) { event.preventDefault(); select(target); } });
+    document.getElementById('fit').addEventListener('click', () => { clearAll(); fit(); });
+    document.getElementById('reset').addEventListener('click', () => { clearAll(); fit(false); });
+    document.getElementById('zoom-in').addEventListener('click', () => { state.scale = Math.min(4, state.scale * 1.25); applyTransform(); });
+    document.getElementById('zoom-out').addEventListener('click', () => { state.scale = Math.max(.02, state.scale / 1.25); applyTransform(); });
+    search.addEventListener('input', () => { const query = search.value.trim().toLowerCase(); elements.forEach((item) => item.classList.toggle('is-dimmed', Boolean(query) && !titleOf(item).toLowerCase().includes(query))); });
+    window.addEventListener('resize', () => { if (!state.pinned) fit(false); });
+    fit(false);
+    refreshRaster();
+  }
+})();
+</script>
+</body>
+</html>
