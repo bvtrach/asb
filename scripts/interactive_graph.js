@@ -46,6 +46,7 @@
     canvas.appendChild(rasterLayer);
     let rasterReady = false;
     let rasterTimer = 0;
+    let rasterDirty = false;
     const rawTitle = (element) => element.dataset.graphTitle || element.querySelector(':scope > title')?.textContent?.trim() || element.querySelector('title')?.textContent?.trim() || element.id || 'graph element';
     const visibleName = (element) => {
       if (names.has(element)) return names.get(element);
@@ -106,7 +107,18 @@
 
     function applyTransform() { canvas.style.transform = `translate(${state.tx}px, ${state.ty}px) scale(${state.scale})`; }
     function useRaster() { if (rasterReady) { svg.style.visibility = 'hidden'; rasterLayer.style.display = 'block'; } }
-    function stopRaster() { clearTimeout(rasterTimer); rasterTimer = setTimeout(() => { rasterLayer.style.display = 'none'; svg.style.visibility = ''; }, 90); }
+    function stopRaster() {
+      clearTimeout(rasterTimer);
+      rasterTimer = setTimeout(() => {
+        rasterLayer.style.display = 'none';
+        svg.style.visibility = '';
+        if (rasterDirty) {
+          rasterDirty = false;
+          const idle = window.requestIdleCallback || ((callback) => setTimeout(callback, 0));
+          idle(() => refreshRaster(), { timeout: 1200 });
+        }
+      }, 90);
+    }
     function refreshRaster() {
       const clone = svg.cloneNode(true);
       clone.querySelectorAll('.edge-hitbox').forEach((item) => item.remove());
@@ -229,7 +241,7 @@
       clearPinned(); state.pinned = element; state.pinnedParts = new Set(relatedTo(element)); state.pinnedParts.forEach((item) => item.classList.add('is-pinned')); selection.textContent = titleOf(element);
       if (element.classList.contains('edge')) { const ends = edgeEnds(element), target = ends[reverseEdge ? 0 : 1]; centerElements([...state.pinnedParts, ...(target ? [target] : [])]); } else centerElements([...state.pinnedParts]);
       state.hover = null;
-      refreshRaster();
+      rasterDirty = true;
     }
     function clearAll() { clearPinned(); setHover(null); elements.forEach((item) => item.classList.remove('is-dimmed', 'is-selected', 'is-related')); selection.textContent = 'Hover an element for details. Drag to pan; scroll to zoom.'; }
 
