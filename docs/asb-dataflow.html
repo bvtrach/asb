@@ -38,7 +38,7 @@ h1 { font-size: clamp(20px, 3vw, 32px); line-height: 1.1; margin: 0; }
 .canvas .node, .canvas .edge, .canvas .cluster { cursor: pointer; }
 .canvas .node.is-hovered > polygon, .canvas .node.is-pinned > polygon, .canvas .node.is-hovered > ellipse, .canvas .node.is-pinned > ellipse, .canvas .node.is-hovered > path, .canvas .node.is-pinned > path { fill: #eff6ff !important; stroke: #3b82f6 !important; stroke-width: 2px !important; }
 .canvas .edge.is-hovered > path, .canvas .edge.is-pinned > path, .canvas .edge.is-hovered > polygon, .canvas .edge.is-pinned > polygon { stroke: #2563eb !important; stroke-width: 2.4px !important; }
-.canvas .edge > .edge-hitbox { opacity: 0 !important; pointer-events: bounding-box; stroke: transparent !important; stroke-width: 12px !important; }
+.canvas .edge > .edge-hitbox { opacity: 0 !important; pointer-events: stroke; stroke: transparent !important; stroke-width: 14px !important; }
 .canvas .cluster.is-hovered > path, .canvas .cluster.is-pinned > path { stroke: #60a5fa !important; stroke-width: 2px !important; }
 .canvas .node:focus, .canvas .edge:focus, .canvas .cluster:focus { outline: none; }
 .canvas .is-dimmed { opacity: .18; }
@@ -6607,7 +6607,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     hover: null, pinned: null, pinnedParts: new Set(), pointers: new Map(),
     gesture: null, pressTarget: null, transformFrame: 0, animation: 0,
     suppressClickUntil: 0, tooltipFrame: 0, tooltipElement: null,
-    tooltipEvent: null, hoverRect: null,
+    tooltipEvent: null,
   };
   canvas.style.transform = `translate3d(${state.tx}px, ${state.ty}px, 0) scale(${state.scale})`;
   requestAnimationFrame(initialize);
@@ -6618,6 +6618,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     const names = new Map();
     const edgeEndsCache = new Map();
     const relatedCache = new Map();
+    const edgeHitPaths = [];
     const rawTitle = (element) => element.dataset.graphTitle || element.querySelector(':scope > title')?.textContent?.trim() || element.querySelector('title')?.textContent?.trim() || element.id || 'graph element';
     const visibleName = (element) => {
       if (names.has(element)) return names.get(element);
@@ -6668,8 +6669,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
         const hit = path.cloneNode(false);
         hit.classList.add('edge-hitbox');
         hit.removeAttribute('marker-start'); hit.removeAttribute('marker-mid'); hit.removeAttribute('marker-end');
-        hit.setAttribute('stroke', 'transparent'); hit.setAttribute('stroke-width', '12'); hit.setAttribute('fill', 'none'); hit.setAttribute('pointer-events', 'bounding-box');
+        hit.setAttribute('stroke', 'transparent'); hit.setAttribute('stroke-width', '14'); hit.setAttribute('fill', 'none'); hit.setAttribute('pointer-events', 'stroke');
         element.appendChild(hit);
+        edgeHitPaths.push({ edge: element, path: hit });
       });
     });
     svg.querySelectorAll('title').forEach((title) => title.remove());
@@ -6707,12 +6709,19 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
       const candidates = document.elementsFromPoint(x, y).map(graphAncestor).filter(Boolean);
       return candidates.find((item) => item.classList.contains('node')) || candidates[0] || null;
     }
-    function inEdgeRegion(edge, x, y) {
-      if (!edge?.classList.contains('edge')) return false;
-      const rect = state.hoverRect || edge.getBoundingClientRect(); state.hoverRect = rect;
-      return x >= rect.left - 8 && x <= rect.right + 8 && y >= rect.top - 8 && y <= rect.bottom + 8;
+    function edgeTargetAtPoint(x, y) {
+      const screenPoint = svg.createSVGPoint(); screenPoint.x = x; screenPoint.y = y;
+      for (const item of edgeHitPaths) {
+        const rect = item.path.getBoundingClientRect();
+        if (x < rect.left - 3 || x > rect.right + 3 || y < rect.top - 3 || y > rect.bottom + 3) continue;
+        const ctm = item.path.getScreenCTM();
+        if (!ctm || typeof item.path.isPointInStroke !== 'function') continue;
+        const local = screenPoint.matrixTransform(ctm.inverse());
+        if (item.path.isPointInStroke(local)) return item.edge;
+      }
+      return null;
     }
-    function hitAt(x, y) { return inEdgeRegion(state.hover, x, y) ? state.hover : pointTarget(x, y); }
+    function hitAt(x, y) { return pointTarget(x, y) || edgeTargetAtPoint(x, y); }
     function hideTooltip() { state.tooltipElement = null; state.tooltipEvent = null; tooltip.style.display = 'none'; }
     function drawTooltip() {
       state.tooltipFrame = 0; if (!state.tooltipElement || !state.tooltipEvent) return;
@@ -6723,7 +6732,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     function setHover(element, event) {
       if (state.hover !== element) {
         if (state.hover && !state.hover.classList.contains('is-pinned')) state.hover.classList.remove('is-hovered');
-        state.hover = element; state.hoverRect = element?.classList.contains('edge') ? element.getBoundingClientRect() : null;
+        state.hover = element;
         if (element) element.classList.add('is-hovered');
       }
       if (element) showTooltip(element, event); else hideTooltip();
@@ -6734,7 +6743,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
       if (state.pinned === element) { clearPinned(); selection.textContent = 'Hover an element for details. Drag to pan; scroll to zoom.'; return; }
       clearPinned(); state.pinned = element; state.pinnedParts = new Set(relatedTo(element)); state.pinnedParts.forEach((item) => item.classList.add('is-pinned')); selection.textContent = titleOf(element);
       if (element.classList.contains('edge')) { const ends = edgeEnds(element), target = ends[reverseEdge ? 0 : 1]; centerElements([...state.pinnedParts, ...(target ? [target] : [])]); } else centerElements([...state.pinnedParts]);
-      state.hover = null; state.hoverRect = null;
+      state.hover = null;
     }
     function clearAll() { clearPinned(); setHover(null); elements.forEach((item) => item.classList.remove('is-dimmed', 'is-selected', 'is-related')); selection.textContent = 'Hover an element for details. Drag to pan; scroll to zoom.'; }
 
@@ -6742,7 +6751,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     viewport.addEventListener('pointerleave', () => { if (!state.gesture?.dragging) setHover(null); });
     viewport.addEventListener('pointerdown', (event) => {
       if (event.button !== 0) return;
-      state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY }); state.pressTarget = pointTarget(event.clientX, event.clientY) || state.hover; viewport.setPointerCapture(event.pointerId);
+      state.pointers.set(event.pointerId, { x: event.clientX, y: event.clientY }); state.pressTarget = hitAt(event.clientX, event.clientY) || state.hover; viewport.setPointerCapture(event.pointerId);
       if (state.pointers.size >= 2) {
         const points = [...state.pointers.values()], mid = { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 }, vr = viewport.getBoundingClientRect();
         state.gesture = { type: 'pinch', distance: Math.max(1, Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y)), scale: state.scale, graphX: (mid.x - vr.left - state.tx) / state.scale, graphY: (mid.y - vr.top - state.ty) / state.scale, moved: false }; state.pressTarget = null;
@@ -6765,8 +6774,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     function finish(event) {
       const gesture = state.gesture; state.pointers.delete(event.pointerId); if (state.pointers.size) return;
       if (gesture?.frame) cancelAnimationFrame(gesture.frame); if (gesture?.nextTx !== undefined) { state.tx = gesture.nextTx; state.ty = gesture.nextTy; applyTransform(); }
-      if (gesture?.type === 'pointer' && !gesture.moved && state.pressTarget) { state.suppressClickUntil = performance.now() + 500; event.preventDefault(); select(pointTarget(event.clientX, event.clientY) || state.pressTarget, event.ctrlKey || event.metaKey); } else state.suppressClickUntil = performance.now() + 150;
-      state.gesture = null; state.pressTarget = null; state.hoverRect = null; viewport.classList.remove('dragging');
+      if (gesture?.type === 'pointer' && !gesture.moved && state.pressTarget) { state.suppressClickUntil = performance.now() + 500; event.preventDefault(); select(hitAt(event.clientX, event.clientY) || state.pressTarget, event.ctrlKey || event.metaKey); } else state.suppressClickUntil = performance.now() + 150;
+      state.gesture = null; state.pressTarget = null; viewport.classList.remove('dragging');
     }
     viewport.addEventListener('pointerup', finish); viewport.addEventListener('pointercancel', finish);
     viewport.addEventListener('lostpointercapture', () => { if (!state.pointers.size) { state.gesture = null; state.pressTarget = null; viewport.classList.remove('dragging'); } });

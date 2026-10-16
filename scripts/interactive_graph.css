@@ -32,7 +32,7 @@ h1 { font-size: clamp(20px, 3vw, 32px); line-height: 1.1; margin: 0; }
 .canvas .node, .canvas .edge, .canvas .cluster { cursor: pointer; }
 .canvas .node.is-hovered > polygon, .canvas .node.is-pinned > polygon, .canvas .node.is-hovered > ellipse, .canvas .node.is-pinned > ellipse, .canvas .node.is-hovered > path, .canvas .node.is-pinned > path { fill: #eff6ff !important; stroke: #3b82f6 !important; stroke-width: 2px !important; }
 .canvas .edge.is-hovered > path, .canvas .edge.is-pinned > path, .canvas .edge.is-hovered > polygon, .canvas .edge.is-pinned > polygon { stroke: #2563eb !important; stroke-width: 2.4px !important; }
-.canvas .edge > .edge-hitbox { opacity: 0 !important; pointer-events: bounding-box; stroke: transparent !important; stroke-width: 12px !important; }
+.canvas .edge > .edge-hitbox { opacity: 0 !important; pointer-events: stroke; stroke: transparent !important; stroke-width: 14px !important; }
 .canvas .cluster.is-hovered > path, .canvas .cluster.is-pinned > path { stroke: #60a5fa !important; stroke-width: 2px !important; }
 .canvas .node:focus, .canvas .edge:focus, .canvas .cluster:focus { outline: none; }
 .canvas .is-dimmed { opacity: .18; }
