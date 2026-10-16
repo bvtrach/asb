@@ -10,7 +10,16 @@ Use the pinned Rust toolchain and run:
 cargo fmt --all -- --check
 cargo test --locked
 cargo build --locked
+make rust-doc
+make uml
 ```
+
+`make rust-doc` runs `cargo doc --locked --no-deps --document-private-items`,
+because the CLI implementation modules are intentionally private. `make uml`
+installs the pinned AutoUML release under `target/tools/`, regenerates
+`docs/asb-type-diagram.mmd`, and renders `docs/asb-type-diagram.svg`. The
+generated diagram supplements the maintained architecture overview; review both
+when changing public or private type relationships.
 
 These checks are offline and deterministic: CI never starts an agent, bridge,
 or live provider. Run `asb run` with credentials only as an explicit local

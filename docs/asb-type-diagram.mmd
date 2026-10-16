@@ -1,0 +1,414 @@
+classDiagram
+    class asb-cli_src_TrialSet {
+        +workload: String
+        +trials: Vec~asb-cli_src_Trial~
+    }
+    class asb-cli_src_Trial {
+        +id: String
+        +description: String
+    }
+    class asb-cli_src_Fixture {
+        -name: &'static str
+        -files: &'static [(&'static str, &'static str)]
+    }
+    class asb-cli_src_SweepFile {
+        -configs: Vec~String~
+    }
+    class asb-cli_src_BenchmarkData {
+        -label: String
+        -directory: PathBuf
+        -agent: String
+        -workload: String
+        -provider: String
+        -model: String
+        -metrics: BTreeMap~String, f64~
+        -series: BTreeMap~String, asb-cli_src_TimeSeries~
+        -status: Option~String~
+        -artifacts: Vec~String~
+    }
+    class asb-cli_src_TimeSeries {
+        -values: Vec~f64~
+        -timestamps_ms: Option~Vec<f64>~
+    }
+    class asb-cli_src_SweepFile {
+        -configs: Vec~String~
+    }
+    class asb-cli_src_RunResult~'a~ {
+        -status: &'a str
+        -agent: &'a str
+        -workload: &'a str
+        -provider: &'a str
+        -model: &'a str
+        -success_rate: f64
+        -elapsed_ms: u128
+        -exit_code: Option~i32~
+        -token_usage: asb-cli_src_TokenUsage
+        -steps: u64
+        -cassette: Option~String~
+        -stdout: String
+        -stderr: String
+    }
+    class asb-cli_src_CommandSpec {
+        -program: String
+        -args: Vec~String~
+        -append_prompt: bool
+    }
+    class asb-cli_src_Session {
+        -child: Child
+        -url: String
+        +start(mode: Mode, cassette: &Path, upstream: Option~&str~, respect_record_timings: bool) Result~Self, Error~
+        +url() &str
+        +stop(self) Result~(), Error~
+    }
+    class asb-cli_src_ProxyExecutable {
+        +command() Command
+    }
+    class asb-cli_src_Drop {
+        +drop() void
+    }
+    class asb-cli_src_ProviderSpec {
+        +name: &'static str
+        +credential: Option~&'static str~
+        +endpoint: Option~&'static str~
+    }
+    class asb-cli_src_ModelSpec {
+        +name: &'static str
+        +credential: Option~&'static str~
+        +endpoint: Option~&'static str~
+        +default_url: Option~&'static str~
+        +kind: ModelKind
+        +url(self) Option~String~
+    }
+    class asb-cli_src_BenchmarkConfig {
+        +agent: String
+        +workload: String
+        +provider: String
+        +model: String
+        +concurrency: usize
+        +trial_set: Option~String~
+        +trial: Option~String~
+        +workspace: String
+        +log_file: String
+        +measurements: Option~asb-cli_src_MeasurementConfig~
+    }
+    class asb-cli_src_MeasurementConfig {
+        +enabled: bool
+        +directory: String
+        +collectors: Vec~String~
+    }
+    class asb-cli_src_BpftraceProfile {
+        -name: &'static str
+        -description: &'static str
+        -program: &'static str
+    }
+    class asb-cli_src_TokenUsage {
+        +input_tokens: Option~u64~
+        +output_tokens: Option~u64~
+        +cached_tokens: Option~u64~
+        +total_tokens: Option~u64~
+        +source: Option~String~
+        +merge(self, other: Self) Self
+        +add(self, other: Self) Self
+        +merge_with_source(self, other: Self, source: &str) Self
+        +with_derived_total(self) Self
+        +any() bool
+    }
+    class asb-cli_src_RunMeasurement~'a~ {
+        +schema_version: u32
+        +run_id: String
+        +status: &'a str
+        +success: bool
+        +success_rate: f64
+        +agent: &'a str
+        +workload: &'a str
+        +provider: &'a str
+        +model: &'a str
+        +elapsed_ms: u128
+        +exit_code: Option~i32~
+        +token_usage: asb-cli_src_TokenUsage
+        +steps: u64
+        +started_unix_ms: u128
+    }
+    class asb-cli_src_SystemInfo {
+        -schema_version: u32
+        -collected_unix_ms: u128
+        -os: &'static str
+        -architecture: &'static str
+        -logical_cpus: usize
+        -kernel_release: Option~String~
+        -memory_total_kib: Option~u64~
+    }
+    class asb-cli_src_CollectorResult {
+        -schema_version: u32
+        -collector: String
+        -status: String
+        -exit_code: Option~i32~
+        -elapsed_ms: u128
+        -stdout: String
+        -stderr: String
+        -artifact: Option~String~
+        -metrics: BTreeMap~String, f64~
+        -series: BTreeMap~String, Vec<f64>~
+        -series_timestamps: BTreeMap~String, Vec<f64>~
+    }
+    class asb-cli_src_Collector {
+        -name: String
+        -child: Child
+        -started: Instant
+        -stdout_path: PathBuf
+        -stderr_path: PathBuf
+    }
+    class asb-cli_src_Session {
+        -dir: PathBuf
+        -tool_dir: Option~PathBuf~
+        -started_unix_ms: u128
+        -collectors: Vec~asb-cli_src_Collector~
+        -perf_data: Option~PathBuf~
+        -perf_enabled: bool
+        -perfetto_trace: Option~PathBuf~
+        -perfetto_enabled: bool
+        -trace_marker: Option~PathBuf~
+        -tracepoint_count: u64
+        -perfetto_metrics: BTreeMap~String, f64~
+        -bpftrace_profiles: Vec~asb-cli_src_BpftraceProfile~
+        -mpstat_enabled: bool
+        -iostat_enabled: bool
+        -bpftrace_enabled: bool
+        -sudo_collectors: BTreeSet~String~
+        +started_unix_ms() u128
+        +start_with_collectors(dir: &Path, selected: &[String], tool_dir: Option~&Path~) Result~Self, String~
+        +trace_instant(name: &str) void
+        +trace_begin(name: &str) void
+        +trace_end() void
+        +attach_pid(pid: u32) Result~(), String~
+        +finish(self, measurement: asb-cli_src_RunMeasurement~'a~) Result~(), String~
+        +start_perfetto(pid: u32) Result~(), String~
+        +write_trace_marker(event: &str) void
+        +perfetto_trace_metrics() BTreeMap~String, f64~
+        +perfetto_trace_series() (BTreeMap~String, Vec<f64>>, BTreeMap<String, Vec<f64>~
+        +start_snapshot(name: &str, variable: &str, args: &[&str], enabled: bool, command_name: &str) Result~(), String~
+        +start_process_snapshots(pid: u32) Result~(), String~
+        +start_bpftrace(pid: u32) Result~(), String~
+        +start_bpftrace_profiles(pid: u32) Result~(), String~
+        +write_flamegraph() Result~(), String~
+        +command(name: &str) Command
+        +executable(name: &str) PathBuf
+    }
+    class asb-cli_src_Default {
+        +default() Self
+    }
+    class asb-cli_src_FlamegraphStatus~'a~ {
+        -schema_version: u32
+        -status: &'a str
+        -artifact: Option~&'a str~
+        -reason: Option~&'a str~
+    }
+    class asb-cli_src_LoggedStatus {
+        +logged_status() Result~ExitStatus~
+    }
+    class asb-cli_src_ExternalWorkload {
+        -name: &'static str
+        -source: &'static str
+    }
+    class asb-cli_src_BundleSpec {
+        -archive: &'static str
+        -marker: &'static str
+        -prompt: &'static str
+    }
+    class asb-cli_src_ToolInstallOptions {
+        +name: String
+        +source: Option~String~
+        +dir: Option~PathBuf~
+        +dry_run: bool
+    }
+    class asb-cli_src_WorkloadInstallOptions {
+        +source: String
+        +name: Option~String~
+        +dir: Option~PathBuf~
+    }
+    class asb-cli_src_WorkloadListOptions {
+        +dir: Option~PathBuf~
+    }
+    class asb-cli_src_CliError {
+        +fmt(formatter: Formatter~'_~) Result
+    }
+    class asb-cli_src_SetupOptions {
+        +agent: Option~String~
+        +workload: Option~String~
+        +provider: Option~String~
+        +model: Option~String~
+        +concurrency: Option~usize~
+        +workspace: Option~String~
+        +output: Option~String~
+    }
+    class asb-cli_src_ModelInfo {
+        -id: String
+        -tool_calling: bool
+    }
+    class asb-cli_src_ModelListOptions {
+        +provider: Option~String~
+        +json: bool
+        +free_only: bool
+    }
+    class asb-cli_src_Cli {
+        -completion: Option~String~
+        -command: Option~CommandLine~
+    }
+    class asb-cli_src_InitArgs {
+        -root: Option~PathBuf~
+        -reset: bool
+    }
+    class asb-cli_src_SetupArgs {
+        -mode: Option~SetupMode~
+        -agent: Option~String~
+        -workload: Option~String~
+        -provider: Option~String~
+        -model: Option~String~
+        -concurrency: Option~usize~
+        -workspace: Option~String~
+        -output: Option~String~
+    }
+    class asb-cli_src_From {
+        +from(value: asb-cli_src_SetupArgs) Self
+        +from(value: asb-cli_src_ModelArgs) Self
+        +from(value: asb-cli_src_ToolInstallArgs) Self
+        +from(value: asb-cli_src_WorkloadInstallArgs) Self
+        +from(value: asb-cli_src_WorkloadListArgs) Self
+    }
+    class asb-cli_src_RunArgs {
+        -path: String
+        -record: bool
+        -replay: bool
+        -respect_record_timings: bool
+        -cassette: Option~String~
+        -json: bool
+        -show_output: bool
+        -measurements: Option~String~
+    }
+    class asb-cli_src_SweepArgs {
+        -path: String
+        -record: bool
+        -replay: bool
+        -respect_record_timings: bool
+        -json: bool
+        -show_output: bool
+    }
+    class asb-cli_src_CompareArgs {
+        -path: String
+    }
+    class asb-cli_src_ProviderArgs {
+        -command: ProviderCommand
+    }
+    class asb-cli_src_ToolArgs {
+        -command: ToolCommand
+    }
+    class asb-cli_src_ToolListArgs {
+    }
+    class asb-cli_src_WorkloadArgs {
+        -command: WorkloadCommand
+    }
+    class asb-cli_src_WorkloadListArgs {
+        -dir: Option~PathBuf~
+    }
+    class asb-cli_src_WorkloadInstallArgs {
+        -source: String
+        -name: Option~String~
+        -dir: Option~PathBuf~
+    }
+    class asb-cli_src_ModelArgs {
+        -provider: Option~String~
+        -json: bool
+        -free: bool
+    }
+    class asb-cli_src_ToolInstallArgs {
+        -name: String
+        -source: Option~String~
+        -dir: Option~PathBuf~
+        -dry_run: bool
+    }
+    class asb-cli_src_Choice {
+        -label: String
+        -provider: Option~String~
+        -model: Option~String~
+        -availability: Availability
+    }
+    class asb-cli_src_Pane {
+        -choices: Vec~asb-cli_src_Choice~
+        -selected: Vec~bool~
+        -cursor: usize
+        -search: String
+        -sections: Vec~Option<&'static str>~
+        +new(choices: Vec~asb-cli_src_Choice~) Self
+        +visible() Vec~usize~
+        +move_cursor(delta: i32) void
+        +toggle() void
+        +toggle_single() void
+        +search_changed() void
+        +selected_choices() impl Iterator~Item = &Choice~
+        +has_selection() bool
+    }
+    class asb-cli_src_App {
+        -root: PathBuf
+        -project: asb-cli_src_ProjectConfig
+        -panes: Vec~asb-cli_src_Pane~
+        -step: usize
+        -message: String
+        -message_color: Color
+        -message_until: Option~std::time::Instant~
+        +new(root: PathBuf, project: asb-cli_src_ProjectConfig) Self
+        +refresh_availability() void
+        +refresh_models() void
+        +advance() Result~Option<Generated>, Error~
+        +back() void
+    }
+    class asb-cli_src_Generated {
+        -tests: usize
+        -sweep: PathBuf
+    }
+    class asb-cli_src_WorkloadApp {
+        -root: PathBuf
+        -project: asb-cli_src_ProjectConfig
+        -workloads: asb-cli_src_Pane
+        -trials: asb-cli_src_Pane
+        -level: usize
+        -selected_workload: Option~String~
+        -selections: BTreeSet~String~
+        -message: String
+        -message_color: Color
+        -message_until: Option~std::time::Instant~
+    }
+    class asb-cli_src_SweepFile {
+        -configs: Vec~String~
+    }
+    class asb-cli_src_Bridge {
+        -api_key: String
+        -base_url: String
+        -process: Option~Child~
+        +connect(executable: Option~&str~) Result~Self, Error~
+        +api_key() &str
+        +base_url() &str
+    }
+    class asb-cli_src_Drop {
+        +drop() void
+    }
+    class asb-cli_src_ProjectConfig {
+        +tools_dir: String
+        +workloads_dir: String
+        +workspace_dir: String
+    }
+    class asb-cli_src_Default {
+        +default() Self
+    }
+    asb-cli_src_TrialSet --> asb-cli_src_Trial
+    asb-cli_src_BenchmarkData --> asb-cli_src_TimeSeries
+    asb-cli_src_RunResult --> asb-cli_src_TokenUsage
+    asb-cli_src_BenchmarkConfig --> asb-cli_src_MeasurementConfig
+    asb-cli_src_RunMeasurement --> asb-cli_src_TokenUsage
+    asb-cli_src_Session --> asb-cli_src_Collector
+    asb-cli_src_Session --> asb-cli_src_BpftraceProfile
+    asb-cli_src_Pane --> asb-cli_src_Choice
+    asb-cli_src_App --> asb-cli_src_ProjectConfig
+    asb-cli_src_App --> asb-cli_src_Pane
+    asb-cli_src_WorkloadApp --> asb-cli_src_ProjectConfig
+    asb-cli_src_WorkloadApp --> asb-cli_src_Pane
+    asb-cli_src_WorkloadApp --> asb-cli_src_Pane
