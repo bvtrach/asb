@@ -1,0 +1,5 @@
+// Agent task migrations between CPUs. $1 is the agent process TGID.
+tracepoint:sched:sched_migrate_task /args->pid == $1/ {
+  @asb_cpu_migrations = count();
+  @asb_cpu_migration_destination[args->dest_cpu] = count();
+}

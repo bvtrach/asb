@@ -173,3 +173,13 @@ installer reports copy-paste package commands for the three supported distro
 families (Red Hat/Fedora, Debian/Ubuntu, and openEuler) if that fallback
 cannot be configured or compiled. The same commands are shown when no matching
 host `bpftrace` package is available.
+
+ASB's built-in BPFTrace profiles are scoped to the spawned agent PID, rather
+than sampling unrelated host work. Add entries such as
+`"bpftrace:sched-latency"` and `"bpftrace:futex-wait"` to
+`measurements.collectors`, or set
+`ASB_BPFTRACE_PROFILES=sched-latency,futex-wait` before `asb run`. The available
+profiles are `sched-latency`, `cpu-migrations`, `futex-wait`, `syscall-rate`,
+and `lock-contention`; `all` selects the full catalog. Each profile writes a
+separate JSON result and SVG, and comparison reports graph every extracted
+numeric metric.

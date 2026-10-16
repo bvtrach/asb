@@ -1,0 +1,16 @@
+// Agent wakeup-to-run latency. $1 is the agent process TGID.
+tracepoint:sched:sched_wakeup /args->pid == $1/ {
+  @asb_wakeup_start[args->pid] = nsecs;
+}
+
+tracepoint:sched:sched_wakeup_new /args->pid == $1/ {
+  @asb_wakeup_start[args->pid] = nsecs;
+}
+
+tracepoint:sched:sched_switch /@asb_wakeup_start[args->next_pid]/ {
+  $latency = nsecs - @asb_wakeup_start[args->next_pid];
+  @asb_wakeup_latency_events = count();
+  @asb_wakeup_latency_total_ns = sum($latency);
+  @asb_wakeup_latency_max_ns = max($latency);
+  delete(@asb_wakeup_start[args->next_pid]);
+}

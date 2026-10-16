@@ -16,6 +16,50 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 const MAX_CAPTURE: usize = 256 * 1024;
 const MAX_RUNS: usize = 10_000;
 
+/// A bounded, target-PID-scoped bpftrace program. Profiles use only stable
+/// kernel tracepoint families where possible; users can still supply a
+/// runtime-specific program through ASB_BPFTRACE_PROGRAMS.
+#[derive(Clone, Copy)]
+struct BpftraceProfile {
+    name: &'static str,
+    description: &'static str,
+    program: &'static str,
+}
+
+const BPFTRACE_PROFILES: &[BpftraceProfile] = &[
+    BpftraceProfile {
+        name: "sched-latency",
+        description: "wakeup-to-run latency for agent tasks",
+        program: include_str!("bpftrace_profiles/sched_latency.bt"),
+    },
+    BpftraceProfile {
+        name: "cpu-migrations",
+        description: "agent task migrations between CPUs",
+        program: include_str!("bpftrace_profiles/cpu_migrations.bt"),
+    },
+    BpftraceProfile {
+        name: "futex-wait",
+        description: "futex wait count and duration for agent threads",
+        program: include_str!("bpftrace_profiles/futex_wait.bt"),
+    },
+    BpftraceProfile {
+        name: "syscall-rate",
+        description: "aggregate system-call pressure from the agent process",
+        program: include_str!("bpftrace_profiles/syscall_rate.bt"),
+    },
+    BpftraceProfile {
+        name: "lock-contention",
+        description: "kernel lock contention for agent threads when supported",
+        program: include_str!("bpftrace_profiles/lock_contention.bt"),
+    },
+];
+
+/// Names accepted by `bpftrace:PROFILE` collector selections and
+/// `ASB_BPFTRACE_PROFILES=PROFILE,...`.
+pub fn bpftrace_profile_names() -> impl Iterator<Item = &'static str> {
+    BPFTRACE_PROFILES.iter().map(|profile| profile.name)
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TokenUsage {
     pub input_tokens: Option<u64>,
@@ -111,6 +155,7 @@ pub struct Session {
     trace_marker: Option<PathBuf>,
     tracepoint_count: u64,
     perfetto_metrics: BTreeMap<String, f64>,
+    bpftrace_profiles: Vec<BpftraceProfile>,
     sudo_collectors: BTreeSet<String>,
 }
 
@@ -158,6 +203,7 @@ impl Session {
             trace_marker: None,
             tracepoint_count: 0,
             perfetto_metrics: BTreeMap::new(),
+            bpftrace_profiles: selected_bpftrace_profiles(selected)?,
             sudo_collectors,
         };
         session.start_perfetto()?;
@@ -196,6 +242,7 @@ impl Session {
     /// Attach perf to the selected child after it has been spawned.
     pub fn attach_pid(&mut self, pid: u32) -> Result<(), String> {
         if !self.perf_enabled {
+            self.start_bpftrace_profiles(pid)?;
             return Ok(());
         }
         let data = self.dir.join("perf.data");
@@ -218,6 +265,7 @@ impl Session {
             Ok(child) => child,
             Err(error) if !env_true("ASB_MEASURE_PERF") => {
                 write_unavailable(&self.dir.join("perf.json"), "perf", error.to_string())?;
+                self.start_bpftrace_profiles(pid)?;
                 return Ok(());
             }
             Err(error) => {
@@ -267,6 +315,7 @@ impl Session {
                 error.to_string(),
             )?,
         }
+        self.start_bpftrace_profiles(pid)?;
         Ok(())
     }
 
@@ -332,23 +381,26 @@ impl Session {
                     .map(|path| file_name(path)),
                 _ => None,
             };
+            let collector_status = if status.success()
+                || (stopped_by_runner && collector.name != "perf" && !stdout.is_empty())
+                || (stopped_by_runner && collector.name == "perf-stat" && !stderr.is_empty())
+                || (stopped_by_runner
+                    && collector_artifact_exists(
+                        &collector.name,
+                        self.perf_data.as_deref(),
+                        self.perfetto_trace.as_deref(),
+                    )) {
+                "completed"
+            } else {
+                "failed"
+            };
+            if let Some(profile) = collector.name.strip_prefix("bpftrace-") {
+                write_bpftrace_profile_svg(&self.dir, profile, collector_status, &metrics)?;
+            }
             let result = CollectorResult {
                 schema_version: 1,
                 collector: collector.name.clone(),
-                status: if status.success()
-                    || (stopped_by_runner && collector.name != "perf" && !stdout.is_empty())
-                    || (stopped_by_runner && collector.name == "perf-stat" && !stderr.is_empty())
-                    || (stopped_by_runner
-                        && collector_artifact_exists(
-                            &collector.name,
-                            self.perf_data.as_deref(),
-                            self.perfetto_trace.as_deref(),
-                        )) {
-                    "completed"
-                } else {
-                    "failed"
-                }
-                .into(),
+                status: collector_status.into(),
                 exit_code: status.code(),
                 elapsed_ms: collector.started.elapsed().as_millis(),
                 stdout,
@@ -591,6 +643,48 @@ impl Session {
                 stdout_path,
                 stderr_path,
             });
+        }
+        Ok(())
+    }
+
+    /// Start each selected built-in profile after the agent PID is known. This
+    /// keeps all probes scoped to the benchmarked agent rather than the host.
+    fn start_bpftrace_profiles(&mut self, pid: u32) -> Result<(), String> {
+        for profile in &self.bpftrace_profiles {
+            let name = format!("bpftrace-{}", profile.name);
+            let stdout_path = self.dir.join(format!("{name}.stdout"));
+            let stderr_path = self.dir.join(format!("{name}.stderr"));
+            let stdout = File::create(&stdout_path)
+                .map_err(|error| format!("cannot create {name} output: {error}"))?;
+            let stderr = File::create(&stderr_path)
+                .map_err(|error| format!("cannot create {name} error output: {error}"))?;
+            let child = self
+                .command("bpftrace")
+                .args(["-e", profile.program])
+                .arg(pid.to_string())
+                .stdout(Stdio::from(stdout))
+                .stderr(Stdio::from(stderr))
+                .spawn();
+            match child {
+                Ok(child) => self.collectors.push(Collector {
+                    name,
+                    child,
+                    started: Instant::now(),
+                    stdout_path,
+                    stderr_path,
+                }),
+                Err(error) if !env_true("ASB_MEASURE_BPFTRACE") => write_unavailable(
+                    &self.dir.join(format!("bpftrace-{}.json", profile.name)),
+                    &format!("bpftrace-{}", profile.name),
+                    format!("{}; profile: {}", error, profile.description),
+                )?,
+                Err(error) => {
+                    return Err(format!(
+                        "cannot start bpftrace profile {}: {error}",
+                        profile.name
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -1392,6 +1486,51 @@ fn write_perfetto_metric_svgs(
     Ok(())
 }
 
+/// Each built-in eBPF profile owns one SVG. The comparison layer additionally
+/// creates one cross-run graph per numeric metric in that profile.
+fn write_bpftrace_profile_svg(
+    dir: &Path,
+    profile: &str,
+    status: &str,
+    metrics: &BTreeMap<String, f64>,
+) -> Result<(), String> {
+    let mut lines = vec![format!("status: {status}")];
+    for (name, value) in metrics {
+        lines.push(format!(
+            "{}: {:.0}",
+            name.rsplit('.').next().unwrap_or(name),
+            value
+        ));
+    }
+    if metrics.is_empty() {
+        lines.push("no aggregate values emitted; inspect the paired JSON result".into());
+    }
+    let height = 76 + lines.len() * 26;
+    let mut svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"760\" height=\"{height}\" viewBox=\"0 0 760 {height}\"><title>bpftrace {}</title><rect width=\"760\" height=\"{height}\" fill=\"#101827\"/><rect x=\"16\" y=\"16\" width=\"728\" height=\"{}\" rx=\"10\" fill=\"#182334\"/><text x=\"36\" y=\"48\" fill=\"#e5edf8\" font-family=\"sans-serif\" font-size=\"20\" font-weight=\"bold\">bpftrace: {}</text>",
+        escape_svg(profile),
+        height - 32,
+        escape_svg(profile)
+    );
+    for (index, line) in lines.iter().enumerate() {
+        let color = if index == 0 && status == "completed" {
+            "#78dba9"
+        } else if index == 0 {
+            "#ffb86b"
+        } else {
+            "#b9c7dc"
+        };
+        svg.push_str(&format!(
+            "<text x=\"36\" y=\"{}\" fill=\"{color}\" font-family=\"monospace\" font-size=\"15\">{}</text>",
+            76 + index * 26,
+            escape_svg(line)
+        ));
+    }
+    svg.push_str("</svg>\n");
+    fs::write(dir.join(format!("bpftrace-{profile}.svg")), svg)
+        .map_err(|error| format!("cannot write bpftrace profile SVG: {error}"))
+}
+
 fn escape_svg(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -1418,8 +1557,31 @@ fn parse_collector_metrics(name: &str, output: &str) -> BTreeMap<String, f64> {
         "mpstat" => parse_mpstat_metrics(output),
         "iostat" => parse_iostat_metrics(output),
         "perf-stat" => parse_perf_stat_metrics(output),
+        profile if profile.starts_with("bpftrace-") => {
+            parse_bpftrace_metrics(profile.trim_start_matches("bpftrace-"), output)
+        }
         _ => BTreeMap::new(),
     }
+}
+
+/// bpftrace prints aggregation maps as `@asb_metric: value`. Only these
+/// ASB-owned map names are accepted, so arbitrary program output cannot create
+/// comparison metrics accidentally.
+fn parse_bpftrace_metrics(profile: &str, output: &str) -> BTreeMap<String, f64> {
+    let mut metrics = BTreeMap::new();
+    for line in output.lines() {
+        let Some((name, value)) = line.trim().split_once(':') else {
+            continue;
+        };
+        let Some(name) = name.trim().strip_prefix("@asb_") else {
+            continue;
+        };
+        let Some(value) = parse_float(value) else {
+            continue;
+        };
+        metrics.insert(format!("bpftrace.{profile}.{name}"), value);
+    }
+    metrics
 }
 
 /// Parse `perf stat -x,` output into stable unit-named fields. Unsupported
@@ -1707,8 +1869,9 @@ fn preflight_collectors(
     tool_dir: Option<&Path>,
 ) -> Result<BTreeSet<String>, String> {
     let mut sudo_collectors = BTreeSet::new();
-    let bpftrace_selected = selected_or_env("bpftrace", "ASB_MEASURE_BPFTRACE", selected)
-        && std::env::var_os("ASB_BPFTRACE_PROGRAMS").is_some();
+    let bpftrace_selected = (selected_or_env("bpftrace", "ASB_MEASURE_BPFTRACE", selected)
+        && std::env::var_os("ASB_BPFTRACE_PROGRAMS").is_some())
+        || !selected_bpftrace_profiles(selected)?.is_empty();
     let probes = [
         (
             "perf",
@@ -1866,6 +2029,43 @@ fn shell_quote(value: &str) -> String {
 
 fn selected_or_env(name: &str, variable: &str, selected: &[String]) -> bool {
     selected.iter().any(|value| value == name) || env_true(variable)
+}
+
+fn selected_bpftrace_profiles(selected: &[String]) -> Result<Vec<BpftraceProfile>, String> {
+    let mut requested = selected
+        .iter()
+        .filter_map(|value| value.strip_prefix("bpftrace:"))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if let Ok(value) = std::env::var("ASB_BPFTRACE_PROFILES") {
+        requested.extend(
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
+        );
+    }
+    if requested.iter().any(|value| value == "all") {
+        return Ok(BPFTRACE_PROFILES.to_vec());
+    }
+    requested.sort();
+    requested.dedup();
+    requested
+        .iter()
+        .map(|name| {
+            BPFTRACE_PROFILES
+                .iter()
+                .find(|profile| profile.name == name)
+                .copied()
+                .ok_or_else(|| {
+                    format!(
+                        "unknown bpftrace profile `{name}`; choose one of: {}",
+                        bpftrace_profile_names().collect::<Vec<_>>().join(", ")
+                    )
+                })
+        })
+        .collect()
 }
 fn env_u64(name: &str) -> Option<u64> {
     std::env::var(name).ok()?.parse().ok()
@@ -2170,6 +2370,41 @@ mod tests {
         assert_eq!(metrics["perf.page_faults"], 4.0);
         assert_eq!(metrics["perf.cycles"], 1234.0);
         assert_eq!(metrics["perf.instructions"], 567.0);
+    }
+
+    #[test]
+    fn bpftrace_profiles_are_target_scoped_and_parse_only_asb_metrics() {
+        assert_eq!(
+            bpftrace_profile_names().collect::<Vec<_>>(),
+            vec![
+                "sched-latency",
+                "cpu-migrations",
+                "futex-wait",
+                "syscall-rate",
+                "lock-contention"
+            ]
+        );
+        let profiles = selected_bpftrace_profiles(&[
+            "bpftrace:sched-latency".into(),
+            "bpftrace:futex-wait".into(),
+        ])
+        .expect("profile selection");
+        assert_eq!(profiles.len(), 2);
+        assert!(
+            profiles
+                .iter()
+                .all(|profile| profile.program.contains("$1"))
+        );
+        let metrics = parse_bpftrace_metrics(
+            "sched-latency",
+            "@asb_wakeup_latency_events: 7\n@asb_wakeup_latency_total_ns: 420\n@other: 99\n",
+        );
+        assert_eq!(metrics["bpftrace.sched-latency.wakeup_latency_events"], 7.0);
+        assert_eq!(
+            metrics["bpftrace.sched-latency.wakeup_latency_total_ns"],
+            420.0
+        );
+        assert_eq!(metrics.len(), 2);
     }
 
     #[test]

@@ -1,0 +1,13 @@
+// Futex wait pressure for all threads in the agent process. $1 is its TGID.
+tracepoint:syscalls:sys_enter_futex /pid == $1/ {
+  @asb_futex_start[tid] = nsecs;
+  @asb_futex_calls = count();
+}
+
+tracepoint:syscalls:sys_exit_futex /@asb_futex_start[tid]/ {
+  $latency = nsecs - @asb_futex_start[tid];
+  @asb_futex_wait_events = count();
+  @asb_futex_wait_total_ns = sum($latency);
+  @asb_futex_wait_max_ns = max($latency);
+  delete(@asb_futex_start[tid]);
+}

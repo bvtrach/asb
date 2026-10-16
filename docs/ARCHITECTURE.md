@@ -107,6 +107,15 @@ host binary or source build prerequisites are unavailable, the failure prints
 typical copy-paste commands for Red Hat/Fedora, Debian/Ubuntu, and openEuler
 so the user can install either the matching host tool or the needed development
 packages before retrying.
+Built-in BPFTrace profiles are small, separate source files under
+`crates/asb-cli/src/bpftrace_profiles/`. They start only after ASB knows the
+agent PID and therefore scope their probes to the benchmarked process. The
+portable catalog covers scheduler wakeup latency, CPU migration, futex waits,
+syscall rate, and kernel lock contention. Each profile has its own JSON result
+and SVG; comparison consumes only its `@asb_*` aggregate maps, embeds that
+profile SVG in the HTML artifact view, and emits one cross-run chart per
+numeric metric. NUMA topology and language-runtime data-structure probes remain
+custom profiles because their event layouts are neither portable nor stable.
 The `perfetto` recipe downloads SHA-256-pinned official Tracebox and trace
 processor binaries into the project tool directory. It supports Linux x86_64
 and aarch64. Ftrace itself is a tracefs interface provided by the running host

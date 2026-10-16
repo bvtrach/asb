@@ -73,7 +73,16 @@ remain deterministic: `ASB_MEASURE_MPSTAT=1`, `ASB_MEASURE_IOSTAT=1`, and
 `ASB_MEASURE_PERF=1` start the corresponding local tools. BPFTrace programs
 are selected with `ASB_MEASURE_BPFTRACE=1` and a semicolon-separated
 `ASB_BPFTRACE_PROGRAMS` list such as
-`program.bt?PID=123&INTERVAL=1`. Flamegraphs use the local tools named by
+`program.bt?PID=123&INTERVAL=1`. ASB also includes PID-scoped BPFTrace profiles:
+`sched-latency`, `cpu-migrations`, `futex-wait`, `syscall-rate`, and
+`lock-contention`. Select them in a benchmark configuration as
+`bpftrace:PROFILE` entries in `measurements.collectors`, or set
+`ASB_BPFTRACE_PROFILES=sched-latency,futex-wait` (use `all` for every profile).
+Each profile writes its own JSON result and SVG; `asb compare` embeds those
+artifacts and produces one cross-run graph per numeric profile metric. The
+profiles deliberately do not include a generic NUMA or language-runtime data
+structure probe: neither has a portable kernel ABI, so such measurements stay
+available through the custom-program interface. Flamegraphs use the local tools named by
 `ASB_FLAMEGRAPH_STACKCOLLAPSE` and `ASB_FLAMEGRAPH_RENDER`; the SVG is paired
 with machine-readable `flamegraph.json` metadata. The mpstat and iostat files
 retain bounded raw samples and add averaged machine-readable CPU, I/O
