@@ -7988,7 +7988,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   const edges = [...canvas.querySelectorAll('.edge')];
   const clusters = [...canvas.querySelectorAll('.cluster')];
   const allElements = [...nodes, ...edges, ...clusters];
-  const state = { scale: 1, tx: 0, ty: 0, drag: null, pinch: null, pointers: new Map(), pressTarget: null, pinned: null, pinnedParts: new Set(), animation: null, suppressClickUntil: 0 };
+  const state = { scale: 1, tx: 0, ty: 0, drag: null, pinch: null, pointers: new Map(), pressTarget: null, pinned: null, pinnedParts: new Set(), hovered: null, animation: null, suppressClickUntil: 0 };
   const viewBox = svg.viewBox.baseVal;
   // Establish the first useful viewport synchronously, then yield one frame
   // before preparing metadata, listeners, and accessibility state. This lets
@@ -8197,14 +8197,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     if (!tooltipFrame) tooltipFrame = requestAnimationFrame(renderTooltip);
   }
   allElements.forEach((element) => {
-    element.addEventListener('pointerenter', (event) => { clearTimeout(hoverTimers.get(element)); element.classList.add('is-hovered'); showTooltip(element, event); });
-    element.addEventListener('pointermove', (event) => { if (tooltip.style.display !== 'none') showTooltip(element, event); });
-    element.addEventListener('pointerleave', () => {
-      clearTimeout(hoverTimers.get(element));
-      hoverTimers.set(element, setTimeout(() => {
-        if (!element.classList.contains('is-pinned')) element.classList.remove('is-hovered');
-      }, 80));
-    });
     element.addEventListener('click', (event) => {
       if (state.suppressClickUntil > performance.now()) return;
       event.stopPropagation();
@@ -8302,13 +8294,26 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   viewport.addEventListener('pointercancel', finishPointer);
   viewport.addEventListener('lostpointercapture', () => { if (state.pointers.size === 0) { state.drag = null; state.pinch = null; state.pressTarget = null; viewport.classList.remove('dragging'); } });
   viewport.addEventListener('pointermove', (event) => {
-    if (!graphElementFromTarget(event.target)) {
+    if (viewport.classList.contains('dragging')) return;
+    const hovered = graphElementFromTarget(event.target) || graphElementAtPoint(event.clientX, event.clientY);
+    if (hovered) {
+      if (state.hovered !== hovered) {
+        if (state.hovered && !state.hovered.classList.contains('is-pinned')) state.hovered.classList.remove('is-hovered');
+        state.hovered = hovered;
+        state.hovered.classList.add('is-hovered');
+      }
+      showTooltip(hovered, event);
+    } else {
+      if (state.hovered && !state.hovered.classList.contains('is-pinned')) state.hovered.classList.remove('is-hovered');
+      state.hovered = null;
       tooltipElement = null;
       tooltipEvent = null;
       tooltip.style.display = 'none';
     }
   });
   viewport.addEventListener('pointerleave', () => {
+    if (state.hovered && !state.hovered.classList.contains('is-pinned')) state.hovered.classList.remove('is-hovered');
+    state.hovered = null;
     tooltipElement = null;
     tooltipEvent = null;
     tooltip.style.display = 'none';
