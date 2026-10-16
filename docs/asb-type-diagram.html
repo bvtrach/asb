@@ -634,6 +634,22 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   const allElements = [...nodes, ...edges, ...clusters];
   const state = { scale: 1, tx: 0, ty: 0, drag: null, pinch: null, pointers: new Map(), pressTarget: null, pinned: null, pinnedParts: new Set(), animation: null, suppressClickUntil: 0, ignoreNextClick: false };
   const viewBox = svg.viewBox.baseVal;
+  // Establish the first useful viewport synchronously, then yield one frame
+  // before preparing metadata, listeners, and accessibility state. This lets
+  // the browser paint the graph at its initial zoom without a long blank pause.
+  canvas.style.width = `${viewBox.width}px`;
+  canvas.style.height = `${viewBox.height}px`;
+  svg.setAttribute('width', viewBox.width);
+  svg.setAttribute('height', viewBox.height);
+  const initialScale = Math.max(.02, Math.min(4, Math.min((viewport.clientWidth - 34) / viewBox.width, (viewport.clientHeight - 34) / viewBox.height)));
+  state.scale = initialScale;
+  state.tx = (viewport.clientWidth - viewBox.width * initialScale) / 2;
+  state.ty = (viewport.clientHeight - viewBox.height * initialScale) / 2;
+  canvas.style.transform = `translate3d(${state.tx}px, ${state.ty}px, 0) scale(${state.scale})`;
+  requestAnimationFrame(() => initialize());
+  return;
+
+  function initialize() {
   const titles = new Map();
   let tooltipFrame = 0;
   let tooltipEvent = null;
@@ -888,6 +904,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   search.addEventListener('input', () => { const query = search.value.trim().toLowerCase(); allElements.forEach((item) => item.classList.toggle('is-dimmed', Boolean(query) && !titleOf(item).toLowerCase().includes(query))); });
   window.addEventListener('resize', () => { if (!state.selected) fit(false); });
   fit(false);
+  }
 })();
 </script>
 </body>
