@@ -29,20 +29,36 @@
 
   function initialize() {
   const titles = new Map();
+  const nameCache = new Map();
+  const titleCache = new Map();
+  const edgeEndsCache = new Map();
+  const relatedCache = new Map();
+  let transformFrame = 0;
+  let navigationTimer = 0;
   let tooltipFrame = 0;
   let tooltipEvent = null;
   let tooltipElement = null;
 
   const rawTitleOf = (element) => element.dataset.graphTitle || element.querySelector(':scope > title')?.textContent?.trim() || element.querySelector('title')?.textContent?.trim() || element.id || 'graph element';
   const visibleNameOf = (element) => {
+    if (nameCache.has(element)) return nameCache.get(element);
     const text = [...element.querySelectorAll(':scope > text, :scope > g text')].map((item) => item.textContent.trim()).filter(Boolean).join(' · ');
-    return text || rawTitleOf(element);
+    const name = text || rawTitleOf(element);
+    nameCache.set(element, name);
+    return name;
   };
   const titleOf = (element) => {
+    if (titleCache.has(element)) return titleCache.get(element);
     const raw = rawTitleOf(element);
-    if (!element.classList.contains('edge')) return visibleNameOf(element);
+    if (!element.classList.contains('edge')) {
+      const name = visibleNameOf(element);
+      titleCache.set(element, name);
+      return name;
+    }
     const ends = raw.split('->').map((part) => titles.get(part.trim())).filter(Boolean);
-    return ends.length === 2 ? `${visibleNameOf(ends[0])} → ${visibleNameOf(ends[1])}` : raw;
+    const name = ends.length === 2 ? `${visibleNameOf(ends[0])} → ${visibleNameOf(ends[1])}` : raw;
+    titleCache.set(element, name);
+    return name;
   };
   allElements.forEach((element) => {
     const title = rawTitleOf(element);
@@ -61,6 +77,15 @@
   svg.setAttribute('height', viewBox.height);
 
   function applyTransform() { canvas.style.transform = `translate3d(${state.tx}px, ${state.ty}px, 0) scale(${state.scale})`; }
+  function scheduleTransform() {
+    if (transformFrame) return;
+    transformFrame = requestAnimationFrame(() => { transformFrame = 0; applyTransform(); });
+  }
+  function beginNavigation() {
+    viewport.classList.add('navigating');
+    clearTimeout(navigationTimer);
+    navigationTimer = setTimeout(() => viewport.classList.remove('navigating'), 110);
+  }
   function fit(animated = true) {
     const width = viewport.clientWidth;
     const height = viewport.clientHeight;
@@ -115,9 +140,11 @@
     moveTo(targetScale, viewport.clientWidth / 2 - graphX * targetScale, viewport.clientHeight / 2 - graphY * targetScale, true);
   }
   function edgeEnds(edge) {
+    if (edgeEndsCache.has(edge)) return edgeEndsCache.get(edge);
     const parts = rawTitleOf(edge).split('->').map((part) => part.trim());
-    if (parts.length !== 2) return [];
-    return parts.map((part) => titles.get(part)).filter(Boolean);
+    const ends = parts.length === 2 ? parts.map((part) => titles.get(part)).filter(Boolean) : [];
+    edgeEndsCache.set(edge, ends);
+    return ends;
   }
   function followEdge(edge, reverse = false) {
     const ends = edgeEnds(edge);
@@ -130,14 +157,16 @@
     }
   }
   function relatedTo(element) {
-    const title = titleOf(element);
+    if (relatedCache.has(element)) return relatedCache.get(element);
     const related = new Set([element]);
     if (element.classList.contains('edge')) {
       edgeEnds(element).forEach((endpoint) => related.add(endpoint));
+      relatedCache.set(element, related);
       return related;
     }
-    if (!element.classList.contains('node')) return related;
-    edges.forEach((edge) => { if (edgeEnds(edge).includes(element)) { related.add(edge); edgeEnds(edge).forEach((endpoint) => related.add(endpoint)); } });
+    if (!element.classList.contains('node')) { relatedCache.set(element, related); return related; }
+    edges.forEach((edge) => { const ends = edgeEnds(edge); if (ends.includes(element)) { related.add(edge); ends.forEach((endpoint) => related.add(endpoint)); } });
+    relatedCache.set(element, related);
     return related;
   }
   function clearSelection() {
@@ -227,7 +256,8 @@
       state.tx = x - state.pinch.graphX * nextScale;
       state.ty = y - state.pinch.graphY * nextScale;
       state.pinch.moved = true;
-      applyTransform();
+      beginNavigation();
+      scheduleTransform();
       return;
     }
     if (!state.drag) return;
@@ -236,7 +266,7 @@
     if (Math.hypot(dx, dy) > 4) { state.drag.moved = true; viewport.classList.add('dragging'); }
     state.drag.nextTx = state.drag.tx + dx;
     state.drag.nextTy = state.drag.ty + dy;
-    if (!state.drag.frame) state.drag.frame = requestAnimationFrame(() => { state.tx = state.drag?.nextTx ?? state.tx; state.ty = state.drag?.nextTy ?? state.ty; state.drag.frame = 0; applyTransform(); });
+    if (!state.drag.frame) state.drag.frame = requestAnimationFrame(() => { state.tx = state.drag?.nextTx ?? state.tx; state.ty = state.drag?.nextTy ?? state.ty; state.drag.frame = 0; beginNavigation(); applyTransform(); });
   });
   function finishPointer(event) {
     const pressTarget = state.pressTarget || graphElementFromTarget(event.target);
@@ -274,7 +304,7 @@
     if (state.suppressClickUntil > performance.now()) return;
     if (event.target === viewport || event.target === canvas) clearSelection();
   });
-  viewport.addEventListener('wheel', (event) => { event.preventDefault(); const rect = viewport.getBoundingClientRect(); const x = event.clientX - rect.left; const y = event.clientY - rect.top; const next = Math.max(.02, Math.min(4, state.scale * Math.pow(1.0018, -event.deltaY))); state.tx = x - (x - state.tx) * next / state.scale; state.ty = y - (y - state.ty) * next / state.scale; state.scale = next; applyTransform(); }, { passive: false });
+  viewport.addEventListener('wheel', (event) => { event.preventDefault(); const rect = viewport.getBoundingClientRect(); const x = event.clientX - rect.left; const y = event.clientY - rect.top; const next = Math.max(.02, Math.min(4, state.scale * Math.pow(1.0018, -event.deltaY))); state.tx = x - (x - state.tx) * next / state.scale; state.ty = y - (y - state.ty) * next / state.scale; state.scale = next; beginNavigation(); scheduleTransform(); }, { passive: false });
   document.getElementById('fit').addEventListener('click', () => { clearSelection(); fit(); });
   document.getElementById('reset').addEventListener('click', () => { clearSelection(); fit(false); });
   document.getElementById('zoom-in').addEventListener('click', () => { state.scale = Math.min(4, state.scale * 1.25); applyTransform(); });
