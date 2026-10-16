@@ -6636,9 +6636,17 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     state.animation = requestAnimationFrame(frame);
   }
   function center(element) {
-    const box = element.getBBox();
-    const targetScale = Math.max(.08, Math.min(2.5, Math.min(viewport.clientWidth / Math.max(box.width * 4, 420), viewport.clientHeight / Math.max(box.height * 4, 260))));
-    moveTo(targetScale, viewport.clientWidth / 2 - (box.x + box.width / 2) * targetScale, viewport.clientHeight / 2 - (box.y + box.height / 2) * targetScale, true);
+    // Use the rendered rectangle instead of getBBox(). Graphviz wraps its
+    // content in a translated root <g>, so raw SVG coordinates do not map
+    // directly to the CSS transform applied by this viewer.
+    const viewportRect = viewport.getBoundingClientRect();
+    const elementRect = element.getBoundingClientRect();
+    const currentX = elementRect.left - viewportRect.left + elementRect.width / 2;
+    const currentY = elementRect.top - viewportRect.top + elementRect.height / 2;
+    const graphX = (currentX - state.tx) / state.scale;
+    const graphY = (currentY - state.ty) / state.scale;
+    const targetScale = Math.max(.08, Math.min(2.5, state.scale));
+    moveTo(targetScale, viewport.clientWidth / 2 - graphX * targetScale, viewport.clientHeight / 2 - graphY * targetScale, true);
   }
   function edgeEnds(edge) {
     const parts = titleOf(edge).split('->').map((part) => part.trim());
