@@ -254,10 +254,9 @@ make install
 
 `make build` regenerates `target/asb.bash` and `target/_asb` from ASB's command
 and option catalog, generates Rust API documentation under `target/doc/`, and
-generates `target/asb-uml.dot` plus `target/asb-uml.svg`. It installs the
-pinned AutoUML generator project-locally under `target/tools/`; if Graphviz is
-available its `dot` renderer is used, otherwise ASB's deterministic SVG
-fallback is used. `make install` installs Bash completion at
+generates the AutoUML Mermaid diagram plus SVG under `docs/`. It installs the
+pinned AutoUML generator project-locally under `target/tools/`. `make install`
+installs Bash completion at
 `~/.local/share/bash-completion/completions/asb` and Zsh completion at
 `~/.local/share/zsh/site-functions/_asb`, alongside the binary.
 
