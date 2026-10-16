@@ -87,7 +87,9 @@ is parsed for nested provider usage before it is removed. Their terminal output 
 rate, elapsed time, and token usage; `--json` changes only the representation
 of those metrics.
 Pass `--show-output` to stream the agent's stdout and stderr live for interactive
-debugging; the same output remains in the configured log.
+debugging when `concurrency = 1`; concurrent replicas buffer each bounded stream
+and emit it in replica order after completion so output cannot interleave
+unreadably. The same output remains in the configured log.
 The same flag is accepted by `asb sweep` and is forwarded to each underlying
 `run`, so sweeps do not maintain a second output path.
 An agent is not considered successful solely because its process exits with
