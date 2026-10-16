@@ -255,7 +255,7 @@ fn run_mode(
     }
     let elapsed_ms = started.elapsed().as_millis();
     let success = process_successful(&child.status, &child.stdout, &child.stderr);
-    let token_usage = measurements::token_usage_from_sources(
+    let mut token_usage = measurements::token_usage_from_sources(
         &config.provider,
         &config.agent,
         &bounded(&child.stdout),
@@ -264,6 +264,14 @@ fn run_mode(
             .as_ref()
             .map(|(_, cassette)| cassette.as_path()),
     );
+    if config.agent.eq_ignore_ascii_case("mini-swe") {
+        let trajectory = workspace.join(".asb-mini-swe.traj.json");
+        token_usage = token_usage.merge_with_source(
+            measurements::token_usage_from_path(&trajectory),
+            "agent-artifact",
+        );
+        let _ = std::fs::remove_file(trajectory);
+    }
     let steps = measurements::steps_from_sources(
         &config.agent,
         &bounded(&child.stdout),
@@ -547,6 +555,8 @@ fn command_for(
                 prompt.into(),
                 "--yolo".into(),
                 "--exit-immediately".into(),
+                "--output".into(),
+                ".asb-mini-swe.traj.json".into(),
             ],
             append_prompt: false,
         },
@@ -554,6 +564,7 @@ fn command_for(
             program: "openhands".into(),
             args: vec![
                 "--headless".into(),
+                "--json".into(),
                 "--yolo".into(),
                 "--override-with-envs".into(),
                 "--task".into(),
@@ -571,6 +582,8 @@ fn command_for(
                 "--api-base",
                 cli2key_base_url.unwrap_or_default(),
                 "run",
+                "-f",
+                "json",
                 prompt,
             ]
             .into_iter()
@@ -790,7 +803,39 @@ mod tests {
             .expect("known agent has a command");
         assert_eq!(command.program, "openhands");
         assert!(!command.append_prompt);
+        assert!(command.args.contains(&"--json".into()));
         assert_eq!(command.args.last().map(String::as_str), Some("prompt"));
+    }
+
+    #[test]
+    fn token_reporting_commands_request_machine_readable_agent_output() {
+        let base = BenchmarkConfig {
+            agent: "mini-swe".into(),
+            workload: "bug-fix".into(),
+            provider: "cli2key".into(),
+            model: "gpt-test".into(),
+            trial_set: None,
+            trial: None,
+            workspace: "workspace".into(),
+            log_file: "run.log".into(),
+            measurements: None,
+        };
+        let mini = command_for(&base, Some("http://127.0.0.1:3456/v1"), "prompt").unwrap();
+        assert!(
+            mini.args
+                .windows(2)
+                .any(|pair| pair[0] == "--output" && pair[1] == ".asb-mini-swe.traj.json")
+        );
+
+        let mut openjiuwen = base.clone();
+        openjiuwen.agent = "openjiuwen".into();
+        let command = command_for(&openjiuwen, Some("http://127.0.0.1:3456/v1"), "prompt").unwrap();
+        assert!(
+            command
+                .args
+                .windows(2)
+                .any(|pair| pair[0] == "-f" && pair[1] == "json")
+        );
     }
 
     #[test]

@@ -506,6 +506,14 @@ pub fn token_usage_from_sources(
     usage.with_derived_total()
 }
 
+/// Read a bounded machine-readable agent artifact (for example mini-SWE's
+/// trajectory) and normalize any usage events it contains.
+pub fn token_usage_from_path(path: &Path) -> TokenUsage {
+    read_bounded_text(path, 16 * 1024 * 1024)
+        .map(|text| usage_from_text(&text).with_derived_total())
+        .unwrap_or_default()
+}
+
 /// Count bounded agent actions/turns from structured or human-readable output.
 /// The count is deliberately provider-neutral: agents may expose `step`,
 /// `turn`, tool, command, or iteration events under different JSON shapes.
@@ -605,7 +613,7 @@ impl TokenUsage {
         }
     }
 
-    fn merge_with_source(self, other: Self, source: &str) -> Self {
+    pub(crate) fn merge_with_source(self, other: Self, source: &str) -> Self {
         let found = other.any();
         let mut merged = self.merge(other);
         if found {
@@ -790,6 +798,8 @@ fn usage_from_json(value: &serde_json::Value) -> TokenUsage {
                 "promptTokens",
                 "input_token_count",
                 "prompt_token_count",
+                "promptTokenCount",
+                "inputTokenCount",
             ],
         )
         .or_else(|| {
@@ -806,6 +816,8 @@ fn usage_from_json(value: &serde_json::Value) -> TokenUsage {
                 "completionTokens",
                 "output_token_count",
                 "completion_token_count",
+                "candidatesTokenCount",
+                "outputTokenCount",
             ],
         )
         .or_else(|| {
@@ -822,6 +834,8 @@ fn usage_from_json(value: &serde_json::Value) -> TokenUsage {
                 "cache_read_tokens",
                 "cacheRead",
                 "cache_read",
+                "cacheReadInputTokens",
+                "cachedContentTokenCount",
             ],
         )
         .or_else(|| {
@@ -831,7 +845,13 @@ fn usage_from_json(value: &serde_json::Value) -> TokenUsage {
         });
         usage.total_tokens = find_number(
             object,
-            &["total_tokens", "totalTokens", "token_count", "tokens_used"],
+            &[
+                "total_tokens",
+                "totalTokens",
+                "token_count",
+                "tokens_used",
+                "totalTokenCount",
+            ],
         )
         .or_else(|| {
             short_usage
@@ -848,22 +868,29 @@ fn usage_from_json(value: &serde_json::Value) -> TokenUsage {
                 "promptTokens",
                 "input_token_count",
                 "prompt_token_count",
+                "promptTokenCount",
+                "inputTokenCount",
                 "output_tokens",
                 "completion_tokens",
                 "outputTokens",
                 "completionTokens",
                 "output_token_count",
                 "completion_token_count",
+                "candidatesTokenCount",
+                "outputTokenCount",
                 "cached_tokens",
                 "cache_read_input_tokens",
                 "cachedTokens",
                 "cache_read_tokens",
                 "cacheRead",
                 "cache_read",
+                "cacheReadInputTokens",
+                "cachedContentTokenCount",
                 "total_tokens",
                 "totalTokens",
                 "token_count",
                 "tokens_used",
+                "totalTokenCount",
                 "input",
                 "prompt",
                 "output",
@@ -929,25 +956,52 @@ fn find_number(object: &serde_json::Map<String, serde_json::Value>, names: &[&st
 
 fn usage_from_key_values(line: &str) -> TokenUsage {
     let mut usage = TokenUsage::default();
-    for part in line.split(|character: char| {
-        character.is_whitespace() || character == ',' || character == '{' || character == '}'
-    }) {
-        let Some((key, value)) = part.split_once(['=', ':']) else {
+    let normalized = line.replace(['=', ':', ',', ';', '{', '}', '[', ']'], " ");
+    let tokens = normalized.split_whitespace().collect::<Vec<_>>();
+    for (index, token) in tokens.iter().enumerate() {
+        let key = token
+            .trim_matches(['"', '\''])
+            .to_ascii_lowercase()
+            .replace(['-', '_'], "");
+        let (key, number) = if let Some(number) = tokens
+            .get(index + 1)
+            .and_then(|value| value.trim_matches(['"', '\'']).parse::<u64>().ok())
+        {
+            (key, number)
+        } else if let Some(number) = tokens
+            .get(index + 2)
+            .and_then(|value| value.trim_matches(['"', '\'']).parse::<u64>().ok())
+            && matches!(
+                key.as_str(),
+                "input" | "output" | "cache" | "cached" | "total"
+            )
+        {
+            let compound = tokens[index + 1]
+                .to_ascii_lowercase()
+                .replace(['-', '_'], "");
+            let key = format!("{key}{compound}");
+            (key, number)
+        } else {
             continue;
         };
-        let number = value.trim_matches(['"', '\'']).parse::<u64>().ok();
-        let Some(number) = number else { continue };
-        match key.trim_matches(['"', '\'']).to_ascii_lowercase().as_str() {
-            "input_tokens" | "prompt_tokens" | "inputtokens" | "prompttokens" => {
-                usage.input_tokens = Some(number)
+        match key.as_str() {
+            "input" | "inputtokens" | "inputtoken" | "prompt" | "prompttokens"
+            | "prompttokencount" | "inputtokencount" => usage.input_tokens = Some(number),
+            "output"
+            | "outputtokens"
+            | "outputtoken"
+            | "completion"
+            | "completiontokens"
+            | "candidatestokencount"
+            | "outputtokencount" => usage.output_tokens = Some(number),
+            "cached"
+            | "cachedtokens"
+            | "cacheread"
+            | "cachereadinputtokens"
+            | "cachedcontenttokencount" => usage.cached_tokens = Some(number),
+            "total" | "totaltokens" | "totaltokencount" | "tokencount" | "tokensused" => {
+                usage.total_tokens = Some(number)
             }
-            "output_tokens" | "completion_tokens" | "outputtokens" | "completiontokens" => {
-                usage.output_tokens = Some(number)
-            }
-            "cached_tokens" | "cachedtokens" | "cache_read_input_tokens" => {
-                usage.cached_tokens = Some(number)
-            }
-            "total_tokens" | "totaltokens" => usage.total_tokens = Some(number),
             _ => {}
         }
     }
@@ -1472,6 +1526,83 @@ mod tests {
             assert_eq!(usage.input_tokens, Some(7), "{agent} input");
             assert_eq!(usage.output_tokens, Some(3), "{agent} output");
             assert_eq!(usage.total_tokens, Some(10), "{agent} total");
+        }
+    }
+
+    #[test]
+    fn parses_provider_usage_metadata_and_agent_raw_usage_shapes() {
+        let cases = [
+            (
+                "gemini",
+                r#"{"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":4,"cachedContentTokenCount":2,"totalTokenCount":15}}"#,
+            ),
+            (
+                "workbuddy",
+                r#"[{"rawUsage":{"inputTokens":21,"outputTokens":5,"totalTokens":26,"inputTokensDetails":{"cached_tokens":3}}}]"#,
+            ),
+            (
+                "openhands",
+                r#"usage: input: 31 output: 7 cached: 4 total: 38"#,
+            ),
+            (
+                "openjiuwen",
+                r#"Token usage: input_tokens=41 output_tokens=9 cacheReadInputTokens=6 totalTokens=50"#,
+            ),
+        ];
+        for (agent, output) in cases {
+            let usage = token_usage_from_sources("cli2key", agent, output, "", None);
+            assert_eq!(
+                usage.input_tokens,
+                Some(if agent == "gemini" {
+                    11
+                } else if agent == "workbuddy" {
+                    21
+                } else if agent == "openhands" {
+                    31
+                } else {
+                    41
+                }),
+                "{agent} input"
+            );
+            assert_eq!(
+                usage.output_tokens,
+                Some(if agent == "gemini" {
+                    4
+                } else if agent == "workbuddy" {
+                    5
+                } else if agent == "openhands" {
+                    7
+                } else {
+                    9
+                }),
+                "{agent} output"
+            );
+            assert_eq!(
+                usage.cached_tokens,
+                Some(if agent == "gemini" {
+                    2
+                } else if agent == "workbuddy" {
+                    3
+                } else if agent == "openhands" {
+                    4
+                } else {
+                    6
+                }),
+                "{agent} cached"
+            );
+            assert_eq!(
+                usage.total_tokens,
+                Some(if agent == "gemini" {
+                    15
+                } else if agent == "workbuddy" {
+                    26
+                } else if agent == "openhands" {
+                    38
+                } else {
+                    50
+                }),
+                "{agent} total"
+            );
         }
     }
 
