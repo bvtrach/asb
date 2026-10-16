@@ -5,6 +5,7 @@
 //! result is written as bounded JSON so later processing never has to parse
 //! terminal output.
 
+use crate::collectors;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -71,22 +72,10 @@ pub struct TokenUsage {
 
 /// Stable names used in generated configuration files and downstream tools.
 pub fn available_collectors() -> Vec<String> {
-    [
-        "system",
-        "runtime",
-        "mpstat",
-        "iostat",
-        "perf",
-        "perfetto",
-        "flamegraph",
-        "bpftrace",
-        "token_usage",
-        "steps",
-        "success_rate",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect()
+    collectors::all()
+        .iter()
+        .map(|collector| collector.id().to_owned())
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2258,7 +2247,7 @@ fn read_bounded(path: &Path) -> String {
     }
     bounded(&bytes)
 }
-fn env_true(name: &str) -> bool {
+pub(crate) fn env_true(name: &str) -> bool {
     matches!(
         std::env::var(name).as_deref(),
         Ok("1") | Ok("true") | Ok("yes")
@@ -2494,7 +2483,19 @@ fn shell_quote(value: &str) -> String {
 }
 
 fn selected_or_env(name: &str, variable: &str, selected: &[String]) -> bool {
-    selected.iter().any(|value| value == name) || env_true(variable)
+    debug_assert_eq!(
+        collectors::find(name).and_then(|collector| collector.environment_flag()),
+        Some(variable)
+    );
+    let Some(collector) = collectors::find(name) else {
+        return false;
+    };
+    // Resolve these catalog properties here even when the execution path only
+    // needs enablement. It verifies that every selectable collector carries
+    // complete lifecycle metadata for the PID-attached runner.
+    let _tool = collector.tool_id();
+    let _pid_attached = collector.requires_pid();
+    collectors::selected_or_environment(name, selected)
 }
 
 fn selected_bpftrace_profiles(selected: &[String]) -> Result<Vec<BpftraceProfile>, String> {
