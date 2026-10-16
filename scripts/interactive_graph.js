@@ -172,7 +172,7 @@
 
     viewport.addEventListener('pointermove', (event) => {
       if (state.gesture?.dragging) return;
-      const target = graphAncestor(event.target) || pointTarget(event.clientX, event.clientY) || edgeTargetAtPoint(event.clientX, event.clientY);
+      const target = hitAt(event.clientX, event.clientY);
       setHover(target, event);
     });
     viewport.addEventListener('pointerleave', () => { if (!state.gesture?.dragging) setHover(null); });
