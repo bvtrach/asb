@@ -41,7 +41,6 @@ const TOOL_INSTALL_VALUES: &[&str] = &[
     "cline",
     "continue",
     "cli2key",
-    "llmtape",
     "--source",
     "--dir",
     "--dry-run",

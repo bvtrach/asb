@@ -7,7 +7,6 @@ agent/workload, create a configuration, then run it:
 asb init [PROJECT_DIR] [--reset]
 asb tool list
 asb tool install AGENT
-asb tool install llmtape
 asb workload list
 asb workload install SOURCE.txt|URL
 asb workload tui
@@ -153,14 +152,13 @@ artifacts. Checkbox filters can enable or disable individual benchmarks,
 agents, providers, models, and workloads without contacting a provider or
 rerunning the sweep.
 
-`asb run CONFIG --record` runs the same configuration through the local `llmtape`
-proxy and writes a JSONL cassette (by default below `cassettes/` next to the
-configuration). Install the proxy into the current benchmark project with
-`asb tool install llmtape`; this installs the pinned npm library plus ASB's
-project-local `llmtape` proxy wrapper. No global llmtape installation is required. ASB
-does not search the host `PATH` implicitly. To deliberately use another
-executable, set `ASB_LLM_TAPE`. Use `--cassette FILE` to choose an explicit
-path. `asb run CONFIG --replay` starts llmtape's cassette server and routes
+`asb run CONFIG --record` runs the same configuration through ASB's built-in
+local tape proxy and writes a JSONL cassette (by default below `cassettes/`
+next to the configuration). ASB materializes this small proxy beside the
+cassette automatically; no external recorder package is required.
+It does not search the host `PATH` implicitly. To deliberately use another
+compatible executable, set `ASB_LLM_TAPE`. Use `--cassette FILE` to choose an
+explicit path. `asb run CONFIG --replay` starts the tape server and routes
 all supported provider endpoints to it; it refuses a missing cassette and does
 not start cli2key or connect to any live provider. Add
 `--respect-record-timings` to `run --replay` or `sweep --replay` to reproduce
@@ -255,7 +253,11 @@ make install
 ```
 
 `make build` regenerates `target/asb.bash` and `target/_asb` from ASB's command
-and option catalog. `make install` installs Bash completion at
+and option catalog, generates Rust API documentation under `target/doc/`, and
+generates `target/asb-uml.dot` plus `target/asb-uml.svg`. It installs the
+pinned AutoUML generator project-locally under `target/tools/`; if Graphviz is
+available its `dot` renderer is used, otherwise ASB's deterministic SVG
+fallback is used. `make install` installs Bash completion at
 `~/.local/share/bash-completion/completions/asb` and Zsh completion at
 `~/.local/share/zsh/site-functions/_asb`, alongside the binary.
 

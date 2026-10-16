@@ -10,7 +10,6 @@ make install
 ./target/debug/asb init
 ./target/debug/asb tool list
 ./target/debug/asb tool install codex
-./target/debug/asb tool install llmtape
 ./target/debug/asb tool install perfetto
 ./target/debug/asb workload list
 ./target/debug/asb provider models openrouter
@@ -158,7 +157,6 @@ The built-in recipes are:
 | `cline` | pinned npm package | `cline` |
 | `continue` | pinned npm package | `cn` |
 | `cli2key` | pinned npm bridge package | `codex-bridge` |
-| `llmtape` | pinned npm package | `llmtape` |
 
 The npm recipes require `npm`; the Python recipes require `python3` with
 virtual-environment support. `asb tool install AGENT --dry-run` prints the

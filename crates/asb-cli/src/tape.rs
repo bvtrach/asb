@@ -3,12 +3,13 @@
 use crate::Error;
 use crate::providers;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(8);
+const BUILTIN_PROXY: &str = include_str!("../../../scripts/llmtape.mjs");
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {
@@ -28,7 +29,6 @@ impl Session {
         mode: Mode,
         cassette: &Path,
         upstream: Option<&str>,
-        project_executable: Option<&Path>,
         respect_record_timings: bool,
     ) -> Result<Self, Error> {
         if mode == Mode::Replay && !cassette.is_file() {
@@ -48,8 +48,8 @@ impl Session {
             })?;
         }
         let port = free_port()?;
-        let executable = resolve_executable(project_executable)?;
-        let mut command = Command::new(&executable);
+        let executable = resolve_executable(cassette)?;
+        let mut command = executable.command();
         command
             .arg(match mode {
                 Mode::Record => "record",
@@ -81,7 +81,7 @@ impl Session {
             .stderr(Stdio::null());
         let child = command.spawn().map_err(|error| {
             Error::Run(format!(
-                "cannot start project llmtape (`{executable}`); run `asb tool install llmtape` in the benchmark project or set ASB_LLM_TAPE to another executable: {error}"
+                "cannot start ASB's built-in tape proxy; install Node.js or set ASB_LLM_TAPE to an explicit compatible executable: {error}"
             ))
         })?;
         let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
@@ -99,7 +99,7 @@ impl Session {
         let _ = child.kill();
         let _ = child.wait();
         Err(Error::Run(
-            "llmtape did not become ready within 8 seconds; verify the llmtape installation and cassette format".into(),
+            "ASB's tape proxy did not become ready within 8 seconds; verify Node.js and the cassette format".into(),
         ))
     }
 
@@ -116,29 +116,44 @@ impl Session {
     }
 }
 
-/// Resolve llmtape without silently depending on a host-wide installation.
-///
-/// The runner passes the executable found in the benchmark project's tool
-/// directory.  `ASB_LLM_TAPE` remains an explicit escape hatch for a caller
-/// that deliberately supplies another executable; an unqualified `llmtape`
-/// lookup on `PATH` is intentionally not performed.
-fn resolve_executable(project_executable: Option<&Path>) -> Result<String, Error> {
-    resolve_executable_with_override(project_executable, std::env::var("ASB_LLM_TAPE").ok())
+/// A tape proxy command. The default proxy is compiled into ASB and materialized
+/// beside the cassette; no npm package or catalog installation is involved.
+enum ProxyExecutable {
+    Builtin(PathBuf),
+    Override(String),
 }
 
-fn resolve_executable_with_override(
-    project_executable: Option<&Path>,
-    explicit_override: Option<String>,
-) -> Result<String, Error> {
-    project_executable
-        .map(|path| path.to_string_lossy().into_owned())
-        .or(explicit_override)
+impl ProxyExecutable {
+    fn command(&self) -> Command {
+        match self {
+            Self::Builtin(script) => {
+                let mut command = Command::new("node");
+                command.arg(script);
+                command
+            }
+            Self::Override(executable) => Command::new(executable),
+        }
+    }
+}
+
+/// Resolve an explicitly supplied proxy or materialize ASB's built-in proxy.
+/// ASB deliberately does not look up an unqualified host `llmtape` command.
+fn resolve_executable(cassette: &Path) -> Result<ProxyExecutable, Error> {
+    if let Some(override_path) = std::env::var("ASB_LLM_TAPE")
+        .ok()
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| {
-            Error::Run(
-                "llmtape is not installed in this benchmark project; run `asb tool install llmtape` from the project directory, or set ASB_LLM_TAPE to an explicit executable".into(),
-            )
-        })
+    {
+        return Ok(ProxyExecutable::Override(override_path));
+    }
+    let parent = cassette.parent().unwrap_or_else(|| Path::new("."));
+    let script = parent.join(".asb-tape-proxy.mjs");
+    std::fs::write(&script, BUILTIN_PROXY).map_err(|error| {
+        Error::Run(format!(
+            "cannot materialize ASB's built-in tape proxy at {}: {error}",
+            script.display()
+        ))
+    })?;
+    Ok(ProxyExecutable::Builtin(script))
 }
 
 impl Drop for Session {
@@ -222,10 +237,7 @@ fn free_port() -> Result<u16, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Mode, configure_command, resolve_executable, resolve_executable_with_override, upstream,
-    };
-    use std::path::Path;
+    use super::{Mode, ProxyExecutable, configure_command, resolve_executable, upstream};
     use std::process::Command;
 
     #[test]
@@ -268,19 +280,30 @@ mod tests {
     }
 
     #[test]
-    fn project_tool_is_preferred_without_path_fallback() {
-        let path = Path::new(".asb-tools/llmtape/node_modules/.bin/llmtape");
-        assert_eq!(
-            resolve_executable(Some(path)).unwrap(),
-            path.display().to_string()
-        );
+    fn built_in_proxy_is_materialized_beside_the_cassette() {
+        let root = std::env::temp_dir().join(format!("asb-tape-test-{}", std::process::id()));
+        let cassette = root.join("cassettes/run.jsonl");
+        std::fs::create_dir_all(cassette.parent().unwrap()).unwrap();
+        let resolved = resolve_executable(&cassette).unwrap();
+        match resolved {
+            ProxyExecutable::Builtin(path) => {
+                assert_eq!(path, root.join("cassettes/.asb-tape-proxy.mjs"));
+                assert!(
+                    std::fs::read_to_string(path)
+                        .unwrap()
+                        .contains("http.createServer")
+                );
+            }
+            ProxyExecutable::Override(_) => panic!("expected the embedded tape proxy"),
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
-    fn missing_project_tool_explains_local_install() {
-        let error = resolve_executable_with_override(None, None)
-            .expect_err("missing llmtape should fail closed");
-        assert!(error.to_string().contains("asb tool install llmtape"));
-        assert!(error.to_string().contains("benchmark project"));
+    fn explicit_proxy_override_remains_supported() {
+        // Environment changes are process-global, so exercise the command shape
+        // directly rather than changing ASB_LLM_TAPE in a parallel test.
+        let command = ProxyExecutable::Override("custom-tape".into()).command();
+        assert_eq!(command.get_program(), "custom-tape");
     }
 }

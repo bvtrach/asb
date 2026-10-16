@@ -9,7 +9,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
-const LLMTAPE_WRAPPER: &str = include_str!("../../../scripts/llmtape.mjs");
 const BPFTRACE_SOURCE: &str =
     "https://github.com/bpftrace/bpftrace/archive/refs/tags/v0.20.2.tar.gz";
 const PERFETTO_LINUX_X86_64_URL: &str =
@@ -98,7 +97,6 @@ const BUILTIN_TOOLS: &[&str] = &[
     "cline",
     "continue",
     "cli2key",
-    "llmtape",
     "mpstat",
     "iostat",
     "perf",
@@ -268,10 +266,6 @@ fn recipe(name: &str) -> Option<Recipe> {
             package: "codex-anthropic-bridge@0.1.10",
             executable: "codex-bridge",
         }),
-        "llmtape" => Some(Recipe::Npm {
-            package: "llmtape@1.2.0",
-            executable: "llmtape",
-        }),
         "mpstat" => Some(Recipe::Host {
             executable: "mpstat",
         }),
@@ -377,7 +371,7 @@ pub fn tool_with_progress(
     progress(100, "ready");
     let kind = if matches!(
         id.as_str(),
-        "llmtape" | "mpstat" | "iostat" | "perf" | "bpftrace" | "perfetto" | "flamegraph"
+        "mpstat" | "iostat" | "perf" | "bpftrace" | "perfetto" | "flamegraph"
     ) {
         "tool"
     } else {
@@ -784,15 +778,6 @@ fn install_recipe(
         ));
     }
     let executable = executable(recipe, root);
-    if is_llmtape(recipe) {
-        fs::create_dir_all(executable.parent().expect("llmtape wrapper parent")).map_err(
-            |error| Error::Io(format!("cannot create llmtape wrapper directory: {error}")),
-        )?;
-        fs::write(&executable, LLMTAPE_WRAPPER).map_err(|error| {
-            Error::Io(format!("cannot write {}: {error}", executable.display()))
-        })?;
-        make_executable(&executable)?;
-    }
     Ok(executable)
 }
 
@@ -1135,10 +1120,6 @@ fn json_string(value: &str) -> String {
 
 fn executable(recipe: Recipe, root: &Path) -> PathBuf {
     match recipe {
-        Recipe::Npm {
-            package,
-            executable,
-        } if package == "llmtape@1.2.0" => root.join("bin").join(executable),
         Recipe::Npm { executable, .. } => root.join("node_modules/.bin").join(executable),
         Recipe::Python { executable, .. } => root.join("venv/bin").join(executable),
         Recipe::Host { executable } => root.join("bin").join(executable),
@@ -1147,16 +1128,6 @@ fn executable(recipe: Recipe, root: &Path) -> PathBuf {
         Recipe::Flamegraph => root.join("bin").join("flamegraph"),
         Recipe::Goose => root.join("bin").join("goose"),
     }
-}
-
-fn is_llmtape(recipe: Recipe) -> bool {
-    matches!(
-        recipe,
-        Recipe::Npm {
-            package: "llmtape@1.2.0",
-            ..
-        }
-    )
 }
 
 fn describe(recipe: Recipe, root: &Path) -> String {
@@ -1373,7 +1344,6 @@ mod tests {
             "cline",
             "continue",
             "cli2key",
-            "llmtape",
             "mpstat",
             "iostat",
             "perf",
@@ -1385,18 +1355,6 @@ mod tests {
             assert!(!describe(recipe, Path::new(".asb-tools")).is_empty());
             assert!(!executable_name(agent).is_empty());
         }
-    }
-
-    #[test]
-    fn llmtape_recipe_materializes_a_project_local_wrapper() {
-        let recipe = recipe("llmtape").expect("llmtape recipe");
-        assert!(is_llmtape(recipe));
-        assert_eq!(
-            executable(recipe, Path::new(".asb-tools/llmtape")),
-            Path::new(".asb-tools/llmtape/bin/llmtape")
-        );
-        assert!(LLMTAPE_WRAPPER.contains("llmtape record"));
-        assert!(LLMTAPE_WRAPPER.contains("llmtape replay"));
     }
 
     #[test]
@@ -1417,9 +1375,6 @@ mod tests {
     fn tool_availability_prefers_project_local_installations() {
         let root = std::env::temp_dir().join(format!("asb-tool-status-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("llmtape/bin")).unwrap();
-        fs::write(root.join("llmtape/bin/llmtape"), "#!/bin/sh\n").unwrap();
-        assert!(tool_available("llmtape", &root));
         assert!(!tool_available("not-a-tool", &root));
         let _ = fs::remove_dir_all(root);
     }
@@ -1466,10 +1421,11 @@ mod tests {
         assert!(!text.contains("codeagent"));
         assert!(text.contains("pi"));
         assert!(text.contains("openjiuwen"));
-        assert!(text.contains("llmtape"));
+        assert!(!text.contains("llmtape"));
         assert!(text.contains("mpstat"));
         assert!(text.contains("bpftrace"));
         assert!(text.contains("custom"));
+        assert!(recipe("llmtape").is_none());
     }
 
     #[test]

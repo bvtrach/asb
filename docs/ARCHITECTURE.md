@@ -105,8 +105,8 @@ messages are treated as failures so sweeps cannot report a false success.
 
 `asb tool install` installs a pinned package recipe into the configured tools
 directory for supported agents and support tools, or downloads/copies an
-executable supplied with `--source`. The `llmtape` support tool is project-local
-and is automatically preferred by record/replay when installed. npm recipes are
+executable supplied with `--source`. Record/replay instead uses ASB's embedded
+tape proxy automatically and has no tool-catalog entry. npm recipes are
 project-local; Python recipes use a
 project-local virtual environment. `asb workload install` downloads a prompt
 URL, resolves a pinned external workload alias, or copies a local prompt into
@@ -158,7 +158,8 @@ The ASB source checkout is not a benchmark project: `init` rejects its
 distinctive workspace layout before creating any files.
 
 Recording and replay are implemented as a separate `tape` module behind the
-runner boundary. The `run --record` and `run --replay` flags start the project-local `llmtape` loopback proxy,
+runner boundary. The `run --record` and `run --replay` flags materialize and start
+ASB's built-in loopback tape proxy,
 routes provider endpoints to that proxy, and tears it down after the child
 exits. `--record` writes a JSONL cassette with a bounded `delay_ms` response
 latency for every interaction; `--replay` requires that cassette and never
@@ -166,12 +167,12 @@ starts cli2key or a live provider. Passing `--respect-record-timings` with
 `--replay` makes llmtape match each request first, then wait for its recorded
 delay before returning the response. The same option is available on
 `asb sweep`. This keeps the benchmark
-configuration contract unchanged and keeps llmtape an optional, project-local
-development tool rather than a runtime dependency. Installation includes the
-llmtape npm library and a small project-local proxy wrapper because the npm
-package itself does not publish a CLI. ASB never falls back to a
-host `PATH` lookup; use `asb tool install llmtape` in the benchmark project or
-set `ASB_LLM_TAPE` explicitly. Measurement collection remains
+configuration contract unchanged and keeps the tape component an optional,
+project-local development capability rather than a runtime dependency. The
+proxy is embedded in ASB and requires only Node.js; it does not use or install
+an external recorder package. ASB never falls back to an unqualified host `PATH`
+lookup; set `ASB_LLM_TAPE` explicitly to use another compatible executable.
+Measurement collection remains
 explicitly opt-in through `asb run --measurements DIR`; CI does not start live
 agents, llmtape, or host collectors.
 

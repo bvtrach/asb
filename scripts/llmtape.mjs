@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
-// Small project-local HTTP recorder/replayer used by ASB.  The npm llmtape
-// package is a library, not a command-line proxy, so this wrapper supplies the
+// Small project-local HTTP recorder/replayer embedded in ASB. It supplies the
 // bounded loopback protocol that ASB's tape module invokes.
 
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
