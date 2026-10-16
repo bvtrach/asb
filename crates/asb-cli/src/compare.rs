@@ -312,7 +312,9 @@ fn artifact_links(sweep_parent: &Path, result_dir: &Path) -> Vec<String> {
             }
         }
     }
-    collect_artifacts(result_dir, 0, &mut files);
+    // Do not inventory external workload workspaces; only measurement output
+    // is comparison evidence and should appear in the report.
+    collect_artifacts(&measurement_dir, 0, &mut files);
     files.sort();
     files.dedup();
     files

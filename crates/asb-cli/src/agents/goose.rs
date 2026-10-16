@@ -21,11 +21,11 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
         if let Some((key, url)) = context.cli2key {
             context
                 .command
-                .env("GOOSE_PROVIDER", "openai")
+                .env("GOOSE_PROVIDER", "anthropic")
                 .env("GOOSE_MODEL", context.model)
-                .env("OPENAI_HOST", url.trim_end_matches("/v1"))
-                .env("OPENAI_BASE_PATH", "/v1/chat/completions")
-                .env("OPENAI_API_KEY", key);
+                .env("ANTHROPIC_HOST", url.trim_end_matches("/v1"))
+                .env("ANTHROPIC_API_KEY", key)
+                .env("ANTHROPIC_AUTH_TOKEN", key);
         }
     }
     Ok(())
