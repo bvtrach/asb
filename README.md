@@ -94,9 +94,10 @@ When the `perfetto` collector is selected (or `ASB_MEASURE_PERFETTO=1` is set),
 ASB validates the exact ftrace configuration before the agent starts, then starts
 Tracebox and writes
 `perfetto-scheduling.perfetto-trace`, the generated trace configuration, and
-`perfetto-tracepoints.json` to the measurement directory. It also writes a
-portable `perfetto-summary.svg`; `asb compare` embeds that summary, links the
-native trace, and charts the extracted scheduler/process metrics. The trace contains
+`perfetto-tracepoints.json` to the measurement directory. It also writes one
+portable `perfetto-metric-*.svg` per extracted metric; `asb compare` embeds
+those per-metric graphs, links the native trace, and charts the extracted
+scheduler/process metrics. The trace contains
 scheduler switch/wakeup, process/thread lifecycle, and fixed ASB lifecycle
 markers for measurement-ready, agent spawn, agent execution, and agent exit.
 It contains no prompt, provider response, configuration value, or credential.

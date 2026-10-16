@@ -35,8 +35,8 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   then starts project-local Tracebox and records scheduler switches/wakeups,
   thread lifecycle, process names, and fixed non-secret ASB lifecycle
   tracepoints. The project-local trace processor extracts stable aggregates,
-  and ASB preserves the native `.perfetto-trace`, a bounded JSON record, and a
-  portable SVG summary for the comparison report;
+  and ASB preserves the native `.perfetto-trace`, a bounded JSON record, and
+  one portable SVG per extracted metric for the comparison report;
   the perf adapter records both call stacks and stable `perf stat` counters
   (task clock, context switches, migrations, faults, cycles, instructions);
   each adapter is isolated from the runner and can be extended without adding

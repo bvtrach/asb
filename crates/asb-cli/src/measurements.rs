@@ -371,7 +371,7 @@ impl Session {
                     "trace": self.perfetto_trace.as_ref().map(|path| file_name(path)),
                 }),
             )?;
-            write_perfetto_summary(
+            write_perfetto_metric_svgs(
                 &self.dir,
                 self.perfetto_trace.as_deref(),
                 self.tracepoint_count,
@@ -1358,47 +1358,38 @@ fn write_flamegraph_status(
     )
 }
 
-/// Write a dependency-free visual summary for the native Perfetto artifact.
-/// Raw traces are intentionally not converted to text: they can contain host
-/// process names, while this SVG contains only ASB's fixed aggregate metrics.
-fn write_perfetto_summary(
+/// Write one dependency-free SVG per stable Perfetto metric. Raw traces are
+/// intentionally not converted to text: they can contain host process names,
+/// while these SVGs contain only ASB's fixed aggregate metrics.
+fn write_perfetto_metric_svgs(
     dir: &Path,
     trace: Option<&Path>,
     tracepoint_count: u64,
     metrics: &BTreeMap<String, f64>,
 ) -> Result<(), String> {
-    let trace_state = trace
-        .filter(|path| path.is_file())
-        .map_or("native trace unavailable", |_| "native trace recorded");
-    let mut lines = vec![
-        "Perfetto scheduler summary".to_owned(),
-        trace_state.to_owned(),
-        format!("ASB lifecycle markers: {tracepoint_count}"),
-    ];
-    for (name, value) in metrics {
-        lines.push(format!(
-            "{}: {:.0}",
-            name.trim_start_matches("perfetto."),
-            value
-        ));
+    let mut all_metrics = metrics.clone();
+    if all_metrics.is_empty() {
+        all_metrics.insert("perfetto.tracepoints".into(), tracepoint_count as f64);
     }
-    let height = 70 + lines.len() * 28;
-    let mut svg = format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"760\" height=\"{height}\" viewBox=\"0 0 760 {height}\"><title>Perfetto scheduler summary</title><rect width=\"760\" height=\"{height}\" fill=\"#101827\"/><rect x=\"16\" y=\"16\" width=\"728\" height=\"{}\" rx=\"10\" fill=\"#182334\"/><text x=\"36\" y=\"46\" fill=\"#e5edf8\" font-family=\"sans-serif\" font-size=\"20\" font-weight=\"bold\">{}</text>",
-        height - 32,
-        escape_svg(&lines[0])
-    );
-    for (index, line) in lines.iter().enumerate().skip(1) {
-        let color = if index == 1 { "#78dba9" } else { "#b9c7dc" };
-        svg.push_str(&format!(
-            "<text x=\"36\" y=\"{}\" fill=\"{color}\" font-family=\"monospace\" font-size=\"15\">{}</text>",
-            46 + index * 28,
-            escape_svg(line)
-        ));
+    for (name, value) in all_metrics {
+        let trace_state = trace
+            .filter(|path| path.is_file())
+            .map_or("native trace unavailable", |_| "native trace recorded");
+        let label = name.trim_start_matches("perfetto.");
+        let svg = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"760\" height=\"180\" viewBox=\"0 0 760 180\"><title>Perfetto {}</title><rect width=\"760\" height=\"180\" fill=\"#101827\"/><rect x=\"16\" y=\"16\" width=\"728\" height=\"148\" rx=\"10\" fill=\"#182334\"/><text x=\"36\" y=\"50\" fill=\"#e5edf8\" font-family=\"sans-serif\" font-size=\"20\" font-weight=\"bold\">Perfetto: {}</text><text x=\"36\" y=\"92\" fill=\"#78dba9\" font-family=\"monospace\" font-size=\"28\">{:.0}</text><text x=\"36\" y=\"132\" fill=\"#b9c7dc\" font-family=\"sans-serif\" font-size=\"15\">{} · lifecycle markers: {tracepoint_count}</text></svg>\n",
+            escape_svg(label),
+            escape_svg(label),
+            value,
+            trace_state,
+        );
+        fs::write(
+            dir.join(format!("perfetto-metric-{}.svg", safe_svg_name(label))),
+            svg,
+        )
+        .map_err(|error| format!("cannot write Perfetto metric SVG: {error}"))?;
     }
-    svg.push_str("</svg>\n");
-    fs::write(dir.join("perfetto-summary.svg"), svg)
-        .map_err(|error| format!("cannot write Perfetto SVG summary: {error}"))
+    Ok(())
 }
 
 fn escape_svg(value: &str) -> String {
@@ -1407,6 +1398,19 @@ fn escape_svg(value: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+fn safe_svg_name(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 fn parse_collector_metrics(name: &str, output: &str) -> BTreeMap<String, f64> {
