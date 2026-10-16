@@ -324,8 +324,8 @@ fn write_html_report(
 
     let mut html = String::from(HTML_HEAD);
     html.push_str("<main class=\"shell\">");
-    html.push_str("<header class=\"hero\"><p class=\"eyebrow\">ASB BENCHMARK REPORT</p><h1>Sweep comparison</h1><p>Explore benchmark results, measurements, and artifacts from this sweep. Use the filters to focus the report without rerunning anything.</p></header>");
-    html.push_str("<section class=\"explain\"><strong>How to read this report</strong><p>Each row is one agent/provider/model/workload combination. Runtime, success rate, token usage, and structured system measurements are linked to their raw JSON evidence. SVG charts summarize the complete sweep; filters control the result table and report cards.</p></section>");
+    html.push_str("<header class=\"hero\"><p class=\"eyebrow\">ASB BENCHMARK REPORT</p><h1>Sweep comparison</h1><p>Explore benchmark results and measurements from this sweep. Use the filters to focus the report without rerunning anything.</p></header>");
+    html.push_str("<section class=\"explain\"><strong>How to read this report</strong><p>Each row is one agent/provider/model/workload combination. Runtime, success rate, token usage, and structured system measurements are summarized in the table and charts. The complete machine-readable evidence inventory is available in comparison.json.</p></section>");
     html.push_str("<section class=\"filters\"><div class=\"section-title\"><h2>Filter results</h2><div><button type=\"button\" data-action=\"all\">Select all</button><button type=\"button\" data-action=\"none\">Clear all</button></div></div><div class=\"filter-grid\">");
     for (group, values) in &dimensions {
         html.push_str(&format!("<fieldset><legend>{}</legend>", title_case(group)));
@@ -336,7 +336,7 @@ fn write_html_report(
         html.push_str("</fieldset>");
     }
     html.push_str("</div><p class=\"filter-count\" id=\"filter-count\"></p></section>");
-    html.push_str("<section><div class=\"section-title\"><h2>Benchmark results</h2><a class=\"text-link\" href=\"comparison.json\">Download comparison.json</a></div><div class=\"table-wrap\"><table><thead><tr><th>Benchmark</th><th>Agent</th><th>Provider</th><th>Model</th><th>Workload</th><th>Runtime</th><th>Success</th><th>Tokens</th><th>Evidence</th></tr></thead><tbody id=\"results\">");
+    html.push_str("<section><div class=\"section-title\"><h2>Benchmark results</h2><a class=\"text-link\" href=\"comparison.json\">Download comparison.json</a></div><div class=\"table-wrap\"><table><thead><tr><th>Benchmark</th><th>Agent</th><th>Provider</th><th>Model</th><th>Workload</th><th>Runtime</th><th>Success</th><th>Tokens</th><th>Details</th></tr></thead><tbody id=\"results\">");
     for benchmark in benchmarks {
         let runtime = benchmark
             .metrics
@@ -360,27 +360,11 @@ fn write_html_report(
                 .collect::<String>();
             format!("<details><summary>All metrics</summary><dl>{items}</dl></details>")
         };
-        let artifact_details = if benchmark.artifacts.is_empty() {
-            String::new()
-        } else {
-            benchmark
-                .artifacts
-                .iter()
-                .map(|link| {
-                    format!(
-                        "<a href=\"{}\">{}</a> ",
-                        escape(link),
-                        escape(&artifact_label(link))
-                    )
-                })
-                .collect()
-        };
-        html.push_str(&format!("<tr data-dimension-benchmark=\"{}\" data-dimension-agent=\"{}\" data-dimension-provider=\"{}\" data-dimension-model=\"{}\" data-dimension-workload=\"{}\"><td><strong>{}</strong></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"links\">{}{}{}</td></tr>",
+        html.push_str(&format!("<tr data-dimension-benchmark=\"{}\" data-dimension-agent=\"{}\" data-dimension-provider=\"{}\" data-dimension-model=\"{}\" data-dimension-workload=\"{}\"><td><strong>{}</strong></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"details\">{}{}</td></tr>",
             escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
             escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
             runtime, success, tokens,
             metrics_details,
-            artifact_details,
             benchmark.status.as_ref().map_or(String::new(), |status| format!("<span class=\"status\">{}</span>", escape(status))),
             ));
     }
@@ -399,10 +383,6 @@ fn title_case(value: &str) -> String {
     chars.next().map_or_else(String::new, |first| {
         first.to_uppercase().collect::<String>() + chars.as_str()
     })
-}
-
-fn artifact_label(link: &str) -> String {
-    link.rsplit('/').next().unwrap_or(link).to_owned()
 }
 
 const HTML_HEAD: &str = r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ASB sweep report</title><style>
@@ -743,7 +723,9 @@ mod tests {
             std::fs::read_to_string(root.join("results/sweep-comparison/report.html")).unwrap();
         assert!(report.contains("Filter results"));
         assert!(report.contains("data-group=\"agent\""));
-        assert!(report.contains("run.json"));
+        assert!(report.contains(">Details</th>"));
+        assert!(report.contains("All metrics"));
+        assert!(!report.contains("run.json"));
         assert!(report.contains("Select all"));
         let _ = std::fs::remove_dir_all(root);
     }
