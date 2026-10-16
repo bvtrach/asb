@@ -27,6 +27,7 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
     if context.provider.eq_ignore_ascii_case("cli2key") {
         context
             .command
+            .env("QWEN_DEFAULT_AUTH_TYPE", "anthropic")
             .env_remove("OPENAI_API_KEY")
             .env_remove("OPENAI_BASE_URL")
             .env_remove("OPENAI_API_BASE")

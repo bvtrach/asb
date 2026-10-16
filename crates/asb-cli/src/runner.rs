@@ -303,24 +303,31 @@ fn run_mode(
         .stderr(Stdio::piped());
     providers::configure(&mut command, &config.provider, &config.model);
     let cli2key_endpoint = tape_url.or_else(|| bridge.as_ref().map(cli2key::Bridge::base_url));
+    let cli2key_credentials = if config.provider.eq_ignore_ascii_case("cli2key") {
+        Some((
+            bridge
+                .as_ref()
+                .map_or("asb-replay", cli2key::Bridge::api_key),
+            cli2key_endpoint.unwrap_or("http://127.0.0.1:0/v1"),
+        ))
+    } else {
+        None
+    };
     prepare::apply_with_tape(
+        &mut command,
+        &config.provider,
+        &config.model,
+        cli2key_credentials,
+        tape_url,
+        tape_mode == Some(tape::Mode::Replay),
+    )?;
+    agents::prepare(
         &mut command,
         &config.agent,
         &config.provider,
         &config.model,
-        if config.provider.eq_ignore_ascii_case("cli2key") {
-            Some((
-                bridge
-                    .as_ref()
-                    .map_or("asb-replay", cli2key::Bridge::api_key),
-                cli2key_endpoint.unwrap_or("http://127.0.0.1:0/v1"),
-            ))
-        } else {
-            None
-        },
+        cli2key_credentials,
         &project::resolve(&project_root, &project_config.tools_dir),
-        tape_url,
-        tape_mode == Some(tape::Mode::Replay),
     )?;
     if let Some(url) = tape_url {
         tape::configure_command(

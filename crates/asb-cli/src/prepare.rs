@@ -1,35 +1,27 @@
-//! Pre-run environment preparation hooks.
+//! Provider-wide pre-run environment preparation.
 
-use crate::Error;
-use crate::providers;
-use std::path::Path;
+use crate::{Error, providers};
 use std::process::Command;
 
-/// Apply preparation with an optional local tape endpoint.
+/// Apply only provider-wide configuration to a command.
 ///
-/// Provider-wide configuration remains here; adapter-specific preparation is
-/// dispatched through the agent registry after that baseline is installed.
+/// Agent adapters are invoked separately by the runner after this baseline has
+/// been established. Keeping this module target-neutral prevents a provider
+/// change from silently changing another adapter's configuration.
 pub fn apply_with_tape(
     command: &mut Command,
-    agent: &str,
     provider: &str,
     model: &str,
     cli2key: Option<(&str, &str)>,
-    tools_dir: &Path,
     tape_base_url: Option<&str>,
     replay: bool,
 ) -> Result<(), Error> {
     if provider.eq_ignore_ascii_case("cli2key") {
-        prepare_cli2key(
-            command,
-            model,
-            crate::agents::resolve_from_tools("codex", tools_dir).as_deref(),
-            cli2key,
-        )?;
+        prepare_cli2key(command, model, cli2key)?;
     } else if provider.eq_ignore_ascii_case("openrouter") {
         prepare_openrouter(command, model, tape_base_url, replay)?;
     }
-    crate::agents::prepare(command, agent, provider, model, cli2key, tools_dir)
+    Ok(())
 }
 
 fn prepare_openrouter(
@@ -51,17 +43,12 @@ fn prepare_openrouter(
         .map(str::to_owned)
         .or_else(|| std::env::var("OPENROUTER_BASE_URL").ok())
         .unwrap_or_else(|| "https://openrouter.ai/api/v1".into());
-    configure_openai_compatible(command, model, &key, &base_url)?;
+    configure_openai_compatible(command, model, &key, &base_url);
     command.env("OPENROUTER_API_KEY", &key);
     Ok(())
 }
 
-pub(crate) fn configure_openai_compatible(
-    command: &mut Command,
-    model: &str,
-    key: &str,
-    base_url: &str,
-) -> Result<(), Error> {
+fn configure_openai_compatible(command: &mut Command, model: &str, key: &str, base_url: &str) {
     let root = base_url.trim_end_matches('/');
     let api_root = root.strip_suffix("/v1").unwrap_or(root);
     command
@@ -70,22 +57,12 @@ pub(crate) fn configure_openai_compatible(
         .env("OPENAI_API_BASE", root)
         .env("OPENAI_MODEL", model)
         .env("ANTHROPIC_API_KEY", key)
-        .env("ANTHROPIC_BASE_URL", api_root)
-        .env("GOOSE_PROVIDER", "openai")
-        .env("GOOSE_MODEL", model)
-        .env("OPENAI_HOST", api_root)
-        .env("OPENAI_BASE_PATH", "/v1/chat/completions")
-        .env("CLINE_API_KEY", key)
-        .env("CONTINUE_API_KEY", key)
-        .env("CONTINUE_API_BASE", root)
-        .env("CONTINUE_MODEL", model);
-    Ok(())
+        .env("ANTHROPIC_BASE_URL", api_root);
 }
 
 fn prepare_cli2key(
     command: &mut Command,
     model: &str,
-    codex_executable: Option<&str>,
     cli2key: Option<(&str, &str)>,
 ) -> Result<(), Error> {
     let (key, base_url) = cli2key.ok_or_else(|| {
@@ -102,482 +79,85 @@ fn prepare_cli2key(
         .env("OPENAI_API_BASE", base_url)
         .env("OPENAI_MODEL", model)
         .env("ANTHROPIC_MODEL", model)
-        .env("QWEN_DEFAULT_AUTH_TYPE", "anthropic")
         .env("ANTHROPIC_API_KEY", key)
         .env("ANTHROPIC_BASE_URL", base_url.trim_end_matches("/v1"));
-    if let Some(executable) = codex_executable {
-        command.env("CLI2KEY_CODEX_BIN", executable);
-    }
     Ok(())
-}
-
-pub(crate) fn configure_pi_provider(
-    command: &mut Command,
-    directory: &Path,
-    provider: &str,
-    model: &str,
-    base_url: &str,
-    api: &str,
-    api_key: &str,
-) -> Result<(), Error> {
-    std::fs::create_dir_all(directory).map_err(|error| {
-        Error::Run(format!(
-            "cannot create Pi provider configuration directory: {error}"
-        ))
-    })?;
-    let configuration = serde_json::json!({
-        "providers": {
-            provider: {
-                "baseUrl": base_url,
-                "api": api,
-                "apiKey": api_key,
-                "models": [{
-                    "id": model,
-                    "name": model,
-                    "reasoning": true,
-                    "input": ["text"],
-                    "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-                    "contextWindow": 128000,
-                    "maxTokens": 16384
-                }]
-            }
-        }
-    });
-    let path = directory.join("models.json");
-    let content = serde_json::to_vec_pretty(&configuration)
-        .map_err(|error| Error::Run(format!("cannot render Pi provider configuration: {error}")))?;
-    std::fs::write(&path, content)
-        .map_err(|error| Error::Run(format!("cannot write {}: {error}", path.display())))?;
-    command.env("PI_CODING_AGENT_DIR", directory);
-    Ok(())
-}
-
-pub(crate) fn configure_workbuddy(
-    directory: &Path,
-    model: &str,
-    base_url: &str,
-) -> Result<(), Error> {
-    std::fs::create_dir_all(directory).map_err(|error| {
-        Error::Run(format!(
-            "cannot create WorkBuddy provider configuration directory: {error}"
-        ))
-    })?;
-    let configuration = serde_json::json!([{
-        "id": model,
-        "name": model,
-        "url": base_url,
-        "api": "openai-responses"
-    }]);
-    let content = serde_json::to_vec_pretty(&configuration).map_err(|error| {
-        Error::Run(format!(
-            "cannot render WorkBuddy provider configuration: {error}"
-        ))
-    })?;
-    std::fs::write(directory.join("models.json"), content).map_err(|error| {
-        Error::Run(format!(
-            "cannot write WorkBuddy provider configuration: {error}"
-        ))
-    })?;
-    Ok(())
-}
-
-/// Configure Codex against the project-local CLI2KEY bridge without writing a
-/// credential to disk. The key remains inherited from the environment.
-pub(crate) fn configure_codex(directory: &Path, model: &str, base_url: &str) -> Result<(), Error> {
-    std::fs::create_dir_all(directory).map_err(|error| {
-        Error::Run(format!(
-            "cannot create Codex provider configuration directory: {error}"
-        ))
-    })?;
-    let configuration = format!(
-        "model = \"{model}\"\nmodel_provider = \"cli2key\"\n\n[model_providers.cli2key]\nname = \"CLI2KEY bridge\"\nbase_url = \"{base_url}\"\nenv_key = \"CLI2KEY_API_KEY\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n"
-    );
-    std::fs::write(directory.join("config.toml"), configuration).map_err(|error| {
-        Error::Run(format!(
-            "cannot write Codex provider configuration: {error}"
-        ))
-    })
-}
-
-pub(crate) fn configure_continue(
-    directory: &Path,
-    provider: &str,
-    model: &str,
-    base_url: &str,
-    api_key_env: &str,
-) -> Result<(), Error> {
-    std::fs::create_dir_all(directory).map_err(|error| {
-        Error::Run(format!(
-            "cannot create Continue provider configuration directory: {error}"
-        ))
-    })?;
-    let configuration = format!(
-        "name: ASB provider\nversion: 1.0.0\nmodels:\n  - name: {model}\n    provider: {provider}\n    model: {model}\n    apiBase: {base_url}\n    apiKey: ${{{{ secrets.//{api_key_env} }}}}\n"
-    );
-    std::fs::write(directory.join("config.yaml"), configuration).map_err(|error| {
-        Error::Run(format!(
-            "cannot write Continue provider configuration: {error}"
-        ))
-    })
-}
-
-pub(crate) fn configure_cline(
-    directory: &Path,
-    provider: &str,
-    model: &str,
-    base_url: &str,
-    key: &str,
-) -> Result<(), Error> {
-    let settings_dir = directory.join("data/settings");
-    std::fs::create_dir_all(&settings_dir).map_err(|error| {
-        Error::Run(format!(
-            "cannot create Cline provider configuration directory: {error}"
-        ))
-    })?;
-    let configuration = serde_json::json!({
-        "version": 1,
-        "lastUsedProvider": provider,
-        "providers": { provider: {
-            "settings": {
-                "provider": provider,
-                "model": model,
-                "baseUrl": base_url,
-                "apiKey": key,
-                "protocol": "openai-responses",
-                "client": "openai"
-            },
-            "updatedAt": "1970-01-01T00:00:00.000Z",
-            "tokenSource": "manual"
-        }}
-    });
-    let content = serde_json::to_vec_pretty(&configuration).map_err(|error| {
-        Error::Run(format!(
-            "cannot render Cline provider configuration: {error}"
-        ))
-    })?;
-    std::fs::write(settings_dir.join("providers.json"), content).map_err(|error| {
-        Error::Run(format!(
-            "cannot write Cline provider configuration: {error}"
-        ))
-    })?;
-    let global = serde_json::json!({
-        "disabledTools": ["web_search", "image_generation"],
-        "tools": {
-            "web_search": {"enabled": false},
-            "image_generation": {"enabled": false}
-        }
-    });
-    let global_content = serde_json::to_vec_pretty(&global)
-        .map_err(|error| Error::Run(format!("cannot render Cline global settings: {error}")))?;
-    std::fs::write(settings_dir.join("global-settings.json"), global_content)
-        .map_err(|error| Error::Run(format!("cannot write Cline global settings: {error}")))
-}
-
-pub(crate) fn opencode_config(model: &str, base_url: &str) -> Result<String, Error> {
-    let mut models = serde_json::Map::new();
-    models.insert(model.to_owned(), serde_json::json!({"name": model}));
-    serde_json::to_string(&serde_json::json!({
-        "$schema": "https://opencode.ai/config.json",
-        "provider": {
-            "cli2key": {
-                "npm": "@ai-sdk/anthropic",
-                "name": "cli2key (Codex Bridge)",
-                "options": {
-                    "baseURL": base_url,
-                    "apiKey": "{env:CLI2KEY_API_KEY}"
-                },
-                "models": models
-            }
-        }
-    }))
-    .map_err(|error| {
-        Error::Run(format!(
-            "cannot configure OpenCode cli2key provider: {error}"
-        ))
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn values(command: &Command) -> std::collections::HashMap<String, String> {
+        command
+            .get_envs()
+            .filter_map(|(name, value)| {
+                value.map(|value| {
+                    (
+                        name.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect()
+    }
+
     #[test]
-    fn cli2key_preparation_configures_the_selected_agent_api() {
-        let mut command = Command::new("cli2key");
+    fn cli2key_preparation_sets_protocol_compatible_environment() {
+        let mut command = Command::new("bridge-client");
         apply_with_tape(
             &mut command,
-            "opencode",
             "cli2key",
             "gpt-test",
             Some(("cb_test", "http://127.0.0.1:3456/v1")),
-            Path::new("/project/tools"),
             None,
             false,
         )
         .expect("preparation succeeds");
-        let values = command
-            .get_envs()
-            .filter_map(|(name, value)| {
-                value.map(|value| (name.to_string_lossy(), value.to_string_lossy()))
-            })
-            .collect::<std::collections::HashMap<_, _>>();
-        assert!(values.contains_key("CLI2KEY_API_KEY"));
+        let values = values(&command);
+        assert_eq!(values.get("CLI2KEY_MODEL"), Some(&"gpt-test".to_owned()));
+        assert_eq!(values.get("OPENAI_API_KEY"), Some(&"cb_test".to_owned()));
         assert_eq!(
-            values.get("CLI2KEY_MODEL").map(|value| value.as_ref()),
-            Some("gpt-test")
-        );
-        assert_eq!(
-            values.get("OPENAI_API_KEY").map(|value| value.as_ref()),
-            Some("cb_test")
-        );
-        assert_eq!(
-            values.get("OPENAI_BASE_URL").map(|value| value.as_ref()),
-            Some("http://127.0.0.1:3456/v1")
-        );
-        assert_eq!(
-            values.get("OPENAI_API_BASE").map(|value| value.as_ref()),
-            Some("http://127.0.0.1:3456/v1")
-        );
-        assert_eq!(
-            values.get("ANTHROPIC_BASE_URL").map(|value| value.as_ref()),
-            Some("http://127.0.0.1:3456")
-        );
-        let config: serde_json::Value = serde_json::from_str(
-            values
-                .get("OPENCODE_CONFIG_CONTENT")
-                .expect("OpenCode config is set"),
-        )
-        .expect("OpenCode config is valid JSON");
-        assert_eq!(
-            config["provider"]["cli2key"]["models"]["gpt-test"]["name"],
-            "gpt-test"
-        );
-        assert_eq!(
-            config["provider"]["cli2key"]["options"]["apiKey"],
-            "{env:CLI2KEY_API_KEY}"
+            values.get("ANTHROPIC_BASE_URL"),
+            Some(&"http://127.0.0.1:3456".to_owned())
         );
     }
 
     #[test]
-    fn pi_cli2key_preparation_writes_project_local_provider_config() {
-        let directory = std::env::temp_dir().join(format!("asb-pi-config-{}", std::process::id()));
-        let mut command = Command::new("pi");
-        apply_with_tape(
-            &mut command,
-            "pi",
-            "cli2key",
-            "gpt-6.1-sol",
-            Some(("cb_test", "http://127.0.0.1:3456/v1")),
-            &directory,
-            None,
-            false,
-        )
-        .expect("Pi preparation succeeds");
-        let config: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(directory.join("pi/config/models.json"))
-                .expect("Pi config exists"),
-        )
-        .expect("Pi config is JSON");
-        assert_eq!(config["providers"]["cli2key"]["api"], "openai-responses");
-        assert_eq!(
-            config["providers"]["cli2key"]["models"][0]["id"],
-            "gpt-6.1-sol"
-        );
-        let _ = std::fs::remove_dir_all(directory);
-    }
-
-    #[test]
-    fn workbuddy_cli2key_preparation_uses_project_bridge_credentials() {
-        let directory =
-            std::env::temp_dir().join(format!("asb-workbuddy-config-{}", std::process::id()));
-        let mut command = Command::new("codebuddy");
-        apply_with_tape(
-            &mut command,
-            "workbuddy",
-            "cli2key",
-            "gpt-6.1-sol",
-            Some(("cb_test", "http://127.0.0.1:3456/v1")),
-            &directory,
-            None,
-            false,
-        )
-        .expect("WorkBuddy preparation succeeds");
-        let values = command
-            .get_envs()
-            .filter_map(|(name, value)| {
-                value.map(|value| (name.to_string_lossy(), value.to_string_lossy()))
-            })
-            .collect::<std::collections::HashMap<_, _>>();
-        assert_eq!(
-            values.get("CODEBUDDY_API_KEY").map(|value| value.as_ref()),
-            Some("cb_test")
-        );
-        assert_eq!(
-            values
-                .get("CODEBUDDY_AUTH_TOKEN")
-                .map(|value| value.as_ref()),
-            Some("cb_test")
-        );
-        assert_eq!(
-            values.get("CODEBUDDY_BASE_URL").map(|value| value.as_ref()),
-            Some("http://127.0.0.1:3456/v1")
-        );
-        assert_eq!(
-            values.get("CODEBUDDY_MODEL").map(|value| value.as_ref()),
-            Some("gpt-6.1-sol")
-        );
-        assert_eq!(
-            values
-                .get("CODEBUDDY_API_KEY_HELPER_DISABLED")
-                .map(|value| value.as_ref()),
-            Some("1")
-        );
-        let config: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(directory.join("workbuddy/config/models.json"))
-                .expect("models config exists"),
-        )
-        .expect("models config is JSON");
-        assert_eq!(config[0]["id"], "gpt-6.1-sol");
-        assert_eq!(config[0]["api"], "openai-responses");
-        assert_eq!(config[0]["url"], "http://127.0.0.1:3456/v1");
-        let _ = std::fs::remove_dir_all(directory);
-    }
-
-    #[test]
-    fn continue_cli2key_preparation_writes_project_local_yaml() {
-        let directory =
-            std::env::temp_dir().join(format!("asb-continue-config-{}", std::process::id()));
-        let mut command = Command::new("cn");
-        apply_with_tape(
-            &mut command,
-            "continue",
-            "cli2key",
-            "gpt-test",
-            Some(("cb_test", "http://127.0.0.1:3456/v1")),
-            &directory,
-            None,
-            false,
-        )
-        .expect("Continue preparation succeeds");
-        let config =
-            std::fs::read_to_string(directory.join("continue/config/config.yaml")).expect("config");
-        assert!(config.contains("provider: anthropic"));
-        assert!(config.contains("model: gpt-test"));
-        assert!(config.contains("apiBase: http://127.0.0.1:3456/v1"));
-        assert!(config.contains("CLI2KEY_API_KEY"));
-        let _ = std::fs::remove_dir_all(directory);
-    }
-
-    #[test]
-    fn openrouter_preparation_maps_new_agents_to_compatible_endpoints() {
-        let directory =
-            std::env::temp_dir().join(format!("asb-openrouter-config-{}", std::process::id()));
-        let mut command = Command::new("cn");
+    fn openrouter_baseline_uses_compatible_protocol_endpoints() {
+        let mut command = Command::new("bridge-client");
         configure_openai_compatible(
             &mut command,
-            "deepseek/deepseek-chat-v3-0324:free",
+            "example/model",
             "or-test",
             "https://openrouter.ai/api/v1",
-        )
-        .expect("OpenRouter preparation succeeds");
-        let values = command
-            .get_envs()
-            .filter_map(|(name, value)| {
-                value.map(|value| (name.to_string_lossy(), value.to_string_lossy()))
-            })
-            .collect::<std::collections::HashMap<_, _>>();
+        );
+        let values = values(&command);
         assert_eq!(
-            values.get("OPENAI_API_KEY").map(|v| v.as_ref()),
-            Some("or-test")
+            values.get("OPENAI_BASE_URL"),
+            Some(&"https://openrouter.ai/api/v1".to_owned())
         );
         assert_eq!(
-            values.get("OPENAI_BASE_URL").map(|v| v.as_ref()),
-            Some("https://openrouter.ai/api/v1")
+            values.get("ANTHROPIC_BASE_URL"),
+            Some(&"https://openrouter.ai/api".to_owned())
         );
-        assert_eq!(
-            values.get("ANTHROPIC_BASE_URL").map(|v| v.as_ref()),
-            Some("https://openrouter.ai/api")
-        );
-        assert!(!directory.join("config.yaml").exists());
-        let _ = std::fs::remove_dir_all(directory);
     }
 
     #[test]
-    fn pi_openrouter_record_uses_tape_provider_configuration() {
-        let directory =
-            std::env::temp_dir().join(format!("asb-pi-openrouter-config-{}", std::process::id()));
-        let mut command = Command::new("pi");
-        configure_pi_provider(
-            &mut command,
-            &directory,
-            "openrouter",
-            "deepseek/deepseek-chat-v3-0324:free",
-            "http://127.0.0.1:4567/v1",
-            "openai-completions",
-            "OPENROUTER_API_KEY",
-        )
-        .expect("Pi OpenRouter preparation succeeds");
-        let config: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(directory.join("models.json")).expect("Pi config exists"),
-        )
-        .expect("Pi config is JSON");
-        assert_eq!(
-            config["providers"]["openrouter"]["baseUrl"],
-            "http://127.0.0.1:4567/v1"
-        );
-        assert_eq!(
-            config["providers"]["openrouter"]["api"],
-            "openai-completions"
-        );
-        assert_eq!(
-            config["providers"]["openrouter"]["apiKey"],
-            "OPENROUTER_API_KEY"
-        );
-        let values = command
-            .get_envs()
-            .filter_map(|(name, value)| {
-                value.map(|value| (name.to_string_lossy(), value.to_string_lossy()))
-            })
-            .collect::<std::collections::HashMap<_, _>>();
-        assert!(!values.contains_key("OPENROUTER_API_KEY"));
-        let _ = std::fs::remove_dir_all(directory);
-    }
-
-    #[test]
-    fn pi_openrouter_replay_uses_no_live_credential() {
-        let directory =
-            std::env::temp_dir().join(format!("asb-pi-openrouter-replay-{}", std::process::id()));
-        let mut command = Command::new("pi");
+    fn replay_openrouter_does_not_need_a_live_credential() {
+        let mut command = Command::new("bridge-client");
         apply_with_tape(
             &mut command,
-            "pi",
             "openrouter",
-            "tool-model",
+            "example/model",
             None,
-            &directory,
             Some("http://127.0.0.1:4567/v1"),
             true,
         )
-        .expect("replay preparation succeeds without a provider key");
-        let values = command
-            .get_envs()
-            .filter_map(|(name, value)| {
-                value.map(|value| (name.to_string_lossy(), value.to_string_lossy()))
-            })
-            .collect::<std::collections::HashMap<_, _>>();
+        .expect("replay preparation succeeds");
         assert_eq!(
-            values.get("OPENROUTER_API_KEY").map(|value| value.as_ref()),
-            Some("asb-replay")
+            values(&command).get("OPENROUTER_API_KEY"),
+            Some(&"asb-replay".to_owned())
         );
-        let config: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(directory.join("pi/config/models.json"))
-                .expect("Pi config exists"),
-        )
-        .expect("Pi config is JSON");
-        assert_eq!(
-            config["providers"]["openrouter"]["api"],
-            "openai-completions"
-        );
-        let _ = std::fs::remove_dir_all(directory);
     }
 }
