@@ -181,10 +181,30 @@ pub(crate) fn configure_workbuddy(
     Ok(())
 }
 
+/// Configure Codex against the project-local CLI2KEY bridge without writing a
+/// credential to disk. The key remains inherited from the environment.
+pub(crate) fn configure_codex(directory: &Path, model: &str, base_url: &str) -> Result<(), Error> {
+    std::fs::create_dir_all(directory).map_err(|error| {
+        Error::Run(format!(
+            "cannot create Codex provider configuration directory: {error}"
+        ))
+    })?;
+    let configuration = format!(
+        "model = \"{model}\"\nmodel_provider = \"cli2key\"\n\n[model_providers.cli2key]\nname = \"CLI2KEY bridge\"\nbase_url = \"{base_url}\"\nenv_key = \"CLI2KEY_API_KEY\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n"
+    );
+    std::fs::write(directory.join("config.toml"), configuration).map_err(|error| {
+        Error::Run(format!(
+            "cannot write Codex provider configuration: {error}"
+        ))
+    })
+}
+
 pub(crate) fn configure_continue(
     directory: &Path,
+    provider: &str,
     model: &str,
     base_url: &str,
+    api_key_env: &str,
 ) -> Result<(), Error> {
     std::fs::create_dir_all(directory).map_err(|error| {
         Error::Run(format!(
@@ -192,7 +212,7 @@ pub(crate) fn configure_continue(
         ))
     })?;
     let configuration = format!(
-        "name: ASB provider\nversion: 1.0.0\nmodels:\n  - name: {model}\n    provider: openai\n    model: {model}\n    apiBase: {base_url}\n"
+        "name: ASB provider\nversion: 1.0.0\nmodels:\n  - name: {model}\n    provider: {provider}\n    model: {model}\n    apiBase: {base_url}\n    apiKey: ${{{{ secrets.//{api_key_env} }}}}\n"
     );
     std::fs::write(directory.join("config.yaml"), configuration).map_err(|error| {
         Error::Run(format!(
@@ -441,9 +461,10 @@ mod tests {
         .expect("Continue preparation succeeds");
         let config =
             std::fs::read_to_string(directory.join("continue/config/config.yaml")).expect("config");
-        assert!(config.contains("provider: openai"));
+        assert!(config.contains("provider: anthropic"));
         assert!(config.contains("model: gpt-test"));
         assert!(config.contains("apiBase: http://127.0.0.1:3456/v1"));
+        assert!(config.contains("CLI2KEY_API_KEY"));
         let _ = std::fs::remove_dir_all(directory);
     }
 

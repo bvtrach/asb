@@ -29,7 +29,12 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
         .map(|(_, url)| url.to_owned())
         .or_else(|| std::env::var("OPENROUTER_BASE_URL").ok())
         .unwrap_or_else(|| "https://openrouter.ai/api/v1".into());
-    prepare::configure_continue(&directory, context.model, &url)?;
+    let (provider, key_name) = if context.provider.eq_ignore_ascii_case("cli2key") {
+        ("anthropic", "CLI2KEY_API_KEY")
+    } else {
+        ("openai", "OPENROUTER_API_KEY")
+    };
+    prepare::configure_continue(&directory, provider, context.model, &url, key_name)?;
     context
         .command
         .env("CONTINUE_CONFIG", directory.join("config.yaml"))

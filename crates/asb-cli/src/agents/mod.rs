@@ -117,10 +117,6 @@ impl AgentAdapter for StaticAdapter {
             .unwrap_or_default()
     }
 }
-pub(super) fn no_prepare(_context: &mut PreparationContext<'_>) -> Result<(), Error> {
-    Ok(())
-}
-
 pub(crate) fn prepare(
     command: &mut Command,
     agent: &str,
