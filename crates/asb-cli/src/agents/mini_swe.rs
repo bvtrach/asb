@@ -2,9 +2,18 @@ use super::{
     AgentArtifacts, CollectionContext, CommandContext, CommandSpec, PreparationContext,
     StaticAdapter,
 };
-use crate::Error;
-pub(super) static ADAPTER: StaticAdapter =
-    StaticAdapter::new("mini-swe", "mini", command, prepare_adapter).with_collection(collect);
+use crate::{Error, install::Recipe};
+pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
+    "mini-swe",
+    "mini",
+    Recipe::Python {
+        package: "mini-swe-agent==2.4.6",
+        executable: "mini",
+    },
+    command,
+    prepare_adapter,
+)
+.with_collection(collect);
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "mini".into(),

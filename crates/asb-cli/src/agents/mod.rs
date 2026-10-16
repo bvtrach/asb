@@ -18,6 +18,7 @@ mod workbuddy;
 
 use crate::Error;
 use crate::benchmark::BenchmarkConfig;
+use crate::install::Recipe;
 use crate::project;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -25,6 +26,8 @@ use std::process::Command;
 pub(crate) trait AgentAdapter: Sync {
     fn id(&self) -> &'static str;
     fn executable(&self) -> &'static str;
+    /// Project-local installation recipe for this exact adapter executable.
+    fn recipe(&self) -> Recipe;
     fn command(&self, context: &CommandContext<'_>) -> CommandSpec;
     fn prepare(&self, context: &mut PreparationContext<'_>) -> Result<(), Error>;
     fn collect(&self, _context: &CollectionContext<'_>) -> AgentArtifacts {
@@ -73,6 +76,7 @@ type CollectionHook = for<'a> fn(&CollectionContext<'a>) -> AgentArtifacts;
 pub(super) struct StaticAdapter {
     id: &'static str,
     executable: &'static str,
+    recipe: Recipe,
     command: CommandBuilder,
     prepare: PreparationHook,
     collect: Option<CollectionHook>,
@@ -81,12 +85,14 @@ impl StaticAdapter {
     pub(super) const fn new(
         id: &'static str,
         executable: &'static str,
+        recipe: Recipe,
         command: CommandBuilder,
         prepare: PreparationHook,
     ) -> Self {
         Self {
             id,
             executable,
+            recipe,
             command,
             prepare,
             collect: None,
@@ -104,6 +110,9 @@ impl AgentAdapter for StaticAdapter {
     }
     fn executable(&self) -> &'static str {
         self.executable
+    }
+    fn recipe(&self) -> Recipe {
+        self.recipe
     }
     fn command(&self, context: &CommandContext<'_>) -> CommandSpec {
         (self.command)(context)

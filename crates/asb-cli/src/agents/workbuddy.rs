@@ -1,7 +1,15 @@
 use super::{CommandContext, CommandSpec, PreparationContext, StaticAdapter};
-use crate::{Error, prepare};
-pub(super) static ADAPTER: StaticAdapter =
-    StaticAdapter::new("workbuddy", "codebuddy", command, prepare_adapter);
+use crate::{Error, install::Recipe, prepare};
+pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
+    "workbuddy",
+    "codebuddy",
+    Recipe::Npm {
+        package: "@tencent-ai/codebuddy-code@2.167.0",
+        executable: "codebuddy",
+    },
+    command,
+    prepare_adapter,
+);
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "codebuddy".into(),

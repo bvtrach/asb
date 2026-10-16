@@ -1,7 +1,7 @@
 use super::{CommandContext, CommandSpec, PreparationContext, StaticAdapter};
-use crate::Error;
+use crate::{Error, install::Recipe};
 pub(super) static ADAPTER: StaticAdapter =
-    StaticAdapter::new("goose", "goose", command, prepare_adapter);
+    StaticAdapter::new("goose", "goose", Recipe::Goose, command, prepare_adapter);
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "goose".into(),

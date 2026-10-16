@@ -1,7 +1,15 @@
 use super::{CommandContext, CommandSpec, PreparationContext, StaticAdapter};
-use crate::Error;
-pub(super) static ADAPTER: StaticAdapter =
-    StaticAdapter::new("openhands", "openhands", command, prepare_adapter);
+use crate::{Error, install::Recipe};
+pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
+    "openhands",
+    "openhands",
+    Recipe::Python {
+        package: "openhands==1.16.0",
+        executable: "openhands",
+    },
+    command,
+    prepare_adapter,
+);
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "openhands".into(),

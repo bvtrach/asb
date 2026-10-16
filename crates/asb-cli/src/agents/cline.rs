@@ -1,7 +1,15 @@
 use super::{CommandContext, CommandSpec, PreparationContext, StaticAdapter};
-use crate::{Error, prepare, providers};
-pub(super) static ADAPTER: StaticAdapter =
-    StaticAdapter::new("cline", "cline", command, prepare_adapter);
+use crate::{Error, install::Recipe, prepare, providers};
+pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
+    "cline",
+    "cline",
+    Recipe::Npm {
+        package: "cline@3.0.72",
+        executable: "cline",
+    },
+    command,
+    prepare_adapter,
+);
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "cline".into(),

@@ -1,7 +1,15 @@
 use super::{CommandContext, CommandSpec, PreparationContext, StaticAdapter};
-use crate::Error;
-pub(super) static ADAPTER: StaticAdapter =
-    StaticAdapter::new("openjiuwen", "openjiuwen", command, prepare_adapter);
+use crate::{Error, install::Recipe};
+pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
+    "openjiuwen",
+    "openjiuwen",
+    Recipe::Python {
+        package: "openjiuwen[cli]==0.1.19.post2",
+        executable: "openjiuwen",
+    },
+    command,
+    prepare_adapter,
+);
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "openjiuwen".into(),

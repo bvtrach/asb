@@ -1,7 +1,15 @@
 use super::{CommandContext, CommandSpec, PreparationContext, StaticAdapter};
-use crate::{Error, prepare};
-pub(super) static ADAPTER: StaticAdapter =
-    StaticAdapter::new("opencode", "opencode", command, prepare_adapter);
+use crate::{Error, install::Recipe, prepare};
+pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
+    "opencode",
+    "opencode",
+    Recipe::Npm {
+        package: "opencode-ai@1.19.0",
+        executable: "opencode",
+    },
+    command,
+    prepare_adapter,
+);
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     let model = if context.config.model.contains('/') {
         context.config.model.clone()
