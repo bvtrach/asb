@@ -91,6 +91,15 @@ function normalizeRequestBody(url, body) {
         changed = true;
       }
     }
+    if (url.includes("/responses") && parsed.reasoning && typeof parsed.reasoning === "object") {
+      // The bridge accepts only effort and summary. Newer Codex clients add a
+      // local `context` field; it is not provider input and must not make a
+      // recorded request fail at the compatibility boundary.
+      if (Object.hasOwn(parsed.reasoning, "context")) {
+        delete parsed.reasoning.context;
+        changed = true;
+      }
+    }
     if (!Array.isArray(parsed.tools)) return changed ? JSON.stringify(parsed) : body;
     parsed.tools = parsed.tools
       .filter((tool) => {
