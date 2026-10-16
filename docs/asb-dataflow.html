@@ -38,6 +38,7 @@ h1 { font-size: clamp(20px, 3vw, 32px); line-height: 1.1; margin: 0; }
 .canvas .node, .canvas .edge, .canvas .cluster { cursor: pointer; }
 .canvas .node.is-hovered > polygon, .canvas .node.is-pinned > polygon, .canvas .node.is-hovered > ellipse, .canvas .node.is-pinned > ellipse, .canvas .node.is-hovered > path, .canvas .node.is-pinned > path { fill: #eff6ff !important; stroke: #3b82f6 !important; stroke-width: 2px !important; }
 .canvas .edge.is-hovered > path, .canvas .edge.is-pinned > path, .canvas .edge.is-hovered > polygon, .canvas .edge.is-pinned > polygon { stroke: #2563eb !important; stroke-width: 2.4px !important; }
+.canvas .edge > .edge-hitbox { opacity: 0 !important; pointer-events: stroke; stroke: transparent !important; stroke-width: 10px !important; }
 .canvas .cluster.is-hovered > path, .canvas .cluster.is-pinned > path { stroke: #60a5fa !important; stroke-width: 2px !important; }
 .canvas .node:focus, .canvas .edge:focus, .canvas .cluster:focus { outline: none; }
 .canvas .is-dimmed { opacity: .18; }
@@ -6593,7 +6594,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   const edges = [...canvas.querySelectorAll('.edge')];
   const clusters = [...canvas.querySelectorAll('.cluster')];
   const allElements = [...nodes, ...edges, ...clusters];
-  const state = { scale: 1, tx: 0, ty: 0, drag: null, pinch: null, pointers: new Map(), pressTarget: null, pinned: null, pinnedParts: new Set(), animation: null, suppressClickUntil: 0, ignoreNextClick: false };
+  const state = { scale: 1, tx: 0, ty: 0, drag: null, pinch: null, pointers: new Map(), pressTarget: null, pinned: null, pinnedParts: new Set(), animation: null, suppressClickUntil: 0 };
   const viewBox = svg.viewBox.baseVal;
   // Establish the first useful viewport synchronously, then yield one frame
   // before preparing metadata, listeners, and accessibility state. This lets
@@ -6649,6 +6650,20 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     element.setAttribute('tabindex', '0');
     element.setAttribute('role', element.classList.contains('node') ? 'button' : 'img');
     element.dataset.graphTitle = title;
+    if (element.classList.contains('edge')) {
+      element.querySelectorAll(':scope > path').forEach((path) => {
+        const hitbox = path.cloneNode(false);
+        hitbox.classList.add('edge-hitbox');
+        hitbox.removeAttribute('marker-start');
+        hitbox.removeAttribute('marker-mid');
+        hitbox.removeAttribute('marker-end');
+        hitbox.setAttribute('stroke', 'transparent');
+        hitbox.setAttribute('stroke-width', '10');
+        hitbox.setAttribute('fill', 'none');
+        hitbox.setAttribute('pointer-events', 'stroke');
+        element.appendChild(hitbox);
+      });
+    }
   });
   // Keep Graphviz titles in data attributes for navigation, but remove the
   // native SVG title popups so they cannot compete with the styled tooltip.
@@ -6791,7 +6806,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     element.addEventListener('pointermove', (event) => { if (tooltip.style.display !== 'none') showTooltip(element, event); });
     element.addEventListener('pointerleave', () => { if (!element.classList.contains('is-pinned')) element.classList.remove('is-hovered'); tooltipElement = null; tooltipEvent = null; tooltip.style.display = 'none'; });
     element.addEventListener('click', (event) => {
-      if (state.ignoreNextClick) { state.ignoreNextClick = false; return; }
       if (state.suppressClickUntil > performance.now()) return;
       event.stopPropagation();
       select(element, element.classList.contains('edge') && (event.ctrlKey || event.metaKey));
@@ -6871,8 +6885,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     if (!wasPinching && !wasDragged && pressTarget) {
       // Pointer capture retargets the browser click to the viewport. Activate
       // the original graph element explicitly so click and drag remain distinct.
-      state.ignoreNextClick = true;
-      setTimeout(() => { state.ignoreNextClick = false; }, 600);
+      state.suppressClickUntil = performance.now() + 450;
+      event.preventDefault();
       select(pressTarget, pressTarget.classList.contains('edge') && (event.ctrlKey || event.metaKey));
     } else if (wasDragged) state.suppressClickUntil = performance.now() + 120;
     state.drag = null;
@@ -6883,7 +6897,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   viewport.addEventListener('pointercancel', finishPointer);
   viewport.addEventListener('lostpointercapture', () => { if (state.pointers.size === 0) { state.drag = null; state.pinch = null; state.pressTarget = null; viewport.classList.remove('dragging'); } });
   viewport.addEventListener('click', (event) => {
-    if (state.ignoreNextClick) { state.ignoreNextClick = false; return; }
     if (state.suppressClickUntil > performance.now()) return;
     if (event.target === viewport || event.target === canvas) clearSelection();
   });

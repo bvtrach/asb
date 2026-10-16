@@ -10,7 +10,7 @@
   const edges = [...canvas.querySelectorAll('.edge')];
   const clusters = [...canvas.querySelectorAll('.cluster')];
   const allElements = [...nodes, ...edges, ...clusters];
-  const state = { scale: 1, tx: 0, ty: 0, drag: null, pinch: null, pointers: new Map(), pressTarget: null, pinned: null, pinnedParts: new Set(), animation: null, suppressClickUntil: 0, ignoreNextClick: false };
+  const state = { scale: 1, tx: 0, ty: 0, drag: null, pinch: null, pointers: new Map(), pressTarget: null, pinned: null, pinnedParts: new Set(), animation: null, suppressClickUntil: 0 };
   const viewBox = svg.viewBox.baseVal;
   // Establish the first useful viewport synchronously, then yield one frame
   // before preparing metadata, listeners, and accessibility state. This lets
@@ -66,6 +66,20 @@
     element.setAttribute('tabindex', '0');
     element.setAttribute('role', element.classList.contains('node') ? 'button' : 'img');
     element.dataset.graphTitle = title;
+    if (element.classList.contains('edge')) {
+      element.querySelectorAll(':scope > path').forEach((path) => {
+        const hitbox = path.cloneNode(false);
+        hitbox.classList.add('edge-hitbox');
+        hitbox.removeAttribute('marker-start');
+        hitbox.removeAttribute('marker-mid');
+        hitbox.removeAttribute('marker-end');
+        hitbox.setAttribute('stroke', 'transparent');
+        hitbox.setAttribute('stroke-width', '10');
+        hitbox.setAttribute('fill', 'none');
+        hitbox.setAttribute('pointer-events', 'stroke');
+        element.appendChild(hitbox);
+      });
+    }
   });
   // Keep Graphviz titles in data attributes for navigation, but remove the
   // native SVG title popups so they cannot compete with the styled tooltip.
@@ -208,7 +222,6 @@
     element.addEventListener('pointermove', (event) => { if (tooltip.style.display !== 'none') showTooltip(element, event); });
     element.addEventListener('pointerleave', () => { if (!element.classList.contains('is-pinned')) element.classList.remove('is-hovered'); tooltipElement = null; tooltipEvent = null; tooltip.style.display = 'none'; });
     element.addEventListener('click', (event) => {
-      if (state.ignoreNextClick) { state.ignoreNextClick = false; return; }
       if (state.suppressClickUntil > performance.now()) return;
       event.stopPropagation();
       select(element, element.classList.contains('edge') && (event.ctrlKey || event.metaKey));
@@ -288,8 +301,8 @@
     if (!wasPinching && !wasDragged && pressTarget) {
       // Pointer capture retargets the browser click to the viewport. Activate
       // the original graph element explicitly so click and drag remain distinct.
-      state.ignoreNextClick = true;
-      setTimeout(() => { state.ignoreNextClick = false; }, 600);
+      state.suppressClickUntil = performance.now() + 450;
+      event.preventDefault();
       select(pressTarget, pressTarget.classList.contains('edge') && (event.ctrlKey || event.metaKey));
     } else if (wasDragged) state.suppressClickUntil = performance.now() + 120;
     state.drag = null;
@@ -300,7 +313,6 @@
   viewport.addEventListener('pointercancel', finishPointer);
   viewport.addEventListener('lostpointercapture', () => { if (state.pointers.size === 0) { state.drag = null; state.pinch = null; state.pressTarget = null; viewport.classList.remove('dragging'); } });
   viewport.addEventListener('click', (event) => {
-    if (state.ignoreNextClick) { state.ignoreNextClick = false; return; }
     if (state.suppressClickUntil > performance.now()) return;
     if (event.target === viewport || event.target === canvas) clearSelection();
   });
