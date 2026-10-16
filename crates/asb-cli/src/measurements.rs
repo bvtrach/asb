@@ -960,17 +960,31 @@ fn usage_from_key_values(line: &str) -> TokenUsage {
     let tokens = normalized.split_whitespace().collect::<Vec<_>>();
     for (index, token) in tokens.iter().enumerate() {
         let key = token
-            .trim_matches(['"', '\''])
+            .trim_matches(['"', '\'', '.', ','])
             .to_ascii_lowercase()
             .replace(['-', '_'], "");
+        if matches!(key.as_str(), "sent" | "received") {
+            if let Some(number) = index
+                .checked_sub(1)
+                .and_then(|previous| tokens.get(previous))
+                .and_then(|value| parse_token_count(value.trim_matches(['"', '\''])))
+            {
+                if key == "sent" {
+                    usage.input_tokens = Some(number);
+                } else {
+                    usage.output_tokens = Some(number);
+                }
+            }
+            continue;
+        }
         let (key, number) = if let Some(number) = tokens
             .get(index + 1)
-            .and_then(|value| value.trim_matches(['"', '\'']).parse::<u64>().ok())
+            .and_then(|value| parse_token_count(value.trim_matches(['"', '\''])))
         {
             (key, number)
         } else if let Some(number) = tokens
             .get(index + 2)
-            .and_then(|value| value.trim_matches(['"', '\'']).parse::<u64>().ok())
+            .and_then(|value| parse_token_count(value.trim_matches(['"', '\''])))
             && matches!(
                 key.as_str(),
                 "input" | "output" | "cache" | "cached" | "total"
@@ -1006,6 +1020,24 @@ fn usage_from_key_values(line: &str) -> TokenUsage {
         }
     }
     usage
+}
+
+fn parse_token_count(value: &str) -> Option<u64> {
+    let value = value.trim_matches(['"', '\'', '.', ',']);
+    let (number, multiplier) = match value
+        .chars()
+        .last()
+        .map(|suffix| suffix.to_ascii_lowercase())
+    {
+        Some('k') => (&value[..value.len() - 1], 1_000.0),
+        Some('m') => (&value[..value.len() - 1], 1_000_000.0),
+        _ => (value, 1.0),
+    };
+    number.parse::<f64>().ok().and_then(|value| {
+        let value = value * multiplier;
+        (value.is_finite() && value >= 0.0 && value <= u64::MAX as f64)
+            .then_some(value.round() as u64)
+    })
 }
 
 fn read_bounded_text(path: &Path, max_bytes: u64) -> Result<String, std::io::Error> {
@@ -1604,6 +1636,20 @@ mod tests {
                 "{agent} total"
             );
         }
+    }
+
+    #[test]
+    fn parses_aider_sent_received_token_summary_with_suffixes() {
+        let usage = token_usage_from_sources(
+            "cli2key",
+            "aider",
+            "> Tokens: 12.5k sent, 133 received. Cost: $0.01 message.\n",
+            "",
+            None,
+        );
+        assert_eq!(usage.input_tokens, Some(12_500));
+        assert_eq!(usage.output_tokens, Some(133));
+        assert_eq!(usage.total_tokens, Some(12_633));
     }
 
     #[test]
