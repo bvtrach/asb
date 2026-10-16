@@ -3,3 +3,9 @@ tracepoint:sched:sched_migrate_task /args->pid == $1/ {
   @asb_cpu_migrations = count();
   @asb_cpu_migration_destination[args->dest_cpu] = count();
 }
+
+// Emit a cumulative sample every second; the final map is still printed on exit.
+interval:s:1 {
+  print(@asb_cpu_migrations);
+  print(@asb_cpu_migration_destination);
+}

@@ -11,3 +11,11 @@ tracepoint:syscalls:sys_exit_futex /@asb_futex_start[tid]/ {
   @asb_futex_wait_max_ns = max($latency);
   delete(@asb_futex_start[tid]);
 }
+
+// Emit cumulative interval samples without clearing the final aggregate maps.
+interval:s:1 {
+  print(@asb_futex_calls);
+  print(@asb_futex_wait_events);
+  print(@asb_futex_wait_total_ns);
+  print(@asb_futex_wait_max_ns);
+}

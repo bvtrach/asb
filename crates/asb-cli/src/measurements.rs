@@ -2843,6 +2843,11 @@ mod tests {
                 .iter()
                 .all(|profile| profile.program.contains("$1"))
         );
+        assert!(
+            profiles
+                .iter()
+                .all(|profile| profile.program.contains("interval:s:1"))
+        );
         let metrics = parse_bpftrace_metrics(
             "sched-latency",
             "@asb_wakeup_latency_events: 7\n@asb_wakeup_latency_total_ns: 420\n@other: 99\n",

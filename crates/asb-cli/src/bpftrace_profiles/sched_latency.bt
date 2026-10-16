@@ -14,3 +14,10 @@ tracepoint:sched:sched_switch /@asb_wakeup_start[args->next_pid]/ {
   @asb_wakeup_latency_max_ns = max($latency);
   delete(@asb_wakeup_start[args->next_pid]);
 }
+
+// Emit cumulative interval samples without clearing the final aggregate maps.
+interval:s:1 {
+  print(@asb_wakeup_latency_events);
+  print(@asb_wakeup_latency_total_ns);
+  print(@asb_wakeup_latency_max_ns);
+}
