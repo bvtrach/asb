@@ -8302,8 +8302,8 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   viewport.addEventListener('lostpointercapture', () => { if (state.pointers.size === 0) { state.drag = null; state.pinch = null; state.pressTarget = null; viewport.classList.remove('dragging'); } });
   viewport.addEventListener('pointermove', (event) => {
     if (viewport.classList.contains('dragging')) return;
-    let hovered = graphElementFromTarget(event.target) || graphElementAtPoint(event.clientX, event.clientY);
-    if (!hovered && withinExpandedHoverArea(state.hovered, event.clientX, event.clientY)) hovered = state.hovered;
+    const staysOnCurrentEdge = withinExpandedHoverArea(state.hovered, event.clientX, event.clientY);
+    let hovered = staysOnCurrentEdge ? state.hovered : (graphElementFromTarget(event.target) || graphElementAtPoint(event.clientX, event.clientY));
     if (hovered) {
       if (state.hovered !== hovered) {
         if (state.hovered && !state.hovered.classList.contains('is-pinned')) state.hovered.classList.remove('is-hovered');
