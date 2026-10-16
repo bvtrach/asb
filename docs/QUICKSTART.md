@@ -146,9 +146,7 @@ The built-in recipes are:
 | `codex` | pinned npm package | `codex` |
 | `opencode` | pinned npm package | `opencode` |
 | `workbuddy` | pinned npm package | `codebuddy` |
-| `gemini` | pinned npm package | `gemini` |
 | `qwen-code` | pinned npm package | `qwen` |
-| `aider` | pinned Python package | `aider` |
 | `mini-swe` | pinned Python package | `mini` |
 | `openhands` | pinned Python package | `openhands` |
 | `openjiuwen` | pinned Python package | `openjiuwen` |

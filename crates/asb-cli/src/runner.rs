@@ -25,9 +25,7 @@ const BUILTIN_AGENTS: &[&str] = &[
     "pi",
     "opencode",
     "workbuddy",
-    "gemini",
     "qwen-code",
-    "aider",
     "mini-swe",
     "openhands",
     "openjiuwen",
@@ -592,16 +590,6 @@ fn command_for(
             )));
         }
     }
-    if config.provider.eq_ignore_ascii_case("cli2key") && config.agent == "gemini" {
-        return Err(Error::Run(
-            "gemini requires the Google Generative Language API and cannot use the cli2key OpenAI/Anthropic bridge; choose an OpenAI-compatible agent or configure a Google provider".into(),
-        ));
-    }
-    if config.provider.eq_ignore_ascii_case("cli2key") && config.agent == "aider" {
-        return Err(Error::Run(
-            "aider requires OpenAI Chat Completions, while the cli2key bridge exposes Responses and Anthropic Messages; choose an OpenAI-compatible provider for aider or use codex, opencode, qwen-code, mini-swe, openhands, openjiuwen, or workbuddy with cli2key".into(),
-        ));
-    }
     let spec = match config.agent.as_str() {
         "codex" => CommandSpec {
             program: "codex".into(),
@@ -624,18 +612,6 @@ fn command_for(
                 "--mode".into(),
                 "json".into(),
                 "--print".into(),
-            ],
-            append_prompt: true,
-        },
-        "aider" => CommandSpec {
-            program: "aider".into(),
-            args: vec![
-                "--model".into(),
-                config.model.clone(),
-                "--no-git".into(),
-                "--no-pretty".into(),
-                "--yes-always".into(),
-                "--message".into(),
             ],
             append_prompt: true,
         },
@@ -704,19 +680,6 @@ fn command_for(
             .into_iter()
             .map(str::to_owned)
             .collect(),
-            append_prompt: false,
-        },
-        "gemini" => CommandSpec {
-            program: "gemini".into(),
-            args: vec![
-                "-p".into(),
-                prompt.into(),
-                "-m".into(),
-                config.model.clone(),
-                "--output-format".into(),
-                "json".into(),
-                "--yolo".into(),
-            ],
             append_prompt: false,
         },
         "workbuddy" => CommandSpec {
@@ -969,26 +932,6 @@ mod tests {
         assert!(command.args.contains(&"--mode".into()));
         assert!(command.args.contains(&"json".into()));
         assert!(command.append_prompt);
-    }
-
-    #[test]
-    fn aider_cli2key_reports_the_bridge_protocol_boundary() {
-        let config = BenchmarkConfig {
-            agent: "aider".into(),
-            workload: "bug-fix".into(),
-            provider: "cli2key".into(),
-            model: "gpt-6.1-sol".into(),
-            trial_set: None,
-            trial: None,
-            workspace: "workspace".into(),
-            log_file: "run.log".into(),
-            measurements: None,
-        };
-        let error = match command_for(&config, Some("http://127.0.0.1:3456/v1"), "prompt") {
-            Ok(_) => panic!("bridge protocol boundary must be rejected"),
-            Err(error) => error,
-        };
-        assert!(error.to_string().contains("OpenAI Chat Completions"));
     }
 
     #[test]

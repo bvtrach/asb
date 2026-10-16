@@ -82,9 +82,7 @@ const BUILTIN_TOOLS: &[&str] = &[
     "pi",
     "opencode",
     "workbuddy",
-    "gemini",
     "qwen-code",
-    "aider",
     "mini-swe",
     "openhands",
     "openjiuwen",
@@ -226,17 +224,9 @@ fn recipe(name: &str) -> Option<Recipe> {
             package: "@tencent-ai/codebuddy-code@2.167.0",
             executable: "codebuddy",
         }),
-        "gemini" => Some(Recipe::Npm {
-            package: "@google/gemini-cli@0.64.0",
-            executable: "gemini",
-        }),
         "qwen-code" => Some(Recipe::Npm {
             package: "@qwen-code/qwen-code@0.25.1",
             executable: "qwen",
-        }),
-        "aider" => Some(Recipe::Python {
-            package: "aider-chat==0.86.2",
-            executable: "aider",
         }),
         "mini-swe" => Some(Recipe::Python {
             package: "mini-swe-agent==2.4.6",
@@ -1279,9 +1269,7 @@ mod tests {
             "pi",
             "opencode",
             "workbuddy",
-            "gemini",
             "qwen-code",
-            "aider",
             "mini-swe",
             "openhands",
             "openjiuwen",

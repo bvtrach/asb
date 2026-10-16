@@ -2242,10 +2242,6 @@ mod tests {
                 r#"{"type":"result","stats":{"total_tokens":10,"input_tokens":7,"output_tokens":3,"cached":2}}"#,
             ),
             (
-                "aider",
-                r#"completion: {"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}"#,
-            ),
-            (
                 "workbuddy",
                 r#"done {"usage":{"inputTokens":7,"outputTokens":3,"totalTokens":10}}"#,
             ),
@@ -2274,10 +2270,6 @@ mod tests {
     fn parses_provider_usage_metadata_and_agent_raw_usage_shapes() {
         let cases = [
             (
-                "gemini",
-                r#"{"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":4,"cachedContentTokenCount":2,"totalTokenCount":15}}"#,
-            ),
-            (
                 "workbuddy",
                 r#"[{"rawUsage":{"inputTokens":21,"outputTokens":5,"totalTokens":26,"inputTokensDetails":{"cached_tokens":3}}}]"#,
             ),
@@ -2294,9 +2286,7 @@ mod tests {
             let usage = token_usage_from_sources("cli2key", agent, output, "", None);
             assert_eq!(
                 usage.input_tokens,
-                Some(if agent == "gemini" {
-                    11
-                } else if agent == "workbuddy" {
+                Some(if agent == "workbuddy" {
                     21
                 } else if agent == "openhands" {
                     31
@@ -2307,9 +2297,7 @@ mod tests {
             );
             assert_eq!(
                 usage.output_tokens,
-                Some(if agent == "gemini" {
-                    4
-                } else if agent == "workbuddy" {
+                Some(if agent == "workbuddy" {
                     5
                 } else if agent == "openhands" {
                     7
@@ -2320,9 +2308,7 @@ mod tests {
             );
             assert_eq!(
                 usage.cached_tokens,
-                Some(if agent == "gemini" {
-                    2
-                } else if agent == "workbuddy" {
+                Some(if agent == "workbuddy" {
                     3
                 } else if agent == "openhands" {
                     4
@@ -2333,9 +2319,7 @@ mod tests {
             );
             assert_eq!(
                 usage.total_tokens,
-                Some(if agent == "gemini" {
-                    15
-                } else if agent == "workbuddy" {
+                Some(if agent == "workbuddy" {
                     26
                 } else if agent == "openhands" {
                     38
@@ -2345,20 +2329,6 @@ mod tests {
                 "{agent} total"
             );
         }
-    }
-
-    #[test]
-    fn parses_aider_sent_received_token_summary_with_suffixes() {
-        let usage = token_usage_from_sources(
-            "cli2key",
-            "aider",
-            "> Tokens: 12.5k sent, 133 received. Cost: $0.01 message.\n",
-            "",
-            None,
-        );
-        assert_eq!(usage.input_tokens, Some(12_500));
-        assert_eq!(usage.output_tokens, Some(133));
-        assert_eq!(usage.total_tokens, Some(12_633));
     }
 
     #[test]
