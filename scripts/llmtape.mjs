@@ -165,7 +165,18 @@ function normalizeCassetteBody(body) {
 }
 
 function requestKey(request) {
-  return JSON.stringify([request.method, request.url, request.body]);
+  let model = null;
+  try {
+    model = request.body ? JSON.parse(request.body).model || null : null;
+  } catch {
+    // Non-JSON provider requests still match on method and endpoint below.
+  }
+  // The ordered cassette already scopes one provider/model run.  SDK request
+  // bodies contain ephemeral session, tool-state, and prompt metadata that
+  // legitimately changes between record and replay.  Require the stable wire
+  // contract (method, endpoint path, and model), then consume interactions in
+  // order so a request to the wrong provider route remains fail-closed.
+  return JSON.stringify([request.method, request.url, model]);
 }
 
 const interactions = mode === "replay"
