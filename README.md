@@ -194,11 +194,10 @@ matching key.
 The bundled cli2key bridge executes workloads through `codex`, `opencode`,
 `qwen-code`, `mini-swe`, `openhands`, `openjiuwen`, and `workbuddy`.
 WorkBuddy uses project-local CodeBuddy model settings configured for the
-bridge's Responses API. Aider requires OpenAI Chat Completions and therefore
-needs an OpenAI-compatible provider; Gemini still requires its Google provider.
+bridge's Responses API.
 Built-in tool recipes install pinned releases into the project (and do not
-modify global tools): `codex`, `pi`, `opencode`, `workbuddy`, `gemini`,
-`qwen-code`, and `cli2key` use npm; `aider`, `mini-swe`, `openhands`, and
+modify global tools): `codex`, `pi`, `opencode`, `workbuddy`,
+`qwen-code`, and `cli2key` use npm; `mini-swe`, `openhands`, and
 `openjiuwen` use an isolated Python virtual environment. Any other agent can
 be installed from a local executable or URL with `--source`.
 
