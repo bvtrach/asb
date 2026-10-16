@@ -10,7 +10,7 @@
   const edges = [...canvas.querySelectorAll('.edge')];
   const clusters = [...canvas.querySelectorAll('.cluster')];
   const allElements = [...nodes, ...edges, ...clusters];
-  const state = { scale: 1, tx: 0, ty: 0, drag: null, pinch: null, pointers: new Map(), selected: null, animation: null, suppressClickUntil: 0 };
+  const state = { scale: 1, tx: 0, ty: 0, drag: null, pinch: null, pointers: new Map(), pinned: null, animation: null, suppressClickUntil: 0 };
   const viewBox = svg.viewBox.baseVal;
   const titles = new Map();
 
@@ -121,12 +121,18 @@
     edges.forEach((edge) => { if (edgeEnds(edge).includes(element)) { related.add(edge); edgeEnds(edge).forEach((endpoint) => related.add(endpoint)); } });
     return related;
   }
+  function clearSelection() {
+    state.pinned?.classList.remove('is-pinned');
+    state.pinned = null;
+    allElements.forEach((item) => item.classList.remove('is-dimmed', 'is-selected', 'is-related'));
+    selection.textContent = 'Hover an element for details. Drag to pan; scroll to zoom.';
+  }
   function select(element, reverseEdge = false) {
-    state.selected = element;
+    if (state.pinned === element) { clearSelection(); return; }
+    clearSelection();
+    state.pinned = element;
+    element.classList.add('is-pinned');
     const related = relatedTo(element);
-    allElements.forEach((item) => item.classList.toggle('is-dimmed', element.classList.contains('node') && !related.has(item)));
-    allElements.forEach((item) => item.classList.toggle('is-selected', item === element));
-    related.forEach((item) => item.classList.add('is-related'));
     selection.textContent = titleOf(element);
     if (element.classList.contains('edge')) followEdge(element, reverseEdge); else centerElements([...related]);
   }
@@ -136,7 +142,6 @@
     tooltip.style.left = `${Math.min(event.clientX + 14, window.innerWidth - tooltip.offsetWidth - 12)}px`;
     tooltip.style.top = `${Math.min(event.clientY + 14, window.innerHeight - tooltip.offsetHeight - 12)}px`;
   }
-  function clearSelection() { state.selected = null; allElements.forEach((item) => item.classList.remove('is-dimmed', 'is-selected', 'is-related')); selection.textContent = 'Hover an element for details. Drag to pan; scroll to zoom.'; }
   allElements.forEach((element) => {
     element.addEventListener('pointerenter', (event) => { element.classList.add('is-hovered'); showTooltip(element, event); });
     element.addEventListener('pointermove', (event) => { if (tooltip.style.display !== 'none') showTooltip(element, event); });
