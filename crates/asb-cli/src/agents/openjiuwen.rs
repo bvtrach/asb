@@ -23,7 +23,10 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
             "run",
             "-f",
             "json",
-            context.prompt,
+            &format!(
+                "{}\n\nDo not use todo/planning tools for this run. Execute the requested work directly and return a final response when complete.",
+                context.prompt
+            ),
         ]
         .into_iter()
         .map(str::to_owned)
