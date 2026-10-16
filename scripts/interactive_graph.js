@@ -188,6 +188,8 @@
     state.pinnedParts.forEach((item) => item.classList.remove('is-pinned', 'is-hovered'));
     state.pinnedParts.clear();
     state.pinned = null;
+    state.hovered = null;
+    state.hoverRect = null;
     allElements.forEach((item) => item.classList.remove('is-dimmed', 'is-selected', 'is-related'));
     selection.textContent = 'Hover an element for details. Drag to pan; scroll to zoom.';
   }
