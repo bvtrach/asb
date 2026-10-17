@@ -43,8 +43,6 @@ pub(crate) struct PreparationContext<'a> {
     /// The project-local tool root. Adapters choose their own configuration
     /// layout below this root instead of teaching the runner agent names.
     pub tools_dir: &'a Path,
-    /// Canonical benchmark workspace for per-run adapter state.
-    pub workspace: &'a Path,
 }
 
 pub(crate) struct CommandContext<'a> {
@@ -135,7 +133,6 @@ pub(crate) fn prepare(
     model: &str,
     cli2key: Option<(&str, &str)>,
     tools_dir: &Path,
-    workspace: &Path,
 ) -> Result<(), Error> {
     let Some(adapter) = find(agent) else {
         return Ok(());
@@ -146,7 +143,6 @@ pub(crate) fn prepare(
         model,
         cli2key,
         tools_dir,
-        workspace,
     })
 }
 

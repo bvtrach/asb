@@ -67,13 +67,6 @@ mod tests {
 }
 
 fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
-    // OpenJiuwen's `-w` option hangs in non-interactive replay when pointed
-    // at an isolated workspace. Its configuration loader also accepts the
-    // equivalent environment setting; keep the CLI invocation on its stable
-    // default path while still isolating every benchmark workspace.
-    context
-        .command
-        .env("OPENJIUWEN_WORKSPACE", context.workspace);
     if context.provider.eq_ignore_ascii_case("cli2key") {
         if let Some((key, _)) = context.cli2key {
             context.command.env("OPENJIUWEN_API_KEY", key);
