@@ -820,6 +820,8 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> 
     const RIGHT: f64 = 1_160.0;
     const BOTTOM: f64 = 530.0;
     const LEGEND_COLUMN_WIDTH: f64 = 355.0;
+    const LEGEND_TOP: f64 = 44.0;
+    const LEGEND_ROW_HEIGHT: f64 = 28.0;
     const LEGEND_MAX_CHARS: usize = 34;
     let max = values
         .iter()
@@ -838,7 +840,7 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> 
         });
     let legend_columns = values.len().clamp(1, 3);
     let legend_rows = values.len().div_ceil(legend_columns);
-    let plot_top = 92.0 + legend_rows as f64 * 40.0;
+    let plot_top = LEGEND_TOP + legend_rows as f64 * LEGEND_ROW_HEIGHT + 16.0;
     let mut svg = svg_header(WIDTH, HEIGHT, title);
     append_y_axis(&mut svg, LEFT, plot_top, BOTTOM, RIGHT, max, title);
     append_series_x_axis(
@@ -902,7 +904,7 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> 
         let column = series_index % legend_columns;
         let row = series_index / legend_columns;
         let legend_x = LEFT + column as f64 * LEGEND_COLUMN_WIDTH;
-        let legend_y = 60.0 + row as f64 * 40.0;
+        let legend_y = LEGEND_TOP + row as f64 * LEGEND_ROW_HEIGHT;
         let lines = wrap_label(label, LEGEND_MAX_CHARS);
         svg.push_str(&format!(
             "<rect class=\"legend-swatch\" x=\"{legend_x:.1}\" y=\"{:.1}\" width=\"10\" height=\"10\" rx=\"2\" fill=\"{color}\"/><text class=\"legend-item\" data-series-index=\"{series_index}\" x=\"{:.1}\" y=\"{:.1}\" font-size=\"12\" fill=\"{color}\" aria-label=\"{}\">",
