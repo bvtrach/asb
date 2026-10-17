@@ -21,6 +21,8 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
             "anthropic",
             "--api-base",
             context.endpoint.unwrap_or_default(),
+            "-w",
+            context.config.workspace.as_str(),
             "run",
             "-f",
             "json",
@@ -62,6 +64,7 @@ mod tests {
             prompt: "repair",
         });
         assert_eq!(spec.args.first().map(String::as_str), Some("-v"));
+        assert!(spec.args.windows(2).any(|pair| pair == ["-w", "workspace"]));
     }
 }
 
