@@ -7,6 +7,7 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
         package: "@tencent-ai/codebuddy-code@2.167.0",
         executable: "codebuddy",
     },
+    &[crate::endpoint::RESPONSES],
     command,
     prepare_adapter,
 )
@@ -26,12 +27,9 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
     }
 }
 fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
-    if !context.provider.eq_ignore_ascii_case("cli2key") {
-        return Ok(());
-    }
-    let (key, base_url) = context
-        .cli2key
-        .ok_or_else(|| Error::Run("cli2key provider has no API endpoint".into()))?;
+    let connection = context.connection;
+    let key = connection.credential.as_deref().unwrap_or("asb-local");
+    let base_url = &connection.base_url;
     let directory = context.runtime_dir.join("workbuddy/config");
     configure(&directory, context.model, base_url)?;
     context

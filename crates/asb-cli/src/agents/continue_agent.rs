@@ -7,6 +7,7 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
         package: "@continuedev/cli@1.5.47",
         executable: "cn",
     },
+    &[crate::endpoint::CHAT, crate::endpoint::MESSAGES_KEY],
     command,
     prepare_adapter,
 )
@@ -27,46 +28,29 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
     }
 }
 fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
-    if !context.provider.eq_ignore_ascii_case("cli2key")
-        && !context.provider.eq_ignore_ascii_case("openrouter")
-    {
-        return Ok(());
-    }
+    let connection = context.connection;
     let directory = context.runtime_dir.join("continue/config");
-    let url = context
-        .tape
-        .map(|(_, url)| url.to_owned())
-        .or_else(|| context.cli2key.map(|(_, url)| url.to_owned()))
-        .or_else(|| std::env::var("OPENROUTER_BASE_URL").ok())
-        .unwrap_or_else(|| "https://openrouter.ai/api/v1".into());
-    let (provider, key_name, key) = if context.provider.eq_ignore_ascii_case("cli2key") {
-        let (key, _) = context
-            .cli2key
-            .ok_or_else(|| Error::Run("cli2key provider has no API endpoint".into()))?;
-        ("anthropic", "CLI2KEY_API_KEY", key.to_owned())
-    } else {
-        let key = if context
-            .tape
-            .is_some_and(|(mode, _)| mode == crate::tape::Mode::Replay)
-        {
-            "asb-replay".to_owned()
-        } else {
-            crate::providers::credential("openrouter").ok_or_else(|| {
-                Error::Run(
-                    "openrouter provider requires OPENROUTER_API_KEY or ~/.api_key_openrouter"
-                        .into(),
-                )
-            })?
-        };
-        ("openai", "OPENROUTER_API_KEY", key)
+    let provider = match connection.interface {
+        crate::endpoint::Interface::AnthropicMessages => "anthropic",
+        crate::endpoint::Interface::OpenAiChat => "openai",
+        _ => unreachable!("unsupported Continue endpoint"),
     };
-    configure(&directory, provider, context.model, &url, key_name)?;
+    let key = connection.credential.as_deref().unwrap_or("asb-local");
+    let url = &connection.base_url;
+    configure(
+        &directory,
+        provider,
+        context.model,
+        url,
+        "ASB_AGENT_API_KEY",
+    )?;
     context
         .command
         .env("CONTINUE_CONFIG", directory.join("config.yaml"))
         .env("CONTINUE_GLOBAL_DIR", &directory)
         .env("CONTINUE_API_KEY", key)
-        .env("CONTINUE_API_BASE", &url)
+        .env("ASB_AGENT_API_KEY", key)
+        .env("CONTINUE_API_BASE", url)
         .env("CONTINUE_MODEL", context.model);
     Ok(())
 }
@@ -83,6 +67,10 @@ fn configure(
             "cannot create Continue provider configuration directory: {error}"
         ))
     })?;
+    let model = serde_json::to_string(model)
+        .map_err(|error| Error::Run(format!("cannot render Continue model: {error}")))?;
+    let base_url = serde_json::to_string(base_url)
+        .map_err(|error| Error::Run(format!("cannot render Continue endpoint: {error}")))?;
     let configuration = format!(
         "name: ASB provider\nversion: 1.0.0\nmodels:\n  - name: {model}\n    provider: {provider}\n    model: {model}\n    apiBase: {base_url}\n    apiKey: ${{{{ secrets.//{api_key_env} }}}}\n"
     );

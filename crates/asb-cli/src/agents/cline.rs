@@ -1,5 +1,5 @@
 use super::{CommandContext, CommandSpec, PreparationContext, StaticAdapter};
-use crate::{Error, install::Recipe, providers};
+use crate::{Error, install::Recipe};
 pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     "cline",
     "cline",
@@ -7,6 +7,7 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
         package: "cline@3.0.72",
         executable: "cline",
     },
+    &[crate::endpoint::CHAT, crate::endpoint::RESPONSES],
     command,
     prepare_adapter,
 )
@@ -19,11 +20,7 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
             "--auto-approve".into(),
             "true".into(),
             "--provider".into(),
-            if context.config.provider.eq_ignore_ascii_case("openrouter") {
-                "openrouter".into()
-            } else {
-                "openai-native".into()
-            },
+            client(context.interface).into(),
             "--model".into(),
             context.config.model.clone(),
             context.prompt.into(),
@@ -33,41 +30,28 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
 }
 fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
     let directory = context.runtime_dir.join("cline/config");
-    if context.provider.eq_ignore_ascii_case("cli2key") {
-        let (key, url) = context
-            .cli2key
-            .ok_or_else(|| Error::Run("cli2key provider has no API endpoint".into()))?;
-        configure(&directory, "openai-native", context.model, url, key)?;
-        context
-            .command
-            .env("OPENAI_API_KEY", key)
-            .env("OPENAI_BASE_URL", url)
-            .env("OPENAI_API_BASE", url)
-            .env("OPENAI_MODEL", context.model)
-            .env("CLINE_API_KEY", key);
-    } else if context.provider.eq_ignore_ascii_case("openrouter") {
-        let url = context
-            .tape
-            .map(|(_, url)| url.to_owned())
-            .or_else(|| std::env::var("OPENROUTER_BASE_URL").ok())
-            .unwrap_or_else(|| "https://openrouter.ai/api/v1".into());
-        let key = if context
-            .tape
-            .is_some_and(|(mode, _)| mode == crate::tape::Mode::Replay)
-        {
-            "asb-replay".to_owned()
-        } else {
-            providers::credential("openrouter").ok_or_else(|| {
-                Error::Run(
-                    "openrouter provider requires OPENROUTER_API_KEY or ~/.api_key_openrouter"
-                        .into(),
-                )
-            })?
-        };
-        configure(&directory, "openrouter", context.model, &url, &key)?;
-    } else {
-        return Ok(());
-    }
+    let connection = context.connection;
+    let key = connection.credential.as_deref().unwrap_or("asb-local");
+    let protocol = match connection.interface {
+        crate::endpoint::Interface::OpenAiResponses => "openai-responses",
+        crate::endpoint::Interface::OpenAiChat => "openai-chat-completions",
+        _ => unreachable!("unsupported Cline endpoint"),
+    };
+    configure(
+        &directory,
+        client(Some(connection.interface)),
+        context.model,
+        &connection.base_url,
+        key,
+        protocol,
+    )?;
+    context
+        .command
+        .env("OPENAI_API_KEY", key)
+        .env("OPENAI_BASE_URL", &connection.base_url)
+        .env("OPENAI_API_BASE", &connection.base_url)
+        .env("OPENAI_MODEL", context.model)
+        .env("CLINE_API_KEY", key);
     context
         .command
         .env("CLINE_DIR", &directory)
@@ -83,12 +67,20 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
     Ok(())
 }
 
+fn client(interface: Option<crate::endpoint::Interface>) -> &'static str {
+    match interface {
+        Some(crate::endpoint::Interface::OpenAiChat) => "openai-compatible",
+        _ => "openai-native",
+    }
+}
+
 fn configure(
     directory: &std::path::Path,
     provider: &str,
     model: &str,
     base_url: &str,
     key: &str,
+    protocol: &str,
 ) -> Result<(), Error> {
     let settings_dir = directory.join("data/settings");
     std::fs::create_dir_all(&settings_dir).map_err(|error| {
@@ -96,13 +88,15 @@ fn configure(
             "cannot create Cline provider configuration directory: {error}"
         ))
     })?;
-    let configuration = serde_json::json!({
-        "version": 1, "lastUsedProvider": provider,
+    let mut configuration = serde_json::json!({
+        "version": 1, "lastUsedProvider": provider, "modes": {},
         "providers": { provider: { "settings": {
-            "provider": provider, "model": model, "baseUrl": base_url, "apiKey": key,
-            "protocol": "openai-responses", "client": "openai"
+            "provider": provider, "model": model, "baseUrl": base_url, "apiKey": key
         }, "updatedAt": "1970-01-01T00:00:00.000Z", "tokenSource": "manual"}}
     });
+    if protocol == "openai-responses" {
+        configuration["providers"][provider]["settings"]["protocol"] = protocol.into();
+    }
     let content = serde_json::to_vec_pretty(&configuration).map_err(|error| {
         Error::Run(format!(
             "cannot render Cline provider configuration: {error}"
@@ -137,11 +131,35 @@ mod tests {
             "test-model",
             "http://127.0.0.1:3456/v1",
             "test-key",
+            "openai-responses",
         )
         .expect("configuration succeeds");
         let text = std::fs::read_to_string(directory.join("data/settings/providers.json"))
             .expect("configuration exists");
         assert!(text.contains("test-model"));
         let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn compatible_chat_settings_keep_the_selected_base_url() {
+        let directory = std::env::temp_dir().join(format!("asb-cline-chat-{}", std::process::id()));
+        configure(
+            &directory,
+            client(Some(crate::endpoint::Interface::OpenAiChat)),
+            "fixture/model",
+            "http://127.0.0.1:3456/v1",
+            "fixture-key",
+            "openai-chat-completions",
+        )
+        .unwrap();
+        let settings: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(directory.join("data/settings/providers.json")).unwrap(),
+        )
+        .unwrap();
+        let entry = &settings["providers"]["openai-compatible"]["settings"];
+        assert_eq!(entry["baseUrl"], "http://127.0.0.1:3456/v1");
+        assert_eq!(entry["apiKey"], "fixture-key");
+        assert!(entry.get("protocol").is_none());
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

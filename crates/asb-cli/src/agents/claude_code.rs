@@ -8,6 +8,7 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
         package: "@anthropic-ai/claude-code@2.1.301",
         executable: "claude",
     },
+    &[crate::endpoint::MESSAGES_BOTH],
     command,
     prepare_adapter,
 )
@@ -43,17 +44,87 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
         ))
     })?;
     context.command.env("CLAUDE_CONFIG_DIR", &config_root);
-    if context.provider.eq_ignore_ascii_case("cli2key") {
-        let (key, url) = context
-            .cli2key
-            .ok_or_else(|| Error::Run("cli2key provider has no API endpoint".into()))?;
-        context
-            .command
-            .env("ANTHROPIC_BASE_URL", url)
-            .env("ANTHROPIC_API_KEY", key)
-            .env("ANTHROPIC_AUTH_TOKEN", key)
-            .env_remove("CLAUDE_CODE_USE_BEDROCK")
-            .env_remove("CLAUDE_CODE_USE_VERTEX");
+    let connection = context.connection;
+    let key = connection.credential.as_deref().unwrap_or("asb-local");
+    context
+        .command
+        .env(
+            "ANTHROPIC_BASE_URL",
+            connection.base_url.trim_end_matches("/v1"),
+        )
+        .env_remove("CLAUDE_CODE_USE_BEDROCK")
+        .env_remove("CLAUDE_CODE_USE_VERTEX");
+    match connection.authentication {
+        crate::endpoint::Authentication::Bearer => {
+            context
+                .command
+                .env("ANTHROPIC_API_KEY", "")
+                .env("ANTHROPIC_AUTH_TOKEN", key);
+        }
+        crate::endpoint::Authentication::ApiKey => {
+            context
+                .command
+                .env("ANTHROPIC_API_KEY", key)
+                .env_remove("ANTHROPIC_AUTH_TOKEN");
+        }
+        crate::endpoint::Authentication::None => {
+            context
+                .command
+                .env("ANTHROPIC_API_KEY", "")
+                .env_remove("ANTHROPIC_AUTH_TOKEN");
+        }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn uses_negotiated_authentication_without_conflicting_credentials() {
+        let root = std::env::temp_dir().join(format!("asb-claude-auth-{}", std::process::id()));
+        for auth in [
+            crate::endpoint::Authentication::Bearer,
+            crate::endpoint::Authentication::ApiKey,
+        ] {
+            let connection = crate::endpoint::Connection {
+                interface: crate::endpoint::Interface::AnthropicMessages,
+                base_url: "http://127.0.0.1:4242/api/v1".into(),
+                credential: Some("fixture-key".into()),
+                authentication: auth,
+            };
+            let mut command = std::process::Command::new("unused");
+            prepare_adapter(&mut PreparationContext {
+                command: &mut command,
+                model: "fixture",
+                connection: &connection,
+                runtime_dir: &root,
+            })
+            .unwrap();
+            let env = command
+                .get_envs()
+                .filter_map(|(key, value)| {
+                    value.map(|value| {
+                        (
+                            key.to_string_lossy().into_owned(),
+                            value.to_string_lossy().into_owned(),
+                        )
+                    })
+                })
+                .collect::<std::collections::HashMap<_, _>>();
+            assert_eq!(env["ANTHROPIC_BASE_URL"], "http://127.0.0.1:4242/api");
+            match auth {
+                crate::endpoint::Authentication::Bearer => {
+                    assert_eq!(env["ANTHROPIC_API_KEY"], "");
+                    assert_eq!(env["ANTHROPIC_AUTH_TOKEN"], "fixture-key");
+                }
+                crate::endpoint::Authentication::ApiKey => {
+                    assert_eq!(env["ANTHROPIC_API_KEY"], "fixture-key");
+                    assert!(!env.contains_key("ANTHROPIC_AUTH_TOKEN"));
+                }
+                _ => unreachable!(),
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

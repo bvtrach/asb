@@ -454,7 +454,7 @@ fn ollama_discovery_and_codex_run_use_the_selected_local_endpoint() {
 const fs = require('fs');
 const cfg = fs.readFileSync(process.env.CODEX_HOME + '/config.toml', 'utf8');
 const endpoint = cfg.match(/base_url = "([^"]+)"/)[1];
-if (!cfg.includes('model_provider = "asb_ollama"') || !cfg.includes('web_search = "disabled"')) process.exit(11);
+if (!cfg.includes('model_provider = "asb_provider"') || !cfg.includes('web_search = "disabled"')) process.exit(11);
 const body = JSON.stringify({model:'qwen3:0.6b',input:'offline test',tools:[{type:'function',name:'read_file'}]});
 fetch(endpoint + '/responses', {method:'POST',headers:{'content-type':'application/json'},body}).then(r => { if (!r.ok) process.exit(12); console.log('local-ollama-agent'); }).catch(() => process.exit(13));
 "##);
@@ -503,6 +503,141 @@ fetch(endpoint + '/responses', {method:'POST',headers:{'content-type':'applicati
 }
 
 #[cfg(unix)]
+#[test]
+fn codex_uses_selected_openrouter_endpoint_for_live_record_and_replay() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Arc, Mutex, atomic::AtomicBool};
+    use std::time::Duration;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let worker_stop = Arc::clone(&stop);
+    let worker_requests = Arc::clone(&requests);
+    let worker = std::thread::spawn(move || {
+        while !worker_stop.load(Ordering::Relaxed) {
+            let (mut stream, _) = match listener.accept() {
+                Ok(value) => value,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(error) => panic!("fixture server: {error}"),
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let count = stream.read(&mut chunk).unwrap();
+                if count == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let header = String::from_utf8_lossy(&bytes[..end]);
+                    let length = header
+                        .lines()
+                        .find_map(|line| {
+                            let (key, value) = line.split_once(':')?;
+                            key.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            let request = String::from_utf8(bytes).unwrap();
+            let path = request.lines().next().unwrap_or_default().to_owned();
+            worker_requests.lock().unwrap().push(request);
+            let body = if path.starts_with("GET /api/v1/models ") {
+                r#"{"data":[{"id":"fixture/model","supported_parameters":["tools"]}]}"#
+            } else if path.starts_with("POST /api/v1/responses ") {
+                r#"{"id":"resp_fixture","object":"response","output":[]}"#
+            } else {
+                panic!("unexpected request: {path}")
+            };
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+    });
+    let project = Project::new();
+    project.init();
+    project.write("benchmark.toml", "agent='codex'\nworkload='bug-fix'\nprovider='openrouter'\nmodel='fixture/model'\nworkspace='workspace'\nlog_file='run.log'\n");
+    let agent = ".asb-tools/codex/bin/codex";
+    project.write(agent, r##"#!/usr/bin/env node
+const fs = require('fs');
+const cfg = fs.readFileSync(process.env.CODEX_HOME + '/config.toml', 'utf8');
+const endpoint = cfg.match(/base_url = "([^"]+)"/)[1];
+if (!cfg.includes('model_provider = "asb_provider"') || !cfg.includes('wire_api = "responses"') || !cfg.includes('env_key = "ASB_AGENT_API_KEY"')) process.exit(11);
+if (process.env.OPENROUTER_API_KEY === 'live-secret' && process.env.ASB_AGENT_API_KEY !== 'live-secret') process.exit(12);
+if (process.env.OPENROUTER_API_KEY === 'asb-replay' && process.env.ASB_AGENT_API_KEY !== 'asb-replay') process.exit(13);
+const body = JSON.stringify({model:'fixture/model',input:'offline test',tools:[{type:'function',name:'read_file'}]});
+fetch(endpoint + '/responses', {method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+process.env.ASB_AGENT_API_KEY},body}).then(r => {if (!r.ok) process.exit(14); console.log('provider-neutral-agent');}).catch(() => process.exit(15));
+"##);
+    std::fs::set_permissions(
+        project.0.join(agent),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let base = format!("http://{address}/api/v1");
+    let env = [
+        ("OPENROUTER_BASE_URL", base.as_str()),
+        ("OPENROUTER_API_KEY", "live-secret"),
+    ];
+    let run = project.command_with_env(&["run", "benchmark.toml"], &env);
+    let record = project.command_with_env(
+        &[
+            "run",
+            "benchmark.toml",
+            "--record",
+            "--cassette",
+            "tape.jsonl",
+        ],
+        &env,
+    );
+    let before_replay = requests.lock().unwrap().len();
+    let replay = project.command_with_env(
+        &[
+            "run",
+            "benchmark.toml",
+            "--replay",
+            "--cassette",
+            "tape.jsonl",
+        ],
+        &env,
+    );
+    let after_replay = requests.lock().unwrap().len();
+    stop.store(true, Ordering::Relaxed);
+    worker.join().unwrap();
+    expect_success(&run);
+    expect_success(&record);
+    expect_success(&replay);
+    assert_eq!(
+        before_replay, after_replay,
+        "replay contacted the live provider"
+    );
+    let seen = requests.lock().unwrap();
+    let posts: Vec<_> = seen
+        .iter()
+        .filter(|request| request.starts_with("POST /api/v1/responses "))
+        .collect();
+    assert_eq!(posts.len(), 2);
+    assert!(
+        posts[0]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer live-secret")
+    );
+}
+
+#[cfg(unix)]
 fn replay_project(concurrency: usize) -> Project {
     use std::os::unix::fs::PermissionsExt;
     let project = Project::new();
@@ -510,23 +645,25 @@ fn replay_project(concurrency: usize) -> Project {
     project.write("benchmark.toml", &format!(
         "agent='pi'\nworkload='bug-fix'\nprovider='cli2key'\nmodel='test-model'\nconcurrency={concurrency}\nworkspace='workspace'\nlog_file='run.log'\n"
     ));
-    let body = serde_json::json!({"model":"test-model","messages":[{"content":"offline"}],"tools":[{"type":"function"}]}).to_string();
-    let cassette = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body},
+    let body =
+        serde_json::json!({"model":"test-model","input":"offline","tools":[{"type":"function"}]})
+            .to_string();
+    let cassette = serde_json::json!({"request":{"method":"POST","url":"/v1/responses","body":body},
         "response":{"status":200,"headers":{"content-type":"application/json"},"body":"{\"ok\":true}"}});
     project.write("tape.jsonl", &format!("{cassette}\n"));
     let agent = ".asb-tools/pi/bin/pi";
     project.write(agent, r##"#!/usr/bin/env node
 const fs = require('fs');
 const config = JSON.parse(fs.readFileSync(process.env.PI_CODING_AGENT_DIR + '/models.json'));
-const endpoint = config.providers.cli2key.baseUrl;
-if (!/^http:\/\/127\.0\.0\.1:\d+\/v1$/.test(endpoint) || process.env.CLI2KEY_API_KEY !== 'asb-replay') {
+const endpoint = config.providers.asb.baseUrl;
+if (!/^http:\/\/127\.0\.0\.1:\d+\/v1$/.test(endpoint) || config.providers.asb.api !== 'openai-responses' || process.env.ASB_AGENT_API_KEY !== 'asb-replay') {
   console.error('unexpected replay configuration'); process.exit(11);
 }
 const behavior = process.env.ASB_FIXTURE_BEHAVIOR || 'success';
 async function main() {
   if (behavior === 'skip') { console.log('fixture-no-request'); return; }
-  const body = {model:'test-model',messages:[{content:behavior === 'mismatch' ? 'changed' : 'offline'}],tools:[{type:'function'}]};
-  const send = () => fetch(endpoint + '/chat/completions', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+  const body = {model:'test-model',input:behavior === 'mismatch' ? 'changed' : 'offline',tools:[{type:'function'}]};
+  const send = () => fetch(endpoint + '/responses', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
   let response = await send();
   if (behavior === 'extra') response = await send();
   if (!response.ok) { console.error('fixture-rejected', response.status); process.exitCode = 8; return; }
@@ -715,9 +852,9 @@ fn replay_must_not_expose_a_provider_credential_to_the_agent() {
 const fs=require('fs');
 const keys = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CODEBUDDY_API_KEY', 'CODEBUDDY_AUTH_TOKEN', 'LLM_API_KEY', 'CLINE_API_KEY', 'CONTINUE_API_KEY', 'OPENJIUWEN_API_KEY'];
 fs.writeFileSync('credential-observation', process.env.OPENAI_API_KEY === 'asb-replay' && keys.every(key => process.env[key] === undefined) ? 'not-exposed' : 'exposed');
-const body={model:'test-model',messages:[{content:'offline'}],tools:[{type:'function'}]};
+const body={model:'test-model',input:'offline',tools:[{type:'function'}]};
 if (!/^http:\/\/127\.0\.0\.1:\d+\/v1$/.test(process.env.ASB_PROVIDER_BASE_URL || '')) process.exit(12);
-fetch(process.env.ASB_PROVIDER_BASE_URL + '/chat/completions', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
+fetch(process.env.ASB_PROVIDER_BASE_URL + '/responses', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
   .then(r => { if (!r.ok) process.exitCode=1; })
   .catch(() => { process.exitCode=1; });
 "##);
@@ -835,6 +972,209 @@ fn wait_for_fixture(project: &Project, pid: u32) -> WaitForFixtureExpiry {
         executable: project
             .0
             .join(".asb-tools/cli2key/node_modules/.bin/codex-bridge"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn provider_models_fetches_all_authenticated_catalog_pages() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+    for (provider, env_key, env_url, first, second, expected_query, expected_header) in [
+        (
+            "anthropic",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            r#"{"data":[{"id":"first"}],"has_more":true,"last_id":"a/b"}"#,
+            r#"{"data":[{"id":"second"}],"has_more":false}"#,
+            "after_id=a%2Fb",
+            "x-api-key: fixture-key",
+        ),
+        (
+            "gemini",
+            "GEMINI_API_KEY",
+            "GOOGLE_GEMINI_BASE_URL",
+            r#"{"models":[{"name":"models/first"}],"nextPageToken":"a/b"}"#,
+            r#"{"models":[{"name":"models/second"}]}"#,
+            "pageToken=a%2Fb",
+            "x-goog-api-key: fixture-key",
+        ),
+        (
+            "fireworks",
+            "FIREWORKS_API_KEY",
+            "FIREWORKS_MODELS_URL",
+            r#"{"models":[{"name":"first","supportsTools":true}],"nextPageToken":"a/b"}"#,
+            r#"{"models":[{"name":"second","supportsTools":true}]}"#,
+            "pageToken=a%2Fb",
+            "authorization: bearer fixture-key",
+        ),
+    ] {
+        let project = Project::new();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}/v1beta", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut requests = Vec::new();
+            while requests.len() < 2 && Instant::now() < deadline {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(value) => value,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("fixture accept: {error}"),
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut buf = [0; 8192];
+                let len = stream.read(&mut buf).unwrap();
+                requests.push(String::from_utf8_lossy(&buf[..len]).to_string());
+                let body = if requests.len() == 1 { first } else { second };
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            }
+            requests
+        });
+        let result = project.command_with_env(
+            &["provider", "models", provider, "--json"],
+            &[(env_key, "fixture-key"), (env_url, &base)],
+        );
+        let requests = server.join().unwrap();
+        expect_success(&result);
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1].lines().next().unwrap().contains(expected_query));
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.to_ascii_lowercase().contains(expected_header))
+        );
+        let data: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(data["models"], serde_json::json!(["first", "second"]));
+    }
+}
+
+#[test]
+fn together_provider_models_accepts_documented_array_response() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let (mut stream, _) = loop {
+            match listener.accept() {
+                Ok(value) => break value,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(5))
+                }
+                Err(error) => panic!("fixture accept: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let mut request = [0; 8192];
+        let len = stream.read(&mut request).unwrap();
+        let body = r#"[{"id":"example/chat","type":"chat"}]"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+        String::from_utf8_lossy(&request[..len]).into_owned()
+    });
+    let project = Project::new();
+    let result = project.command_with_env(
+        &["provider", "models", "together", "--json"],
+        &[
+            ("TOGETHER_API_KEY", "fixture-key"),
+            ("TOGETHER_BASE_URL", &base),
+        ],
+    );
+    let request = server.join().unwrap();
+    expect_success(&result);
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer fixture-key")
+    );
+    let data: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(data["models"], serde_json::json!(["example/chat"]));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cli2key_run_validates_current_bridge_catalog_and_reaps_bridge() {
+    use std::os::unix::fs::PermissionsExt;
+    for (model, expect_ok) in [("current-model", true), ("removed-model", false)] {
+        let project = Project::new();
+        project.init();
+        project.write("benchmark.toml", &format!("agent='pi'\nworkload='bug-fix'\nprovider='cli2key'\nmodel='{model}'\nworkspace='workspace'\nlog_file='run.log'\n"));
+        project.write(
+            ".asb-tools/pi/bin/pi",
+            "#!/bin/sh\nprintf 'fixture agent complete\\n'\n",
+        );
+        std::fs::set_permissions(
+            project.0.join(".asb-tools/pi/bin/pi"),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        install_fake_bridge(
+            &project,
+            r##"#!/usr/bin/env node
+const http = require('http'), fs = require('fs');
+fs.writeFileSync(process.env.ASB_TEST_PIDFILE, String(process.pid));
+http.createServer((req,res) => {
+  fs.writeFileSync(process.env.ASB_TEST_OBSERVED, req.url + ' ' + req.headers.authorization);
+  res.writeHead(200, {'content-type':'application/json'});
+  res.end(JSON.stringify({data:[{id:'current-model'}]}));
+}).listen(Number(process.env.CODEX_BRIDGE_PORT), '127.0.0.1', () => console.log('Codex Bridge API key: fixture-key'));
+"##,
+        );
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+            .to_string();
+        let pidfile = project.0.join("bridge.pid");
+        let observed = project.0.join("observed");
+        let result = project.command_with_env(
+            &["run", "benchmark.toml"],
+            &[
+                ("CODEX_BRIDGE_PORT", &port),
+                ("ASB_TEST_PIDFILE", pidfile.to_str().unwrap()),
+                ("ASB_TEST_OBSERVED", observed.to_str().unwrap()),
+            ],
+        );
+        let pid: u32 = std::fs::read_to_string(pidfile).unwrap().parse().unwrap();
+        let _wait = wait_for_fixture(&project, pid);
+        if expect_ok {
+            expect_success(&result);
+        } else {
+            expect_failure(&result, "was not returned by provider");
+        }
+        assert_eq!(
+            std::fs::read_to_string(observed).unwrap(),
+            "/v1/models Bearer fixture-key"
+        );
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "bridge was not reaped"
+        );
     }
 }
 

@@ -5,9 +5,13 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     "openjiuwen",
     Recipe::Python {
         package: "openjiuwen[cli]==0.1.19.post2",
-        dependencies: &[],
+        // filelock 4.2.2 stalls while the pinned OpenJiuwen client acquires
+        // its filesystem locks. 3.32.7 satisfies its >=3.25 requirement and
+        // is verified by the opt-in real-client fixture test.
+        dependencies: &["filelock==3.32.7"],
         executable: "openjiuwen",
     },
+    &[crate::endpoint::MESSAGES_KEY],
     command,
     prepare_adapter,
 )
@@ -45,6 +49,14 @@ mod tests {
     use crate::benchmark::BenchmarkConfig;
 
     #[test]
+    fn installer_pins_a_tested_compatible_filelock() {
+        let crate::install::Recipe::Python { dependencies, .. } = super::ADAPTER.recipe else {
+            panic!("OpenJiuwen must use a Python recipe");
+        };
+        assert!(dependencies.contains(&"filelock==3.32.7"));
+    }
+
+    #[test]
     fn enables_verbose_mode_for_deterministic_noninteractive_runs() {
         let config = BenchmarkConfig {
             agent: "openjiuwen".into(),
@@ -61,6 +73,7 @@ mod tests {
         let spec = command(&CommandContext {
             config: &config,
             endpoint: Some("http://127.0.0.1:3000/v1"),
+            interface: Some(crate::endpoint::Interface::AnthropicMessages),
             prompt: "repair",
         });
         assert_eq!(spec.args.first().map(String::as_str), Some("-v"));
@@ -69,10 +82,10 @@ mod tests {
 }
 
 fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
-    if context.provider.eq_ignore_ascii_case("cli2key") {
-        if let Some((key, _)) = context.cli2key {
-            context.command.env("OPENJIUWEN_API_KEY", key);
-        }
-    }
+    let connection = context.connection;
+    context.command.env(
+        "OPENJIUWEN_API_KEY",
+        connection.credential.as_deref().unwrap_or("asb-local"),
+    );
     Ok(())
 }

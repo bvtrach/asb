@@ -18,6 +18,7 @@ mod workbuddy;
 
 use crate::Error;
 use crate::benchmark::BenchmarkConfig;
+use crate::endpoint::{Interface, Support};
 use crate::install::Recipe;
 use crate::project;
 use std::path::{Path, PathBuf};
@@ -28,6 +29,8 @@ pub(crate) trait AgentAdapter: Sync {
     fn executable(&self) -> &'static str;
     /// Project-local installation recipe for this exact adapter executable.
     fn recipe(&self) -> Recipe;
+    /// Supported wire interfaces, in preference order.
+    fn supported_endpoints(&self) -> &'static [Support];
     fn command(&self, context: &CommandContext<'_>) -> CommandSpec;
     fn prepare(&self, context: &mut PreparationContext<'_>) -> Result<(), Error>;
     fn replay_credential_vars(&self) -> &'static [&'static str] {
@@ -40,21 +43,16 @@ pub(crate) trait AgentAdapter: Sync {
 
 pub(crate) struct PreparationContext<'a> {
     pub command: &'a mut Command,
-    pub provider: &'a str,
     pub model: &'a str,
-    pub cli2key: Option<(&'a str, &'a str)>,
-    /// The project-local tool root. Adapters choose their own configuration
-    /// layout below this root instead of teaching the runner agent names.
-    pub tools_dir: &'a Path,
+    pub connection: &'a crate::endpoint::Connection,
     /// Private mutable configuration for this agent execution.
     pub runtime_dir: &'a Path,
-    /// Current tape endpoint and mode, when recording or replaying.
-    pub tape: Option<(crate::tape::Mode, &'a str)>,
 }
 
 pub(crate) struct CommandContext<'a> {
     pub config: &'a BenchmarkConfig,
     pub endpoint: Option<&'a str>,
+    pub interface: Option<Interface>,
     pub prompt: &'a str,
 }
 
@@ -84,6 +82,7 @@ pub(super) struct StaticAdapter {
     id: &'static str,
     executable: &'static str,
     recipe: Recipe,
+    supported_endpoints: &'static [Support],
     command: CommandBuilder,
     prepare: PreparationHook,
     collect: Option<CollectionHook>,
@@ -94,6 +93,7 @@ impl StaticAdapter {
         id: &'static str,
         executable: &'static str,
         recipe: Recipe,
+        supported_endpoints: &'static [Support],
         command: CommandBuilder,
         prepare: PreparationHook,
     ) -> Self {
@@ -101,6 +101,7 @@ impl StaticAdapter {
             id,
             executable,
             recipe,
+            supported_endpoints,
             command,
             prepare,
             collect: None,
@@ -130,6 +131,9 @@ impl AgentAdapter for StaticAdapter {
     }
     fn recipe(&self) -> Recipe {
         self.recipe
+    }
+    fn supported_endpoints(&self) -> &'static [Support] {
+        self.supported_endpoints
     }
     fn command(&self, context: &CommandContext<'_>) -> CommandSpec {
         (self.command)(context)
@@ -205,17 +209,6 @@ pub(crate) fn resolve_executable(
         .map(|candidate| candidate.to_string_lossy().into_owned())
 }
 
-/// Resolve an adapter's executable from a known project-local tools root.
-/// The owning adapter uses this for its target-specific support executable.
-pub(crate) fn resolve_from_tools(id: &str, tools_root: &Path) -> Option<String> {
-    let adapter = find(id)?;
-    executable_candidates(adapter.id(), adapter.executable(), tools_root)
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-        .and_then(|candidate| candidate.canonicalize().ok())
-        .map(|candidate| candidate.to_string_lossy().into_owned())
-}
-
 fn executable_candidates(id: &str, executable: &str, tools_root: &Path) -> Vec<PathBuf> {
     let root = tools_root.join(id);
     vec![
@@ -244,16 +237,23 @@ mod tests {
         ] {
             let runtime = root.join(agent);
             let mut command = std::process::Command::new("unused");
+            let adapter = super::find(agent).unwrap();
+            let connection = crate::endpoint::negotiate(
+                adapter.id(),
+                adapter.supported_endpoints(),
+                "openrouter",
+                "test-model",
+                None,
+                Some((crate::tape::Mode::Replay, "http://127.0.0.1:4242/v1")),
+            )
+            .unwrap();
             super::prepare(
                 agent,
                 &mut super::PreparationContext {
                     command: &mut command,
-                    provider: "openrouter",
                     model: "test-model",
-                    cli2key: None,
-                    tools_dir: &root,
+                    connection: &connection,
                     runtime_dir: &runtime,
-                    tape: Some((crate::tape::Mode::Replay, "http://127.0.0.1:4242/v1")),
                 },
             )
             .unwrap();
@@ -289,6 +289,7 @@ mod tests {
             let command = adapter.command(&CommandContext {
                 config: &config,
                 endpoint: Some("http://127.0.0.1:3000/v1"),
+                interface: Some(Interface::AnthropicMessages),
                 prompt: "repair",
             });
             assert!(!command.program.is_empty(), "{}", adapter.id());
@@ -303,5 +304,38 @@ mod tests {
         assert_eq!(ids.len(), all().len());
         assert!(ids.contains("codex"));
         assert!(ids.contains("continue"));
+    }
+
+    #[test]
+    fn every_agent_declares_and_prepares_every_advertised_interface() {
+        let root =
+            std::env::temp_dir().join(format!("asb-agent-interface-matrix-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        for adapter in all() {
+            assert!(
+                !adapter.supported_endpoints().is_empty(),
+                "{}",
+                adapter.id()
+            );
+            for (index, interface) in adapter.supported_endpoints().iter().enumerate() {
+                let runtime = root.join(adapter.id()).join(index.to_string());
+                let connection = crate::endpoint::Connection {
+                    interface: interface.interface,
+                    base_url: "http://127.0.0.1:4242/v1".into(),
+                    credential: Some("asb-replay".into()),
+                    authentication: interface.authentication[0],
+                };
+                let mut command = std::process::Command::new("unused");
+                adapter
+                    .prepare(&mut PreparationContext {
+                        command: &mut command,
+                        model: "example/model",
+                        connection: &connection,
+                        runtime_dir: &runtime,
+                    })
+                    .unwrap_or_else(|error| panic!("{} {interface:?}: {error}", adapter.id()));
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

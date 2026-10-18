@@ -197,11 +197,12 @@ those providers. OpenCode Zen model discovery is public and does not require
 an API key. Model
 discovery uses the provider credential and endpoint environment variables but
 never writes or prints credential values.
-Only models that advertise tool-calling support are enumerated. `run` and
-`run --record` revalidate the selected model before launch; `run --replay` validates that
-the cassette contains a tool-calling request for the configured model. Models
-without tool support are rejected because the bundled workloads depend on
-agent tools.
+Models explicitly reported as lacking tool support are excluded; models whose
+catalog does not report tool support remain selectable, with a warning before
+a run. `run` and `run --record` revalidate the selected model before launch;
+`run --replay` instead validates that the cassette contains a tool-calling
+request for the configured model. A listed model is not guaranteed to complete
+an agent workload.
 When an environment credential is absent, ASB also checks the bounded local
 file `$HOME/.api_key_<provider>` (for example `$HOME/.api_key_openrouter`).
 For `cli2key`, `asb tool install cli2key` refreshes the local bridge key, and
@@ -241,9 +242,10 @@ packages; `mini-swe`, `openhands`, and `openjiuwen` use an isolated Python
 virtual environment. `goose` uses a SHA-256-pinned upstream binary. Any
 other agent can be installed from a local executable or URL with `--source`.
 
-Claude Code, Goose, Cline, and Continue can use OpenRouter or the cli2key
-OpenAI-compatible bridge; ASB writes the required endpoint/model environment
-and Continue project configuration automatically.
+ASB negotiates a compatible API interface and authentication style between
+the selected agent and provider, then writes the agent-specific configuration.
+Not every agent, provider, and model combination is compatible; ASB reports
+when there is no matching interface.
 
 If npm, Python, curl, or tar is unavailable, the failed command prints a
 copy-paste repair command. The npm repair uses user-local `fnm`; the Python

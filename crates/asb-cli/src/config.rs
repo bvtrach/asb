@@ -48,18 +48,6 @@ pub fn setup(options: SetupOptions, output: &mut dyn Write) -> Result<(), Error>
         )));
     }
     let model = required(model)?;
-    if let Some(candidates) = providers::known_models(&provider) {
-        if !candidates.iter().any(|candidate| *candidate == model) {
-            if let Some(candidate) = suggestions::closest(&model, candidates) {
-                return Err(Error::Input(format!(
-                    "model `{model}` for provider `{provider}` is not tool-capable; did you mean `{candidate}`?"
-                )));
-            }
-            return Err(Error::Input(format!(
-                "model `{model}` for provider `{provider}` is not in the tool-capable catalog; run `asb provider models {provider}`"
-            )));
-        }
-    }
     let concurrency = concurrency.unwrap_or(1);
     if concurrency == 0 {
         return Err(Error::Input("concurrency must be at least 1".into()));
@@ -169,15 +157,10 @@ mod tests {
                 .to_string()
                 .contains("did you mean `openrouter`?")
         );
-        let model_error = setup(
-            options("opencode", "cli2key", "gpt-6.1-sl"),
+        setup(
+            options("opencode", "cli2key", "new-live-model"),
             &mut Vec::new(),
         )
-        .expect_err("model typo rejected");
-        assert!(
-            model_error
-                .to_string()
-                .contains("did you mean `gpt-6.1-sol`?")
-        );
+        .expect("setup must not reject models absent from an old snapshot");
     }
 }

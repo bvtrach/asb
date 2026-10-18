@@ -1,8 +1,14 @@
 use super::{CommandContext, CommandSpec, PreparationContext, StaticAdapter};
-use crate::{Error, install::Recipe, providers};
-pub(super) static ADAPTER: StaticAdapter =
-    StaticAdapter::new("goose", "goose", Recipe::Goose, command, prepare_adapter)
-        .with_replay_credential_vars(&["ANTHROPIC_AUTH_TOKEN"]);
+use crate::{Error, install::Recipe};
+pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
+    "goose",
+    "goose",
+    Recipe::Goose,
+    &[crate::endpoint::CHAT, crate::endpoint::MESSAGES_KEY],
+    command,
+    prepare_adapter,
+)
+.with_replay_credential_vars(&["ANTHROPIC_AUTH_TOKEN"]);
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "goose".into(),
@@ -20,51 +26,31 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
     }
 }
 fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
-    if context.provider.eq_ignore_ascii_case("cli2key") {
-        if let Some((key, url)) = context.cli2key {
-            let url = context.tape.map_or(url, |(_, endpoint)| endpoint);
-            let key = if context
-                .tape
-                .is_some_and(|(mode, _)| mode == crate::tape::Mode::Replay)
-            {
-                "asb-replay"
-            } else {
-                key
-            };
+    let connection = context.connection;
+    let key = connection.credential.as_deref().unwrap_or("asb-local");
+    match connection.interface {
+        crate::endpoint::Interface::AnthropicMessages => {
             context
                 .command
                 .env("GOOSE_PROVIDER", "anthropic")
                 .env("GOOSE_MODEL", context.model)
-                .env("ANTHROPIC_HOST", url.trim_end_matches("/v1"))
+                .env(
+                    "ANTHROPIC_HOST",
+                    connection.base_url.trim_end_matches("/v1"),
+                )
                 .env("ANTHROPIC_API_KEY", key)
                 .env("ANTHROPIC_AUTH_TOKEN", key);
         }
-    } else if context.provider.eq_ignore_ascii_case("openrouter") {
-        let key = if context
-            .tape
-            .is_some_and(|(mode, _)| mode == crate::tape::Mode::Replay)
-        {
-            "asb-replay".to_owned()
-        } else {
-            providers::credential("openrouter").ok_or_else(|| {
-                Error::Run(
-                    "openrouter provider requires OPENROUTER_API_KEY or ~/.api_key_openrouter"
-                        .into(),
-                )
-            })?
-        };
-        let base_url = context
-            .tape
-            .map(|(_, url)| url.to_owned())
-            .or_else(|| std::env::var("OPENROUTER_BASE_URL").ok())
-            .unwrap_or_else(|| "https://openrouter.ai/api/v1".into());
-        context
-            .command
-            .env("GOOSE_PROVIDER", "openai")
-            .env("GOOSE_MODEL", context.model)
-            .env("OPENAI_HOST", base_url.trim_end_matches("/v1"))
-            .env("OPENAI_BASE_PATH", "/v1/chat/completions")
-            .env("OPENAI_API_KEY", key);
+        crate::endpoint::Interface::OpenAiChat => {
+            context
+                .command
+                .env("GOOSE_PROVIDER", "openai")
+                .env("GOOSE_MODEL", context.model)
+                .env("OPENAI_HOST", connection.base_url.trim_end_matches("/v1"))
+                .env("OPENAI_BASE_PATH", "/v1/chat/completions")
+                .env("OPENAI_API_KEY", key);
+        }
+        _ => unreachable!("Goose advertises only chat and messages interfaces"),
     }
     Ok(())
 }
@@ -93,14 +79,17 @@ mod tests {
     #[test]
     fn openrouter_replay_uses_tape_and_dummy_credential() {
         let mut command = Command::new("goose");
+        let connection = crate::endpoint::Connection {
+            interface: crate::endpoint::Interface::OpenAiChat,
+            base_url: "http://127.0.0.1:4321/v1".into(),
+            credential: Some("asb-replay".into()),
+            authentication: crate::endpoint::Authentication::Bearer,
+        };
         prepare_adapter(&mut PreparationContext {
             command: &mut command,
-            provider: "openrouter",
             model: "test-model",
-            cli2key: None,
-            tools_dir: Path::new("."),
+            connection: &connection,
             runtime_dir: Path::new("."),
-            tape: Some((crate::tape::Mode::Replay, "http://127.0.0.1:4321/v1")),
         })
         .unwrap();
         let env = environment(&command);
@@ -114,14 +103,20 @@ mod tests {
     fn cli2key_tape_endpoint_wins_over_bridge_endpoint() {
         for mode in [crate::tape::Mode::Record, crate::tape::Mode::Replay] {
             let mut command = Command::new("goose");
+            let connection = crate::endpoint::negotiate(
+                "fixture-agent",
+                &[crate::endpoint::MESSAGES_KEY],
+                "cli2key",
+                "test-model",
+                Some(("fixture-key", "http://127.0.0.1:9000/v1")),
+                Some((mode, "http://127.0.0.1:4321/v1")),
+            )
+            .unwrap();
             prepare_adapter(&mut PreparationContext {
                 command: &mut command,
-                provider: "cli2key",
                 model: "test-model",
-                cli2key: Some(("fixture-key", "http://127.0.0.1:9000/v1")),
-                tools_dir: Path::new("."),
+                connection: &connection,
                 runtime_dir: Path::new("."),
-                tape: Some((mode, "http://127.0.0.1:4321/v1")),
             })
             .unwrap();
             let env = environment(&command);
