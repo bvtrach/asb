@@ -34,7 +34,7 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
     // endpoint) out of a project-local benchmark.  The adapter owns this
     // isolated config root so tape and live runs use the endpoint prepared by
     // the runner rather than ambient host configuration.
-    let config_root = context.tools_dir.join("claude-code/config");
+    let config_root = context.runtime_dir.join("claude-code/config");
     std::fs::create_dir_all(&config_root).map_err(|error| {
         Error::Run(format!(
             "cannot create Claude Code project config directory {}: {error}",

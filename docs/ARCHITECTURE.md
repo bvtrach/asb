@@ -70,7 +70,8 @@ The CLI is the stable user boundary. A benchmark configuration names an agent,
 workload, provider, model, concurrency, workspace, and log file. `concurrency`
 defaults to `1`; values greater than one run isolated replicas of the same
 agent/model/workload in parallel, with separate workspaces, logs, measurements,
-and record cassettes. Provider credentials are never stored
+and record cassettes. A replay may fan one cassette out to every replica, each
+with independent progress and agent configuration. Provider credentials are never stored
 in that file. The runner passes provider/model selection through environment
 variables and gives the selected agent one bounded workload prompt.
 Provider credentials are not stored in benchmark configuration. Known providers
@@ -179,7 +180,8 @@ delay before returning the response. The same option is available on
 `asb sweep`. This keeps the benchmark
 configuration contract unchanged and keeps the tape component an optional,
 project-local development capability rather than a runtime dependency. The
-proxy is embedded in ASB and requires only Node.js; it does not use or install
+proxy checks normalized complete request bodies and rejects mismatches and
+extra requests. It is embedded in ASB and requires only Node.js; it does not use or install
 an external recorder package. ASB never falls back to an unqualified host `PATH`
 lookup; set `ASB_LLM_TAPE` explicitly to use another compatible executable.
 Measurement collection remains

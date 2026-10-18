@@ -31,7 +31,7 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
     }
 }
 fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
-    let directory = context.tools_dir.join("cline/config");
+    let directory = context.runtime_dir.join("cline/config");
     if context.provider.eq_ignore_ascii_case("cli2key") {
         let (key, url) = context
             .cli2key
@@ -45,13 +45,24 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
             .env("OPENAI_MODEL", context.model)
             .env("CLINE_API_KEY", key);
     } else if context.provider.eq_ignore_ascii_case("openrouter") {
-        let url = std::env::var("OPENROUTER_BASE_URL")
-            .unwrap_or_else(|_| "https://openrouter.ai/api/v1".into());
-        let key = providers::credential("openrouter").ok_or_else(|| {
-            Error::Run(
-                "openrouter provider requires OPENROUTER_API_KEY or ~/.api_key_openrouter".into(),
-            )
-        })?;
+        let url = context
+            .tape
+            .map(|(_, url)| url.to_owned())
+            .or_else(|| std::env::var("OPENROUTER_BASE_URL").ok())
+            .unwrap_or_else(|| "https://openrouter.ai/api/v1".into());
+        let key = if context
+            .tape
+            .is_some_and(|(mode, _)| mode == crate::tape::Mode::Replay)
+        {
+            "asb-replay".to_owned()
+        } else {
+            providers::credential("openrouter").ok_or_else(|| {
+                Error::Run(
+                    "openrouter provider requires OPENROUTER_API_KEY or ~/.api_key_openrouter"
+                        .into(),
+                )
+            })?
+        };
         configure(&directory, "openrouter", context.model, &url, &key)?;
     } else {
         return Ok(());

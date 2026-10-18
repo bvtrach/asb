@@ -80,18 +80,28 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
     for (index, reference) in sweep.configs.iter().enumerate() {
         let config = checked_reference(parent, reference, path)?;
         let result_dir = sweep_results.join(format!("{index:03}-{}", safe_name(&config)));
-        let measurement_dir = result_dir.join("measurements");
-        let run_path = measurement_dir.join("run.json");
-        let (agent, workload, provider, model) = benchmark_identity(&config)?;
-        let artifacts = artifact_links(parent, &result_dir);
-        if !run_path.is_file() {
-            benchmark_data.push(BenchmarkData {
-                label: format!("{index:03}-{}", safe_name(&config)),
-                directory: result_dir,
-                agent,
-                workload,
-                provider,
-                model,
+        let (agent, workload, provider, model, concurrency) = benchmark_identity(&config)?;
+        for replica in 1..=concurrency {
+            let label = if concurrency == 1 {
+                format!("{index:03}-{}", safe_name(&config))
+            } else {
+                format!("{index:03}-{}-concurrency-{replica}", safe_name(&config))
+            };
+            let measurement_dir = result_dir.join(if concurrency == 1 {
+                "measurements".to_owned()
+            } else {
+                format!("measurements-concurrency-{replica}")
+            });
+            let run_path = measurement_dir.join("run.json");
+            let artifacts = artifact_links(parent, &result_dir);
+            if !run_path.is_file() {
+                benchmark_data.push(BenchmarkData {
+                label,
+                directory: result_dir.clone(),
+                agent: agent.clone(),
+                workload: workload.clone(),
+                provider: provider.clone(),
+                model: model.clone(),
                 metrics: BTreeMap::new(),
                 series: BTreeMap::new(),
                 status: Some(format!(
@@ -100,94 +110,95 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 )),
                 artifacts,
             });
-            continue;
-        }
-        let run_value = read_json(&run_path)?;
-        let run_status = if run_value.get("success") == Some(&Value::Bool(false)) {
-            Some(format!(
-                "benchmark run failed (status={}, exit_code={})",
-                run_value
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown"),
-                run_value
-                    .get("exit_code")
-                    .map(Value::to_string)
-                    .unwrap_or_else(|| "null".into())
-            ))
-        } else {
-            None
-        };
-        let mut metrics = BTreeMap::new();
-        flatten_numbers("", &run_value, &mut metrics);
-        let mut series = BTreeMap::new();
-        for entry in
-            fs::read_dir(&measurement_dir).map_err(|error| Error::Input(error.to_string()))?
-        {
-            let file = entry
-                .map_err(|error| Error::Input(error.to_string()))?
-                .path();
-            if file.extension().and_then(|value| value.to_str()) != Some("json")
-                || file.file_name().and_then(|value| value.to_str()) == Some("run.json")
-            {
                 continue;
             }
-            let collector = read_json(&file)?;
-            let name = file
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .unwrap_or("collector");
-            if let Some(collector_metrics) = collector.get("metrics") {
-                flatten_numbers(name, collector_metrics, &mut metrics);
-            }
-            // Collector stdout is retained for diagnosis, but is not a
-            // numerical series: scraping its last token created noisy and
-            // misleading graphs for repeated mpstat/iostat samples.
-            if let Some(collector_series) = collector.get("series") {
-                let collector_timestamps = collector.get("series_timestamps");
-                let timestamp_map = collector_timestamps.and_then(Value::as_object);
-                if let Some(series_map) = collector_series.as_object() {
-                    for (metric, raw_values) in series_map {
-                        let points = series_values(raw_values);
-                        if points.len() < 2 {
-                            continue;
+            let run_value = read_json(&run_path)?;
+            let run_status = if run_value.get("success") == Some(&Value::Bool(false)) {
+                Some(format!(
+                    "benchmark run failed (status={}, exit_code={})",
+                    run_value
+                        .get("status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown"),
+                    run_value
+                        .get("exit_code")
+                        .map(Value::to_string)
+                        .unwrap_or_else(|| "null".into())
+                ))
+            } else {
+                None
+            };
+            let mut metrics = BTreeMap::new();
+            flatten_numbers("", &run_value, &mut metrics);
+            let mut series = BTreeMap::new();
+            for entry in
+                fs::read_dir(&measurement_dir).map_err(|error| Error::Input(error.to_string()))?
+            {
+                let file = entry
+                    .map_err(|error| Error::Input(error.to_string()))?
+                    .path();
+                if file.extension().and_then(|value| value.to_str()) != Some("json")
+                    || file.file_name().and_then(|value| value.to_str()) == Some("run.json")
+                {
+                    continue;
+                }
+                let collector = read_json(&file)?;
+                let name = file
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("collector");
+                if let Some(collector_metrics) = collector.get("metrics") {
+                    flatten_numbers(name, collector_metrics, &mut metrics);
+                }
+                // Collector stdout is retained for diagnosis, but is not a
+                // numerical series: scraping its last token created noisy and
+                // misleading graphs for repeated mpstat/iostat samples.
+                if let Some(collector_series) = collector.get("series") {
+                    let collector_timestamps = collector.get("series_timestamps");
+                    let timestamp_map = collector_timestamps.and_then(Value::as_object);
+                    if let Some(series_map) = collector_series.as_object() {
+                        for (metric, raw_values) in series_map {
+                            let points = series_values(raw_values);
+                            if points.len() < 2 {
+                                continue;
+                            }
+                            series.insert(
+                                metric.clone(),
+                                TimeSeries {
+                                    values: points,
+                                    timestamps_ms: timestamp_map
+                                        .and_then(|map| map.get(metric))
+                                        .map(series_values),
+                                },
+                            );
                         }
-                        series.insert(
-                            metric.clone(),
-                            TimeSeries {
-                                values: points,
-                                timestamps_ms: timestamp_map
-                                    .and_then(|map| map.get(metric))
-                                    .map(series_values),
-                            },
-                        );
-                    }
-                } else {
-                    let points = series_values(collector_series);
-                    if points.len() >= 2 {
-                        series.insert(
-                            name.to_owned(),
-                            TimeSeries {
-                                values: points,
-                                timestamps_ms: None,
-                            },
-                        );
+                    } else {
+                        let points = series_values(collector_series);
+                        if points.len() >= 2 {
+                            series.insert(
+                                name.to_owned(),
+                                TimeSeries {
+                                    values: points,
+                                    timestamps_ms: None,
+                                },
+                            );
+                        }
                     }
                 }
             }
+            benchmark_data.push(BenchmarkData {
+                label,
+                directory: result_dir.clone(),
+                agent: agent.clone(),
+                workload: workload.clone(),
+                provider: provider.clone(),
+                model: model.clone(),
+                metrics,
+                series,
+                status: run_status,
+                artifacts,
+            });
         }
-        benchmark_data.push(BenchmarkData {
-            label: format!("{index:03}-{}", safe_name(&config)),
-            directory: result_dir,
-            agent,
-            workload,
-            provider,
-            model,
-            metrics,
-            series,
-            status: run_status,
-            artifacts,
-        });
     }
 
     let mut metric_values: BTreeMap<String, Vec<(String, f64)>> = BTreeMap::new();
@@ -256,7 +267,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
     .map_err(|error| Error::Io(error.to_string()))
 }
 
-fn benchmark_identity(path: &Path) -> Result<(String, String, String, String), Error> {
+fn benchmark_identity(path: &Path) -> Result<(String, String, String, String, usize), Error> {
     let text = read_config(path)?;
     let value: toml::Value = toml::from_str(&text).map_err(|error| {
         Error::Input(format!(
@@ -284,6 +295,12 @@ fn benchmark_identity(path: &Path) -> Result<(String, String, String, String), E
         field("workload")?,
         field("provider")?,
         field("model")?,
+        table
+            .get("concurrency")
+            .and_then(toml::Value::as_integer)
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(1),
     ))
 }
 
