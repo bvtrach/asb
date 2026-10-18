@@ -471,7 +471,7 @@ fn run_mode(
             }
             Err(error) => {
                 run_error = Some(format!(
-                    "record completed without creating cassette {}; verify the provider endpoint and llmtape installation: {error}",
+                    "record completed without creating cassette {}; verify the provider endpoint and proxy adapter installation: {error}",
                     cassette.display()
                 ));
             }

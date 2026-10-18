@@ -55,6 +55,9 @@ pub(crate) struct RunningProxy {
 
 struct LlmtapeAdapter;
 
+static LLMTAPE_ADAPTER: LlmtapeAdapter = LlmtapeAdapter;
+static PROXY_ADAPTERS: &[&dyn ProxyAdapter] = &[&LLMTAPE_ADAPTER];
+
 impl ProxyAdapter for LlmtapeAdapter {
     fn name(&self) -> &'static str {
         "llmtape"
@@ -193,13 +196,19 @@ impl Session {
             )));
         }
         let names = configured_chain()?;
-        let adapters: Vec<Box<dyn ProxyAdapter>> = names
+        let adapters: Vec<&'static dyn ProxyAdapter> = names
             .iter()
-            .map(|name| match name.as_str() {
-                "llmtape" => Ok(Box::new(LlmtapeAdapter) as Box<dyn ProxyAdapter>),
-                _ => Err(Error::Input(format!(
-                    "unknown proxy adapter `{name}` in ASB_PROXY_CHAIN; available adapters: llmtape"
-                ))),
+            .map(|name| {
+                proxy_adapter(name).ok_or_else(|| {
+                    let available = PROXY_ADAPTERS
+                        .iter()
+                        .map(|adapter| adapter.name())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    Error::Input(format!(
+                        "unknown proxy adapter `{name}` in ASB_PROXY_CHAIN; available adapters: {available}"
+                    ))
+                })
             })
             .collect::<Result<_, _>>()?;
         let mut proxies = Vec::with_capacity(adapters.len());
@@ -388,6 +397,13 @@ impl Drop for Session {
 fn configured_chain() -> Result<Vec<String>, Error> {
     let raw = std::env::var("ASB_PROXY_CHAIN").unwrap_or_else(|_| "llmtape".into());
     parse_chain(&raw)
+}
+
+fn proxy_adapter(name: &str) -> Option<&'static dyn ProxyAdapter> {
+    PROXY_ADAPTERS
+        .iter()
+        .copied()
+        .find(|adapter| adapter.name().eq_ignore_ascii_case(name))
 }
 
 fn parse_chain(raw: &str) -> Result<Vec<String>, Error> {
