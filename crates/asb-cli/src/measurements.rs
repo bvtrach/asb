@@ -2490,14 +2490,26 @@ fn perfetto_probe(executable: &Path, measurement_dir: &Path, sudo: bool) -> Resu
         .arg(&config)
         .args(["-o"])
         .arg(&trace)
-        .arg("--background-wait")
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+        .stderr(Stdio::piped())
+        .output();
     let _ = fs::remove_file(&config);
     let _ = fs::remove_file(&trace);
     match result {
-        Ok(status) => Ok(status.success()),
+        Ok(output) => {
+            if !output.status.success() {
+                return Ok(false);
+            }
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let unavailable_markers = [
+                "Failed to reset ftrace",
+                "Failed to create FtraceController",
+                "Data source id=1 not found",
+            ];
+            Ok(!unavailable_markers
+                .iter()
+                .any(|marker| stderr.contains(marker)))
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound && sudo => Ok(false),
         Err(error) => Err(format!("cannot probe Perfetto ftrace collector: {error}")),
     }

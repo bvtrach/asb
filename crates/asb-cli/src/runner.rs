@@ -358,6 +358,25 @@ fn run_mode(
     let started = Instant::now();
     let mut command = Command::new(&program);
     command.args(specification.args);
+    // Do not leak an enclosing Codex session into the benchmark agent. These
+    // variables are host-runner integration state; if inherited, a project
+    // local Codex CLI can advertise the coordinator's tools as an
+    // `additional_tools` request that cli2key does not support.
+    for variable in [
+        "CODEX_REMOTE_PAYLOAD",
+        "CODEX_SESSION_ID",
+        "CODEX_THREAD_ID",
+        "CODEX_PERMISSION_PROFILE",
+        "CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS",
+        "CODEX_MANAGED_PACKAGE_ROOT",
+        "CODEX_MANAGED_BY_NPM",
+        "CODEX_MANAGED_BY_BUN",
+        "CODEX_MANAGED_BY_PNPM",
+        "CODEX_MANAGED_BY_VITE_PLUS",
+        "CODEX_CI",
+    ] {
+        command.env_remove(variable);
+    }
     if specification.append_prompt {
         command.arg(prompt);
     }
@@ -693,7 +712,24 @@ fn process_successful(status: &std::process::ExitStatus, stdout: &[u8], stderr: 
     ]
     .iter()
     .any(|marker| output.contains(marker));
-    !has_fatal_marker || has_completion_evidence
+    let has_refusal_marker = [
+        "I can’t run tests",
+        "I can't run tests",
+        "I cannot run tests",
+        "can't inspect",
+        "cannot inspect",
+        "don't have access to the terminal",
+        "do not have access to the terminal",
+        "no terminal or filesystem",
+        "workspace is read-only",
+        "workspace appears to be read-only",
+        "unable to modify files",
+        "can't modify files",
+        "cannot modify files",
+    ]
+    .iter()
+    .any(|marker| output.contains(marker));
+    (!has_fatal_marker && !has_refusal_marker) || has_completion_evidence
 }
 
 enum OutputChunk {
@@ -1185,6 +1221,23 @@ mod tests {
             b""
         ));
         assert!(super::process_successful(&status, b"completed", b""));
+    }
+
+    #[test]
+    fn zero_exit_tool_refusals_are_not_successes() {
+        let status = std::process::Command::new("true")
+            .status()
+            .expect("true exists");
+        assert!(!super::process_successful(
+            &status,
+            b"I can't run tests or inspect src/parser.py because I do not have access to the terminal",
+            b""
+        ));
+        assert!(!super::process_successful(
+            &status,
+            b"The workspace appears to be read-only; I can't modify files",
+            b""
+        ));
     }
 
     #[test]

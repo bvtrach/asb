@@ -84,6 +84,11 @@ compatible authentication style and obtains its connection details from that
 specific provider offer. It does not
 select providers based on agent identity or agents based on provider identity.
 No intersection produces an actionable error rather than a silent fallback.
+The project-local cli2key session owns a small compatibility hop in front of the
+bridge. It removes only Codex host metadata (`additional_tools` and reasoning
+context) that the bridge API cannot accept, while forwarding prompts, function
+tools, credentials, and streaming responses unchanged. External
+`CLI2KEY_BASE_URL` endpoints are used directly and are not modified.
 Provider-specific behavior belongs in the corresponding module under
 `crates/asb-cli/src/providers/registry/` or its provider-owned helper module;
 register new adapters in the registry. Catalog parsing and endpoint negotiation

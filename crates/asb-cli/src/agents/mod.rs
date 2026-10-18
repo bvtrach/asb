@@ -211,12 +211,39 @@ pub(crate) fn resolve_executable(
 
 fn executable_candidates(id: &str, executable: &str, tools_root: &Path) -> Vec<PathBuf> {
     let root = tools_root.join(id);
-    vec![
+    let mut candidates = vec![
         root.join("bin").join(executable),
         root.join("node_modules/.bin").join(executable),
         root.join("venv/bin").join(executable),
         Path::new(".asb-tools/bin").join(executable),
-    ]
+    ];
+    // The npm Codex launcher injects package-management metadata and can
+    // inherit host integration state.  Prefer its bundled native executable
+    // so benchmark runs are isolated from the enclosing Codex session.
+    if id == "codex" {
+        let (platform_package, target) = match (std::env::consts::OS, std::env::consts::ARCH) {
+            ("linux", "x86_64") => ("codex-linux-x64", "x86_64-unknown-linux-musl"),
+            ("linux", "aarch64") => ("codex-linux-arm64", "aarch64-unknown-linux-musl"),
+            ("macos", "x86_64") => ("codex-darwin-x64", "x86_64-apple-darwin"),
+            ("macos", "aarch64") => ("codex-darwin-arm64", "aarch64-apple-darwin"),
+            ("windows", "x86_64") => ("codex-win32-x64", "x86_64-pc-windows-msvc"),
+            ("windows", "aarch64") => ("codex-win32-arm64", "aarch64-pc-windows-msvc"),
+            _ => ("", ""),
+        };
+        if !platform_package.is_empty() {
+            candidates.insert(
+                0,
+                root.join("node_modules")
+                    .join("@openai")
+                    .join(platform_package)
+                    .join("vendor")
+                    .join(target)
+                    .join("bin")
+                    .join(executable),
+            );
+        }
+    }
+    candidates
 }
 pub(crate) fn resolve(id: &str, project_root: &Path, tools_dir: &str) -> Option<String> {
     let adapter = find(id)?;

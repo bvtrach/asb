@@ -19,6 +19,7 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
             "--skip-git-repo-check".into(),
             "--ephemeral".into(),
             "--ignore-rules".into(),
+            "--approve-for-me".into(),
             "--json".into(),
             "--model".into(),
             context.config.model.clone(),
@@ -64,7 +65,7 @@ fn configure(
         ""
     };
     let configuration = format!(
-        "model = {model}\nmodel_provider = \"asb_provider\"\nweb_search = \"disabled\"\n\n[model_providers.asb_provider]\nname = \"ASB provider\"\nbase_url = {base_url}\n{key}wire_api = \"responses\"\nrequires_openai_auth = false\n"
+        "model = {model}\nmodel_provider = \"asb_provider\"\nweb_search = \"disabled\"\n\n[features]\napps = false\nplugins = false\nenable_mcp_apps = false\n\n[model_providers.asb_provider]\nname = \"ASB provider\"\nbase_url = {base_url}\n{key}wire_api = \"responses\"\nrequires_openai_auth = false\n"
     );
     std::fs::write(directory.join("config.toml"), configuration).map_err(|error| {
         Error::Run(format!(
