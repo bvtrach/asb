@@ -64,6 +64,11 @@ impl ModelSpec {
             .and_then(std::env::var_os)
             .map(|value| value.to_string_lossy().into_owned())
             .or_else(|| self.default_url.map(str::to_owned))?;
+        let base = if matches!(self.kind, ModelKind::Ollama) && !base.contains("://") {
+            format!("http://{base}")
+        } else {
+            base
+        };
         let trimmed = base.trim_end_matches('/');
         if trimmed.ends_with("/models") || trimmed.ends_with("/tags") {
             return Some(trimmed.to_owned());
@@ -496,7 +501,7 @@ pub(crate) fn tape_upstream(provider: &str, bridge_base_url: Option<&str>) -> Op
         .filter(|value| !value.is_empty())
         .or_else(|| {
             model_spec(provider).and_then(|spec| spec.url()).map(|url| {
-                ["/models", "/tags"]
+                ["/api/tags", "/models", "/tags"]
                     .iter()
                     .find_map(|suffix| url.strip_suffix(suffix))
                     .unwrap_or(&url)
