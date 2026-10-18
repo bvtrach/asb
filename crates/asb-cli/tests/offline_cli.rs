@@ -364,6 +364,145 @@ fn missing_compare_input_fails_without_creating_a_report() {
 }
 
 #[cfg(unix)]
+#[test]
+fn ollama_discovery_and_codex_run_use_the_selected_local_endpoint() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Arc, Mutex, atomic::AtomicBool};
+    use std::time::Duration;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let worker_stop = Arc::clone(&stop);
+    let worker_requests = Arc::clone(&requests);
+    let worker = std::thread::spawn(move || {
+        while !worker_stop.load(Ordering::Relaxed) {
+            let (mut stream, _) = match listener.accept() {
+                Ok(value) => value,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(error) => panic!("fixture server: {error}"),
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let count = stream.read(&mut chunk).unwrap();
+                if count == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(header_end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let header = String::from_utf8_lossy(&bytes[..header_end]);
+                    let size = header
+                        .lines()
+                        .find_map(|line| {
+                            let (key, value) = line.split_once(':')?;
+                            key.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() >= header_end + 4 + size {
+                        break;
+                    }
+                }
+            }
+            let request = String::from_utf8(bytes).unwrap();
+            let path = request.lines().next().unwrap_or_default().to_owned();
+            worker_requests.lock().unwrap().push(path.clone());
+            let body = if path.starts_with("GET /api/tags ") {
+                r#"{"models":[{"name":"qwen3:0.6b"},{"name":"unknown"},{"name":"no-tools","capabilities":["completion"]},{"name":"modern","capabilities":["completion","tools"]}]}"#
+            } else if path.starts_with("POST /api/show ") {
+                if request.contains("qwen3:0.6b") {
+                    r#"{"capabilities":["completion","tools","thinking"]}"#
+                } else {
+                    assert!(request.contains("unknown"));
+                    r#"{"capabilities":["completion"]}"#
+                }
+            } else if path.starts_with("POST /v1/responses ") {
+                r#"{"id":"resp_fixture","object":"response","output":[]}"#
+            } else {
+                panic!("unexpected request: {path}")
+            };
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        }
+    });
+
+    let project = Project::new();
+    project.init();
+    let endpoint = format!("http://{address}");
+    let host = address.to_string();
+    let catalog =
+        project.command_with_env(&["provider", "models", "ollama"], &[("OLLAMA_HOST", &host)]);
+    expect_success(&catalog);
+    assert!(stdout(&catalog).contains("qwen3:0.6b"));
+    assert!(stdout(&catalog).contains("modern"));
+    assert!(!stdout(&catalog).contains("no-tools"));
+    assert!(!stdout(&catalog).contains("unknown"));
+    project.write("benchmark.toml", "agent='codex'\nworkload='bug-fix'\nprovider='ollama'\nmodel='qwen3:0.6b'\nworkspace='workspace'\nlog_file='run.log'\n");
+    let agent = ".asb-tools/codex/bin/codex";
+    project.write(agent, r##"#!/usr/bin/env node
+const fs = require('fs');
+const cfg = fs.readFileSync(process.env.CODEX_HOME + '/config.toml', 'utf8');
+const endpoint = cfg.match(/base_url = "([^"]+)"/)[1];
+if (!cfg.includes('model_provider = "asb_ollama"') || !cfg.includes('web_search = "disabled"')) process.exit(11);
+const body = JSON.stringify({model:'qwen3:0.6b',input:'offline test',tools:[{type:'function',name:'read_file'}]});
+fetch(endpoint + '/responses', {method:'POST',headers:{'content-type':'application/json'},body}).then(r => { if (!r.ok) process.exit(12); console.log('local-ollama-agent'); }).catch(() => process.exit(13));
+"##);
+    std::fs::set_permissions(
+        project.0.join(agent),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let run = project.command_with_env(&["run", "benchmark.toml"], &[("OLLAMA_HOST", &endpoint)]);
+    let record = project.command_with_env(
+        &[
+            "run",
+            "benchmark.toml",
+            "--record",
+            "--cassette",
+            "tape.jsonl",
+        ],
+        &[("OLLAMA_HOST", &endpoint)],
+    );
+    let replay = project.command_with_env(
+        &[
+            "run",
+            "benchmark.toml",
+            "--replay",
+            "--cassette",
+            "tape.jsonl",
+        ],
+        &[("OLLAMA_HOST", "http://127.0.0.1:1")],
+    );
+    stop.store(true, Ordering::Relaxed);
+    worker.join().unwrap();
+    expect_success(&run);
+    expect_success(&record);
+    expect_success(&replay);
+    assert!(
+        std::fs::read_to_string(project.0.join("run.log"))
+            .unwrap()
+            .contains("local-ollama-agent")
+    );
+    let seen = requests.lock().unwrap();
+    assert!(seen.iter().any(|path| path.starts_with("POST /api/show ")));
+    assert!(
+        seen.iter()
+            .any(|path| path.starts_with("POST /v1/responses "))
+    );
+}
+
+#[cfg(unix)]
 fn replay_project(concurrency: usize) -> Project {
     use std::os::unix::fs::PermissionsExt;
     let project = Project::new();

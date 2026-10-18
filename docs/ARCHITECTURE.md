@@ -168,6 +168,12 @@ Model discovery is fail-closed for tool use: provider metadata must advertise
 `tools`, `tool_choice`, function calling, or an equivalent capability before a
 model is listed. Execution repeats that validation; offline replay uses the
 cassette's recorded tool request instead of contacting the provider.
+Ollama discovery recognizes the server's capability arrays and, when a list
+entry omits capabilities, queries `/api/show` for that model. Only explicit
+tool support is accepted. For Codex with Ollama, the agent adapter writes an
+isolated local provider configuration using Ollama's Responses endpoint;
+record and replay instead use the tape endpoint. This routing does not itself
+guarantee that a particular model can complete an agent workload.
 The ASB source checkout is not a benchmark project: `init` rejects its
 distinctive workspace layout before creating any files.
 

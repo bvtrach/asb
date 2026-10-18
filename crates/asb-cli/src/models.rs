@@ -92,7 +92,57 @@ fn discover(provider: &str, free_only: bool) -> Result<Vec<ModelInfo>, Error> {
     } else {
         fetch(spec)?
     };
+    let body = if matches!(spec.kind, providers::ModelKind::Ollama) {
+        enrich_ollama_capabilities(&body, spec)?
+    } else {
+        body
+    };
     parse_models(&body, spec.kind, provider, free_only)
+}
+
+// Older Ollama versions omit capabilities from /api/tags. Query the model's
+// metadata rather than assuming that every local model supports tools.
+fn enrich_ollama_capabilities(body: &[u8], spec: providers::ModelSpec) -> Result<Vec<u8>, Error> {
+    let mut catalog: Value = serde_json::from_slice(body)
+        .map_err(|_| Error::Input("provider returned invalid model JSON".into()))?;
+    let entries = catalog
+        .get_mut("models")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| Error::Input("provider response has no model list".into()))?;
+    let tags_url = spec
+        .url()
+        .ok_or_else(|| Error::Input("provider model endpoint is not configured".into()))?;
+    let show_url = tags_url
+        .strip_suffix("/api/tags")
+        .map(|base| format!("{base}/api/show"))
+        .ok_or_else(|| Error::Input("Ollama model endpoint must end in /api/tags".into()))?;
+    for entry in entries {
+        if entry.get("capabilities").is_some() {
+            continue;
+        }
+        let Some(name) = entry
+            .get("name")
+            .or_else(|| entry.get("id"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let payload = serde_json::json!({"model": name}).to_string();
+        let mut config = curl_config(spec, &show_url, None)?;
+        config.push_str("header = \"Content-Type: application/json\"\n");
+        config.push_str(&format!("data = \"{}\"\n", escape_config(&payload)));
+        let response = fetch_config(config, spec.name)?;
+        let metadata: Value = serde_json::from_slice(&response).map_err(|_| {
+            Error::Input(format!(
+                "Ollama returned invalid metadata for model `{name}`"
+            ))
+        })?;
+        if let Some(capabilities) = metadata.get("capabilities") {
+            entry["capabilities"] = capabilities.clone();
+        }
+    }
+    serde_json::to_vec(&catalog)
+        .map_err(|error| Error::Input(format!("cannot read Ollama catalog: {error}")))
 }
 
 /// Discover tool-capable models for interactive setup without rendering them.
@@ -419,6 +469,14 @@ fn supports_tools(entry: &Value, kind: providers::ModelKind, provider: &str) -> 
     if provider.eq_ignore_ascii_case("cli2key")
         || provider.eq_ignore_ascii_case("opencode-zen")
         || matches!(kind, providers::ModelKind::Anthropic)
+    {
+        return true;
+    }
+    if matches!(kind, providers::ModelKind::Ollama)
+        && entry
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .is_some_and(|values| values.iter().any(|value| value.as_str() == Some("tools")))
     {
         return true;
     }
@@ -750,6 +808,24 @@ mod tests {
         )
         .expect("model response parses");
         assert_eq!(model_ids(&models), vec!["local-a", "local-b"]);
+    }
+
+    #[test]
+    fn ollama_capability_arrays_only_accept_explicit_tools() {
+        let models = parse_models(
+            br#"{"models":[
+              {"name":"qwen3:0.6b","capabilities":["completion","tools","thinking"]},
+              {"name":"embedding","capabilities":["embedding"]},
+              {"name":"plain","capabilities":["completion"]},
+              {"name":"unknown"},
+              {"name":"wrong","capabilities":["tool"]}
+            ]}"#,
+            providers::ModelKind::Ollama,
+            "ollama",
+            true,
+        )
+        .unwrap();
+        assert_eq!(model_ids(&models), vec!["qwen3:0.6b"]);
     }
 
     #[test]
