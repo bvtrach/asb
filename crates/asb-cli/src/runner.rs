@@ -256,9 +256,9 @@ fn run_mode(
         tape_mode == Some(tape::Mode::Replay),
     )?;
     if tape_mode != Some(tape::Mode::Replay) {
-        let endpoint = providers::local_bridge_endpoint(&config.provider, bridge.as_ref());
+        let endpoint = providers::local_bridge_endpoint(&config.provider, bridge.as_deref());
         let bridge_catalog =
-            providers::local_bridge_credentials(&config.provider, bridge.as_ref(), endpoint)
+            providers::local_bridge_credentials(&config.provider, bridge.as_deref(), endpoint)
                 .map(|(key, url)| (url, key));
         if discovered_tool_support == Some(false) {
             return Err(Error::Input(format!(
@@ -299,7 +299,7 @@ fn run_mode(
     workloads::prepare_external(&config.workload, &workload_directory, &workspace)
         .map_err(Error::Run)?;
     let mut tape_session = if let Some((mode, cassette)) = tape_cassette.as_ref() {
-        let bridge_url = providers::local_bridge_endpoint(&config.provider, bridge.as_ref());
+        let bridge_url = providers::local_bridge_endpoint(&config.provider, bridge.as_deref());
         let upstream = if *mode == tape::Mode::Replay {
             None
         } else if let Some(offer) = selected_offer.as_ref() {
@@ -323,9 +323,9 @@ fn run_mode(
     };
     let tape_url = tape_session.as_ref().map(|session| session.url());
     let provider_endpoint =
-        tape_url.or_else(|| providers::local_bridge_endpoint(&config.provider, bridge.as_ref()));
+        tape_url.or_else(|| providers::local_bridge_endpoint(&config.provider, bridge.as_deref()));
     let provider_credentials =
-        providers::local_bridge_credentials(&config.provider, bridge.as_ref(), provider_endpoint);
+        providers::local_bridge_credentials(&config.provider, bridge.as_deref(), provider_endpoint);
     let connection = selected_offer
         .map(|offer| {
             providers::endpoint_connection(

@@ -1,17 +1,14 @@
 //! Live model discovery through provider model-list endpoints.
 
 use crate::Error;
-use crate::cli2key;
-use crate::project;
 use crate::providers;
 use crate::suggestions;
 use serde_json::Value;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 const MAX_RESPONSE: usize = 1024 * 1024;
-const MAX_ENDPOINT_CATALOG: usize = 8 * 1024 * 1024;
 // Cassettes are bounded inputs, but multi-step agent runs can legitimately
 // exceed the former 16 MiB limit (for example Workbuddy/SWE-bench). Keep a
 // finite ceiling while allowing those recorded runs to be replayed.
@@ -22,39 +19,6 @@ struct ModelInfo {
     id: String,
     // None means the live catalog does not report this capability.
     tool_calling: Option<bool>,
-}
-
-/// Public OpenCode-maintained metadata; never send provider credentials here.
-pub(crate) fn fetch_endpoint_catalog() -> Result<Vec<u8>, Error> {
-    let catalog_url = std::env::var("ASB_ENDPOINT_CATALOG_URL")
-        .unwrap_or_else(|_| "https://models.dev/api.json".into());
-    let output = Command::new("curl")
-        .args([
-            "--disable",
-            "--fail",
-            "--silent",
-            "--show-error",
-            "--location",
-            "--connect-timeout",
-            "3",
-            "--max-time",
-            "8",
-            "--max-filesize",
-            "8388608",
-            "--proto",
-            "=http,https",
-            "--proto-redir",
-            "=http,https",
-            &catalog_url,
-        ])
-        .output()
-        .map_err(|error| Error::Io(format!("cannot retrieve endpoint metadata: {error}")))?;
-    if !output.status.success() || output.stdout.len() > MAX_ENDPOINT_CATALOG {
-        return Err(Error::Input(
-            "current endpoint metadata is unavailable or exceeds 8 MiB".into(),
-        ));
-    }
-    Ok(output.stdout)
 }
 
 /// List models for one provider, or all providers when no name is supplied.
@@ -72,9 +36,14 @@ pub fn list(options: ModelListOptions, output: &mut dyn Write) -> Result<(), Err
     } = options;
     if let Some(provider) = provider {
         if free_only && !providers::supports_free_models(&provider) {
-            return Err(Error::Input(
-                "`--free` is supported for `openrouter`, `opencode-zen`, and `ollama`; query one of those providers or omit `--free`".into(),
-            ));
+            return Err(Error::Input(format!(
+                "`--free` is supported for {}; query one of those providers or omit `--free`",
+                providers::free_names()
+                    .iter()
+                    .map(|name| format!("`{name}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
         }
         let result = discover(&provider, free_only)?;
         render_one(output, &provider, result, json)
@@ -111,15 +80,13 @@ fn discover_for_model(
             providers::names(),
         ))
     })?;
-    if provider.eq_ignore_ascii_case("cli2key") {
-        let bridge = cli2key::Bridge::connect(local_bridge_executable().as_deref())?;
+    if let Some(bridge) = providers::discovery_session(provider)? {
         let url = format!("{}/models", bridge.base_url().trim_end_matches('/'));
         let body = fetch_authenticated(spec, &url, bridge.api_key())?;
         return parse_models(&body, spec.kind, provider, free_only);
     }
-    let public_catalog = provider.eq_ignore_ascii_case("opencode-zen")
-        || (provider.eq_ignore_ascii_case("openrouter")
-            && providers::credential(provider).is_none());
+    let public_catalog =
+        providers::public_catalog(provider, providers::credential(provider).is_some());
     if let Some(credential) = spec.credential {
         if !public_catalog && providers::credential(provider).is_none() {
             return Err(Error::Input(format!(
@@ -129,10 +96,8 @@ fn discover_for_model(
         }
     }
     let Some(url) = spec.url_for_model(selected) else {
-        if matches!(spec.kind, providers::ModelKind::Fireworks)
-            && std::env::var_os("FIREWORKS_ACCOUNT_ID").is_some()
-        {
-            return Err(Error::Input("FIREWORKS_ACCOUNT_ID must be a nonempty account ID containing only letters, digits, underscores or hyphens".into()));
+        if let Some(message) = providers::catalog_url_error(provider) {
+            return Err(Error::Input(message.into()));
         }
         let endpoint = spec.endpoint.unwrap_or("provider endpoint variable");
         return Err(Error::Input(format!("missing {endpoint}")));
@@ -146,57 +111,8 @@ fn discover_for_model(
         spec
     };
     let body = fetch_pages(request_spec, &url)?;
-    let body = if matches!(spec.kind, providers::ModelKind::Ollama) {
-        enrich_ollama_capabilities(&body, spec)?
-    } else {
-        body
-    };
+    let body = providers::enrich_catalog(provider, body)?;
     parse_models(&body, spec.kind, provider, free_only)
-}
-
-// Older Ollama versions omit capabilities from /api/tags. Query the model's
-// metadata rather than assuming that every local model supports tools.
-fn enrich_ollama_capabilities(body: &[u8], spec: providers::ModelSpec) -> Result<Vec<u8>, Error> {
-    let mut catalog: Value = serde_json::from_slice(body)
-        .map_err(|_| Error::Input("provider returned invalid model JSON".into()))?;
-    let entries = catalog
-        .get_mut("models")
-        .and_then(Value::as_array_mut)
-        .ok_or_else(|| Error::Input("provider response has no model list".into()))?;
-    let tags_url = spec
-        .url()
-        .ok_or_else(|| Error::Input("provider model endpoint is not configured".into()))?;
-    let show_url = tags_url
-        .strip_suffix("/api/tags")
-        .map(|base| format!("{base}/api/show"))
-        .ok_or_else(|| Error::Input("Ollama model endpoint must end in /api/tags".into()))?;
-    for entry in entries {
-        if entry.get("capabilities").is_some() {
-            continue;
-        }
-        let Some(name) = entry
-            .get("name")
-            .or_else(|| entry.get("id"))
-            .and_then(Value::as_str)
-        else {
-            continue;
-        };
-        let payload = serde_json::json!({"model": name}).to_string();
-        let mut config = curl_config(spec, &show_url, None)?;
-        config.push_str("header = \"Content-Type: application/json\"\n");
-        config.push_str(&format!("data = \"{}\"\n", escape_config(&payload)));
-        let response = fetch_config(config, spec.name)?;
-        let metadata: Value = serde_json::from_slice(&response).map_err(|_| {
-            Error::Input(format!(
-                "Ollama returned invalid metadata for model `{name}`"
-            ))
-        })?;
-        if let Some(capabilities) = metadata.get("capabilities") {
-            entry["capabilities"] = capabilities.clone();
-        }
-    }
-    serde_json::to_vec(&catalog)
-        .map_err(|error| Error::Input(format!("cannot read Ollama catalog: {error}")))
 }
 
 /// Discover tool-capable models for interactive setup without rendering them.
@@ -354,7 +270,7 @@ fn fetch_pages(spec: providers::ModelSpec, url: &str) -> Result<Vec<u8>, Error> 
     })
 }
 
-// Anthropic, Gemini and Fireworks paginate their model catalogs. Keep requests,
+// Some model catalogs are paginated. Keep requests,
 // aggregate size, and cursor behavior bounded, and do not accept a URL from
 // the response (which could redirect provider credentials to another host).
 fn collect_catalog_pages(
@@ -364,9 +280,9 @@ fn collect_catalog_pages(
 ) -> Result<Vec<u8>, Error> {
     let collection = if matches!(
         kind,
-        providers::ModelKind::Gemini
-            | providers::ModelKind::Ollama
-            | providers::ModelKind::Fireworks
+        providers::ModelKind::ModelsPageTokenApiKey
+            | providers::ModelKind::ModelsUnpaginated
+            | providers::ModelKind::ModelsPageTokenBearer
     ) {
         "models"
     } else {
@@ -381,7 +297,7 @@ fn collect_catalog_pages(
             Some(token) => format!(
                 "{base}{}{}={}",
                 if base.contains('?') { '&' } else { '?' },
-                if matches!(kind, providers::ModelKind::Anthropic) {
+                if matches!(kind, providers::ModelKind::DataCursor) {
                     "after_id"
                 } else {
                     "pageToken"
@@ -398,7 +314,7 @@ fn collect_catalog_pages(
         let value: Value = serde_json::from_slice(&body)
             .map_err(|_| Error::Input("provider returned invalid model JSON".into()))?;
         merged.extend(
-            (if matches!(kind, providers::ModelKind::Together) && value.is_array() {
+            (if matches!(kind, providers::ModelKind::ArrayUnpaginated) && value.is_array() {
                 Some(&value)
             } else {
                 value.get(collection)
@@ -409,7 +325,7 @@ fn collect_catalog_pages(
             .cloned(),
         );
         let next = match kind {
-            providers::ModelKind::Anthropic
+            providers::ModelKind::DataCursor
                 if value.get("has_more").and_then(Value::as_bool) == Some(true) =>
             {
                 Some(
@@ -422,7 +338,8 @@ fn collect_catalog_pages(
                         })?,
                 )
             }
-            providers::ModelKind::Gemini | providers::ModelKind::Fireworks => value
+            providers::ModelKind::ModelsPageTokenApiKey
+            | providers::ModelKind::ModelsPageTokenBearer => value
                 .get("nextPageToken")
                 .and_then(Value::as_str)
                 .filter(|s| !s.is_empty()),
@@ -460,14 +377,14 @@ fn encode_query(value: &str) -> String {
 fn fetch_authenticated(spec: providers::ModelSpec, url: &str, key: &str) -> Result<Vec<u8>, Error> {
     if url.contains(['\n', '\r']) || key.contains(['\n', '\r']) {
         return Err(Error::Input(
-            "cli2key endpoint or key contains a newline".into(),
+            "provider endpoint or key contains a newline".into(),
         ));
     }
     let config = curl_config(spec, url, Some(key))?;
     fetch_config(config, spec.name)
 }
 
-fn fetch_config(config: String, provider: &str) -> Result<Vec<u8>, Error> {
+pub(crate) fn fetch_config(config: String, provider: &str) -> Result<Vec<u8>, Error> {
     let mut command = Command::new("curl");
     command.args([
         "--disable",
@@ -519,7 +436,7 @@ fn fetch_config(config: String, provider: &str) -> Result<Vec<u8>, Error> {
     Ok(output.stdout)
 }
 
-fn curl_config(
+pub(crate) fn curl_config(
     spec: providers::ModelSpec,
     url: &str,
     key_override: Option<&str>,
@@ -542,36 +459,14 @@ fn curl_config(
                 "{credential} contains invalid newline characters"
             )));
         }
-        let header = match spec.kind {
-            providers::ModelKind::Gemini => format!("x-goog-api-key: {key}"),
-            providers::ModelKind::Anthropic => format!("x-api-key: {key}"),
-            _ => format!("Authorization: Bearer {key}"),
-        };
-        config.push_str(&format!("header = \"{}\"\n", escape_config(&header)));
-    }
-    if matches!(spec.kind, providers::ModelKind::Anthropic) {
-        config.push_str("header = \"anthropic-version: 2023-06-01\"\n");
+        for header in providers::catalog_headers(spec.name, &key) {
+            config.push_str(&format!("header = \"{}\"\n", escape_config(&header)));
+        }
     }
     Ok(config)
 }
 
-fn local_bridge_executable() -> Option<String> {
-    let (root, config) = project::load(Path::new(".")).ok()?;
-    let mut candidates = Vec::<PathBuf>::new();
-    if let Some(directory) = std::env::var_os("ASB_TOOL_DIR") {
-        candidates.push(PathBuf::from(directory).join("codex-bridge"));
-    }
-    candidates.push(
-        project::resolve(&root, &config.tools_dir).join("cli2key/node_modules/.bin/codex-bridge"),
-    );
-    candidates
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-        .and_then(|candidate| candidate.canonicalize().ok())
-        .map(|candidate| candidate.to_string_lossy().into_owned())
-}
-
-fn escape_config(value: &str) -> String {
+pub(crate) fn escape_config(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
@@ -585,9 +480,9 @@ fn parse_models(
         .map_err(|_| Error::Input("provider returned invalid model JSON".into()))?;
     let key = if matches!(
         kind,
-        providers::ModelKind::Gemini
-            | providers::ModelKind::Ollama
-            | providers::ModelKind::Fireworks
+        providers::ModelKind::ModelsPageTokenApiKey
+            | providers::ModelKind::ModelsUnpaginated
+            | providers::ModelKind::ModelsPageTokenBearer
     ) {
         "models"
     } else {
@@ -627,27 +522,12 @@ fn is_free_model_entry(
     entry: &Value,
     model_id: &str,
     provider: &str,
-    kind: providers::ModelKind,
+    _kind: providers::ModelKind,
 ) -> bool {
-    if provider.eq_ignore_ascii_case("ollama") && matches!(kind, providers::ModelKind::Ollama) {
-        return true;
-    }
-    if provider.eq_ignore_ascii_case("opencode-zen") {
-        return model_id.ends_with("-free");
-    }
-    if !provider.eq_ignore_ascii_case("openrouter") {
-        return false;
-    }
-    model_id.ends_with(":free")
-        || entry
-            .get("pricing")
-            .and_then(Value::as_object)
-            .is_some_and(|pricing| {
-                is_zero_price(pricing.get("prompt")) && is_zero_price(pricing.get("completion"))
-            })
+    providers::free_model(provider, entry, model_id)
 }
 
-fn is_zero_price(value: Option<&Value>) -> bool {
+pub(crate) fn is_zero_price(value: Option<&Value>) -> bool {
     value.is_some_and(|value| {
         value
             .as_f64()
@@ -660,24 +540,9 @@ fn is_zero_price(value: Option<&Value>) -> bool {
     })
 }
 
-fn supports_tools(entry: &Value, kind: providers::ModelKind, provider: &str) -> Option<bool> {
-    if matches!(kind, providers::ModelKind::Gemini) {
-        if let Some(methods) = entry
-            .get("supportedGenerationMethods")
-            .and_then(Value::as_array)
-        {
-            if !methods
-                .iter()
-                .any(|value| value.as_str() == Some("generateContent"))
-            {
-                return Some(false);
-            }
-        }
-    }
-    if matches!(kind, providers::ModelKind::Ollama) {
-        if let Some(values) = entry.get("capabilities").and_then(Value::as_array) {
-            return Some(values.iter().any(|value| value.as_str() == Some("tools")));
-        }
+fn supports_tools(entry: &Value, _kind: providers::ModelKind, provider: &str) -> Option<bool> {
+    if let Some(result) = providers::catalog_tool_support(provider, entry) {
+        return Some(result);
     }
     for key in [
         "tool_calling",
@@ -720,10 +585,7 @@ fn supports_tools(entry: &Value, kind: providers::ModelKind, provider: &str) -> 
     }
     // These APIs document tool use as a standard capability of their exposed
     // agent models, while their model list does not include a capability bit.
-    if provider.eq_ignore_ascii_case("cli2key") || matches!(kind, providers::ModelKind::Anthropic) {
-        return Some(true);
-    }
-    None
+    providers::default_tool_support(provider)
 }
 
 fn render_one(
@@ -807,7 +669,7 @@ mod tests {
         assert_eq!(
             supports_tools(
                 &serde_json::json!({"capabilities":{"tools":{"supported":false}}}),
-                providers::ModelKind::Anthropic,
+                providers::ModelKind::DataCursor,
                 "anthropic"
             ),
             Some(false)
@@ -815,7 +677,7 @@ mod tests {
         assert_eq!(
             supports_tools(
                 &serde_json::json!({"supportedGenerationMethods":["embedContent"]}),
-                providers::ModelKind::Gemini,
+                providers::ModelKind::ModelsPageTokenApiKey,
                 "gemini"
             ),
             Some(false)
@@ -823,7 +685,7 @@ mod tests {
         assert_eq!(
             supports_tools(
                 &serde_json::json!({"supportedGenerationMethods":["generateContent"]}),
-                providers::ModelKind::Gemini,
+                providers::ModelKind::ModelsPageTokenApiKey,
                 "gemini"
             ),
             None
@@ -831,7 +693,7 @@ mod tests {
         assert_eq!(
             supports_tools(
                 &serde_json::json!({"capabilities":{"function_calling":false}}),
-                providers::ModelKind::OpenAi,
+                providers::ModelKind::DataUnpaginated,
                 "mistral"
             ),
             Some(false)
@@ -839,7 +701,7 @@ mod tests {
         assert_eq!(
             supports_tools(
                 &serde_json::json!({"supportsTools":true}),
-                providers::ModelKind::Fireworks,
+                providers::ModelKind::ModelsPageTokenBearer,
                 "fireworks"
             ),
             Some(true)
@@ -850,19 +712,19 @@ mod tests {
     fn catalog_pagination_uses_encoded_cursors_and_collects_every_page() {
         for (kind, first, second, query) in [
             (
-                providers::ModelKind::Anthropic,
+                providers::ModelKind::DataCursor,
                 r#"{"data":[{"id":"one"}],"has_more":true,"last_id":"a/b?"}"#,
                 r#"{"data":[{"id":"two"}],"has_more":false}"#,
                 "after_id=a%2Fb%3F",
             ),
             (
-                providers::ModelKind::Gemini,
+                providers::ModelKind::ModelsPageTokenApiKey,
                 r#"{"models":[{"name":"models/one"}],"nextPageToken":"a/b?"}"#,
                 r#"{"models":[{"name":"models/two"}]}"#,
                 "pageToken=a%2Fb%3F",
             ),
             (
-                providers::ModelKind::Fireworks,
+                providers::ModelKind::ModelsPageTokenBearer,
                 r#"{"models":[{"name":"accounts/fireworks/models/one"}],"nextPageToken":"a/b?"}"#,
                 r#"{"models":[{"name":"accounts/fireworks/models/two"}]}"#,
                 "pageToken=a%2Fb%3F",
@@ -879,7 +741,7 @@ mod tests {
             assert_eq!(calls.len(), 2);
             assert!(calls[1].ends_with(query));
             let parsed = parse_models(&body, kind, "fixture", false).unwrap();
-            if kind == providers::ModelKind::Fireworks {
+            if kind == providers::ModelKind::ModelsPageTokenBearer {
                 assert_eq!(
                     model_ids(&parsed),
                     vec![
@@ -896,13 +758,18 @@ mod tests {
     #[test]
     fn together_catalog_accepts_documented_top_level_array() {
         let body = collect_catalog_pages(
-            providers::ModelKind::Together,
+            providers::ModelKind::ArrayUnpaginated,
             "http://localhost/models",
             |_| Ok(br#"[{"id":"fixture/chat","type":"chat"}]"#.to_vec()),
         )
         .unwrap();
-        let parsed =
-            parse_models(&body, providers::ModelKind::Together, "together", false).unwrap();
+        let parsed = parse_models(
+            &body,
+            providers::ModelKind::ArrayUnpaginated,
+            "together",
+            false,
+        )
+        .unwrap();
         assert_eq!(model_ids(&parsed), vec!["fixture/chat"]);
         assert_eq!(parsed[0].tool_calling, None);
     }
@@ -910,13 +777,13 @@ mod tests {
     #[test]
     fn catalog_pagination_rejects_repeated_and_missing_cursors() {
         let repeated = collect_catalog_pages(
-            providers::ModelKind::Gemini,
+            providers::ModelKind::ModelsPageTokenApiKey,
             "http://localhost/models",
             |_| Ok(br#"{"models":[],"nextPageToken":"same"}"#.to_vec()),
         );
         assert!(repeated.unwrap_err().to_string().contains("repeated"));
         let missing = collect_catalog_pages(
-            providers::ModelKind::Anthropic,
+            providers::ModelKind::DataCursor,
             "http://localhost/models",
             |_| Ok(br#"{"data":[],"has_more":true}"#.to_vec()),
         );
@@ -968,8 +835,8 @@ mod tests {
             (&b"{}"[..], "no model list"),
             (&b"{\"data\":{}}"[..], "no model list"),
         ] {
-            let error =
-                parse_models(body, providers::ModelKind::OpenAi, "openai", false).unwrap_err();
+            let error = parse_models(body, providers::ModelKind::DataUnpaginated, "openai", false)
+                .unwrap_err();
             assert!(error.to_string().contains(message));
         }
     }
@@ -987,7 +854,7 @@ mod tests {
           {"id":"ignored","tool_calling":false},
           {"supported_parameters":["tools"]}
         ]}"#,
-            providers::ModelKind::OpenAi,
+            providers::ModelKind::DataUnpaginated,
             "openrouter",
             false,
         )
@@ -1004,7 +871,7 @@ mod tests {
           {"id":"paid-output","tool_calling":true,"pricing":{"prompt":0,"completion":1}},
           {"id":"nonnumeric","tool_calling":true,"pricing":{"prompt":"free","completion":0}}
         ]}"#,
-            providers::ModelKind::OpenAi,
+            providers::ModelKind::DataUnpaginated,
             "openrouter",
             true,
         )
@@ -1107,7 +974,7 @@ mod tests {
         assert_eq!(
             parse_models(
                 br#"{"data":[{"id":"z","supported_parameters":["tools"]},{"id":"a","supported_parameters":["tools"]},{"id":"a","supported_parameters":["tools"]}]}"#,
-                providers::ModelKind::OpenAi,
+                providers::ModelKind::DataUnpaginated,
                 "openai",
                 false,
             )
@@ -1120,7 +987,7 @@ mod tests {
         assert_eq!(
             parse_models(
                 br#"{"models":[{"name":"models/gemini-2.0","capabilities":{"tools":true}}]}"#,
-                providers::ModelKind::Gemini,
+                providers::ModelKind::ModelsPageTokenApiKey,
                 "gemini",
                 false,
             )
@@ -1136,7 +1003,7 @@ mod tests {
     fn retains_models_with_unknown_tool_calling_metadata() {
         let models = parse_models(
             br#"{"data":[{"id":"plain"},{"id":"tools","supported_parameters":["tools"]},{"id":"flag","capabilities":{"tools":true}}]}"#,
-            providers::ModelKind::OpenAi,
+            providers::ModelKind::DataUnpaginated,
             "openrouter",
             false,
         )
@@ -1161,7 +1028,7 @@ mod tests {
                 {"id":"zero-pricing","supported_parameters":["tools"],"pricing":{"prompt":"0","completion":"0"}},
                 {"id":"no-tools:free","pricing":{"prompt":"0","completion":"0"}}
             ]}"#,
-            providers::ModelKind::OpenAi,
+            providers::ModelKind::DataUnpaginated,
             "openrouter",
             true,
         )
@@ -1176,7 +1043,7 @@ mod tests {
     fn free_filter_treats_ollama_models_as_local() {
         let models = parse_models(
             br#"{"models":[{"name":"local-a","capabilities":{"tools":true}},{"name":"local-b","capabilities":{"tools":true}}]}"#,
-            providers::ModelKind::Ollama,
+            providers::ModelKind::ModelsUnpaginated,
             "ollama",
             true,
         )
@@ -1194,7 +1061,7 @@ mod tests {
               {"name":"unknown"},
               {"name":"wrong","capabilities":["tool"]}
             ]}"#,
-            providers::ModelKind::Ollama,
+            providers::ModelKind::ModelsUnpaginated,
             "ollama",
             true,
         )
@@ -1206,7 +1073,7 @@ mod tests {
     fn opencode_zen_catalog_is_public_and_free_models_are_suffix_marked() {
         let models = parse_models(
             br#"{"data":[{"id":"paid-model"},{"id":"free-model-free"}]}"#,
-            providers::ModelKind::OpenAi,
+            providers::ModelKind::DataUnpaginated,
             "opencode-zen",
             true,
         )

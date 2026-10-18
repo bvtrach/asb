@@ -2,7 +2,6 @@
 
 mod agents;
 mod benchmark;
-mod cli2key;
 mod collectors;
 mod compare;
 mod completion;
