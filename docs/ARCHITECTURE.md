@@ -15,8 +15,9 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   path and falls back only when a catalog is unavailable, then writes test
   configurations and a sweep manifest;
 - `install`: local copying of agent executables and workload prompt files;
-- `providers`: a provider registry owning model-specific API endpoint offerings,
-  addresses, credentials, and optional bridge lifecycle;
+- `providers`: a registry of `ProviderAdapter` implementations, each owning
+  its provider's model and endpoint metadata, catalog policy, process preparation,
+  and optional bridge lifecycle;
 - `endpoint`: agent/provider-neutral selection of a shared API interface;
 - `models`: bounded live model-catalog discovery using provider-specific
   endpoints and response shapes;
@@ -83,6 +84,12 @@ compatible authentication style and obtains its connection details from that
 specific provider offer. It does not
 select providers based on agent identity or agents based on provider identity.
 No intersection produces an actionable error rather than a silent fallback.
+Provider-specific behavior belongs in the corresponding module under
+`crates/asb-cli/src/providers/registry/` or its provider-owned helper module;
+register new adapters in the registry. Catalog parsing and endpoint negotiation
+operate on response shapes and API interfaces, not provider identities. A
+source-level test catches common direct provider-ID comparisons outside provider
+modules, but it is a heuristic, not a substitute for reviewing indirect dispatch.
 Interface compatibility is distinct from whether a particular model can
 successfully perform an agent's task. Provider model/endpoint declarations must
 be maintained as the upstream providers change. OpenCode's public model-list

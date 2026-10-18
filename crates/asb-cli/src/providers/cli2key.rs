@@ -9,11 +9,59 @@ use std::time::{Duration, Instant};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 
+pub(super) fn prepare(
+    command: &mut Command,
+    model: &str,
+    bridge: Option<(&str, &str)>,
+) -> Result<(), Error> {
+    let (key, base_url) = bridge.ok_or_else(|| {
+        Error::Run("cli2key provider has no API endpoint; run `asb tool install cli2key` or set CLI2KEY_BASE_URL and CLI2KEY_API_KEY".into())
+    })?;
+    command
+        .env("CLI2KEY_API_KEY", key)
+        .env("CLI2KEY_BASE_URL", base_url)
+        .env("CLI2KEY_MODEL", model)
+        .env("OPENAI_API_KEY", key)
+        .env("OPENAI_BASE_URL", base_url)
+        .env("OPENAI_API_BASE", base_url)
+        .env("OPENAI_MODEL", model)
+        .env("ANTHROPIC_MODEL", model)
+        .env("ANTHROPIC_API_KEY", key)
+        .env("ANTHROPIC_BASE_URL", base_url.trim_end_matches("/v1"));
+    Ok(())
+}
+
+pub(super) fn local_executable() -> Option<String> {
+    let (root, config) = crate::project::load(std::path::Path::new(".")).ok()?;
+    let mut candidates = Vec::new();
+    if let Some(directory) = std::env::var_os("ASB_TOOL_DIR") {
+        candidates.push(std::path::PathBuf::from(directory).join("codex-bridge"));
+    }
+    candidates.push(
+        crate::project::resolve(&root, &config.tools_dir)
+            .join("cli2key/node_modules/.bin/codex-bridge"),
+    );
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .and_then(|candidate| candidate.canonicalize().ok())
+        .map(|candidate| candidate.to_string_lossy().into_owned())
+}
+
 /// A cli2key API endpoint and the optional server process ASB owns.
 pub struct Bridge {
     api_key: String,
     base_url: String,
     process: Option<Child>,
+}
+
+impl super::ProviderSession for Bridge {
+    fn api_key(&self) -> &str {
+        Bridge::api_key(self)
+    }
+    fn base_url(&self) -> &str {
+        Bridge::base_url(self)
+    }
 }
 
 impl Bridge {

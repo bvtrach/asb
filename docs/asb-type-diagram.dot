@@ -26,14 +26,6 @@ digraph ASB_Rust_UML {
         "asb-cli_src_MeasurementConfig" [label="{MeasurementConfig|+enabled: bool\l+directory: String\l+collectors: Vec\<String\>\l}", shape=record];
     }
 
-    subgraph "cluster_cli2key" {
-        label="cli2key";
-        color="#cbd5e1";
-        fontcolor="#334155";
-        style="rounded,dashed";
-        "asb-cli_src_Bridge" [label="{Bridge|-api_key: String\l-base_url: String\l-process: Option\<Child\>\l|+connect(executable: Option\<&str\>) Result\<Self, Error\>\l+api_key() &str\l+base_url() &str\l}", shape=record];
-    }
-
     subgraph "cluster_compare" {
         label="compare";
         color="#cbd5e1";
@@ -135,6 +127,8 @@ digraph ASB_Rust_UML {
         style="rounded,dashed";
         "asb-cli_src_ModelSpec" [label="{ModelSpec|+name: &'static str\l+credential: Option\<&'static str\>\l+endpoint: Option\<&'static str\>\l+default_url: Option\<&'static str\>\l+kind: ModelKind\l|+url(self) Option\<String\>\l+url_for_model(self, selected: Option\<&str\>) Option\<String\>\l}", shape=record];
         "asb-cli_src_ProviderSpec" [label="{ProviderSpec|+name: &'static str\l+credential: Option\<&'static str\>\l+endpoint: Option\<&'static str\>\l+model_env: Option\<&'static str\>\l+tape_endpoint_envs: &'static [&'static str]\l+bridge_tool: Option\<&'static str\>\l}", shape=record];
+        "asb-cli_src_providers_Bridge" [label="{providers_Bridge|-api_key: String\l-base_url: String\l-process: Option\<Child\>\l|+api_key() &str\l+base_url() &str\l+connect(executable: Option\<&str\>) Result\<Self, Error\>\l+api_key() &str\l+base_url() &str\l}", shape=record];
+        "asb-cli_src_providers_Drop" [label="{providers_Drop||+drop() void\l}", shape=record];
     }
 
     subgraph "cluster_runner" {
@@ -150,8 +144,8 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_tools_StaticTool" [label="{tools_StaticTool|-id: &'static str\l-recipe: Recipe\l-kind: ToolKind\l|+new(id: &'static str, recipe: Recipe, kind: ToolKind) Self\l}", shape=record];
-        "asb-cli_src_tools_ToolAdapter" [label="{tools_ToolAdapter||+id() &'static str\l+recipe() Recipe\l+kind() ToolKind\l}", shape=record];
+        "asb-cli_src_tools_StaticTool" [label="{tools_StaticTool|-id: &'static str\l-recipe: Recipe\l-kind: ToolKind\l-post_install: Option\<fn(&Path, &mut dyn FnMut(u8, &str), &mut dyn std::io::Write) -\> Result\<(), crate::Error\>\>\l|+new(id: &'static str, recipe: Recipe, kind: ToolKind) Self\l+with_post_install(self, hook: Write,\n        ) -\> Result\<(), crate::Error\>) Self\l}", shape=record];
+        "asb-cli_src_tools_ToolAdapter" [label="{tools_ToolAdapter||+id() &'static str\l+recipe() Recipe\l+kind() ToolKind\l+post_install(executable: &Path, progress: &mut dyn FnMut(u8, &str), output: Write) Result\<(), crate::Error\>\l}", shape=record];
     }
 
     subgraph "cluster_tui" {

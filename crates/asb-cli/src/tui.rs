@@ -1353,21 +1353,7 @@ fn workload_choices(root: &Path, directory: &str) -> Vec<Choice> {
 }
 
 fn default_model(provider: &str) -> &'static str {
-    match provider {
-        "openai" => "gpt-4o-mini",
-        "openrouter" => "openai/gpt-4o-mini",
-        "opencode-zen" => "mimo-v2.6-flash-free",
-        "anthropic" => "claude-3-5-sonnet-latest",
-        "ollama" => "llama3.2",
-        "groq" => "llama-3.3-70b-versatile",
-        "mistral" => "mistral-small-latest",
-        "deepseek" => "deepseek-chat",
-        "xai" => "grok-3-mini",
-        "together" => "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-        "fireworks" => "accounts/fireworks/models/llama-v3p1-8b-instruct",
-        "cli2key" => "gpt-6.1-sol",
-        _ => "test-model",
-    }
+    providers::default_model(provider)
 }
 
 #[derive(Serialize)]

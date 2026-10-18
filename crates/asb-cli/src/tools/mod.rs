@@ -22,6 +22,14 @@ pub(crate) trait ToolAdapter: Sync {
     fn id(&self) -> &'static str;
     fn recipe(&self) -> Recipe;
     fn kind(&self) -> ToolKind;
+    fn post_install(
+        &self,
+        _executable: &Path,
+        _progress: &mut dyn FnMut(u8, &str),
+        _output: &mut dyn std::io::Write,
+    ) -> Result<(), crate::Error> {
+        Ok(())
+    }
 
     /// Executable published by this tool, when it has one. This keeps the
     /// installer, availability check, and runner on the same catalog entry.
@@ -42,10 +50,29 @@ pub(crate) struct StaticTool {
     id: &'static str,
     recipe: Recipe,
     kind: ToolKind,
+    post_install: Option<
+        fn(&Path, &mut dyn FnMut(u8, &str), &mut dyn std::io::Write) -> Result<(), crate::Error>,
+    >,
 }
 impl StaticTool {
     pub(crate) const fn new(id: &'static str, recipe: Recipe, kind: ToolKind) -> Self {
-        Self { id, recipe, kind }
+        Self {
+            id,
+            recipe,
+            kind,
+            post_install: None,
+        }
+    }
+    pub(crate) const fn with_post_install(
+        mut self,
+        hook: fn(
+            &Path,
+            &mut dyn FnMut(u8, &str),
+            &mut dyn std::io::Write,
+        ) -> Result<(), crate::Error>,
+    ) -> Self {
+        self.post_install = Some(hook);
+        self
     }
 }
 impl ToolAdapter for StaticTool {
@@ -57,6 +84,15 @@ impl ToolAdapter for StaticTool {
     }
     fn kind(&self) -> ToolKind {
         self.kind
+    }
+    fn post_install(
+        &self,
+        executable: &Path,
+        progress: &mut dyn FnMut(u8, &str),
+        output: &mut dyn std::io::Write,
+    ) -> Result<(), crate::Error> {
+        self.post_install
+            .map_or(Ok(()), |hook| hook(executable, progress, output))
     }
 }
 

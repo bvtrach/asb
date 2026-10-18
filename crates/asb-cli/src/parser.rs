@@ -358,7 +358,7 @@ impl From<WorkloadListArgs> for install::WorkloadListOptions {
 }
 #[derive(Debug, Args)]
 #[command(
-    after_help = "The cli2key tool is a provider bridge. Install it locally with `asb tool install cli2key`."
+    after_help = "Install tools, including provider bridge tools. List available tools with `asb tool list`."
 )]
 struct ToolInstallArgs {
     #[arg(value_name = "TOOL")]

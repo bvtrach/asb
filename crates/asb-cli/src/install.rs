@@ -34,7 +34,7 @@ const GOOSE_AARCH64_URL: &str = "https://github.com/aaif-goose/goose/releases/do
 const GOOSE_AARCH64_SHA256: &str =
     "0f174b5118a53888cd4e65b7ca9a4b72dd0b887e89142c8ce41e2409205e40d5";
 
-trait LoggedStatus {
+pub(crate) trait LoggedStatus {
     fn logged_status(&mut self) -> io::Result<ExitStatus>;
 }
 
@@ -273,19 +273,8 @@ pub fn tool_with_progress(
         return Ok(());
     }
     let executable = install_recipe(plan, &root, progress)?;
-    if id == "cli2key" {
-        progress(90, "generating local API key");
-        let status = Command::new(&executable)
-            .args(["key", "refresh"])
-            .logged_status()
-            .map_err(|error| Error::Io(format!("cannot refresh cli2key API key: {error}")))?;
-        if !status.success() {
-            return Err(Error::Io(
-                "cli2key was installed, but its local API key could not be generated".into(),
-            ));
-        }
-        writeln!(output, "Generated a local cli2key API key for project runs")
-            .map_err(super::io_error)?;
+    if let Some(tool) = tools::find(&id) {
+        tool.post_install(&executable, progress, output)?;
     }
     progress(100, "ready");
     let kind = built_in.expect("known tool has metadata").2;
