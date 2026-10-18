@@ -76,6 +76,9 @@ pub fn init(
 }
 
 fn reset_project(root: &Path, config_path: &Path) -> Result<(), Error> {
+    let state = root.join(CONFIG_DIR);
+    reject_symlink(&state)?;
+    reject_symlink(config_path)?;
     let existing = fs::read_to_string(config_path)
         .map_err(|error| Error::Io(format!("cannot read {}: {error}", config_path.display())))?;
     let config: ProjectConfig = toml::from_str(&existing).map_err(|error| {
@@ -84,7 +87,26 @@ fn reset_project(root: &Path, config_path: &Path) -> Result<(), Error> {
             config_path.display()
         ))
     })?;
-    let state = root.join(CONFIG_DIR);
+    // Only direct children can be removed safely with std::fs::remove_dir_all:
+    // it does not follow the final symlink, but does follow intermediate ones.
+    // Validate everything before changing anything, including the default paths
+    // that initialization will recreate after the reset.
+    let defaults = ProjectConfig::default();
+    for directory in [
+        &config.tools_dir,
+        &config.workloads_dir,
+        &config.workspace_dir,
+        &defaults.tools_dir,
+        &defaults.workloads_dir,
+        &defaults.workspace_dir,
+    ] {
+        if !is_safe_project_relative_path(directory) {
+            return Err(Error::Input(format!(
+                "cannot reset configured directory {directory:?}: reset requires a direct child of the project; move its contents manually and update .asb/project.toml before retrying"
+            )));
+        }
+        reject_symlink(&root.join(directory))?;
+    }
     if state.exists() {
         fs::remove_dir_all(&state).map_err(|error| {
             Error::Io(format!("cannot remove {}: {error}", config_path.display()))
@@ -95,28 +117,34 @@ fn reset_project(root: &Path, config_path: &Path) -> Result<(), Error> {
         &config.workloads_dir,
         &config.workspace_dir,
     ] {
-        if is_safe_project_relative_path(directory) {
-            let path = root.join(directory);
-            if path.is_dir() {
-                fs::remove_dir_all(&path).map_err(|error| {
-                    Error::Io(format!("cannot remove {}: {error}", path.display()))
-                })?;
-            }
+        let path = root.join(directory);
+        if path.is_dir() {
+            fs::remove_dir_all(&path)
+                .map_err(|error| Error::Io(format!("cannot remove {}: {error}", path.display())))?;
         }
     }
     Ok(())
 }
 
 fn is_safe_project_relative_path(value: &str) -> bool {
-    let path = Path::new(value);
-    !path.as_os_str().is_empty()
-        && !path.is_absolute()
-        && !path.components().any(|component| {
-            matches!(
-                component,
-                std::path::Component::CurDir | std::path::Component::ParentDir
-            )
-        })
+    let mut components = Path::new(value).components();
+    matches!(components.next(), Some(std::path::Component::Normal(_)))
+        && components.next().is_none()
+}
+
+fn reject_symlink(path: &Path) -> Result<(), Error> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(Error::Input(format!(
+            "cannot reset: {} is a symbolic link; move or remove the link before retrying",
+            path.display()
+        ))),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Error::Io(format!(
+            "cannot inspect {}: {error}",
+            path.display()
+        ))),
+    }
 }
 
 fn is_asb_source_checkout(root: &Path) -> bool {

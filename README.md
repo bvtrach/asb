@@ -50,6 +50,10 @@ Run `asb init` in a separate benchmark project directory; it intentionally
 refuses to modify the ASB source checkout.
 If the directory is already initialized, ASB warns and makes no changes;
 rerun with `--reset` to remove managed state and create a fresh project.
+For safety, reset accepts managed directories only as direct project children
+and refuses symbolic links. If your project uses nested or external managed
+directories, move their contents manually and update `.asb/project.toml` before
+retrying. Do not modify the project tree concurrently with a reset.
 `run` loads the project and benchmark configuration, selects the workload
 prompt, and starts the configured agent with the provider and model in the
 environment. `setup` writes a `log_file` entry (for example `foo.log` for

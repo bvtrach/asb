@@ -97,14 +97,15 @@ fn run_with_changed_request(root: &Path, endpoint: &str, args: &[&str], changed:
     command
         .current_dir(root)
         .args(args)
+        .env_clear()
+        .env("HOME", root)
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("OPENROUTER_BASE_URL", endpoint)
         .env("OPENROUTER_API_KEY", "fixture-key")
-        .env("ASB_TEST_UPSTREAM", endpoint.trim_end_matches("/v1"))
-        .env_remove("ASB_PROVIDER_BASE_URL")
-        .env_remove("ASB_LLM_TAPE")
-        .env_remove("ASB_TOOL_DIR")
-        .env_remove("ASB_TAPE_MODE")
-        .env_remove("ASB_TEST_CHANGED");
+        .env("ASB_TEST_UPSTREAM", endpoint.trim_end_matches("/v1"));
+    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+        command.env("LLVM_PROFILE_FILE", profile);
+    }
     if changed {
         command.env("ASB_TEST_CHANGED", "1");
     }
@@ -131,7 +132,7 @@ fn goose_routes_record_and_replay_through_tape_without_live_credentials() {
     let agent = agent_dir.join("goose");
     std::fs::write(&agent, r##"#!/usr/bin/env node
 const host = process.env.OPENAI_HOST;
-if (!host?.startsWith('http://127.0.0.1:') ||
+if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(host || '') ||
     (process.env.ASB_TAPE_MODE ? host === process.env.ASB_TEST_UPSTREAM : host !== process.env.ASB_TEST_UPSTREAM)) {
   console.error('Goose endpoint is not the expected loopback service'); process.exit(7);
 }

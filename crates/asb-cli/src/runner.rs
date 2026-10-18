@@ -303,7 +303,15 @@ fn run_mode(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    providers::configure(&mut command, &config.provider, &config.model);
+    providers::configure(
+        &mut command,
+        &config.provider,
+        &config.model,
+        tape_mode == Some(tape::Mode::Replay),
+    );
+    if tape_mode == Some(tape::Mode::Replay) {
+        agents::mask_replay_credentials(&mut command);
+    }
     let provider_endpoint =
         tape_url.or_else(|| providers::local_bridge_endpoint(&config.provider, bridge.as_ref()));
     let provider_credentials =
@@ -371,7 +379,7 @@ fn run_mode(
         session.trace_begin("asb.agent.execute");
     }
     let child = match command.spawn() {
-        Ok(child) => child,
+        Ok(child) => OwnedChild(child),
         Err(error) => {
             if let Some(session) = measurement_session.as_mut() {
                 session.trace_end();
@@ -636,12 +644,39 @@ enum OutputChunk {
     Finished,
 }
 
+// std::process::Child does not stop a process on drop. Own it from spawn
+// through all collector attachment, output and wait error paths.
+struct OwnedChild(Child);
+
+impl std::ops::Deref for OwnedChild {
+    type Target = Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for OwnedChild {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for OwnedChild {
+    fn drop(&mut self) {
+        if self.0.try_wait().ok().flatten().is_none() {
+            let _ = self.0.kill();
+        }
+        let _ = self.0.wait();
+    }
+}
+
 /// Wait for an agent while optionally forwarding both output streams live.
 /// Readers run independently so a verbose agent cannot deadlock on a full
 /// stdout or stderr pipe. The complete bounded-by-the-existing-runner capture
 /// is still returned for logging and token parsing.
 fn wait_with_output(
-    mut child: Child,
+    mut child: OwnedChild,
     show_output: bool,
     output: &mut dyn Write,
 ) -> std::io::Result<Output> {
@@ -784,6 +819,45 @@ mod tests {
     };
     use crate::benchmark::BenchmarkConfig;
     use crate::measurements::TokenUsage;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn child_is_killed_and_reaped_if_collector_attachment_aborts() {
+        let child = std::process::Command::new("sleep")
+            .arg("10")
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let owned = super::OwnedChild(child);
+        // Simulate returning from the runner after attachment fails.
+        drop(owned);
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn child_is_killed_and_reaped_when_output_writer_fails() {
+        struct FailingWriter;
+        impl std::io::Write for FailingWriter {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("fixture output failure"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let child = std::process::Command::new("sh")
+            .args(["-c", "printf ready; exec sleep 10"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let error = super::wait_with_output(super::OwnedChild(child), true, &mut FailingWriter)
+            .unwrap_err();
+        assert!(error.to_string().contains("fixture output failure"));
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    }
 
     #[test]
     fn concurrent_replay_fans_out_single_recording_and_supports_replica_recordings() {

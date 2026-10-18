@@ -8,13 +8,17 @@ use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn asb(root: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_asb"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_asb"));
+    command
         .current_dir(root)
         .args(args)
-        .env_remove("ASB_LLM_TAPE")
-        .env_remove("ASB_TOOL_DIR")
-        .output()
-        .expect("ASB starts")
+        .env_clear()
+        .env("HOME", root)
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default());
+    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+        command.env("LLVM_PROFILE_FILE", profile);
+    }
+    command.output().expect("ASB starts")
 }
 
 #[test]
@@ -39,7 +43,7 @@ fn sweep_replays_one_recording_eight_times_without_a_live_bridge() {
 const fs = require('fs');
 const conf = JSON.parse(fs.readFileSync(process.env.PI_CODING_AGENT_DIR + '/models.json'));
 const url = conf.providers.cli2key.baseUrl;
-if (!url.startsWith('http://127.0.0.1:')) process.exit(3);
+if (!/^http:\/\/127\.0\.0\.1:\d+\/v1$/.test(url || '')) process.exit(3);
 const body = {model: 'test-model', messages: [{content: 'example prompt'}], tools: [{type: 'function'}]};
 fetch(url + '/chat/completions', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(body)})
   .then(async r => { if (!r.ok) throw new Error(await r.text()); console.log('{"status":"ok"}'); })

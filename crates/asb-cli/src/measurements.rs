@@ -2643,6 +2643,67 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    fn perfetto_metrics_produce_distinct_escaped_svg_artifacts() {
+        let dir = std::env::temp_dir().join(format!("asb-metric-svg-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let metrics = BTreeMap::from([
+            ("perfetto.sched_switch".to_owned(), 3.0),
+            ("perfetto.wait<unsafe>".to_owned(), 12.0),
+        ]);
+        write_perfetto_metric_svgs(&dir, None, 2, &metrics).unwrap();
+        let first = fs::read_to_string(dir.join("perfetto-metric-sched_switch.svg")).unwrap();
+        let second = fs::read_to_string(dir.join("perfetto-metric-wait-unsafe-.svg")).unwrap();
+        assert!(first.contains("sched_switch"));
+        assert!(second.contains("wait&lt;unsafe&gt;"));
+        assert!(!second.contains("wait<unsafe>"));
+        assert!(second.contains("native trace unavailable"));
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn perfetto_without_metrics_reports_tracepoints_as_a_fallback() {
+        let dir = std::env::temp_dir().join(format!("asb-metric-fallback-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        write_perfetto_metric_svgs(&dir, None, 9, &BTreeMap::new()).unwrap();
+        let svg = fs::read_to_string(dir.join("perfetto-metric-tracepoints.svg")).unwrap();
+        assert!(svg.contains("lifecycle markers: 9"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn bpftrace_svg_renders_each_metric_and_escapes_status() {
+        let dir = std::env::temp_dir().join(format!("asb-bpf-svg-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let metrics = BTreeMap::from([
+            ("sched.total".to_owned(), 7.0),
+            ("sched.max".to_owned(), 3.0),
+        ]);
+        write_bpftrace_profile_svg(&dir, "sched_latency", "failure <mock>", &metrics).unwrap();
+        let svg = fs::read_to_string(dir.join("bpftrace-sched_latency.svg")).unwrap();
+        assert!(svg.contains("failure &lt;mock&gt;"));
+        assert!(svg.contains("total: 7"));
+        assert!(svg.contains("max: 3"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn collector_svg_write_errors_report_the_artifact_type() {
+        let absent =
+            std::env::temp_dir().join(format!("asb-no-such-metric-dir-{}", std::process::id()));
+        assert!(
+            write_perfetto_metric_svgs(&absent, None, 0, &BTreeMap::new())
+                .unwrap_err()
+                .contains("Perfetto metric SVG")
+        );
+        assert!(
+            write_bpftrace_profile_svg(&absent, "sched", "error", &BTreeMap::new())
+                .unwrap_err()
+                .contains("bpftrace profile SVG")
+        );
+    }
+
+    #[test]
     fn writes_machine_readable_run_and_summary() {
         let dir = std::env::temp_dir().join(format!("asb-measure-{}", unix_ms()));
         let session = Session::start_with_collectors(&dir, &[], None).expect("session");

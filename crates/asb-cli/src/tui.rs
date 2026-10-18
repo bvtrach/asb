@@ -108,6 +108,9 @@ impl Pane {
 
     fn toggle(&mut self) {
         self.search_changed();
+        if self.visible().is_empty() {
+            return;
+        }
         if let Some(value) = self.selected.get_mut(self.cursor) {
             *value = !*value;
         }
@@ -115,7 +118,7 @@ impl Pane {
 
     fn toggle_single(&mut self) {
         self.search_changed();
-        if self.cursor >= self.selected.len() {
+        if self.visible().is_empty() || self.cursor >= self.selected.len() {
             return;
         }
         let enabled = !self.selected[self.cursor];
@@ -1507,6 +1510,120 @@ mod tests {
     use std::collections::BTreeSet;
     use std::time::Instant;
 
+    fn choice(name: &str) -> Choice {
+        Choice {
+            label: name.into(),
+            provider: None,
+            model: None,
+            availability: Availability::Unknown,
+        }
+    }
+
+    #[test]
+    fn filtered_cursor_navigation_clamps_to_visible_choices() {
+        let mut pane = Pane::new(vec![choice("alpha"), choice("beta"), choice("bravo")]);
+        pane.search = "B".into();
+        pane.search_changed();
+        assert_eq!(pane.cursor, 1);
+        pane.move_cursor(100);
+        assert_eq!(pane.cursor, 2);
+        pane.move_cursor(100);
+        assert_eq!(pane.cursor, 2);
+        pane.move_cursor(-100);
+        assert_eq!(pane.cursor, 1);
+    }
+
+    #[test]
+    fn selection_survives_search_and_single_select_replaces_previous_choice() {
+        let mut pane = Pane::new(vec![choice("alpha"), choice("beta"), choice("bravo")]);
+        pane.toggle();
+        pane.search = "br".into();
+        pane.search_changed();
+        pane.toggle();
+        assert_eq!(pane.selected, vec![true, false, true]);
+        pane.toggle_single();
+        assert_eq!(pane.selected, vec![false, false, false]);
+        pane.toggle_single();
+        assert_eq!(pane.selected, vec![false, false, true]);
+    }
+
+    #[test]
+    fn keyboard_search_ignores_control_keys_and_backspace_updates_results() {
+        let mut pane = Pane::new(vec![choice("alpha"), choice("beta")]);
+        assert!(!super::handle_pane_key(
+            &mut pane,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)
+        ));
+        assert!(super::handle_pane_key(
+            &mut pane,
+            KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE)
+        ));
+        assert_eq!(pane.visible(), vec![1]);
+        assert!(super::handle_pane_key(
+            &mut pane,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)
+        ));
+        assert_eq!(pane.visible(), vec![0, 1]);
+    }
+
+    #[test]
+    fn wizard_does_not_advance_without_a_selection_and_back_stops_at_start() {
+        let root = std::env::temp_dir().join(format!("asb-tui-navigation-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app = App::new(root.clone(), ProjectConfig::default());
+        assert!(app.advance().unwrap().is_none());
+        assert_eq!(app.step, 0);
+        assert!(app.message.contains("Select at least one"));
+        app.back();
+        assert_eq!(app.step, 0);
+        app.panes[0].selected[0] = true;
+        assert!(app.advance().unwrap().is_none());
+        assert_eq!(app.step, 1);
+        app.back();
+        assert_eq!(app.step, 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn wizard_renders_each_step_at_small_and_normal_terminal_sizes() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let root = std::env::temp_dir().join(format!("asb-tui-render-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut app = App::new(root.clone(), ProjectConfig::default());
+        for (width, height) in [(1, 1), (20, 5), (40, 12), (100, 30)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            for step in 0..app.panes.len() {
+                app.step = step;
+                terminal.draw(|frame| super::draw(frame, &app)).unwrap();
+            }
+            if width == 100 {
+                app.step = 0;
+                terminal.draw(|frame| super::draw(frame, &app)).unwrap();
+                let rendered = terminal
+                    .backend()
+                    .buffer()
+                    .content
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>();
+                assert!(rendered.contains("ASB setup"));
+                assert!(rendered.contains("[ ]"));
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn search_with_no_matches_must_not_toggle_a_hidden_choice() {
+        let mut pane = Pane::new(vec![choice("alpha"), choice("beta")]);
+        pane.search = "no matches".into();
+        pane.search_changed();
+        pane.toggle();
+        assert!(!pane.has_selection());
+        pane.toggle_single();
+        assert!(!pane.has_selection());
+    }
+
     #[test]
     fn pane_filters_and_toggles_visible_choices() {
         let mut pane = Pane::new(vec![
@@ -1693,7 +1810,14 @@ mod tests {
         let mut app = App::new(root.clone(), project);
         app.panes[0].selected[0] = true;
         app.panes[1].selected[0] = true;
-        app.refresh_models();
+        // Use a catalog fixture rather than discovering from the selected
+        // provider, which could read a developer key or contact a live API.
+        app.panes[2] = Pane::new(vec![Choice {
+            label: "openai:fixture-model".into(),
+            provider: Some("openai".into()),
+            model: Some("fixture-model".into()),
+            availability: Availability::Unknown,
+        }]);
         app.panes[2].selected[0] = true;
         app.panes[3].selected[0] = true;
         let generated = generate_configs(&app).expect("configs generated");
