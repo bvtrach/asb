@@ -30,6 +30,9 @@ pub(crate) trait AgentAdapter: Sync {
     fn recipe(&self) -> Recipe;
     fn command(&self, context: &CommandContext<'_>) -> CommandSpec;
     fn prepare(&self, context: &mut PreparationContext<'_>) -> Result<(), Error>;
+    fn replay_credential_vars(&self) -> &'static [&'static str] {
+        &[]
+    }
     fn collect(&self, _context: &CollectionContext<'_>) -> AgentArtifacts {
         AgentArtifacts::default()
     }
@@ -84,6 +87,7 @@ pub(super) struct StaticAdapter {
     command: CommandBuilder,
     prepare: PreparationHook,
     collect: Option<CollectionHook>,
+    replay_credential_vars: &'static [&'static str],
 }
 impl StaticAdapter {
     pub(super) const fn new(
@@ -100,11 +104,20 @@ impl StaticAdapter {
             command,
             prepare,
             collect: None,
+            replay_credential_vars: &[],
         }
     }
 
     pub(super) const fn with_collection(mut self, collect: CollectionHook) -> Self {
         self.collect = Some(collect);
+        self
+    }
+
+    pub(super) const fn with_replay_credential_vars(
+        mut self,
+        vars: &'static [&'static str],
+    ) -> Self {
+        self.replay_credential_vars = vars;
         self
     }
 }
@@ -124,6 +137,9 @@ impl AgentAdapter for StaticAdapter {
     fn prepare(&self, context: &mut PreparationContext<'_>) -> Result<(), Error> {
         (self.prepare)(context)
     }
+    fn replay_credential_vars(&self) -> &'static [&'static str] {
+        self.replay_credential_vars
+    }
     fn collect(&self, context: &CollectionContext<'_>) -> AgentArtifacts {
         self.collect
             .map(|collect| collect(context))
@@ -135,6 +151,15 @@ pub(crate) fn prepare(agent: &str, context: &mut PreparationContext<'_>) -> Resu
         return Ok(());
     };
     adapter.prepare(context)
+}
+
+/// Mask known agent-owned credential aliases in the inherited replay environment.
+pub(crate) fn mask_replay_credentials(command: &mut Command) {
+    for adapter in REGISTRY {
+        for variable in adapter.replay_credential_vars() {
+            command.env_remove(variable);
+        }
+    }
 }
 
 static REGISTRY: &[&dyn AgentAdapter] = &[

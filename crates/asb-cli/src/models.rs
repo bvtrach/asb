@@ -527,6 +527,160 @@ fn model_ids(models: &[ModelInfo]) -> Vec<String> {
 mod tests {
     use super::*;
 
+    fn replay_fixture(contents: &str, check: impl FnOnce(&Path)) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "asb-replay-validation-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, contents).unwrap();
+        check(&path);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn malformed_and_wrong_shape_model_catalogs_are_rejected() {
+        for (body, message) in [
+            (&b"not json"[..], "invalid model JSON"),
+            (&b"{}"[..], "no model list"),
+            (&b"{\"data\":{}}"[..], "no model list"),
+        ] {
+            let error =
+                parse_models(body, providers::ModelKind::OpenAi, "openai", false).unwrap_err();
+            assert!(error.to_string().contains(message));
+        }
+    }
+
+    #[test]
+    fn model_tool_capabilities_accept_supported_metadata_shapes() {
+        let models = parse_models(
+            br#"{"data":[
+          {"id":"a","tool_calling":true},
+          {"id":"b","tool_calls":true},
+          {"id":"c","supports_tool_calls":true},
+          {"id":"d","capabilities":{"tool_calling":true}},
+          {"id":"e","supported_parameters":["function_calling"]},
+          {"id":"f","supported_parameters":["tool_choice"]},
+          {"id":"ignored","tool_calling":false},
+          {"supported_parameters":["tools"]}
+        ]}"#,
+            providers::ModelKind::OpenAi,
+            "openrouter",
+            false,
+        )
+        .unwrap();
+        assert_eq!(model_ids(&models), vec!["a", "b", "c", "d", "e", "f"]);
+    }
+
+    #[test]
+    fn free_pricing_requires_both_input_and_output_to_be_zero() {
+        let models = parse_models(
+            br#"{"data":[
+          {"id":"both-zero","tool_calling":true,"pricing":{"prompt":0,"completion":"0.0"}},
+          {"id":"missing","tool_calling":true,"pricing":{"prompt":0}},
+          {"id":"paid-output","tool_calling":true,"pricing":{"prompt":0,"completion":1}},
+          {"id":"nonnumeric","tool_calling":true,"pricing":{"prompt":"free","completion":0}}
+        ]}"#,
+            providers::ModelKind::OpenAi,
+            "openrouter",
+            true,
+        )
+        .unwrap();
+        assert_eq!(model_ids(&models), vec!["both-zero"]);
+    }
+
+    #[test]
+    fn curl_configuration_rejects_newlines_and_escapes_credentials() {
+        let spec = providers::model_spec("openai").unwrap();
+        let output = curl_config(
+            spec,
+            "http://127.0.0.1:1234/v1/models",
+            Some("fake\"key\\value"),
+        )
+        .unwrap();
+        assert!(output.contains(r#"Authorization: Bearer fake\"key\\value"#));
+        assert!(curl_config(spec, "http://127.0.0.1/\nheader=bad", Some("fixture")).is_err());
+        assert!(curl_config(spec, "http://127.0.0.1/", Some("fixture\r\nheader=bad")).is_err());
+    }
+
+    #[test]
+    fn replay_skips_bodyless_requests_before_tool_call() {
+        replay_fixture(
+            concat!(
+                "{\"request\":{\"method\":\"GET\",\"body\":null}}\n",
+                "{\"request\":{\"body\":{\"model\":\"test-model\",\"tools\":[{}]}}}\n"
+            ),
+            |path| ensure_replay_tool_capable(path, "test-model").unwrap(),
+        );
+    }
+
+    #[test]
+    fn replay_rejects_invalid_jsonl_and_invalid_encoded_request_body() {
+        for (fixture, message) in [
+            ("not json\n", "invalid JSONL"),
+            (
+                "{\"request\":{\"body\":\"not-json\"}}\n",
+                "request body that is not valid JSON",
+            ),
+        ] {
+            replay_fixture(fixture, |path| {
+                assert!(
+                    ensure_replay_tool_capable(path, "test-model")
+                        .unwrap_err()
+                        .to_string()
+                        .contains(message)
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn replay_rejects_matching_models_without_a_tool_request() {
+        replay_fixture(
+            "{\"request\":{\"body\":{\"model\":\"test-model\",\"tools\":[]}}}\n",
+            |path| {
+                assert!(
+                    ensure_replay_tool_capable(path, "test-model")
+                        .unwrap_err()
+                        .to_string()
+                        .contains("no tool-calling request")
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn replay_accepts_tool_choice_and_legacy_function_requests() {
+        for body in [
+            r#"{"model":"test-model","tool_choice":"auto"}"#,
+            r#"{"model":"test-model","functions":[{}]}"#,
+        ] {
+            replay_fixture(&format!("{{\"request\":{{\"body\":{body}}}}}\n"), |path| {
+                ensure_replay_tool_capable(path, "test-model").unwrap();
+            });
+        }
+    }
+
+    #[test]
+    fn replay_rejects_cassettes_over_the_size_limit() {
+        replay_fixture("", |path| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_len(MAX_CASSETTE_BYTES + 1)
+                .unwrap();
+            assert!(
+                ensure_replay_tool_capable(path, "test-model")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("64 MiB")
+            );
+        });
+    }
+
     #[test]
     fn parses_openai_and_gemini_model_shapes() {
         assert_eq!(

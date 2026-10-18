@@ -383,14 +383,21 @@ fn read_key_file(path: PathBuf) -> Option<String> {
 
 /// Add provider-neutral and provider-specific selection variables to a child.
 ///
-/// The child inherits the parent environment. If a local key file is used,
-/// its bounded credential is injected into the child without being printed.
-pub fn configure(command: &mut std::process::Command, provider: &str, model: &str) {
+/// The child inherits the parent environment. During replay, known provider
+/// credentials are removed and only the selected provider gets a placeholder.
+pub fn configure(command: &mut std::process::Command, provider: &str, model: &str, replay: bool) {
     let selected = spec(provider);
-    if let Some(variable) = selected.credential {
-        if let Some(value) = credential(provider) {
-            command.env(variable, value);
+    if replay {
+        for variable in PROVIDERS.iter().filter_map(|spec| spec.credential) {
+            command.env_remove(variable);
         }
+        if let Some(variable) = selected.credential {
+            command.env(variable, "asb-replay");
+        }
+    } else if let Some(variable) = selected.credential
+        && let Some(value) = credential(provider)
+    {
+        command.env(variable, value);
     }
     command
         .env("ASB_PROVIDER", provider)

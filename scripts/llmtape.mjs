@@ -40,12 +40,6 @@ if (respectRecordTimings && mode !== "replay") {
   usage("--respect-record-timings is only valid with replay");
 }
 
-function boundedBody(chunks) {
-  const body = Buffer.concat(chunks);
-  if (body.length > MAX_BODY) throw new Error("request body exceeds 16 MiB");
-  return body;
-}
-
 function headersObject(headers) {
   const result = {};
   for (const [name, value] of headers) result[name] = value;
@@ -221,10 +215,23 @@ writeProgress();
 async function handle(request, response) {
   const startedAt = performance.now();
   const chunks = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  let bodySize = 0;
+  for await (const chunk of request.iterator({ destroyOnReturn: false })) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bodySize += bytes.length;
+    if (bodySize > MAX_BODY) {
+      if (mode === "replay") {
+        rejected += 1;
+        writeProgress();
+      }
+      request.resume();
+      response.writeHead(413, { "content-type": "application/json", connection: "close" });
+      response.end(JSON.stringify({ error: "request body exceeds 16 MiB" }));
+      return;
+    }
+    chunks.push(bytes);
   }
-  const body = boundedBody(chunks);
+  const body = Buffer.concat(chunks, bodySize);
   const normalizedBody = normalizeRequestBody(request.url || "/", body.toString("utf8"));
   const recordedRequest = {
     method: request.method || "GET",
@@ -295,7 +302,16 @@ async function handle(request, response) {
     headers: forwardedHeaders,
     body: body.length ? Buffer.from(normalizedBody) : undefined,
   });
-  const responseBody = await upstreamResponse.text();
+  const responseChunks = [];
+  let responseSize = 0;
+  if (upstreamResponse.body) {
+    for await (const chunk of upstreamResponse.body) {
+      responseSize += chunk.byteLength;
+      if (responseSize > MAX_BODY) throw new Error("upstream response body exceeds 16 MiB");
+      responseChunks.push(chunk);
+    }
+  }
+  const responseBody = Buffer.concat(responseChunks, responseSize).toString("utf8");
   const recordedResponse = {
     status: upstreamResponse.status,
     headers: responseHeaders(upstreamResponse.headers),

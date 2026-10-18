@@ -81,6 +81,10 @@ and child launch use the environment first and then a bounded
 The `provider models` command is the one exception that reads the selected credential
 only long enough to send a catalog request; it sends it through curl's stdin
 configuration, never includes it in arguments or output, and never stores it.
+For replay, ASB removes known provider and registered agent credential
+environment variables and supplies dummy values where needed before launching
+the agent. Replay is not a security sandbox:
+agents may still access other environment variables, local files, and network.
 OpenCode Zen model discovery uses its public `/zen/v1/models` catalog and does
 not require `OPENCODE_API_KEY`; the key is still required for benchmark
 execution.

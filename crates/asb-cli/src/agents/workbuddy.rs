@@ -9,7 +9,8 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     },
     command,
     prepare_adapter,
-);
+)
+.with_replay_credential_vars(&["CODEBUDDY_API_KEY", "CODEBUDDY_AUTH_TOKEN"]);
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "codebuddy".into(),

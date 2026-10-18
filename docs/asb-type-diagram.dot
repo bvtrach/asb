@@ -8,13 +8,13 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_agents_AgentAdapter" [label="{agents_AgentAdapter||+id() &'static str\l+executable() &'static str\l+recipe() Recipe\l+command(context: &CommandContext\<'_\>) agents_CommandSpec\l+prepare(context: &mut PreparationContext\<'_\>) Result\<(), Error\>\l+collect(context: &CollectionContext\<'_\>) agents_AgentArtifacts\l}", shape=record];
+        "asb-cli_src_agents_AgentAdapter" [label="{agents_AgentAdapter||+id() &'static str\l+executable() &'static str\l+recipe() Recipe\l+command(context: &CommandContext\<'_\>) agents_CommandSpec\l+prepare(context: &mut PreparationContext\<'_\>) Result\<(), Error\>\l+replay_credential_vars() &'static [&'static str]\l+collect(context: &CollectionContext\<'_\>) agents_AgentArtifacts\l}", shape=record];
         "asb-cli_src_agents_AgentArtifacts" [label="{agents_AgentArtifacts|+token_usage: Option\<crate::measurements::TokenUsage\>\l+cleanup_paths: Vec\<PathBuf\>\l}", shape=record];
         "asb-cli_src_agents_CollectionContext" [label="{agents_CollectionContext|+workspace: &'a Path\l}", shape=record];
         "asb-cli_src_agents_CommandContext" [label="{agents_CommandContext|+config: &'a BenchmarkConfig\l+endpoint: Option\<&'a str\>\l+prompt: &'a str\l}", shape=record];
         "asb-cli_src_agents_CommandSpec" [label="{agents_CommandSpec|+program: String\l+args: Vec\<String\>\l+append_prompt: bool\l}", shape=record];
         "asb-cli_src_agents_PreparationContext" [label="{agents_PreparationContext|+command: &'a mut Command\l+provider: &'a str\l+model: &'a str\l+cli2key: Option\<(&'a str, &'a str)\>\l+tools_dir: &'a Path\l+runtime_dir: &'a Path\l+tape: Option\<(crate::tape::Mode, &'a str)\>\l}", shape=record];
-        "asb-cli_src_agents_StaticAdapter" [label="{agents_StaticAdapter|-id: &'static str\l-executable: &'static str\l-recipe: Recipe\l-command: CommandBuilder\l-prepare: PreparationHook\l-collect: Option\<CollectionHook\>\l|+new(id: &'static str, executable: &'static str, recipe: Recipe, command: CommandBuilder, prepare: PreparationHook) Self\l+with_collection(self, collect: CollectionHook) Self\l}", shape=record];
+        "asb-cli_src_agents_StaticAdapter" [label="{agents_StaticAdapter|-id: &'static str\l-executable: &'static str\l-recipe: Recipe\l-command: CommandBuilder\l-prepare: PreparationHook\l-collect: Option\<CollectionHook\>\l-replay_credential_vars: &'static [&'static str]\l|+new(id: &'static str, executable: &'static str, recipe: Recipe, command: CommandBuilder, prepare: PreparationHook) Self\l+with_collection(self, collect: CollectionHook) Self\l+with_replay_credential_vars(self, vars: &'static [&'static str]) Self\l}", shape=record];
     }
 
     subgraph "cluster_benchmark" {
@@ -58,6 +58,7 @@ digraph ASB_Rust_UML {
         "asb-cli_src_InitArgs" [label="{InitArgs|-root: Option\<PathBuf\>\l-reset: bool\l}", shape=record];
         "asb-cli_src_ModelArgs" [label="{ModelArgs|-provider: Option\<String\>\l-json: bool\l-free: bool\l}", shape=record];
         "asb-cli_src_ModelListOptions" [label="{ModelListOptions|+provider: Option\<String\>\l+json: bool\l+free_only: bool\l}", shape=record];
+        "asb-cli_src_OwnedChild" [label="{OwnedChild||+deref() Target\l+deref_mut() Target\l}", shape=record];
         "asb-cli_src_ProviderArgs" [label="{ProviderArgs|-command: ProviderCommand\l}", shape=record];
         "asb-cli_src_ProxyExecutable" [label="{ProxyExecutable||+command() Command\l}", shape=record];
         "asb-cli_src_RunArgs" [label="{RunArgs|-path: String\l-record: bool\l-replay: bool\l-respect_record_timings: bool\l-cassette: Option\<String\>\l-json: bool\l-show_output: bool\l-measurements: Option\<String\>\l}", shape=record];
@@ -78,8 +79,11 @@ digraph ASB_Rust_UML {
         "asb-cli_src_WorkloadInstallOptions" [label="{WorkloadInstallOptions|+source: String\l+name: Option\<String\>\l+dir: Option\<PathBuf\>\l}", shape=record];
         "asb-cli_src_WorkloadListArgs" [label="{WorkloadListArgs|-dir: Option\<PathBuf\>\l}", shape=record];
         "asb-cli_src_WorkloadListOptions" [label="{WorkloadListOptions|+dir: Option\<PathBuf\>\l}", shape=record];
-        "asb-cli_tests_Drop" [label="{asb-cli_tests_Drop||+drop() void\l}", shape=record];
+        "asb-cli_tests_Drop" [label="{asb-cli_tests_Drop||+drop() void\l+drop() void\l}", shape=record];
         "asb-cli_tests_MockProvider" [label="{asb-cli_tests_MockProvider|-endpoint: String\l-requests: Arc\<Mutex\<Vec\<String\>\>\>\l-done: Arc\<AtomicBool\>\l-thread: Option\<std::thread::JoinHandle\<()\>\>\l|+start() Self\l}", shape=record];
+        "asb-cli_tests_Project" [label="{asb-cli_tests_Project||+new() Self\l+command(args: &[&str]) Output\l+command_with_env(args: &[&str], extra: &[(&str, &str)]) Output\l+write(name: &str, contents: &str) void\l+init() void\l}", shape=record];
+        "asb-cli_tests_WaitForFixtureExpiry" [label="{asb-cli_tests_WaitForFixtureExpiry|-pid: u32\l-executable: PathBuf\l}", shape=record];
+        "tests_asb-cli_src_FailingWriter" [label="{tests_FailingWriter||+write() Result\<usize\>\l+flush() Result\<()\>\l}", shape=record];
     }
 
     subgraph "cluster_install" {

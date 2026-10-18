@@ -1,7 +1,8 @@
 use super::{CommandContext, CommandSpec, PreparationContext, StaticAdapter};
 use crate::{Error, install::Recipe, providers};
 pub(super) static ADAPTER: StaticAdapter =
-    StaticAdapter::new("goose", "goose", Recipe::Goose, command, prepare_adapter);
+    StaticAdapter::new("goose", "goose", Recipe::Goose, command, prepare_adapter)
+        .with_replay_credential_vars(&["ANTHROPIC_AUTH_TOKEN"]);
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "goose".into(),

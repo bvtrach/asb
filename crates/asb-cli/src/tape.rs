@@ -325,6 +325,9 @@ mod tests {
         socket
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .unwrap();
+        socket
+            .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
         write!(socket, "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
         let mut response = String::new();
         socket.read_to_string(&mut response).unwrap();
@@ -373,6 +376,58 @@ mod tests {
         assert!(request(&session, valid).contains("200 OK"));
         assert!(request(&session, valid).contains("409 Conflict"));
         assert!(session.stop().unwrap_err().to_string().contains("rejected"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replay_rejects_oversized_request_during_streaming() {
+        let root = test_root();
+        let cassette = cassette(&root);
+        let session = Session::start(Mode::Replay, &cassette, None, false, &root).unwrap();
+        let response = request(&session, &"x".repeat(16 * 1024 * 1024 + 1));
+        assert!(response.contains("413 Payload Too Large"), "{response}");
+        assert!(response.contains("request body exceeds 16 MiB"));
+        assert!(session.stop().unwrap_err().to_string().contains("rejected"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn record_rejects_oversized_upstream_response_during_streaming() {
+        let root = test_root();
+        let cassette = root.join("record.jsonl");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let upstream = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut connection, _) = listener.accept().unwrap();
+            connection
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            connection
+                .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut incoming = [0u8; 8192];
+            assert!(connection.read(&mut incoming).unwrap() > 0);
+            connection
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 16777217\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+            let chunk = vec![b'x'; 65536];
+            for _ in 0..256 {
+                if connection.write_all(&chunk).is_err() {
+                    return;
+                }
+            }
+            let _ = connection.write_all(b"x");
+        });
+        let session =
+            Session::start(Mode::Record, &cassette, Some(&upstream), false, &root).unwrap();
+        let response = request(&session, "{}");
+        assert!(response.contains("502 Bad Gateway"), "{response}");
+        assert!(response.contains("upstream response body exceeds 16 MiB"));
+        session.stop().unwrap();
+        server.join().unwrap();
+        assert!(!cassette.exists() || std::fs::metadata(&cassette).unwrap().len() == 0);
         std::fs::remove_dir_all(root).unwrap();
     }
 

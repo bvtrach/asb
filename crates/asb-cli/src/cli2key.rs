@@ -47,7 +47,7 @@ impl Bridge {
             host.as_str()
         };
         let base_url = format!("http://{client_host}:{port_number}/v1");
-        let mut process = Command::new(executable)
+        let process = Command::new(executable)
             .arg("serve")
             .env("CODEX_BRIDGE_HOST", &host)
             .env("CODEX_BRIDGE_PORT", &port)
@@ -56,6 +56,13 @@ impl Bridge {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|error| Error::Run(format!("could not start cli2key bridge: {error}")))?;
+        // Own the child immediately: every startup error must kill and reap it.
+        let mut bridge = Self {
+            api_key: String::new(),
+            base_url,
+            process: Some(process),
+        };
+        let process = bridge.process.as_mut().expect("spawned bridge");
         let stdout = process
             .stdout
             .take()
@@ -115,11 +122,8 @@ impl Bridge {
             .filter(|value| !value.trim().is_empty())
             .or(discovered_key)
             .ok_or_else(|| Error::Run("cli2key bridge did not provide an API key".into()))?;
-        Ok(Self {
-            api_key,
-            base_url,
-            process: Some(process),
-        })
+        bridge.api_key = api_key;
+        Ok(bridge)
     }
 
     /// Return the API key to configure the selected agent.
