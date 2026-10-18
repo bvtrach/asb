@@ -23,8 +23,9 @@ diagram explicitly shows trait implementation edges and never publishes local
 paths or branch names. It supplements the maintained architecture overview;
 review both when changing public or private type relationships.
 
-These checks are offline and deterministic: CI never starts an agent, bridge,
-or live provider. Run `asb run` with credentials only as an explicit local
+These checks are offline: replay tests start the embedded tape proxy and test
+clients on loopback, but CI never starts a real agent, bridge, or live provider.
+Run `asb run` with credentials only as an explicit local
 smoke/benchmark operation.
 
 Workspaces, caches, and build outputs stay under `/srv/data/projects`. Do not

@@ -43,6 +43,10 @@ pub(crate) struct PreparationContext<'a> {
     /// The project-local tool root. Adapters choose their own configuration
     /// layout below this root instead of teaching the runner agent names.
     pub tools_dir: &'a Path,
+    /// Private mutable configuration for this agent execution.
+    pub runtime_dir: &'a Path,
+    /// Current tape endpoint and mode, when recording or replaying.
+    pub tape: Option<(crate::tape::Mode, &'a str)>,
 }
 
 pub(crate) struct CommandContext<'a> {
@@ -126,24 +130,11 @@ impl AgentAdapter for StaticAdapter {
             .unwrap_or_default()
     }
 }
-pub(crate) fn prepare(
-    command: &mut Command,
-    agent: &str,
-    provider: &str,
-    model: &str,
-    cli2key: Option<(&str, &str)>,
-    tools_dir: &Path,
-) -> Result<(), Error> {
+pub(crate) fn prepare(agent: &str, context: &mut PreparationContext<'_>) -> Result<(), Error> {
     let Some(adapter) = find(agent) else {
         return Ok(());
     };
-    adapter.prepare(&mut PreparationContext {
-        command,
-        provider,
-        model,
-        cli2key,
-        tools_dir,
-    })
+    adapter.prepare(context)
 }
 
 static REGISTRY: &[&dyn AgentAdapter] = &[
@@ -216,6 +207,43 @@ pub(crate) fn resolve(id: &str, project_root: &Path, tools_dir: &str) -> Option<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn replay_agent_configs_use_the_tape_endpoint_without_live_credentials() {
+        let root =
+            std::env::temp_dir().join(format!("asb-agent-replay-config-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        for (agent, config) in [
+            ("pi", "pi/config/models.json"),
+            ("cline", "cline/config/data/settings/providers.json"),
+            ("continue", "continue/config/config.yaml"),
+        ] {
+            let runtime = root.join(agent);
+            let mut command = std::process::Command::new("unused");
+            super::prepare(
+                agent,
+                &mut super::PreparationContext {
+                    command: &mut command,
+                    provider: "openrouter",
+                    model: "test-model",
+                    cli2key: None,
+                    tools_dir: &root,
+                    runtime_dir: &runtime,
+                    tape: Some((crate::tape::Mode::Replay, "http://127.0.0.1:4242/v1")),
+                },
+            )
+            .unwrap();
+            let contents = std::fs::read_to_string(runtime.join(config)).unwrap();
+            assert!(
+                contents.contains("http://127.0.0.1:4242/v1"),
+                "{agent}: {contents}"
+            );
+            assert!(
+                !contents.contains("https://openrouter.ai"),
+                "{agent}: {contents}"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
     use super::*;
 
     #[test]

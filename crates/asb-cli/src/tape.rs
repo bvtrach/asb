@@ -4,11 +4,15 @@ use crate::Error;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(8);
 const BUILTIN_PROXY: &str = include_str!("../../../scripts/llmtape.mjs");
+static NEXT_SESSION: AtomicU64 = AtomicU64::new(0);
+static START_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {
@@ -22,6 +26,8 @@ pub struct Session {
     url: String,
     mode: Mode,
     cassette: PathBuf,
+    progress: Option<PathBuf>,
+    _scratch: Scratch,
 }
 
 impl Session {
@@ -31,6 +37,7 @@ impl Session {
         cassette: &Path,
         upstream: Option<&str>,
         respect_record_timings: bool,
+        workspace: &Path,
     ) -> Result<Self, Error> {
         if mode == Mode::Replay && !cassette.is_file() {
             return Err(Error::Input(format!(
@@ -40,7 +47,10 @@ impl Session {
             )));
         }
         if mode == Mode::Record {
-            let parent = cassette.parent().unwrap_or_else(|| Path::new("."));
+            let parent = cassette
+                .parent()
+                .filter(|path| !path.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
             std::fs::create_dir_all(parent).map_err(|error| {
                 Error::Run(format!(
                     "cannot create cassette directory {}: {error}",
@@ -48,8 +58,29 @@ impl Session {
                 ))
             })?;
         }
+        let parent = cassette
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let scratch = Scratch::create(parent)?;
+        // Every replay has its own copy and progress file. Sharing the source
+        // directly would race on the proxy's cassette progress sidecar.
+        let replay_cassette = scratch.path.join("cassette.jsonl");
+        if mode == Mode::Replay {
+            std::fs::copy(cassette, &replay_cassette).map_err(|error| {
+                Error::Run(format!(
+                    "cannot copy replay cassette {}: {error}",
+                    cassette.display()
+                ))
+            })?;
+        }
+        // Hold the startup lock until the proxy is listening so sibling
+        // replicas do not select the same released ephemeral port.
+        let _start_guard = START_LOCK
+            .lock()
+            .map_err(|_| Error::Run("tape startup lock was poisoned".into()))?;
         let port = free_port()?;
-        let executable = resolve_executable(cassette)?;
+        let executable = resolve_executable(&scratch.path)?;
         let mut command = executable.command();
         command
             .arg(match mode {
@@ -70,17 +101,18 @@ impl Session {
             }
             Mode::Replay => {
                 command.args(["--cassette"]);
-                command.arg(cassette);
+                command.arg(&replay_cassette);
                 if respect_record_timings {
                     command.arg("--respect-record-timings");
                 }
             }
         }
         command
+            .env("ASB_TAPE_WORKSPACE", workspace)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let child = command.spawn().map_err(|error| {
+        let mut child = command.spawn().map_err(|error| {
             Error::Run(format!(
                 "cannot start ASB's built-in tape proxy; install Node.js or set ASB_LLM_TAPE to an explicit compatible executable: {error}"
             ))
@@ -94,7 +126,17 @@ impl Session {
                     url: format!("http://127.0.0.1:{port}/v1"),
                     mode,
                     cassette: cassette.to_path_buf(),
+                    progress: (mode == Mode::Replay)
+                        .then(|| replay_cassette.with_extension("jsonl.progress.json")),
+                    _scratch: scratch,
                 });
+            }
+            if child
+                .try_wait()
+                .map_err(|error| Error::Run(format!("cannot inspect tape proxy: {error}")))?
+                .is_some()
+            {
+                return Err(Error::Run("ASB's tape proxy exited before becoming ready; verify Node.js and the cassette format".into()));
             }
             thread::sleep(Duration::from_millis(50));
         }
@@ -116,8 +158,8 @@ impl Session {
             .wait()
             .map_err(|error| Error::Run(format!("could not stop llmtape: {error}")))?;
         if self.mode == Mode::Replay {
-            let progress = self.cassette.with_extension("jsonl.progress.json");
-            let text = std::fs::read_to_string(&progress).map_err(|error| {
+            let progress = self.progress.as_ref().expect("replay has progress path");
+            let text = std::fs::read_to_string(progress).map_err(|error| {
                 Error::Run(format!(
                     "replay did not produce cassette progress for {}; verify the tape proxy: {error}",
                     self.cassette.display()
@@ -134,6 +176,16 @@ impl Session {
                 .get("total")
                 .and_then(|value| value.as_u64())
                 .unwrap_or(0);
+            let rejected = value
+                .get("rejected")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            if rejected != 0 {
+                return Err(Error::Run(format!(
+                    "replay rejected {rejected} request(s) for {}; the normalized request or sequence differs from the recording",
+                    self.cassette.display()
+                )));
+            }
             if consumed != total {
                 return Err(Error::Run(format!(
                     "replay consumed {consumed} of {total} cassette requests for {}; refusing partial replay",
@@ -167,15 +219,14 @@ impl ProxyExecutable {
 
 /// Resolve an explicitly supplied proxy or materialize ASB's built-in proxy.
 /// ASB deliberately does not look up an unqualified host `llmtape` command.
-fn resolve_executable(cassette: &Path) -> Result<ProxyExecutable, Error> {
+fn resolve_executable(directory: &Path) -> Result<ProxyExecutable, Error> {
     if let Some(override_path) = std::env::var("ASB_LLM_TAPE")
         .ok()
         .filter(|value| !value.trim().is_empty())
     {
         return Ok(ProxyExecutable::Override(override_path));
     }
-    let parent = cassette.parent().unwrap_or_else(|| Path::new("."));
-    let script = parent.join(".asb-tape-proxy.mjs");
+    let script = directory.join(".asb-tape-proxy.mjs");
     std::fs::write(&script, BUILTIN_PROXY).map_err(|error| {
         Error::Run(format!(
             "cannot materialize ASB's built-in tape proxy at {}: {error}",
@@ -183,6 +234,45 @@ fn resolve_executable(cassette: &Path) -> Result<ProxyExecutable, Error> {
         ))
     })?;
     Ok(ProxyExecutable::Builtin(script))
+}
+
+// Created exclusively, so teardown only removes files owned by this session.
+struct Scratch {
+    path: PathBuf,
+}
+
+impl Scratch {
+    fn create(parent: &Path) -> Result<Self, Error> {
+        for _ in 0..100 {
+            let id = NEXT_SESSION.fetch_add(1, Ordering::Relaxed);
+            let path = parent.join(format!(".asb-tape-{}-{id}", std::process::id()));
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            match builder.create(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => {
+                    return Err(Error::Run(format!(
+                        "cannot create tape session directory {}: {error}",
+                        path.display()
+                    )));
+                }
+            }
+        }
+        Err(Error::Run(
+            "cannot allocate a unique tape session directory".into(),
+        ))
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
 }
 
 impl Drop for Session {
@@ -201,14 +291,160 @@ fn free_port() -> Result<u16, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProxyExecutable, resolve_executable};
+    use super::{Mode, ProxyExecutable, Session, resolve_executable};
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_root() -> std::path::PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("asb-tape-session-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn cassette(root: &Path) -> std::path::PathBuf {
+        let path = root.join("record.jsonl");
+        let body = r#"{"model":"m","messages":[{"content":"work in <asb-workspace>"}],"tools":[{"type":"function"}]}"#;
+        let line = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{\"ok\":true}"}});
+        std::fs::write(&path, format!("{line}\n")).unwrap();
+        path
+    }
+
+    fn request(session: &Session, body: &str) -> String {
+        let address = session
+            .url()
+            .trim_start_matches("http://")
+            .trim_end_matches("/v1");
+        let mut socket = TcpStream::connect(address).unwrap();
+        socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        write!(socket, "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+        let mut response = String::new();
+        socket.read_to_string(&mut response).unwrap();
+        response
+    }
+
+    #[test]
+    fn eight_sessions_replay_one_cassette_independently() {
+        let root = test_root();
+        let cassette = cassette(&root);
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8).map(|index| {
+                let cassette = &cassette;
+                scope.spawn(move || {
+                    let workspace = format!("/tmp/replica-{index}");
+                    let session = Session::start(Mode::Replay, cassette, None, false, Path::new(&workspace)).unwrap();
+                    let body = format!(r#"{{"tools":[{{"type":"function"}}],"messages":[{{"content":"work in {workspace}"}}],"model":"m"}}"#);
+                    assert!(request(&session, &body).contains("200 OK"));
+                    session.stop().unwrap();
+                })
+            }).collect();
+            for handle in handles {
+                handle.join().unwrap();
+            }
+        });
+        assert_eq!(
+            std::fs::read_dir(&root).unwrap().count(),
+            1,
+            "session artifacts cleaned up"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replay_rejects_changed_body_and_extra_requests() {
+        let root = test_root();
+        let cassette = cassette(&root);
+        let workspace = Path::new("/tmp/replay-workspace");
+        let session = Session::start(Mode::Replay, &cassette, None, false, workspace).unwrap();
+        let changed =
+            r#"{"model":"m","messages":[{"content":"different"}],"tools":[{"type":"function"}]}"#;
+        assert!(request(&session, changed).contains("409 Conflict"));
+        assert!(session.stop().unwrap_err().to_string().contains("rejected"));
+        let session = Session::start(Mode::Replay, &cassette, None, false, workspace).unwrap();
+        let valid = r#"{"model":"m","messages":[{"content":"work in /tmp/replay-workspace"}],"tools":[{"type":"function"}]}"#;
+        assert!(request(&session, valid).contains("200 OK"));
+        assert!(request(&session, valid).contains("409 Conflict"));
+        assert!(session.stop().unwrap_err().to_string().contains("rejected"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn records_then_replays_with_a_different_workspace() {
+        let root = test_root();
+        let cassette = root.join("record.jsonl");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let upstream = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut connection, _) = listener.accept().unwrap();
+            let mut request = [0u8; 8192];
+            let _ = connection.read(&mut request).unwrap();
+            connection.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").unwrap();
+        });
+        let session = Session::start(
+            Mode::Record,
+            &cassette,
+            Some(&upstream),
+            false,
+            Path::new("/tmp/original-workspace"),
+        )
+        .unwrap();
+        let original = r#"{"model":"m","messages":[{"content":"work in /tmp/original-workspace"}],"tools":[{"type":"function"}]}"#;
+        assert!(request(&session, original).contains("200 OK"));
+        session.stop().unwrap();
+        server.join().unwrap();
+        let session = Session::start(
+            Mode::Replay,
+            &cassette,
+            None,
+            false,
+            Path::new("/tmp/replica-workspace"),
+        )
+        .unwrap();
+        let replay = r#"{"model":"m","messages":[{"content":"work in /tmp/replica-workspace"}],"tools":[{"type":"function"}]}"#;
+        assert!(request(&session, replay).contains("200 OK"));
+        session.stop().unwrap();
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replay_can_honor_recorded_response_delay() {
+        let root = test_root();
+        let cassette = cassette(&root);
+        let line = std::fs::read_to_string(&cassette).unwrap();
+        let mut interaction: serde_json::Value = serde_json::from_str(&line).unwrap();
+        interaction["delay_ms"] = 200.into();
+        std::fs::write(&cassette, format!("{interaction}\n")).unwrap();
+        let session = Session::start(
+            Mode::Replay,
+            &cassette,
+            None,
+            true,
+            Path::new("/tmp/replay-workspace"),
+        )
+        .unwrap();
+        let valid = r#"{"model":"m","messages":[{"content":"work in /tmp/replay-workspace"}],"tools":[{"type":"function"}]}"#;
+        let started = std::time::Instant::now();
+        assert!(request(&session, valid).contains("200 OK"));
+        assert!(started.elapsed() >= std::time::Duration::from_millis(180));
+        session.stop().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn built_in_proxy_is_materialized_beside_the_cassette() {
         let root = std::env::temp_dir().join(format!("asb-tape-test-{}", std::process::id()));
         let cassette = root.join("cassettes/run.jsonl");
         std::fs::create_dir_all(cassette.parent().unwrap()).unwrap();
-        let resolved = resolve_executable(&cassette).unwrap();
+        let resolved = resolve_executable(cassette.parent().unwrap()).unwrap();
         match resolved {
             ProxyExecutable::Builtin(path) => {
                 assert_eq!(path, root.join("cassettes/.asb-tape-proxy.mjs"));

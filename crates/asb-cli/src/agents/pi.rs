@@ -32,15 +32,16 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
     if !cli2key && !openrouter {
         return Ok(());
     }
-    let directory = context.tools_dir.join("pi/config");
+    let directory = context.runtime_dir.join("pi/config");
     let (provider, api, key_name) = if cli2key {
         ("cli2key", "openai-responses", "CLI2KEY_API_KEY")
     } else {
         ("openrouter", "openai-completions", "OPENROUTER_API_KEY")
     };
     let base_url = context
-        .cli2key
+        .tape
         .map(|(_, url)| url.to_owned())
+        .or_else(|| context.cli2key.map(|(_, url)| url.to_owned()))
         .unwrap_or_else(|| {
             std::env::var("OPENROUTER_BASE_URL")
                 .unwrap_or_else(|_| "https://openrouter.ai/api/v1".into())

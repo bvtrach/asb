@@ -167,11 +167,9 @@ function normalizeRequestBody(url, body) {
 // request body unchanged to the live provider during recording.
 function normalizeCassetteBody(body) {
   if (!body) return body;
-  const normalized = body
-    .replace(
-    /\/(?:srv\/data\/projects|tmp)\/[A-Za-z0-9._~+%-]+(?:\/[A-Za-z0-9._~+%-]+)*/g,
-    "<asb-path>",
-    )
+  if (typeof body !== "string") body = JSON.stringify(body);
+  const workspace = process.env.ASB_TAPE_WORKSPACE;
+  const normalized = (workspace ? body.replaceAll(workspace, "<asb-workspace>") : body)
     // Agent SDKs generate fresh message/session IDs for every invocation;
     // those identifiers are not provider semantics and must not prevent a
     // cassette recorded in one process from replaying in another.
@@ -192,18 +190,9 @@ function normalizeCassetteBody(body) {
 }
 
 function requestKey(request) {
-  let model = null;
-  try {
-    model = request.body ? JSON.parse(request.body).model || null : null;
-  } catch {
-    // Non-JSON provider requests still match on method and endpoint below.
-  }
-  // The ordered cassette already scopes one provider/model run.  SDK request
-  // bodies contain ephemeral session, tool-state, and prompt metadata that
-  // legitimately changes between record and replay.  Require the stable wire
-  // contract (method, endpoint path, and model), then consume interactions in
-  // order so a request to the wrong provider route remains fail-closed.
-  return JSON.stringify([request.method, request.url, model]);
+  // Match the normalized full request, not just model and endpoint: a changed
+  // prompt or tool state must not silently consume an unrelated response.
+  return JSON.stringify([request.method, request.url, normalizeCassetteBody(request.body)]);
 }
 
 const interactions = mode === "replay"
@@ -220,10 +209,11 @@ const interactions = mode === "replay"
       })
   : [];
 let cursor = 0;
+let rejected = 0;
 const progressPath = `${cassette}.progress.json`;
 function writeProgress() {
   if (mode === "replay") {
-    writeFileSync(progressPath, JSON.stringify({ schema_version: 1, consumed: cursor, total: interactions.length }));
+    writeFileSync(progressPath, JSON.stringify({ schema_version: 1, consumed: cursor, total: interactions.length, rejected }));
   }
 }
 writeProgress();
@@ -250,11 +240,15 @@ async function handle(request, response) {
   if (mode === "replay") {
     const interaction = interactions[cursor];
     if (!interaction) {
+      rejected += 1;
+      writeProgress();
       response.writeHead(409, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "cassette has no more recorded requests" }));
       return;
     }
     if (requestKey(recordedRequest) !== requestKey(interaction.request)) {
+      rejected += 1;
+      writeProgress();
       if (process.env.ASB_TAPE_DEBUG === "1") {
         writeFileSync("/tmp/asb-tape-expected.json", interaction.request.body || "");
         writeFileSync("/tmp/asb-tape-actual.json", recordedRequest.body || "");

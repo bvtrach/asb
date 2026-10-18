@@ -31,10 +31,11 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
     {
         return Ok(());
     }
-    let directory = context.tools_dir.join("continue/config");
+    let directory = context.runtime_dir.join("continue/config");
     let url = context
-        .cli2key
+        .tape
         .map(|(_, url)| url.to_owned())
+        .or_else(|| context.cli2key.map(|(_, url)| url.to_owned()))
         .or_else(|| std::env::var("OPENROUTER_BASE_URL").ok())
         .unwrap_or_else(|| "https://openrouter.ai/api/v1".into());
     let (provider, key_name, key) = if context.provider.eq_ignore_ascii_case("cli2key") {
@@ -43,11 +44,19 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
             .ok_or_else(|| Error::Run("cli2key provider has no API endpoint".into()))?;
         ("anthropic", "CLI2KEY_API_KEY", key.to_owned())
     } else {
-        let key = crate::providers::credential("openrouter").ok_or_else(|| {
-            Error::Run(
-                "openrouter provider requires OPENROUTER_API_KEY or ~/.api_key_openrouter".into(),
-            )
-        })?;
+        let key = if context
+            .tape
+            .is_some_and(|(mode, _)| mode == crate::tape::Mode::Replay)
+        {
+            "asb-replay".to_owned()
+        } else {
+            crate::providers::credential("openrouter").ok_or_else(|| {
+                Error::Run(
+                    "openrouter provider requires OPENROUTER_API_KEY or ~/.api_key_openrouter"
+                        .into(),
+                )
+            })?
+        };
         ("openai", "OPENROUTER_API_KEY", key)
     };
     configure(&directory, provider, context.model, &url, key_name)?;

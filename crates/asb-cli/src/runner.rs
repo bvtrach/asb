@@ -103,15 +103,11 @@ fn run_concurrent(
         if let Some(measurements) = replica.measurements.as_mut() {
             measurements.directory = parallel_path(&measurements.directory, index);
         }
-        let cassette = tape_request.and_then(|(mode, requested)| {
-            requested
-                .map(|path| append_path_suffix(Path::new(path), index))
-                .or_else(|| {
-                    (mode == tape::Mode::Record).then(|| {
-                        append_path_suffix(&default_cassette(config_path, &replica), index)
-                    })
-                })
-                .map(|path| (mode, path))
+        let cassette = tape_request.map(|(mode, requested)| {
+            let base = requested
+                .map(PathBuf::from)
+                .unwrap_or_else(|| default_cassette(config_path, config));
+            (mode, replica_cassette(mode, &base, index))
         });
         let measurement = measurement_dir.map(|path| PathBuf::from(parallel_path(path, index)));
         jobs.push((replica, measurement, cassette));
@@ -168,6 +164,16 @@ fn run_concurrent(
             failures.len(),
             failures.join("; ")
         )))
+    }
+}
+
+// A single recording can be replayed independently by every replica. When no
+// single recording exists, retain compatibility with concurrent recordings.
+fn replica_cassette(mode: tape::Mode, base: &Path, index: usize) -> PathBuf {
+    if mode == tape::Mode::Replay && base.is_file() {
+        base.to_path_buf()
+    } else {
+        append_path_suffix(base, index)
     }
 }
 
@@ -265,6 +271,7 @@ fn run_mode(
             cassette,
             upstream.as_deref(),
             respect_record_timings,
+            &workspace,
         )?)
     } else {
         None
@@ -309,13 +316,22 @@ fn run_mode(
         tape_url,
         tape_mode == Some(tape::Mode::Replay),
     )?;
+    // Agent state must not appear inside the workload checkout, where it can
+    // affect git status, tools, and therefore the recorded agent trajectory.
+    let mut runtime_path = workspace.as_os_str().to_os_string();
+    runtime_path.push(".asb-agent-runtime");
+    let runtime_path = PathBuf::from(runtime_path);
     agents::prepare(
-        &mut command,
         &config.agent,
-        &config.provider,
-        &config.model,
-        provider_credentials,
-        &project::resolve(&project_root, &project_config.tools_dir),
+        &mut agents::PreparationContext {
+            command: &mut command,
+            provider: &config.provider,
+            model: &config.model,
+            cli2key: provider_credentials,
+            tools_dir: &project::resolve(&project_root, &project_config.tools_dir),
+            runtime_dir: &runtime_path,
+            tape: tape_url.zip(tape_mode).map(|(url, mode)| (mode, url)),
+        },
     )?;
     if let Some(url) = tape_url {
         providers::configure_tape(
@@ -762,9 +778,60 @@ fn bounded(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{RunResult, command_for, render_human, render_json, resolve_log_path, write_log};
+    use super::{
+        RunResult, command_for, render_human, render_json, replica_cassette, resolve_log_path,
+        run_with_tape, write_log,
+    };
     use crate::benchmark::BenchmarkConfig;
     use crate::measurements::TokenUsage;
+
+    #[test]
+    fn concurrent_replay_fans_out_single_recording_and_supports_replica_recordings() {
+        let root =
+            std::env::temp_dir().join(format!("asb-replica-cassettes-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let base = root.join("record.jsonl");
+        assert_eq!(
+            replica_cassette(crate::tape::Mode::Replay, &base, 8),
+            root.join("record-concurrency-8.jsonl")
+        );
+        std::fs::write(&base, "test").unwrap();
+        for index in 1..=8 {
+            assert_eq!(
+                replica_cassette(crate::tape::Mode::Replay, &base, index),
+                base
+            );
+        }
+        assert_eq!(
+            replica_cassette(crate::tape::Mode::Record, &base, 8),
+            root.join("record-concurrency-8.jsonl")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_replay_without_explicit_cassette_fails_closed() {
+        let root =
+            std::env::temp_dir().join(format!("asb-replay-no-cassette-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let config = root.join("benchmark.toml");
+        std::fs::write(&config, "agent='pi'\nworkload='bug-fix'\nprovider='not-a-provider'\nmodel='model'\nconcurrency=8\n").unwrap();
+        let error = run_with_tape(
+            config.to_str().unwrap(),
+            false,
+            false,
+            None,
+            Some(crate::tape::Mode::Replay),
+            None,
+            false,
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("replay cassette"), "{message}");
+        assert!(!message.contains("unsupported provider"), "{message}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn result<'a>() -> RunResult<'a> {
         RunResult {

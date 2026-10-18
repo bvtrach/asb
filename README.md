@@ -14,7 +14,7 @@ asb provider models [PROVIDER] [--free]
 asb setup tui
 asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]
 asb run CONFIG [--record|--replay] [--cassette FILE] [--json] [--measurements DIR]
-asb sweep SWEEP.toml [--record|--replay] [--json]
+asb sweep SWEEP.toml [--record|--replay] [--cassette-root DIR] [--respect-record-timings] [--json]
 asb compare SWEEP.toml
 ```
 
@@ -154,8 +154,8 @@ rerunning the sweep.
 
 `asb run CONFIG --record` runs the same configuration through ASB's built-in
 local tape proxy and writes a JSONL cassette (by default below `cassettes/`
-next to the configuration). ASB materializes this small proxy beside the
-cassette automatically; no external recorder package is required.
+next to the configuration). ASB materializes this small proxy in a private
+temporary session directory beside the cassette; no external recorder package is required.
 It does not search the host `PATH` implicitly. To deliberately use another
 compatible executable, set `ASB_LLM_TAPE`. Use `--cassette FILE` to choose an
 explicit path. `asb run CONFIG --replay` starts the tape server and routes
@@ -164,6 +164,25 @@ not start cli2key or connect to any live provider. Add
 `--respect-record-timings` to `run --replay` or `sweep --replay` to reproduce
 the bounded response delays recorded in each cassette entry. Cassettes are local test
 artifacts and should not be committed when they contain provider responses.
+
+For a sweep, keep the sweep entries and their order unchanged, and use the same
+`--cassette-root DIR` for recording and replay (or omit it for both). To record
+once and replay eight concurrent replicas, record with `concurrency = 1` in
+each benchmark TOML, then set `concurrency = 8` in those TOMLs before replay.
+Each replica receives an independent copy of its entry's original cassette and
+an isolated workspace and agent configuration. If no single-replica cassette
+exists, ASB instead looks for the `-concurrency-N` cassettes produced by a
+concurrent recording. A missing cassette stops that replica; replay does not
+fall back to live mode. Sweep entries run sequentially; only their replicas run
+in parallel. ASB's tape routing is not a network sandbox for arbitrary agents.
+
+Replay checks each ordered request's method, path and normalized full body,
+including prompt and tool definitions. Workspace paths, UUIDs and long
+timestamps are normalized to allow different replica directories and sessions;
+other differences are rejected. Older recordings that normalized paths
+differently may need to be recorded again. Replaying responses does not freeze
+external tools or filesystem state, and without `--respect-record-timings`
+provider delays are not reproduced.
 
 `provider models` queries live provider model catalogs. Pass a provider to query one,
 or omit it to query every supported provider and report unavailable providers

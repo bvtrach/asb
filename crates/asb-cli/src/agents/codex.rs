@@ -31,7 +31,7 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
         let (key, url) = context
             .cli2key
             .ok_or_else(|| Error::Run("cli2key provider has no API endpoint".into()))?;
-        let directory = context.tools_dir.join("codex/config");
+        let directory = context.runtime_dir.join("codex/config");
         configure(&directory, context.model, url)?;
         context
             .command

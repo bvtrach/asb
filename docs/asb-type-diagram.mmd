@@ -105,6 +105,7 @@ classDiagram
         +drop() void
         +drop() void
         +drop() void
+        +drop() void
     }
     class C016["ExternalWorkload"] {
         -name: &'static str
@@ -240,12 +241,18 @@ classDiagram
         -stdout: String
         -stderr: String
     }
-    class C036["Session"] {
+    class C036["Scratch"] {
+        -path: PathBuf
+        +create(parent: &Path) Result~Self, Error~
+    }
+    class C037["Session"] {
         -child: Child
         -url: String
         -mode: Mode
         -cassette: PathBuf
-        +start(mode: Mode, cassette: &Path, upstream: Option~&str~, respect_record_timings: bool) Result~Self, Error~
+        -progress: Option~PathBuf~
+        -_scratch: Scratch
+        +start(mode: Mode, cassette: &Path, upstream: Option~&str~, respect_record_timings: bool, workspace: &Path) Result~Self, Error~
         +url() &str
         +stop(self) Result~(), Error~
         -dir: PathBuf
@@ -283,7 +290,7 @@ classDiagram
         +command(name: &str) Command
         +executable(name: &str) PathBuf
     }
-    class C037["SetupArgs"] {
+    class C038["SetupArgs"] {
         -mode: Option~SetupMode~
         -agent: Option~String~
         -workload: Option~String~
@@ -293,7 +300,7 @@ classDiagram
         -workspace: Option~String~
         -output: Option~String~
     }
-    class C038["SetupOptions"] {
+    class C039["SetupOptions"] {
         +agent: Option~String~
         +workload: Option~String~
         +provider: Option~String~
@@ -302,14 +309,14 @@ classDiagram
         +workspace: Option~String~
         +output: Option~String~
     }
-    class C039["StaticCollector"] {
+    class C040["StaticCollector"] {
         -id: &'static str
         -environment_flag: Option~&'static str~
         -tool_id: Option~&'static str~
         -requires_pid: bool
         +new(id: &'static str, environment_flag: Option~&'static str~, tool_id: Option~&'static str~, requires_pid: bool) Self
     }
-    class C040["SweepArgs"] {
+    class C041["SweepArgs"] {
         -path: String
         -record: bool
         -replay: bool
@@ -318,12 +325,12 @@ classDiagram
         -show_output: bool
         -cassette_root: Option~String~
     }
-    class C041["SweepFile"] {
+    class C042["SweepFile"] {
         -configs: Vec~String~
         -configs: Vec~String~
         -configs: Vec~String~
     }
-    class C042["SystemInfo"] {
+    class C043["SystemInfo"] {
         -schema_version: u32
         -collected_unix_ms: u128
         -os: &'static str
@@ -332,11 +339,11 @@ classDiagram
         -kernel_release: Option~String~
         -memory_total_kib: Option~u64~
     }
-    class C043["TimeSeries"] {
+    class C044["TimeSeries"] {
         -values: Vec~f64~
         -timestamps_ms: Option~Vec<f64>~
     }
-    class C044["TokenUsage"] {
+    class C045["TokenUsage"] {
         +input_tokens: Option~u64~
         +output_tokens: Option~u64~
         +cached_tokens: Option~u64~
@@ -348,32 +355,32 @@ classDiagram
         +with_derived_total(self) Self
         +any() bool
     }
-    class C045["ToolArgs"] {
+    class C046["ToolArgs"] {
         -command: ToolCommand
     }
-    class C046["ToolInstallArgs"] {
+    class C047["ToolInstallArgs"] {
         -name: String
         -source: Option~String~
         -dir: Option~PathBuf~
         -dry_run: bool
     }
-    class C047["ToolInstallOptions"] {
+    class C048["ToolInstallOptions"] {
         +name: String
         +source: Option~String~
         +dir: Option~PathBuf~
         +dry_run: bool
     }
-    class C048["ToolListArgs"] {
+    class C049["ToolListArgs"] {
     }
-    class C049["Trial"] {
+    class C050["Trial"] {
         +id: String
         +description: String
     }
-    class C050["TrialSet"] {
+    class C051["TrialSet"] {
         +workload: String
         +trials: Vec~Trial~
     }
-    class C051["WorkloadApp"] {
+    class C052["WorkloadApp"] {
         -root: PathBuf
         -project: ProjectConfig
         -workloads: Pane
@@ -385,26 +392,26 @@ classDiagram
         -message_color: Color
         -message_until: Option~std::time::Instant~
     }
-    class C052["WorkloadArgs"] {
+    class C053["WorkloadArgs"] {
         -command: WorkloadCommand
     }
-    class C053["WorkloadInstallArgs"] {
+    class C054["WorkloadInstallArgs"] {
         -source: String
         -name: Option~String~
         -dir: Option~PathBuf~
     }
-    class C054["WorkloadInstallOptions"] {
+    class C055["WorkloadInstallOptions"] {
         +source: String
         +name: Option~String~
         +dir: Option~PathBuf~
     }
-    class C055["WorkloadListArgs"] {
+    class C056["WorkloadListArgs"] {
         -dir: Option~PathBuf~
     }
-    class C056["WorkloadListOptions"] {
+    class C057["WorkloadListOptions"] {
         +dir: Option~PathBuf~
     }
-    class C057["«trait» agents::AgentAdapter"] {
+    class C058["«trait» agents::AgentAdapter"] {
         +id() &'static str
         +executable() &'static str
         +recipe() Recipe
@@ -412,31 +419,33 @@ classDiagram
         +prepare(context: &mut PreparationContext~'_~) Result~(), Error~
         +collect(context: &CollectionContext~'_~) agents::AgentArtifacts
     }
-    class C058["agents::AgentArtifacts"] {
+    class C059["agents::AgentArtifacts"] {
         +token_usage: Option~crate::measurements::TokenUsage~
         +cleanup_paths: Vec~PathBuf~
     }
-    class C059["agents::CollectionContext"] {
+    class C060["agents::CollectionContext"] {
         +workspace: &'a Path
     }
-    class C060["agents::CommandContext"] {
+    class C061["agents::CommandContext"] {
         +config: &'a BenchmarkConfig
         +endpoint: Option~&'a str~
         +prompt: &'a str
     }
-    class C061["agents::CommandSpec"] {
+    class C062["agents::CommandSpec"] {
         +program: String
         +args: Vec~String~
         +append_prompt: bool
     }
-    class C062["agents::PreparationContext"] {
+    class C063["agents::PreparationContext"] {
         +command: &'a mut Command
         +provider: &'a str
         +model: &'a str
         +cli2key: Option~(&'a str, &'a str)~
         +tools_dir: &'a Path
+        +runtime_dir: &'a Path
+        +tape: Option~(crate::tape::Mode, &'a str)~
     }
-    class C063["agents::StaticAdapter"] {
+    class C064["agents::StaticAdapter"] {
         -id: &'static str
         -executable: &'static str
         -recipe: Recipe
@@ -446,25 +455,25 @@ classDiagram
         +new(id: &'static str, executable: &'static str, recipe: Recipe, command: CommandBuilder, prepare: PreparationHook) Self
         +with_collection(self, collect: CollectionHook) Self
     }
-    class C064["tools::StaticTool"] {
+    class C065["tools::StaticTool"] {
         -id: &'static str
         -recipe: Recipe
         -kind: ToolKind
         +new(id: &'static str, recipe: Recipe, kind: ToolKind) Self
     }
-    class C065["«trait» tools::ToolAdapter"] {
+    class C066["«trait» tools::ToolAdapter"] {
         +id() &'static str
         +recipe() Recipe
         +kind() ToolKind
     }
-    class C066["workloads::adapters::PromptAdapter"] {
+    class C067["workloads::adapters::PromptAdapter"] {
     }
-    class C067["workloads::adapters::StaticExternalAdapter"] {
+    class C068["workloads::adapters::StaticExternalAdapter"] {
         -id: &'static str
         -trials: &'static [(&'static str, &'static str)]
         +new(id: &'static str, trials: &'static [(&'static str, &'static str)]) Self
     }
-    class C068["«trait» workloads::adapters::WorkloadAdapter"] {
+    class C069["«trait» workloads::adapters::WorkloadAdapter"] {
         +id() &'static str
         +trial_ids() Vec~Trial~
         +prepare_source(workloads: &Path, workspace: &Path) Result~usize, String~
@@ -479,20 +488,21 @@ classDiagram
     C001 --> C028
     C001 --> C029
     C002 --> C023
-    C003 --> C043
+    C003 --> C044
     C028 --> C007
-    C034 --> C044
-    C035 --> C044
-    C036 --> C004
-    C036 --> C010
-    C050 --> C049
-    C051 --> C028
-    C051 --> C029
-    C057 ..> C058
-    C057 ..> C061
-    C068 ..> C049
-    C039 ..|> C011
-    C063 ..|> C057
-    C064 ..|> C065
-    C066 ..|> C068
-    C067 ..|> C068
+    C034 --> C045
+    C035 --> C045
+    C037 --> C004
+    C037 --> C010
+    C037 --> C036
+    C051 --> C050
+    C052 --> C028
+    C052 --> C029
+    C058 ..> C059
+    C058 ..> C062
+    C069 ..> C050
+    C040 ..|> C011
+    C064 ..|> C058
+    C065 ..|> C066
+    C067 ..|> C069
+    C068 ..|> C069
