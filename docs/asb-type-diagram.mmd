@@ -134,29 +134,31 @@ classDiagram
         -root: Option~PathBuf~
         -reset: bool
     }
-    class C022["LoggedStatus"] {
+    class C022["LlmtapeAdapter"] {
+    }
+    class C023["LoggedStatus"] {
         +logged_status() Result~ExitStatus~
     }
-    class C023["MeasurementConfig"] {
+    class C024["MeasurementConfig"] {
         +enabled: bool
         +directory: String
         +collectors: Vec~String~
     }
-    class C024["ModelArgs"] {
+    class C025["ModelArgs"] {
         -provider: Option~String~
         -json: bool
         -free: bool
     }
-    class C025["ModelInfo"] {
+    class C026["ModelInfo"] {
         -id: String
         -tool_calling: Option~bool~
     }
-    class C026["ModelListOptions"] {
+    class C027["ModelListOptions"] {
         +provider: Option~String~
         +json: bool
         +free_only: bool
     }
-    class C027["ModelSpec"] {
+    class C028["ModelSpec"] {
         +name: &'static str
         +credential: Option~&'static str~
         +endpoint: Option~&'static str~
@@ -165,16 +167,16 @@ classDiagram
         +url(self) Option~String~
         +url_for_model(self, selected: Option~&str~) Option~String~
     }
-    class C028["Offer"] {
+    class C029["Offer"] {
         +interface: Interface
         +authentication: Authentication
         +address: Address
     }
-    class C029["OwnedChild"] {
+    class C030["OwnedChild"] {
         +deref() Target
         +deref_mut() Target
     }
-    class C030["Pane"] {
+    class C031["Pane"] {
         -choices: Vec~Choice~
         -selected: Vec~bool~
         -cursor: usize
@@ -189,15 +191,15 @@ classDiagram
         +selected_choices() impl Iterator~Item = &Choice~
         +has_selection() bool
     }
-    class C031["ProjectConfig"] {
+    class C032["ProjectConfig"] {
         +tools_dir: String
         +workloads_dir: String
         +workspace_dir: String
     }
-    class C032["ProviderArgs"] {
+    class C033["ProviderArgs"] {
         -command: ProviderCommand
     }
-    class C033["ProviderSpec"] {
+    class C034["ProviderSpec"] {
         +name: &'static str
         +credential: Option~&'static str~
         +endpoint: Option~&'static str~
@@ -205,10 +207,21 @@ classDiagram
         +tape_endpoint_envs: &'static [&'static str]
         +bridge_tool: Option~&'static str~
     }
-    class C034["ProxyExecutable"] {
+    class C035["ProxyAdapter"] {
+        +name() &'static str
+        +start(request: &ProxyRequest) Result~RunningProxy, Error~
+    }
+    class C036["ProxyExecutable"] {
         +command() Command
     }
-    class C035["RunArgs"] {
+    class C037["ProxyRequest"] {
+        -mode: Mode
+        -cassette: PathBuf
+        -upstream: Option~String~
+        -respect_record_timings: bool
+        -workspace: PathBuf
+    }
+    class C038["RunArgs"] {
         -path: String
         -record: bool
         -replay: bool
@@ -218,7 +231,7 @@ classDiagram
         -show_output: bool
         -measurements: Option~String~
     }
-    class C036["RunMeasurement"] {
+    class C039["RunMeasurement"] {
         +schema_version: u32
         +run_id: String
         +status: &'a str
@@ -234,7 +247,7 @@ classDiagram
         +steps: u64
         +started_unix_ms: u128
     }
-    class C037["RunResult"] {
+    class C040["RunResult"] {
         -status: &'a str
         -agent: &'a str
         -workload: &'a str
@@ -249,17 +262,22 @@ classDiagram
         -stdout: String
         -stderr: String
     }
-    class C038["Scratch"] {
+    class C041["RunningProxy"] {
+        -child: Child
+        -url: String
+        -progress: Option~PathBuf~
+        -_scratch: Scratch
+    }
+    class C042["Scratch"] {
         -path: PathBuf
         +create(parent: &Path) Result~Self, Error~
     }
-    class C039["Session"] {
-        -child: Child
+    class C043["Session"] {
+        -proxies: Vec~RunningProxy~
         -url: String
         -mode: Mode
         -cassette: PathBuf
         -progress: Option~PathBuf~
-        -_scratch: Scratch
         +start(mode: Mode, cassette: &Path, upstream: Option~&str~, respect_record_timings: bool, workspace: &Path) Result~Self, Error~
         +url() &str
         +stop(self) Result~(), Error~
@@ -298,7 +316,7 @@ classDiagram
         +command(name: &str) Command
         +executable(name: &str) PathBuf
     }
-    class C040["SetupArgs"] {
+    class C044["SetupArgs"] {
         -mode: Option~SetupMode~
         -agent: Option~String~
         -workload: Option~String~
@@ -308,7 +326,7 @@ classDiagram
         -workspace: Option~String~
         -output: Option~String~
     }
-    class C041["SetupOptions"] {
+    class C045["SetupOptions"] {
         +agent: Option~String~
         +workload: Option~String~
         +provider: Option~String~
@@ -317,18 +335,18 @@ classDiagram
         +workspace: Option~String~
         +output: Option~String~
     }
-    class C042["StaticCollector"] {
+    class C046["StaticCollector"] {
         -id: &'static str
         -environment_flag: Option~&'static str~
         -tool_id: Option~&'static str~
         -requires_pid: bool
         +new(id: &'static str, environment_flag: Option~&'static str~, tool_id: Option~&'static str~, requires_pid: bool) Self
     }
-    class C043["Support"] {
+    class C047["Support"] {
         +interface: Interface
         +authentication: &'static [Authentication]
     }
-    class C044["SweepArgs"] {
+    class C048["SweepArgs"] {
         -path: String
         -record: bool
         -replay: bool
@@ -337,12 +355,12 @@ classDiagram
         -show_output: bool
         -cassette_root: Option~String~
     }
-    class C045["SweepFile"] {
+    class C049["SweepFile"] {
         -configs: Vec~String~
         -configs: Vec~String~
         -configs: Vec~String~
     }
-    class C046["SystemInfo"] {
+    class C050["SystemInfo"] {
         -schema_version: u32
         -collected_unix_ms: u128
         -os: &'static str
@@ -351,11 +369,11 @@ classDiagram
         -kernel_release: Option~String~
         -memory_total_kib: Option~u64~
     }
-    class C047["TimeSeries"] {
+    class C051["TimeSeries"] {
         -values: Vec~f64~
         -timestamps_ms: Option~Vec<f64>~
     }
-    class C048["TokenUsage"] {
+    class C052["TokenUsage"] {
         +input_tokens: Option~u64~
         +output_tokens: Option~u64~
         +cached_tokens: Option~u64~
@@ -367,32 +385,32 @@ classDiagram
         +with_derived_total(self) Self
         +any() bool
     }
-    class C049["ToolArgs"] {
+    class C053["ToolArgs"] {
         -command: ToolCommand
     }
-    class C050["ToolInstallArgs"] {
+    class C054["ToolInstallArgs"] {
         -name: String
         -source: Option~String~
         -dir: Option~PathBuf~
         -dry_run: bool
     }
-    class C051["ToolInstallOptions"] {
+    class C055["ToolInstallOptions"] {
         +name: String
         +source: Option~String~
         +dir: Option~PathBuf~
         +dry_run: bool
     }
-    class C052["ToolListArgs"] {
+    class C056["ToolListArgs"] {
     }
-    class C053["Trial"] {
+    class C057["Trial"] {
         +id: String
         +description: String
     }
-    class C054["TrialSet"] {
+    class C058["TrialSet"] {
         +workload: String
         +trials: Vec~Trial~
     }
-    class C055["WorkloadApp"] {
+    class C059["WorkloadApp"] {
         -root: PathBuf
         -project: ProjectConfig
         -workloads: Pane
@@ -404,26 +422,26 @@ classDiagram
         -message_color: Color
         -message_until: Option~std::time::Instant~
     }
-    class C056["WorkloadArgs"] {
+    class C060["WorkloadArgs"] {
         -command: WorkloadCommand
     }
-    class C057["WorkloadInstallArgs"] {
+    class C061["WorkloadInstallArgs"] {
         -source: String
         -name: Option~String~
         -dir: Option~PathBuf~
     }
-    class C058["WorkloadInstallOptions"] {
+    class C062["WorkloadInstallOptions"] {
         +source: String
         +name: Option~String~
         +dir: Option~PathBuf~
     }
-    class C059["WorkloadListArgs"] {
+    class C063["WorkloadListArgs"] {
         -dir: Option~PathBuf~
     }
-    class C060["WorkloadListOptions"] {
+    class C064["WorkloadListOptions"] {
         +dir: Option~PathBuf~
     }
-    class C061["«trait» agents::AgentAdapter"] {
+    class C065["«trait» agents::AgentAdapter"] {
         +id() &'static str
         +executable() &'static str
         +recipe() Recipe
@@ -433,31 +451,31 @@ classDiagram
         +replay_credential_vars() &'static [&'static str]
         +collect(context: &CollectionContext~'_~) agents::AgentArtifacts
     }
-    class C062["agents::AgentArtifacts"] {
+    class C066["agents::AgentArtifacts"] {
         +token_usage: Option~crate::measurements::TokenUsage~
         +cleanup_paths: Vec~PathBuf~
     }
-    class C063["agents::CollectionContext"] {
+    class C067["agents::CollectionContext"] {
         +workspace: &'a Path
     }
-    class C064["agents::CommandContext"] {
+    class C068["agents::CommandContext"] {
         +config: &'a BenchmarkConfig
         +endpoint: Option~&'a str~
         +interface: Option~Interface~
         +prompt: &'a str
     }
-    class C065["agents::CommandSpec"] {
+    class C069["agents::CommandSpec"] {
         +program: String
         +args: Vec~String~
         +append_prompt: bool
     }
-    class C066["agents::PreparationContext"] {
+    class C070["agents::PreparationContext"] {
         +command: &'a mut Command
         +model: &'a str
         +connection: Connection
         +runtime_dir: &'a Path
     }
-    class C067["agents::StaticAdapter"] {
+    class C071["agents::StaticAdapter"] {
         -id: &'static str
         -executable: &'static str
         -recipe: Recipe
@@ -470,7 +488,7 @@ classDiagram
         +with_collection(self, collect: CollectionHook) Self
         +with_replay_credential_vars(self, vars: &'static [&'static str]) Self
     }
-    class C068["providers_Bridge"] {
+    class C072["providers_Bridge"] {
         -api_key: String
         -base_url: String
         -process: Option~Child~
@@ -480,10 +498,10 @@ classDiagram
         +api_key() &str
         +base_url() &str
     }
-    class C069["providers_Drop"] {
+    class C073["providers_Drop"] {
         +drop() void
     }
-    class C070["tools::StaticTool"] {
+    class C074["tools::StaticTool"] {
         -id: &'static str
         -recipe: Recipe
         -kind: ToolKind
@@ -492,20 +510,20 @@ classDiagram
         +with_post_install(self, hook: Write,
         ) -> Result~(), crate::Error~) Self
     }
-    class C071["«trait» tools::ToolAdapter"] {
+    class C075["«trait» tools::ToolAdapter"] {
         +id() &'static str
         +recipe() Recipe
         +kind() ToolKind
         +post_install(executable: &Path, progress: &mut dyn FnMut(u8, &str), output: Write) Result~(), crate::Error~
     }
-    class C072["workloads::adapters::PromptAdapter"] {
+    class C076["workloads::adapters::PromptAdapter"] {
     }
-    class C073["workloads::adapters::StaticExternalAdapter"] {
+    class C077["workloads::adapters::StaticExternalAdapter"] {
         -id: &'static str
         -trials: &'static [(&'static str, &'static str)]
         +new(id: &'static str, trials: &'static [(&'static str, &'static str)]) Self
     }
-    class C074["«trait» workloads::adapters::WorkloadAdapter"] {
+    class C078["«trait» workloads::adapters::WorkloadAdapter"] {
         +id() &'static str
         +trial_ids() Vec~Trial~
         +prepare_source(workloads: &Path, workspace: &Path) Result~usize, String~
@@ -517,52 +535,54 @@ classDiagram
         +prepare_fixture(name: &str, workspace: &Path) Result~usize, String~
         +prepare_source(_workloads: &Path, _workspace: &Path) Result~usize, String~
     }
-    class C075["asb-cli_tests_Drop"] {
+    class C079["asb-cli_tests_Drop"] {
         +drop() void
         +drop() void
         +drop() void
     }
-    class C076["asb-cli_tests_MockProvider"] {
+    class C080["asb-cli_tests_MockProvider"] {
         -endpoint: String
         -requests: Arc~Mutex<Vec<String>>~
         -done: Arc~AtomicBool~
         -thread: Option~std::thread::JoinHandle<()>~
         +start() Self
     }
-    class C077["asb-cli_tests_Project"] {
+    class C081["asb-cli_tests_Project"] {
         +new() Self
         +command(args: &[&str]) Output
         +command_with_env(args: &[&str], extra: &[(&str, &str)]) Output
         +write(name: &str, contents: &str) void
         +init() void
     }
-    class C078["asb-cli_tests_WaitForFixtureExpiry"] {
+    class C082["asb-cli_tests_WaitForFixtureExpiry"] {
         -pid: u32
         -executable: PathBuf
     }
-    class C079["tests_asb-cli_src_FailingWriter"] {
+    class C083["tests_asb-cli_src_FailingWriter"] {
         +write() Result~usize~
         +flush() Result~()~
     }
-    C001 --> C030
     C001 --> C031
-    C002 --> C023
-    C003 --> C047
-    C030 --> C006
-    C036 --> C048
-    C037 --> C048
-    C039 --> C004
-    C039 --> C009
-    C039 --> C038
-    C054 --> C053
-    C055 --> C030
-    C055 --> C031
-    C061 ..> C062
-    C061 ..> C065
-    C066 --> C013
-    C074 ..> C053
-    C042 ..|> C010
-    C067 ..|> C061
-    C070 ..|> C071
-    C072 ..|> C074
-    C073 ..|> C074
+    C001 --> C032
+    C002 --> C024
+    C003 --> C051
+    C031 --> C006
+    C035 ..> C041
+    C039 --> C052
+    C040 --> C052
+    C041 --> C042
+    C043 --> C004
+    C043 --> C009
+    C043 --> C041
+    C058 --> C057
+    C059 --> C031
+    C059 --> C032
+    C065 ..> C066
+    C065 ..> C069
+    C070 --> C013
+    C078 ..> C057
+    C046 ..|> C010
+    C071 ..|> C065
+    C074 ..|> C075
+    C076 ..|> C078
+    C077 ..|> C078

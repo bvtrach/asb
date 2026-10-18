@@ -245,22 +245,31 @@ The ASB source checkout is not a benchmark project: `init` rejects its
 distinctive workspace layout before creating any files.
 
 Recording and replay are implemented as a separate `tape` module behind the
-runner boundary. The `run --record` and `run --replay` flags materialize and start
-ASB's built-in loopback tape proxy, while provider adapters supply endpoint
-routing, record-mode upstream resolution, and optional local-bridge lifecycle.
-The runner and sweep executor retain no provider-specific proxy knowledge and
-tear the session down after the child exits. `--record` writes a JSONL cassette with a bounded `delay_ms` response
-latency for every interaction; `--replay` requires that cassette and never
-starts cli2key or a live provider. Passing `--respect-record-timings` with
-`--replay` makes llmtape match each request first, then wait for its recorded
-delay before returning the response. The same option is available on
-`asb sweep`. This keeps the benchmark
-configuration contract unchanged and keeps the tape component an optional,
-project-local development capability rather than a runtime dependency. The
-proxy checks normalized complete request bodies and rejects mismatches and
-extra requests. It is embedded in ASB and requires only Node.js; it does not use or install
-an external recorder package. ASB never falls back to an unqualified host `PATH`
-lookup; set `ASB_LLM_TAPE` explicitly to use another compatible executable.
+runner boundary. The `run --record` and `run --replay` flags enable the
+configured proxy chain; the default chain contains ASB's built-in loopback
+`llmtape` adapter. Every hop implements the internal `ProxyAdapter` trait and
+receives only a provider-neutral launch request plus the endpoint of its next
+hop. The chain is started from the provider inward, so an agent always receives
+one loopback ingress URL and remains unaware of whether zero, one, or many
+proxy hops are enabled. Set `ASB_PROXY_CHAIN` to a comma-separated list ordered
+from agent to provider to configure additional registered adapters; an empty
+list is rejected when record/replay is enabled. Provider adapters continue to
+own endpoint routing, record-mode upstream resolution, and optional local-
+bridge lifecycle. The runner and sweep executor retain no provider-specific
+proxy knowledge and tear every hop down after the child exits. `--record`
+writes a JSONL cassette with a bounded `delay_ms` response latency for every
+interaction; `--replay` requires that cassette and never starts cli2key or a
+live provider. Passing `--respect-record-timings` with `--replay` makes llmtape
+match each request first, then wait for its recorded delay before returning the
+response. The same option is available on `asb sweep`. This keeps the
+benchmark configuration contract unchanged and keeps the tape component an
+optional, project-local development capability rather than a runtime
+dependency. The proxy checks normalized complete request bodies and rejects
+mismatches and extra requests. The default llmtape adapter is embedded in ASB
+and requires only Node.js; it does not use or install an external recorder
+package. ASB never falls back to an unqualified host `PATH` lookup; set
+`ASB_LLM_TAPE` explicitly to use another compatible executable for the llmtape
+adapter.
 Measurement collection remains
 explicitly opt-in through `asb run --measurements DIR`; CI tests the tape on
 loopback but does not start live agents, live providers, or host collectors.

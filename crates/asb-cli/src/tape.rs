@@ -20,33 +20,52 @@ pub enum Mode {
     Replay,
 }
 
-/// A running local llmtape server. Dropping it always attempts to stop it.
-pub struct Session {
+/// A proxy launch request shared by every adapter in a configured chain.
+///
+/// The request is intentionally provider-neutral: adapters only receive the
+/// endpoint of the next hop and the tape lifecycle settings. Agent adapters
+/// never see this type or any proxy-specific environment.
+#[derive(Clone, Debug)]
+pub(crate) struct ProxyRequest {
+    pub(crate) mode: Mode,
+    pub(crate) cassette: PathBuf,
+    pub(crate) upstream: Option<String>,
+    pub(crate) respect_record_timings: bool,
+    pub(crate) workspace: PathBuf,
+}
+
+/// A proxy implementation owns one hop in the agent-to-provider path.
+///
+/// Adapters are started from the provider inward: the last configured adapter
+/// receives the real provider endpoint, and each preceding adapter receives
+/// the loopback endpoint of the hop after it. This makes a chain of zero, one,
+/// or many proxies transparent to the agent.
+pub(crate) trait ProxyAdapter: Sync {
+    fn name(&self) -> &'static str;
+    fn start(&self, request: &ProxyRequest) -> Result<RunningProxy, Error>;
+}
+
+/// A live process owned by one proxy adapter.
+pub(crate) struct RunningProxy {
     child: Child,
     url: String,
-    mode: Mode,
-    cassette: PathBuf,
     progress: Option<PathBuf>,
     _scratch: Scratch,
 }
 
-impl Session {
-    /// Start llmtape on an available loopback port and wait until it accepts connections.
-    pub fn start(
-        mode: Mode,
-        cassette: &Path,
-        upstream: Option<&str>,
-        respect_record_timings: bool,
-        workspace: &Path,
-    ) -> Result<Self, Error> {
-        if mode == Mode::Replay && !cassette.is_file() {
-            return Err(Error::Input(format!(
-                "replay cassette {} does not exist; run `asb run CONFIG --record --cassette {}` first",
-                cassette.display(),
-                cassette.display()
-            )));
-        }
-        if mode == Mode::Record {
+struct LlmtapeAdapter;
+
+static LLMTAPE_ADAPTER: LlmtapeAdapter = LlmtapeAdapter;
+static PROXY_ADAPTERS: &[&dyn ProxyAdapter] = &[&LLMTAPE_ADAPTER];
+
+impl ProxyAdapter for LlmtapeAdapter {
+    fn name(&self) -> &'static str {
+        "llmtape"
+    }
+
+    fn start(&self, request: &ProxyRequest) -> Result<RunningProxy, Error> {
+        let cassette = &request.cassette;
+        if request.mode == Mode::Record {
             let parent = cassette
                 .parent()
                 .filter(|path| !path.as_os_str().is_empty())
@@ -66,7 +85,7 @@ impl Session {
         // Every replay has its own copy and progress file. Sharing the source
         // directly would race on the proxy's cassette progress sidecar.
         let replay_cassette = scratch.path.join("cassette.jsonl");
-        if mode == Mode::Replay {
+        if request.mode == Mode::Replay {
             std::fs::copy(cassette, &replay_cassette).map_err(|error| {
                 Error::Run(format!(
                     "cannot copy replay cassette {}: {error}",
@@ -83,15 +102,15 @@ impl Session {
         let executable = resolve_executable(&scratch.path)?;
         let mut command = executable.command();
         command
-            .arg(match mode {
+            .arg(match request.mode {
                 Mode::Record => "record",
                 Mode::Replay => "replay",
             })
             .arg("--port")
             .arg(port.to_string());
-        match mode {
+        match request.mode {
             Mode::Record => {
-                let upstream = upstream.ok_or_else(|| {
+                let upstream = request.upstream.as_deref().ok_or_else(|| {
                     Error::Run(
                         "record requires a provider API endpoint; set the provider base URL or use its configured local bridge".into(),
                     )
@@ -102,13 +121,13 @@ impl Session {
             Mode::Replay => {
                 command.args(["--cassette"]);
                 command.arg(&replay_cassette);
-                if respect_record_timings {
+                if request.respect_record_timings {
                     command.arg("--respect-record-timings");
                 }
             }
         }
         command
-            .env("ASB_TAPE_WORKSPACE", workspace)
+            .env("ASB_TAPE_WORKSPACE", &request.workspace)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
@@ -121,12 +140,10 @@ impl Session {
         let deadline = Instant::now() + STARTUP_TIMEOUT;
         while Instant::now() < deadline {
             if TcpStream::connect_timeout(&address, Duration::from_millis(100)).is_ok() {
-                return Ok(Self {
+                return Ok(RunningProxy {
                     child,
                     url: format!("http://127.0.0.1:{port}/v1"),
-                    mode,
-                    cassette: cassette.to_path_buf(),
-                    progress: (mode == Mode::Replay)
+                    progress: (request.mode == Mode::Replay)
                         .then(|| replay_cassette.with_extension("jsonl.progress.json")),
                     _scratch: scratch,
                 });
@@ -140,12 +157,99 @@ impl Session {
             }
             thread::sleep(Duration::from_millis(50));
         }
-        let mut child = child;
         let _ = child.kill();
         let _ = child.wait();
         Err(Error::Run(
             "ASB's tape proxy did not become ready within 8 seconds; verify Node.js and the cassette format".into(),
         ))
+    }
+}
+
+/// A running local proxy chain. Dropping it always attempts to stop every hop.
+pub struct Session {
+    proxies: Vec<RunningProxy>,
+    url: String,
+    mode: Mode,
+    cassette: PathBuf,
+    progress: Option<PathBuf>,
+}
+
+impl Session {
+    /// Start the configured proxy chain on loopback.
+    ///
+    /// `ASB_PROXY_CHAIN` is a comma-separated list ordered from the agent
+    /// toward the provider. It defaults to `llmtape` for record/replay. The
+    /// agent always receives only the first hop's URL; changing the chain is
+    /// therefore transparent to every agent adapter.
+    pub fn start(
+        mode: Mode,
+        cassette: &Path,
+        upstream: Option<&str>,
+        respect_record_timings: bool,
+        workspace: &Path,
+    ) -> Result<Self, Error> {
+        if mode == Mode::Replay && !cassette.is_file() {
+            return Err(Error::Input(format!(
+                "replay cassette {} does not exist; run `asb run CONFIG --record --cassette {}` first",
+                cassette.display(),
+                cassette.display()
+            )));
+        }
+        let names = configured_chain()?;
+        let adapters: Vec<&'static dyn ProxyAdapter> = names
+            .iter()
+            .map(|name| {
+                proxy_adapter(name).ok_or_else(|| {
+                    let available = PROXY_ADAPTERS
+                        .iter()
+                        .map(|adapter| adapter.name())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    Error::Input(format!(
+                        "unknown proxy adapter `{name}` in ASB_PROXY_CHAIN; available adapters: {available}"
+                    ))
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        let mut proxies = Vec::with_capacity(adapters.len());
+        let mut next_hop = upstream.map(str::to_owned);
+        for adapter in adapters.iter().rev() {
+            let request = ProxyRequest {
+                mode,
+                cassette: cassette.to_path_buf(),
+                upstream: next_hop.clone(),
+                respect_record_timings,
+                workspace: workspace.to_path_buf(),
+            };
+            match adapter.start(&request) {
+                Ok(proxy) => {
+                    next_hop = Some(proxy.url.clone());
+                    proxies.push(proxy);
+                }
+                Err(error) => {
+                    for mut proxy in proxies {
+                        let _ = proxy.child.kill();
+                        let _ = proxy.child.wait();
+                    }
+                    return Err(Error::Run(format!(
+                        "proxy adapter `{}` failed: {error}",
+                        adapter.name()
+                    )));
+                }
+            }
+        }
+        proxies.reverse();
+        let first = proxies.first().ok_or_else(|| {
+            Error::Input("ASB_PROXY_CHAIN must contain at least one proxy adapter when recording or replaying".into())
+        })?;
+        let progress = proxies.iter().find_map(|proxy| proxy.progress.clone());
+        Ok(Self {
+            url: first.url.clone(),
+            proxies,
+            mode,
+            cassette: cassette.to_path_buf(),
+            progress,
+        })
     }
 
     pub fn url(&self) -> &str {
@@ -153,10 +257,16 @@ impl Session {
     }
 
     pub fn stop(mut self) -> Result<(), Error> {
-        let _ = self.child.kill();
-        self.child
-            .wait()
-            .map_err(|error| Error::Run(format!("could not stop llmtape: {error}")))?;
+        let mut stop_error = None;
+        for proxy in self.proxies.iter_mut().rev() {
+            let _ = proxy.child.kill();
+            if let Err(error) = proxy.child.wait() {
+                stop_error = Some(Error::Run(format!("could not stop proxy adapter: {error}")));
+            }
+        }
+        if let Some(error) = stop_error {
+            return Err(error);
+        }
         if self.mode == Mode::Replay {
             let progress = self.progress.as_ref().expect("replay has progress path");
             let text = std::fs::read_to_string(progress).map_err(|error| {
@@ -277,9 +387,38 @@ impl Drop for Scratch {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        for proxy in &mut self.proxies {
+            let _ = proxy.child.kill();
+            let _ = proxy.child.wait();
+        }
     }
+}
+
+fn configured_chain() -> Result<Vec<String>, Error> {
+    let raw = std::env::var("ASB_PROXY_CHAIN").unwrap_or_else(|_| "llmtape".into());
+    parse_chain(&raw)
+}
+
+fn proxy_adapter(name: &str) -> Option<&'static dyn ProxyAdapter> {
+    PROXY_ADAPTERS
+        .iter()
+        .copied()
+        .find(|adapter| adapter.name().eq_ignore_ascii_case(name))
+}
+
+fn parse_chain(raw: &str) -> Result<Vec<String>, Error> {
+    let names = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        return Err(Error::Input(
+            "ASB_PROXY_CHAIN must contain at least one adapter when --record or --replay is enabled".into(),
+        ));
+    }
+    Ok(names)
 }
 
 fn free_port() -> Result<u16, Error> {
@@ -291,7 +430,7 @@ fn free_port() -> Result<u16, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Mode, ProxyExecutable, Session, resolve_executable};
+    use super::{Mode, ProxyExecutable, Session, parse_chain, resolve_executable};
     use std::io::{Read, Write};
     use std::net::TcpStream;
     use std::path::Path;
@@ -520,5 +659,14 @@ mod tests {
         // directly rather than changing ASB_LLM_TAPE in a parallel test.
         let command = ProxyExecutable::Override("custom-tape".into()).command();
         assert_eq!(command.get_program(), "custom-tape");
+    }
+
+    #[test]
+    fn proxy_chain_is_ordered_from_agent_to_provider() {
+        assert_eq!(
+            parse_chain("llmtape, audit, redact").unwrap(),
+            vec!["llmtape", "audit", "redact"]
+        );
+        assert!(parse_chain(" , ").is_err());
     }
 }
