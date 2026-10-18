@@ -159,7 +159,7 @@ impl Session {
             .map_err(|error| Error::Run(format!("could not stop llmtape: {error}")))?;
         if self.mode == Mode::Replay {
             let progress = self.progress.as_ref().expect("replay has progress path");
-            let text = std::fs::read_to_string(&progress).map_err(|error| {
+            let text = std::fs::read_to_string(progress).map_err(|error| {
                 Error::Run(format!(
                     "replay did not produce cassette progress for {}; verify the tape proxy: {error}",
                     self.cassette.display()
