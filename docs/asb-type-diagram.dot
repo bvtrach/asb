@@ -78,6 +78,8 @@ digraph ASB_Rust_UML {
         "asb-cli_src_WorkloadInstallOptions" [label="{WorkloadInstallOptions|+source: String\l+name: Option\<String\>\l+dir: Option\<PathBuf\>\l}", shape=record];
         "asb-cli_src_WorkloadListArgs" [label="{WorkloadListArgs|-dir: Option\<PathBuf\>\l}", shape=record];
         "asb-cli_src_WorkloadListOptions" [label="{WorkloadListOptions|+dir: Option\<PathBuf\>\l}", shape=record];
+        "asb-cli_tests_Drop" [label="{asb-cli_tests_Drop||+drop() void\l}", shape=record];
+        "asb-cli_tests_MockProvider" [label="{asb-cli_tests_MockProvider|-endpoint: String\l-requests: Arc\<Mutex\<Vec\<String\>\>\>\l-done: Arc\<AtomicBool\>\l-thread: Option\<std::thread::JoinHandle\<()\>\>\l|+start() Self\l}", shape=record];
     }
 
     subgraph "cluster_install" {

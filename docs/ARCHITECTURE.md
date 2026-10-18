@@ -185,8 +185,8 @@ extra requests. It is embedded in ASB and requires only Node.js; it does not use
 an external recorder package. ASB never falls back to an unqualified host `PATH`
 lookup; set `ASB_LLM_TAPE` explicitly to use another compatible executable.
 Measurement collection remains
-explicitly opt-in through `asb run --measurements DIR`; CI does not start live
-agents, llmtape, or host collectors.
+explicitly opt-in through `asb run --measurements DIR`; CI tests the tape on
+loopback but does not start live agents, live providers, or host collectors.
 
 Finite human-entered names use bounded edit-distance suggestions on failure.
 The original value is never replaced automatically; provider model IDs remain
@@ -202,6 +202,8 @@ Claude Code, Goose, Cline, and Continue receive OpenRouter's
 OpenAI-compatible endpoint (with Claude's Anthropic-compatible path derived
 from the same base) or the equivalent cli2key bridge endpoint. Continue
 receives a project-local model YAML generated for the selected model.
+Goose's adapter sets its `OPENAI_HOST` or `ANTHROPIC_HOST` to the tape endpoint
+for both recording and replay; replay uses a placeholder credential.
 
 `asb compare SWEEP.toml` reads the isolated `<sweep>-results/` directories
 created by `asb sweep`. It writes bounded `comparison.json` data, an offline
