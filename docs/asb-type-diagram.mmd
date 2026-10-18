@@ -485,6 +485,16 @@ classDiagram
         +prepare_fixture(name: &str, workspace: &Path) Result~usize, String~
         +prepare_source(_workloads: &Path, _workspace: &Path) Result~usize, String~
     }
+    class C070["asb-cli_tests_Drop"] {
+        +drop() void
+    }
+    class C071["asb-cli_tests_MockProvider"] {
+        -endpoint: String
+        -requests: Arc~Mutex<Vec<String>>~
+        -done: Arc~AtomicBool~
+        -thread: Option~std::thread::JoinHandle<()>~
+        +start() Self
+    }
     C001 --> C028
     C001 --> C029
     C002 --> C023
