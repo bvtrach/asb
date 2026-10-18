@@ -597,7 +597,10 @@ fn process_successful(status: &std::process::ExitStatus, stdout: &[u8], stderr: 
         String::from_utf8_lossy(stdout),
         String::from_utf8_lossy(stderr)
     );
-    ![
+    let has_completion_evidence = output.contains("Agent finished")
+        || output.contains("Saved trajectory to '.asb-mini-swe.traj.json'")
+        || output.contains("Saved trajectory to \".asb-mini-swe.traj.json\"");
+    let has_fatal_marker = [
         "Authentication required. Please use /login command to sign in to your account",
         "Endpoint /v1/chat/completions was not found",
         "litellm.NotFoundError",
@@ -607,7 +610,8 @@ fn process_successful(status: &std::process::ExitStatus, stdout: &[u8], stderr: 
         "The API provider's servers are down or overloaded",
     ]
     .iter()
-    .any(|marker| output.contains(marker))
+    .any(|marker| output.contains(marker));
+    !has_fatal_marker || has_completion_evidence
 }
 
 enum OutputChunk {
@@ -972,6 +976,23 @@ mod tests {
             b""
         ));
         assert!(super::process_successful(&status, b"completed", b""));
+    }
+
+    #[test]
+    fn transient_agent_test_errors_do_not_hide_completion() {
+        let status = std::process::Command::new("true")
+            .status()
+            .expect("true exists");
+        assert!(super::process_successful(
+            &status,
+            b"Tool returned TypeError: unexpected keyword argument 'reverse'\nAgent finished",
+            b""
+        ));
+        assert!(super::process_successful(
+            &status,
+            b"Tool returned TypeError: unexpected keyword argument 'reverse'\nSaved trajectory to '.asb-mini-swe.traj.json'",
+            b""
+        ));
     }
 
     #[test]
