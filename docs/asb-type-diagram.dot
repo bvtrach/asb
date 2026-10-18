@@ -129,7 +129,7 @@ digraph ASB_Rust_UML {
         style="rounded,dashed";
         "asb-cli_src_providers_ModelSpec" [label="{providers_ModelSpec|+name: &'static str\l+credential: Option\<&'static str\>\l+endpoint: Option\<&'static str\>\l+default_url: Option\<&'static str\>\l+kind: ModelKind\l|+url(self) Option\<String\>\l+url_for_model(self, selected: Option\<&str\>) Option\<String\>\l}", shape=record];
         "asb-cli_src_providers_ProviderSpec" [label="{providers_ProviderSpec|+name: &'static str\l+credential: Option\<&'static str\>\l+endpoint: Option\<&'static str\>\l+model_env: Option\<&'static str\>\l+tape_endpoint_envs: &'static [&'static str]\l+bridge_tool: Option\<&'static str\>\l}", shape=record];
-        "asb-cli_src_providers_adapters_cli2key_Bridge" [label="{providers_adapters_cli2key_Bridge|-api_key: String\l-base_url: String\l-process: Option\<Child\>\l|+api_key() &str\l+base_url() &str\l+connect(executable: Option\<&str\>) Result\<Self, Error\>\l+api_key() &str\l+base_url() &str\l}", shape=record];
+        "asb-cli_src_providers_adapters_cli2key_Bridge" [label="{providers_adapters_cli2key_Bridge|-api_key: String\l-base_url: String\l-process: Option\<Child\>\l-proxy: Option\<Child\>\l|+api_key() &str\l+base_url() &str\l+connect(executable: Option\<&str\>) Result\<Self, Error\>\l+api_key() &str\l+base_url() &str\l}", shape=record];
         "asb-cli_src_providers_adapters_cli2key_Drop" [label="{providers_adapters_cli2key_Drop||+drop() void\l}", shape=record];
     }
 

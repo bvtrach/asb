@@ -909,9 +909,10 @@
 <path fill="#f8fafc" stroke="#64748b" d="M284.5,-5153C284.5,-5153 839.5,-5153 839.5,-5153 845.5,-5153 851.5,-5159 851.5,-5165 851.5,-5165 851.5,-5199 851.5,-5199 851.5,-5205 845.5,-5211 839.5,-5211 839.5,-5211 284.5,-5211 284.5,-5211 278.5,-5211 272.5,-5205 272.5,-5199 272.5,-5199 272.5,-5165 272.5,-5165 272.5,-5159 278.5,-5153 284.5,-5153"/>
 <text text-anchor="middle" x="359" y="-5179.8" font-family="Helvetica,sans-Serif" font-size="9.00">providers_adapters_cli2key_Bridge</text>
 <polyline fill="none" stroke="#64748b" points="445.5,-5153 445.5,-5211 "/>
-<text text-anchor="start" x="453.5" y="-5189.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;api_key: String</text>
-<text text-anchor="start" x="453.5" y="-5179.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;base_url: String</text>
-<text text-anchor="start" x="453.5" y="-5169.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;process: Option&lt;Child&gt;</text>
+<text text-anchor="start" x="453.5" y="-5194.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;api_key: String</text>
+<text text-anchor="start" x="453.5" y="-5184.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;base_url: String</text>
+<text text-anchor="start" x="453.5" y="-5174.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;process: Option&lt;Child&gt;</text>
+<text text-anchor="start" x="453.5" y="-5164.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;proxy: Option&lt;Child&gt;</text>
 <polyline fill="none" stroke="#64748b" points="573.5,-5153 573.5,-5211 "/>
 <text text-anchor="start" x="581.5" y="-5199.8" font-family="Helvetica,sans-Serif" font-size="9.00">+api_key() &amp;str</text>
 <text text-anchor="start" x="581.5" y="-5189.8" font-family="Helvetica,sans-Serif" font-size="9.00">+base_url() &amp;str</text>

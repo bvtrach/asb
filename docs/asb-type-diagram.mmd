@@ -447,6 +447,7 @@ classDiagram
         -api_key: String
         -base_url: String
         -process: Option~Child~
+        -proxy: Option~Child~
         +api_key() &str
         +base_url() &str
         +connect(executable: Option~&str~) Result~Self, Error~
