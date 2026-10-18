@@ -1,0 +1,3 @@
+Inspect `requirements.txt` and `src/client.py`, identify the pinned dependency
+migration opportunity, make the smallest safe compatible update, and run the
+tests. Do not download dependencies.

@@ -1,0 +1,2 @@
+Refactor `src/labels.py` as described in its README without changing behavior,
+then run the tests and explain the resulting clarity improvement.

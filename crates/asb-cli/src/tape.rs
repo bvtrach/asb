@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(8);
-const BUILTIN_PROXY: &str = include_str!("../../../scripts/llmtape.mjs");
+const BUILTIN_PROXY: &str = include_str!("../assets/scripts/llmtape.mjs");
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(0);
 static START_LOCK: Mutex<()> = Mutex::new(());
 

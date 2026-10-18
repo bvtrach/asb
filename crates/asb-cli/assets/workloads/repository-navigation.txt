@@ -1,0 +1,2 @@
+Trace the call path described in the fixture README, run the tests, and explain
+how the main modules fit together. Do not modify files.

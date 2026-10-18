@@ -1,0 +1,3 @@
+Find and fix the small reproducible bug in `src/parser.py`. Run the existing
+tests first, explain the cause, make the smallest focused fix, and rerun the
+tests.

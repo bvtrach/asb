@@ -1,0 +1,2 @@
+Run `./build.sh`, repair its first reproducible build problem, and rerun the
+build plus its tests. Keep the program behavior unchanged.
