@@ -815,14 +815,14 @@ fn write_bar_svg(path: &Path, title: &str, values: &[(String, f64)]) -> Result<(
 
 fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> Result<(), Error> {
     const WIDTH: f64 = 1_200.0;
-    const HEIGHT: f64 = 620.0;
-    const LEFT: f64 = 85.0;
+    const LEFT: f64 = 100.0;
     const RIGHT: f64 = 1_160.0;
-    const BOTTOM: f64 = 530.0;
-    const LEGEND_COLUMN_WIDTH: f64 = 355.0;
-    const LEGEND_TOP: f64 = 44.0;
-    const LEGEND_ROW_HEIGHT: f64 = 28.0;
-    const LEGEND_MAX_CHARS: usize = 34;
+    const LEGEND_TOP: f64 = 50.0;
+    const LEGEND_COLUMNS: usize = 2;
+    const LEGEND_MAX_CHARS: usize = 46;
+    const LEGEND_LINE_HEIGHT: f64 = 16.0;
+    const LEGEND_ROW_PADDING: f64 = 12.0;
+    const PLOT_HEIGHT: f64 = 320.0;
     let max = values
         .iter()
         .flat_map(|(_, points)| points.values.iter().copied())
@@ -838,11 +838,34 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> 
                 None => (timestamp, timestamp),
             })
         });
-    let legend_columns = values.len().clamp(1, 3);
+    let legend_columns = values.len().clamp(1, LEGEND_COLUMNS);
+    let legend_column_width = (RIGHT - LEFT) / legend_columns as f64;
+    let legend_lines = values
+        .iter()
+        .map(|(label, _)| wrap_label(label, LEGEND_MAX_CHARS))
+        .collect::<Vec<_>>();
     let legend_rows = values.len().div_ceil(legend_columns);
-    let plot_top = LEGEND_TOP + legend_rows as f64 * LEGEND_ROW_HEIGHT + 16.0;
-    let mut svg = svg_header(WIDTH, HEIGHT, title);
-    append_y_axis(&mut svg, LEFT, plot_top, BOTTOM, RIGHT, max, title);
+    let legend_height = (0..legend_rows)
+        .map(|row| {
+            (0..legend_columns)
+                .filter_map(|column| legend_lines.get(row * legend_columns + column))
+                .map(|lines| lines.len())
+                .max()
+                .unwrap_or(1) as f64
+                * LEGEND_LINE_HEIGHT
+                + LEGEND_ROW_PADDING
+        })
+        .sum::<f64>();
+    let plot_top = LEGEND_TOP + legend_height + 18.0;
+    let bottom = plot_top + PLOT_HEIGHT;
+    let height = bottom + 72.0;
+    let mut svg = svg_header(WIDTH, height, title);
+    svg.push_str(&format!(
+        "<rect class=\"legend-panel\" x=\"{LEFT:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{legend_height:.1}\" rx=\"8\" fill=\"#f4f8fb\" stroke=\"#dce4ec\"/>",
+        LEGEND_TOP - 22.0,
+        RIGHT - LEFT
+    ));
+    append_y_axis(&mut svg, LEFT, plot_top, bottom, RIGHT, max, title);
     append_series_x_axis(
         &mut svg,
         timestamp_bounds,
@@ -852,7 +875,7 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> 
             .max()
             .unwrap_or(0),
         LEFT,
-        BOTTOM,
+        bottom,
         RIGHT,
     );
     for (series_index, (label, points)) in values.iter().enumerate() {
@@ -870,7 +893,7 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> 
                     LEFT,
                     RIGHT,
                 );
-                let y = BOTTOM - value.max(0.0) / max * (BOTTOM - plot_top);
+                let y = bottom - value.max(0.0) / max * (bottom - plot_top);
                 format!("{x:.1},{y:.1}")
             })
             .collect::<Vec<_>>()
@@ -888,7 +911,7 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> 
                 LEFT,
                 RIGHT,
             );
-            let y = BOTTOM - value.max(0.0) / max * (BOTTOM - plot_top);
+            let y = bottom - value.max(0.0) / max * (bottom - plot_top);
             let timestamp = points
                 .timestamps_ms
                 .as_ref()
@@ -903,9 +926,23 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> 
         }
         let column = series_index % legend_columns;
         let row = series_index / legend_columns;
-        let legend_x = LEFT + column as f64 * LEGEND_COLUMN_WIDTH;
-        let legend_y = LEGEND_TOP + row as f64 * LEGEND_ROW_HEIGHT;
-        let lines = wrap_label(label, LEGEND_MAX_CHARS);
+        let legend_x = LEFT + column as f64 * legend_column_width;
+        let row_y = LEGEND_TOP
+            + (0..row)
+                .map(|previous_row| {
+                    (0..legend_columns)
+                        .filter_map(|previous_column| {
+                            legend_lines.get(previous_row * legend_columns + previous_column)
+                        })
+                        .map(|lines| lines.len())
+                        .max()
+                        .unwrap_or(1) as f64
+                        * LEGEND_LINE_HEIGHT
+                        + LEGEND_ROW_PADDING
+                })
+                .sum::<f64>();
+        let lines = &legend_lines[series_index];
+        let legend_y = row_y + 6.0;
         svg.push_str(&format!(
             "<rect class=\"legend-swatch\" x=\"{legend_x:.1}\" y=\"{:.1}\" width=\"10\" height=\"10\" rx=\"2\" fill=\"{color}\"/><text class=\"legend-item\" data-series-index=\"{series_index}\" x=\"{:.1}\" y=\"{:.1}\" font-size=\"12\" fill=\"{color}\" aria-label=\"{}\">",
             legend_y - 10.0,
@@ -960,10 +997,10 @@ fn append_series_x_axis(
     bottom: f64,
     right: f64,
 ) {
-    let label = if timestamp_bounds.is_some() {
-        "time (ms)"
+    let (label, unit) = if timestamp_bounds.is_some() {
+        ("time", "ms")
     } else {
-        "sample"
+        ("sample", "index")
     };
     for tick in 0..=Y_TICKS {
         let fraction = tick as f64 / Y_TICKS as f64;
@@ -975,11 +1012,11 @@ fn append_series_x_axis(
             "<line class=\"x-axis-tick\" x1=\"{x:.1}\" y1=\"{bottom:.1}\" x2=\"{x:.1}\" y2=\"{:.1}\" stroke=\"#18212b\"/><text class=\"x-axis-value\" x=\"{x:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-size=\"11\">{}</text>",
             bottom + 6.0,
             bottom + 22.0,
-            format_tick(value)
+            format!("{} {}", format_tick(value), unit)
         ));
     }
     svg.push_str(&format!(
-        "<text class=\"x-axis-label\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-size=\"12\">{label}</text>",
+        "<text class=\"x-axis-label\" x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-size=\"12\">{label} ({unit})</text>",
         (left + right) / 2.0,
         bottom + 43.0
     ));
@@ -1297,8 +1334,51 @@ mod tests {
         assert!(svg.contains("class=\"x-axis-value\""));
         assert!(svg.contains("class=\"x-axis-label\""));
         assert!(svg.contains(">time (ms)</text>"));
+        assert!(svg.contains("10 ms"));
+        assert!(svg.contains("20 ms"));
         assert!(svg.contains("class=\"legend-item\""));
+        assert!(svg.contains("class=\"legend-panel\""));
         assert!(svg.contains("<tspan"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn line_graph_labels_sample_axis_and_gives_long_legends_room() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-compare-sample-axis-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let series = (0..8)
+            .map(|index| {
+                (
+                    format!(
+                        "collector-{}-with-a-long-human-readable-series-name",
+                        index + 1
+                    ),
+                    super::TimeSeries {
+                        values: vec![1.0, 2.0, 3.0],
+                        timestamps_ms: None,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        super::write_line_svg(&root.join("samples.svg"), "cpu.user_pct", &series).unwrap();
+        let svg = std::fs::read_to_string(root.join("samples.svg")).unwrap();
+        assert!(svg.contains(">sample (index)</text>"));
+        assert!(svg.contains("0 index"));
+        assert!(svg.contains("2 index"));
+        assert!(svg.contains("class=\"legend-panel\""));
+        assert!(svg.matches("class=\"legend-item\"").count() == 8);
+        let height = svg
+            .split_once("height=\"")
+            .and_then(|(_, value)| value.split_once('"'))
+            .and_then(|(value, _)| value.parse::<f64>().ok())
+            .unwrap();
+        assert!(height > 620.0);
         let _ = std::fs::remove_dir_all(root);
     }
 
