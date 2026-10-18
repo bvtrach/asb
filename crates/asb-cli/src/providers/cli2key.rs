@@ -2,12 +2,14 @@
 
 use crate::Error;
 use std::io::{BufRead, BufReader};
+use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+const BUILTIN_COMPAT_PROXY: &str = include_str!("../../assets/scripts/cli2key-proxy.mjs");
 
 pub(super) fn prepare(
     command: &mut Command,
@@ -53,6 +55,7 @@ pub struct Bridge {
     api_key: String,
     base_url: String,
     process: Option<Child>,
+    proxy: Option<Child>,
 }
 
 impl super::ProviderSession for Bridge {
@@ -74,6 +77,7 @@ impl Bridge {
                 api_key,
                 base_url,
                 process: None,
+                proxy: None,
             });
         }
         let executable = executable.ok_or(Error::Run(
@@ -109,6 +113,7 @@ impl Bridge {
             api_key: String::new(),
             base_url,
             process: Some(process),
+            proxy: None,
         };
         let process = bridge.process.as_mut().expect("spawned bridge");
         let stdout = process
@@ -171,6 +176,71 @@ impl Bridge {
             .or(discovered_key)
             .ok_or_else(|| Error::Run("cli2key bridge did not provide an API key".into()))?;
         bridge.api_key = api_key;
+        let proxy_root = std::env::current_dir()
+            .map_err(|error| Error::Run(format!("cannot locate the project directory for the cli2key compatibility proxy: {error}")))?
+            .join(".asb-runtime");
+        std::fs::create_dir_all(&proxy_root).map_err(|error| {
+            Error::Run(format!(
+                "cannot create cli2key compatibility proxy directory {}: {error}",
+                proxy_root.display()
+            ))
+        })?;
+        let proxy_script = proxy_root.join(format!("cli2key-proxy-{}.mjs", std::process::id()));
+        std::fs::write(&proxy_script, BUILTIN_COMPAT_PROXY).map_err(|error| {
+            Error::Run(format!(
+                "cannot write cli2key compatibility proxy {}: {error}",
+                proxy_script.display()
+            ))
+        })?;
+        let proxy_port = free_port()?;
+        let upstream = bridge.base_url.clone();
+        let mut proxy = Command::new("node")
+            .arg(&proxy_script)
+            .args(["--port", &proxy_port.to_string(), "--upstream", &upstream])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| {
+                Error::Run(format!(
+                    "could not start cli2key compatibility proxy: {error}"
+                ))
+            })?;
+        let stdout = proxy.stdout.take().ok_or_else(|| {
+            Error::Run("cli2key compatibility proxy did not expose startup output".into())
+        })?;
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().take(8) {
+                let Ok(line) = line else { break };
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        let deadline = Instant::now() + STARTUP_TIMEOUT;
+        let mut ready = false;
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match receiver.recv_timeout(remaining) {
+                Ok(line) if line == "ASB cli2key proxy ready" => {
+                    ready = true;
+                    break;
+                }
+                Ok(_) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => break,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        if !ready {
+            let _ = proxy.kill();
+            let _ = proxy.wait();
+            return Err(Error::Run(
+                "cli2key compatibility proxy did not become ready within 5 seconds".into(),
+            ));
+        }
+        bridge.base_url = format!("http://127.0.0.1:{proxy_port}/v1");
+        bridge.proxy = Some(proxy);
         Ok(bridge)
     }
 
@@ -187,6 +257,12 @@ impl Bridge {
 
 impl Drop for Bridge {
     fn drop(&mut self) {
+        if let Some(proxy) = self.proxy.as_mut() {
+            if proxy.try_wait().ok().flatten().is_none() {
+                let _ = proxy.kill();
+            }
+            let _ = proxy.wait();
+        }
         if let Some(process) = self.process.as_mut() {
             if process.try_wait().ok().flatten().is_none() {
                 let _ = process.kill();
@@ -194,6 +270,17 @@ impl Drop for Bridge {
             let _ = process.wait();
         }
     }
+}
+
+fn free_port() -> Result<u16, Error> {
+    TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .and_then(|listener| listener.local_addr())
+        .map(|address| address.port())
+        .map_err(|error| {
+            Error::Run(format!(
+                "cannot allocate cli2key compatibility proxy port: {error}"
+            ))
+        })
 }
 
 fn required_key() -> Result<String, Error> {
