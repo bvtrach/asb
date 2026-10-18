@@ -42,6 +42,9 @@ runner. Do not register or enable a local runner until its isolation and runner
 access controls have been explicitly chosen and verified; do not expose host
 credentials, project trees, or host services to untrusted jobs. A dedicated
 account and service hardening reduce risk but are not a disposable VM boundary.
+In particular, a native runner shares the host network and can reach loopback
+services, and a job runs with the runner account's own credentials. Review the
+full workflow and code before approving external pull-request workflow runs.
 
 The opt-in real-agent fixture test launches an installed client against a
 synthetic loopback provider with dummy credentials. On Linux, compile it and
