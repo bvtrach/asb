@@ -4,7 +4,7 @@ use std::process::Command;
 const MAX_ENDPOINT_CATALOG: usize = 8 * 1024 * 1024;
 
 /// Public OpenCode-maintained metadata; never send provider credentials here.
-pub(super) fn fetch_endpoint_catalog() -> Result<Vec<u8>, Error> {
+pub(in crate::providers) fn fetch_endpoint_catalog() -> Result<Vec<u8>, Error> {
     let catalog_url = std::env::var("ASB_ENDPOINT_CATALOG_URL")
         .unwrap_or_else(|_| "https://models.dev/api.json".into());
     let output = Command::new("curl")
@@ -36,7 +36,7 @@ pub(super) fn fetch_endpoint_catalog() -> Result<Vec<u8>, Error> {
     Ok(output.stdout)
 }
 
-pub(super) fn catalog_tool_support(body: &[u8], model: &str) -> Option<bool> {
+pub(in crate::providers) fn catalog_tool_support(body: &[u8], model: &str) -> Option<bool> {
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
     value
         .get("opencode")?
@@ -46,7 +46,10 @@ pub(super) fn catalog_tool_support(body: &[u8], model: &str) -> Option<bool> {
         .as_bool()
 }
 
-pub(super) fn catalog_offer(body: &[u8], model: &str) -> Option<crate::endpoint::Offer> {
+pub(in crate::providers) fn catalog_offer(
+    body: &[u8],
+    model: &str,
+) -> Option<crate::endpoint::Offer> {
     use crate::endpoint::{Address, Authentication, Interface, Offer};
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
     let provider = value.get("opencode")?;

@@ -11,7 +11,6 @@ fixed_offers!(
 );
 
 adapter!(
-    together,
     "together",
     Some("TOGETHER_API_KEY"),
     Some("TOGETHER_BASE_URL"),

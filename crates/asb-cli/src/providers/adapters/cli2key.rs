@@ -1,4 +1,5 @@
 //! Adapter for cli2key.
+pub(in crate::providers) mod implementation;
 use super::*;
 
 fn cli2key_offers(_: &str) -> Vec<Offer> {
@@ -9,7 +10,6 @@ fn cli2key_offers(_: &str) -> Vec<Offer> {
 }
 
 adapter!(
-    cli2key,
     "cli2key",
     Some("CLI2KEY_API_KEY"),
     Some("CLI2KEY_BASE_URL"),
@@ -29,7 +29,7 @@ adapter!(
         _tape: Option<&str>,
         _replay: bool,
     ) -> Result<(), crate::Error> {
-        crate::providers::cli2key::prepare(command, model, bridge)
+        implementation::prepare(command, model, bridge)
     },
     fn known_models(&self) -> Option<&'static [&'static str]> {
         Some(&["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"])
@@ -43,14 +43,14 @@ adapter!(
         tools_dir: &str,
     ) -> Result<Option<Box<dyn crate::providers::ProviderSession>>, crate::Error> {
         let executable = crate::tools::resolve("cli2key", project_root, tools_dir);
-        crate::providers::cli2key::Bridge::connect(executable.as_deref())
+        implementation::Bridge::connect(executable.as_deref())
             .map(|session| Some(Box::new(session) as Box<dyn crate::providers::ProviderSession>))
     },
     fn discovery_session(
         &self,
     ) -> Result<Option<Box<dyn crate::providers::ProviderSession>>, crate::Error> {
-        let executable = crate::providers::cli2key::local_executable();
-        crate::providers::cli2key::Bridge::connect(executable.as_deref())
+        let executable = implementation::local_executable();
+        implementation::Bridge::connect(executable.as_deref())
             .map(|session| Some(Box::new(session) as Box<dyn crate::providers::ProviderSession>))
     }
 );

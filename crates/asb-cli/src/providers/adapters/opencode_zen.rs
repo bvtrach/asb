@@ -1,4 +1,5 @@
 //! Adapter for opencode-zen.
+pub(in crate::providers) mod implementation;
 use super::*;
 
 fn opencode_offers(model: &str) -> Vec<Offer> {
@@ -60,7 +61,6 @@ fn opencode_offers(model: &str) -> Vec<Offer> {
 }
 
 adapter!(
-    opencode_zen,
     "opencode-zen",
     Some("OPENCODE_API_KEY"),
     Some("OPENCODE_ZEN_BASE_URL"),
@@ -73,12 +73,12 @@ adapter!(
     "mimo-v2.6-flash-free",
     opencode_offers,
     fn discover_endpoints(&self, model: &str) -> (Vec<Offer>, bool, Option<bool>) {
-        if let Ok(catalog) = crate::providers::opencode_zen::fetch_endpoint_catalog() {
-            if let Some(offer) = crate::providers::opencode_zen::catalog_offer(&catalog, model) {
+        if let Ok(catalog) = implementation::fetch_endpoint_catalog() {
+            if let Some(offer) = implementation::catalog_offer(&catalog, model) {
                 return (
                     vec![offer],
                     false,
-                    crate::providers::opencode_zen::catalog_tool_support(&catalog, model),
+                    implementation::catalog_tool_support(&catalog, model),
                 );
             }
         }

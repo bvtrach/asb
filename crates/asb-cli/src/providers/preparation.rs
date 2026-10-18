@@ -16,7 +16,7 @@ pub fn apply_with_tape(
     tape_base_url: Option<&str>,
     replay: bool,
 ) -> Result<(), Error> {
-    if let Some(adapter) = super::registry::find(provider) {
+    if let Some(adapter) = super::adapters::find(provider) {
         adapter.prepare(command, model, bridge, tape_base_url, replay)?;
     }
     Ok(())
@@ -64,7 +64,7 @@ mod tests {
     #[test]
     fn openrouter_baseline_uses_compatible_protocol_endpoints() {
         let mut command = Command::new("bridge-client");
-        super::super::openrouter::configure_openai_compatible(
+        super::super::adapters::openrouter::implementation::configure_openai_compatible(
             &mut command,
             "example/model",
             "or-test",

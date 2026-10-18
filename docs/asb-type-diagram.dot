@@ -49,18 +49,12 @@ digraph ASB_Rust_UML {
         "asb-cli_src_Drop" [label="{Drop||+drop() void\l}", shape=record];
         "asb-cli_src_From" [label="{From||+from(value: SetupArgs) Self\l+from(value: ModelArgs) Self\l+from(value: ToolInstallArgs) Self\l+from(value: WorkloadInstallArgs) Self\l+from(value: WorkloadListArgs) Self\l}", shape=record];
         "asb-cli_src_InitArgs" [label="{InitArgs|-root: Option\<PathBuf\>\l-reset: bool\l}", shape=record];
-        "asb-cli_src_LlmtapeAdapter" [label="{LlmtapeAdapter}", shape=record];
         "asb-cli_src_ModelArgs" [label="{ModelArgs|-provider: Option\<String\>\l-json: bool\l-free: bool\l}", shape=record];
         "asb-cli_src_ModelListOptions" [label="{ModelListOptions|+provider: Option\<String\>\l+json: bool\l+free_only: bool\l}", shape=record];
         "asb-cli_src_Offer" [label="{Offer|+interface: Interface\l+authentication: Authentication\l+address: Address\l}", shape=record];
         "asb-cli_src_OwnedChild" [label="{OwnedChild||+deref() Target\l+deref_mut() Target\l}", shape=record];
         "asb-cli_src_ProviderArgs" [label="{ProviderArgs|-command: ProviderCommand\l}", shape=record];
-        "asb-cli_src_ProxyAdapter" [label="{ProxyAdapter||+name() &'static str\l+start(request: &ProxyRequest) Result\<RunningProxy, Error\>\l}", shape=record];
-        "asb-cli_src_ProxyExecutable" [label="{ProxyExecutable||+command() Command\l}", shape=record];
-        "asb-cli_src_ProxyRequest" [label="{ProxyRequest|-mode: Mode\l-cassette: PathBuf\l-upstream: Option\<String\>\l-respect_record_timings: bool\l-workspace: PathBuf\l}", shape=record];
         "asb-cli_src_RunArgs" [label="{RunArgs|-path: String\l-record: bool\l-replay: bool\l-respect_record_timings: bool\l-cassette: Option\<String\>\l-json: bool\l-show_output: bool\l-measurements: Option\<String\>\l}", shape=record];
-        "asb-cli_src_RunningProxy" [label="{RunningProxy|-child: Child\l-url: String\l-progress: Option\<PathBuf\>\l-_scratch: Scratch\l}", shape=record];
-        "asb-cli_src_Scratch" [label="{Scratch|-path: PathBuf\l|+create(parent: &Path) Result\<Self, Error\>\l}", shape=record];
         "asb-cli_src_Session" [label="{Session|-dir: PathBuf\l-tool_dir: Option\<PathBuf\>\l-started_unix_ms: u128\l-collectors: Vec\<Collector\>\l-perf_data: Option\<PathBuf\>\l-perf_enabled: bool\l-perfetto_trace: Option\<PathBuf\>\l-perfetto_enabled: bool\l-trace_marker: Option\<PathBuf\>\l-tracepoint_count: u64\l-perfetto_metrics: BTreeMap\<String, f64\>\l-bpftrace_profiles: Vec\<BpftraceProfile\>\l-mpstat_enabled: bool\l-iostat_enabled: bool\l-bpftrace_enabled: bool\l-sudo_collectors: BTreeSet\<String\>\l|+started_unix_ms() u128\l+start_with_collectors(dir: &Path, selected: &[String], tool_dir: Option\<&Path\>) Result\<Self, String\>\l+trace_instant(name: &str) void\l+trace_begin(name: &str) void\l+trace_end() void\l+attach_pid(pid: u32) Result\<(), String\>\l+finish(self, measurement: RunMeasurement\<'a\>) Result\<(), String\>\l+start_perfetto(pid: u32) Result\<(), String\>\l+write_trace_marker(event: &str) void\l+perfetto_trace_metrics() BTreeMap\<String, f64\>\l+perfetto_trace_series() (BTreeMap\<String, Vec\<f64\>\>, BTreeMap\<String, Vec\<f64\>\>\l+start_snapshot(name: &str, variable: &str, args: &[&str], enabled: bool, command_name: &str) Result\<(), String\>\l+start_process_snapshots(pid: u32) Result\<(), String\>\l+start_bpftrace(pid: u32) Result\<(), String\>\l+start_bpftrace_profiles(pid: u32) Result\<(), String\>\l+write_flamegraph() Result\<(), String\>\l+command(name: &str) Command\l+executable(name: &str) PathBuf\l}", shape=record];
         "asb-cli_src_SetupArgs" [label="{SetupArgs|-mode: Option\<SetupMode\>\l-agent: Option\<String\>\l-workload: Option\<String\>\l-provider: Option\<String\>\l-model: Option\<String\>\l-concurrency: Option\<usize\>\l-workspace: Option\<String\>\l-output: Option\<String\>\l}", shape=record];
         "asb-cli_src_SetupOptions" [label="{SetupOptions|+agent: Option\<String\>\l+workload: Option\<String\>\l+provider: Option\<String\>\l+model: Option\<String\>\l+concurrency: Option\<usize\>\l+workspace: Option\<String\>\l+output: Option\<String\>\l}", shape=record];
@@ -83,6 +77,10 @@ digraph ASB_Rust_UML {
         "asb-cli_tests_Project" [label="{asb-cli_tests_Project||+new() Self\l+command(args: &[&str]) Output\l+command_with_env(args: &[&str], extra: &[(&str, &str)]) Output\l+write(name: &str, contents: &str) void\l+init() void\l}", shape=record];
         "asb-cli_tests_WaitForFixtureExpiry" [label="{asb-cli_tests_WaitForFixtureExpiry|-pid: u32\l-executable: PathBuf\l}", shape=record];
         "tests_asb-cli_src_FailingWriter" [label="{tests_FailingWriter||+write() Result\<usize\>\l+flush() Result\<()\>\l}", shape=record];
+        "tests_asb-cli_src_proxy_FixtureAdapter" [label="{tests_proxy_FixtureAdapter|-name: &'static str\l-fail: bool\l-fail_finish: bool\l-events: Arc\<Mutex\<Vec\<String\>\>\>\l}", shape=record];
+        "tests_asb-cli_src_proxy_FixtureSession" [label="{tests_proxy_FixtureSession|-name: &'static str\l-url: String\l-active: bool\l-fail_finish: bool\l-events: Arc\<Mutex\<Vec\<String\>\>\>\l}", shape=record];
+        "tests_asb-cli_src_proxy_ProxyAdapter" [label="{tests_proxy_ProxyAdapter||+name() &'static str\l+start(upstream: Option\<&str\>, settings: Option\<&dyn Any\>) Result\<Box\<dyn ProxySession\>, Error\>\l}", shape=record];
+        "tests_asb-cli_src_proxy_ProxySession" [label="{tests_proxy_ProxySession||+url() &str\l+finish() Result\<(), Error\>\l+abort() void\l}", shape=record];
     }
 
     subgraph "cluster_install" {
@@ -129,10 +127,28 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_ModelSpec" [label="{ModelSpec|+name: &'static str\l+credential: Option\<&'static str\>\l+endpoint: Option\<&'static str\>\l+default_url: Option\<&'static str\>\l+kind: ModelKind\l|+url(self) Option\<String\>\l+url_for_model(self, selected: Option\<&str\>) Option\<String\>\l}", shape=record];
-        "asb-cli_src_ProviderSpec" [label="{ProviderSpec|+name: &'static str\l+credential: Option\<&'static str\>\l+endpoint: Option\<&'static str\>\l+model_env: Option\<&'static str\>\l+tape_endpoint_envs: &'static [&'static str]\l+bridge_tool: Option\<&'static str\>\l}", shape=record];
-        "asb-cli_src_providers_Bridge" [label="{providers_Bridge|-api_key: String\l-base_url: String\l-process: Option\<Child\>\l|+api_key() &str\l+base_url() &str\l+connect(executable: Option\<&str\>) Result\<Self, Error\>\l+api_key() &str\l+base_url() &str\l}", shape=record];
-        "asb-cli_src_providers_Drop" [label="{providers_Drop||+drop() void\l}", shape=record];
+        "asb-cli_src_providers_ModelSpec" [label="{providers_ModelSpec|+name: &'static str\l+credential: Option\<&'static str\>\l+endpoint: Option\<&'static str\>\l+default_url: Option\<&'static str\>\l+kind: ModelKind\l|+url(self) Option\<String\>\l+url_for_model(self, selected: Option\<&str\>) Option\<String\>\l}", shape=record];
+        "asb-cli_src_providers_ProviderSpec" [label="{providers_ProviderSpec|+name: &'static str\l+credential: Option\<&'static str\>\l+endpoint: Option\<&'static str\>\l+model_env: Option\<&'static str\>\l+tape_endpoint_envs: &'static [&'static str]\l+bridge_tool: Option\<&'static str\>\l}", shape=record];
+        "asb-cli_src_providers_adapters_cli2key_Bridge" [label="{providers_adapters_cli2key_Bridge|-api_key: String\l-base_url: String\l-process: Option\<Child\>\l|+api_key() &str\l+base_url() &str\l+connect(executable: Option\<&str\>) Result\<Self, Error\>\l+api_key() &str\l+base_url() &str\l}", shape=record];
+        "asb-cli_src_providers_adapters_cli2key_Drop" [label="{providers_adapters_cli2key_Drop||+drop() void\l}", shape=record];
+    }
+
+    subgraph "cluster_proxy" {
+        label="proxy";
+        color="#cbd5e1";
+        fontcolor="#334155";
+        style="rounded,dashed";
+        "asb-cli_src_proxy_Chain" [label="{proxy_Chain|-hops: Vec\<Box\<dyn ProxySession\>\>\l-url: String\l|+start(names: &[String], upstream: Option\<&str\>, configurations: &HashMap\<String, Box\<dyn Any\>\>) Result\<Self, Error\>\l+start_selected(selected: &[&dyn ProxyAdapter], upstream: Option\<&str\>, configurations: &HashMap\<String, Box\<dyn Any\>\>) Result\<Self, Error\>\l+url() &str\l+stop(self) Result\<(), Error\>\l}", shape=record];
+        "asb-cli_src_proxy_Drop" [label="{proxy_Drop||+drop() void\l}", shape=record];
+        "asb-cli_src_proxy_adapters_Drop" [label="{proxy_adapters_Drop||+drop() void\l+drop() void\l+drop() void\l}", shape=record];
+        "asb-cli_src_proxy_adapters_LlmtapeAdapter" [label="{proxy_adapters_LlmtapeAdapter}", shape=record];
+        "asb-cli_src_proxy_ProxyAdapter" [label="{proxy_ProxyAdapter||+name() &'static str\l+start(upstream: Option\<&str\>, settings: Option\<&dyn Any\>) Result\<Box\<dyn ProxySession\>, Error\>\l}", shape=record];
+        "asb-cli_src_proxy_adapters_ProxyExecutable" [label="{proxy_adapters_ProxyExecutable||+command() Command\l}", shape=record];
+        "asb-cli_src_proxy_ProxySession" [label="{proxy_ProxySession||+url() &str\l+finish() Result\<(), Error\>\l+abort() void\l}", shape=record];
+        "asb-cli_src_proxy_adapters_RunningLlmtape" [label="{proxy_adapters_RunningLlmtape|-child: Option\<Child\>\l-url: String\l-progress: Option\<PathBuf\>\l-cassette: PathBuf\l-mode: Mode\l-_scratch: proxy_adapters_Scratch\l}", shape=record];
+        "asb-cli_src_proxy_adapters_Scratch" [label="{proxy_adapters_Scratch|-path: PathBuf\l|+create(parent: &Path) Result\<Self, Error\>\l}", shape=record];
+        "asb-cli_src_proxy_adapters_Settings" [label="{proxy_adapters_Settings|-mode: Mode\l-cassette: PathBuf\l-respect_record_timings: bool\l-workspace: PathBuf\l}", shape=record];
+        "asb-cli_src_proxy_adapters_StartingChild" [label="{proxy_adapters_StartingChild}", shape=record];
     }
 
     subgraph "cluster_runner" {
@@ -169,12 +185,12 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_Fixture" [label="{Fixture|-name: &'static str\l-files: &'static [(&'static str, &'static str)]\l}", shape=record];
-        "asb-cli_src_Trial" [label="{Trial|+id: String\l+description: String\l}", shape=record];
-        "asb-cli_src_TrialSet" [label="{TrialSet|+workload: String\l+trials: Vec\<Trial\>\l}", shape=record];
-        "asb-cli_src_workloads_workload_adapters_PromptAdapter" [label="{workloads_workload_adapters_PromptAdapter}", shape=record];
-        "asb-cli_src_workloads_workload_adapters_StaticExternalAdapter" [label="{workloads_workload_adapters_StaticExternalAdapter|-id: &'static str\l-trials: &'static [(&'static str, &'static str)]\l|+new(id: &'static str, trials: &'static [(&'static str, &'static str)]) Self\l}", shape=record];
-        "asb-cli_src_workloads_workload_adapters_WorkloadAdapter" [label="{workloads_workload_adapters_WorkloadAdapter||+id() &'static str\l+trial_ids() Vec\<Trial\>\l+prepare_source(workloads: &Path, workspace: &Path) Result\<usize, String\>\l+id() &'static str\l+matches(name: &str) bool\l+trial_ids() Vec\<Trial\>\l+populate_prompts(directory: &Path) Result\<usize, std::io::Error\>\l+populate_fixtures(directory: &Path) Result\<usize, std::io::Error\>\l+prepare_fixture(name: &str, workspace: &Path) Result\<usize, String\>\l+prepare_source(_workloads: &Path, _workspace: &Path) Result\<usize, String\>\l}", shape=record];
+        "asb-cli_src_workloads_Fixture" [label="{workloads_Fixture|-name: &'static str\l-files: &'static [(&'static str, &'static str)]\l}", shape=record];
+        "asb-cli_src_workloads_Trial" [label="{workloads_Trial|+id: String\l+description: String\l}", shape=record];
+        "asb-cli_src_workloads_TrialSet" [label="{workloads_TrialSet|+workload: String\l+trials: Vec\<workloads_Trial\>\l}", shape=record];
+        "asb-cli_src_workloads_adapters_PromptAdapter" [label="{workloads_adapters_PromptAdapter}", shape=record];
+        "asb-cli_src_workloads_adapters_StaticExternalAdapter" [label="{workloads_adapters_StaticExternalAdapter|-id: &'static str\l-trials: &'static [(&'static str, &'static str)]\l|+new(id: &'static str, trials: &'static [(&'static str, &'static str)]) Self\l}", shape=record];
+        "asb-cli_src_workloads_adapters_WorkloadAdapter" [label="{workloads_adapters_WorkloadAdapter||+id() &'static str\l+trial_ids() Vec\<workloads_Trial\>\l+prepare_source(workloads: &Path, workspace: &Path) Result\<usize, String\>\l+id() &'static str\l+matches(name: &str) bool\l+trial_ids() Vec\<workloads_Trial\>\l+populate_prompts(directory: &Path) Result\<usize, std::io::Error\>\l+populate_fixtures(directory: &Path) Result\<usize, std::io::Error\>\l+prepare_fixture(name: &str, workspace: &Path) Result\<usize, String\>\l+prepare_source(_workloads: &Path, _workspace: &Path) Result\<usize, String\>\l}", shape=record];
     }
 
     "asb-cli_src_App" -> "asb-cli_src_Pane" [arrowhead="vee"];
@@ -182,18 +198,18 @@ digraph ASB_Rust_UML {
     "asb-cli_src_BenchmarkConfig" -> "asb-cli_src_MeasurementConfig" [arrowhead="vee"];
     "asb-cli_src_BenchmarkData" -> "asb-cli_src_TimeSeries" [arrowhead="vee"];
     "asb-cli_src_Pane" -> "asb-cli_src_Choice" [arrowhead="vee"];
-    "asb-cli_src_ProxyAdapter" -> "asb-cli_src_RunningProxy" [arrowhead="vee", style="dashed"];
     "asb-cli_src_RunMeasurement" -> "asb-cli_src_TokenUsage" [arrowhead="vee"];
     "asb-cli_src_RunResult" -> "asb-cli_src_TokenUsage" [arrowhead="vee"];
-    "asb-cli_src_RunningProxy" -> "asb-cli_src_Scratch" [arrowhead="vee"];
     "asb-cli_src_Session" -> "asb-cli_src_BpftraceProfile" [arrowhead="vee"];
     "asb-cli_src_Session" -> "asb-cli_src_Collector" [arrowhead="vee"];
-    "asb-cli_src_Session" -> "asb-cli_src_RunningProxy" [arrowhead="vee"];
-    "asb-cli_src_TrialSet" -> "asb-cli_src_Trial" [arrowhead="vee"];
     "asb-cli_src_WorkloadApp" -> "asb-cli_src_Pane" [arrowhead="vee"];
     "asb-cli_src_WorkloadApp" -> "asb-cli_src_ProjectConfig" [arrowhead="vee"];
     "asb-cli_src_agents_AgentAdapter" -> "asb-cli_src_agents_AgentArtifacts" [arrowhead="vee", style="dashed"];
     "asb-cli_src_agents_AgentAdapter" -> "asb-cli_src_agents_CommandSpec" [arrowhead="vee", style="dashed"];
     "asb-cli_src_agents_PreparationContext" -> "asb-cli_src_Connection" [arrowhead="vee"];
-    "asb-cli_src_workloads_workload_adapters_WorkloadAdapter" -> "asb-cli_src_Trial" [arrowhead="vee", style="dashed"];
+    "asb-cli_src_proxy_adapters_LlmtapeAdapter" -> "asb-cli_src_proxy_adapters_ProxyAdapter" [arrowhead="empty", style="dashed"];
+    "asb-cli_src_proxy_adapters_RunningLlmtape" -> "asb-cli_src_proxy_adapters_ProxySession" [arrowhead="empty", style="dashed"];
+    "asb-cli_src_proxy_adapters_RunningLlmtape" -> "asb-cli_src_proxy_adapters_Scratch" [arrowhead="vee"];
+    "asb-cli_src_workloads_TrialSet" -> "asb-cli_src_workloads_Trial" [arrowhead="vee"];
+    "asb-cli_src_workloads_adapters_WorkloadAdapter" -> "asb-cli_src_workloads_Trial" [arrowhead="vee", style="dashed"];
 }

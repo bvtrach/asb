@@ -1,4 +1,5 @@
 //! Adapter for ollama.
+pub(in crate::providers) mod implementation;
 use super::*;
 
 fixed_offers!(
@@ -11,7 +12,6 @@ fixed_offers!(
 );
 
 adapter!(
-    ollama,
     "ollama",
     None,
     Some("OLLAMA_HOST"),
@@ -36,7 +36,7 @@ adapter!(
             .map(|values| values.iter().any(|value| value.as_str() == Some("tools")))
     },
     fn enrich_catalog(&self, body: Vec<u8>) -> Result<Vec<u8>, crate::Error> {
-        crate::providers::ollama::enrich_catalog(&body, self.model_spec())
+        implementation::enrich_catalog(&body, self.model_spec())
     },
     fn catalog_normalize(&self, base: String) -> String {
         if base.contains("://") {

@@ -1,4 +1,5 @@
 //! Adapter for fireworks.
+pub(in crate::providers) mod implementation;
 use super::*;
 
 fixed_offers!(
@@ -16,7 +17,6 @@ fixed_offers!(
 );
 
 adapter!(
-    fireworks,
     "fireworks",
     Some("FIREWORKS_API_KEY"),
     Some("FIREWORKS_BASE_URL"),
@@ -29,7 +29,7 @@ adapter!(
     "accounts/fireworks/models/llama-v3p1-8b-instruct",
     fireworks_offers,
     fn catalog_base(&self, selected: Option<&str>, _fallback: Option<&str>) -> Option<String> {
-        crate::providers::fireworks::catalog_base(selected)
+        implementation::catalog_base(selected)
     },
     fn catalog_url_error(&self) -> Option<&'static str> {
         std::env::var_os("FIREWORKS_ACCOUNT_ID").map(|_| "FIREWORKS_ACCOUNT_ID must be a nonempty account ID containing only letters, digits, underscores or hyphens")

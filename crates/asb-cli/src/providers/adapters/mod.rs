@@ -109,10 +109,8 @@ pub(super) trait ProviderAdapter: Sync {
 }
 
 macro_rules! adapter {
-    ($module:ident, $id:literal, $key:expr, $endpoint:expr, $model_env:expr, $bridge:expr, $tape_envs:expr,
+    ($id:literal, $key:expr, $endpoint:expr, $model_env:expr, $bridge:expr, $tape_envs:expr,
      $model_endpoint:expr, $model_url:expr, $kind:ident, $suggestion:literal, $offers:expr $(, $extra:item)*) => {
-        pub(super) mod $module {
-            use super::*;
             pub(in crate::providers) struct Adapter;
             pub(in crate::providers) static ADAPTER: Adapter = Adapter;
             impl ProviderAdapter for Adapter {
@@ -147,39 +145,38 @@ macro_rules! adapter {
                 }
                 $($extra)*
             }
-        }
     };
 }
 
 mod anthropic;
-mod cli2key;
+pub(super) mod cli2key;
 mod deepseek;
-mod fireworks;
+pub(super) mod fireworks;
 mod gemini;
 mod groq;
 mod local;
 mod mistral;
-mod ollama;
+pub(super) mod ollama;
 mod openai;
-mod opencode_zen;
-mod openrouter;
+pub(super) mod opencode_zen;
+pub(super) mod openrouter;
 mod together;
 mod xai;
 
 pub(super) static ADAPTERS: &[&dyn ProviderAdapter] = &[
-    &openai::openai::ADAPTER,
-    &openrouter::openrouter::ADAPTER,
-    &opencode_zen::opencode_zen::ADAPTER,
-    &anthropic::anthropic::ADAPTER,
-    &gemini::gemini::ADAPTER,
-    &ollama::ollama::ADAPTER,
-    &groq::groq::ADAPTER,
-    &mistral::mistral::ADAPTER,
-    &deepseek::deepseek::ADAPTER,
-    &xai::xai::ADAPTER,
-    &together::together::ADAPTER,
-    &fireworks::fireworks::ADAPTER,
-    &cli2key::cli2key::ADAPTER,
+    &openai::ADAPTER,
+    &openrouter::ADAPTER,
+    &opencode_zen::ADAPTER,
+    &anthropic::ADAPTER,
+    &gemini::ADAPTER,
+    &ollama::ADAPTER,
+    &groq::ADAPTER,
+    &mistral::ADAPTER,
+    &deepseek::ADAPTER,
+    &xai::ADAPTER,
+    &together::ADAPTER,
+    &fireworks::ADAPTER,
+    &cli2key::ADAPTER,
 ];
 
 pub(super) fn find(name: &str) -> Option<&'static dyn ProviderAdapter> {
@@ -276,7 +273,10 @@ mod tests {
                 let entry = entry.expect("source entry is readable");
                 let path = entry.path();
                 if path.is_dir() {
-                    if entry.file_name() != "providers" {
+                    if !(entry.file_name() == "adapters"
+                        && path.parent().and_then(|parent| parent.file_name())
+                            == Some(std::ffi::OsStr::new("providers")))
+                    {
                         visit(&path, names);
                     }
                 } else if path.extension().is_some_and(|extension| extension == "rs") {

@@ -3,7 +3,7 @@
 use crate::{Error, providers};
 use std::process::Command;
 
-pub(super) fn prepare(
+pub(in crate::providers) fn prepare(
     command: &mut Command,
     model: &str,
     tape_base_url: Option<&str>,
@@ -25,7 +25,7 @@ pub(super) fn prepare(
     Ok(())
 }
 
-pub(super) fn configure_openai_compatible(
+pub(in crate::providers) fn configure_openai_compatible(
     command: &mut Command,
     model: &str,
     key: &str,
