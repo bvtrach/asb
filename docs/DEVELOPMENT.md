@@ -28,6 +28,24 @@ clients on loopback, but CI never starts a real agent, bridge, or live provider.
 Run `asb run` with credentials only as an explicit local
 smoke/benchmark operation.
 
+The optional `local-host-checks` CI job repeats the ordinary checks on a local
+Linux x86-64 GitHub Actions runner labeled `asb-local-ci`. It runs only for
+pushes to `main` or a manual dispatch of `main`, and is disabled unless the repository variable
+`ASB_LOCAL_CI_ENABLED` is set to `true`. The normal GitHub-hosted job remains
+enabled for pull requests and pushes. The local runner needs the pinned Rust
+toolchain, Node.js 22 (or a functional Actions tool cache), and access to the
+dependencies needed for `cargo package`.
+
+ASB is public. The job's event condition does not prevent an untrusted pull
+request from proposing a different workflow that targets a registered self-hosted
+runner. Do not register or enable a local runner until its isolation and runner
+access controls have been explicitly chosen and verified; do not expose host
+credentials, project trees, or host services to untrusted jobs. A dedicated
+account and service hardening reduce risk but are not a disposable VM boundary.
+In particular, a native runner shares the host network and can reach loopback
+services, and a job runs with the runner account's own credentials. Review the
+full workflow and code before approving external pull-request workflow runs.
+
 The opt-in real-agent fixture test launches an installed client against a
 synthetic loopback provider with dummy credentials. On Linux, compile it and
 run each client in a separate rootless network and PID namespace with only

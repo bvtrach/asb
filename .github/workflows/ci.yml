@@ -27,3 +27,29 @@ jobs:
         run: rm -f crates/asb-cli/.asb/install.log
       - name: Verify package
         run: cargo package --locked
+
+  local-host-checks:
+    # This is disabled until the repository owner provisions an appropriately
+    # isolated runner and explicitly enables the repository variable.
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.ASB_LOCAL_CI_ENABLED == 'true'
+    runs-on: [self-hosted, linux, x64, asb-local-ci]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Use the runner's Rust toolchain
+        run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run tests
+        run: cargo test --locked
+      - name: Build
+        run: cargo build --locked
+      - name: Remove test-generated workspace files
+        run: rm -f crates/asb-cli/.asb/install.log
+      - name: Verify package
+        run: cargo package --locked
