@@ -1,12 +1,7 @@
 //! Small provider registry for environment-driven integrations.
 
-mod cli2key;
-mod fireworks;
-mod ollama;
-mod opencode_zen;
-mod openrouter;
+mod adapters;
 mod preparation;
-mod registry;
 pub(crate) use preparation::apply_with_tape;
 
 use crate::endpoint::Interface;
@@ -67,7 +62,7 @@ impl ModelSpec {
 
     /// Resolve the catalog endpoint for an optionally selected model.
     pub fn url_for_model(self, selected: Option<&str>) -> Option<String> {
-        let adapter = registry::find(self.name);
+        let adapter = adapters::find(self.name);
         let base = self
             .endpoint
             .and_then(std::env::var_os)
@@ -88,15 +83,15 @@ impl ModelSpec {
 
 /// Return a known provider or a generic custom provider specification.
 pub fn spec(name: &str) -> ProviderSpec {
-    registry::find(name)
+    adapters::find(name)
         .map(|adapter| adapter.spec())
-        .or_else(|| registry::fallback_spec(name))
+        .or_else(|| adapters::fallback_spec(name))
         .unwrap_or(ProviderSpec {
             name: "custom",
             credential: None,
             endpoint: None,
             model_env: None,
-            tape_endpoint_envs: registry::tape_endpoint_envs(),
+            tape_endpoint_envs: adapters::tape_endpoint_envs(),
             bridge_tool: None,
         })
 }
@@ -105,7 +100,7 @@ pub fn spec(name: &str) -> ProviderSpec {
 pub fn names() -> &'static [&'static str] {
     static NAMES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
     NAMES.get_or_init(|| {
-        registry::ADAPTERS
+        adapters::ADAPTERS
             .iter()
             .map(|adapter| adapter.spec().name)
             .collect()
@@ -116,7 +111,7 @@ pub fn names() -> &'static [&'static str] {
 pub fn free_names() -> &'static [&'static str] {
     static NAMES: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
     NAMES.get_or_init(|| {
-        registry::ADAPTERS
+        adapters::ADAPTERS
             .iter()
             .filter(|adapter| adapter.supports_free())
             .map(|adapter| adapter.spec().name)
@@ -133,38 +128,38 @@ pub fn supports_free_models(name: &str) -> bool {
 
 /// Offline UI suggestions only; never use this stale snapshot to validate runs.
 pub fn known_models(provider: &str) -> Option<&'static [&'static str]> {
-    registry::find(provider).and_then(|adapter| adapter.known_models())
+    adapters::find(provider).and_then(|adapter| adapter.known_models())
 }
 
 pub(crate) fn public_catalog(provider: &str, credential_present: bool) -> bool {
-    registry::find(provider).is_some_and(|adapter| adapter.public_catalog(credential_present))
+    adapters::find(provider).is_some_and(|adapter| adapter.public_catalog(credential_present))
 }
 
 pub(crate) fn free_model(provider: &str, entry: &serde_json::Value, model: &str) -> bool {
-    registry::find(provider).is_some_and(|adapter| adapter.free_model(entry, model))
+    adapters::find(provider).is_some_and(|adapter| adapter.free_model(entry, model))
 }
 
 pub(crate) fn default_tool_support(provider: &str) -> Option<bool> {
-    registry::find(provider).and_then(|adapter| adapter.default_tool_support())
+    adapters::find(provider).and_then(|adapter| adapter.default_tool_support())
 }
 
 pub(crate) fn catalog_tool_support(provider: &str, entry: &serde_json::Value) -> Option<bool> {
-    registry::find(provider).and_then(|adapter| adapter.tool_support(entry))
+    adapters::find(provider).and_then(|adapter| adapter.tool_support(entry))
 }
 
 pub(crate) fn enrich_catalog(provider: &str, body: Vec<u8>) -> Result<Vec<u8>, crate::Error> {
-    match registry::find(provider) {
+    match adapters::find(provider) {
         Some(adapter) => adapter.enrich_catalog(body),
         None => Ok(body),
     }
 }
 
 pub(crate) fn catalog_url_error(provider: &str) -> Option<&'static str> {
-    registry::find(provider).and_then(|adapter| adapter.catalog_url_error())
+    adapters::find(provider).and_then(|adapter| adapter.catalog_url_error())
 }
 
 pub(crate) fn catalog_headers(provider: &str, key: &str) -> Vec<String> {
-    registry::find(provider).map_or_else(
+    adapters::find(provider).map_or_else(
         || vec![format!("Authorization: Bearer {key}")],
         |adapter| adapter.catalog_headers(key),
     )
@@ -173,7 +168,7 @@ pub(crate) fn catalog_headers(provider: &str, key: &str) -> Vec<String> {
 pub(crate) fn discovery_session(
     provider: &str,
 ) -> Result<Option<Box<dyn ProviderSession>>, crate::Error> {
-    match registry::find(provider) {
+    match adapters::find(provider) {
         Some(adapter) => adapter.discovery_session(),
         None => Ok(None),
     }
@@ -182,11 +177,11 @@ pub(crate) fn discovery_session(
 /// Validate a user-facing provider or agent identifier.
 /// Return the endpoint and credential information for live discovery.
 pub fn model_spec(name: &str) -> Option<ModelSpec> {
-    registry::find(name).map(|adapter| adapter.model_spec())
+    adapters::find(name).map(|adapter| adapter.model_spec())
 }
 
 pub(crate) fn default_model(name: &str) -> &'static str {
-    registry::find(name).map_or("test-model", |adapter| adapter.default_model())
+    adapters::find(name).map_or("test-model", |adapter| adapter.default_model())
 }
 
 /// Resolve a provider credential from the environment or the user's local key file.
@@ -210,7 +205,7 @@ pub fn credential(name: &str) -> Option<String> {
 /// order. A model whose endpoint family is not yet known must not be guessed.
 #[cfg(test)]
 pub(crate) fn offered_endpoints(provider: &str, model: &str) -> Vec<crate::endpoint::Offer> {
-    registry::find(provider).map_or_else(Vec::new, |adapter| adapter.offered_endpoints(model))
+    adapters::find(provider).map_or_else(Vec::new, |adapter| adapter.offered_endpoints(model))
 }
 
 /// Refresh model-specific endpoint metadata where the provider publishes it.
@@ -220,7 +215,7 @@ pub(crate) fn discover_endpoints(
     provider: &str,
     model: &str,
 ) -> (Vec<crate::endpoint::Offer>, bool, Option<bool>) {
-    registry::find(provider).map_or_else(
+    adapters::find(provider).map_or_else(
         || (Vec::new(), false, None),
         |adapter| adapter.discover_endpoints(model),
     )
@@ -232,7 +227,7 @@ pub(crate) fn replay_endpoints(
     model: &str,
     recorded: Option<Interface>,
 ) -> Vec<crate::endpoint::Offer> {
-    registry::find(provider).map_or_else(Vec::new, |adapter| {
+    adapters::find(provider).map_or_else(Vec::new, |adapter| {
         adapter.replay_endpoints(model, recorded)
     })
 }
@@ -339,7 +334,7 @@ pub fn configure(command: &mut std::process::Command, provider: &str, model: &st
     let selected = spec(provider);
     if replay {
         command.env_remove("ASB_AGENT_API_KEY");
-        for variable in registry::ADAPTERS
+        for variable in adapters::ADAPTERS
             .iter()
             .filter_map(|adapter| adapter.spec().credential)
         {
@@ -380,7 +375,7 @@ pub(crate) fn start_local_bridge(
     if replay {
         return Ok(None);
     }
-    match registry::find(provider) {
+    match adapters::find(provider) {
         Some(adapter) => adapter.start_session(project_root, tools_dir),
         None => Ok(None),
     }
@@ -424,7 +419,7 @@ pub(crate) fn configure_tape(
     for name in selected.tape_endpoint_envs {
         command.env(name, url);
     }
-    for name in registry::tape_root_endpoint_envs() {
+    for name in adapters::tape_root_endpoint_envs() {
         command.env(name, root_url);
     }
     command
@@ -471,18 +466,27 @@ mod tests {
     #[test]
     fn fireworks_account_is_derived_only_from_complete_model_resources() {
         assert_eq!(
-            super::fireworks::model_account("accounts/my-account/models/model"),
+            super::adapters::fireworks::implementation::model_account(
+                "accounts/my-account/models/model"
+            ),
             Some("my-account")
         );
         assert_eq!(
-            super::fireworks::model_account("accounts/my-account/models/"),
+            super::adapters::fireworks::implementation::model_account(
+                "accounts/my-account/models/"
+            ),
             None
         );
         assert_eq!(
-            super::fireworks::model_account("accounts/my-account/models/model/extra"),
+            super::adapters::fireworks::implementation::model_account(
+                "accounts/my-account/models/model/extra"
+            ),
             None
         );
-        assert_eq!(super::fireworks::model_account("unqualified-model"), None);
+        assert_eq!(
+            super::adapters::fireworks::implementation::model_account("unqualified-model"),
+            None
+        );
     }
     use super::{ProviderSpec, configure_tape, read_key_file, spec, tape_upstream};
     use crate::tape::Mode;
@@ -533,15 +537,15 @@ mod tests {
     fn opencode_catalog_reads_explicit_model_tool_support() {
         let catalog = br#"{"opencode":{"models":{"yes":{"tool_call":true},"no":{"tool_call":false},"unknown":{}}}}"#;
         assert_eq!(
-            super::opencode_zen::catalog_tool_support(catalog, "yes"),
+            super::adapters::opencode_zen::implementation::catalog_tool_support(catalog, "yes"),
             Some(true)
         );
         assert_eq!(
-            super::opencode_zen::catalog_tool_support(catalog, "no"),
+            super::adapters::opencode_zen::implementation::catalog_tool_support(catalog, "no"),
             Some(false)
         );
         assert_eq!(
-            super::opencode_zen::catalog_tool_support(catalog, "unknown"),
+            super::adapters::opencode_zen::implementation::catalog_tool_support(catalog, "unknown"),
             None
         );
     }
@@ -550,7 +554,8 @@ mod tests {
     fn opencode_model_catalog_selects_current_interface_and_address() {
         use crate::endpoint::{Address, Authentication, Interface};
         let catalog = br#"{"opencode":{"api":"https://opencode.ai/inference/openai/v1","npm":"@ai-sdk/openai-compatible","models":{"new-gpt":{"provider":{"npm":"@ai-sdk/openai","api":"https://opencode.ai/inference/openai/v2"}},"new-claude":{"provider":{"npm":"@ai-sdk/anthropic","api":"https://opencode.ai/inference/anthropic/v1"}},"new-chat":{},"bad":{"provider":{"npm":"@ai-sdk/openai","api":"https://opencode.ai.evil.test/v1"}}}}}"#;
-        let gpt = super::opencode_zen::catalog_offer(catalog, "new-gpt").unwrap();
+        let gpt = super::adapters::opencode_zen::implementation::catalog_offer(catalog, "new-gpt")
+            .unwrap();
         assert_eq!(gpt.interface, Interface::OpenAiResponses);
         assert_eq!(gpt.authentication, Authentication::Bearer);
         assert_eq!(
@@ -561,20 +566,28 @@ mod tests {
             }
         );
         assert_eq!(
-            super::opencode_zen::catalog_offer(catalog, "new-claude")
+            super::adapters::opencode_zen::implementation::catalog_offer(catalog, "new-claude")
                 .unwrap()
                 .interface,
             Interface::AnthropicMessages
         );
         assert_eq!(
-            super::opencode_zen::catalog_offer(catalog, "new-chat")
+            super::adapters::opencode_zen::implementation::catalog_offer(catalog, "new-chat")
                 .unwrap()
                 .interface,
             Interface::OpenAiChat
         );
-        assert!(super::opencode_zen::catalog_offer(catalog, "bad").is_none());
-        assert!(super::opencode_zen::catalog_offer(catalog, "not-listed").is_none());
-        assert!(super::opencode_zen::catalog_offer(b"invalid", "new-gpt").is_none());
+        assert!(
+            super::adapters::opencode_zen::implementation::catalog_offer(catalog, "bad").is_none()
+        );
+        assert!(
+            super::adapters::opencode_zen::implementation::catalog_offer(catalog, "not-listed")
+                .is_none()
+        );
+        assert!(
+            super::adapters::opencode_zen::implementation::catalog_offer(b"invalid", "new-gpt")
+                .is_none()
+        );
     }
 
     #[test]
@@ -638,7 +651,7 @@ mod tests {
                 credential: Some("CLI2KEY_API_KEY"),
                 endpoint: Some("CLI2KEY_BASE_URL"),
                 model_env: Some("CLI2KEY_MODEL"),
-                tape_endpoint_envs: super::registry::tape_endpoint_envs(),
+                tape_endpoint_envs: super::adapters::tape_endpoint_envs(),
                 bridge_tool: Some("cli2key"),
             }
         );

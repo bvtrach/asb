@@ -11,7 +11,6 @@ fixed_offers!(
 );
 
 adapter!(
-    mistral,
     "mistral",
     Some("MISTRAL_API_KEY"),
     Some("MISTRAL_BASE_URL"),

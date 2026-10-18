@@ -11,7 +11,6 @@ fixed_offers!(
 );
 
 adapter!(
-    gemini,
     "gemini",
     Some("GEMINI_API_KEY"),
     Some("GOOGLE_GEMINI_BASE_URL"),

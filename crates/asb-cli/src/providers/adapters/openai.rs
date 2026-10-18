@@ -11,7 +11,6 @@ fixed_offers!(
 );
 
 adapter!(
-    openai,
     "openai",
     Some("OPENAI_API_KEY"),
     Some("OPENAI_BASE_URL"),

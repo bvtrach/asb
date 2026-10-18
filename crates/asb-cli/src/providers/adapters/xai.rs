@@ -11,7 +11,6 @@ fixed_offers!(
 );
 
 adapter!(
-    xai,
     "xai",
     Some("XAI_API_KEY"),
     Some("XAI_BASE_URL"),

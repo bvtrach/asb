@@ -18,7 +18,7 @@ from pathlib import Path
 CLASS = re.compile(r"^\s*class\s+([A-Za-z0-9_-]+)")
 EDGE = re.compile(r"^(\s*)([A-Za-z0-9_-]+)(\s+[-.]+[>|]\s+)([A-Za-z0-9_-]+)(\s*)$")
 RAW_PREFIX = "asb-cli_src_"
-TRAITS = {"AgentAdapter", "ToolAdapter", "WorkloadAdapter", "CollectorAdapter"}
+TRAITS = {"AgentAdapter", "ToolAdapter", "WorkloadAdapter", "CollectorAdapter", "ProxyAdapter", "ProxySession"}
 
 
 def display_name(raw: str) -> str:
@@ -26,8 +26,16 @@ def display_name(raw: str) -> str:
     if not raw.startswith(RAW_PREFIX):
         return raw
     name = raw.removeprefix(RAW_PREFIX)
+    # AutoUML currently reports these imported traits at their implementation
+    # site, rather than at their actual declarations in proxy/mod.rs.
+    if name in {"proxy_adapters_ProxyAdapter", "proxy_adapters_ProxySession"}:
+        return "proxy::" + name.removeprefix("proxy_adapters_")
     for prefix, namespace in (
-        ("workloads_workload_adapters_", "workloads::adapters::"),
+        ("proxy_adapters_", "proxy::adapters::"),
+        ("proxy_", "proxy::"),
+        ("workloads_adapters_", "workloads::adapters::"),
+        ("providers_adapters_", "providers::adapters::"),
+        ("agents_adapters_", "agents::adapters::"),
         ("agents_", "agents::"),
         ("tools_", "tools::"),
     ):
@@ -78,15 +86,17 @@ def main() -> int:
         result.append(f"    {ids[start]}{relation}{ids[end]}")
 
     implementation_edges = (
+        ("asb-cli_src_proxy_adapters_LlmtapeAdapter", "asb-cli_src_proxy_adapters_ProxyAdapter"),
+        ("asb-cli_src_proxy_adapters_RunningLlmtape", "asb-cli_src_proxy_adapters_ProxySession"),
         ("asb-cli_src_agents_StaticAdapter", "asb-cli_src_agents_AgentAdapter"),
         ("asb-cli_src_tools_StaticTool", "asb-cli_src_tools_ToolAdapter"),
         (
-            "asb-cli_src_workloads_workload_adapters_StaticExternalAdapter",
-            "asb-cli_src_workloads_workload_adapters_WorkloadAdapter",
+            "asb-cli_src_workloads_adapters_StaticExternalAdapter",
+            "asb-cli_src_workloads_adapters_WorkloadAdapter",
         ),
         (
-            "asb-cli_src_workloads_workload_adapters_PromptAdapter",
-            "asb-cli_src_workloads_workload_adapters_WorkloadAdapter",
+            "asb-cli_src_workloads_adapters_PromptAdapter",
+            "asb-cli_src_workloads_adapters_WorkloadAdapter",
         ),
         ("asb-cli_src_StaticCollector", "asb-cli_src_CollectorAdapter"),
     )

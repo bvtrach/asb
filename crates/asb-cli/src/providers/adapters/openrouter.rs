@@ -1,4 +1,5 @@
 //! Adapter for openrouter.
+pub(in crate::providers) mod implementation;
 use super::*;
 
 fixed_offers!(
@@ -11,7 +12,6 @@ fixed_offers!(
 );
 
 adapter!(
-    openrouter,
     "openrouter",
     Some("OPENROUTER_API_KEY"),
     Some("OPENROUTER_BASE_URL"),
@@ -31,7 +31,7 @@ adapter!(
         tape: Option<&str>,
         replay: bool,
     ) -> Result<(), crate::Error> {
-        crate::providers::openrouter::prepare(command, model, tape, replay)
+        implementation::prepare(command, model, tape, replay)
     },
     fn public_catalog(&self, credential_present: bool) -> bool {
         !credential_present

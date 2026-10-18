@@ -24,7 +24,6 @@ fn deepseek_offers(_: &str) -> Vec<Offer> {
 }
 
 adapter!(
-    deepseek,
     "deepseek",
     Some("DEEPSEEK_API_KEY"),
     Some("DEEPSEEK_BASE_URL"),

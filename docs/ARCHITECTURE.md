@@ -21,7 +21,7 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
 - `endpoint`: agent/provider-neutral selection of a shared API interface;
 - `models`: bounded live model-catalog discovery using provider-specific
   endpoints and response shapes;
-- `agents/`, `tools/`, and `workloads/workload_adapters/`: owning adapters for
+- `agents/adapters/`, `providers/adapters/`, `tools/`, and `workloads/adapters/`: owning adapters for
   target-specific command construction, setup, installation identity, source
   materialization, and result artifacts; the generic agent runner dispatches
   only through these registries;
@@ -89,9 +89,13 @@ bridge. It removes only Codex host metadata (`additional_tools` and reasoning
 context) that the bridge API cannot accept, while forwarding prompts, function
 tools, credentials, and streaming responses unchanged. External
 `CLI2KEY_BASE_URL` endpoints are used directly and are not modified.
-Provider-specific behavior belongs in the corresponding module under
-`crates/asb-cli/src/providers/registry/` or its provider-owned helper module;
-register new adapters in the registry. Catalog parsing and endpoint negotiation
+Agents, providers, and workloads use the same source layout: each has a
+`mod.rs` for category-wide behavior and an `adapters/` directory containing
+the adapter registry (`adapters/mod.rs`) and one module per implementation.
+When an adapter needs multiple files, its helpers live beneath the matching
+adapter name in that same directory. Provider-specific behavior belongs in
+its provider's adapter module or its provider-owned helper directory;
+register new adapters in the category's adapter registry. Catalog parsing and endpoint negotiation
 operate on response shapes and API interfaces, not provider identities. A
 source-level test catches common direct provider-ID comparisons outside provider
 modules, but it is a heuristic, not a substitute for reviewing indirect dispatch.
@@ -252,9 +256,11 @@ distinctive workspace layout before creating any files.
 Recording and replay are implemented as a separate `tape` module behind the
 runner boundary. The `run --record` and `run --replay` flags enable the
 configured proxy chain; the default chain contains ASB's built-in loopback
-`llmtape` adapter. Every hop implements the internal `ProxyAdapter` trait and
-receives only a provider-neutral launch request plus the endpoint of its next
-hop. The chain is started from the provider inward, so an agent always receives
+`llmtape` adapter. Generic chain management and the `ProxyAdapter` and
+`ProxySession` traits live in `src/proxy/mod.rs`; each registered implementation
+lives in `src/proxy/adapters/`, with llmtape's settings, process and replay
+validation contained in its own adapter. A hop receives its own adapter-specific
+settings and the endpoint of its next hop. The chain is started from the provider inward, so an agent always receives
 one loopback ingress URL and remains unaware of whether zero, one, or many
 proxy hops are enabled. Set `ASB_PROXY_CHAIN` to a comma-separated list ordered
 from agent to provider to configure additional registered adapters; an empty

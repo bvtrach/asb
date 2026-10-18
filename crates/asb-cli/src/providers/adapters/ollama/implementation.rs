@@ -5,7 +5,10 @@ use serde_json::Value;
 
 // Older Ollama versions omit capabilities from /api/tags. Query the model's
 // metadata rather than assuming that every local model supports tools.
-pub(super) fn enrich_catalog(body: &[u8], spec: providers::ModelSpec) -> Result<Vec<u8>, Error> {
+pub(in crate::providers) fn enrich_catalog(
+    body: &[u8],
+    spec: providers::ModelSpec,
+) -> Result<Vec<u8>, Error> {
     let mut catalog: Value = serde_json::from_slice(body)
         .map_err(|_| Error::Input("provider returned invalid model JSON".into()))?;
     let entries = catalog

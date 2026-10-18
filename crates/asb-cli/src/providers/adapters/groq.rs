@@ -11,7 +11,6 @@ fixed_offers!(
 );
 
 adapter!(
-    groq,
     "groq",
     Some("GROQ_API_KEY"),
     Some("GROQ_BASE_URL"),

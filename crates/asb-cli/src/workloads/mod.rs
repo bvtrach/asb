@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-mod workload_adapters;
+mod adapters;
 
 const MAX_PROMPT_BYTES: u64 = 64 * 1024;
 
@@ -30,30 +30,33 @@ struct Fixture {
 }
 
 const BUILTIN: &[(&str, &str)] = &[
-    ("bug-fix", include_str!("../assets/workloads/bug-fix.txt")),
+    (
+        "bug-fix",
+        include_str!("../../assets/workloads/bug-fix.txt"),
+    ),
     (
         "build-repair",
-        include_str!("../assets/workloads/build-repair.txt"),
+        include_str!("../../assets/workloads/build-repair.txt"),
     ),
     (
         "dependency-migration",
-        include_str!("../assets/workloads/dependency-migration.txt"),
+        include_str!("../../assets/workloads/dependency-migration.txt"),
     ),
     (
         "feature-addition",
-        include_str!("../assets/workloads/feature-addition.txt"),
+        include_str!("../../assets/workloads/feature-addition.txt"),
     ),
     (
         "refactoring",
-        include_str!("../assets/workloads/refactoring.txt"),
+        include_str!("../../assets/workloads/refactoring.txt"),
     ),
     (
         "repository-navigation",
-        include_str!("../assets/workloads/repository-navigation.txt"),
+        include_str!("../../assets/workloads/repository-navigation.txt"),
     ),
     (
         "test-generation",
-        include_str!("../assets/workloads/test-generation.txt"),
+        include_str!("../../assets/workloads/test-generation.txt"),
     ),
 ];
 
@@ -63,15 +66,15 @@ const FIXTURES: &[Fixture] = &[
         files: &[
             (
                 "README.md",
-                include_str!("../assets/workloads/fixtures/bug-fix/README.md"),
+                include_str!("../../assets/workloads/fixtures/bug-fix/README.md"),
             ),
             (
                 "src/parser.py",
-                include_str!("../assets/workloads/fixtures/bug-fix/src/parser.py"),
+                include_str!("../../assets/workloads/fixtures/bug-fix/src/parser.py"),
             ),
             (
                 "tests/test_parser.py",
-                include_str!("../assets/workloads/fixtures/bug-fix/tests/test_parser.py"),
+                include_str!("../../assets/workloads/fixtures/bug-fix/tests/test_parser.py"),
             ),
         ],
     },
@@ -80,19 +83,19 @@ const FIXTURES: &[Fixture] = &[
         files: &[
             (
                 "README.md",
-                include_str!("../assets/workloads/fixtures/build-repair/README.md"),
+                include_str!("../../assets/workloads/fixtures/build-repair/README.md"),
             ),
             (
                 "src/app.py",
-                include_str!("../assets/workloads/fixtures/build-repair/src/app.py"),
+                include_str!("../../assets/workloads/fixtures/build-repair/src/app.py"),
             ),
             (
                 "tests/test_app.py",
-                include_str!("../assets/workloads/fixtures/build-repair/tests/test_app.py"),
+                include_str!("../../assets/workloads/fixtures/build-repair/tests/test_app.py"),
             ),
             (
                 "build.sh",
-                include_str!("../assets/workloads/fixtures/build-repair/build.sh"),
+                include_str!("../../assets/workloads/fixtures/build-repair/build.sh"),
             ),
         ],
     },
@@ -101,20 +104,22 @@ const FIXTURES: &[Fixture] = &[
         files: &[
             (
                 "README.md",
-                include_str!("../assets/workloads/fixtures/dependency-migration/README.md"),
+                include_str!("../../assets/workloads/fixtures/dependency-migration/README.md"),
             ),
             (
                 "requirements.txt",
-                include_str!("../assets/workloads/fixtures/dependency-migration/requirements.txt"),
+                include_str!(
+                    "../../assets/workloads/fixtures/dependency-migration/requirements.txt"
+                ),
             ),
             (
                 "src/client.py",
-                include_str!("../assets/workloads/fixtures/dependency-migration/src/client.py"),
+                include_str!("../../assets/workloads/fixtures/dependency-migration/src/client.py"),
             ),
             (
                 "tests/test_client.py",
                 include_str!(
-                    "../assets/workloads/fixtures/dependency-migration/tests/test_client.py"
+                    "../../assets/workloads/fixtures/dependency-migration/tests/test_client.py"
                 ),
             ),
         ],
@@ -124,16 +129,16 @@ const FIXTURES: &[Fixture] = &[
         files: &[
             (
                 "README.md",
-                include_str!("../assets/workloads/fixtures/feature-addition/README.md"),
+                include_str!("../../assets/workloads/fixtures/feature-addition/README.md"),
             ),
             (
                 "src/formatter.py",
-                include_str!("../assets/workloads/fixtures/feature-addition/src/formatter.py"),
+                include_str!("../../assets/workloads/fixtures/feature-addition/src/formatter.py"),
             ),
             (
                 "tests/test_formatter.py",
                 include_str!(
-                    "../assets/workloads/fixtures/feature-addition/tests/test_formatter.py"
+                    "../../assets/workloads/fixtures/feature-addition/tests/test_formatter.py"
                 ),
             ),
         ],
@@ -143,15 +148,15 @@ const FIXTURES: &[Fixture] = &[
         files: &[
             (
                 "README.md",
-                include_str!("../assets/workloads/fixtures/refactoring/README.md"),
+                include_str!("../../assets/workloads/fixtures/refactoring/README.md"),
             ),
             (
                 "src/labels.py",
-                include_str!("../assets/workloads/fixtures/refactoring/src/labels.py"),
+                include_str!("../../assets/workloads/fixtures/refactoring/src/labels.py"),
             ),
             (
                 "tests/test_labels.py",
-                include_str!("../assets/workloads/fixtures/refactoring/tests/test_labels.py"),
+                include_str!("../../assets/workloads/fixtures/refactoring/tests/test_labels.py"),
             ),
         ],
     },
@@ -160,20 +165,22 @@ const FIXTURES: &[Fixture] = &[
         files: &[
             (
                 "README.md",
-                include_str!("../assets/workloads/fixtures/repository-navigation/README.md"),
+                include_str!("../../assets/workloads/fixtures/repository-navigation/README.md"),
             ),
             (
                 "src/cli.py",
-                include_str!("../assets/workloads/fixtures/repository-navigation/src/cli.py"),
+                include_str!("../../assets/workloads/fixtures/repository-navigation/src/cli.py"),
             ),
             (
                 "src/registry.py",
-                include_str!("../assets/workloads/fixtures/repository-navigation/src/registry.py"),
+                include_str!(
+                    "../../assets/workloads/fixtures/repository-navigation/src/registry.py"
+                ),
             ),
             (
                 "tests/test_cli.py",
                 include_str!(
-                    "../assets/workloads/fixtures/repository-navigation/tests/test_cli.py"
+                    "../../assets/workloads/fixtures/repository-navigation/tests/test_cli.py"
                 ),
             ),
         ],
@@ -183,16 +190,16 @@ const FIXTURES: &[Fixture] = &[
         files: &[
             (
                 "README.md",
-                include_str!("../assets/workloads/fixtures/test-generation/README.md"),
+                include_str!("../../assets/workloads/fixtures/test-generation/README.md"),
             ),
             (
                 "src/temperature.py",
-                include_str!("../assets/workloads/fixtures/test-generation/src/temperature.py"),
+                include_str!("../../assets/workloads/fixtures/test-generation/src/temperature.py"),
             ),
             (
                 "tests/test_temperature.py",
                 include_str!(
-                    "../assets/workloads/fixtures/test-generation/tests/test_temperature.py"
+                    "../../assets/workloads/fixtures/test-generation/tests/test_temperature.py"
                 ),
             ),
         ],
@@ -201,7 +208,7 @@ const FIXTURES: &[Fixture] = &[
 
 /// Populate a new project with the prompts shipped in the ASB binary.
 pub(crate) fn populate(directory: &Path) -> Result<usize, std::io::Error> {
-    workload_adapters::populate_prompts(directory)
+    adapters::populate_prompts(directory)
 }
 
 /// Generic prompt materialization used by the prompt-family adapter.
@@ -219,7 +226,7 @@ pub(super) fn populate_builtin_prompts(directory: &Path) -> Result<usize, std::i
 
 /// Copy all bundled fixture templates into a project's managed fixture area.
 pub(crate) fn populate_fixtures(directory: &Path) -> Result<usize, std::io::Error> {
-    workload_adapters::populate_fixtures(directory)
+    adapters::populate_fixtures(directory)
 }
 
 /// Generic fixture materialization used by the prompt-family adapter.
@@ -245,7 +252,7 @@ pub(super) fn populate_builtin_fixtures(directory: &Path) -> Result<usize, std::
 
 /// Materialize the selected fixture into the run workspace without overwriting edits.
 pub(crate) fn prepare_fixture(name: &str, directory: &Path) -> Result<usize, String> {
-    workload_adapters::find(name).map_or(Ok(0), |adapter| adapter.prepare_fixture(name, directory))
+    adapters::find(name).map_or(Ok(0), |adapter| adapter.prepare_fixture(name, directory))
 }
 
 pub(super) fn is_builtin_prompt(name: &str) -> bool {
@@ -286,7 +293,7 @@ pub(crate) fn prepare_external(
     workload_directory: &Path,
     workspace: &Path,
 ) -> Result<usize, String> {
-    if let Some(adapter) = workload_adapters::find(name) {
+    if let Some(adapter) = adapters::find(name) {
         return adapter.prepare_source(workload_directory, workspace);
     }
     Ok(0)
@@ -476,7 +483,7 @@ pub fn read_trial_set(path: &Path) -> Result<TrialSet, String> {
 }
 
 pub fn trial_ids(name: &str) -> Vec<Trial> {
-    if let Some(adapter) = workload_adapters::find(name) {
+    if let Some(adapter) = adapters::find(name) {
         return adapter.trial_ids();
     }
     let ids: &[(&str, &str)] = match name {
@@ -497,7 +504,7 @@ pub fn trial_ids(name: &str) -> Vec<Trial> {
 /// Names backed by first-class external-suite adapters.
 #[cfg(test)]
 pub(crate) fn external_adapter_names() -> impl Iterator<Item = &'static str> {
-    workload_adapters::names()
+    adapters::names()
 }
 
 pub fn write_default_trial_set(name: &str, directory: &Path) -> Result<(), std::io::Error> {

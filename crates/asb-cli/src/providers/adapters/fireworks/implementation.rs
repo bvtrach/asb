@@ -1,5 +1,5 @@
 //! Fireworks account-scoped model discovery.
-pub(super) fn catalog_base(selected: Option<&str>) -> Option<String> {
+pub(in crate::providers) fn catalog_base(selected: Option<&str>) -> Option<String> {
     let account = std::env::var("FIREWORKS_ACCOUNT_ID")
         .ok()
         .or_else(|| selected.and_then(model_account).map(str::to_owned))
@@ -16,7 +16,7 @@ pub(super) fn catalog_base(selected: Option<&str>) -> Option<String> {
     ))
 }
 
-pub(super) fn model_account(model: &str) -> Option<&str> {
+pub(in crate::providers) fn model_account(model: &str) -> Option<&str> {
     let mut parts = model.split('/');
     (parts.next()? == "accounts").then_some(())?;
     let account = parts.next()?;

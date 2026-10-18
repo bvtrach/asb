@@ -1,0 +1,340 @@
+//! Provider-neutral proxy adapters and ordered chain lifecycle.
+
+pub(crate) mod adapters;
+
+use crate::Error;
+use std::any::Any;
+use std::collections::HashMap;
+
+/// An adapter starts one hop using its own optional typed configuration.
+pub(crate) trait ProxyAdapter: Sync {
+    fn name(&self) -> &'static str;
+    fn start(
+        &self,
+        upstream: Option<&str>,
+        settings: Option<&dyn Any>,
+    ) -> Result<Box<dyn ProxySession>, Error>;
+}
+
+/// An owned hop. Both shutdown methods must be safe to call more than once.
+pub(crate) trait ProxySession {
+    fn url(&self) -> &str;
+    /// Stop and validate the completed session, if the adapter requires it.
+    fn finish(&mut self) -> Result<(), Error>;
+    /// Stop without completion validation, including on partial startup.
+    fn abort(&mut self);
+}
+
+pub(crate) struct Chain {
+    hops: Vec<Box<dyn ProxySession>>,
+    url: String,
+}
+
+impl Chain {
+    pub(crate) fn start(
+        names: &[String],
+        upstream: Option<&str>,
+        configurations: &HashMap<String, Box<dyn Any>>,
+    ) -> Result<Self, Error> {
+        let selected = names
+            .iter()
+            .map(|name| {
+                adapters::REGISTRY
+                    .iter()
+                    .copied()
+                    .find(|adapter| adapter.name().eq_ignore_ascii_case(name))
+                    .ok_or_else(|| {
+                        let available = adapters::REGISTRY
+                            .iter()
+                            .map(|adapter| adapter.name())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        Error::Input(format!(
+                            "unknown proxy adapter `{name}` in ASB_PROXY_CHAIN; available adapters: {available}"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::start_selected(&selected, upstream, configurations)
+    }
+
+    fn start_selected(
+        selected: &[&dyn ProxyAdapter],
+        upstream: Option<&str>,
+        configurations: &HashMap<String, Box<dyn Any>>,
+    ) -> Result<Self, Error> {
+        if selected.is_empty() {
+            return Err(Error::Input(
+                "proxy chain must contain at least one adapter".into(),
+            ));
+        }
+        let mut hops: Vec<Box<dyn ProxySession>> = Vec::with_capacity(selected.len());
+        let mut next_hop = upstream.map(str::to_owned);
+        for adapter in selected.iter().rev() {
+            let settings = configurations
+                .get(adapter.name())
+                .map(|value| value.as_ref());
+            match adapter.start(next_hop.as_deref(), settings) {
+                Ok(hop) => {
+                    next_hop = Some(hop.url().to_owned());
+                    hops.push(hop);
+                }
+                Err(error) => {
+                    for hop in hops.iter_mut().rev() {
+                        hop.abort();
+                    }
+                    return Err(Error::Run(format!(
+                        "proxy adapter `{}` failed: {error}",
+                        adapter.name()
+                    )));
+                }
+            }
+        }
+        hops.reverse();
+        Ok(Self {
+            url: next_hop.expect("nonempty chain"),
+            hops,
+        })
+    }
+
+    pub(crate) fn url(&self) -> &str {
+        &self.url
+    }
+
+    pub(crate) fn stop(mut self) -> Result<(), Error> {
+        let mut failure = None;
+        for hop in self.hops.iter_mut().rev() {
+            if let Err(error) = hop.finish() {
+                failure.get_or_insert(error);
+            }
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Drop for Chain {
+    fn drop(&mut self) {
+        for hop in self.hops.iter_mut().rev() {
+            hop.abort();
+        }
+    }
+}
+
+pub(crate) fn configured_chain(default: &str) -> Result<Vec<String>, Error> {
+    let raw = std::env::var("ASB_PROXY_CHAIN").unwrap_or_else(|_| default.into());
+    parse_chain(&raw)
+}
+
+#[cfg(test)]
+pub(crate) fn names() -> impl Iterator<Item = &'static str> {
+    adapters::REGISTRY.iter().map(|adapter| adapter.name())
+}
+
+fn parse_chain(raw: &str) -> Result<Vec<String>, Error> {
+    let names = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        return Err(Error::Input(
+            "ASB_PROXY_CHAIN must contain at least one proxy adapter".into(),
+        ));
+    }
+    Ok(names)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    struct FixtureAdapter {
+        name: &'static str,
+        fail: bool,
+        fail_finish: bool,
+        events: Arc<Mutex<Vec<String>>>,
+    }
+    struct FixtureSession {
+        name: &'static str,
+        url: String,
+        active: bool,
+        fail_finish: bool,
+        events: Arc<Mutex<Vec<String>>>,
+    }
+    impl ProxyAdapter for FixtureAdapter {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn start(
+            &self,
+            upstream: Option<&str>,
+            settings: Option<&dyn Any>,
+        ) -> Result<Box<dyn ProxySession>, Error> {
+            let value = settings
+                .and_then(|value| value.downcast_ref::<u32>())
+                .copied()
+                .unwrap_or(0);
+            self.events.lock().unwrap().push(format!(
+                "start:{}:{}:{value}",
+                self.name,
+                upstream.unwrap_or("none")
+            ));
+            if self.fail {
+                return Err(Error::Run("fixture failure".into()));
+            }
+            Ok(Box::new(FixtureSession {
+                name: self.name,
+                url: format!("{}-url", self.name),
+                active: true,
+                fail_finish: self.fail_finish,
+                events: self.events.clone(),
+            }))
+        }
+    }
+    impl ProxySession for FixtureSession {
+        fn url(&self) -> &str {
+            &self.url
+        }
+        fn finish(&mut self) -> Result<(), Error> {
+            self.events
+                .lock()
+                .unwrap()
+                .push(format!("finish:{}", self.name));
+            self.active = false;
+            if self.fail_finish {
+                Err(Error::Run("fixture finish failure".into()))
+            } else {
+                Ok(())
+            }
+        }
+        fn abort(&mut self) {
+            if self.active {
+                self.events
+                    .lock()
+                    .unwrap()
+                    .push(format!("abort:{}", self.name));
+                self.active = false;
+            }
+        }
+    }
+
+    #[test]
+    fn arbitrary_adapters_use_own_settings_and_next_hop() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let a = FixtureAdapter {
+            name: "a",
+            fail: false,
+            fail_finish: false,
+            events: events.clone(),
+        };
+        let b = FixtureAdapter {
+            name: "b",
+            fail: false,
+            fail_finish: false,
+            events: events.clone(),
+        };
+        let mut settings: HashMap<String, Box<dyn Any>> = HashMap::new();
+        settings.insert("a".into(), Box::new(17_u32));
+        settings.insert("b".into(), Box::new(42_u32));
+        let chain = Chain::start_selected(&[&a, &b], Some("provider"), &settings).unwrap();
+        assert_eq!(chain.url(), "a-url");
+        chain.stop().unwrap();
+        assert_eq!(
+            *events.lock().unwrap(),
+            [
+                "start:b:provider:42",
+                "start:a:b-url:17",
+                "finish:b",
+                "finish:a"
+            ]
+        );
+    }
+
+    #[test]
+    fn startup_failure_aborts_already_started_hops() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let a = FixtureAdapter {
+            name: "a",
+            fail: true,
+            fail_finish: false,
+            events: events.clone(),
+        };
+        let b = FixtureAdapter {
+            name: "b",
+            fail: false,
+            fail_finish: false,
+            events: events.clone(),
+        };
+        let result = Chain::start_selected(&[&a, &b], Some("provider"), &HashMap::new());
+        assert!(result.is_err());
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["start:b:provider:0", "start:a:b-url:0", "abort:b"]
+        );
+    }
+
+    #[test]
+    fn chain_names_are_normalized_and_empty_chains_rejected() {
+        assert_eq!(
+            parse_chain("llmtape, audit, REDACT").unwrap(),
+            vec!["llmtape", "audit", "redact"]
+        );
+        assert!(parse_chain(" , ").is_err());
+    }
+
+    #[test]
+    fn finish_failure_still_finishes_every_hop() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let a = FixtureAdapter {
+            name: "a",
+            fail: false,
+            fail_finish: false,
+            events: events.clone(),
+        };
+        let b = FixtureAdapter {
+            name: "b",
+            fail: false,
+            fail_finish: true,
+            events: events.clone(),
+        };
+        let chain = Chain::start_selected(&[&a, &b], None, &HashMap::new()).unwrap();
+        assert!(chain.stop().is_err());
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["start:b:none:0", "start:a:b-url:0", "finish:b", "finish:a"]
+        );
+    }
+
+    #[test]
+    fn dropping_chain_aborts_every_hop() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let a = FixtureAdapter {
+            name: "a",
+            fail: false,
+            fail_finish: false,
+            events: events.clone(),
+        };
+        let b = FixtureAdapter {
+            name: "b",
+            fail: false,
+            fail_finish: false,
+            events: events.clone(),
+        };
+        let chain = Chain::start_selected(&[&a, &b], None, &HashMap::new()).unwrap();
+        drop(chain);
+        assert_eq!(
+            *events.lock().unwrap(),
+            ["start:b:none:0", "start:a:b-url:0", "abort:b", "abort:a"]
+        );
+    }
+
+    #[test]
+    fn unknown_adapter_is_rejected_before_startup() {
+        assert!(Chain::start(&["no-such-adapter".into()], None, &HashMap::new()).is_err());
+    }
+}

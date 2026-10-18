@@ -11,7 +11,6 @@ fixed_offers!(
 );
 
 adapter!(
-    anthropic,
     "anthropic",
     Some("ANTHROPIC_API_KEY"),
     Some("ANTHROPIC_BASE_URL"),

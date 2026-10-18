@@ -13,6 +13,7 @@ mod models;
 mod parser;
 mod project;
 mod providers;
+mod proxy;
 mod runner;
 mod suggestions;
 mod sweep;
@@ -83,6 +84,80 @@ pub(crate) fn read_config(path: &std::path::Path) -> Result<String, CliError> {
 }
 
 pub(crate) use CliError as Error;
+
+#[cfg(test)]
+mod adapter_layout_tests {
+    use std::path::Path;
+
+    #[test]
+    fn registered_adapters_have_consistent_paths() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let categories: [(&str, Vec<&str>, &[&str]); 4] = [
+            ("agents", super::agents::names().collect(), &["mod.rs"]),
+            (
+                "providers",
+                super::providers::names().to_vec(),
+                &["mod.rs", "preparation.rs"],
+            ),
+            (
+                "workloads",
+                super::workloads::external_adapter_names().collect(),
+                &["mod.rs"],
+            ),
+            ("proxy", super::proxy::names().collect(), &["mod.rs"]),
+        ];
+        for (category, ids, root_modules) in categories {
+            let root = source.join(category);
+            let adapters = root.join("adapters");
+            assert!(
+                adapters.join("mod.rs").is_file(),
+                "{category} registry missing"
+            );
+            assert!(!source.join(format!("{category}.rs")).exists());
+            for entry in std::fs::read_dir(&root).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_dir() {
+                    assert_eq!(
+                        entry.file_name(),
+                        "adapters",
+                        "unexpected adapter directory: {}",
+                        path.display()
+                    );
+                }
+                if path.is_file() && path.extension().is_some_and(|ext| ext == "rs") {
+                    let name = entry.file_name();
+                    assert!(
+                        root_modules.iter().any(|allowed| name == *allowed),
+                        "target-specific module outside adapters: {}",
+                        path.display()
+                    );
+                }
+            }
+            for id in ids {
+                let stem = id.replace('-', "_");
+                assert!(
+                    adapters.join(format!("{stem}.rs")).is_file()
+                        || adapters.join(format!("{stem}_agent.rs")).is_file(),
+                    "missing {category} adapter file for {id}"
+                );
+            }
+            for entry in std::fs::read_dir(&adapters).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_dir() {
+                    assert!(
+                        adapters
+                            .join(format!("{}.rs", entry.file_name().to_string_lossy()))
+                            .is_file(),
+                        "adapter helper directory has no owning adapter: {}",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

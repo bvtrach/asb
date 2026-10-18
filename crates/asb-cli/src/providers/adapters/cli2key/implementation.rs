@@ -9,9 +9,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
-const BUILTIN_COMPAT_PROXY: &str = include_str!("../../assets/scripts/cli2key-proxy.mjs");
+const BUILTIN_COMPAT_PROXY: &str = include_str!("../../../../assets/scripts/cli2key-proxy.mjs");
 
-pub(super) fn prepare(
+pub(in crate::providers) fn prepare(
     command: &mut Command,
     model: &str,
     bridge: Option<(&str, &str)>,
@@ -33,7 +33,7 @@ pub(super) fn prepare(
     Ok(())
 }
 
-pub(super) fn local_executable() -> Option<String> {
+pub(in crate::providers) fn local_executable() -> Option<String> {
     let (root, config) = crate::project::load(std::path::Path::new(".")).ok()?;
     let mut candidates = Vec::new();
     if let Some(directory) = std::env::var_os("ASB_TOOL_DIR") {
@@ -58,7 +58,7 @@ pub struct Bridge {
     proxy: Option<Child>,
 }
 
-impl super::ProviderSession for Bridge {
+impl crate::providers::ProviderSession for Bridge {
     fn api_key(&self) -> &str {
         Bridge::api_key(self)
     }

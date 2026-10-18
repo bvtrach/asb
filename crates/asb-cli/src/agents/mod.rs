@@ -3,18 +3,8 @@
 //! The runner owns only process lifecycle and output capture. Every command
 //! shape and provider-specific adjustment lives in the owning adapter module.
 
-mod claude_code;
-mod cline;
-mod codex;
-mod continue_agent;
-mod goose;
-mod mini_swe;
-mod opencode;
-mod openhands;
-mod openjiuwen;
-mod pi;
-mod qwen_code;
-mod workbuddy;
+mod adapters;
+use adapters::REGISTRY;
 
 use crate::Error;
 use crate::benchmark::BenchmarkConfig;
@@ -166,20 +156,6 @@ pub(crate) fn mask_replay_credentials(command: &mut Command) {
     }
 }
 
-static REGISTRY: &[&dyn AgentAdapter] = &[
-    &codex::ADAPTER,
-    &pi::ADAPTER,
-    &opencode::ADAPTER,
-    &workbuddy::ADAPTER,
-    &qwen_code::ADAPTER,
-    &mini_swe::ADAPTER,
-    &openhands::ADAPTER,
-    &openjiuwen::ADAPTER,
-    &claude_code::ADAPTER,
-    &goose::ADAPTER,
-    &cline::ADAPTER,
-    &continue_agent::ADAPTER,
-];
 pub(crate) fn all() -> &'static [&'static dyn AgentAdapter] {
     REGISTRY
 }
