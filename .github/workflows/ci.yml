@@ -23,3 +23,7 @@ jobs:
         run: cargo test --locked
       - name: Build
         run: cargo build --locked
+      - name: Remove test-generated workspace files
+        run: rm -f crates/asb-cli/.asb/install.log
+      - name: Verify package
+        run: cargo package --locked
