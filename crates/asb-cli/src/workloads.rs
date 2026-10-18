@@ -30,30 +30,30 @@ struct Fixture {
 }
 
 const BUILTIN: &[(&str, &str)] = &[
-    ("bug-fix", include_str!("../../../workloads/bug-fix.txt")),
+    ("bug-fix", include_str!("../assets/workloads/bug-fix.txt")),
     (
         "build-repair",
-        include_str!("../../../workloads/build-repair.txt"),
+        include_str!("../assets/workloads/build-repair.txt"),
     ),
     (
         "dependency-migration",
-        include_str!("../../../workloads/dependency-migration.txt"),
+        include_str!("../assets/workloads/dependency-migration.txt"),
     ),
     (
         "feature-addition",
-        include_str!("../../../workloads/feature-addition.txt"),
+        include_str!("../assets/workloads/feature-addition.txt"),
     ),
     (
         "refactoring",
-        include_str!("../../../workloads/refactoring.txt"),
+        include_str!("../assets/workloads/refactoring.txt"),
     ),
     (
         "repository-navigation",
-        include_str!("../../../workloads/repository-navigation.txt"),
+        include_str!("../assets/workloads/repository-navigation.txt"),
     ),
     (
         "test-generation",
-        include_str!("../../../workloads/test-generation.txt"),
+        include_str!("../assets/workloads/test-generation.txt"),
     ),
 ];
 
@@ -63,15 +63,15 @@ const FIXTURES: &[Fixture] = &[
         files: &[
             (
                 "README.md",
-                include_str!("../../../workloads/fixtures/bug-fix/README.md"),
+                include_str!("../assets/workloads/fixtures/bug-fix/README.md"),
             ),
             (
                 "src/parser.py",
-                include_str!("../../../workloads/fixtures/bug-fix/src/parser.py"),
+                include_str!("../assets/workloads/fixtures/bug-fix/src/parser.py"),
             ),
             (
                 "tests/test_parser.py",
-                include_str!("../../../workloads/fixtures/bug-fix/tests/test_parser.py"),
+                include_str!("../assets/workloads/fixtures/bug-fix/tests/test_parser.py"),
             ),
         ],
     },
@@ -80,19 +80,19 @@ const FIXTURES: &[Fixture] = &[
         files: &[
             (
                 "README.md",
-                include_str!("../../../workloads/fixtures/build-repair/README.md"),
+                include_str!("../assets/workloads/fixtures/build-repair/README.md"),
             ),
             (
                 "src/app.py",
-                include_str!("../../../workloads/fixtures/build-repair/src/app.py"),
+                include_str!("../assets/workloads/fixtures/build-repair/src/app.py"),
             ),
             (
                 "tests/test_app.py",
-                include_str!("../../../workloads/fixtures/build-repair/tests/test_app.py"),
+                include_str!("../assets/workloads/fixtures/build-repair/tests/test_app.py"),
             ),
             (
                 "build.sh",
-                include_str!("../../../workloads/fixtures/build-repair/build.sh"),
+                include_str!("../assets/workloads/fixtures/build-repair/build.sh"),
             ),
         ],
     },
@@ -101,20 +101,20 @@ const FIXTURES: &[Fixture] = &[
         files: &[
             (
                 "README.md",
-                include_str!("../../../workloads/fixtures/dependency-migration/README.md"),
+                include_str!("../assets/workloads/fixtures/dependency-migration/README.md"),
             ),
             (
                 "requirements.txt",
-                include_str!("../../../workloads/fixtures/dependency-migration/requirements.txt"),
+                include_str!("../assets/workloads/fixtures/dependency-migration/requirements.txt"),
             ),
             (
                 "src/client.py",
-                include_str!("../../../workloads/fixtures/dependency-migration/src/client.py"),
+                include_str!("../assets/workloads/fixtures/dependency-migration/src/client.py"),
             ),
             (
                 "tests/test_client.py",
                 include_str!(
-                    "../../../workloads/fixtures/dependency-migration/tests/test_client.py"
+                    "../assets/workloads/fixtures/dependency-migration/tests/test_client.py"
                 ),
             ),
         ],
@@ -124,16 +124,16 @@ const FIXTURES: &[Fixture] = &[
         files: &[
             (
                 "README.md",
-                include_str!("../../../workloads/fixtures/feature-addition/README.md"),
+                include_str!("../assets/workloads/fixtures/feature-addition/README.md"),
             ),
             (
                 "src/formatter.py",
-                include_str!("../../../workloads/fixtures/feature-addition/src/formatter.py"),
+                include_str!("../assets/workloads/fixtures/feature-addition/src/formatter.py"),
             ),
             (
                 "tests/test_formatter.py",
                 include_str!(
-                    "../../../workloads/fixtures/feature-addition/tests/test_formatter.py"
+                    "../assets/workloads/fixtures/feature-addition/tests/test_formatter.py"
                 ),
             ),
         ],
@@ -143,15 +143,15 @@ const FIXTURES: &[Fixture] = &[
         files: &[
             (
                 "README.md",
-                include_str!("../../../workloads/fixtures/refactoring/README.md"),
+                include_str!("../assets/workloads/fixtures/refactoring/README.md"),
             ),
             (
                 "src/labels.py",
-                include_str!("../../../workloads/fixtures/refactoring/src/labels.py"),
+                include_str!("../assets/workloads/fixtures/refactoring/src/labels.py"),
             ),
             (
                 "tests/test_labels.py",
-                include_str!("../../../workloads/fixtures/refactoring/tests/test_labels.py"),
+                include_str!("../assets/workloads/fixtures/refactoring/tests/test_labels.py"),
             ),
         ],
     },
@@ -160,19 +160,21 @@ const FIXTURES: &[Fixture] = &[
         files: &[
             (
                 "README.md",
-                include_str!("../../../workloads/fixtures/repository-navigation/README.md"),
+                include_str!("../assets/workloads/fixtures/repository-navigation/README.md"),
             ),
             (
                 "src/cli.py",
-                include_str!("../../../workloads/fixtures/repository-navigation/src/cli.py"),
+                include_str!("../assets/workloads/fixtures/repository-navigation/src/cli.py"),
             ),
             (
                 "src/registry.py",
-                include_str!("../../../workloads/fixtures/repository-navigation/src/registry.py"),
+                include_str!("../assets/workloads/fixtures/repository-navigation/src/registry.py"),
             ),
             (
                 "tests/test_cli.py",
-                include_str!("../../../workloads/fixtures/repository-navigation/tests/test_cli.py"),
+                include_str!(
+                    "../assets/workloads/fixtures/repository-navigation/tests/test_cli.py"
+                ),
             ),
         ],
     },
@@ -181,16 +183,16 @@ const FIXTURES: &[Fixture] = &[
         files: &[
             (
                 "README.md",
-                include_str!("../../../workloads/fixtures/test-generation/README.md"),
+                include_str!("../assets/workloads/fixtures/test-generation/README.md"),
             ),
             (
                 "src/temperature.py",
-                include_str!("../../../workloads/fixtures/test-generation/src/temperature.py"),
+                include_str!("../assets/workloads/fixtures/test-generation/src/temperature.py"),
             ),
             (
                 "tests/test_temperature.py",
                 include_str!(
-                    "../../../workloads/fixtures/test-generation/tests/test_temperature.py"
+                    "../assets/workloads/fixtures/test-generation/tests/test_temperature.py"
                 ),
             ),
         ],

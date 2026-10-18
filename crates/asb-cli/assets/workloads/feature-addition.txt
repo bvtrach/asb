@@ -1,0 +1,2 @@
+Implement the small formatter feature described in `README.md`, preserve the
+existing default behavior, and run the tests. Explain the change concisely.
