@@ -169,6 +169,12 @@ not start cli2key or connect to any live provider. Add
 the bounded response delays recorded in each cassette entry. Cassettes are local test
 artifacts and should not be committed when they contain provider responses.
 
+The tape layer is a provider-neutral proxy chain. `--record` and `--replay`
+enable the default `llmtape` adapter; future adapters can be chained by setting
+`ASB_PROXY_CHAIN` to comma-separated names ordered from agent to provider. The
+agent always receives only the chain's loopback ingress endpoint, so enabling,
+disabling, or extending the chain does not change agent configuration.
+
 For a sweep, keep the sweep entries and their order unchanged, and use the same
 `--cassette-root DIR` for recording and replay (or omit it for both). To record
 once and replay eight concurrent replicas, record with `concurrency = 1` in
