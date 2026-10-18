@@ -862,7 +862,7 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> 
     let mut svg = svg_header(WIDTH, height, title);
     svg.push_str(&format!(
         "<rect class=\"legend-panel\" x=\"{LEFT:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{legend_height:.1}\" rx=\"8\" fill=\"#f4f8fb\" stroke=\"#dce4ec\"/>",
-        LEGEND_TOP - 22.0,
+        LEGEND_TOP - 12.0,
         RIGHT - LEFT
     ));
     append_y_axis(&mut svg, LEFT, plot_top, bottom, RIGHT, max, title);
