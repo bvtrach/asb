@@ -292,7 +292,9 @@ async function handle(request, response) {
     return;
   }
 
-  const target = new URL(recordedRequest.url, upstream);
+  // Preserve provider-specific prefixes (e.g. OpenRouter's /api) while
+  // keeping the selected upstream host, even for absolute-form requests.
+  const target = new URL(`${upstream.replace(/\/+$/, "")}${recordedRequest.url}`);
   const forwardedHeaders = { ...request.headers };
   delete forwardedHeaders.host;
   delete forwardedHeaders.connection;

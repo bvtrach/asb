@@ -11,6 +11,7 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
         dependencies: &["mcp==2.3.0"],
         executable: "mini",
     },
+    &[crate::endpoint::CHAT, crate::endpoint::MESSAGES_KEY],
     command,
     prepare_adapter,
 )
@@ -20,7 +21,14 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
         program: "mini".into(),
         args: vec![
             "--model".into(),
-            format!("anthropic/{}", context.config.model),
+            format!(
+                "{}/{}",
+                match context.interface {
+                    Some(crate::endpoint::Interface::OpenAiChat) => "openai",
+                    _ => "anthropic",
+                },
+                context.config.model
+            ),
             "--task".into(),
             context.prompt.into(),
             "--yolo".into(),
@@ -32,14 +40,30 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
     }
 }
 fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
-    if context.provider.eq_ignore_ascii_case("cli2key") {
-        context
-            .command
-            .env("MSWEA_CONFIGURED", "true")
-            .env("MSWEA_MODEL_NAME", format!("anthropic/{}", context.model))
-            .env("MSWEA_SILENT_STARTUP", "1")
-            .env("MSWEA_COST_TRACKING", "ignore_errors");
-    }
+    let connection = context.connection;
+    let (family, prefix) = match connection.interface {
+        crate::endpoint::Interface::AnthropicMessages => ("ANTHROPIC", "anthropic"),
+        crate::endpoint::Interface::OpenAiChat => ("OPENAI", "openai"),
+        _ => unreachable!("unsupported mini-swe endpoint"),
+    };
+    let base_url = if connection.interface == crate::endpoint::Interface::AnthropicMessages {
+        connection.base_url.trim_end_matches("/v1")
+    } else {
+        connection.base_url.as_str()
+    };
+    context
+        .command
+        .env(
+            format!("{family}_API_KEY"),
+            connection.credential.as_deref().unwrap_or("asb-local"),
+        )
+        .env(format!("{family}_BASE_URL"), base_url);
+    context
+        .command
+        .env("MSWEA_CONFIGURED", "true")
+        .env("MSWEA_MODEL_NAME", format!("{prefix}/{}", context.model))
+        .env("MSWEA_SILENT_STARTUP", "1")
+        .env("MSWEA_COST_TRACKING", "ignore_errors");
     Ok(())
 }
 

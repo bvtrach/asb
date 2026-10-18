@@ -8,6 +8,7 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
         dependencies: &[],
         executable: "openhands",
     },
+    &[crate::endpoint::CHAT, crate::endpoint::MESSAGES_KEY],
     command,
     prepare_adapter,
 )
@@ -27,17 +28,20 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
     }
 }
 fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
-    if !context.provider.eq_ignore_ascii_case("cli2key") {
-        return Ok(());
-    }
-    let (key, url) = context
-        .cli2key
-        .ok_or_else(|| Error::Run("cli2key provider has no API endpoint".into()))?;
+    let connection = context.connection;
+    let key = connection.credential.as_deref().unwrap_or("asb-local");
+    let (prefix, url) = match connection.interface {
+        crate::endpoint::Interface::AnthropicMessages => {
+            ("anthropic", connection.base_url.trim_end_matches("/v1"))
+        }
+        crate::endpoint::Interface::OpenAiChat => ("openai", connection.base_url.as_str()),
+        _ => unreachable!("unsupported OpenHands endpoint"),
+    };
     context
         .command
         .env("LLM_API_KEY", key)
-        .env("LLM_BASE_URL", url.trim_end_matches("/v1"))
-        .env("LLM_MODEL", format!("anthropic/{}", context.model))
+        .env("LLM_BASE_URL", url)
+        .env("LLM_MODEL", format!("{prefix}/{}", context.model))
         .env("OPENHANDS_SUPPRESS_BANNER", "1");
     Ok(())
 }

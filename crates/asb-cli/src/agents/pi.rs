@@ -8,6 +8,7 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
         package: "@mariozechner/pi-coding-agent@0.73.1",
         executable: "pi",
     },
+    &[crate::endpoint::RESPONSES, crate::endpoint::CHAT],
     command,
     prepare_adapter,
 );
@@ -16,7 +17,7 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
         program: "pi".into(),
         args: vec![
             "--provider".into(),
-            context.config.provider.clone(),
+            "asb".into(),
             "--model".into(),
             context.config.model.clone(),
             "--mode".into(),
@@ -27,33 +28,25 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
     }
 }
 fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
-    let cli2key = context.provider.eq_ignore_ascii_case("cli2key");
-    let openrouter = context.provider.eq_ignore_ascii_case("openrouter");
-    if !cli2key && !openrouter {
-        return Ok(());
-    }
+    let connection = context.connection;
     let directory = context.runtime_dir.join("pi/config");
-    let (provider, api, key_name) = if cli2key {
-        ("cli2key", "openai-responses", "CLI2KEY_API_KEY")
-    } else {
-        ("openrouter", "openai-completions", "OPENROUTER_API_KEY")
+    let api = match connection.interface {
+        crate::endpoint::Interface::OpenAiResponses => "openai-responses",
+        crate::endpoint::Interface::OpenAiChat => "openai-completions",
+        _ => unreachable!("Pi advertises only OpenAI-compatible interfaces"),
     };
-    let base_url = context
-        .tape
-        .map(|(_, url)| url.to_owned())
-        .or_else(|| context.cli2key.map(|(_, url)| url.to_owned()))
-        .unwrap_or_else(|| {
-            std::env::var("OPENROUTER_BASE_URL")
-                .unwrap_or_else(|_| "https://openrouter.ai/api/v1".into())
-        });
+    context.command.env(
+        "ASB_AGENT_API_KEY",
+        connection.credential.as_deref().unwrap_or("asb-local"),
+    );
     configure_provider(
         context.command,
         &directory,
-        provider,
+        "asb",
         context.model,
-        &base_url,
+        &connection.base_url,
         api,
-        key_name,
+        "ASB_AGENT_API_KEY",
     )
 }
 

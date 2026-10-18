@@ -5,7 +5,6 @@ use crate::agents;
 use crate::benchmark::BenchmarkConfig;
 use crate::measurements;
 use crate::models;
-use crate::prepare;
 use crate::project;
 use crate::providers;
 use crate::suggestions;
@@ -220,15 +219,60 @@ fn run_mode(
     });
     if let Some((tape::Mode::Replay, cassette)) = tape_cassette.as_ref() {
         models::ensure_replay_tool_capable(cassette, &config.model)?;
-    } else {
-        models::ensure_tool_capable(&config.provider, &config.model)?;
     }
+    let mut discovered_tool_support = None;
+    let selected_offer = agents::find(&config.agent)
+        .map(|adapter| {
+            let offered = if let Some((tape::Mode::Replay, cassette)) = tape_cassette.as_ref() {
+                providers::replay_endpoints(&config.provider, &config.model, models::replay_interface(cassette)?)
+            } else {
+                let (offers, snapshot_fallback, tool_support) = providers::discover_endpoints(&config.provider, &config.model);
+                discovered_tool_support = tool_support;
+                if snapshot_fallback && !json {
+                    writeln!(output, "Warning: current endpoint metadata is unavailable for provider `{}` and model `{}`; using the built-in endpoint snapshot, which may be out of date.", config.provider, config.model).map_err(crate::io_error)?;
+                }
+                offers
+            };
+            crate::endpoint::choose_from(
+                adapter.id(),
+                adapter.supported_endpoints(),
+                &config.provider,
+                &config.model,
+                &offered,
+            )
+        })
+        .transpose()?;
     let (project_root, project_config) = project::load(config_path)?;
     let project_root = project_root.canonicalize().map_err(|error| {
         Error::Input(format!(
             "cannot resolve benchmark project directory: {error}"
         ))
     })?;
+    let tape_mode = tape_request.map(|(mode, _)| mode);
+    let bridge = providers::start_local_bridge(
+        &config.provider,
+        &project_root,
+        &project_config.tools_dir,
+        tape_mode == Some(tape::Mode::Replay),
+    )?;
+    if tape_mode != Some(tape::Mode::Replay) {
+        let endpoint = providers::local_bridge_endpoint(&config.provider, bridge.as_ref());
+        let bridge_catalog =
+            providers::local_bridge_credentials(&config.provider, bridge.as_ref(), endpoint)
+                .map(|(key, url)| (url, key));
+        if discovered_tool_support == Some(false) {
+            return Err(Error::Input(format!(
+                "provider metadata reports that model `{}` does not support tools",
+                config.model
+            )));
+        }
+        if !models::ensure_tool_capable(&config.provider, &config.model, bridge_catalog)?
+            && discovered_tool_support != Some(true)
+            && !json
+        {
+            writeln!(output, "Warning: provider `{}` lists model `{}` but does not report whether it supports tools; the agent may fail if the model cannot use tools.", config.provider, config.model).map_err(crate::io_error)?;
+        }
+    }
     let workspace_name = if config.workspace == "asb-workspace" {
         &project_config.workspace_dir
     } else {
@@ -254,18 +298,19 @@ fn run_mode(
     workloads::prepare_fixture(&config.workload, &workspace).map_err(Error::Run)?;
     workloads::prepare_external(&config.workload, &workload_directory, &workspace)
         .map_err(Error::Run)?;
-    let tape_mode = tape_request.map(|(mode, _)| mode);
-    let bridge = providers::start_local_bridge(
-        &config.provider,
-        &project_root,
-        &project_config.tools_dir,
-        tape_mode == Some(tape::Mode::Replay),
-    )?;
     let mut tape_session = if let Some((mode, cassette)) = tape_cassette.as_ref() {
-        let upstream = providers::tape_upstream(
-            &config.provider,
-            providers::local_bridge_endpoint(&config.provider, bridge.as_ref()),
-        );
+        let bridge_url = providers::local_bridge_endpoint(&config.provider, bridge.as_ref());
+        let upstream = if *mode == tape::Mode::Replay {
+            None
+        } else if let Some(offer) = selected_offer.as_ref() {
+            Some(providers::selected_tape_upstream(
+                &config.provider,
+                offer.clone(),
+                bridge_url,
+            )?)
+        } else {
+            providers::tape_upstream(&config.provider, bridge_url)
+        };
         Some(tape::Session::start(
             *mode,
             cassette,
@@ -277,16 +322,34 @@ fn run_mode(
         None
     };
     let tape_url = tape_session.as_ref().map(|session| session.url());
+    let provider_endpoint =
+        tape_url.or_else(|| providers::local_bridge_endpoint(&config.provider, bridge.as_ref()));
+    let provider_credentials =
+        providers::local_bridge_credentials(&config.provider, bridge.as_ref(), provider_endpoint);
+    let connection = selected_offer
+        .map(|offer| {
+            providers::endpoint_connection(
+                &config.provider,
+                offer,
+                provider_credentials,
+                tape_url.zip(tape_mode).map(|(url, mode)| (mode, url)),
+            )
+        })
+        .transpose()?;
     // Adapters run with the benchmark workspace as their current directory.
     // Pass the canonical workspace explicitly so a relative configuration
     // value is not resolved a second time inside that directory (which is
     // especially important for OpenJiuwen's persistent workspace).
     let mut command_config = config.clone();
     command_config.workspace = workspace.to_string_lossy().into_owned();
-    let specification = command_for(
+    let specification = command_for_with_interface(
         &command_config,
-        tape_url.or_else(|| providers::local_bridge_endpoint(&config.provider, bridge.as_ref())),
+        connection
+            .as_ref()
+            .map(|connection| connection.base_url.as_str())
+            .or(provider_endpoint),
         &prompt,
+        connection.as_ref().map(|connection| connection.interface),
     )?;
     let mut program = specification.program;
     if let Some(local) = agents::resolve(&config.agent, &project_root, &project_config.tools_dir) {
@@ -312,11 +375,7 @@ fn run_mode(
     if tape_mode == Some(tape::Mode::Replay) {
         agents::mask_replay_credentials(&mut command);
     }
-    let provider_endpoint =
-        tape_url.or_else(|| providers::local_bridge_endpoint(&config.provider, bridge.as_ref()));
-    let provider_credentials =
-        providers::local_bridge_credentials(&config.provider, bridge.as_ref(), provider_endpoint);
-    prepare::apply_with_tape(
+    providers::apply_with_tape(
         &mut command,
         &config.provider,
         &config.model,
@@ -329,18 +388,17 @@ fn run_mode(
     let mut runtime_path = workspace.as_os_str().to_os_string();
     runtime_path.push(".asb-agent-runtime");
     let runtime_path = PathBuf::from(runtime_path);
-    agents::prepare(
-        &config.agent,
-        &mut agents::PreparationContext {
-            command: &mut command,
-            provider: &config.provider,
-            model: &config.model,
-            cli2key: provider_credentials,
-            tools_dir: &project::resolve(&project_root, &project_config.tools_dir),
-            runtime_dir: &runtime_path,
-            tape: tape_url.zip(tape_mode).map(|(url, mode)| (mode, url)),
-        },
-    )?;
+    if let Some(connection) = connection.as_ref() {
+        agents::prepare(
+            &config.agent,
+            &mut agents::PreparationContext {
+                command: &mut command,
+                model: &config.model,
+                connection,
+                runtime_dir: &runtime_path,
+            },
+        )?;
+    }
     if let Some(url) = tape_url {
         providers::configure_tape(
             &mut command,
@@ -773,15 +831,33 @@ fn read_stream<R: Read>(mut stream: R, kind: OutputStream, sender: mpsc::Sender<
 
 type CommandSpec = agents::CommandSpec;
 
+#[cfg(test)]
 fn command_for(
     config: &BenchmarkConfig,
     provider_base_url: Option<&str>,
     prompt: &str,
 ) -> Result<CommandSpec, Error> {
+    let interface = agents::find(&config.agent).and_then(|adapter| {
+        crate::endpoint::select(
+            adapter.supported_endpoints(),
+            &providers::offered_endpoints(&config.provider, &config.model),
+        )
+        .map(|offer| offer.interface)
+    });
+    command_for_with_interface(config, provider_base_url, prompt, interface)
+}
+
+fn command_for_with_interface(
+    config: &BenchmarkConfig,
+    provider_base_url: Option<&str>,
+    prompt: &str,
+    interface: Option<crate::endpoint::Interface>,
+) -> Result<CommandSpec, Error> {
     if let Some(adapter) = agents::find(&config.agent) {
         return Ok(adapter.command(&agents::CommandContext {
             config,
             endpoint: provider_base_url,
+            interface,
             prompt,
         }));
     }
@@ -791,14 +867,6 @@ fn command_for(
             "unknown agent `{}`; did you mean `{candidate}`?",
             config.agent
         )));
-    }
-    if let Some(candidates) = providers::known_models(&config.provider) {
-        if let Some(candidate) = suggestions::closest(&config.model, candidates) {
-            return Err(Error::Input(format!(
-                "unknown model `{}` for provider `{}`; did you mean `{candidate}`?",
-                config.model, config.provider
-            )));
-        }
     }
     Ok(CommandSpec {
         program: config.agent.clone(),
@@ -1089,7 +1157,7 @@ mod tests {
             .expect("pi has a command");
         assert_eq!(command.program, "pi");
         assert_eq!(command.args[0], "--provider");
-        assert_eq!(command.args[1], "cli2key");
+        assert_eq!(command.args[1], "asb");
         assert!(command.args.contains(&"--print".into()));
         assert!(command.args.contains(&"--mode".into()));
         assert!(command.args.contains(&"json".into()));
@@ -1137,7 +1205,7 @@ mod tests {
     }
 
     #[test]
-    fn opencode_zen_command_uses_opencode_provider_model_namespace() {
+    fn opencode_command_uses_generic_provider_model_namespace() {
         let config = BenchmarkConfig {
             agent: "opencode".into(),
             workload: "bug-fix".into(),
@@ -1151,12 +1219,11 @@ mod tests {
             measurements: None,
         };
         let command = command_for(&config, None, "prompt").expect("known agent");
-        assert!(command.args.windows(2).any(|pair| {
-            pair == [
-                "--model".to_owned(),
-                "opencode/mimo-v2.6-flash-free".to_owned(),
-            ]
-        }));
+        assert!(
+            command.args.windows(2).any(|pair| {
+                pair == ["--model".to_owned(), "asb/mimo-v2.6-flash-free".to_owned()]
+            })
+        );
     }
 
     #[test]

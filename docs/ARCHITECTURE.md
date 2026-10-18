@@ -15,10 +15,11 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   path and falls back only when a catalog is unavailable, then writes test
   configurations and a sweep manifest;
 - `install`: local copying of agent executables and workload prompt files;
-- `providers`: a concise provider-name and environment-variable registry;
+- `providers`: a provider registry owning model-specific API endpoint offerings,
+  addresses, credentials, and optional bridge lifecycle;
+- `endpoint`: agent/provider-neutral selection of a shared API interface;
 - `models`: bounded live model-catalog discovery using provider-specific
   endpoints and response shapes;
-- `prepare`: provider-wide, target-neutral pre-launch environment preparation;
 - `agents/`, `tools/`, and `workloads/workload_adapters/`: owning adapters for
   target-specific command construction, setup, installation identity, source
   materialization, and result artifacts; the generic agent runner dispatches
@@ -74,13 +75,66 @@ and record cassettes. A replay may fan one cassette out to every replica, each
 with independent progress and agent configuration. Provider credentials are never stored
 in that file. The runner passes provider/model selection through environment
 variables and gives the selected agent one bounded workload prompt.
+Each agent declares the API interfaces its adapter can configure in preference
+order, and each provider declares the interfaces it offers for the selected
+model, including the interface's authentication style and API base address.
+The endpoint negotiator chooses the first agent-preferred interface with a
+compatible authentication style and obtains its connection details from that
+specific provider offer. It does not
+select providers based on agent identity or agents based on provider identity.
+No intersection produces an actionable error rather than a silent fallback.
+Interface compatibility is distinct from whether a particular model can
+successfully perform an agent's task. Provider model/endpoint declarations must
+be maintained as the upstream providers change. OpenCode's public model-list
+endpoint does not report the interface for each model, so preparation also
+fetches OpenCode's public models.dev metadata and uses its per-model API URL and
+SDK family. Metadata is read without provider credentials and discovered URLs
+are restricted to the OpenCode host; `OPENCODE_ZEN_BASE_URL` remains an explicit
+override. If live metadata is unavailable, ASB warns in human output and uses a
+built-in snapshot. Every live run queries the selected provider's model catalog;
+Anthropic, Gemini, and Fireworks continuation pages are followed with bounded size and page
+counts, and cli2key is queried through the same bridge instance used for the
+run. OpenRouter's public catalog can also be queried without credentials.
+Other providers use their documented API-interface and address declarations
+because model catalogs do not consistently enumerate wire interfaces. Explicit
+model capability flags are used when available; a missing tool-support flag is
+unknown, not a positive claim, and produces a warning before execution. These
+documented declarations and the offline replay snapshot can become stale;
+automatic freshness cannot be guaranteed when a provider does not publish that
+metadata.
+
+The catalog implementation follows the official [Anthropic Models API](https://platform.claude.com/docs/en/api/models/list),
+[Gemini Models API](https://ai.google.dev/api/models),
+[OpenAI Models API](https://platform.openai.com/docs/api-reference/models/list),
+[OpenRouter Models API](https://openrouter.ai/docs/api/api-reference/models/get-models), and
+[Ollama API](https://docs.ollama.com/api), [Together Models API](https://docs.together.ai/reference/models),
+[Fireworks Models API](https://docs.fireworks.ai/api-reference/list-models), and
+[Mistral Models API](https://docs.mistral.ai/api/endpoint/models); the OpenCode model-specific metadata
+comes from its [models.dev catalog](https://github.com/anomalyco/models.dev).
+Other provider adapters retain their documented URL and wire-interface defaults;
+model availability still comes from their individual live model-list APIs.
+For example, [DeepSeek's Anthropic-compatible API](https://api-docs.deepseek.com/guides/anthropic_api/)
+is offered separately from its OpenAI-compatible API, with an independent
+`DEEPSEEK_ANTHROPIC_BASE_URL` override.
+Fireworks' model catalog is account-scoped: it queries the public `fireworks`
+account by default. Set `FIREWORKS_ACCOUNT_ID` to a different account to list
+its models; for a run, a full `accounts/<account>/models/<model>` identifier
+also selects that account unless `FIREWORKS_ACCOUNT_ID` is set. Set
+`FIREWORKS_MODELS_URL` to use an explicitly configured catalog
+endpoint; `FIREWORKS_BASE_URL` independently controls inference. These do not
+automatically combine public and private account catalogs. Fireworks advertises
+documented chat, responses, and Anthropic-compatible interfaces, but a listed
+model is not thereby guaranteed to support every interface.
 Provider credentials are not stored in benchmark configuration. Known providers
 document conventional credential and endpoint variable names; model discovery
 and child launch use the environment first and then a bounded
-`$HOME/.api_key_<provider>` file. Any custom provider name is accepted unchanged.
-The `provider models` command is the one exception that reads the selected credential
-only long enough to send a catalog request; it sends it through curl's stdin
-configuration, never includes it in arguments or output, and never stores it.
+`$HOME/.api_key_<provider>` file. Custom provider names can be represented in
+configuration, but registered agents require a provider with declared endpoint
+capabilities before a run can start.
+Model discovery reads the selected credential only long enough to send a catalog
+request; it sends it through curl's stdin configuration, never includes it in
+arguments or output, and never stores it. Authenticated requests do not follow
+redirects, which prevents a catalog redirect from forwarding a provider key.
 For replay, ASB removes known provider and registered agent credential
 environment variables and supplies dummy values where needed before launching
 the agent. Replay is not a security sandbox:
@@ -129,6 +183,9 @@ aliases download pinned upstream source archives into local bundle directories;
 the runner copies those sources into `external-workload/` in the workspace.
 Other aliases install pinned prompt metadata. These commands do not handle
 credentials.
+OpenJiuwen's Python recipe pins `filelock` 3.32.7 because the 4.2.2 release
+stalled while the pinned OpenJiuwen client acquired filesystem locks. A fresh
+`asb tool install openjiuwen` applies the tested dependency to the local venv.
 The `bpftrace` recipe copies the exact host executable into the project and
 writes `bpftrace-compatibility.json` with its version, kernel release, and
 architecture. This keeps measurement runs tied to the kernel on the machine
@@ -158,19 +215,22 @@ through `sudo -n` only when the direct probe fails, and rejects the run before
 the agent starts when the needed passwordless authorization is absent. Normal
 commands and CI do not require kernel tracing access.
 The `pi` agent uses the pinned `@mariozechner/pi-coding-agent` npm package and
-its non-interactive print mode. For `cli2key`, the preparation layer maps Pi to
-the bridge's OpenAI-compatible endpoint without storing credentials.
+its non-interactive print mode. The generic endpoint negotiator selects a
+compatible API interface without coupling Pi to a particular provider.
 Installing `cli2key` also asks its bridge to refresh the local API key; model
 discovery and runs then start the bridge and use that key ephemerally.
 `asb tool list` and `asb workload list` expose these two catalogs without
 installing anything. Command-specific help is available with `--help`.
-Model discovery is fail-closed for tool use: provider metadata must advertise
-`tools`, `tool_choice`, function calling, or an equivalent capability before a
-model is listed. Execution repeats that validation; offline replay uses the
-cassette's recorded tool request instead of contacting the provider.
+Model discovery excludes models whose live metadata explicitly reports no tool
+support. Models with unknown support remain selectable because several official
+catalogs omit that field; execution warns about the uncertainty. Documented
+standard capabilities are used for Anthropic and the cli2key bridge when their
+catalogs omit that bit. Offline replay uses the cassette's recorded tool request
+instead of contacting the provider.
 Ollama discovery recognizes the server's capability arrays and, when a list
-entry omits capabilities, queries `/api/show` for that model. Only explicit
-tool support is accepted. For Codex with Ollama, the agent adapter writes an
+entry omits capabilities, queries `/api/show` for that model. Explicit absence
+of tool support is rejected; missing capability data is reported as unknown.
+For Codex with Ollama, the agent adapter writes an
 isolated local provider configuration using Ollama's Responses endpoint;
 record and replay instead use the tape endpoint. This routing does not itself
 guarantee that a particular model can complete an agent workload.
@@ -208,10 +268,9 @@ bridge lifecycle and target-specific configuration are delegated through their
 respective registries and adapters, so adding an integration does not add a
 target-name branch to `run` or the benchmark configuration format.
 
-Claude Code, Goose, Cline, and Continue receive OpenRouter's
-OpenAI-compatible endpoint (with Claude's Anthropic-compatible path derived
-from the same base) or the equivalent cli2key bridge endpoint. Continue
-receives a project-local model YAML generated for the selected model.
+Claude Code, Goose, Cline, and Continue receive the endpoint selected by the
+generic negotiator. Continue receives a project-local model YAML generated for
+the selected model and interface.
 Goose's adapter sets its `OPENAI_HOST` or `ANTHROPIC_HOST` to the tape endpoint
 for both recording and replay; replay uses a placeholder credential.
 

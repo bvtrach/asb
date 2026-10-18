@@ -1,4 +1,4 @@
-//! Provider-wide pre-run environment preparation.
+//! Provider-owned pre-run environment preparation.
 
 use crate::{Error, providers};
 use std::process::Command;

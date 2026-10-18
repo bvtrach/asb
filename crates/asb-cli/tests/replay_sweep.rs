@@ -42,10 +42,11 @@ fn sweep_replays_one_recording_eight_times_without_a_live_bridge() {
     std::fs::write(&agent, r##"#!/usr/bin/env node
 const fs = require('fs');
 const conf = JSON.parse(fs.readFileSync(process.env.PI_CODING_AGENT_DIR + '/models.json'));
-const url = conf.providers.cli2key.baseUrl;
+const url = conf.providers.asb.baseUrl;
+if (conf.providers.asb.api !== 'openai-responses') process.exit(4);
 if (!/^http:\/\/127\.0\.0\.1:\d+\/v1$/.test(url || '')) process.exit(3);
-const body = {model: 'test-model', messages: [{content: 'example prompt'}], tools: [{type: 'function'}]};
-fetch(url + '/chat/completions', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(body)})
+const body = {model: 'test-model', input: 'example prompt', tools: [{type: 'function'}]};
+fetch(url + '/responses', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(body)})
   .then(async r => { if (!r.ok) throw new Error(await r.text()); console.log('{"status":"ok"}'); })
   .catch(e => { console.error(e); process.exitCode = 1; });
 "##).unwrap();
@@ -59,8 +60,8 @@ fetch(url + '/chat/completions', {method:'POST', headers:{'content-type':'applic
     let cassette_dir = root.join("tapes/000-benchmark/cassettes");
     std::fs::create_dir_all(&cassette_dir).unwrap();
     let cassette = cassette_dir.join("benchmark-pi-bug-fix-test-model.jsonl");
-    let body = r#"{"model":"test-model","messages":[{"content":"example prompt"}],"tools":[{"type":"function"}]}"#;
-    let interaction = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{}"}});
+    let body = r#"{"model":"test-model","input":"example prompt","tools":[{"type":"function"}]}"#;
+    let interaction = serde_json::json!({"request":{"method":"POST","url":"/v1/responses","body":body},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{}"}});
     std::fs::write(&cassette, format!("{interaction}\n")).unwrap();
     let result = asb(
         &root,
