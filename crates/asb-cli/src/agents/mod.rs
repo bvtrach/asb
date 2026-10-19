@@ -252,7 +252,10 @@ pub(super) fn usage_fields(value: &serde_json::Value) -> crate::measurements::To
         cached_tokens: number(&[
             "cache_read_input_tokens",
             "cache_read_tokens",
+            "cacheReadTokens",
             "cached_tokens",
+            "cached_input_tokens",
+            "cachedTokens",
             "cached",
             "cache_tokens",
         ]),

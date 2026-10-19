@@ -28,27 +28,16 @@ fn from_sources(
     let output_usage = specialized
         .clone()
         .unwrap_or_else(|| usage_from_text(stdout).merge(usage_from_text(stderr)));
-    let output_complete =
-        output_usage.input_tokens.is_some() && output_usage.output_tokens.is_some();
     let mut cassette_usage = TokenUsage::default();
-    if !output_complete || specialized.is_none() {
-        if let Some(path) = cassette {
-            if let Ok(text) = read_bounded_text(path, 16 * 1024 * 1024) {
-                cassette_usage = usage_from_cassette(&text, inclusive);
-            }
+    if let Some(path) = cassette {
+        if let Ok(text) = read_bounded_text(path, 16 * 1024 * 1024) {
+            cassette_usage = usage_from_cassette(&text, inclusive);
         }
     }
-    if specialized.is_some()
-        && !output_complete
-        && cassette_usage.input_tokens.is_some()
-        && cassette_usage.output_tokens.is_some()
-    {
+    if cassette_usage.input_tokens.is_some() && cassette_usage.output_tokens.is_some() {
         usage = usage.merge_with_source(cassette_usage, "cassette");
     } else {
         usage = usage.merge_with_source(output_usage, "agent-output");
-        if specialized.is_none() {
-            usage = usage.merge_with_source(cassette_usage, "cassette");
-        }
     }
     usage.with_derived_total()
 }
@@ -298,12 +287,10 @@ impl Default for TokenUsage {
     }
 }
 
-fn usage_from_text(text: &str) -> TokenUsage {
+pub(crate) fn usage_from_text(text: &str) -> TokenUsage {
     let mut usage = TokenUsage::default();
-    if text.contains('\n')
-        && let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim())
-    {
-        usage = usage.add(usage_from_json(&value));
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim()) {
+        return usage_from_json(&value);
     }
     let mut lines = text.lines().peekable();
     while let Some(line) = lines.next() {
@@ -376,7 +363,7 @@ pub(super) fn embedded_json_values(text: &str) -> Vec<serde_json::Value> {
     values
 }
 
-fn usage_from_json(value: &serde_json::Value) -> TokenUsage {
+pub(crate) fn usage_from_json(value: &serde_json::Value) -> TokenUsage {
     let mut usage = TokenUsage::default();
     if let Some(object) = value.as_object() {
         let short_usage = object.contains_key("total")
@@ -423,6 +410,7 @@ fn usage_from_json(value: &serde_json::Value) -> TokenUsage {
             object,
             &[
                 "cached_tokens",
+                "cached_input_tokens",
                 "cache_read_input_tokens",
                 "cachedTokens",
                 "cache_read_tokens",
@@ -474,6 +462,7 @@ fn usage_from_json(value: &serde_json::Value) -> TokenUsage {
                 "candidatesTokenCount",
                 "outputTokenCount",
                 "cached_tokens",
+                "cached_input_tokens",
                 "cache_read_input_tokens",
                 "cache_creation_input_tokens",
                 "cachedTokens",
