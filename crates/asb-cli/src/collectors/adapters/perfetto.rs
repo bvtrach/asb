@@ -117,12 +117,26 @@ fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
         return Err("Perfetto is required for the selected collector. Run `asb tool install perfetto` and retry.".into());
     }
     let marker = checked_trace_marker_path()?;
-    preflight_with_marker(context, &marker)
+    match probe_trace_marker_io(&marker) {
+        Ok(()) => preflight_perfetto(context, &executable),
+        Err(error) if marker_probe_allows_fallback(&marker, &error) => {
+            // Some container kernels expose a trace_marker inode but reject
+            // writes with EBADF. Perfetto can still collect scheduler data;
+            // post-processing falls back to the scoped process lifetime.
+            preflight_perfetto(context, &executable)
+        }
+        Err(error) => Err(marker_access_error(&marker, &error)),
+    }
 }
 
+#[cfg(test)]
 fn preflight_with_marker(context: &mut PreflightContext<'_>, marker: &Path) -> Result<(), String> {
     let executable = measurements::resolve_executable(context.tool_dir, "perfetto");
     probe_trace_marker(&marker)?;
+    preflight_perfetto(context, &executable)
+}
+
+fn preflight_perfetto(context: &mut PreflightContext<'_>, executable: &Path) -> Result<(), String> {
     probe_trace_processor(context.tool_dir)?;
     if !executable.is_file() {
         return Ok(());
@@ -227,10 +241,20 @@ impl measurements::Session {
         File::create(&stdout_path)
             .map_err(|error| format!("cannot create Perfetto output: {error}"))?;
         let marker = checked_trace_marker_path()?;
-        let marker_output = OpenOptions::new()
-            .write(true)
-            .open(&marker)
-            .map_err(|error| marker_access_error(&marker, &error))?;
+        let marker = match probe_trace_marker_io(&marker) {
+            Ok(()) => Some(marker),
+            Err(error) if marker_probe_allows_fallback(&marker, &error) => None,
+            Err(error) => return Err(marker_access_error(&marker, &error)),
+        };
+        let marker_output = marker
+            .as_ref()
+            .map(|marker| {
+                OpenOptions::new()
+                    .write(true)
+                    .open(marker)
+                    .map_err(|error| marker_access_error(marker, &error))
+            })
+            .transpose()?;
         let child = self
             .command("perfetto")
             .args(["--txt", "--notify-fd", "1", "-c"])
@@ -265,8 +289,8 @@ impl measurements::Session {
                 let state = self.state::<PerfettoState>();
                 let mut state = state.borrow_mut();
                 state.trace = Some(trace);
-                state.trace_marker = Some(marker);
-                state.trace_marker_output = Some(marker_output);
+                state.trace_marker = marker;
+                state.trace_marker_output = marker_output;
                 self.collectors.push(Collector {
                     name: "perfetto".into(),
                     adapter: collectors::find("perfetto").expect("registered collector"),
@@ -477,15 +501,20 @@ fn checked_trace_marker_path() -> Result<PathBuf, String> {
     }
 }
 
-fn probe_trace_marker(path: &Path) -> Result<(), String> {
-    let mut marker = OpenOptions::new()
-        .write(true)
-        .open(path)
-        .map_err(|error| marker_access_error(path, &error))?;
+fn probe_trace_marker_io(path: &Path) -> std::io::Result<()> {
+    let mut marker = OpenOptions::new().write(true).open(path)?;
     // Probe as ASB's own user, not as the potentially privileged Tracebox.
     // This fixed, non-secret event also tests failures that occur on write.
     write!(marker, "I|{}|asb.preflight", std::process::id())
-        .map_err(|error| marker_access_error(path, &error))
+}
+
+#[cfg(test)]
+fn probe_trace_marker(path: &Path) -> Result<(), String> {
+    probe_trace_marker_io(path).map_err(|error| marker_access_error(path, &error))
+}
+
+fn marker_probe_allows_fallback(path: &Path, error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(9) && path.starts_with("/sys/kernel/")
 }
 
 fn marker_access_error(path: &Path, error: &std::io::Error) -> String {
@@ -689,6 +718,21 @@ mod marker_tests {
         let error = marker_access_error(Path::new("/dev/full"), &std::io::Error::other("full"));
         assert!(error.contains("check the tracefs mount"));
         assert!(!error.contains("systemd-tmpfiles"));
+    }
+
+    #[test]
+    fn ebadf_marker_probe_uses_process_bounds_fallback() {
+        let path = Path::new("/sys/kernel/tracing/trace_marker");
+        let error = std::io::Error::from_raw_os_error(9);
+        assert!(marker_probe_allows_fallback(path, &error));
+    }
+
+    #[test]
+    fn permission_marker_probe_remains_fail_closed() {
+        let path = Path::new("/sys/kernel/tracing/trace_marker");
+        let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        assert!(!marker_probe_allows_fallback(path, &error));
+        assert!(marker_access_error(path, &error).contains("systemd-tmpfiles"));
     }
 
     #[cfg(unix)]
