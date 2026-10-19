@@ -1014,11 +1014,6 @@ fn process_failure_reason(
     stderr: &[u8],
     final_response: Option<&str>,
 ) -> Option<String> {
-    if !status.success() {
-        return Some(format!(
-            "agent exited unsuccessfully ({status}); inspect the benchmark log for agent output"
-        ));
-    }
     let transcript = format!(
         "{}\n{}",
         String::from_utf8_lossy(stdout),
@@ -1081,7 +1076,15 @@ fn process_failure_reason(
         } else {
             "agent reported a provider error; inspect the benchmark log and check provider availability"
         };
-        Some(message.into())
+        Some(if status.success() {
+            message.into()
+        } else {
+            format!("{message} ({status})")
+        })
+    } else if !status.success() {
+        Some(format!(
+            "agent exited unsuccessfully ({status}); inspect the benchmark log for agent output"
+        ))
     } else if (final_response.is_some() || !has_completion_evidence) && has_command_fatal_marker {
         Some("agent reported an incompatible command or argument; inspect the benchmark log and agent configuration".into())
     } else if (final_response.is_some() || !has_completion_evidence) && cannot_run_tests {
@@ -1904,6 +1907,16 @@ mod tests {
             assert!(reason.contains(expected), "{reason}");
             assert!(!reason.contains("secret-value"));
         }
+        let failed_status = std::process::Command::new("false").status().unwrap();
+        let reason = super::process_failure_reason(
+            &failed_status,
+            b"Authentication required. Please use /login command to sign in to your account secret-value",
+            b"",
+            None,
+        ).unwrap();
+        assert!(reason.contains("authentication failure"), "{reason}");
+        assert!(reason.contains("exit status"), "{reason}");
+        assert!(!reason.contains("secret-value"));
     }
 
     #[test]
