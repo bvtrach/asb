@@ -73,6 +73,14 @@ DIR` when a host profile is needed; keep `ASB_MEASURE_*` collectors disabled in
 CI. Measurement JSON must remain bounded and must not contain credentials,
 provider responses, or full agent transcripts.
 
+Lifecycle events are sent through the collector interface, and an ordered,
+bounded `lifecycle.json` journal is written for measured runs, including early
+failures. Optional live Perfetto tests require a project-local installation and
+working tracefs permissions: set `ASB_TEST_PERFETTO_TOOLS` to the project's
+tools directory and run the ignored `live_perfetto` tests serially. They use an
+offline replay fixture, not a live provider; ordinary CI does not require
+privileged tracing.
+
 Each completed run records `process_success` separately from
 `workload_success`. External workload aliases install a pinned reference plus a
 small deterministic adapter trial and local grader, so a zero exit status is

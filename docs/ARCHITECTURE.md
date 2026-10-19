@@ -36,7 +36,7 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
 - `measurements`: opt-in process-scoped runtime collection. It writes bounded JSON
   records for host facts, elapsed time, success rate, and normalized input,
   output, cached, and total token usage, and
-  owns optional `mpstat`, `iostat`, `perf`, Perfetto, BPFTrace, and FlameGraph adapters;
+  dispatches through the `CollectorAdapter` registry in `collectors/adapters/`;
   the mpstat/iostat result names use process-scoped `pidstat` sampling for the
   agent process and its child tasks, retaining bounded raw output and exposing
   averaged, unit-named CPU and I/O metrics under a machine-readable `metrics`
@@ -50,10 +50,11 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   interval programs may add series), while Perfetto retains its timestamped
   trace and extracts timestamped scheduler-event and scheduler-duration
   series; those trace timestamps are used as line-chart x coordinates;
-  the Perfetto adapter validates tracefs/ftrace access before the agent process,
-  then starts project-local Tracebox after the agent PID is known, filters
-  scheduler events to that PID, disables process-wide scans, and records fixed
-  non-secret ASB lifecycle tracepoints. The project-local trace processor
+  the Perfetto adapter validates tracefs/ftrace access and starts project-local
+  Tracebox before preparation begins. It waits for recording readiness before
+  emitting fixed, non-secret lifecycle tracepoints; after the agent is spawned,
+  it scopes scheduler analysis to that PID and its descendants. Each concurrent
+  run has a distinct trace identity. The project-local trace processor
   extracts stable aggregates,
   and ASB preserves the native `.perfetto-trace`, a bounded JSON record, and
   one portable SVG per extracted metric for the comparison report;
@@ -214,7 +215,7 @@ typical copy-paste commands for Red Hat/Fedora, Debian/Ubuntu, and openEuler
 so the user can install either the matching host tool or the needed development
 packages before retrying.
 Built-in BPFTrace profiles are small, separate source files under
-`crates/asb-cli/src/bpftrace_profiles/`. They start only after ASB knows the
+`crates/asb-cli/src/collectors/adapters/bpftrace/`. They start only after ASB knows the
 agent PID and therefore scope their probes to the benchmarked process. The
 portable catalog covers scheduler wakeup latency, CPU migration, futex waits,
 syscall rate, and kernel lock contention. Each profile has its own JSON result

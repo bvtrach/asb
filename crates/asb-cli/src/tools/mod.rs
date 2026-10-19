@@ -4,7 +4,7 @@ use crate::install::Recipe;
 use crate::project;
 use std::path::Path;
 
-mod bpftrace;
+pub(crate) mod bpftrace;
 mod cli2key;
 mod flamegraph;
 mod iostat;
@@ -37,10 +37,8 @@ pub(crate) trait ToolAdapter: Sync {
         match self.recipe() {
             Recipe::Npm { executable, .. }
             | Recipe::Python { executable, .. }
-            | Recipe::Host { executable } => Some(executable),
-            Recipe::Bpftrace => Some("bpftrace"),
-            Recipe::Perfetto => Some("tracebox"),
-            Recipe::Flamegraph => Some("flamegraph"),
+            | Recipe::Host { executable }
+            | Recipe::Custom { executable, .. } => Some(executable),
             Recipe::Goose => Some("goose"),
         }
     }

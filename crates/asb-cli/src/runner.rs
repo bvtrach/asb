@@ -3,6 +3,7 @@
 use super::{Error, io_error, read_config};
 use crate::agents;
 use crate::benchmark::BenchmarkConfig;
+use crate::collectors::{LifecycleEvent, LifecyclePhase};
 use crate::measurements;
 use crate::models;
 use crate::project;
@@ -220,11 +221,50 @@ fn run_mode(
                 .unwrap_or_else(|| default_cassette(config_path, &config)),
         )
     });
+    let (project_root, project_config) = project::load(config_path)?;
+    let project_root = project_root.canonicalize().map_err(|error| {
+        Error::Input(format!(
+            "cannot resolve benchmark project directory: {error}"
+        ))
+    })?;
+    let configured_measurements = config
+        .measurements
+        .as_ref()
+        .filter(|value| value.enabled)
+        .map(|value| project::resolve(&project_root, &value.directory));
+    let measurement_path = measurement_dir
+        .map(std::path::PathBuf::from)
+        .or(configured_measurements);
+    let measurement_collectors = config
+        .measurements
+        .as_ref()
+        .filter(|value| value.enabled)
+        .map_or(&[][..], |value| value.collectors.as_slice());
+    let mut measurement_session = measurement_path
+        .as_deref()
+        .map(|dir| {
+            measurements::Session::start_with_collectors(
+                dir,
+                measurement_collectors,
+                Some(&project::resolve(&project_root, &project_config.tools_dir)),
+            )
+        })
+        .transpose()
+        .map_err(Error::Run)?;
+    if let Some(session) = measurement_session.as_mut() {
+        session
+            .event(LifecycleEvent::RunStarted)
+            .map_err(Error::Run)?;
+    }
     if let Some((tape::Mode::Replay, cassette)) = tape_cassette.as_ref() {
         models::ensure_replay_tool_capable(cassette, &config.model)?;
     }
     let mut discovered_tool_support = None;
-    let selected_offer = agents::find(&config.agent)
+    let selected_offer = instrument_phase(
+        measurement_session.as_mut(),
+        LifecyclePhase::ProviderDiscovery,
+        || {
+            agents::find(&config.agent)
         .map(|adapter| {
             let offered = if let Some((tape::Mode::Replay, cassette)) = tape_cassette.as_ref() {
                 providers::replay_endpoints(&config.provider, &config.model, models::replay_interface(cassette)?)
@@ -244,86 +284,107 @@ fn run_mode(
                 &offered,
             )
         })
-        .transpose()?;
-    let (project_root, project_config) = project::load(config_path)?;
-    let project_root = project_root.canonicalize().map_err(|error| {
-        Error::Input(format!(
-            "cannot resolve benchmark project directory: {error}"
-        ))
-    })?;
-    let tape_mode = tape_request.map(|(mode, _)| mode);
-    let bridge = providers::start_local_bridge(
-        &config.provider,
-        &project_root,
-        &project_config.tools_dir,
-        tape_mode == Some(tape::Mode::Replay),
+        .transpose()
+        },
     )?;
-    if tape_mode != Some(tape::Mode::Replay) {
-        let endpoint = providers::local_bridge_endpoint(&config.provider, bridge.as_deref());
-        let bridge_catalog =
-            providers::local_bridge_credentials(&config.provider, bridge.as_deref(), endpoint)
+    let tape_mode = tape_request.map(|(mode, _)| mode);
+    let bridge = instrument_phase(
+        measurement_session.as_mut(),
+        LifecyclePhase::ProviderSetup,
+        || {
+            let bridge = providers::start_local_bridge(
+                &config.provider,
+                &project_root,
+                &project_config.tools_dir,
+                tape_mode == Some(tape::Mode::Replay),
+            )?;
+            if tape_mode != Some(tape::Mode::Replay) {
+                let endpoint =
+                    providers::local_bridge_endpoint(&config.provider, bridge.as_deref());
+                let bridge_catalog = providers::local_bridge_credentials(
+                    &config.provider,
+                    bridge.as_deref(),
+                    endpoint,
+                )
                 .map(|(key, url)| (url, key));
-        if discovered_tool_support == Some(false) {
-            return Err(Error::Input(format!(
-                "provider metadata reports that model `{}` does not support tools",
-                config.model
-            )));
-        }
-        if !models::ensure_tool_capable(&config.provider, &config.model, bridge_catalog)?
-            && discovered_tool_support != Some(true)
-            && !json
-        {
-            writeln!(output, "Warning: provider `{}` lists model `{}` but does not report whether it supports tools; the agent may fail if the model cannot use tools.", config.provider, config.model).map_err(crate::io_error)?;
-        }
-    }
+                if discovered_tool_support == Some(false) {
+                    return Err(Error::Input(format!(
+                        "provider metadata reports that model `{}` does not support tools",
+                        config.model
+                    )));
+                }
+                if !models::ensure_tool_capable(&config.provider, &config.model, bridge_catalog)?
+                    && discovered_tool_support != Some(true)
+                    && !json
+                {
+                    writeln!(output, "Warning: provider `{}` lists model `{}` but does not report whether it supports tools; the agent may fail if the model cannot use tools.", config.provider, config.model).map_err(crate::io_error)?;
+                }
+            }
+            Ok(bridge)
+        },
+    )?;
     let workspace_name = if config.workspace == "asb-workspace" {
         &project_config.workspace_dir
     } else {
         &config.workspace
     };
     let workspace = project::resolve(&project_root, workspace_name);
-    std::fs::create_dir_all(&workspace).map_err(|error| {
-        Error::Run(format!(
-            "cannot create workspace {}: {error}",
-            workspace.display()
-        ))
-    })?;
     let workload_directory = std::env::var_os("ASB_WORKLOAD_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir));
-    let prompt = workloads::load_trial(
-        &config.workload,
-        config.trial.as_deref(),
-        config.trial_set.as_deref(),
-        &workload_directory,
-    )
-    .map_err(Error::Input)?;
-    workloads::prepare_fixture(&config.workload, &workspace).map_err(Error::Run)?;
-    workloads::prepare_external(&config.workload, &workload_directory, &workspace)
-        .map_err(Error::Run)?;
-    let mut tape_session = if let Some((mode, cassette)) = tape_cassette.as_ref() {
-        let bridge_url = providers::local_bridge_endpoint(&config.provider, bridge.as_deref());
-        let upstream = if *mode == tape::Mode::Replay {
-            None
-        } else if let Some(offer) = selected_offer.as_ref() {
-            Some(providers::selected_tape_upstream(
-                &config.provider,
-                offer.clone(),
-                bridge_url,
-            )?)
-        } else {
-            providers::tape_upstream(&config.provider, bridge_url)
-        };
-        Some(tape::Session::start(
-            *mode,
-            cassette,
-            upstream.as_deref(),
-            respect_record_timings,
-            &workspace,
-        )?)
-    } else {
-        None
-    };
+    let prompt = instrument_phase(
+        measurement_session.as_mut(),
+        LifecyclePhase::WorkloadPreparation,
+        || {
+            std::fs::create_dir_all(&workspace).map_err(|error| {
+                Error::Run(format!(
+                    "cannot create workspace {}: {error}",
+                    workspace.display()
+                ))
+            })?;
+            let prompt = workloads::load_trial(
+                &config.workload,
+                config.trial.as_deref(),
+                config.trial_set.as_deref(),
+                &workload_directory,
+            )
+            .map_err(Error::Input)?;
+            workloads::prepare_fixture(&config.workload, &workspace).map_err(Error::Run)?;
+            workloads::prepare_external(&config.workload, &workload_directory, &workspace)
+                .map_err(Error::Run)?;
+            Ok(prompt)
+        },
+    )?;
+    let mut tape_session = instrument_phase(
+        measurement_session.as_mut(),
+        LifecyclePhase::ProxyPreparation,
+        || {
+            if let Some((mode, cassette)) = tape_cassette.as_ref() {
+                let bridge_url =
+                    providers::local_bridge_endpoint(&config.provider, bridge.as_deref());
+                let upstream = if *mode == tape::Mode::Replay {
+                    None
+                } else if let Some(offer) = selected_offer.as_ref() {
+                    Some(providers::selected_tape_upstream(
+                        &config.provider,
+                        offer.clone(),
+                        bridge_url,
+                    )?)
+                } else {
+                    providers::tape_upstream(&config.provider, bridge_url)
+                };
+                Ok(Some(tape::Session::start(
+                    *mode,
+                    cassette,
+                    upstream.as_deref(),
+                    respect_record_timings,
+                    &workspace,
+                )?))
+            } else {
+                Ok(None)
+            }
+        },
+    )?;
     let tape_url = tape_session.as_ref().map(|session| session.url());
     let provider_endpoint =
         tape_url.or_else(|| providers::local_bridge_endpoint(&config.provider, bridge.as_deref()));
@@ -410,17 +471,24 @@ fn run_mode(
     let mut runtime_path = workspace.as_os_str().to_os_string();
     runtime_path.push(".asb-agent-runtime");
     let runtime_path = PathBuf::from(runtime_path);
-    if let Some(connection) = connection.as_ref() {
-        agents::prepare(
-            &config.agent,
-            &mut agents::PreparationContext {
-                command: &mut command,
-                model: &config.model,
-                connection,
-                runtime_dir: &runtime_path,
-            },
-        )?;
-    }
+    instrument_phase(
+        measurement_session.as_mut(),
+        LifecyclePhase::AgentPreparation,
+        || {
+            if let Some(connection) = connection.as_ref() {
+                agents::prepare(
+                    &config.agent,
+                    &mut agents::PreparationContext {
+                        command: &mut command,
+                        model: &config.model,
+                        connection,
+                        runtime_dir: &runtime_path,
+                    },
+                )?;
+            }
+            Ok(())
+        },
+    )?;
     if let Some(url) = tape_url {
         providers::configure_tape(
             &mut command,
@@ -429,55 +497,13 @@ fn run_mode(
             tape_mode.expect("tape URL implies tape mode"),
         );
     }
-    let configured_measurements = config
-        .measurements
-        .as_ref()
-        .filter(|value| value.enabled)
-        .map(|value| project::resolve(&project_root, &value.directory));
-    let measurement_path = measurement_dir
-        .map(std::path::PathBuf::from)
-        .or(configured_measurements);
-    let measurement_collectors = config
-        .measurements
-        .as_ref()
-        .filter(|value| value.enabled)
-        .map_or(&[][..], |value| value.collectors.as_slice());
-    let mut measurement_session = measurement_path
-        .as_deref()
-        .map(|dir| {
-            measurements::Session::start_with_collectors(
-                dir,
-                measurement_collectors,
-                Some(&project::resolve(&project_root, &project_config.tools_dir)),
-            )
-        })
-        .transpose()
-        .map_err(Error::Run)?;
-    if let Some(session) = measurement_session.as_mut() {
-        session.trace_instant("asb.measurements.ready");
-        session.trace_instant("asb.agent.spawn");
-        session.trace_begin("asb.agent.execute");
-    }
-    let child = match command.spawn() {
-        Ok(child) => OwnedChild(child),
-        Err(error) => {
-            if let Some(session) = measurement_session.as_mut() {
-                session.trace_end();
-                session.trace_instant("asb.agent.spawn_failed");
-            }
-            return Err(Error::Run(format!("could not start {program}: {error}")));
-        }
-    };
-    if let Some(session) = measurement_session.as_mut() {
-        session.trace_instant("asb.agent.started");
-        session.attach_pid(child.id()).map_err(Error::Run)?;
-    }
-    let child = wait_with_output(child, show_output, output)
-        .map_err(|error| Error::Run(format!("could not wait for {program}: {error}")))?;
-    if let Some(session) = measurement_session.as_mut() {
-        session.trace_end();
-        session.trace_instant("asb.agent.exited");
-    }
+    let child = run_measured_agent(
+        &mut command,
+        &program,
+        measurement_session.as_mut(),
+        show_output,
+        output,
+    )?;
     let mut run_error = tape_session
         .take()
         .and_then(|session| session.stop().err())
@@ -513,13 +539,19 @@ fn run_mode(
             final_response.as_deref(),
         );
     let (workload_success, grading_error) = if process_success {
-        match workloads::evaluate(
-            &config.workload,
-            &workspace,
-            final_response.as_deref().unwrap_or_default(),
-        ) {
+        match instrument_operation(
+            measurement_session.as_mut(),
+            LifecyclePhase::WorkloadEvaluation,
+            || {
+                workloads::evaluate(
+                    &config.workload,
+                    &workspace,
+                    final_response.as_deref().unwrap_or_default(),
+                )
+            },
+        )? {
             Ok(value) => (Some(value), None),
-            Err(error) => (Some(false), Some(error)),
+            Err(error) => (Some(false), Some(error.to_string())),
         }
     } else {
         (Some(false), None)
@@ -565,6 +597,10 @@ fn run_mode(
         stderr.push_str(error);
         stderr.push('\n');
     }
+    let run_metrics = crate::collectors::run_metrics(&crate::collectors::RunObservation {
+        elapsed_ms,
+        success,
+    });
     let result = RunResult {
         status: if success { "completed" } else { "failed" },
         agent: &config.agent,
@@ -574,8 +610,8 @@ fn run_mode(
         process_success,
         workload_success,
         workload_evaluation: workloads::evaluation_kind(&config.workload, &workspace),
-        success_rate: if success { 1.0 } else { 0.0 },
-        elapsed_ms,
+        success_rate: run_metrics.success_rate,
+        elapsed_ms: run_metrics.elapsed_ms,
         exit_code: child.status.code(),
         token_usage,
         steps,
@@ -587,6 +623,15 @@ fn run_mode(
     };
     write_log(config_path, &config.log_file, &result)?;
     if let Some(session) = measurement_session {
+        let mut session = session;
+        if !success {
+            session
+                .event(LifecycleEvent::RunFailed)
+                .map_err(Error::Run)?;
+        }
+        session
+            .event(LifecycleEvent::RunFinishing)
+            .map_err(Error::Run)?;
         let measured = measurements::RunMeasurement {
             schema_version: 1,
             run_id: format!("{}-{}", result.workload, result.elapsed_ms),
@@ -620,6 +665,95 @@ fn run_mode(
     } else {
         Err(Error::Run("agent exited unsuccessfully".into()))
     }
+}
+
+fn instrument_operation<T, E>(
+    mut session: Option<&mut measurements::Session>,
+    phase: LifecyclePhase,
+    operation: impl FnOnce() -> Result<T, E>,
+) -> Result<Result<T, E>, Error> {
+    if let Some(session) = session.as_deref_mut() {
+        session
+            .event(LifecycleEvent::PhaseBegin(phase))
+            .map_err(Error::Run)?;
+    }
+    let result = operation();
+    if let Some(session) = session {
+        session
+            .event(LifecycleEvent::PhaseEnd(phase))
+            .map_err(Error::Run)?;
+        if result.is_err() {
+            session
+                .event(LifecycleEvent::PhaseFailed(phase))
+                .map_err(Error::Run)?;
+        }
+    }
+    Ok(result)
+}
+
+fn instrument_phase<T>(
+    session: Option<&mut measurements::Session>,
+    phase: LifecyclePhase,
+    operation: impl FnOnce() -> Result<T, Error>,
+) -> Result<T, Error> {
+    instrument_operation(session, phase, operation)?
+}
+
+/// Run the agent while delivering every lifecycle event through the collector
+/// interface, including failures after the execution span has begun.
+fn run_measured_agent(
+    command: &mut Command,
+    program: &str,
+    mut session: Option<&mut measurements::Session>,
+    show_output: bool,
+    output: &mut dyn Write,
+) -> Result<Output, Error> {
+    let child = {
+        let mut emit = |event| {
+            if let Some(session) = session.as_deref_mut() {
+                session.event(event).map_err(Error::Run)?;
+            }
+            Ok(())
+        };
+        emit(LifecycleEvent::MeasurementsReady)?;
+        emit(LifecycleEvent::AgentSpawn)?;
+        emit(LifecycleEvent::AgentExecuteBegin)?;
+        let child = match command.spawn() {
+            Ok(child) => OwnedChild(child),
+            Err(error) => {
+                emit(LifecycleEvent::AgentExecuteEnd)?;
+                emit(LifecycleEvent::AgentSpawnFailed)?;
+                return Err(Error::Run(format!("could not start {program}: {error}")));
+            }
+        };
+        emit(LifecycleEvent::AgentStarted)?;
+        child
+    };
+    if let Some(session) = session.as_deref_mut()
+        && let Err(error) = session.attach_pid(child.id())
+    {
+        session
+            .event(LifecycleEvent::AgentExecuteEnd)
+            .map_err(Error::Run)?;
+        session
+            .event(LifecycleEvent::AgentAttachFailed)
+            .map_err(Error::Run)?;
+        return Err(Error::Run(error));
+    }
+    let result = wait_with_output(child, show_output, output);
+    if let Some(session) = session {
+        session
+            .event(LifecycleEvent::AgentExecuteEnd)
+            .map_err(Error::Run)?;
+        session
+            .event(if result.is_ok() {
+                LifecycleEvent::AgentExited
+            } else {
+                LifecycleEvent::AgentWaitFailed
+            })
+            .map_err(Error::Run)?;
+    }
+    result.map_err(|error| Error::Run(format!("could not wait for {program}: {error}")))
 }
 
 fn default_cassette(config_path: &Path, config: &BenchmarkConfig) -> std::path::PathBuf {
@@ -991,6 +1125,245 @@ mod tests {
     };
     use crate::benchmark::BenchmarkConfig;
     use crate::measurements::TokenUsage;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn every_instrumented_phase_closes_and_reports_failure_through_the_collector() {
+        use crate::collectors::LifecyclePhase;
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("asb-phase-{}-{unique}", std::process::id()));
+        let mut session =
+            crate::measurements::Session::start_with_collectors(&dir, &[], None).unwrap();
+        let marker = dir.join("marker");
+        session.set_test_marker(&marker);
+        let phases = [
+            LifecyclePhase::ProviderDiscovery,
+            LifecyclePhase::ProviderSetup,
+            LifecyclePhase::WorkloadPreparation,
+            LifecyclePhase::ProxyPreparation,
+            LifecyclePhase::AgentPreparation,
+            LifecyclePhase::WorkloadEvaluation,
+        ];
+        let mut expected = String::new();
+        for phase in phases {
+            let result = super::instrument_operation(Some(&mut session), phase, || {
+                Err::<(), _>("test failure")
+            })
+            .unwrap();
+            assert!(result.is_err());
+            expected.push_str(&format!(
+                "B|{}|asb.{}.{}EI|{}|asb.{}.failed.{}",
+                std::process::id(),
+                phase.name(),
+                session.trace_id(),
+                std::process::id(),
+                phase.name(),
+                session.trace_id()
+            ));
+        }
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), expected);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn check_lifecycle(command: &mut std::process::Command, expected: &[&str], fail_attach: bool) {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("asb-events-{}-{unique}", std::process::id()));
+        let mut session =
+            crate::measurements::Session::start_with_collectors(&dir, &[], None).unwrap();
+        let trace_id = session.trace_id().to_owned();
+        session.test_attach_failure = fail_attach;
+        let marker = dir.join("marker");
+        session.set_test_marker(&marker);
+        let _ = super::run_measured_agent(
+            command,
+            "fixture",
+            Some(&mut session),
+            false,
+            &mut Vec::new(),
+        );
+        let actual = std::fs::read_to_string(&marker).unwrap();
+        let pid = std::process::id();
+        let expected = expected
+            .iter()
+            .map(|event| {
+                if *event == "end" {
+                    "E".to_owned()
+                } else {
+                    let (kind, name) = event.split_once(':').unwrap();
+                    format!("{kind}|{pid}|{name}.{trace_id}")
+                }
+            })
+            .collect::<String>();
+        assert_eq!(actual, expected);
+        drop(session);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn measured_agent_emits_all_success_events_in_order() {
+        let mut command = std::process::Command::new("/bin/true");
+        command
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        check_lifecycle(
+            &mut command,
+            &[
+                "I:asb.measurements.ready",
+                "I:asb.agent.spawn",
+                "B:asb.agent.execute",
+                "I:asb.agent.started",
+                "end",
+                "I:asb.agent.exited",
+            ],
+            false,
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn measured_agent_emits_spawn_failure_events_in_order() {
+        let mut command = std::process::Command::new("/asb-test-path-that-does-not-exist");
+        check_lifecycle(
+            &mut command,
+            &[
+                "I:asb.measurements.ready",
+                "I:asb.agent.spawn",
+                "B:asb.agent.execute",
+                "end",
+                "I:asb.agent.spawn_failed",
+            ],
+            false,
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn measured_agent_emits_wait_failure_events_in_order() {
+        let mut command = std::process::Command::new("/bin/true");
+        check_lifecycle(
+            &mut command,
+            &[
+                "I:asb.measurements.ready",
+                "I:asb.agent.spawn",
+                "B:asb.agent.execute",
+                "I:asb.agent.started",
+                "end",
+                "I:asb.agent.wait_failed",
+            ],
+            false,
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn measured_agent_emits_attach_failure_events_in_order() {
+        let mut command = std::process::Command::new("/bin/sleep");
+        command
+            .arg("10")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        check_lifecycle(
+            &mut command,
+            &[
+                "I:asb.measurements.ready",
+                "I:asb.agent.spawn",
+                "B:asb.agent.execute",
+                "I:asb.agent.started",
+                "end",
+                "I:asb.agent.attach_failed",
+            ],
+            true,
+        );
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires a project-local Perfetto installation and host tracing privileges"]
+    fn live_perfetto_captures_measured_agent_events_in_order() {
+        let tools = std::path::PathBuf::from(
+            std::env::var_os("ASB_TEST_PERFETTO_TOOLS").expect("set ASB_TEST_PERFETTO_TOOLS"),
+        );
+        let dir = tools.parent().unwrap().join("trace-test-output");
+        let mut session = crate::measurements::Session::start_with_collectors(
+            &dir,
+            &["perfetto".into()],
+            Some(&tools),
+        )
+        .expect("start real Perfetto");
+        let id = session.trace_id().to_owned();
+        let mut command = std::process::Command::new("/bin/sleep");
+        command
+            .arg("0.2")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let output = super::run_measured_agent(
+            &mut command,
+            "sleep",
+            Some(&mut session),
+            false,
+            &mut Vec::new(),
+        )
+        .expect("run fixture");
+        assert!(output.status.success());
+        session
+            .finish(crate::measurements::RunMeasurement {
+                schema_version: 1,
+                run_id: "test".into(),
+                status: "completed",
+                success: true,
+                process_success: true,
+                workload_success: Some(true),
+                success_rate: 1.0,
+                agent: "fixture",
+                workload: "fixture",
+                workload_evaluation: "fixture",
+                provider: "fixture",
+                model: "fixture",
+                elapsed_ms: 200,
+                exit_code: Some(0),
+                token_usage: crate::measurements::TokenUsage::default(),
+                steps: 1,
+                started_unix_ms: 0,
+            })
+            .expect("finish collector");
+        let trace = dir.join("perfetto-scheduling.perfetto-trace");
+        let query = format!("SELECT name FROM slice WHERE name GLOB 'asb.*.{id}' ORDER BY ts");
+        let result = std::process::Command::new(tools.join("perfetto/bin/trace_processor_shell"))
+            .arg("query")
+            .arg(&trace)
+            .arg(query)
+            .output()
+            .expect("trace processor");
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let rows = String::from_utf8_lossy(&result.stdout);
+        let expected = [
+            "asb.measurements.ready",
+            "asb.agent.spawn",
+            "asb.agent.execute",
+            "asb.agent.started",
+            "asb.agent.exited",
+        ];
+        let mut cursor = 0;
+        for name in expected {
+            let needle = format!("{name}.{id}");
+            let offset = rows[cursor..]
+                .find(&needle)
+                .unwrap_or_else(|| panic!("missing {needle} in {rows}"));
+            cursor += offset + needle.len();
+        }
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

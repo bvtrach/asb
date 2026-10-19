@@ -315,7 +315,7 @@ fn artifact_links(sweep_parent: &Path, result_dir: &Path) -> Vec<String> {
     let mut files = Vec::new();
     // Measurement artifacts are the primary evidence for a comparison. Add
     // them before the bounded recursive inventory so a large external
-    // workload workspace cannot crowd the bpftrace/perfetto SVGs out of the
+    // workload workspace cannot crowd collector artifacts out of the
     // HTML report's artifact links.
     let measurement_dir = result_dir.join("measurements");
     if let Ok(entries) = fs::read_dir(&measurement_dir) {
@@ -325,12 +325,7 @@ fn artifact_links(sweep_parent: &Path, result_dir: &Path) -> Vec<String> {
                 && path
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .is_some_and(|name| {
-                        name.starts_with("bpftrace-")
-                            || name.starts_with("perfetto-metric-")
-                            || name == "flamegraph.svg"
-                            || name == "flamegraph.json"
-                    })
+                    .is_some_and(crate::collectors::prioritizes_artifact)
             {
                 files.push(path);
             }
@@ -470,67 +465,37 @@ fn write_html_report(
                     )
                 })
                 .collect::<String>();
-            let perfetto_svgs = benchmark
-                .artifacts
-                .iter()
-                .filter(|artifact| {
-                    artifact.contains("/perfetto-metric-") && artifact.ends_with(".svg")
-                })
-                .map(|artifact| {
-                    inline_svg_artifact(
-                        comparison_dir,
-                        artifact,
-                        "perfetto-metric",
-                        "Perfetto metric SVG",
-                    )
-                })
-                .collect::<Result<String, Error>>()?;
-            let bpftrace_svgs = benchmark
-                .artifacts
-                .iter()
-                .filter(|artifact| {
-                    artifact
-                        .rsplit('/')
-                        .next()
-                        .is_some_and(|name| name.starts_with("bpftrace-") && name.ends_with(".svg"))
-                })
-                .map(|artifact| {
-                    inline_svg_artifact(
-                        comparison_dir,
-                        artifact,
-                        "bpftrace-profile",
-                        "bpftrace profile SVG",
-                    )
-                })
-                .collect::<Result<String, Error>>()?;
-            let flamegraph_svgs = benchmark
-                .artifacts
-                .iter()
-                .filter(|artifact| {
-                    artifact
-                        .rsplit('/')
-                        .next()
-                        .is_some_and(|name| name == "flamegraph.svg")
-                })
-                .map(|artifact| {
-                    inline_svg_artifact(comparison_dir, artifact, "flamegraph", "Flamegraph SVG")
-                })
-                .collect::<Result<String, Error>>()?;
-            let flamegraph_status = benchmark
-                .artifacts
-                .iter()
-                .filter(|artifact| {
-                    artifact.rsplit('/').next().is_some_and(|name| name == "flamegraph.json")
-                })
-                .map(|artifact| {
-                    format!(
-                        "<p class=\"flamegraph-status\">Flamegraph collector status: <a href=\"{}\">flamegraph.json</a>. An SVG is embedded here when collection completed.</p>",
-                        escape(artifact)
-                    )
-                })
-                .collect::<String>();
+            let mut previews = String::new();
+            for artifact in &benchmark.artifacts {
+                let name = artifact.rsplit('/').next().unwrap_or(artifact);
+                match crate::collectors::display_artifact(name) {
+                    Some(crate::collectors::ArtifactDisplay::Svg { class, label }) => {
+                        previews.push_str(&inline_svg_artifact(
+                            comparison_dir,
+                            artifact,
+                            class,
+                            label,
+                        )?);
+                    }
+                    Some(crate::collectors::ArtifactDisplay::Status {
+                        class,
+                        label,
+                        suffix,
+                    }) => {
+                        previews.push_str(&format!(
+                            "<p class=\"{}\">{}: <a href=\"{}\">{}</a>. {}</p>",
+                            escape(class),
+                            escape(label),
+                            escape(artifact),
+                            escape(name),
+                            escape(suffix)
+                        ));
+                    }
+                    None => {}
+                }
+            }
             format!(
-                "<details><summary>Run artifacts</summary>{perfetto_svgs}{bpftrace_svgs}{flamegraph_svgs}{flamegraph_status}<ul class=\"artifact-list\">{links}</ul></details>"
+                "<details><summary>Run artifacts</summary>{previews}<ul class=\"artifact-list\">{links}</ul></details>"
             )
         };
         html.push_str(&format!("<tr data-dimension-benchmark=\"{}\" data-dimension-agent=\"{}\" data-dimension-provider=\"{}\" data-dimension-model=\"{}\" data-dimension-workload=\"{}\"><td><strong>{}</strong></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"details\">{}{}{}{}</td></tr>",
@@ -543,27 +508,29 @@ fn write_html_report(
             benchmark.status.as_ref().map_or(String::new(), |status| format!("<span class=\"status\">{}</span>", escape(status))),
             ));
     }
-    let bpftrace_graphs = graphs
-        .iter()
-        .filter(|graph| {
-            graph.starts_with("metric-bpftrace-") || graph.starts_with("series-bpftrace-")
-        })
-        .collect::<Vec<_>>();
-    if !bpftrace_graphs.is_empty() {
-        html.push_str("</tbody></table></div></section><section><div class=\"section-title\"><h2>bpftrace profiles</h2><p class=\"muted\">Cross-run SVG graphs for every bpftrace aggregate emitted by the selected profiles.</p></div><div class=\"charts\">");
-        for graph in &bpftrace_graphs {
-            html.push_str(&chart_figure(&comparison_dir, graph)?);
+    html.push_str("</tbody></table></div></section>");
+    let mut sections = std::collections::BTreeMap::<(&str, &str), Vec<&String>>::new();
+    for graph in graphs {
+        if let Some(section) = crate::collectors::graph_section(graph) {
+            sections
+                .entry((section.title, section.description))
+                .or_default()
+                .push(graph);
+        }
+    }
+    for ((title, description), section_graphs) in sections {
+        html.push_str(&format!("<section><div class=\"section-title\"><h2>{}</h2><p class=\"muted\">{}</p></div><div class=\"charts\">", escape(title), escape(description)));
+        for graph in section_graphs {
+            html.push_str(&chart_figure(comparison_dir, graph)?);
         }
         html.push_str("</div></section>");
-    } else {
-        html.push_str("</tbody></table></div></section>");
     }
     html.push_str("<section><div class=\"section-title\"><h2>Charts</h2><p class=\"muted\">SVG files are linked below and remain available for download.</p></div><div class=\"charts\">");
     for graph in graphs
         .iter()
-        .filter(|graph| !bpftrace_graphs.iter().any(|bpf| *bpf == *graph))
+        .filter(|graph| crate::collectors::graph_section(graph).is_none())
     {
-        html.push_str(&chart_figure(&comparison_dir, graph)?);
+        html.push_str(&chart_figure(comparison_dir, graph)?);
     }
     html.push_str("</div></section><footer>Generated locally by <code>asb compare</code>. No provider or agent was contacted.</footer></main>");
     html.push_str(INTERACTIVE_SCRIPT);
