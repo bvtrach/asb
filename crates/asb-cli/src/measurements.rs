@@ -85,6 +85,8 @@ pub struct RunMeasurement<'a> {
     pub run_id: String,
     pub status: &'a str,
     pub success: bool,
+    pub process_success: bool,
+    pub workload_success: Option<bool>,
     pub success_rate: f64,
     pub agent: &'a str,
     pub workload: &'a str,
@@ -147,6 +149,7 @@ pub struct Session {
     perf_data: Option<PathBuf>,
     perf_enabled: bool,
     perfetto_trace: Option<PathBuf>,
+    perfetto_pid: Option<u32>,
     perfetto_enabled: bool,
     trace_marker: Option<PathBuf>,
     tracepoint_count: u64,
@@ -211,6 +214,7 @@ impl Session {
             perf_data: None,
             perf_enabled: selected_or_env("perf", "ASB_MEASURE_PERF", selected),
             perfetto_trace: None,
+            perfetto_pid: None,
             perfetto_enabled: selected_or_env("perfetto", "ASB_MEASURE_PERFETTO", selected),
             trace_marker: None,
             tracepoint_count: 0,
@@ -462,6 +466,7 @@ impl Session {
         if !self.perfetto_enabled {
             return Ok(());
         }
+        self.perfetto_pid = Some(pid);
         let config = self.dir.join("perfetto-scheduling.pbtx");
         fs::write(&config, perfetto_config(Some(pid)))
             .map_err(|error| format!("cannot write Perfetto trace configuration: {error}"))?;
@@ -545,11 +550,7 @@ impl Session {
         if !processor.is_file() {
             return metrics;
         }
-        for (metric, query) in [
-            ("perfetto.scheduler_events", "SELECT COUNT(*) FROM sched"),
-            ("perfetto.processes", "SELECT COUNT(*) FROM process"),
-            ("perfetto.threads", "SELECT COUNT(*) FROM thread"),
-        ] {
+        for (metric, query) in perfetto_metric_queries(self.perfetto_pid) {
             let Ok(output) = Command::new(&processor)
                 .args(["query"])
                 .arg(trace)
@@ -583,16 +584,7 @@ impl Session {
         if !processor.is_file() {
             return (series, timestamps);
         }
-        for (name, query) in [
-            (
-                "perfetto.scheduler_events_per_s",
-                "SELECT ts/1000000000 AS timestamp_s, COUNT(*) AS value FROM sched GROUP BY timestamp_s ORDER BY timestamp_s",
-            ),
-            (
-                "perfetto.scheduler_duration_ms_per_s",
-                "SELECT ts/1000000000 AS timestamp_s, SUM(dur)/1000000.0 AS value FROM sched GROUP BY timestamp_s ORDER BY timestamp_s",
-            ),
-        ] {
+        for (name, query) in perfetto_series_queries(self.perfetto_pid) {
             let Ok(output) = Command::new(&processor)
                 .args(["query"])
                 .arg(trace)
@@ -607,7 +599,7 @@ impl Session {
             let (sample_timestamps, values) =
                 parse_perfetto_series_output(&bounded(&output.stdout));
             if values.len() >= 2 {
-                timestamps.insert(name.into(), sample_timestamps);
+                timestamps.insert(name.clone(), sample_timestamps);
                 series.insert(name.into(), values);
             }
         }
@@ -1975,6 +1967,62 @@ fn trace_marker_path() -> Option<PathBuf> {
     .find(|path| path.is_file())
 }
 
+/// Build Perfetto queries that restrict scheduler data to the benchmark
+/// process and every descendant it launched.  Tracebox cannot apply a pid
+/// filter on all supported versions, so the scope is enforced by the offline
+/// trace processor instead of silently reporting host-wide activity.
+fn perfetto_metric_queries(pid: Option<u32>) -> Vec<(String, String)> {
+    let Some(pid) = pid else {
+        return Vec::new();
+    };
+    let scope = perfetto_scope_sql(pid);
+    vec![
+        (
+            "perfetto.scheduler_events".into(),
+            format!(
+                "{scope} SELECT COUNT(*) FROM sched s JOIN thread th ON s.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND s.ts < bounds.end_ts AND s.ts+s.dur > bounds.start_ts"
+            ),
+        ),
+        (
+            "perfetto.processes".into(),
+            format!("{scope} SELECT COUNT(*) FROM process WHERE upid IN tree"),
+        ),
+        (
+            "perfetto.threads".into(),
+            format!("{scope} SELECT COUNT(*) FROM thread WHERE upid IN tree"),
+        ),
+    ]
+}
+
+fn perfetto_series_queries(pid: Option<u32>) -> Vec<(String, String)> {
+    let Some(pid) = pid else {
+        return Vec::new();
+    };
+    let scope = perfetto_scope_sql(pid);
+    vec![
+        (
+            "perfetto.scheduler_events_per_s".into(),
+            format!(
+                "{scope} SELECT (s.ts-bounds.start_ts)/1000000000.0 AS timestamp_s, COUNT(*) AS value FROM sched s JOIN thread th ON s.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND s.ts < bounds.end_ts AND s.ts+s.dur > bounds.start_ts GROUP BY timestamp_s ORDER BY timestamp_s"
+            ),
+        ),
+        (
+            "perfetto.scheduler_duration_ms_per_s".into(),
+            format!(
+                "{scope} SELECT (s.ts-bounds.start_ts)/1000000000.0 AS timestamp_s, SUM(s.dur)/1000000.0 AS value FROM sched s JOIN thread th ON s.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND s.ts < bounds.end_ts AND s.ts+s.dur > bounds.start_ts GROUP BY timestamp_s ORDER BY timestamp_s"
+            ),
+        ),
+    ]
+}
+
+fn perfetto_scope_sql(pid: u32) -> String {
+    // Prefer explicit ASB lifecycle markers when tracefs captured them, and
+    // fall back to the process tree's lifetime when markers are unavailable.
+    format!(
+        "WITH RECURSIVE tree(upid) AS (SELECT upid FROM process WHERE pid={pid} UNION ALL SELECT p.upid FROM process p JOIN tree t ON p.parent_upid=t.upid), process_bounds AS (SELECT MIN(start_ts) AS process_start, MAX(COALESCE(end_ts,(SELECT MAX(ts+dur) FROM sched))) AS process_end FROM process WHERE upid IN tree), marker_bounds AS (SELECT MIN(ts) FILTER (WHERE name='asb.agent.started') AS marker_start, MAX(ts) FILTER (WHERE name='asb.agent.exited') AS marker_end FROM slice), bounds AS (SELECT COALESCE(marker_start,process_start) AS start_ts, COALESCE(marker_end,process_end) AS end_ts FROM process_bounds CROSS JOIN marker_bounds)",
+    )
+}
+
 fn perfetto_config(pid: Option<u32>) -> String {
     // Tracebox's bundled schema rejects FtraceConfig.pid_filter. Process
     // scoping is applied during post-processing using ASB lifecycle markers.
@@ -2724,6 +2772,8 @@ mod tests {
             run_id: "test".into(),
             status: "completed",
             success: true,
+            process_success: true,
+            workload_success: Some(true),
             success_rate: 1.0,
             agent: "a",
             workload: "w",
@@ -3138,6 +3188,29 @@ mod tests {
         let config = perfetto_config(Some(42));
         assert!(!config.contains("pid_filter"));
         assert!(config.contains("scan_all_processes_on_start: false"));
+    }
+
+    #[test]
+    fn perfetto_queries_scope_to_the_target_process_tree() {
+        let metrics = perfetto_metric_queries(Some(42));
+        assert!(
+            metrics
+                .iter()
+                .all(|(_, query)| query.contains("WITH RECURSIVE tree"))
+        );
+        assert!(metrics.iter().all(|(_, query)| query.contains("pid=42")));
+        assert!(
+            metrics
+                .iter()
+                .any(|(_, query)| query.contains("th.upid IN tree"))
+        );
+        let series = perfetto_series_queries(Some(42));
+        assert!(
+            series
+                .iter()
+                .all(|(_, query)| query.contains("bounds.start_ts"))
+        );
+        assert!(perfetto_metric_queries(None).is_empty());
     }
 
     #[test]

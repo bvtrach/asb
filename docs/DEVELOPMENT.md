@@ -72,3 +72,10 @@ Measurement smoke tests are local-only. Use `asb run CONFIG --measurements
 DIR` when a host profile is needed; keep `ASB_MEASURE_*` collectors disabled in
 CI. Measurement JSON must remain bounded and must not contain credentials,
 provider responses, or full agent transcripts.
+
+Each completed run records `process_success` separately from
+`workload_success`. External workload aliases install a pinned reference plus a
+small deterministic adapter trial and local grader, so a zero exit status is
+not reported as a successful benchmark unless the grader passes. Perfetto
+post-processing scopes scheduler counts and series to the benchmark process
+tree and lifecycle interval; it never compares host-wide scheduler noise.

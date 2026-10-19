@@ -113,20 +113,18 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 continue;
             }
             let run_value = read_json(&run_path)?;
-            let run_status = if run_value.get("success") == Some(&Value::Bool(false)) {
-                Some(format!(
-                    "benchmark run failed (status={}, exit_code={})",
-                    run_value
-                        .get("status")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown"),
-                    run_value
-                        .get("exit_code")
-                        .map(Value::to_string)
-                        .unwrap_or_else(|| "null".into())
-                ))
-            } else {
-                None
+            let run_status = match run_value.get("status").and_then(Value::as_str) {
+                Some(status) if run_value.get("success") == Some(&Value::Bool(false)) => {
+                    Some(format!(
+                        "benchmark run failed (status={status}, exit_code={})",
+                        run_value
+                            .get("exit_code")
+                            .map(Value::to_string)
+                            .unwrap_or_else(|| "null".into())
+                    ))
+                }
+                Some(status) => Some(status.to_owned()),
+                None => Some("unknown".into()),
             };
             let mut metrics = BTreeMap::new();
             flatten_numbers("", &run_value, &mut metrics);
@@ -1203,7 +1201,7 @@ mod tests {
         std::fs::write(root.join("sweep.toml"), "configs=[\"one.toml\"]\n").unwrap();
         std::fs::write(
             root.join("sweep-results/000-one/measurements/run.json"),
-            r#"{"success_rate":1.0,"elapsed_ms":12,"token_usage":{"total_tokens":7}}"#,
+            r#"{"status":"completed","success":true,"success_rate":1.0,"elapsed_ms":12,"token_usage":{"total_tokens":7}}"#,
         )
         .unwrap();
         std::fs::write(
@@ -1280,6 +1278,12 @@ mod tests {
         );
         let report =
             std::fs::read_to_string(root.join("results/sweep-comparison/report.html")).unwrap();
+        let comparison: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("results/sweep-comparison/comparison.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(comparison["benchmarks"][0]["status"], "completed");
         assert!(report.contains("Filter results"));
         assert!(report.contains("data-group=\"agent\""));
         assert!(report.contains(">Details</th>"));

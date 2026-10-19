@@ -141,7 +141,15 @@ pub fn run(
     // Always regenerate the comparison artifacts after the execution loop,
     // including partial sweeps. The comparison report records missing or
     // failed benchmark entries instead of hiding useful completed results.
-    let comparison_error = compare::run(path, output).err();
+    // `--json` promises a stream of one JSON object per line.  Comparison
+    // generation still runs, but its human summary must not contaminate that
+    // machine-readable stream.
+    let comparison_error = if json {
+        let mut comparison_output = Vec::new();
+        compare::run(path, &mut comparison_output).err()
+    } else {
+        compare::run(path, output).err()
+    };
     if failures.is_empty() {
         comparison_error.map_or(Ok(()), Err)
     } else {

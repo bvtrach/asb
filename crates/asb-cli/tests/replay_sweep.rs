@@ -94,7 +94,7 @@ fetch(url + '/responses', {method:'POST', headers:{'content-type':'application/j
     let benchmarks = comparison["benchmarks"].as_array().unwrap();
     assert_eq!(benchmarks.len(), 8);
     for benchmark in benchmarks {
-        assert!(benchmark["status"].is_null(), "{benchmark}");
+        assert_eq!(benchmark["status"], "completed", "{benchmark}");
         assert!(
             benchmark["metrics"]
                 .as_object()
