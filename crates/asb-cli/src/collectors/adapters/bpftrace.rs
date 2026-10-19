@@ -1,43 +1,71 @@
 use super::super::{
-    ArtifactDisplay, GraphSection, PreflightContext, ProcessContext, ProcessData, StaticCollector,
+    ArtifactDisplay, CollectorAdapter, GraphSection, PreflightContext, ProcessContext, ProcessData,
 };
 use crate::measurements;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
-pub(super) static ADAPTER: StaticCollector = StaticCollector::new(
-    "bpftrace",
-    Some("ASB_MEASURE_BPFTRACE"),
-    Some("bpftrace"),
-    true,
-)
-.with_artifacts(
-    |name| name.starts_with("bpftrace-"),
-    |name| {
+pub(super) struct BpftraceCollector;
+pub(super) static ADAPTER: BpftraceCollector = BpftraceCollector;
+
+impl CollectorAdapter for BpftraceCollector {
+    fn id(&self) -> &'static str {
+        "bpftrace"
+    }
+    fn environment_flag(&self) -> Option<&'static str> {
+        Some("ASB_MEASURE_BPFTRACE")
+    }
+    fn tool_id(&self) -> Option<&'static str> {
+        Some("bpftrace")
+    }
+    fn requires_pid(&self) -> bool {
+        true
+    }
+    fn prioritizes_artifact(&self, name: &str) -> bool {
+        name.starts_with("bpftrace-")
+    }
+    fn display_artifact(&self, name: &str) -> Option<ArtifactDisplay> {
         (name.starts_with("bpftrace-") && name.ends_with(".svg")).then_some(ArtifactDisplay::Svg {
             class: "bpftrace-profile",
             label: "bpftrace profile SVG",
         })
-    },
-)
-.with_graph_section(|name| {
-    (name.starts_with("metric-bpftrace-") || name.starts_with("series-bpftrace-"))
+    }
+    fn graph_section(&self, name: &str) -> Option<GraphSection> {
+        (name.starts_with("metric-bpftrace-") || name.starts_with("series-bpftrace-"))
         .then_some(GraphSection {
             title: "bpftrace profiles",
             description: "Cross-run SVG graphs for every bpftrace aggregate emitted by the selected profiles.",
         })
-})
-.with_preflight(preflight)
-.with_configure(|session, selected| {
-    let state = session.state::<BpftraceState>();
-    let mut state = state.borrow_mut();
-    state.enabled = super::super::selected_or_environment("bpftrace", selected);
-    state.profiles = selected_bpftrace_profiles(selected)?;
-    Ok(())
-})
-.with_processing(|_| true, process)
-.with_attach_pid(|session, pid| session.attach_bpftrace(pid));
+    }
+    fn preflight(&self, context: &mut PreflightContext<'_>) -> Result<(), String> {
+        preflight(context)
+    }
+    fn configure(
+        &self,
+        session: &mut measurements::Session,
+        selected: &[String],
+    ) -> Result<(), String> {
+        let state = session.state::<BpftraceState>();
+        let mut state = state.borrow_mut();
+        state.enabled = super::super::selected_or_environment("bpftrace", selected);
+        state.profiles = selected_bpftrace_profiles(selected)?;
+        Ok(())
+    }
+    fn graceful_shutdown(&self, _: &str) -> bool {
+        true
+    }
+    fn process(
+        &self,
+        session: &mut measurements::Session,
+        context: &ProcessContext<'_>,
+    ) -> Result<ProcessData, String> {
+        process(session, context)
+    }
+    fn attach_pid(&self, session: &mut measurements::Session, pid: u32) -> Result<(), String> {
+        session.attach_bpftrace(pid)
+    }
+}
 
 fn process(
     session: &mut measurements::Session,

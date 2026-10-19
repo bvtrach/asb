@@ -1,59 +1,96 @@
 use super::super::{
-    ArtifactDisplay, LifecycleEvent, PreflightContext, ProcessContext, ProcessData, StaticCollector,
+    ArtifactDisplay, CollectorAdapter, LifecycleEvent, PreflightContext, ProcessContext,
+    ProcessData,
 };
 use crate::measurements;
-pub(super) static ADAPTER: StaticCollector = StaticCollector::new(
-    "perfetto",
-    Some("ASB_MEASURE_PERFETTO"),
-    Some("perfetto"),
-    true,
-)
-.with_artifacts(
-    |name| name.starts_with("perfetto-metric-"),
-    |name| {
+pub(super) struct PerfettoCollector;
+pub(super) static ADAPTER: PerfettoCollector = PerfettoCollector;
+
+impl CollectorAdapter for PerfettoCollector {
+    fn id(&self) -> &'static str {
+        "perfetto"
+    }
+    fn environment_flag(&self) -> Option<&'static str> {
+        Some("ASB_MEASURE_PERFETTO")
+    }
+    fn tool_id(&self) -> Option<&'static str> {
+        Some("perfetto")
+    }
+    fn requires_pid(&self) -> bool {
+        true
+    }
+    fn prioritizes_artifact(&self, name: &str) -> bool {
+        name.starts_with("perfetto-metric-")
+    }
+    fn display_artifact(&self, name: &str) -> Option<ArtifactDisplay> {
         (name.starts_with("perfetto-metric-") && name.ends_with(".svg")).then_some(
             ArtifactDisplay::Svg {
                 class: "perfetto-metric",
                 label: "Perfetto metric SVG",
             },
         )
-    },
-)
-.with_preflight(preflight)
-.with_configure(|session, selected| {
-    session.state::<PerfettoState>().borrow_mut().enabled =
-        super::super::selected_or_environment("perfetto", selected);
-    Ok(())
-})
-.with_processing(|_| true, process)
-.with_finish(finish)
-.with_start(|session| session.start_perfetto())
-.with_lifecycle_event(|session, event| {
-    let pid = std::process::id();
-    let id = session.trace_id();
-    let marker = match event {
-        LifecycleEvent::RunStarted => format!("I|{pid}|asb.run.started.{id}"),
-        LifecycleEvent::RunFinishing => format!("I|{pid}|asb.run.finishing.{id}"),
-        LifecycleEvent::RunFailed => format!("I|{pid}|asb.run.failed.{id}"),
-        LifecycleEvent::PhaseBegin(phase) => format!("B|{pid}|asb.{}.{id}", phase.name()),
-        LifecycleEvent::PhaseEnd(_) => "E".into(),
-        LifecycleEvent::PhaseFailed(phase) => format!("I|{pid}|asb.{}.failed.{id}", phase.name()),
-        LifecycleEvent::MeasurementsReady => format!("I|{pid}|asb.measurements.ready.{id}"),
-        LifecycleEvent::AgentSpawn => format!("I|{pid}|asb.agent.spawn.{id}"),
-        LifecycleEvent::AgentExecuteBegin => format!("B|{pid}|asb.agent.execute.{id}"),
-        LifecycleEvent::AgentStarted => format!("I|{pid}|asb.agent.started.{id}"),
-        LifecycleEvent::AgentSpawnFailed => format!("I|{pid}|asb.agent.spawn_failed.{id}"),
-        LifecycleEvent::AgentAttachFailed => format!("I|{pid}|asb.agent.attach_failed.{id}"),
-        LifecycleEvent::AgentWaitFailed => format!("I|{pid}|asb.agent.wait_failed.{id}"),
-        LifecycleEvent::AgentExecuteEnd => "E".into(),
-        LifecycleEvent::AgentExited => format!("I|{pid}|asb.agent.exited.{id}"),
-    };
-    session.write_trace_marker(&marker)
-})
-.with_attach_pid(|session, pid| {
-    session.set_perfetto_pid(pid);
-    Ok(())
-});
+    }
+    fn preflight(&self, context: &mut PreflightContext<'_>) -> Result<(), String> {
+        preflight(context)
+    }
+    fn configure(
+        &self,
+        session: &mut measurements::Session,
+        selected: &[String],
+    ) -> Result<(), String> {
+        session.state::<PerfettoState>().borrow_mut().enabled =
+            super::super::selected_or_environment("perfetto", selected);
+        Ok(())
+    }
+    fn graceful_shutdown(&self, _: &str) -> bool {
+        true
+    }
+    fn process(
+        &self,
+        session: &mut measurements::Session,
+        context: &ProcessContext<'_>,
+    ) -> Result<ProcessData, String> {
+        process(session, context)
+    }
+    fn finish(&self, session: &mut measurements::Session) -> Result<(), String> {
+        finish(session)
+    }
+    fn start(&self, session: &mut measurements::Session) -> Result<(), String> {
+        session.start_perfetto()
+    }
+    fn lifecycle_event(
+        &self,
+        session: &mut measurements::Session,
+        event: LifecycleEvent,
+    ) -> Result<(), String> {
+        let pid = std::process::id();
+        let id = session.trace_id();
+        let marker = match event {
+            LifecycleEvent::RunStarted => format!("I|{pid}|asb.run.started.{id}"),
+            LifecycleEvent::RunFinishing => format!("I|{pid}|asb.run.finishing.{id}"),
+            LifecycleEvent::RunFailed => format!("I|{pid}|asb.run.failed.{id}"),
+            LifecycleEvent::PhaseBegin(phase) => format!("B|{pid}|asb.{}.{id}", phase.name()),
+            LifecycleEvent::PhaseEnd(_) => "E".into(),
+            LifecycleEvent::PhaseFailed(phase) => {
+                format!("I|{pid}|asb.{}.failed.{id}", phase.name())
+            }
+            LifecycleEvent::MeasurementsReady => format!("I|{pid}|asb.measurements.ready.{id}"),
+            LifecycleEvent::AgentSpawn => format!("I|{pid}|asb.agent.spawn.{id}"),
+            LifecycleEvent::AgentExecuteBegin => format!("B|{pid}|asb.agent.execute.{id}"),
+            LifecycleEvent::AgentStarted => format!("I|{pid}|asb.agent.started.{id}"),
+            LifecycleEvent::AgentSpawnFailed => format!("I|{pid}|asb.agent.spawn_failed.{id}"),
+            LifecycleEvent::AgentAttachFailed => format!("I|{pid}|asb.agent.attach_failed.{id}"),
+            LifecycleEvent::AgentWaitFailed => format!("I|{pid}|asb.agent.wait_failed.{id}"),
+            LifecycleEvent::AgentExecuteEnd => "E".into(),
+            LifecycleEvent::AgentExited => format!("I|{pid}|asb.agent.exited.{id}"),
+        };
+        session.write_trace_marker(&marker)
+    }
+    fn attach_pid(&self, session: &mut measurements::Session, pid: u32) -> Result<(), String> {
+        session.set_perfetto_pid(pid);
+        Ok(())
+    }
+}
 
 fn process(
     session: &mut measurements::Session,

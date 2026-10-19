@@ -1,9 +1,21 @@
-use super::super::{StaticCollector, UsageContext};
+use super::super::{CollectorAdapter, UsageContext};
 use crate::measurements::TokenUsage;
 use std::{fs::File, io::Read, path::Path};
 
-pub(super) static ADAPTER: StaticCollector =
-    StaticCollector::new("token_usage", None, None, false).with_usage(collect, from_path);
+pub(super) struct TokenUsageCollector;
+pub(super) static ADAPTER: TokenUsageCollector = TokenUsageCollector;
+
+impl CollectorAdapter for TokenUsageCollector {
+    fn id(&self) -> &'static str {
+        "token_usage"
+    }
+    fn usage(&self, context: &UsageContext<'_>) -> Option<TokenUsage> {
+        Some(collect(context))
+    }
+    fn usage_file(&self, path: &Path) -> Option<TokenUsage> {
+        Some(from_path(path))
+    }
+}
 fn collect(context: &UsageContext<'_>) -> TokenUsage {
     from_sources(
         context.provider,

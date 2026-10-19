@@ -8,13 +8,13 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_agents_AgentAdapter" [label="{agents_AgentAdapter||+id() &'static str\l+executable() &'static str\l+recipe() Recipe\l+supported_endpoints() &'static [Support]\l+command(context: &CommandContext\<'_\>) agents_CommandSpec\l+prepare(context: &mut PreparationContext\<'_\>) Result\<(), Error\>\l+replay_credential_vars() &'static [&'static str]\l+collect(context: &CollectionContext\<'_\>) agents_AgentArtifacts\l}", shape=record];
+        "asb-cli_src_agents_AgentAdapter" [label="{agents_AgentAdapter||+id() &'static str\l+executable() &'static str\l+recipe() Recipe\l+supported_endpoints() &'static [Support]\l+command(context: &CommandContext\<'_\>) agents_CommandSpec\l+prepare(context: &mut PreparationContext\<'_\>) Result\<(), Error\>\l+process(executable: &str) Result\<Command, Error\>\l+replay_credential_vars() &'static [&'static str]\l+collect(context: &CollectionContext\<'_\>) agents_AgentArtifacts\l+output_usage(stdout: &str, stderr: &str, input_includes_cache: bool) Option\<crate::measurements::TokenUsage\>\l+final_response(output: &str, workspace: &Path) Option\<String\>\l}", shape=record];
         "asb-cli_src_agents_AgentArtifacts" [label="{agents_AgentArtifacts|+token_usage: Option\<crate::measurements::TokenUsage\>\l+cleanup_paths: Vec\<PathBuf\>\l}", shape=record];
         "asb-cli_src_agents_CollectionContext" [label="{agents_CollectionContext|+workspace: &'a Path\l}", shape=record];
         "asb-cli_src_agents_CommandContext" [label="{agents_CommandContext|+config: &'a BenchmarkConfig\l+endpoint: Option\<&'a str\>\l+interface: Option\<Interface\>\l+prompt: &'a str\l}", shape=record];
         "asb-cli_src_agents_CommandSpec" [label="{agents_CommandSpec|+program: String\l+args: Vec\<String\>\l+append_prompt: bool\l}", shape=record];
         "asb-cli_src_agents_PreparationContext" [label="{agents_PreparationContext|+command: &'a mut Command\l+model: &'a str\l+connection: Connection\l+runtime_dir: &'a Path\l}", shape=record];
-        "asb-cli_src_agents_StaticAdapter" [label="{agents_StaticAdapter|-id: &'static str\l-executable: &'static str\l-recipe: Recipe\l-supported_endpoints: &'static [Support]\l-command: CommandBuilder\l-prepare: PreparationHook\l-collect: Option\<CollectionHook\>\l-replay_credential_vars: &'static [&'static str]\l|+new(id: &'static str, executable: &'static str, recipe: Recipe, supported_endpoints: &'static [Support], command: CommandBuilder, prepare: PreparationHook) Self\l+with_collection(self, collect: CollectionHook) Self\l+with_replay_credential_vars(self, vars: &'static [&'static str]) Self\l}", shape=record];
+        "asb-cli_src_agents_StaticAdapter" [label="{agents_StaticAdapter|-id: &'static str\l-executable: &'static str\l-recipe: Recipe\l-supported_endpoints: &'static [Support]\l-command: CommandBuilder\l-prepare: PreparationHook\l-collect: Option\<CollectionHook\>\l-output_usage: Option\<UsageHook\>\l-final_response: Option\<FinalResponseHook\>\l-process: Option\<ProcessHook\>\l-replay_credential_vars: &'static [&'static str]\l|+new(id: &'static str, executable: &'static str, recipe: Recipe, supported_endpoints: &'static [Support], command: CommandBuilder, prepare: PreparationHook) Self\l+with_collection(self, collect: CollectionHook) Self\l+with_output_usage(self, hook: UsageHook) Self\l+with_final_response(self, hook: FinalResponseHook) Self\l+with_process(self, hook: ProcessHook) Self\l+with_replay_credential_vars(self, vars: &'static [&'static str]) Self\l}", shape=record];
     }
 
     subgraph "cluster_benchmark" {
@@ -24,6 +24,46 @@ digraph ASB_Rust_UML {
         style="rounded,dashed";
         "asb-cli_src_BenchmarkConfig" [label="{BenchmarkConfig|+agent: String\l+workload: String\l+provider: String\l+model: String\l+concurrency: usize\l+trial_set: Option\<String\>\l+trial: Option\<String\>\l+workspace: String\l+log_file: String\l+measurements: Option\<MeasurementConfig\>\l}", shape=record];
         "asb-cli_src_MeasurementConfig" [label="{MeasurementConfig|+enabled: bool\l+directory: String\l+collectors: Vec\<String\>\l}", shape=record];
+    }
+
+    subgraph "cluster_collectors" {
+        label="collectors";
+        color="#cbd5e1";
+        fontcolor="#334155";
+        style="rounded,dashed";
+        "asb-cli_src_collectors_GraphSection" [label="{collectors_GraphSection|+title: &'static str\l+description: &'static str\l}", shape=record];
+        "asb-cli_src_collectors_LifecyclePhase" [label="{collectors_LifecyclePhase||+name(self) &'static str\l}", shape=record];
+        "asb-cli_src_collectors_PreflightContext" [label="{collectors_PreflightContext|+measurement_dir: &'a Path\l+selected: &'a [String]\l+tool_dir: Option\<&'a Path\>\l+sudo_collectors: &'a mut BTreeSet\<String\>\l}", shape=record];
+        "asb-cli_src_collectors_ProcessContext" [label="{collectors_ProcessContext|+name: &'a str\l+status: ExitStatus\l+stdout: &'a str\l+stderr: &'a str\l}", shape=record];
+        "asb-cli_src_collectors_ProcessData" [label="{collectors_ProcessData|+status: String\l+metrics: BTreeMap\<String, f64\>\l+series: BTreeMap\<String, Vec\<f64\>\>\l+timestamps: BTreeMap\<String, Vec\<f64\>\>\l+artifact: Option\<String\>\l|+from_output(context: &ProcessContext\<'_\>) Self\l}", shape=record];
+        "asb-cli_src_collectors_RunMetrics" [label="{collectors_RunMetrics|+elapsed_ms: u128\l+success_rate: f64\l}", shape=record];
+        "asb-cli_src_collectors_RunObservation" [label="{collectors_RunObservation|+elapsed_ms: u128\l+success: bool\l}", shape=record];
+        "asb-cli_src_collectors_UsageContext" [label="{collectors_UsageContext|+provider: &'a str\l+agent: &'a str\l+stdout: &'a str\l+stderr: &'a str\l+cassette: Option\<&'a Path\>\l}", shape=record];
+        "asb-cli_src_collectors_adapters_BpftraceCollector" [label="{collectors_adapters_BpftraceCollector}", shape=record];
+        "asb-cli_src_collectors_adapters_BpftraceProfile" [label="{collectors_adapters_BpftraceProfile|-name: &'static str\l-description: &'static str\l-program: &'static str\l}", shape=record];
+        "asb-cli_src_collectors_adapters_BpftraceState" [label="{collectors_adapters_BpftraceState|-enabled: bool\l-profiles: Vec\<collectors_adapters_BpftraceProfile\>\l}", shape=record];
+        "asb-cli_src_collectors_CollectorAdapter" [label="{collectors_CollectorAdapter||+id() &'static str\l+tool_id() Option\<&'static str\>\l+requires_pid() bool\l+dependencies() &'static [&'static str]\l+preflight(context: collectors_PreflightContext\<'_\>) Result\<(), String\>\l+prioritizes_artifact(name: &str) bool\l+display_artifact(name: &str) Option\<ArtifactDisplay\>\l+finish(session: Session) Result\<(), String\>\l}", shape=record];
+        "asb-cli_src_collectors_adapters_CpuIdentity" [label="{collectors_adapters_CpuIdentity|-model: Option\<String\>\l-vendor: Option\<String\>\l-implementer: Option\<String\>\l-part: Option\<String\>\l}", shape=record];
+        "asb-cli_src_collectors_adapters_CpuState" [label="{collectors_adapters_CpuState|-enabled: bool\l}", shape=record];
+        "asb-cli_src_collectors_adapters_Default" [label="{collectors_adapters_Default||+default() Self\l}", shape=record];
+        "asb-cli_src_collectors_adapters_FlamegraphCollector" [label="{collectors_adapters_FlamegraphCollector}", shape=record];
+        "asb-cli_src_collectors_adapters_FlamegraphStatus" [label="{collectors_adapters_FlamegraphStatus|-schema_version: u32\l-status: &'a str\l-artifact: Option\<&'a str\>\l-reason: Option\<&'a str\>\l}", shape=record];
+        "asb-cli_src_collectors_adapters_GovernorInfo" [label="{collectors_adapters_GovernorInfo|-names: Vec\<String\>\l-min_khz: Option\<u64\>\l-max_khz: Option\<u64\>\l}", shape=record];
+        "asb-cli_src_collectors_adapters_IoState" [label="{collectors_adapters_IoState|-enabled: bool\l}", shape=record];
+        "asb-cli_src_collectors_adapters_IostatCollector" [label="{collectors_adapters_IostatCollector}", shape=record];
+        "asb-cli_src_collectors_adapters_MpstatCollector" [label="{collectors_adapters_MpstatCollector}", shape=record];
+        "asb-cli_src_collectors_adapters_PerfCollector" [label="{collectors_adapters_PerfCollector}", shape=record];
+        "asb-cli_src_collectors_adapters_PerfState" [label="{collectors_adapters_PerfState|-enabled: bool\l}", shape=record];
+        "asb-cli_src_collectors_adapters_PerfettoCollector" [label="{collectors_adapters_PerfettoCollector}", shape=record];
+        "asb-cli_src_collectors_adapters_PerfettoState" [label="{collectors_adapters_PerfettoState|-enabled: bool\l-trace: Option\<PathBuf\>\l-pid: Option\<u32\>\l-trace_marker: Option\<PathBuf\>\l-trace_marker_output: Option\<File\>\l-tracepoint_count: u64\l-metrics: BTreeMap\<String, f64\>\l}", shape=record];
+        "asb-cli_src_collectors_adapters_RuntimeCollector" [label="{collectors_adapters_RuntimeCollector}", shape=record];
+        "asb-cli_src_collectors_adapters_StepsCollector" [label="{collectors_adapters_StepsCollector}", shape=record];
+        "asb-cli_src_collectors_adapters_SuccessRateCollector" [label="{collectors_adapters_SuccessRateCollector}", shape=record];
+        "asb-cli_src_collectors_adapters_SystemCollector" [label="{collectors_adapters_SystemCollector}", shape=record];
+        "asb-cli_src_collectors_adapters_SystemInfo" [label="{collectors_adapters_SystemInfo|-schema_version: u32\l-collected_unix_ms: u128\l-os: &'static str\l-architecture: &'static str\l-logical_cpus: usize\l-kernel_release: Option\<String\>\l-memory_total_kib: Option\<u64\>\l-cpu_model: Option\<String\>\l-cpu_vendor: Option\<String\>\l-cpu_implementer: Option\<String\>\l-cpu_part: Option\<String\>\l-physical_packages: Option\<usize\>\l-physical_cores: Option\<usize\>\l-threads_per_core: Option\<usize\>\l-cpu_governors: Vec\<String\>\l-cpu_frequency_min_khz: Option\<u64\>\l-cpu_frequency_max_khz: Option\<u64\>\l-numa_nodes: Option\<usize\>\l-virtualization: Option\<String\>\l-container_runtime: Option\<String\>\l-compiler_versions: BTreeMap\<String, String\>\l-runtime_versions: BTreeMap\<String, String\>\l-collector_versions: BTreeMap\<String, String\>\l-kernel_settings: BTreeMap\<String, String\>\l}", shape=record];
+        "asb-cli_src_collectors_adapters_TokenUsage" [label="{collectors_adapters_TokenUsage||+merge(self, other: Self) Self\l+add(self, other: Self) Self\l+merge_with_source(self, other: Self, source: &str) Self\l+with_derived_total(self) Self\l+any() bool\l}", shape=record];
+        "asb-cli_src_collectors_adapters_TokenUsageCollector" [label="{collectors_adapters_TokenUsageCollector}", shape=record];
+        "asb-cli_src_collectors_adapters_Topology" [label="{collectors_adapters_Topology|-packages: BTreeSet\<String\>\l-cores: BTreeSet\<(String, String)\>\l}", shape=record];
     }
 
     subgraph "cluster_compare" {
@@ -79,29 +119,6 @@ digraph ASB_Rust_UML {
         "asb-cli_src_WorkloadInstallOptions" [label="{WorkloadInstallOptions|+source: String\l+name: Option\<String\>\l+dir: Option\<PathBuf\>\l}", shape=record];
         "asb-cli_src_WorkloadListArgs" [label="{WorkloadListArgs|-dir: Option\<PathBuf\>\l}", shape=record];
         "asb-cli_src_WorkloadListOptions" [label="{WorkloadListOptions|+dir: Option\<PathBuf\>\l}", shape=record];
-        "asb-cli_src_collectors_CollectorAdapter" [label="{collectors_CollectorAdapter||+id() &'static str\l+environment_flag() Option\<&'static str\>\l+tool_id() Option\<&'static str\>\l+dependencies() &'static [&'static str]\l+requires_pid() bool\l+usage(context: &UsageContext\<'_\>) Option\<crate::measurements::TokenUsage\>\l+usage_file(path: &Path) Option\<crate::measurements::TokenUsage\>\l+steps(agent: &str, stdout: &str, stderr: &str) Option\<u64\>\l+observe_run(observation: &RunObservation, metrics: &mut RunMetrics) void\l+configure(session: Session, selected: &[String]) Result\<(), String\>\l+preflight(context: &mut PreflightContext\<'_\>) Result\<(), String\>\l+prioritizes_artifact(name: &str) bool\l+display_artifact(name: &str) Option\<ArtifactDisplay\>\l+graph_section(name: &str) Option\<collectors_GraphSection\>\l+graceful_shutdown(name: &str) bool\l+process(session: Session, context: &ProcessContext\<'_\>) Result\<collectors_ProcessData, String\>\l+finish(session: Session) Result\<(), String\>\l+start(session: Session) Result\<(), String\>\l+lifecycle_event(session: Session, event: LifecycleEvent) Result\<(), String\>\l+attach_pid(session: Session, pid: u32) Result\<(), String\>\l}", shape=record];
-        "asb-cli_src_collectors_GraphSection" [label="{collectors_GraphSection|+title: &'static str\l+description: &'static str\l}", shape=record];
-        "asb-cli_src_collectors_LifecyclePhase" [label="{collectors_LifecyclePhase||+name(self) &'static str\l}", shape=record];
-        "asb-cli_src_collectors_PreflightContext" [label="{collectors_PreflightContext|+measurement_dir: &'a Path\l+selected: &'a [String]\l+tool_dir: Option\<&'a Path\>\l+sudo_collectors: &'a mut BTreeSet\<String\>\l}", shape=record];
-        "asb-cli_src_collectors_ProcessContext" [label="{collectors_ProcessContext|+name: &'a str\l+status: ExitStatus\l+stdout: &'a str\l+stderr: &'a str\l}", shape=record];
-        "asb-cli_src_collectors_ProcessData" [label="{collectors_ProcessData|+status: String\l+metrics: BTreeMap\<String, f64\>\l+series: BTreeMap\<String, Vec\<f64\>\>\l+timestamps: BTreeMap\<String, Vec\<f64\>\>\l+artifact: Option\<String\>\l|+from_output(context: &ProcessContext\<'_\>) Self\l}", shape=record];
-        "asb-cli_src_collectors_RunMetrics" [label="{collectors_RunMetrics|+elapsed_ms: u128\l+success_rate: f64\l}", shape=record];
-        "asb-cli_src_collectors_RunObservation" [label="{collectors_RunObservation|+elapsed_ms: u128\l+success: bool\l}", shape=record];
-        "asb-cli_src_collectors_StaticCollector" [label="{collectors_StaticCollector|-id: &'static str\l-environment_flag: Option\<&'static str\>\l-tool_id: Option\<&'static str\>\l-dependencies: &'static [&'static str]\l-requires_pid: bool\l-usage: Option\<fn(&UsageContext\<'_\>) -\> crate::measurements::TokenUsage\>\l-usage_file: Option\<fn(&Path) -\> crate::measurements::TokenUsage\>\l-steps: Option\<fn(&str, &str, &str) -\> u64\>\l-observe_run: Option\<fn(&RunObservation, &mut RunMetrics)\>\l-attach_pid: Option\<AttachHook\>\l-start: Option\<SessionHook\>\l-configure: Option\<ConfigureHook\>\l-preflight: Option\<PreflightHook\>\l-prioritizes_artifact: Option\<fn(&str) -\> bool\>\l-display_artifact: Option\<fn(&str) -\> Option\<ArtifactDisplay\>\>\l-graph_section: Option\<fn(&str) -\> Option\<GraphSection\>\>\l-graceful_shutdown: Option\<fn(&str) -\> bool\>\l-process: Option\<ProcessHook\>\l-finish: Option\<SessionHook\>\l-lifecycle_event: Option\<EventHook\>\l|+new(id: &'static str, environment_flag: Option\<&'static str\>, tool_id: Option\<&'static str\>, requires_pid: bool) Self\l+with_dependencies(self, dependencies: &'static [&'static str]) Self\l+with_usage(self, usage: fn(&UsageContext\<'_\>) -\>, usage_file: collectors_adapters_TokenUsage) Self\l+with_steps(self, steps: fn(&str, &str, &str) -\> u64) Self\l+with_run_observation(self, hook: fn(&RunObservation, &mut RunMetrics)) Self\l+with_attach_pid(self, hook: Session, u32) -\> Result\<(), String\>) Self\l+with_start(self, hook: Session) -\> Result\<(), String\>) Self\l+with_configure(self, hook: Session, &[String]) -\> Result\<(), String\>) Self\l+with_preflight(self, hook: fn(&mut PreflightContext\<'_\>) -\> Result\<(), String\>) Self\l+with_artifacts(self, priority: fn(&str) -\> bool, display: fn(&str) -\> Option\<ArtifactDisplay\>) Self\l+with_processing(self, graceful: fn(&str) -\> bool, process: Session,\n            &ProcessContext\<'_\>, ) -\> Result\<ProcessData, String\>) Self\l+with_graph_section(self, hook: fn(&str) -\> Option\<collectors_GraphSection\>) Self\l+with_finish(self, hook: Session) -\> Result\<(), String\>) Self\l+with_lifecycle_event(self, hook: Session, LifecycleEvent) -\> Result\<(), String\>) Self\l}", shape=record];
-        "asb-cli_src_collectors_UsageContext" [label="{collectors_UsageContext|+provider: &'a str\l+agent: &'a str\l+stdout: &'a str\l+stderr: &'a str\l+cassette: Option\<&'a Path\>\l}", shape=record];
-        "asb-cli_src_collectors_adapters_BpftraceProfile" [label="{collectors_adapters_BpftraceProfile|-name: &'static str\l-description: &'static str\l-program: &'static str\l}", shape=record];
-        "asb-cli_src_collectors_adapters_BpftraceState" [label="{collectors_adapters_BpftraceState|-enabled: bool\l-profiles: Vec\<collectors_adapters_BpftraceProfile\>\l}", shape=record];
-        "asb-cli_src_collectors_adapters_CpuIdentity" [label="{collectors_adapters_CpuIdentity|-model: Option\<String\>\l-vendor: Option\<String\>\l-implementer: Option\<String\>\l-part: Option\<String\>\l}", shape=record];
-        "asb-cli_src_collectors_adapters_CpuState" [label="{collectors_adapters_CpuState|-enabled: bool\l}", shape=record];
-        "asb-cli_src_collectors_adapters_Default" [label="{collectors_adapters_Default||+default() Self\l}", shape=record];
-        "asb-cli_src_collectors_adapters_FlamegraphStatus" [label="{collectors_adapters_FlamegraphStatus|-schema_version: u32\l-status: &'a str\l-artifact: Option\<&'a str\>\l-reason: Option\<&'a str\>\l}", shape=record];
-        "asb-cli_src_collectors_adapters_GovernorInfo" [label="{collectors_adapters_GovernorInfo|-names: Vec\<String\>\l-min_khz: Option\<u64\>\l-max_khz: Option\<u64\>\l}", shape=record];
-        "asb-cli_src_collectors_adapters_IoState" [label="{collectors_adapters_IoState|-enabled: bool\l}", shape=record];
-        "asb-cli_src_collectors_adapters_PerfState" [label="{collectors_adapters_PerfState|-enabled: bool\l}", shape=record];
-        "asb-cli_src_collectors_adapters_PerfettoState" [label="{collectors_adapters_PerfettoState|-enabled: bool\l-trace: Option\<PathBuf\>\l-pid: Option\<u32\>\l-trace_marker: Option\<PathBuf\>\l-trace_marker_output: Option\<File\>\l-tracepoint_count: u64\l-metrics: BTreeMap\<String, f64\>\l}", shape=record];
-        "asb-cli_src_collectors_adapters_SystemInfo" [label="{collectors_adapters_SystemInfo|-schema_version: u32\l-collected_unix_ms: u128\l-os: &'static str\l-architecture: &'static str\l-logical_cpus: usize\l-kernel_release: Option\<String\>\l-memory_total_kib: Option\<u64\>\l-cpu_model: Option\<String\>\l-cpu_vendor: Option\<String\>\l-cpu_implementer: Option\<String\>\l-cpu_part: Option\<String\>\l-physical_packages: Option\<usize\>\l-physical_cores: Option\<usize\>\l-threads_per_core: Option\<usize\>\l-cpu_governors: Vec\<String\>\l-cpu_frequency_min_khz: Option\<u64\>\l-cpu_frequency_max_khz: Option\<u64\>\l-numa_nodes: Option\<usize\>\l-virtualization: Option\<String\>\l-container_runtime: Option\<String\>\l-compiler_versions: BTreeMap\<String, String\>\l-runtime_versions: BTreeMap\<String, String\>\l-collector_versions: BTreeMap\<String, String\>\l-kernel_settings: BTreeMap\<String, String\>\l}", shape=record];
-        "asb-cli_src_collectors_adapters_TokenUsage" [label="{collectors_adapters_TokenUsage||+merge(self, other: Self) Self\l+add(self, other: Self) Self\l+merge_with_source(self, other: Self, source: &str) Self\l+with_derived_total(self) Self\l+any() bool\l}", shape=record];
-        "asb-cli_src_collectors_adapters_Topology" [label="{collectors_adapters_Topology|-packages: BTreeSet\<String\>\l-cores: BTreeSet\<(String, String)\>\l}", shape=record];
         "asb-cli_tests_Drop" [label="{asb-cli_tests_Drop||+drop() void\l+drop() void\l}", shape=record];
         "asb-cli_tests_MockProvider" [label="{asb-cli_tests_MockProvider|-endpoint: String\l-requests: Arc\<Mutex\<Vec\<String\>\>\>\l-done: Arc\<AtomicBool\>\l-thread: Option\<std::thread::JoinHandle\<()\>\>\l|+start() Self\l}", shape=record];
         "asb-cli_tests_Project" [label="{asb-cli_tests_Project||+new() Self\l+command(args: &[&str]) Output\l+command_with_env(args: &[&str], extra: &[(&str, &str)]) Output\l+command_in_with_env(dir: Path, args: &[&str], extra: &[(&str, &str)]) Output\l+write(name: &str, contents: &str) void\l+init() void\l}", shape=record];
@@ -112,6 +129,8 @@ digraph ASB_Rust_UML {
         "tests_asb-cli_src_Capture" [label="{tests_Capture|-bytes: Vec\<u8\>\l-flushed: bool\l}", shape=record];
         "tests_asb-cli_src_FailingWriter" [label="{tests_FailingWriter||+write() Result\<usize\>\l+flush() Result\<()\>\l}", shape=record];
         "tests_asb-cli_src_Write" [label="{tests_Write||+write(bytes: &[u8]) Result\<usize\>\l+flush() Result\<()\>\l+write() Result\<usize\>\l+flush() Result\<()\>\l}", shape=record];
+        "tests_asb-cli_src_collectors_CollectorAdapter" [label="{tests_collectors_CollectorAdapter||+id() &'static str\l}", shape=record];
+        "tests_asb-cli_src_collectors_Minimal" [label="{tests_collectors_Minimal}", shape=record];
         "tests_asb-cli_src_proxy_FixtureAdapter" [label="{tests_proxy_FixtureAdapter|-name: &'static str\l-fail: bool\l-fail_finish: bool\l-events: Arc\<Mutex\<Vec\<String\>\>\>\l}", shape=record];
         "tests_asb-cli_src_proxy_FixtureSession" [label="{tests_proxy_FixtureSession|-name: &'static str\l-url: String\l-active: bool\l-fail_finish: bool\l-events: Arc\<Mutex\<Vec\<String\>\>\>\l}", shape=record];
         "tests_asb-cli_src_proxy_ProxyAdapter" [label="{tests_proxy_ProxyAdapter||+name() &'static str\l+start(upstream: Option\<&str\>, settings: Option\<&dyn Any\>) Result\<Box\<dyn ProxySession\>, Error\>\l}", shape=record];
@@ -133,7 +152,7 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_Collector" [label="{Collector|-name: String\l-adapter: collectors_CollectorAdapter\l-child: Child\l-started: Instant\l-stdout_path: PathBuf\l-stderr_path: PathBuf\l}", shape=record];
+        "asb-cli_src_Collector" [label="{Collector|-name: String\l-adapter: collectors_adapters_CollectorAdapter\l-child: Child\l-started: Instant\l-stdout_path: PathBuf\l-stderr_path: PathBuf\l}", shape=record];
         "asb-cli_src_CollectorResult" [label="{CollectorResult|-schema_version: u32\l-collector: String\l-status: String\l-exit_code: Option\<i32\>\l-elapsed_ms: u128\l-stdout: String\l-stderr: String\l-artifact: Option\<String\>\l-metrics: BTreeMap\<String, f64\>\l-series: BTreeMap\<String, Vec\<f64\>\>\l-series_timestamps: BTreeMap\<String, Vec\<f64\>\>\l}", shape=record];
         "asb-cli_src_RunMeasurement" [label="{RunMeasurement|+schema_version: u32\l+run_id: String\l+status: &'a str\l+success: bool\l+process_success: bool\l+workload_success: Option\<bool\>\l+failure_kind: Option\<&'a str\>\l+failure_reason: Option\<&'a str\>\l+success_rate: f64\l+agent: &'a str\l+workload: &'a str\l+workload_evaluation: &'a str\l+provider: &'a str\l+model: &'a str\l+elapsed_ms: u128\l+exit_code: Option\<i32\>\l+token_usage: collectors_adapters_TokenUsage\l+steps: u64\l+started_unix_ms: u128\l}", shape=record];
         "asb-cli_src_TokenUsage" [label="{TokenUsage|+input_tokens: Option\<u64\>\l+output_tokens: Option\<u64\>\l+cached_tokens: Option\<u64\>\l+total_tokens: Option\<u64\>\l+source: Option\<String\>\l}", shape=record];
@@ -232,7 +251,7 @@ digraph ASB_Rust_UML {
     "asb-cli_src_App" -> "asb-cli_src_ProjectConfig" [arrowhead="vee"];
     "asb-cli_src_BenchmarkConfig" -> "asb-cli_src_MeasurementConfig" [arrowhead="vee"];
     "asb-cli_src_BenchmarkData" -> "asb-cli_src_TimeSeries" [arrowhead="vee"];
-    "asb-cli_src_Collector" -> "asb-cli_src_collectors_CollectorAdapter" [arrowhead="vee"];
+    "asb-cli_src_Collector" -> "asb-cli_src_collectors_adapters_CollectorAdapter" [arrowhead="vee"];
     "asb-cli_src_ComponentMeasurements" -> "asb-cli_src_ComponentTiming" [arrowhead="vee"];
     "asb-cli_src_Pane" -> "asb-cli_src_Choice" [arrowhead="vee"];
     "asb-cli_src_ProcessAccounting" -> "asb-cli_src_ProcessSample" [arrowhead="vee", style="dashed"];
@@ -251,9 +270,21 @@ digraph ASB_Rust_UML {
     "asb-cli_src_agents_AgentAdapter" -> "asb-cli_src_agents_AgentArtifacts" [arrowhead="vee", style="dashed"];
     "asb-cli_src_agents_AgentAdapter" -> "asb-cli_src_agents_CommandSpec" [arrowhead="vee", style="dashed"];
     "asb-cli_src_agents_PreparationContext" -> "asb-cli_src_Connection" [arrowhead="vee"];
-    "asb-cli_src_collectors_CollectorAdapter" -> "asb-cli_src_collectors_GraphSection" [arrowhead="vee", style="dashed"];
-    "asb-cli_src_collectors_CollectorAdapter" -> "asb-cli_src_collectors_ProcessData" [arrowhead="vee", style="dashed"];
+    "asb-cli_src_collectors_adapters_BpftraceCollector" -> "asb-cli_src_collectors_adapters_CollectorAdapter" [arrowhead="empty", style="dashed"];
     "asb-cli_src_collectors_adapters_BpftraceState" -> "asb-cli_src_collectors_adapters_BpftraceProfile" [arrowhead="vee"];
+    "asb-cli_src_collectors_adapters_CollectorAdapter" -> "asb-cli_src_collectors_GraphSection" [arrowhead="vee", style="dashed"];
+    "asb-cli_src_collectors_adapters_CollectorAdapter" -> "asb-cli_src_collectors_ProcessData" [arrowhead="vee", style="dashed"];
+    "asb-cli_src_collectors_adapters_CollectorAdapter" -> "asb-cli_src_collectors_adapters_TokenUsage" [arrowhead="vee", style="dashed"];
+    "asb-cli_src_collectors_adapters_FlamegraphCollector" -> "asb-cli_src_collectors_adapters_CollectorAdapter" [arrowhead="empty", style="dashed"];
+    "asb-cli_src_collectors_adapters_IostatCollector" -> "asb-cli_src_collectors_adapters_CollectorAdapter" [arrowhead="empty", style="dashed"];
+    "asb-cli_src_collectors_adapters_MpstatCollector" -> "asb-cli_src_collectors_adapters_CollectorAdapter" [arrowhead="empty", style="dashed"];
+    "asb-cli_src_collectors_adapters_PerfCollector" -> "asb-cli_src_collectors_adapters_CollectorAdapter" [arrowhead="empty", style="dashed"];
+    "asb-cli_src_collectors_adapters_PerfettoCollector" -> "asb-cli_src_collectors_adapters_CollectorAdapter" [arrowhead="empty", style="dashed"];
+    "asb-cli_src_collectors_adapters_RuntimeCollector" -> "asb-cli_src_collectors_adapters_CollectorAdapter" [arrowhead="empty", style="dashed"];
+    "asb-cli_src_collectors_adapters_StepsCollector" -> "asb-cli_src_collectors_adapters_CollectorAdapter" [arrowhead="empty", style="dashed"];
+    "asb-cli_src_collectors_adapters_SuccessRateCollector" -> "asb-cli_src_collectors_adapters_CollectorAdapter" [arrowhead="empty", style="dashed"];
+    "asb-cli_src_collectors_adapters_SystemCollector" -> "asb-cli_src_collectors_adapters_CollectorAdapter" [arrowhead="empty", style="dashed"];
+    "asb-cli_src_collectors_adapters_TokenUsageCollector" -> "asb-cli_src_collectors_adapters_CollectorAdapter" [arrowhead="empty", style="dashed"];
     "asb-cli_src_proxy_adapters_LlmtapeAdapter" -> "asb-cli_src_proxy_adapters_ProxyAdapter" [arrowhead="empty", style="dashed"];
     "asb-cli_src_proxy_adapters_RunningLlmtape" -> "asb-cli_src_proxy_adapters_ProxySession" [arrowhead="empty", style="dashed"];
     "asb-cli_src_proxy_adapters_RunningLlmtape" -> "asb-cli_src_proxy_adapters_Scratch" [arrowhead="vee"];

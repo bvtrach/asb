@@ -1,24 +1,44 @@
-use super::super::{ArtifactDisplay, StaticCollector};
-pub(super) static ADAPTER: StaticCollector =
-    StaticCollector::new("flamegraph", None, Some("flamegraph"), true)
-        .with_dependencies(&["perf"])
-        .with_preflight(preflight)
-        .with_artifacts(
-            |name| name == "flamegraph.svg" || name == "flamegraph.json",
-            |name| match name {
-                "flamegraph.svg" => Some(ArtifactDisplay::Svg {
-                    class: "flamegraph",
-                    label: "Flamegraph SVG",
-                }),
-                "flamegraph.json" => Some(ArtifactDisplay::Status {
-                    class: "flamegraph-status",
-                    label: "Flamegraph collector status",
-                    suffix: "An SVG is embedded here when collection completed.",
-                }),
-                _ => None,
-            },
-        )
-        .with_finish(|session| session.write_flamegraph());
+use super::super::{ArtifactDisplay, CollectorAdapter};
+pub(super) struct FlamegraphCollector;
+pub(super) static ADAPTER: FlamegraphCollector = FlamegraphCollector;
+
+impl CollectorAdapter for FlamegraphCollector {
+    fn id(&self) -> &'static str {
+        "flamegraph"
+    }
+    fn tool_id(&self) -> Option<&'static str> {
+        Some("flamegraph")
+    }
+    fn requires_pid(&self) -> bool {
+        true
+    }
+    fn dependencies(&self) -> &'static [&'static str] {
+        &["perf"]
+    }
+    fn preflight(&self, context: &mut super::super::PreflightContext<'_>) -> Result<(), String> {
+        preflight(context)
+    }
+    fn prioritizes_artifact(&self, name: &str) -> bool {
+        name == "flamegraph.svg" || name == "flamegraph.json"
+    }
+    fn display_artifact(&self, name: &str) -> Option<ArtifactDisplay> {
+        match name {
+            "flamegraph.svg" => Some(ArtifactDisplay::Svg {
+                class: "flamegraph",
+                label: "Flamegraph SVG",
+            }),
+            "flamegraph.json" => Some(ArtifactDisplay::Status {
+                class: "flamegraph-status",
+                label: "Flamegraph collector status",
+                suffix: "An SVG is embedded here when collection completed.",
+            }),
+            _ => None,
+        }
+    }
+    fn finish(&self, session: &mut crate::measurements::Session) -> Result<(), String> {
+        session.write_flamegraph()
+    }
+}
 
 use crate::measurements::{self, write_json};
 use serde::Serialize;

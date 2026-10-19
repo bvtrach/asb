@@ -13,7 +13,7 @@ NODE = re.compile(r'^\s*"([^"]+)"\s+\[.*\];\s*$')
 EDGE = re.compile(r'^\s*"([^"]+)"\s+->\s+"([^"]+)"\s+\[.*\];\s*$')
 
 MODULES = (
-    "agents", "benchmark", "cli2key", "compare", "config", "install",
+    "agents", "benchmark", "cli2key", "collectors", "compare", "config", "install",
     "measurements", "models", "prepare", "project", "providers", "proxy", "runner",
     "suggestions", "sweep", "tape", "tools", "tui", "workloads",
 )
@@ -90,6 +90,8 @@ def main() -> int:
                 normalized = node_id + " [label=" + label.replace("asb-cli_src_", "")
                 if match.group(1) in {"asb-cli_src_proxy_adapters_ProxyAdapter", "asb-cli_src_proxy_adapters_ProxySession"}:
                     normalized = normalized.replace("proxy_adapters_Proxy", "proxy_Proxy")
+                if match.group(1) == "asb-cli_src_collectors_adapters_CollectorAdapter":
+                    normalized = normalized.replace("collectors_adapters_CollectorAdapter", "collectors_CollectorAdapter")
             nodes[match.group(1)] = normalized
         elif match := EDGE.match(line):
             edges.add((match.group(1), match.group(2), line.strip()))
@@ -98,6 +100,11 @@ def main() -> int:
     for implementation, trait in (
         ("asb-cli_src_proxy_adapters_LlmtapeAdapter", "asb-cli_src_proxy_adapters_ProxyAdapter"),
         ("asb-cli_src_proxy_adapters_RunningLlmtape", "asb-cli_src_proxy_adapters_ProxySession"),
+        *((f"asb-cli_src_collectors_adapters_{name}Collector",
+           "asb-cli_src_collectors_adapters_CollectorAdapter") for name in (
+               "System", "Runtime", "Mpstat", "Iostat", "Perf", "Perfetto",
+               "Flamegraph", "Bpftrace", "TokenUsage", "Steps", "SuccessRate",
+           )),
     ):
         if implementation in nodes and trait in nodes:
             edge = f'"{implementation}" -> "{trait}" [arrowhead="empty", style="dashed"];'

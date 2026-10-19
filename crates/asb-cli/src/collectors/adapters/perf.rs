@@ -1,18 +1,50 @@
+use super::super::CollectorAdapter;
 use super::super::PreflightContext;
-use super::super::StaticCollector;
 use super::super::{ProcessContext, ProcessData, SharedArtifact};
 use crate::measurements;
 use std::process::{Command, Stdio};
-pub(super) static ADAPTER: StaticCollector =
-    StaticCollector::new("perf", Some("ASB_MEASURE_PERF"), Some("perf"), true)
-        .with_preflight(preflight)
-        .with_configure(|session, selected| {
-            session.state::<PerfState>().borrow_mut().enabled =
-                super::super::selected_or_environment("perf", selected);
-            Ok(())
-        })
-        .with_processing(|name| name == "perf", process)
-        .with_attach_pid(|session, pid| session.start_perf(pid));
+pub(super) struct PerfCollector;
+pub(super) static ADAPTER: PerfCollector = PerfCollector;
+
+impl CollectorAdapter for PerfCollector {
+    fn id(&self) -> &'static str {
+        "perf"
+    }
+    fn environment_flag(&self) -> Option<&'static str> {
+        Some("ASB_MEASURE_PERF")
+    }
+    fn tool_id(&self) -> Option<&'static str> {
+        Some("perf")
+    }
+    fn requires_pid(&self) -> bool {
+        true
+    }
+    fn preflight(&self, context: &mut PreflightContext<'_>) -> Result<(), String> {
+        preflight(context)
+    }
+    fn configure(
+        &self,
+        session: &mut measurements::Session,
+        selected: &[String],
+    ) -> Result<(), String> {
+        session.state::<PerfState>().borrow_mut().enabled =
+            super::super::selected_or_environment("perf", selected);
+        Ok(())
+    }
+    fn graceful_shutdown(&self, name: &str) -> bool {
+        name == "perf"
+    }
+    fn process(
+        &self,
+        session: &mut measurements::Session,
+        context: &ProcessContext<'_>,
+    ) -> Result<ProcessData, String> {
+        process(session, context)
+    }
+    fn attach_pid(&self, session: &mut measurements::Session, pid: u32) -> Result<(), String> {
+        session.start_perf(pid)
+    }
+}
 
 fn process(
     session: &mut measurements::Session,

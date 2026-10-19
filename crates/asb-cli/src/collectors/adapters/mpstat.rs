@@ -1,23 +1,50 @@
-use super::super::{ProcessContext, ProcessData, StaticCollector};
+use super::super::{CollectorAdapter, ProcessContext, ProcessData};
 use crate::measurements;
 use crate::measurements::{parse_float, parse_pidstat_columns};
 use std::collections::BTreeMap;
-pub(super) static ADAPTER: StaticCollector =
-    StaticCollector::new("mpstat", Some("ASB_MEASURE_MPSTAT"), Some("mpstat"), true)
-        .with_preflight(|context| {
-            if super::super::selected_or_environment("mpstat", context.selected) {
-                super::pidstat::preflight(context.tool_dir, "-u")
-            } else {
-                Ok(())
-            }
-        })
-        .with_configure(|session, selected| {
-            session.state::<CpuState>().borrow_mut().enabled =
-                super::super::selected_or_environment("mpstat", selected);
+pub(super) struct MpstatCollector;
+pub(super) static ADAPTER: MpstatCollector = MpstatCollector;
+
+impl CollectorAdapter for MpstatCollector {
+    fn id(&self) -> &'static str {
+        "mpstat"
+    }
+    fn environment_flag(&self) -> Option<&'static str> {
+        Some("ASB_MEASURE_MPSTAT")
+    }
+    fn tool_id(&self) -> Option<&'static str> {
+        Some("mpstat")
+    }
+    fn requires_pid(&self) -> bool {
+        true
+    }
+    fn preflight(&self, context: &mut super::super::PreflightContext<'_>) -> Result<(), String> {
+        if super::super::selected_or_environment("mpstat", context.selected) {
+            super::pidstat::preflight(context.tool_dir, "-u")
+        } else {
             Ok(())
-        })
-        .with_processing(|_| false, process)
-        .with_attach_pid(|session, pid| session.start_cpu_snapshot(pid));
+        }
+    }
+    fn configure(
+        &self,
+        session: &mut measurements::Session,
+        selected: &[String],
+    ) -> Result<(), String> {
+        session.state::<CpuState>().borrow_mut().enabled =
+            super::super::selected_or_environment("mpstat", selected);
+        Ok(())
+    }
+    fn process(
+        &self,
+        session: &mut measurements::Session,
+        context: &ProcessContext<'_>,
+    ) -> Result<ProcessData, String> {
+        process(session, context)
+    }
+    fn attach_pid(&self, session: &mut measurements::Session, pid: u32) -> Result<(), String> {
+        session.start_cpu_snapshot(pid)
+    }
+}
 
 fn process(
     _: &mut measurements::Session,

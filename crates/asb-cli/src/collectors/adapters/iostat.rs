@@ -1,23 +1,50 @@
-use super::super::{ProcessContext, ProcessData, StaticCollector};
+use super::super::{CollectorAdapter, ProcessContext, ProcessData};
 use crate::measurements;
 use crate::measurements::{parse_float, parse_pidstat_columns};
 use std::collections::BTreeMap;
-pub(super) static ADAPTER: StaticCollector =
-    StaticCollector::new("iostat", Some("ASB_MEASURE_IOSTAT"), Some("iostat"), true)
-        .with_preflight(|context| {
-            if super::super::selected_or_environment("iostat", context.selected) {
-                super::pidstat::preflight(context.tool_dir, "-d")
-            } else {
-                Ok(())
-            }
-        })
-        .with_configure(|session, selected| {
-            session.state::<IoState>().borrow_mut().enabled =
-                super::super::selected_or_environment("iostat", selected);
+pub(super) struct IostatCollector;
+pub(super) static ADAPTER: IostatCollector = IostatCollector;
+
+impl CollectorAdapter for IostatCollector {
+    fn id(&self) -> &'static str {
+        "iostat"
+    }
+    fn environment_flag(&self) -> Option<&'static str> {
+        Some("ASB_MEASURE_IOSTAT")
+    }
+    fn tool_id(&self) -> Option<&'static str> {
+        Some("iostat")
+    }
+    fn requires_pid(&self) -> bool {
+        true
+    }
+    fn preflight(&self, context: &mut super::super::PreflightContext<'_>) -> Result<(), String> {
+        if super::super::selected_or_environment("iostat", context.selected) {
+            super::pidstat::preflight(context.tool_dir, "-d")
+        } else {
             Ok(())
-        })
-        .with_processing(|_| false, process)
-        .with_attach_pid(|session, pid| session.start_io_snapshot(pid));
+        }
+    }
+    fn configure(
+        &self,
+        session: &mut measurements::Session,
+        selected: &[String],
+    ) -> Result<(), String> {
+        session.state::<IoState>().borrow_mut().enabled =
+            super::super::selected_or_environment("iostat", selected);
+        Ok(())
+    }
+    fn process(
+        &self,
+        session: &mut measurements::Session,
+        context: &ProcessContext<'_>,
+    ) -> Result<ProcessData, String> {
+        process(session, context)
+    }
+    fn attach_pid(&self, session: &mut measurements::Session, pid: u32) -> Result<(), String> {
+        session.start_io_snapshot(pid)
+    }
+}
 
 fn process(
     _: &mut measurements::Session,

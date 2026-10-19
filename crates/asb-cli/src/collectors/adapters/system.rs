@@ -2,12 +2,21 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use super::super::StaticCollector;
+use super::super::CollectorAdapter;
 use crate::measurements::{self, Session};
 use serde::Serialize;
 
-pub(super) static ADAPTER: StaticCollector =
-    StaticCollector::new("system", None, None, false).with_start(start);
+pub(super) struct SystemCollector;
+pub(super) static ADAPTER: SystemCollector = SystemCollector;
+
+impl CollectorAdapter for SystemCollector {
+    fn id(&self) -> &'static str {
+        "system"
+    }
+    fn start(&self, session: &mut Session) -> Result<(), String> {
+        start(session)
+    }
+}
 
 const MAX_METADATA_VALUE: usize = 128;
 const MAX_CPU_ENTRIES: usize = 4096;

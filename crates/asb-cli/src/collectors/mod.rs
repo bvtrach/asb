@@ -130,14 +130,24 @@ impl LifecyclePhase {
     }
 }
 
+/// Stateless collector behavior shared through the registry.
+///
+/// Adapters override their supported operations and keep mutable run state in
+/// `Session`. Defaults leave unsupported capabilities absent or do no work.
 pub(crate) trait CollectorAdapter: Sync {
     fn id(&self) -> &'static str;
-    fn environment_flag(&self) -> Option<&'static str>;
-    fn tool_id(&self) -> Option<&'static str>;
+    fn environment_flag(&self) -> Option<&'static str> {
+        None
+    }
+    fn tool_id(&self) -> Option<&'static str> {
+        None
+    }
     fn dependencies(&self) -> &'static [&'static str] {
         &[]
     }
-    fn requires_pid(&self) -> bool;
+    fn requires_pid(&self) -> bool {
+        false
+    }
     fn usage(&self, _context: &UsageContext<'_>) -> Option<crate::measurements::TokenUsage> {
         None
     }
@@ -198,241 +208,6 @@ pub(crate) trait CollectorAdapter: Sync {
         _pid: u32,
     ) -> Result<(), String> {
         Ok(())
-    }
-}
-
-type SessionHook = fn(&mut crate::measurements::Session) -> Result<(), String>;
-type AttachHook = fn(&mut crate::measurements::Session, u32) -> Result<(), String>;
-type ConfigureHook = fn(&mut crate::measurements::Session, &[String]) -> Result<(), String>;
-type PreflightHook = fn(&mut PreflightContext<'_>) -> Result<(), String>;
-type ProcessHook =
-    fn(&mut crate::measurements::Session, &ProcessContext<'_>) -> Result<ProcessData, String>;
-type EventHook = fn(&mut crate::measurements::Session, LifecycleEvent) -> Result<(), String>;
-
-pub(crate) struct StaticCollector {
-    id: &'static str,
-    environment_flag: Option<&'static str>,
-    tool_id: Option<&'static str>,
-    dependencies: &'static [&'static str],
-    requires_pid: bool,
-    usage: Option<fn(&UsageContext<'_>) -> crate::measurements::TokenUsage>,
-    usage_file: Option<fn(&Path) -> crate::measurements::TokenUsage>,
-    steps: Option<fn(&str, &str, &str) -> u64>,
-    observe_run: Option<fn(&RunObservation, &mut RunMetrics)>,
-    attach_pid: Option<AttachHook>,
-    start: Option<SessionHook>,
-    configure: Option<ConfigureHook>,
-    preflight: Option<PreflightHook>,
-    prioritizes_artifact: Option<fn(&str) -> bool>,
-    display_artifact: Option<fn(&str) -> Option<ArtifactDisplay>>,
-    graph_section: Option<fn(&str) -> Option<GraphSection>>,
-    graceful_shutdown: Option<fn(&str) -> bool>,
-    process: Option<ProcessHook>,
-    finish: Option<SessionHook>,
-    lifecycle_event: Option<EventHook>,
-}
-impl StaticCollector {
-    const fn new(
-        id: &'static str,
-        environment_flag: Option<&'static str>,
-        tool_id: Option<&'static str>,
-        requires_pid: bool,
-    ) -> Self {
-        Self {
-            id,
-            environment_flag,
-            tool_id,
-            dependencies: &[],
-            requires_pid,
-            usage: None,
-            usage_file: None,
-            steps: None,
-            observe_run: None,
-            attach_pid: None,
-            start: None,
-            configure: None,
-            preflight: None,
-            prioritizes_artifact: None,
-            display_artifact: None,
-            graph_section: None,
-            graceful_shutdown: None,
-            process: None,
-            finish: None,
-            lifecycle_event: None,
-        }
-    }
-    const fn with_dependencies(mut self, dependencies: &'static [&'static str]) -> Self {
-        self.dependencies = dependencies;
-        self
-    }
-    const fn with_usage(
-        mut self,
-        usage: fn(&UsageContext<'_>) -> crate::measurements::TokenUsage,
-        usage_file: fn(&Path) -> crate::measurements::TokenUsage,
-    ) -> Self {
-        self.usage = Some(usage);
-        self.usage_file = Some(usage_file);
-        self
-    }
-    const fn with_steps(mut self, steps: fn(&str, &str, &str) -> u64) -> Self {
-        self.steps = Some(steps);
-        self
-    }
-    const fn with_run_observation(mut self, hook: fn(&RunObservation, &mut RunMetrics)) -> Self {
-        self.observe_run = Some(hook);
-        self
-    }
-    const fn with_attach_pid(
-        mut self,
-        hook: fn(&mut crate::measurements::Session, u32) -> Result<(), String>,
-    ) -> Self {
-        self.attach_pid = Some(hook);
-        self
-    }
-    const fn with_start(
-        mut self,
-        hook: fn(&mut crate::measurements::Session) -> Result<(), String>,
-    ) -> Self {
-        self.start = Some(hook);
-        self
-    }
-    const fn with_configure(
-        mut self,
-        hook: fn(&mut crate::measurements::Session, &[String]) -> Result<(), String>,
-    ) -> Self {
-        self.configure = Some(hook);
-        self
-    }
-    const fn with_preflight(
-        mut self,
-        hook: fn(&mut PreflightContext<'_>) -> Result<(), String>,
-    ) -> Self {
-        self.preflight = Some(hook);
-        self
-    }
-    const fn with_artifacts(
-        mut self,
-        priority: fn(&str) -> bool,
-        display: fn(&str) -> Option<ArtifactDisplay>,
-    ) -> Self {
-        self.prioritizes_artifact = Some(priority);
-        self.display_artifact = Some(display);
-        self
-    }
-    const fn with_processing(
-        mut self,
-        graceful: fn(&str) -> bool,
-        process: fn(
-            &mut crate::measurements::Session,
-            &ProcessContext<'_>,
-        ) -> Result<ProcessData, String>,
-    ) -> Self {
-        self.graceful_shutdown = Some(graceful);
-        self.process = Some(process);
-        self
-    }
-    const fn with_graph_section(mut self, hook: fn(&str) -> Option<GraphSection>) -> Self {
-        self.graph_section = Some(hook);
-        self
-    }
-    const fn with_finish(
-        mut self,
-        hook: fn(&mut crate::measurements::Session) -> Result<(), String>,
-    ) -> Self {
-        self.finish = Some(hook);
-        self
-    }
-    const fn with_lifecycle_event(
-        mut self,
-        hook: fn(&mut crate::measurements::Session, LifecycleEvent) -> Result<(), String>,
-    ) -> Self {
-        self.lifecycle_event = Some(hook);
-        self
-    }
-}
-impl CollectorAdapter for StaticCollector {
-    fn id(&self) -> &'static str {
-        self.id
-    }
-    fn environment_flag(&self) -> Option<&'static str> {
-        self.environment_flag
-    }
-    fn tool_id(&self) -> Option<&'static str> {
-        self.tool_id
-    }
-    fn dependencies(&self) -> &'static [&'static str] {
-        self.dependencies
-    }
-    fn requires_pid(&self) -> bool {
-        self.requires_pid
-    }
-    fn usage(&self, context: &UsageContext<'_>) -> Option<crate::measurements::TokenUsage> {
-        self.usage.map(|hook| hook(context))
-    }
-    fn usage_file(&self, path: &Path) -> Option<crate::measurements::TokenUsage> {
-        self.usage_file.map(|hook| hook(path))
-    }
-    fn steps(&self, agent: &str, stdout: &str, stderr: &str) -> Option<u64> {
-        self.steps.map(|hook| hook(agent, stdout, stderr))
-    }
-    fn observe_run(&self, observation: &RunObservation, metrics: &mut RunMetrics) {
-        if let Some(hook) = self.observe_run {
-            hook(observation, metrics);
-        }
-    }
-    fn configure(
-        &self,
-        session: &mut crate::measurements::Session,
-        selected: &[String],
-    ) -> Result<(), String> {
-        self.configure
-            .map_or(Ok(()), |hook| hook(session, selected))
-    }
-    fn preflight(&self, context: &mut PreflightContext<'_>) -> Result<(), String> {
-        self.preflight.map_or(Ok(()), |hook| hook(context))
-    }
-    fn prioritizes_artifact(&self, name: &str) -> bool {
-        self.prioritizes_artifact.is_some_and(|hook| hook(name))
-    }
-    fn display_artifact(&self, name: &str) -> Option<ArtifactDisplay> {
-        self.display_artifact.and_then(|hook| hook(name))
-    }
-    fn graph_section(&self, name: &str) -> Option<GraphSection> {
-        self.graph_section.and_then(|hook| hook(name))
-    }
-    fn graceful_shutdown(&self, name: &str) -> bool {
-        self.graceful_shutdown.is_some_and(|hook| hook(name))
-    }
-    fn process(
-        &self,
-        session: &mut crate::measurements::Session,
-        context: &ProcessContext<'_>,
-    ) -> Result<ProcessData, String> {
-        self.process.map_or_else(
-            || Ok(ProcessData::from_output(context)),
-            |hook| hook(session, context),
-        )
-    }
-    fn finish(&self, session: &mut crate::measurements::Session) -> Result<(), String> {
-        self.finish.map_or(Ok(()), |hook| hook(session))
-    }
-    fn start(&self, session: &mut crate::measurements::Session) -> Result<(), String> {
-        self.start.map_or(Ok(()), |hook| hook(session))
-    }
-    fn lifecycle_event(
-        &self,
-        session: &mut crate::measurements::Session,
-        event: LifecycleEvent,
-    ) -> Result<(), String> {
-        self.lifecycle_event
-            .map_or(Ok(()), |hook| hook(session, event))
-    }
-    fn attach_pid(
-        &self,
-        session: &mut crate::measurements::Session,
-        pid: u32,
-    ) -> Result<(), String> {
-        self.attach_pid.map_or(Ok(()), |hook| hook(session, pid))
     }
 }
 
@@ -512,6 +287,96 @@ pub(crate) fn selected_or_environment(id: &str, selected: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registry_preserves_metadata_and_shutdown_policy_for_every_adapter() {
+        let expected = [
+            ("system", None, None, false),
+            ("runtime", None, None, false),
+            ("mpstat", Some("ASB_MEASURE_MPSTAT"), Some("mpstat"), true),
+            ("iostat", Some("ASB_MEASURE_IOSTAT"), Some("iostat"), true),
+            ("perf", Some("ASB_MEASURE_PERF"), Some("perf"), true),
+            (
+                "perfetto",
+                Some("ASB_MEASURE_PERFETTO"),
+                Some("perfetto"),
+                true,
+            ),
+            ("flamegraph", None, Some("flamegraph"), true),
+            (
+                "bpftrace",
+                Some("ASB_MEASURE_BPFTRACE"),
+                Some("bpftrace"),
+                true,
+            ),
+            ("token_usage", None, None, false),
+            ("steps", None, None, false),
+            ("success_rate", None, None, false),
+        ];
+        assert_eq!(all().len(), expected.len());
+        for (adapter, (id, environment, tool, pid)) in all().iter().zip(expected) {
+            assert_eq!(adapter.id(), id);
+            assert_eq!(adapter.environment_flag(), environment, "{id}");
+            assert_eq!(adapter.tool_id(), tool, "{id}");
+            assert_eq!(adapter.requires_pid(), pid, "{id}");
+            let dependencies: &[&str] = if id == "flamegraph" { &["perf"] } else { &[] };
+            assert_eq!(adapter.dependencies(), dependencies, "{id}");
+            for process in ["perf", "perf-stat", "perfetto", "bpftrace-sched", "other"] {
+                let graceful =
+                    matches!(id, "perfetto" | "bpftrace") || (id == "perf" && process == "perf");
+                assert_eq!(
+                    adapter.graceful_shutdown(process),
+                    graceful,
+                    "{id}/{process}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn minimal_adapter_uses_safe_defaults_through_dynamic_dispatch() {
+        struct Minimal;
+        impl CollectorAdapter for Minimal {
+            fn id(&self) -> &'static str {
+                "minimal"
+            }
+        }
+        let adapter: &dyn CollectorAdapter = &Minimal;
+        assert_eq!(adapter.environment_flag(), None);
+        assert_eq!(adapter.tool_id(), None);
+        assert!(adapter.dependencies().is_empty());
+        assert!(!adapter.requires_pid());
+        assert!(!adapter.graceful_shutdown("process"));
+        assert!(!adapter.prioritizes_artifact("artifact.svg"));
+        assert!(adapter.display_artifact("artifact.svg").is_none());
+        assert!(adapter.graph_section("metric").is_none());
+        assert!(adapter.steps("agent", "output", "error").is_none());
+        assert!(adapter.usage_file(Path::new("missing")).is_none());
+        assert!(
+            adapter
+                .usage(&UsageContext {
+                    provider: "provider",
+                    agent: "agent",
+                    stdout: "",
+                    stderr: "",
+                    cassette: None,
+                })
+                .is_none()
+        );
+        let mut metrics = RunMetrics {
+            elapsed_ms: 42,
+            success_rate: 0.5,
+        };
+        adapter.observe_run(
+            &RunObservation {
+                elapsed_ms: 100,
+                success: true,
+            },
+            &mut metrics,
+        );
+        assert_eq!(metrics.elapsed_ms, 42);
+        assert_eq!(metrics.success_rate, 0.5);
+    }
     #[test]
     fn flamegraph_automatically_resolves_perf_once() {
         let selected = vec!["flamegraph".to_owned()];
