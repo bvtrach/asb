@@ -116,6 +116,11 @@ impl Pane {
         }
     }
 
+    fn active_index(&mut self) -> Option<usize> {
+        self.search_changed();
+        (!self.visible().is_empty() && self.cursor < self.selected.len()).then_some(self.cursor)
+    }
+
     fn toggle_single(&mut self) {
         self.search_changed();
         if self.visible().is_empty() || self.cursor >= self.selected.len() {
@@ -205,8 +210,7 @@ impl App {
                 availability: Availability::Available,
             })
             .collect();
-        let mut measure_pane = Pane::new(measures);
-        measure_pane.selected.fill(true);
+        let measure_pane = Pane::new(measures);
         let concurrency_choices = (1..=16)
             .map(|value| Choice {
                 label: value.to_string(),
@@ -234,6 +238,18 @@ impl App {
             message_until: None,
         };
         app.refresh_availability();
+        // Missing tools and their dependants are not selected implicitly.
+        for index in 0..app.panes[4].choices.len() {
+            let choice = &app.panes[4].choices[index];
+            let dependencies =
+                crate::collectors::expand_dependencies(std::slice::from_ref(&choice.label));
+            app.panes[4].selected[index] = dependencies.iter().all(|name| {
+                app.panes[4]
+                    .choices
+                    .iter()
+                    .any(|item| &item.label == name && item.availability == Availability::Available)
+            });
+        }
         app
     }
 
@@ -252,8 +268,9 @@ impl App {
                 .label
                 .strip_suffix(" [trial set]")
                 .unwrap_or(&choice.label);
+            let external = install::external_workload_names().any(|external| external == name);
             choice.availability = if install::workload_available(name, &workloads)
-                || workloads::load(name, &workloads).is_ok()
+                || (!external && workloads::load(name, &workloads).is_ok())
             {
                 Availability::Available
             } else {
@@ -359,30 +376,6 @@ const TEMPORARY_MESSAGE: std::time::Duration = std::time::Duration::from_secs(4)
 fn is_install_key(key: &KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL)
         && matches!(key.code, KeyCode::Char('i') | KeyCode::Tab)
-}
-
-/// Legacy terminals encode Ctrl-I as an indistinguishable bare Tab byte. In
-/// that mode, use Tab as an install fallback only for an unavailable item;
-/// Enter remains the unambiguous step/navigation key.
-fn legacy_setup_install_key(key: &KeyEvent, app: &App) -> bool {
-    key.code == KeyCode::Tab
-        && key.modifiers.is_empty()
-        && matches!(app.step, 0 | 3 | 4)
-        && app.panes[app.step]
-            .choices
-            .get(app.panes[app.step].cursor)
-            .is_some_and(|choice| choice.availability != Availability::Available)
-}
-
-fn legacy_workload_install_key(key: &KeyEvent, app: &WorkloadApp) -> bool {
-    key.code == KeyCode::Tab
-        && key.modifiers.is_empty()
-        && app.level == 0
-        && app
-            .workloads
-            .choices
-            .get(app.workloads.cursor)
-            .is_some_and(|choice| choice.availability != Availability::Available)
 }
 
 fn set_message(
@@ -564,7 +557,7 @@ fn workload_loop(
             } if modifiers.contains(KeyModifiers::CONTROL) => {
                 return Err(Error::Usage("workload TUI cancelled"));
             }
-            key if is_install_key(&key) || legacy_workload_install_key(&key, app) => {
+            key if is_install_key(&key) => {
                 install_workload_selection(terminal, app)?;
             }
             KeyEvent {
@@ -583,6 +576,17 @@ fn workload_loop(
                 if app.level == 0 {
                     if !app.workloads.has_selection() {
                         app.message = "Select at least one external workload first.".into();
+                        continue;
+                    }
+                    if !app
+                        .workloads
+                        .selected
+                        .get(app.workloads.cursor)
+                        .copied()
+                        .unwrap_or(false)
+                    {
+                        app.message =
+                            "Select the highlighted workload before opening its trials.".into();
                         continue;
                     }
                     let current = app.workloads.choices[app.workloads.cursor].label.clone();
@@ -618,6 +622,12 @@ fn workload_loop(
                     app.message = "Select at least one trial before continuing.".into();
                 }
             }
+            KeyEvent {
+                code: KeyCode::Char(' '),
+                ..
+            } if app.level == 0 => {
+                toggle_workload_choice(app, |app| install_workload_selection(terminal, app))?;
+            }
             key if handle_pane_key(
                 if app.level == 0 {
                     &mut app.workloads
@@ -634,7 +644,7 @@ fn workload_loop(
 fn install_workload_selection(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut WorkloadApp,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     if app.level != 0 {
         set_message(
             &mut app.message,
@@ -644,7 +654,7 @@ fn install_workload_selection(
             Color::Red,
             true,
         );
-        return Ok(());
+        return Ok(false);
     }
     let Some(choice) = app.workloads.choices.get(app.workloads.cursor) else {
         set_message(
@@ -655,7 +665,7 @@ fn install_workload_selection(
             Color::Red,
             true,
         );
-        return Ok(());
+        return Ok(false);
     };
     let name = choice.label.clone();
     set_message(
@@ -670,6 +680,7 @@ fn install_workload_selection(
     let worker_progress = std::sync::Arc::clone(&progress_state);
     let (sender, receiver) = std::sync::mpsc::channel();
     let install_name = name.clone();
+    let directory = project::resolve(&app.root, &app.project.workloads_dir);
     std::thread::spawn(move || {
         let mut output = Vec::new();
         let mut progress = |percent: u8, stage: &str| {
@@ -681,7 +692,7 @@ fn install_workload_selection(
             install::WorkloadInstallOptions {
                 source: install_name,
                 name: None,
-                dir: None,
+                dir: Some(directory),
             },
             &mut output,
             &mut progress,
@@ -691,8 +702,14 @@ fn install_workload_selection(
     let started = Instant::now();
     let mut tick = 0_u64;
     let result = loop {
-        if let Ok(result) = receiver.try_recv() {
-            break result;
+        match receiver.try_recv() {
+            Ok(result) => break result,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                break Err(Error::Io(
+                    "workload installation stopped unexpectedly".into(),
+                ));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
         let (percent, stage) = progress_state
             .lock()
@@ -713,7 +730,23 @@ fn install_workload_selection(
         std::thread::sleep(std::time::Duration::from_millis(100));
     };
     refresh_workload_availability(app);
+    let ready = result.is_ok()
+        && app
+            .workloads
+            .choices
+            .get(app.workloads.cursor)
+            .is_some_and(|choice| choice.availability == Availability::Available);
     match result {
+        Ok(()) if !ready => set_message(
+            &mut app.message,
+            &mut app.message_color,
+            &mut app.message_until,
+            format!(
+                "Installation of `{name}` finished but it is not ready; check .asb/install.log."
+            ),
+            Color::Red,
+            false,
+        ),
         Ok(()) => set_message(
             &mut app.message,
             &mut app.message_color,
@@ -728,9 +761,24 @@ fn install_workload_selection(
             &mut app.message_until,
             format!("Cannot install `{name}`: {error}"),
             Color::Red,
-            true,
+            false,
         ),
     };
+    Ok(ready)
+}
+
+fn toggle_workload_choice<F>(app: &mut WorkloadApp, mut install: F) -> Result<(), Error>
+where
+    F: FnMut(&mut WorkloadApp) -> Result<bool, Error>,
+{
+    let Some(index) = app.workloads.active_index() else {
+        return Ok(());
+    };
+    if app.workloads.selected[index] {
+        app.workloads.selected[index] = false;
+    } else if app.workloads.choices[index].availability != Availability::Missing || install(app)? {
+        app.workloads.selected[index] = true;
+    }
     Ok(())
 }
 
@@ -796,7 +844,7 @@ fn draw_workload(frame: &mut ratatui::Frame<'_>, app: &WorkloadApp) {
             Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Min(5),
-            Constraint::Length(2),
+            Constraint::Length(3),
         ])
         .split(frame.area());
     let steps = ["workloads", "trials"];
@@ -833,7 +881,7 @@ fn draw_workload(frame: &mut ratatui::Frame<'_>, app: &WorkloadApp) {
         vertical[0],
     );
     let description = if app.level == 0 {
-        "Choose external workloads; red entries can be installed with Ctrl-I."
+        "Choose external workloads; selecting a missing workload installs it first."
     } else {
         "Choose enabled trials for the selected workload."
     };
@@ -848,14 +896,17 @@ fn draw_workload(frame: &mut ratatui::Frame<'_>, app: &WorkloadApp) {
     };
     render_choice_pane(frame, vertical[2], pane, true);
     frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("Ctrl-I install", Style::default().fg(Color::Cyan)),
-            Span::raw(" | ⓘ green=ready red=missing yellow=unknown | Tab fallback install | Enter next | "),
-            Span::styled(
+        Paragraph::new(Text::from(vec![
+            Line::from(vec![
+                Span::styled("Space select/install", Style::default().fg(Color::Cyan)),
+                Span::raw(" | ⓘ green=ready red=missing yellow=unknown | Enter next"),
+            ]),
+            Line::from(Span::styled(
                 visible_message(&app.message, app.message_until),
                 Style::default().fg(app.message_color),
-            ),
-        ])),
+            )),
+        ]))
+        .wrap(Wrap { trim: true }),
         vertical[3],
     );
 }
@@ -956,7 +1007,7 @@ fn run_loop(
             } if modifiers.contains(KeyModifiers::CONTROL) => {
                 return Err(Error::Usage("setup TUI cancelled"));
             }
-            key if is_install_key(&key) || legacy_setup_install_key(&key, app) => {
+            key if is_install_key(&key) => {
                 install_setup_selection(terminal, app)?;
             }
             KeyEvent {
@@ -974,8 +1025,15 @@ fn run_loop(
                 code: KeyCode::Tab | KeyCode::Enter,
                 ..
             } => {
-                if app.step == 4 && !install_setup_dependencies(terminal, app)? {
-                    continue;
+                if app.step == 4 {
+                    let selected = app.panes[4]
+                        .selected_choices()
+                        .map(|choice| choice.label.clone())
+                        .collect::<Vec<_>>();
+                    if !install_setup_dependencies(terminal, app, &selected)? {
+                        continue;
+                    }
+                    app.sync_collector_dependencies();
                 }
                 if let Some(generated) = app.advance()? {
                     return Ok(generated);
@@ -988,9 +1046,11 @@ fn run_loop(
             KeyEvent {
                 code: KeyCode::Char(' '),
                 ..
-            } if app.step == 4 => {
-                app.panes[4].toggle();
-                install_setup_dependencies(terminal, app)?;
+            } if matches!(app.step, 0 | 3 | 4) => {
+                toggle_setup_choice(app, |app, selected| match selected {
+                    Some(selected) => install_setup_dependencies(terminal, app, selected),
+                    None => install_setup_selection(terminal, app),
+                })?;
             }
             key if handle_pane_key(&mut app.panes[app.step], key) => {}
             _ => {}
@@ -1001,8 +1061,9 @@ fn run_loop(
 fn install_setup_dependencies(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
+    selected: &[String],
 ) -> Result<bool, Error> {
-    let selected = app.sync_collector_dependencies();
+    let selected = crate::collectors::expand_dependencies(selected);
     let tools_root = project::resolve(&app.root, &app.project.tools_dir);
     if crate::collectors::dependency_tools(&selected)
         .iter()
@@ -1091,6 +1152,52 @@ fn install_setup_dependencies(
     }
 }
 
+fn toggle_setup_choice<F>(app: &mut App, mut install: F) -> Result<(), Error>
+where
+    F: FnMut(&mut App, Option<&[String]>) -> Result<bool, Error>,
+{
+    let step = app.step;
+    let Some(index) = app.panes[step].active_index() else {
+        return Ok(());
+    };
+    if app.panes[step].selected[index] {
+        app.panes[step].selected[index] = false;
+        if step == 4 {
+            app.sync_collector_dependencies();
+            if app.panes[step].selected[index] {
+                set_message(
+                    &mut app.message,
+                    &mut app.message_color,
+                    &mut app.message_until,
+                    "This collector is required by another selected collector.",
+                    Color::Yellow,
+                    true,
+                );
+            }
+        }
+        return Ok(());
+    }
+    if app.panes[step].choices[index].availability == Availability::Missing && !install(app, None)?
+    {
+        return Ok(());
+    }
+    if step == 4 {
+        let mut selected = app.panes[4]
+            .selected_choices()
+            .map(|choice| choice.label.clone())
+            .collect::<Vec<_>>();
+        selected.push(app.panes[4].choices[index].label.clone());
+        if !install(app, Some(&selected))? {
+            return Ok(());
+        }
+    }
+    app.panes[step].selected[index] = true;
+    if step == 4 {
+        app.sync_collector_dependencies();
+    }
+    Ok(())
+}
+
 fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -1098,7 +1205,7 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
             Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Min(5),
-            Constraint::Length(2),
+            Constraint::Length(3),
         ])
         .split(frame.area());
     let steps = [
@@ -1147,22 +1254,25 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
     let pane = &app.panes[app.step];
     render_choice_pane(frame, vertical[2], pane, !matches!(app.step, 1 | 2 | 5));
     frame.render_widget(
-        Paragraph::new(Text::from(Line::from(vec![
-            if matches!(app.step, 1 | 2 | 5) {
-                Span::styled("Discovery only", Style::default().fg(Color::Yellow))
-            } else {
-                Span::styled("Ctrl-I install", Style::default().fg(Color::Cyan))
-            },
-            if matches!(app.step, 1 | 2 | 5) {
-                Span::raw(" | Enter next | ")
-            } else {
-                Span::raw(" | ⓘ green=ready red=missing yellow=unknown | Tab fallback install | Enter next | ")
-            },
-            Span::styled(
+        Paragraph::new(Text::from(vec![
+            Line::from(vec![
+                if matches!(app.step, 1 | 2 | 5) {
+                    Span::styled("Discovery only", Style::default().fg(Color::Yellow))
+                } else {
+                    Span::styled("Space select/install", Style::default().fg(Color::Cyan))
+                },
+                if matches!(app.step, 1 | 2 | 5) {
+                    Span::raw(" | Enter next")
+                } else {
+                    Span::raw(" | ⓘ green=ready red=missing yellow=unknown | Enter next")
+                },
+            ]),
+            Line::from(Span::styled(
                 visible_message(&app.message, app.message_until),
                 Style::default().fg(app.message_color),
-            ),
-        ]))),
+            )),
+        ]))
+        .wrap(Wrap { trim: true }),
         vertical[3],
     );
 }
@@ -1288,7 +1398,7 @@ fn availability_style(availability: Availability) -> Style {
 fn install_setup_selection(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let Some(choice) = app.panes[app.step].choices.get(app.panes[app.step].cursor) else {
         set_message(
             &mut app.message,
@@ -1298,7 +1408,7 @@ fn install_setup_selection(
             Color::Red,
             true,
         );
-        return Ok(());
+        return Ok(false);
     };
     let label = choice.label.clone();
     if !matches!(app.step, 0 | 3 | 4) {
@@ -1310,7 +1420,7 @@ fn install_setup_selection(
             Color::Red,
             true,
         );
-        return Ok(());
+        return Ok(false);
     }
     set_message(
         &mut app.message,
@@ -1321,7 +1431,22 @@ fn install_setup_selection(
         false,
     );
     let step = app.step;
-    let install_label = label.clone();
+    let install_label = if step == 4 {
+        crate::collectors::find(&label)
+            .and_then(|adapter| adapter.tool_id())
+            .unwrap_or(&label)
+            .to_owned()
+    } else {
+        label.clone()
+    };
+    let directory = project::resolve(
+        &app.root,
+        if step == 3 {
+            &app.project.workloads_dir
+        } else {
+            &app.project.tools_dir
+        },
+    );
     let progress_state = std::sync::Arc::new(std::sync::Mutex::new((8_u8, "preparing".to_owned())));
     let worker_progress = std::sync::Arc::clone(&progress_state);
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -1337,7 +1462,7 @@ fn install_setup_selection(
                 install::ToolInstallOptions {
                     name: install_label,
                     source: None,
-                    dir: None,
+                    dir: Some(directory),
                     dry_run: false,
                 },
                 &mut output,
@@ -1351,7 +1476,7 @@ fn install_setup_selection(
                     install::WorkloadInstallOptions {
                         source: workload.to_owned(),
                         name: None,
-                        dir: None,
+                        dir: Some(directory),
                     },
                     &mut output,
                     &mut progress,
@@ -1364,8 +1489,12 @@ fn install_setup_selection(
     let started = Instant::now();
     let mut tick = 0_u64;
     let result = loop {
-        if let Ok(result) = receiver.try_recv() {
-            break result;
+        match receiver.try_recv() {
+            Ok(result) => break result,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                break Err(Error::Io("installation stopped unexpectedly".into()));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
         let (percent, stage) = progress_state
             .lock()
@@ -1386,7 +1515,22 @@ fn install_setup_selection(
         std::thread::sleep(std::time::Duration::from_millis(100));
     };
     app.refresh_availability();
+    let ready = result.is_ok()
+        && app.panes[step]
+            .choices
+            .get(app.panes[step].cursor)
+            .is_some_and(|choice| choice.availability == Availability::Available);
     match result {
+        Ok(()) if !ready => set_message(
+            &mut app.message,
+            &mut app.message_color,
+            &mut app.message_until,
+            format!(
+                "Installation of `{label}` finished but it is not ready; check .asb/install.log."
+            ),
+            Color::Red,
+            false,
+        ),
         Ok(()) => set_message(
             &mut app.message,
             &mut app.message_color,
@@ -1401,10 +1545,10 @@ fn install_setup_selection(
             &mut app.message_until,
             format!("Cannot install `{label}`: {error}"),
             Color::Red,
-            true,
+            false,
         ),
     };
-    Ok(())
+    Ok(ready)
 }
 
 fn workload_choices(root: &Path, directory: &str) -> Vec<Choice> {
@@ -1844,16 +1988,138 @@ mod tests {
     }
 
     #[test]
-    fn legacy_bare_tab_falls_back_to_install_for_unavailable_setup_items() {
-        let root = std::env::temp_dir().join(format!("asb-tui-shortcut-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        let app = App::new(root.clone(), ProjectConfig::default());
-        assert!(super::legacy_setup_install_key(
-            &KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
-            &app
-        ));
-        let _ = std::fs::remove_dir_all(root);
+    fn setup_selection_installs_missing_items_before_selection_and_retries_failure() {
+        for step in [0, 3, 4] {
+            let mut app = App::new(std::env::temp_dir(), ProjectConfig::default());
+            app.step = step;
+            app.panes[step].selected.fill(false);
+            app.panes[step].cursor = 0;
+            app.panes[step].choices[0].availability = Availability::Missing;
+            let mut calls = 0;
+            super::toggle_setup_choice(&mut app, |app, dependency| {
+                assert!(dependency.is_none());
+                assert!(!app.panes[step].selected[0]);
+                calls += 1;
+                Ok(false)
+            })
+            .unwrap();
+            assert_eq!(calls, 1);
+            assert!(
+                !app.panes[step].selected[0],
+                "failed install selected step {step}"
+            );
+            super::toggle_setup_choice(&mut app, |app, dependency| {
+                assert!(!app.panes[step].selected[0]);
+                if dependency.is_none() {
+                    calls += 1;
+                    app.panes[step].choices[0].availability = Availability::Available;
+                }
+                Ok(true)
+            })
+            .unwrap();
+            assert_eq!(calls, 2);
+            assert!(app.panes[step].selected[0]);
+            super::toggle_setup_choice(&mut app, |_, _| panic!("deselection must not install"))
+                .unwrap();
+            assert!(!app.panes[step].selected[0]);
+        }
+    }
+
+    #[test]
+    fn collector_dependency_install_failure_never_selects_collector() {
+        let mut app = App::new(std::env::temp_dir(), ProjectConfig::default());
+        app.step = 4;
+        app.panes[4].selected.fill(false);
+        let flame = app.panes[4]
+            .choices
+            .iter()
+            .position(|choice| choice.label == "flamegraph")
+            .unwrap();
+        let perf = app.panes[4]
+            .choices
+            .iter()
+            .position(|choice| choice.label == "perf")
+            .unwrap();
+        app.panes[4].cursor = flame;
+        app.panes[4].choices[flame].availability = Availability::Available;
+        super::toggle_setup_choice(&mut app, |app, selected| {
+            assert!(selected.unwrap().contains(&"flamegraph".to_owned()));
+            assert!(!app.panes[4].selected[flame]);
+            assert!(!app.panes[4].selected[perf]);
+            Ok(false)
+        })
+        .unwrap();
+        assert!(!app.panes[4].selected[flame]);
+        assert!(!app.panes[4].selected[perf]);
+        super::toggle_setup_choice(&mut app, |_, selected| {
+            assert!(selected.is_some());
+            Ok(true)
+        })
+        .unwrap();
+        assert!(app.panes[4].selected[flame]);
+        assert!(app.panes[4].selected[perf]);
+        app.panes[4].cursor = perf;
+        super::toggle_setup_choice(&mut app, |_, _| {
+            panic!("required dependency is already selected")
+        })
+        .unwrap();
+        assert!(app.panes[4].selected[perf]);
+    }
+
+    #[test]
+    fn default_measurements_do_not_select_missing_tools_or_dependencies() {
+        let app = App::new(std::env::temp_dir(), ProjectConfig::default());
+        for choice in app.panes[4].selected_choices() {
+            let dependencies =
+                crate::collectors::expand_dependencies(std::slice::from_ref(&choice.label));
+            for name in dependencies {
+                assert!(
+                    app.panes[4]
+                        .choices
+                        .iter()
+                        .any(|item| item.label == name
+                            && item.availability == Availability::Available)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn workload_selector_installs_before_selection_and_does_not_install_on_deselection() {
+        let mut app = super::WorkloadApp {
+            root: std::env::temp_dir(),
+            project: ProjectConfig::default(),
+            workloads: Pane::new(vec![choice("fixture")]),
+            trials: Pane::new(vec![]),
+            level: 0,
+            selected_workload: None,
+            selections: BTreeSet::new(),
+            message: String::new(),
+            message_color: Color::Yellow,
+            message_until: None,
+        };
+        app.workloads.choices[0].availability = Availability::Missing;
+        super::toggle_workload_choice(&mut app, |app| {
+            assert!(!app.workloads.selected[0]);
+            Ok(false)
+        })
+        .unwrap();
+        assert!(!app.workloads.selected[0]);
+        super::toggle_workload_choice(&mut app, |app| {
+            assert!(!app.workloads.selected[0]);
+            app.workloads.choices[0].availability = Availability::Available;
+            Ok(true)
+        })
+        .unwrap();
+        assert!(app.workloads.selected[0]);
+        super::toggle_workload_choice(&mut app, |_| panic!("deselection must not install"))
+            .unwrap();
+        assert!(!app.workloads.selected[0]);
+        super::toggle_workload_choice(&mut app, |_| {
+            panic!("installed workloads must not reinstall")
+        })
+        .unwrap();
+        assert!(app.workloads.selected[0]);
     }
 
     #[test]
