@@ -503,7 +503,7 @@ fn run_mode(
     let process_success =
         run_error.is_none() && process_successful(&child.status, &child.stdout, &child.stderr);
     let (workload_success, grading_error) = if process_success {
-        match workloads::evaluate(&config.workload, &workspace) {
+        match workloads::evaluate(&config.workload, &workspace, &bounded(&child.stdout)) {
             Ok(value) => (Some(value), None),
             Err(error) => (Some(false), Some(error)),
         }

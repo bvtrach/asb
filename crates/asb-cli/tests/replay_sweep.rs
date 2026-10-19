@@ -53,13 +53,24 @@ fetch(url + '/responses', {method:'POST', headers:{'content-type':'application/j
     std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
     std::fs::write(
         root.join("benchmark.toml"),
-        "agent='pi'\nworkload='feature-addition'\nprovider='cli2key'\nmodel='test-model'\nconcurrency=8\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n",
+        "agent='pi'\nworkload='bug-fix'\nprovider='cli2key'\nmodel='test-model'\nconcurrency=8\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n",
     )
     .unwrap();
     std::fs::write(root.join("sweep.toml"), "configs=['benchmark.toml']\n").unwrap();
+    for index in 1..=8 {
+        let workspace = root.join(format!(
+            "sweep-results/000-benchmark/workspace-concurrency-{index}/src"
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(
+            workspace.join("parser.py"),
+            "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+        )
+        .unwrap();
+    }
     let cassette_dir = root.join("tapes/000-benchmark/cassettes");
     std::fs::create_dir_all(&cassette_dir).unwrap();
-    let cassette = cassette_dir.join("benchmark-pi-feature-addition-test-model.jsonl");
+    let cassette = cassette_dir.join("benchmark-pi-bug-fix-test-model.jsonl");
     let body = r#"{"model":"test-model","input":"example prompt","tools":[{"type":"function"}]}"#;
     let interaction = serde_json::json!({"request":{"method":"POST","url":"/v1/responses","body":body},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{}"}});
     std::fs::write(&cassette, format!("{interaction}\n")).unwrap();

@@ -52,6 +52,12 @@ impl Project {
 
     fn init(&self) {
         expect_success(&self.command(&["init"]));
+        // The routing fixtures use a completed bundled task so these tests
+        // exercise provider/tape behavior without masking workload grading.
+        self.write(
+            "workspace/src/parser.py",
+            "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+        );
     }
 }
 
@@ -172,7 +178,7 @@ fn setup_writes_a_parseable_user_selected_configuration() {
         "--agent",
         "pi",
         "--workload",
-        "feature-addition",
+        "bug-fix",
         "--provider",
         "cli2key",
         "--model",
@@ -206,7 +212,7 @@ fn setup_rejects_missing_empty_or_zero_inputs_without_a_config_file() {
         "--agent",
         "pi",
         "--workload",
-        "feature-addition",
+        "bug-fix",
         "--provider",
         "cli2key",
         "--model",
@@ -222,7 +228,7 @@ fn setup_rejects_missing_empty_or_zero_inputs_without_a_config_file() {
             "--agent",
             "",
             "--workload",
-            "feature-addition",
+            "bug-fix",
             "--provider",
             "cli2key",
             "--model",
@@ -448,7 +454,7 @@ fn ollama_discovery_and_codex_run_use_the_selected_local_endpoint() {
     assert!(stdout(&catalog).contains("modern"));
     assert!(!stdout(&catalog).contains("no-tools"));
     assert!(!stdout(&catalog).contains("unknown"));
-    project.write("benchmark.toml", "agent='codex'\nworkload='feature-addition'\nprovider='ollama'\nmodel='qwen3:0.6b'\nworkspace='workspace'\nlog_file='run.log'\n");
+    project.write("benchmark.toml", "agent='codex'\nworkload='bug-fix'\nprovider='ollama'\nmodel='qwen3:0.6b'\nworkspace='workspace'\nlog_file='run.log'\n");
     let agent = ".asb-tools/codex/bin/codex";
     project.write(agent, r##"#!/usr/bin/env node
 const fs = require('fs');
@@ -570,7 +576,7 @@ fn codex_uses_selected_openrouter_endpoint_for_live_record_and_replay() {
     });
     let project = Project::new();
     project.init();
-    project.write("benchmark.toml", "agent='codex'\nworkload='feature-addition'\nprovider='openrouter'\nmodel='fixture/model'\nworkspace='workspace'\nlog_file='run.log'\n");
+    project.write("benchmark.toml", "agent='codex'\nworkload='bug-fix'\nprovider='openrouter'\nmodel='fixture/model'\nworkspace='workspace'\nlog_file='run.log'\n");
     let agent = ".asb-tools/codex/bin/codex";
     project.write(agent, r##"#!/usr/bin/env node
 const fs = require('fs');
@@ -642,8 +648,18 @@ fn replay_project(concurrency: usize) -> Project {
     use std::os::unix::fs::PermissionsExt;
     let project = Project::new();
     project.init();
+    project.write(
+        "workspace/src/parser.py",
+        "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+    );
+    for index in 1..=concurrency {
+        project.write(
+            &format!("workspace-concurrency-{index}/src/parser.py"),
+            "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+        );
+    }
     project.write("benchmark.toml", &format!(
-        "agent='pi'\nworkload='feature-addition'\nprovider='cli2key'\nmodel='test-model'\nconcurrency={concurrency}\nworkspace='workspace'\nlog_file='run.log'\n"
+        "agent='pi'\nworkload='bug-fix'\nprovider='cli2key'\nmodel='test-model'\nconcurrency={concurrency}\nworkspace='workspace'\nlog_file='run.log'\n"
     ));
     let body =
         serde_json::json!({"model":"test-model","input":"offline","tools":[{"type":"function"}]})
@@ -667,6 +683,7 @@ async function main() {
   let response = await send();
   if (behavior === 'extra') response = await send();
   if (!response.ok) { console.error('fixture-rejected', response.status); process.exitCode = 8; return; }
+  if (behavior === 'delete') { fs.rmSync('src/parser.py'); console.log('fixture-deleted'); return; }
   console.log('fixture-agent-output');
   if (behavior === 'fatal') console.error('Authentication required. Please use /login command to sign in to your account');
   if (behavior === 'exit' || (behavior === 'fail-second' && process.cwd().endsWith('concurrency-2')) ||
@@ -776,6 +793,19 @@ fn replay_reports_agent_exit_and_zero_exit_fatal_output() {
 
 #[cfg(unix)]
 #[test]
+fn zero_exit_without_workload_change_is_not_success() {
+    let project = replay_project(1);
+    let result = replay(&project, "delete", &[]);
+    expect_failure(&result, "agent exited unsuccessfully");
+    let log: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(project.0.join("run.log")).unwrap()).unwrap();
+    assert_eq!(log["process_success"], true);
+    assert_eq!(log["workload_success"], false);
+    assert_eq!(log["success_rate"], 0.0);
+}
+
+#[cfg(unix)]
+#[test]
 fn concurrent_replay_isolates_replica_outputs_and_reports_partial_failure() {
     let project = replay_project(2);
     let result = replay(&project, "fail-second", &[]);
@@ -803,10 +833,16 @@ fn partial_replay_sweep_preserves_both_results_and_writes_report() {
     project.write("good.toml", &config);
     project.write("bad.toml", &config);
     project.write("suite.toml", "configs=['good.toml','bad.toml']\n");
+    for id in ["000-good", "001-bad"] {
+        project.write(
+            &format!("suite-results/{id}/workspace/src/parser.py"),
+            "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+        );
+    }
     let tape = std::fs::read_to_string(project.0.join("tape.jsonl")).unwrap();
     for id in ["000-good", "001-bad"] {
         project.write(
-            &format!("tapes/{id}/cassettes/benchmark-pi-feature-addition-test-model.jsonl"),
+            &format!("tapes/{id}/cassettes/benchmark-pi-bug-fix-test-model.jsonl"),
             &tape,
         );
     }
@@ -846,7 +882,7 @@ fn partial_replay_sweep_preserves_both_results_and_writes_report() {
 fn replay_must_not_expose_a_provider_credential_to_the_agent() {
     use std::os::unix::fs::PermissionsExt;
     let project = replay_project(1);
-    project.write("benchmark.toml", "agent='pi'\nworkload='feature-addition'\nprovider='openai'\nmodel='test-model'\nworkspace='workspace'\n");
+    project.write("benchmark.toml", "agent='pi'\nworkload='bug-fix'\nprovider='openai'\nmodel='test-model'\nworkspace='workspace'\n");
     let agent = ".asb-tools/pi/bin/pi";
     project.write(agent, r##"#!/usr/bin/env node
 const fs=require('fs');
@@ -1122,7 +1158,7 @@ fn cli2key_run_validates_current_bridge_catalog_and_reaps_bridge() {
     for (model, expect_ok) in [("current-model", true), ("removed-model", false)] {
         let project = Project::new();
         project.init();
-        project.write("benchmark.toml", &format!("agent='pi'\nworkload='feature-addition'\nprovider='cli2key'\nmodel='{model}'\nworkspace='workspace'\nlog_file='run.log'\n"));
+        project.write("benchmark.toml", &format!("agent='pi'\nworkload='bug-fix'\nprovider='cli2key'\nmodel='{model}'\nworkspace='workspace'\nlog_file='run.log'\n"));
         project.write(
             ".asb-tools/pi/bin/pi",
             "#!/bin/sh\nprintf 'fixture agent complete\\n'\n",

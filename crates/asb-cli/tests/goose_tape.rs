@@ -127,6 +127,12 @@ fn goose_routes_record_and_replay_through_tape_without_live_credentials() {
         "{}",
         String::from_utf8_lossy(&init.stderr)
     );
+    std::fs::create_dir_all(root.join("asb-workspace/src")).unwrap();
+    std::fs::write(
+        root.join("asb-workspace/src/parser.py"),
+        "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+    )
+    .unwrap();
     let agent_dir = root.join(".asb-tools/goose/bin");
     std::fs::create_dir_all(&agent_dir).unwrap();
     let agent = agent_dir.join("goose");
@@ -148,7 +154,7 @@ fetch(host + process.env.OPENAI_BASE_PATH, {method:'POST',headers:{'content-type
   .catch(e => { console.error(e); process.exitCode = 1; });
 "##).unwrap();
     std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
-    std::fs::write(root.join("benchmark.toml"), "agent='goose'\nworkload='feature-addition'\nprovider='openrouter'\nmodel='test-model'\nconcurrency=1\n").unwrap();
+    std::fs::write(root.join("benchmark.toml"), "agent='goose'\nworkload='bug-fix'\nprovider='openrouter'\nmodel='test-model'\nconcurrency=1\n").unwrap();
     let record = run(
         &root,
         &provider.endpoint,

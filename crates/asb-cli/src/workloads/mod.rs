@@ -332,14 +332,15 @@ pub(crate) fn materialize_external_adapter(
         return Ok(());
     }
     let root = directory.join(name).join("asb-trial");
+    let trial_label = adapter_trial_label(name);
     let files = [
         (
             "README.md",
-            "# ASB adapter trial\n\nFix `src/task.py` so the supplied unit test passes.\n",
+            "# ASB adapter trial\n\nFix `src/task.py` so the supplied unit test passes. Preserve the suite-specific `suite_label()` value.\n",
         ),
         (
             "src/task.py",
-            "def normalize(value: str) -> str:\n    return value.strip().replace(' ', '_')\n",
+            "def normalize(value: str) -> str:\n    return value.strip().replace(' ', '_')\n\ndef suite_label() -> str:\n    return \"__ASB_TRIAL_LABEL__\"\n",
         ),
         (
             "tests/test_task.py",
@@ -349,6 +350,7 @@ pub(crate) fn materialize_external_adapter(
         ("tests/__init__.py", ""),
     ];
     for (relative, contents) in files {
+        let contents = contents.replace("__ASB_TRIAL_LABEL__", &trial_label);
         let path = root.join(relative);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -362,10 +364,14 @@ pub(crate) fn materialize_external_adapter(
     fs::write(
         directory.join(format!("{name}.txt")),
         format!(
-            "External workload adapter trial `{name}`. In `external-workload/asb-trial`, fix `src/task.py` so `python3 -m unittest discover -s tests` passes. Do not edit the tests.\n"
+            "External workload adapter trial `{name}`. In `external-workload/asb-trial`, fix `src/task.py` so `normalize` returns lowercase hyphenated text and preserve suite_label()=`{trial_label}`. Do not edit the tests.\n"
         ),
     )?;
     Ok(())
+}
+
+fn adapter_trial_label(name: &str) -> String {
+    name.replace('-', "_")
 }
 
 /// Return the kind of deterministic evaluation used for a workload.
@@ -375,11 +381,18 @@ pub(crate) fn materialize_external_adapter(
 /// adapter is selected and installed, ASB runs the small adapter-smoke trial
 /// that is materialized beside that reference.
 pub(crate) fn evaluation_kind(name: &str, workspace: &Path) -> &'static str {
+    if name == "repository-navigation" {
+        return "response-review";
+    }
     if let Some(expectation) = source_expectation(name) {
-        if workspace.join(expectation.relative).is_file() {
+        if expectation
+            .files
+            .iter()
+            .all(|file| workspace.join(file.relative).is_file())
+        {
             return "bundled-fixture";
         }
-        return "process-completion";
+        return "ungraded";
     }
     if adapters::find(name).is_some() {
         "adapter-smoke"
@@ -388,17 +401,11 @@ pub(crate) fn evaluation_kind(name: &str, workspace: &Path) -> &'static str {
     }
 }
 
-fn legacy_process_completion(name: &str, workspace: &Path) -> bool {
-    source_expectation(name).is_some_and(|expectation| {
-        !workspace.join(expectation.relative).exists()
-            && !workspace
-                .join(expectation.relative)
-                .parent()
-                .is_some_and(Path::is_dir)
-    })
+struct SourceExpectation {
+    files: &'static [FileExpectation],
 }
 
-struct SourceExpectation {
+struct FileExpectation {
     relative: &'static str,
     required: &'static [&'static str],
 }
@@ -406,69 +413,89 @@ struct SourceExpectation {
 fn source_expectation(name: &str) -> Option<SourceExpectation> {
     Some(match name {
         "bug-fix" => SourceExpectation {
-            relative: "src/parser.py",
-            required: &["split", "if segment"],
+            files: &[FileExpectation {
+                relative: "src/parser.py",
+                required: &["return", "split", "if segment"],
+            }],
         },
         "build-repair" => SourceExpectation {
-            relative: "src/app.py",
-            required: &["build fixture is healthy"],
+            files: &[FileExpectation {
+                relative: "build.sh",
+                required: &["unittest discover -s tests"],
+            }],
         },
         "dependency-migration" => SourceExpectation {
-            relative: "src/client.py",
-            required: &["request:", "value"],
+            files: &[FileExpectation {
+                relative: "requirements.txt",
+                required: &["example-client==2.0"],
+            }],
         },
         "feature-addition" => SourceExpectation {
-            relative: "src/formatter.py",
-            required: &["join(", ")"],
+            files: &[FileExpectation {
+                relative: "src/formatter.py",
+                required: &["reverse: bool", "reversed(items)"],
+            }],
         },
         "refactoring" => SourceExpectation {
-            relative: "src/labels.py",
-            required: &["label_triplet", ":"],
-        },
-        "repository-navigation" => SourceExpectation {
-            relative: "src/registry.py",
-            required: &["ENTRIES", "lookup"],
+            files: &[FileExpectation {
+                relative: "src/labels.py",
+                required: &["def _join_labels", "_join_labels("],
+            }],
         },
         "test-generation" => SourceExpectation {
-            relative: "src/temperature.py",
-            required: &["freezing", "hot", "celsius"],
+            files: &[FileExpectation {
+                relative: "tests/test_temperature.py",
+                required: &["classify(0)", "classify(30)"],
+            }],
         },
         _ => return None,
     })
 }
 
 fn source_satisfies(path: &Path, expectation: &SourceExpectation) -> Result<bool, String> {
-    let source_path = path.join(expectation.relative);
-    let metadata = fs::metadata(&source_path).map_err(|error| {
-        format!(
-            "cannot inspect workload implementation {}: {error}",
-            source_path.display()
-        )
-    })?;
-    if !metadata.is_file() || metadata.len() > MAX_PROMPT_BYTES {
-        return Ok(false);
+    for file in expectation.files {
+        let source_path = path.join(file.relative);
+        let metadata = match fs::metadata(&source_path) {
+            Ok(metadata) => metadata,
+            Err(_) => return Ok(false),
+        };
+        if !metadata.is_file() || metadata.len() > MAX_PROMPT_BYTES {
+            return Ok(false);
+        }
+        let source = fs::read_to_string(&source_path).map_err(|error| {
+            format!(
+                "cannot read workload implementation {}: {error}",
+                source_path.display()
+            )
+        })?;
+        let code_lines = source
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect::<Vec<_>>();
+        if !file
+            .required
+            .iter()
+            .all(|needle| code_lines.iter().any(|line| line.contains(needle)))
+        {
+            return Ok(false);
+        }
     }
-    let source = fs::read_to_string(&source_path).map_err(|error| {
-        format!(
-            "cannot read workload implementation {}: {error}",
-            source_path.display()
-        )
-    })?;
-    Ok(expectation
-        .required
-        .iter()
-        .all(|needle| source.contains(needle)))
+    Ok(true)
 }
 
 /// Grade a run's materialized workload without treating a zero exit code as
 /// task success.  Grading is implemented in Rust over evaluator-owned,
 /// immutable expectations; no agent-controlled tests, subprocess, shell, or
 /// inherited credentials are executed.
-pub(crate) fn evaluate(name: &str, workspace: &Path) -> Result<bool, String> {
+pub(crate) fn evaluate(name: &str, workspace: &Path, agent_output: &str) -> Result<bool, String> {
+    if name == "repository-navigation" {
+        let response = agent_output.to_ascii_lowercase();
+        return Ok(response.contains("src/cli.py")
+            && response.contains("src/registry.py")
+            && response.contains("lookup"));
+    }
     if let Some(expectation) = source_expectation(name) {
-        if legacy_process_completion(name, workspace) {
-            return Ok(true);
-        }
         return source_satisfies(workspace, &expectation);
     }
     let directory = if adapters::find(name).is_some() {
@@ -494,7 +521,8 @@ pub(crate) fn evaluate(name: &str, workspace: &Path) -> Result<bool, String> {
     })?;
     Ok(source.contains("strip()")
         && source.contains("lower()")
-        && source.contains("replace(' ', '-')"))
+        && source.contains("replace(' ', '-')")
+        && source.contains(&format!("return \"{}\"", adapter_trial_label(name))))
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<usize, String> {
@@ -852,10 +880,10 @@ mod tests {
         materialize_external_adapter("agentbench", &workloads).unwrap();
         prepare_external("agentbench", &workloads, &workspace).unwrap();
         let task = workspace.join("external-workload/asb-trial/src/task.py");
-        assert!(!evaluate("agentbench", &workspace).unwrap());
+        assert!(!evaluate("agentbench", &workspace, "").unwrap());
         fs::write(
             &task,
-            "def normalize(value: str) -> str:\n    return value.strip().lower().replace(' ', '-')\n",
+            "def normalize(value: str) -> str:\n    return value.strip().lower().replace(' ', '-')\n\ndef suite_label() -> str:\n    return \"agentbench\"\n",
         )
         .unwrap();
         // The grader does not execute or read agent-controlled tests.
@@ -864,7 +892,7 @@ mod tests {
             "# intentionally tampered by the agent\n",
         )
         .unwrap();
-        assert!(evaluate("agentbench", &workspace).unwrap());
+        assert!(evaluate("agentbench", &workspace, "").unwrap());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -874,13 +902,13 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let workspace = root.join("workspace");
         prepare_fixture("bug-fix", &workspace).unwrap();
-        assert!(!evaluate("bug-fix", &workspace).unwrap());
+        assert!(!evaluate("bug-fix", &workspace, "").unwrap());
         fs::write(
             workspace.join("src/parser.py"),
             "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
         )
         .unwrap();
-        assert!(evaluate("bug-fix", &workspace).unwrap());
+        assert!(evaluate("bug-fix", &workspace, "").unwrap());
         let _ = fs::remove_dir_all(root);
     }
 
