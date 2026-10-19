@@ -391,9 +391,7 @@ pub(crate) fn local_bridge_credentials<'a>(
     bridge: Option<&'a dyn ProviderSession>,
     endpoint: Option<&'a str>,
 ) -> Option<(&'a str, &'a str)> {
-    if spec(provider).bridge_tool.is_none() {
-        return None;
-    }
+    spec(provider).bridge_tool?;
     Some((
         bridge.map_or("asb-replay", ProviderSession::api_key),
         endpoint.unwrap_or("http://127.0.0.1:0/v1"),

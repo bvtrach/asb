@@ -63,12 +63,14 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
             }
             runner::run_with_tape(
                 &options.path,
-                options.json,
-                options.show_output,
-                options.measurements.as_deref(),
-                mode,
-                options.cassette.as_deref(),
-                options.respect_record_timings,
+                runner::RunOptions {
+                    json: options.json,
+                    show_output: options.show_output,
+                    measurement_dir: options.measurements.as_deref(),
+                    mode,
+                    cassette: options.cassette.as_deref(),
+                    respect_record_timings: options.respect_record_timings,
+                },
                 stdout,
             )
         }

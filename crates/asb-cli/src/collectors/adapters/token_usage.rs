@@ -1,9 +1,21 @@
-use super::super::{StaticCollector, UsageContext};
+use super::super::{CollectorAdapter, UsageContext};
 use crate::measurements::TokenUsage;
 use std::{fs::File, io::Read, path::Path};
 
-pub(super) static ADAPTER: StaticCollector =
-    StaticCollector::new("token_usage", None, None, false).with_usage(collect, from_path);
+pub(super) struct TokenUsageCollector;
+pub(super) static ADAPTER: TokenUsageCollector = TokenUsageCollector;
+
+impl CollectorAdapter for TokenUsageCollector {
+    fn id(&self) -> &'static str {
+        "token_usage"
+    }
+    fn usage(&self, context: &UsageContext<'_>) -> Option<TokenUsage> {
+        Some(collect(context))
+    }
+    fn usage_file(&self, path: &Path) -> Option<TokenUsage> {
+        Some(from_path(path))
+    }
+}
 fn collect(context: &UsageContext<'_>) -> TokenUsage {
     from_sources(
         context.provider,
@@ -29,10 +41,10 @@ fn from_sources(
         .clone()
         .unwrap_or_else(|| usage_from_text(stdout).merge(usage_from_text(stderr)));
     let mut cassette_usage = TokenUsage::default();
-    if let Some(path) = cassette {
-        if let Ok(text) = read_bounded_text(path, 16 * 1024 * 1024) {
-            cassette_usage = usage_from_cassette(&text, inclusive);
-        }
+    if let Some(path) = cassette
+        && let Ok(text) = read_bounded_text(path, 16 * 1024 * 1024)
+    {
+        cassette_usage = usage_from_cassette(&text, inclusive);
     }
     if cassette_usage.input_tokens.is_some() && cassette_usage.output_tokens.is_some() {
         usage = usage.merge_with_source(cassette_usage, "cassette");
@@ -275,18 +287,6 @@ fn usage_from_environment(provider: &str, agent: &str) -> TokenUsage {
     }
 }
 
-impl Default for TokenUsage {
-    fn default() -> Self {
-        Self {
-            input_tokens: None,
-            output_tokens: None,
-            cached_tokens: None,
-            total_tokens: None,
-            source: None,
-        }
-    }
-}
-
 pub(crate) fn usage_from_text(text: &str) -> TokenUsage {
     let mut usage = TokenUsage::default();
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim()) {
@@ -349,12 +349,11 @@ pub(super) fn embedded_json_values(text: &str) -> Vec<serde_json::Value> {
             '{' if depth > 0 => depth += 1,
             '}' if depth > 0 => {
                 depth -= 1;
-                if depth == 0 {
-                    if let Some(start) = start.take()
-                        && let Ok(value) = serde_json::from_str(&text[start..=index])
-                    {
-                        values.push(value);
-                    }
+                if depth == 0
+                    && let Some(start) = start.take()
+                    && let Ok(value) = serde_json::from_str(&text[start..=index])
+                {
+                    values.push(value);
                 }
             }
             _ => {}
@@ -495,10 +494,10 @@ pub(crate) fn usage_from_json(value: &serde_json::Value) -> TokenUsage {
         for child in array {
             usage = usage.merge(usage_from_json(child));
         }
-    } else if let Some(text) = value.as_str() {
-        if let Ok(nested) = serde_json::from_str::<serde_json::Value>(text) {
-            usage = usage.merge(usage_from_json(&nested));
-        }
+    } else if let Some(text) = value.as_str()
+        && let Ok(nested) = serde_json::from_str::<serde_json::Value>(text)
+    {
+        usage = usage.merge(usage_from_json(&nested));
     }
     usage
 }

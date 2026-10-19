@@ -73,14 +73,14 @@ adapter!(
     "mimo-v2.6-flash-free",
     opencode_offers,
     fn discover_endpoints(&self, model: &str) -> (Vec<Offer>, bool, Option<bool>) {
-        if let Ok(catalog) = implementation::fetch_endpoint_catalog() {
-            if let Some(offer) = implementation::catalog_offer(&catalog, model) {
-                return (
-                    vec![offer],
-                    false,
-                    implementation::catalog_tool_support(&catalog, model),
-                );
-            }
+        if let Ok(catalog) = implementation::fetch_endpoint_catalog()
+            && let Some(offer) = implementation::catalog_offer(&catalog, model)
+        {
+            return (
+                vec![offer],
+                false,
+                implementation::catalog_tool_support(&catalog, model),
+            );
         }
         (self.offered_endpoints(model), true, None)
     },

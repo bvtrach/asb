@@ -20,24 +20,23 @@ fn output_usage(
     stderr: &str,
     input_includes_cache: bool,
 ) -> crate::measurements::TokenUsage {
-    if let Ok(event) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
-        if event.get("type").and_then(|v| v.as_str()) == Some("result") {
-            if let Some(value) = event.get("usage") {
-                let mut usage = super::super::usage_fields(value);
-                if !input_includes_cache {
-                    usage.input_tokens = usage.input_tokens.map(|n| {
-                        n.saturating_add(usage.cached_tokens.unwrap_or(0))
-                            .saturating_add(
-                                value
-                                    .get("cache_creation_input_tokens")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0),
-                            )
-                    });
-                }
-                return usage.with_derived_total();
-            }
+    if let Ok(event) = serde_json::from_str::<serde_json::Value>(stdout.trim())
+        && event.get("type").and_then(|v| v.as_str()) == Some("result")
+        && let Some(value) = event.get("usage")
+    {
+        let mut usage = super::super::usage_fields(value);
+        if !input_includes_cache {
+            usage.input_tokens = usage.input_tokens.map(|n| {
+                n.saturating_add(usage.cached_tokens.unwrap_or(0))
+                    .saturating_add(
+                        value
+                            .get("cache_creation_input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0),
+                    )
+            });
         }
+        return usage.with_derived_total();
     }
     crate::collectors::adapters::token_usage::usage_from_text(&format!("{stdout}\n{stderr}"))
 }

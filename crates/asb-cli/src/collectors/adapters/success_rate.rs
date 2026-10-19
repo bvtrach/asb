@@ -1,7 +1,12 @@
-use super::super::{RunMetrics, RunObservation, StaticCollector};
-pub(super) static ADAPTER: StaticCollector =
-    StaticCollector::new("success_rate", None, None, false).with_run_observation(observe);
+use super::super::{CollectorAdapter, RunMetrics, RunObservation};
+pub(super) struct SuccessRateCollector;
+pub(super) static ADAPTER: SuccessRateCollector = SuccessRateCollector;
 
-fn observe(observation: &RunObservation, metrics: &mut RunMetrics) {
-    metrics.success_rate = if observation.success { 1.0 } else { 0.0 };
+impl CollectorAdapter for SuccessRateCollector {
+    fn id(&self) -> &'static str {
+        "success_rate"
+    }
+    fn observe_run(&self, observation: &RunObservation, metrics: &mut RunMetrics) {
+        metrics.success_rate = if observation.success { 1.0 } else { 0.0 };
+    }
 }

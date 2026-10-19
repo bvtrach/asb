@@ -851,13 +851,11 @@ pub fn trial_ids(name: &str) -> Vec<Trial> {
     if let Some(adapter) = adapters::find(name) {
         return adapter.trial_ids();
     }
-    let ids: &[(&str, &str)] = match name {
-        _ => &[
-            ("smoke", "Small local smoke trial."),
-            ("standard", "Standard workload trial."),
-            ("extended", "Extended workload trial."),
-        ],
-    };
+    let ids: &[(&str, &str)] = &[
+        ("smoke", "Small local smoke trial."),
+        ("standard", "Standard workload trial."),
+        ("extended", "Extended workload trial."),
+    ];
     ids.iter()
         .map(|(id, description)| Trial {
             id: (*id).into(),

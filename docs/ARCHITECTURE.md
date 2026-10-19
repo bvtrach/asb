@@ -37,6 +37,11 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   records for host facts, elapsed time, success rate, and normalized input,
   output, cached, and total token usage, and
   dispatches through the `CollectorAdapter` registry in `collectors/adapters/`;
+  each registered collector has a concrete stateless type implementing that
+  trait. Optional operations use trait defaults, while adapter modules own
+  their metadata, lifecycle hooks, processing, and presentation. Mutable state
+  belongs to each measurement session, so concurrent runs share only the
+  stateless adapters;
   the mpstat/iostat result names use process-scoped `pidstat` sampling for the
   agent process and its child tasks, retaining bounded raw output and exposing
   averaged, unit-named CPU and I/O metrics under a machine-readable `metrics`

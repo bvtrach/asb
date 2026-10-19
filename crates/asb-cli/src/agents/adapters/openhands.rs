@@ -102,10 +102,10 @@ fn conversation_usage(
         let Some(calls) = metrics.get("token_usages").and_then(|v| v.as_array()) else {
             return Default::default();
         };
-        if let Some(latencies) = metrics.get("response_latencies").and_then(|v| v.as_array()) {
-            if latencies.len() != calls.len() {
-                return Default::default();
-            }
+        if let Some(latencies) = metrics.get("response_latencies").and_then(|v| v.as_array())
+            && latencies.len() != calls.len()
+        {
+            return Default::default();
         }
         for call in calls {
             let mut parsed = super::super::usage_fields(call);

@@ -1,8 +1,17 @@
-use super::super::StaticCollector;
+use super::super::CollectorAdapter;
 use super::token_usage::embedded_json_values;
 
-pub(super) static ADAPTER: StaticCollector =
-    StaticCollector::new("steps", None, None, false).with_steps(from_sources);
+pub(super) struct StepsCollector;
+pub(super) static ADAPTER: StepsCollector = StepsCollector;
+
+impl CollectorAdapter for StepsCollector {
+    fn id(&self) -> &'static str {
+        "steps"
+    }
+    fn steps(&self, agent: &str, stdout: &str, stderr: &str) -> Option<u64> {
+        Some(from_sources(agent, stdout, stderr))
+    }
+}
 
 /// Count bounded agent actions/turns from structured or human-readable output.
 /// The count is deliberately provider-neutral: agents may expose `step`,

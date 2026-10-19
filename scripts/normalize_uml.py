@@ -26,6 +26,8 @@ def display_name(raw: str) -> str:
     if not raw.startswith(RAW_PREFIX):
         return raw
     name = raw.removeprefix(RAW_PREFIX)
+    if name == "collectors_adapters_CollectorAdapter":
+        return "collectors::CollectorAdapter"
     # AutoUML currently reports these imported traits at their implementation
     # site, rather than at their actual declarations in proxy/mod.rs.
     if name in {"proxy_adapters_ProxyAdapter", "proxy_adapters_ProxySession"}:
@@ -98,7 +100,11 @@ def main() -> int:
             "asb-cli_src_workloads_adapters_PromptAdapter",
             "asb-cli_src_workloads_adapters_WorkloadAdapter",
         ),
-        ("asb-cli_src_StaticCollector", "asb-cli_src_CollectorAdapter"),
+        *((f"asb-cli_src_collectors_adapters_{name}Collector",
+           "asb-cli_src_collectors_adapters_CollectorAdapter") for name in (
+               "System", "Runtime", "Mpstat", "Iostat", "Perf", "Perfetto",
+               "Flamegraph", "Bpftrace", "TokenUsage", "Steps", "SuccessRate",
+           )),
     )
     for implementation, trait in sorted(implementation_edges):
         if implementation in ids and trait in ids:

@@ -476,7 +476,7 @@ fn write_html_report(
             escape(&benchmark.workload_evaluation)
         );
         let host_details = benchmark.host_metadata.as_ref().map_or_else(
-            || String::new(),
+            String::new,
             |metadata| {
                 let text = serde_json::to_string_pretty(metadata).unwrap_or_else(|_| "{}".into());
                 format!(
@@ -486,7 +486,7 @@ fn write_html_report(
             },
         );
         let component_details = benchmark.components.as_ref().map_or_else(
-            || String::new(),
+            String::new,
             |components| {
                 let text =
                     serde_json::to_string_pretty(components).unwrap_or_else(|_| "{}".into());
@@ -1059,7 +1059,7 @@ fn append_series_x_axis(
             "<line class=\"x-axis-tick\" x1=\"{x:.1}\" y1=\"{bottom:.1}\" x2=\"{x:.1}\" y2=\"{:.1}\" stroke=\"#18212b\"/><text class=\"x-axis-value\" x=\"{x:.1}\" y=\"{:.1}\" text-anchor=\"middle\" font-size=\"11\">{}</text>",
             bottom + 6.0,
             bottom + 22.0,
-            format!("{} {}", format_tick(value), unit)
+            format_args!("{} {}", format_tick(value), unit)
         ));
     }
     svg.push_str(&format!(

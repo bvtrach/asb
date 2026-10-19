@@ -8,6 +8,7 @@ Use the pinned Rust toolchain and run:
 
 ```sh
 cargo fmt --all -- --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked
 cargo build --locked
 make rust-doc

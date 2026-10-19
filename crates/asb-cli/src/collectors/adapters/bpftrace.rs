@@ -1,43 +1,71 @@
 use super::super::{
-    ArtifactDisplay, GraphSection, PreflightContext, ProcessContext, ProcessData, StaticCollector,
+    ArtifactDisplay, CollectorAdapter, GraphSection, PreflightContext, ProcessContext, ProcessData,
 };
 use crate::measurements;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
-pub(super) static ADAPTER: StaticCollector = StaticCollector::new(
-    "bpftrace",
-    Some("ASB_MEASURE_BPFTRACE"),
-    Some("bpftrace"),
-    true,
-)
-.with_artifacts(
-    |name| name.starts_with("bpftrace-"),
-    |name| {
+pub(super) struct BpftraceCollector;
+pub(super) static ADAPTER: BpftraceCollector = BpftraceCollector;
+
+impl CollectorAdapter for BpftraceCollector {
+    fn id(&self) -> &'static str {
+        "bpftrace"
+    }
+    fn environment_flag(&self) -> Option<&'static str> {
+        Some("ASB_MEASURE_BPFTRACE")
+    }
+    fn tool_id(&self) -> Option<&'static str> {
+        Some("bpftrace")
+    }
+    fn requires_pid(&self) -> bool {
+        true
+    }
+    fn prioritizes_artifact(&self, name: &str) -> bool {
+        name.starts_with("bpftrace-")
+    }
+    fn display_artifact(&self, name: &str) -> Option<ArtifactDisplay> {
         (name.starts_with("bpftrace-") && name.ends_with(".svg")).then_some(ArtifactDisplay::Svg {
             class: "bpftrace-profile",
             label: "bpftrace profile SVG",
         })
-    },
-)
-.with_graph_section(|name| {
-    (name.starts_with("metric-bpftrace-") || name.starts_with("series-bpftrace-"))
+    }
+    fn graph_section(&self, name: &str) -> Option<GraphSection> {
+        (name.starts_with("metric-bpftrace-") || name.starts_with("series-bpftrace-"))
         .then_some(GraphSection {
             title: "bpftrace profiles",
             description: "Cross-run SVG graphs for every bpftrace aggregate emitted by the selected profiles.",
         })
-})
-.with_preflight(preflight)
-.with_configure(|session, selected| {
-    let state = session.state::<BpftraceState>();
-    let mut state = state.borrow_mut();
-    state.enabled = super::super::selected_or_environment("bpftrace", selected);
-    state.profiles = selected_bpftrace_profiles(selected)?;
-    Ok(())
-})
-.with_processing(|_| true, process)
-.with_attach_pid(|session, pid| session.attach_bpftrace(pid));
+    }
+    fn preflight(&self, context: &mut PreflightContext<'_>) -> Result<(), String> {
+        preflight(context)
+    }
+    fn configure(
+        &self,
+        session: &mut measurements::Session,
+        selected: &[String],
+    ) -> Result<(), String> {
+        let state = session.state::<BpftraceState>();
+        let mut state = state.borrow_mut();
+        state.enabled = super::super::selected_or_environment("bpftrace", selected);
+        state.profiles = selected_bpftrace_profiles(selected)?;
+        Ok(())
+    }
+    fn graceful_shutdown(&self, _: &str) -> bool {
+        true
+    }
+    fn process(
+        &self,
+        session: &mut measurements::Session,
+        context: &ProcessContext<'_>,
+    ) -> Result<ProcessData, String> {
+        process(session, context)
+    }
+    fn attach_pid(&self, session: &mut measurements::Session, pid: u32) -> Result<(), String> {
+        session.attach_bpftrace(pid)
+    }
+}
 
 fn process(
     session: &mut measurements::Session,
@@ -283,7 +311,9 @@ fn scoped_custom_program(path: &Path, root: u32) -> Result<String, String> {
     Ok(format!("{}\n{}", process_tree_prelude(root), source))
 }
 
-fn custom_programs() -> Result<Vec<(String, Vec<(String, String)>)>, String> {
+type CustomProgram = (String, Vec<(String, String)>);
+
+fn custom_programs() -> Result<Vec<CustomProgram>, String> {
     let specs = std::env::var("ASB_BPFTRACE_PROGRAMS")
         .map_err(|_| "ASB_MEASURE_BPFTRACE=1 requires ASB_BPFTRACE_PROGRAMS".to_owned())?;
     let mut programs = Vec::new();
@@ -494,53 +524,6 @@ fn profile_probe_program(profile: BpftraceProfile) -> String {
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{BPFTRACE_PROFILES, profile_probe_program, validate_custom_program_scope};
-
-    #[test]
-    fn profile_preflight_uses_the_same_seeded_tree_program_as_runtime() {
-        let profile = BPFTRACE_PROFILES
-            .iter()
-            .find(|profile| profile.name == "sched-latency")
-            .copied()
-            .expect("built-in profile");
-        let program = profile_probe_program(profile);
-        assert!(program.contains("@asb_tree[0] = 1;"));
-        assert!(program.contains("sched_process_fork"));
-        assert!(program.contains(profile.program));
-        assert!(program.contains("interval:ms:1 { exit(); }"));
-        assert!(!program.contains("@asb_tree[1] = 1;"));
-        assert!(!program.contains("BEGIN { exit(); }"));
-    }
-
-    #[test]
-    fn custom_programs_must_declare_the_process_tree_predicate() {
-        let root = std::env::temp_dir().join(format!(
-            "asb-bpftrace-scope-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
-        std::fs::write(
-            &root,
-            "tracepoint:syscalls:sys_enter_openat { @host = count(); }\n",
-        )
-        .expect("write fixture");
-        let error = validate_custom_program_scope(&root).expect_err("host-wide program");
-        assert!(error.contains("process-tree scoped"));
-        std::fs::write(
-            &root,
-            "tracepoint:syscalls:sys_enter_openat /@asb_tree[pid]/ { @asb_open = count(); }\n",
-        )
-        .expect("write scoped fixture");
-        validate_custom_program_scope(&root).expect("scoped program");
-        std::fs::remove_file(root).expect("remove fixture");
-    }
-}
-
 /// bpftrace prints aggregation maps as `@asb_metric: value`. Only these
 /// ASB-owned map names are accepted, so arbitrary program output cannot create
 /// comparison metrics accidentally.
@@ -587,4 +570,51 @@ pub(crate) fn parse_bpftrace_series(profile: &str, output: &str) -> BTreeMap<Str
             .push(value);
     }
     series
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BPFTRACE_PROFILES, profile_probe_program, validate_custom_program_scope};
+
+    #[test]
+    fn profile_preflight_uses_the_same_seeded_tree_program_as_runtime() {
+        let profile = BPFTRACE_PROFILES
+            .iter()
+            .find(|profile| profile.name == "sched-latency")
+            .copied()
+            .expect("built-in profile");
+        let program = profile_probe_program(profile);
+        assert!(program.contains("@asb_tree[0] = 1;"));
+        assert!(program.contains("sched_process_fork"));
+        assert!(program.contains(profile.program));
+        assert!(program.contains("interval:ms:1 { exit(); }"));
+        assert!(!program.contains("@asb_tree[1] = 1;"));
+        assert!(!program.contains("BEGIN { exit(); }"));
+    }
+
+    #[test]
+    fn custom_programs_must_declare_the_process_tree_predicate() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-bpftrace-scope-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::write(
+            &root,
+            "tracepoint:syscalls:sys_enter_openat { @host = count(); }\n",
+        )
+        .expect("write fixture");
+        let error = validate_custom_program_scope(&root).expect_err("host-wide program");
+        assert!(error.contains("process-tree scoped"));
+        std::fs::write(
+            &root,
+            "tracepoint:syscalls:sys_enter_openat /@asb_tree[pid]/ { @asb_open = count(); }\n",
+        )
+        .expect("write scoped fixture");
+        validate_custom_program_scope(&root).expect("scoped program");
+        std::fs::remove_file(root).expect("remove fixture");
+    }
 }

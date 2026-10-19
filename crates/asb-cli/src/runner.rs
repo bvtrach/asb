@@ -62,38 +62,29 @@ struct RunResult<'a> {
     stderr: String,
 }
 
+/// Execution choices shared by single runs, replicas, and sweeps.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct RunOptions<'a> {
+    pub json: bool,
+    pub show_output: bool,
+    pub measurement_dir: Option<&'a str>,
+    pub mode: Option<tape::Mode>,
+    pub cassette: Option<&'a str>,
+    pub respect_record_timings: bool,
+}
+
 /// Execute one configured benchmark, optionally through a local llmtape proxy.
-pub fn run_with_tape(
+pub(crate) fn run_with_tape(
     path: &str,
-    json: bool,
-    show_output: bool,
-    measurement_dir: Option<&str>,
-    mode: Option<tape::Mode>,
-    cassette: Option<&str>,
-    respect_record_timings: bool,
+    options: RunOptions<'_>,
     output: &mut dyn Write,
 ) -> Result<(), Error> {
-    run_with_diagnostics(
-        path,
-        json,
-        show_output,
-        measurement_dir,
-        mode,
-        cassette,
-        respect_record_timings,
-        output,
-        &Mutex::new(BTreeSet::new()),
-    )
+    run_with_diagnostics(path, options, output, &Mutex::new(BTreeSet::new()))
 }
 
 pub(crate) fn run_with_diagnostics(
     path: &str,
-    json: bool,
-    show_output: bool,
-    measurement_dir: Option<&str>,
-    mode: Option<tape::Mode>,
-    cassette: Option<&str>,
-    respect_record_timings: bool,
+    options: RunOptions<'_>,
     output: &mut dyn Write,
     warnings: &Mutex<BTreeSet<String>>,
 ) -> Result<(), Error> {
@@ -113,35 +104,14 @@ pub(crate) fn run_with_diagnostics(
             &mut |_, _| {},
             false,
         )?;
-        if !json {
+        if !options.json {
             output.write_all(&messages).map_err(io_error)?;
         }
     }
-    let tape_request = mode.map(|value| (value, cassette));
     if config.concurrency > 1 {
-        return run_concurrent(
-            config_path,
-            &config,
-            json,
-            show_output,
-            measurement_dir,
-            tape_request,
-            respect_record_timings,
-            output,
-            warnings,
-        );
+        return run_concurrent(config_path, &config, options, output, warnings);
     }
-    run_mode(
-        config_path,
-        config,
-        json,
-        show_output,
-        measurement_dir,
-        tape_request,
-        respect_record_timings,
-        output,
-        warnings,
-    )
+    run_mode(config_path, config, options, output, warnings)
 }
 
 /// Execute identical replicas concurrently. Each replica gets an isolated
@@ -151,14 +121,11 @@ pub(crate) fn run_with_diagnostics(
 fn run_concurrent(
     config_path: &Path,
     config: &BenchmarkConfig,
-    json: bool,
-    show_output: bool,
-    measurement_dir: Option<&str>,
-    tape_request: Option<(tape::Mode, Option<&str>)>,
-    respect_record_timings: bool,
+    options: RunOptions<'_>,
     output: &mut dyn Write,
     warnings: &Mutex<BTreeSet<String>>,
 ) -> Result<(), Error> {
+    let tape_request = options.mode.map(|mode| (mode, options.cassette));
     let mut jobs = Vec::with_capacity(config.concurrency);
     for index in 1..=config.concurrency {
         let mut replica = config.clone();
@@ -174,7 +141,9 @@ fn run_concurrent(
                 .unwrap_or_else(|| default_cassette(config_path, config));
             (mode, replica_cassette(mode, &base, index))
         });
-        let measurement = measurement_dir.map(|path| PathBuf::from(parallel_path(path, index)));
+        let measurement = options
+            .measurement_dir
+            .map(|path| PathBuf::from(parallel_path(path, index)));
         jobs.push((replica, measurement, cassette));
     }
 
@@ -194,11 +163,12 @@ fn run_concurrent(
                         let result = run_mode(
                             config_path,
                             replica,
-                            json,
-                            show_output,
-                            measurement_path,
-                            mode.map(|mode| (mode, cassette_path)),
-                            respect_record_timings,
+                            RunOptions {
+                                measurement_dir: measurement_path,
+                                mode,
+                                cassette: cassette_path,
+                                ..options
+                            },
                             &mut buffer,
                             warnings,
                         );
@@ -292,14 +262,19 @@ fn append_path_suffix(path: &Path, index: usize) -> PathBuf {
 fn run_mode(
     config_path: &Path,
     config: BenchmarkConfig,
-    json: bool,
-    show_output: bool,
-    measurement_dir: Option<&str>,
-    tape_request: Option<(tape::Mode, Option<&str>)>,
-    respect_record_timings: bool,
+    options: RunOptions<'_>,
     output: &mut dyn Write,
     warnings: &Mutex<BTreeSet<String>>,
 ) -> Result<(), Error> {
+    let RunOptions {
+        json,
+        show_output,
+        measurement_dir,
+        mode,
+        cassette,
+        respect_record_timings,
+    } = options;
+    let tape_request = mode.map(|mode| (mode, cassette));
     let tape_cassette = tape_request.map(|(mode, requested)| {
         (
             mode,
@@ -1666,12 +1641,10 @@ mod tests {
         std::fs::write(&config, "agent='pi'\nworkload='bug-fix'\nprovider='not-a-provider'\nmodel='model'\nconcurrency=8\n").unwrap();
         let error = run_with_tape(
             config.to_str().unwrap(),
-            false,
-            false,
-            None,
-            Some(crate::tape::Mode::Replay),
-            None,
-            false,
+            super::RunOptions {
+                mode: Some(crate::tape::Mode::Replay),
+                ..Default::default()
+            },
             &mut Vec::new(),
         )
         .unwrap_err();
