@@ -659,6 +659,8 @@ classDiagram
         -pid: Option~u32~
         -trace_marker: Option~PathBuf~
         -trace_marker_output: Option~File~
+        -marker_verified: bool
+        -marker_warning: Option~String~
         -tracepoint_count: u64
         -metrics: BTreeMap~String, f64~
     }

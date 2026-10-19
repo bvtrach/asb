@@ -54,7 +54,7 @@ digraph ASB_Rust_UML {
         "asb-cli_src_collectors_adapters_PerfCollector" [label="{collectors_adapters_PerfCollector}", shape=record];
         "asb-cli_src_collectors_adapters_PerfState" [label="{collectors_adapters_PerfState|-enabled: bool\l}", shape=record];
         "asb-cli_src_collectors_adapters_PerfettoCollector" [label="{collectors_adapters_PerfettoCollector}", shape=record];
-        "asb-cli_src_collectors_adapters_PerfettoState" [label="{collectors_adapters_PerfettoState|-enabled: bool\l-trace: Option\<PathBuf\>\l-pid: Option\<u32\>\l-trace_marker: Option\<PathBuf\>\l-trace_marker_output: Option\<File\>\l-tracepoint_count: u64\l-metrics: BTreeMap\<String, f64\>\l}", shape=record];
+        "asb-cli_src_collectors_adapters_PerfettoState" [label="{collectors_adapters_PerfettoState|-enabled: bool\l-trace: Option\<PathBuf\>\l-pid: Option\<u32\>\l-trace_marker: Option\<PathBuf\>\l-trace_marker_output: Option\<File\>\l-marker_verified: bool\l-marker_warning: Option\<String\>\l-tracepoint_count: u64\l-metrics: BTreeMap\<String, f64\>\l}", shape=record];
         "asb-cli_src_collectors_adapters_RuntimeCollector" [label="{collectors_adapters_RuntimeCollector}", shape=record];
         "asb-cli_src_collectors_adapters_StepsCollector" [label="{collectors_adapters_StepsCollector}", shape=record];
         "asb-cli_src_collectors_adapters_SuccessRateCollector" [label="{collectors_adapters_SuccessRateCollector}", shape=record];
