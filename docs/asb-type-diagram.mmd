@@ -30,6 +30,7 @@ classDiagram
         -directory: PathBuf
         -agent: String
         -workload: String
+        -workload_evaluation: String
         -provider: String
         -model: String
         -metrics: BTreeMap~String, f64~
@@ -197,9 +198,12 @@ classDiagram
         +run_id: String
         +status: &'a str
         +success: bool
+        +process_success: bool
+        +workload_success: Option~bool~
         +success_rate: f64
         +agent: &'a str
         +workload: &'a str
+        +workload_evaluation: &'a str
         +provider: &'a str
         +model: &'a str
         +elapsed_ms: u128
@@ -214,6 +218,9 @@ classDiagram
         -workload: &'a str
         -provider: &'a str
         -model: &'a str
+        -process_success: bool
+        -workload_success: Option~bool~
+        -workload_evaluation: &'static str
         -success_rate: f64
         -elapsed_ms: u128
         -exit_code: Option~i32~
@@ -234,6 +241,7 @@ classDiagram
         -perf_data: Option~PathBuf~
         -perf_enabled: bool
         -perfetto_trace: Option~PathBuf~
+        -perfetto_pid: Option~u32~
         -perfetto_enabled: bool
         -trace_marker: Option~PathBuf~
         -tracepoint_count: u64
@@ -522,26 +530,33 @@ classDiagram
         +kind() ToolKind
         +post_install(executable: &Path, progress: &mut dyn FnMut(u8, &str), output: Write) Result~(), crate::Error~
     }
-    class C078["workloads_Fixture"] {
+    class C078["workloads_FileExpectation"] {
+        -relative: &'static str
+        -accepted: &'static [&'static str]
+    }
+    class C079["workloads_Fixture"] {
         -name: &'static str
         -files: &'static [(&'static str, &'static str)]
     }
-    class C079["workloads_Trial"] {
+    class C080["workloads_SourceExpectation"] {
+        -files: &'static [FileExpectation]
+    }
+    class C081["workloads_Trial"] {
         +id: String
         +description: String
     }
-    class C080["workloads_TrialSet"] {
+    class C082["workloads_TrialSet"] {
         +workload: String
         +trials: Vec~workloads_Trial~
     }
-    class C081["workloads::adapters::PromptAdapter"] {
+    class C083["workloads::adapters::PromptAdapter"] {
     }
-    class C082["workloads::adapters::StaticExternalAdapter"] {
+    class C084["workloads::adapters::StaticExternalAdapter"] {
         -id: &'static str
         -trials: &'static [(&'static str, &'static str)]
         +new(id: &'static str, trials: &'static [(&'static str, &'static str)]) Self
     }
-    class C083["«trait» workloads::adapters::WorkloadAdapter"] {
+    class C085["«trait» workloads::adapters::WorkloadAdapter"] {
         +id() &'static str
         +trial_ids() Vec~workloads_Trial~
         +prepare_source(workloads: &Path, workspace: &Path) Result~usize, String~
@@ -553,51 +568,51 @@ classDiagram
         +prepare_fixture(name: &str, workspace: &Path) Result~usize, String~
         +prepare_source(_workloads: &Path, _workspace: &Path) Result~usize, String~
     }
-    class C084["asb-cli_tests_Drop"] {
+    class C086["asb-cli_tests_Drop"] {
         +drop() void
         +drop() void
         +drop() void
     }
-    class C085["asb-cli_tests_MockProvider"] {
+    class C087["asb-cli_tests_MockProvider"] {
         -endpoint: String
         -requests: Arc~Mutex<Vec<String>>~
         -done: Arc~AtomicBool~
         -thread: Option~std::thread::JoinHandle<()>~
         +start() Self
     }
-    class C086["asb-cli_tests_Project"] {
+    class C088["asb-cli_tests_Project"] {
         +new() Self
         +command(args: &[&str]) Output
         +command_with_env(args: &[&str], extra: &[(&str, &str)]) Output
         +write(name: &str, contents: &str) void
         +init() void
     }
-    class C087["asb-cli_tests_WaitForFixtureExpiry"] {
+    class C089["asb-cli_tests_WaitForFixtureExpiry"] {
         -pid: u32
         -executable: PathBuf
     }
-    class C088["tests_asb-cli_src_FailingWriter"] {
+    class C090["tests_asb-cli_src_FailingWriter"] {
         +write() Result~usize~
         +flush() Result~()~
     }
-    class C089["tests_asb-cli_src_proxy_FixtureAdapter"] {
+    class C091["tests_asb-cli_src_proxy_FixtureAdapter"] {
         -name: &'static str
         -fail: bool
         -fail_finish: bool
         -events: Arc~Mutex<Vec<String>>~
     }
-    class C090["tests_asb-cli_src_proxy_FixtureSession"] {
+    class C092["tests_asb-cli_src_proxy_FixtureSession"] {
         -name: &'static str
         -url: String
         -active: bool
         -fail_finish: bool
         -events: Arc~Mutex<Vec<String>>~
     }
-    class C091["tests_asb-cli_src_proxy_ProxyAdapter"] {
+    class C093["tests_asb-cli_src_proxy_ProxyAdapter"] {
         +name() &'static str
         +start(upstream: Option~&str~, settings: Option~&dyn Any~) Result~Box<dyn ProxySession>, Error~
     }
-    class C092["tests_asb-cli_src_proxy_ProxySession"] {
+    class C094["tests_asb-cli_src_proxy_ProxySession"] {
         +url() &str
         +finish() Result~(), Error~
         +abort() void
@@ -617,12 +632,12 @@ classDiagram
     C054 ..> C058
     C059 --> C013
     C072 --> C073
-    C080 --> C079
-    C083 ..> C079
+    C082 --> C081
+    C085 ..> C081
     C037 ..|> C010
     C060 ..|> C054
     C068 ..|> C069
     C072 ..|> C071
     C076 ..|> C077
-    C081 ..|> C083
-    C082 ..|> C083
+    C083 ..|> C085
+    C084 ..|> C085
