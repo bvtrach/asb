@@ -3,7 +3,7 @@
 use crate::suggestions;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 mod adapters;
 
@@ -566,24 +566,22 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<usize, String> {
         )
     })?;
     let mut added = 0;
-    for entry in fs::read_dir(source).map_err(|error| {
-        format!(
-            "cannot read external workload source {}: {error}",
-            source.display()
-        )
-    })? {
-        let entry =
-            entry.map_err(|error| format!("cannot inspect external workload source: {error}"))?;
-        let source_path = entry.path();
-        let destination_path = destination.join(entry.file_name());
-        let kind = entry.file_type().map_err(|error| {
+    for relative in copy_plan(source)? {
+        let source_path = source.join(&relative);
+        let destination_path = destination.join(&relative);
+        let kind = fs::symlink_metadata(&source_path).map_err(|error| {
             format!(
                 "cannot inspect external workload entry {}: {error}",
                 source_path.display()
             )
         })?;
         if kind.is_dir() {
-            added += copy_tree(&source_path, &destination_path)?;
+            fs::create_dir_all(&destination_path).map_err(|error| {
+                format!(
+                    "cannot create external workload directory {}: {error}",
+                    destination_path.display()
+                )
+            })?;
         } else if kind.is_file() && !destination_path.exists() {
             fs::copy(&source_path, &destination_path).map_err(|error| {
                 format!(
@@ -595,6 +593,53 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<usize, String> {
         }
     }
     Ok(added)
+}
+
+/// Return the exact deterministic pre-order traversal used by `copy_tree`.
+/// Sorting at every directory level prevents upstream archive extraction order
+/// from changing the request body sent to a deterministic workload runner.
+fn copy_plan(source: &Path) -> Result<Vec<PathBuf>, String> {
+    fn visit(source: &Path, relative: &Path, plan: &mut Vec<PathBuf>) -> Result<(), String> {
+        let mut entries = fs::read_dir(source)
+            .map_err(|error| {
+                format!(
+                    "cannot read external workload source {}: {error}",
+                    source.display()
+                )
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("cannot inspect external workload source: {error}"))?;
+        sort_entries(&mut entries);
+        for entry in entries {
+            let next = relative.join(entry.file_name());
+            plan.push(next.clone());
+            if entry
+                .file_type()
+                .map_err(|error| {
+                    format!(
+                        "cannot inspect external workload entry {}: {error}",
+                        entry.path().display()
+                    )
+                })?
+                .is_dir()
+            {
+                visit(&entry.path(), &next, plan)?;
+            }
+        }
+        Ok(())
+    }
+
+    let mut plan = Vec::new();
+    visit(source, Path::new(""), &mut plan)?;
+    Ok(plan)
+}
+
+fn sort_entries(entries: &mut [fs::DirEntry]) {
+    sort_by_name(entries, |entry| entry.file_name());
+}
+
+fn sort_by_name<T>(entries: &mut [T], name: impl Fn(&T) -> std::ffi::OsString) {
+    entries.sort_by_key(name);
 }
 
 fn set_executable(path: &Path) -> Result<(), String> {
@@ -823,10 +868,11 @@ fn missing(name: &str, directory: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        evaluate, load, load_trial, materialize_external_adapter, populate, prepare_external,
-        prepare_fixture, write_default_trial_set,
+        copy_plan, copy_tree, evaluate, load, load_trial, materialize_external_adapter, populate,
+        prepare_external, prepare_fixture, write_default_trial_set,
     };
     use std::fs;
+    use std::path::PathBuf;
 
     #[test]
     fn loads_original_alias_and_rejects_path_traversal() {
@@ -899,6 +945,53 @@ mod tests {
         assert_eq!(
             fs::read_to_string(workspace.join("external-workload/README.md")).unwrap(),
             "edited"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn external_source_copy_uses_deterministic_lexical_traversal() {
+        let root =
+            std::env::temp_dir().join(format!("asb-external-copy-order-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::create_dir_all(source.join("z-last/inner-z")).unwrap();
+        fs::create_dir_all(source.join("a-first/inner-z")).unwrap();
+        fs::write(source.join("z-last/file"), "z").unwrap();
+        fs::write(source.join("a-first/file"), "a").unwrap();
+        fs::write(source.join("z-last/inner-z/file"), "z-inner").unwrap();
+        fs::write(source.join("a-first/inner-z/file"), "a-inner").unwrap();
+
+        // The explicit unsorted input proves the negative case without
+        // depending on unspecified filesystem directory iteration order.
+        let mut unsorted = vec![PathBuf::from("z-last"), PathBuf::from("a-first")];
+        super::sort_by_name(&mut unsorted, |path| path.clone().into_os_string());
+        assert_eq!(
+            unsorted,
+            vec![PathBuf::from("a-first"), PathBuf::from("z-last")]
+        );
+        assert_eq!(
+            copy_plan(&source).unwrap(),
+            vec![
+                PathBuf::from("a-first"),
+                PathBuf::from("a-first/file"),
+                PathBuf::from("a-first/inner-z"),
+                PathBuf::from("a-first/inner-z/file"),
+                PathBuf::from("z-last"),
+                PathBuf::from("z-last/file"),
+                PathBuf::from("z-last/inner-z"),
+                PathBuf::from("z-last/inner-z/file"),
+            ]
+        );
+        copy_tree(&source, &destination).unwrap();
+        assert_eq!(
+            fs::read_to_string(destination.join("a-first/inner-z/file")).unwrap(),
+            "a-inner"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("z-last/inner-z/file")).unwrap(),
+            "z-inner"
         );
         let _ = fs::remove_dir_all(root);
     }
