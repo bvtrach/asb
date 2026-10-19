@@ -121,6 +121,10 @@ VM/container class, compiler/runtime and selected collector versions, and
 relevant kernel settings. Unavailable fields are omitted rather than guessed;
 raw proc/sysfs, cgroup, command output, credentials, and private paths are never
 retained.
+Measured runs additionally write `components.json` with separate lifecycle
+component wall times and process-accounted user/system CPU, block-I/O delay,
+and scheduler wait for agent execution. Network wait remains `null` unless a
+collector directly observes it; residual time is never guessed.
 When the `perfetto` collector is selected (or `ASB_MEASURE_PERFETTO=1` is set),
 ASB validates the exact ftrace configuration before the agent starts, then
 starts Tracebox after the agent PID is known, filters scheduler events to that

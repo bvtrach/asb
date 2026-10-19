@@ -56,6 +56,11 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   runtime and selected collector versions, and relevant kernel settings. It
   records only sanitized values (never raw proc/sysfs/cgroup text, command
   paths, credentials, or provider data) and omits unavailable fields.
+  Every measured run also writes `components.json`: lifecycle component wall
+  times plus process-accounted user/system CPU time, block-I/O delay, and
+  scheduler run-queue wait for the agent execution component. Network wait is
+  represented as `null` unless a collector can observe it directly; ASB never
+  assigns residual wall time to a guessed category.
   the Perfetto adapter validates tracefs/ftrace access and starts project-local
   Tracebox before preparation begins. It waits for recording readiness before
   emitting fixed, non-secret lifecycle tracepoints; after the agent is spawned,

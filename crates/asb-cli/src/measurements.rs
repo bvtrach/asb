@@ -15,7 +15,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_CAPTURE: usize = 256 * 1024;
@@ -29,6 +30,121 @@ pub struct TokenUsage {
     pub cached_tokens: Option<u64>,
     pub total_tokens: Option<u64>,
     pub source: Option<String>,
+}
+
+/// Wall-clock and process-accounting measurements for one benchmark component.
+///
+/// Values that cannot be observed portably are left `null`; ASB never infers
+/// network or I/O time from a residual wall-clock duration.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct ComponentTiming {
+    pub wall_ms: u128,
+    pub cpu_user_ms: Option<f64>,
+    pub cpu_system_ms: Option<f64>,
+    pub io_wait_ms: Option<f64>,
+    pub scheduler_wait_ms: Option<f64>,
+    pub network_wait_ms: Option<f64>,
+}
+
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+struct ProcessSample {
+    user_ticks: u64,
+    system_ticks: u64,
+    io_delay_ticks: u64,
+    runqueue_ns: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct ProcessAccounting {
+    first: ProcessSample,
+    latest: ProcessSample,
+    initialized: bool,
+}
+
+impl ProcessAccounting {
+    fn update(&mut self, sample: ProcessSample) {
+        if !self.initialized {
+            self.first = sample;
+            self.initialized = true;
+        }
+        self.latest = sample;
+    }
+
+    fn delta(self) -> ProcessSample {
+        ProcessSample {
+            user_ticks: self.latest.user_ticks.saturating_sub(self.first.user_ticks),
+            system_ticks: self
+                .latest
+                .system_ticks
+                .saturating_sub(self.first.system_ticks),
+            io_delay_ticks: self
+                .latest
+                .io_delay_ticks
+                .saturating_sub(self.first.io_delay_ticks),
+            runqueue_ns: self
+                .latest
+                .runqueue_ns
+                .saturating_sub(self.first.runqueue_ns),
+        }
+    }
+}
+
+struct ProcessSampler {
+    stop: Arc<AtomicBool>,
+    accounting: Arc<Mutex<ProcessAccounting>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ProcessSampler {
+    fn start(pid: u32, interval_ms: u64) -> Option<Self> {
+        let initial = read_process_sample(pid)?;
+        let stop = Arc::new(AtomicBool::new(false));
+        let accounting = Arc::new(Mutex::new(ProcessAccounting {
+            first: initial,
+            latest: initial,
+            initialized: true,
+        }));
+        let thread_stop = Arc::clone(&stop);
+        let thread_accounting = Arc::clone(&accounting);
+        let handle = std::thread::Builder::new()
+            .name("asb-process-timing".into())
+            .spawn(move || {
+                while !thread_stop.load(Ordering::Relaxed) {
+                    if let Some(sample) = read_process_sample(pid)
+                        && let Ok(mut state) = thread_accounting.lock()
+                    {
+                        state.update(sample);
+                    }
+                    std::thread::sleep(Duration::from_millis(interval_ms));
+                }
+                if let Some(sample) = read_process_sample(pid)
+                    && let Ok(mut state) = thread_accounting.lock()
+                {
+                    state.update(sample);
+                }
+            })
+            .ok()?;
+        Some(Self {
+            stop,
+            accounting,
+            handle: Some(handle),
+        })
+    }
+
+    fn stop(mut self) -> Option<ProcessSample> {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        self.accounting.lock().ok().map(|state| state.delta())
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ComponentMeasurements {
+    schema_version: u32,
+    clock_ticks_per_second: Option<u64>,
+    components: BTreeMap<String, ComponentTiming>,
 }
 
 /// Stable names used in generated configuration files and downstream tools.
@@ -123,6 +239,10 @@ pub struct Session {
     pub(crate) test_attach_failure: bool,
     pub(crate) trace_id: String,
     sudo_collectors: BTreeSet<String>,
+    component_starts: BTreeMap<String, Instant>,
+    component_timings: BTreeMap<String, ComponentTiming>,
+    process_sampler: Option<ProcessSampler>,
+    clock_ticks_per_second: Option<u64>,
 }
 
 impl Drop for Session {
@@ -140,6 +260,7 @@ impl Drop for Session {
                 collector.adapter.graceful_shutdown(&collector.name),
             );
         }
+        self.stop_process_sampler();
         if self.run_started {
             let _ = write_json(&self.dir.join("lifecycle.json"), &self.lifecycle);
         }
@@ -186,6 +307,10 @@ impl Session {
                 NEXT_TRACE_ID.fetch_add(1, Ordering::Relaxed)
             ),
             sudo_collectors,
+            component_starts: BTreeMap::new(),
+            component_timings: BTreeMap::new(),
+            process_sampler: None,
+            clock_ticks_per_second: clock_ticks_per_second(),
         };
         for collector in collectors::all() {
             collector.configure(&mut session, selected)?;
@@ -204,6 +329,7 @@ impl Session {
         for collector in collectors::all() {
             collector.lifecycle_event(self, event)?;
         }
+        self.record_component_event(event);
         self.lifecycle.push(LifecycleRecord {
             sequence: self.lifecycle.len(),
             elapsed_us: self.lifecycle_started.elapsed().as_micros(),
@@ -215,6 +341,81 @@ impl Session {
             _ => {}
         }
         Ok(())
+    }
+
+    fn record_component_event(&mut self, event: collectors::LifecycleEvent) {
+        let now = Instant::now();
+        match event {
+            collectors::LifecycleEvent::PhaseBegin(phase) => {
+                self.component_starts.insert(phase.name().to_owned(), now);
+            }
+            collectors::LifecycleEvent::PhaseEnd(phase)
+            | collectors::LifecycleEvent::PhaseFailed(phase) => {
+                self.finish_component(phase.name(), now);
+            }
+            collectors::LifecycleEvent::AgentExecuteBegin => {
+                self.component_starts.insert("agent.execute".into(), now);
+            }
+            collectors::LifecycleEvent::AgentExecuteEnd => {
+                self.finish_component("agent.execute", now);
+            }
+            _ => {}
+        }
+    }
+
+    fn finish_component(&mut self, name: &str, now: Instant) {
+        let Some(started) = self.component_starts.remove(name) else {
+            return;
+        };
+        self.component_timings
+            .entry(name.to_owned())
+            .or_default()
+            .wall_ms = now.duration_since(started).as_millis();
+    }
+
+    fn start_process_sampler(&mut self, pid: u32) {
+        if self.process_sampler.is_some() {
+            return;
+        }
+        self.process_sampler = ProcessSampler::start(pid, measurement_interval_ms());
+    }
+
+    fn stop_process_sampler(&mut self) {
+        let Some(sampler) = self.process_sampler.take() else {
+            return;
+        };
+        let accounting = sampler.stop();
+        let Some(timing) = self.component_timings.get_mut("agent.execute") else {
+            return;
+        };
+        let Some(accounting) = accounting else {
+            return;
+        };
+        if let Some(hz) = self.clock_ticks_per_second {
+            timing.cpu_user_ms = Some(accounting.user_ticks as f64 * 1_000.0 / hz as f64);
+            timing.cpu_system_ms = Some(accounting.system_ticks as f64 * 1_000.0 / hz as f64);
+            timing.io_wait_ms = Some(accounting.io_delay_ticks as f64 * 1_000.0 / hz as f64);
+        }
+        timing.scheduler_wait_ms = Some(accounting.runqueue_ns as f64 / 1_000_000.0);
+    }
+
+    fn write_component_measurements(&self, elapsed_ms: u128) -> Result<(), String> {
+        let mut components = self.component_timings.clone();
+        components.insert(
+            "run.total".into(),
+            ComponentTiming {
+                wall_ms: elapsed_ms,
+                ..ComponentTiming::default()
+            },
+        );
+        write_json(
+            &self.dir.join("components.json"),
+            &ComponentMeasurements {
+                schema_version: 1,
+                clock_ticks_per_second: self.clock_ticks_per_second,
+                components,
+            },
+        )
     }
 
     pub(crate) fn trace_id(&self) -> &str {
@@ -249,11 +450,13 @@ impl Session {
                 collector.attach_pid(self, pid)?;
             }
         }
+        self.start_process_sampler(pid);
         Ok(())
     }
 
     /// Finish collectors and write the run record and aggregate summary.
     pub fn finish<'a>(mut self, measurement: RunMeasurement<'a>) -> Result<(), String> {
+        self.stop_process_sampler();
         let collectors = std::mem::take(&mut self.collectors);
         for mut collector in collectors {
             let status = match collector.child.try_wait() {
@@ -297,6 +500,7 @@ impl Session {
             write_json(&self.dir.join(format!("{}.json", collector.name)), &result)?;
         }
         write_json(&self.dir.join("run.json"), &measurement)?;
+        self.write_component_measurements(measurement.elapsed_ms)?;
         if self.run_started {
             write_json(&self.dir.join("lifecycle.json"), &self.lifecycle)?;
         }
@@ -739,6 +943,46 @@ fn unix_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_millis())
 }
+
+fn read_process_sample(pid: u32) -> Option<ProcessSample> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let schedstat = fs::read_to_string(format!("/proc/{pid}/schedstat")).ok();
+    parse_process_sample(&stat, schedstat.as_deref())
+}
+
+fn parse_process_sample(stat: &str, schedstat: Option<&str>) -> Option<ProcessSample> {
+    let fields = stat
+        .rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    let user_ticks = fields.get(11)?.parse().ok()?;
+    let system_ticks = fields.get(12)?.parse().ok()?;
+    // Linux procfs field 42 is delayacct_blkio_ticks. It is zero when
+    // delay accounting is disabled, which is intentionally reported as zero.
+    let io_delay_ticks = fields
+        .get(39)
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    let runqueue_ns = schedstat
+        .and_then(|value| value.split_whitespace().nth(1)?.parse().ok())
+        .unwrap_or(0);
+    Some(ProcessSample {
+        user_ticks,
+        system_ticks,
+        io_delay_ticks,
+        runqueue_ns,
+    })
+}
+
+fn clock_ticks_per_second() -> Option<u64> {
+    let output = Command::new("getconf")
+        .arg("CLK_TCK")
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -821,7 +1065,17 @@ mod tests {
     #[test]
     fn writes_machine_readable_run_and_summary() {
         let dir = std::env::temp_dir().join(format!("asb-measure-{}", unix_ms()));
-        let session = Session::start_with_collectors(&dir, &[], None).expect("session");
+        let mut session = Session::start_with_collectors(&dir, &[], None).expect("session");
+        session
+            .event(collectors::LifecycleEvent::PhaseBegin(
+                collectors::LifecyclePhase::WorkloadPreparation,
+            ))
+            .unwrap();
+        session
+            .event(collectors::LifecycleEvent::PhaseEnd(
+                collectors::LifecyclePhase::WorkloadPreparation,
+            ))
+            .unwrap();
         let run = RunMeasurement {
             schema_version: 1,
             run_id: "test".into(),
@@ -848,6 +1102,11 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(dir.join("summary.json")).unwrap()).unwrap();
         assert_eq!(parsed["success_rate"], 1.0);
+        let components: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("components.json")).unwrap())
+                .unwrap();
+        assert!(components["components"]["workload.prepare"]["wall_ms"].is_number());
+        assert!(components["components"]["run.total"]["wall_ms"].is_number());
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -1298,5 +1557,21 @@ mod tests {
         );
         assert_eq!(timestamps, vec![12_000.0, 13_500.0]);
         assert_eq!(values, vec![3.0, 7.0]);
+    }
+
+    #[test]
+    fn process_accounting_separates_cpu_io_and_scheduler_wait() {
+        let stat = "123 (agent) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47";
+        let sample = parse_process_sample(stat, Some("100000 250000 1")).expect("sample");
+        assert_eq!(sample.user_ticks, 11);
+        assert_eq!(sample.system_ticks, 12);
+        assert_eq!(sample.io_delay_ticks, 39);
+        assert_eq!(sample.runqueue_ns, 250_000);
+    }
+
+    #[test]
+    fn malformed_process_accounting_is_unavailable_not_zero_guesswork() {
+        assert!(parse_process_sample("not a proc stat", None).is_none());
+        assert!(parse_process_sample("123 (agent) S", None).is_none());
     }
 }
