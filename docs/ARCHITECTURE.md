@@ -205,7 +205,15 @@ counts are limited to the usage reported by the agent; for example, Goose and
 OpenCode can omit a separate title-generation call, and some agents do not
 report usage at all. Missing values are not estimated. Cassette accounting combines usage
 snapshots within each response and sums completed calls; incomplete accounting
-is not promoted to a whole-run total. OpenHands and OpenJiuwen use
+is not promoted to a whole-run total. Continue's adapter reads provider-reported
+usage on individual session messages rather than its potentially estimated
+aggregate; OpenHands reads per-call conversation metrics, not both individual
+and accumulated counters. Both use separate per-run state directories, reject
+ambiguous or incomplete state, and normalize cached input for the selected
+wire interface. OpenHands may itself report a cache count of zero when its SDK
+does not distinguish a missing cache field from zero. Those run-specific state
+directories can contain agent session transcripts and remain beside the run
+workspace. OpenHands and OpenJiuwen use
 machine-readable output; mini-SWE writes a project-local trajectory that
 is parsed for nested provider usage before it is removed. Their terminal output is intentionally limited to success
 rate, elapsed time, and token usage; `--json` changes only the representation

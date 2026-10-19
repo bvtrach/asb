@@ -93,6 +93,7 @@ mod tests {
             model: "test-model",
             connection: &connection,
             runtime_dir: Path::new("."),
+            run_dir: Path::new("."),
         })
         .unwrap();
         let env = environment(&command);
@@ -120,6 +121,7 @@ mod tests {
                 model: "test-model",
                 connection: &connection,
                 runtime_dir: Path::new("."),
+                run_dir: Path::new("."),
             })
             .unwrap();
             let env = environment(&command);

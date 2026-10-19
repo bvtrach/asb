@@ -451,6 +451,9 @@ classDiagram
     }
     class C062["agents::CollectionContext"] {
         +workspace: &'a Path
+        +run_dir: &'a Path
+        +interface: Option~Interface~
+        +anthropic_input_includes_cache: bool
     }
     class C063["agents::CommandContext"] {
         +config: &'a BenchmarkConfig
@@ -468,6 +471,7 @@ classDiagram
         +model: &'a str
         +connection: Connection
         +runtime_dir: &'a Path
+        +run_dir: &'a Path
     }
     class C066["agents::StaticAdapter"] {
         -id: &'static str

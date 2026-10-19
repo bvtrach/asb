@@ -11,6 +11,7 @@ use crate::benchmark::BenchmarkConfig;
 use crate::endpoint::{Interface, Support};
 use crate::install::Recipe;
 use crate::project;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -55,6 +56,8 @@ pub(crate) struct PreparationContext<'a> {
     pub connection: &'a crate::endpoint::Connection,
     /// Private mutable configuration for this agent execution.
     pub runtime_dir: &'a Path,
+    /// A unique path for artifacts belonging to this individual run.
+    pub run_dir: &'a Path,
 }
 
 pub(crate) struct CommandContext<'a> {
@@ -79,6 +82,49 @@ pub(crate) struct AgentArtifacts {
 
 pub(crate) struct CollectionContext<'a> {
     pub workspace: &'a Path,
+    pub run_dir: &'a Path,
+    pub interface: Option<Interface>,
+    pub anthropic_input_includes_cache: bool,
+}
+
+/// Read exactly one bounded agent-owned JSON artifact; ambiguous or malformed
+/// state is never silently attributed to the current run.
+pub(super) fn single_usage_document(
+    directory: &Path,
+    select: impl Fn(&Path) -> bool,
+) -> Option<serde_json::Value> {
+    let mut selected = None;
+    for entry in std::fs::read_dir(directory).ok()? {
+        let entry = entry.ok()?;
+        if !entry.file_type().ok()?.is_file() || !select(&entry.path()) {
+            continue;
+        }
+        if selected.is_some() {
+            return None;
+        }
+        selected = Some(entry.path());
+    }
+    read_usage_document(&selected?)
+}
+
+pub(super) fn read_usage_document(path: &Path) -> Option<serde_json::Value> {
+    const MAX_USAGE_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024;
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_USAGE_DOCUMENT_BYTES {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_USAGE_DOCUMENT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_USAGE_DOCUMENT_BYTES {
+        return None;
+    }
+    serde_json::from_slice(&bytes).ok()
 }
 
 type CommandBuilder = for<'a> fn(&CommandContext<'a>) -> CommandSpec;
@@ -463,6 +509,7 @@ mod tests {
                     model: "test-model",
                     connection: &connection,
                     runtime_dir: &runtime,
+                    run_dir: &runtime,
                 },
             )
             .unwrap();
@@ -580,6 +627,7 @@ mod tests {
                         model: "example/model",
                         connection: &connection,
                         runtime_dir: &runtime,
+                        run_dir: &runtime,
                     })
                     .unwrap_or_else(|error| panic!("{} {interface:?}: {error}", adapter.id()));
             }
