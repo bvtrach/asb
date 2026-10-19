@@ -217,6 +217,16 @@ aliases download pinned upstream source archives into local bundle directories;
 the runner copies those sources into `external-workload/` in the workspace.
 Other aliases install pinned prompt metadata. These commands do not handle
 credentials.
+`asb init` prepares `.asb/python/venv` using an installed Python 3.12 or 3.13,
+including interpreters managed by uv. If none is available, uv can download
+Python 3.12 into `.asb/python/uv-python` using the project proxy settings.
+If setup is unavailable, init warns and Python tool installs retry it later;
+other project commands remain usable. Each Python agent retains its own
+isolated package environment created from the project interpreter. Agent-run
+subprocesses see the project Python on PATH; a Python tool's own environment
+comes first so its subprocesses can access the tool's dependencies. If an old tool environment
+uses a different Python, ASB moves it to a numbered `venv.asb-backup-*`
+directory before creating the replacement; it never deletes that backup.
 OpenJiuwen's Python recipe pins `filelock` 3.32.7 because the 4.2.2 release
 stalled while the pinned OpenJiuwen client acquired filesystem locks. A fresh
 `asb tool install openjiuwen` applies the tested dependency to the local venv.

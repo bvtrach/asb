@@ -272,7 +272,7 @@ pub fn tool_with_progress(
         writeln!(output, "{}", describe(plan, &root)).map_err(super::io_error)?;
         return Ok(());
     }
-    let executable = install_recipe(plan, &root, progress)?;
+    let executable = install_recipe(plan, &root, &project_root, output, progress)?;
     if let Some(tool) = tools::find(&id) {
         tool.post_install(&executable, progress, output)?;
     }
@@ -599,6 +599,8 @@ pub fn workload_list(
 fn install_recipe(
     recipe: Recipe,
     root: &Path,
+    project_root: &Path,
+    output: &mut dyn std::io::Write,
     progress: &mut dyn FnMut(u8, &str),
 ) -> Result<PathBuf, Error> {
     fs::create_dir_all(root)
@@ -617,32 +619,18 @@ fn install_recipe(
             dependencies,
             ..
         } => {
+            let project_python = crate::python_runtime::ensure(project_root, output)?;
             let venv = root.join("venv");
-            let created = match Command::new("python3")
-                .args(["-m", "venv"])
-                .arg(&venv)
-                .logged_status()
-            {
-                Ok(status) => status,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Command::new("uv")
-                    .args(["venv", "--seed", "--python", "3.12"])
-                    .arg(&venv)
-                    .logged_status()
-                    .map_err(|uv_error| {
-                        missing_dependency("python3", "Python agent installation", uv_error)
-                    })?,
-                Err(error) => {
-                    return Err(missing_dependency(
-                        "python3",
-                        "Python agent installation",
-                        error,
-                    ));
-                }
-            };
+            if fs::symlink_metadata(&venv).is_ok() && !crate::python_runtime::matches_project(&venv.join("bin/python"), &project_python)
+                && let Some(backup) = crate::python_runtime::preserve_environment(&venv)? {
+                writeln!(output, "Preserved the previous tool Python environment at {}.", backup.display())
+                    .map_err(crate::io_error)?;
+            }
+            let created = Command::new(&project_python)
+                .args(["-m", "venv"]).arg(&venv).logged_status()
+                .map_err(|error| Error::Io(format!("cannot create agent environment with {}: {error}", project_python.display())))?;
             if !created.success() {
-                return Err(Error::Io(
-                    "python3 could not create the agent environment".into(),
-                ));
+                return Err(Error::Io("could not create the agent Python environment; see .asb/install.log for details".into()));
             }
             progress(35, "installing Python package");
             let python = venv.join("bin/python");
@@ -654,7 +642,7 @@ fn install_recipe(
                 })?;
             if !status.success() {
                 return Err(Error::Io(format!(
-                    "Python package installation failed for {package}"
+                    "Python package installation failed for {package}; see .asb/install.log for details"
                 )));
             }
             for dependency in dependencies {
@@ -838,7 +826,7 @@ fn describe(recipe: Recipe, root: &Path) -> String {
                 format!(" && pip install {}", dependencies.join(" "))
             };
             format!(
-                "python3 -m venv {}/venv && pip install {package}{extras}",
+                "create {}/venv with project Python 3.12 or 3.13; install {package}{extras}",
                 root.display()
             )
         }
