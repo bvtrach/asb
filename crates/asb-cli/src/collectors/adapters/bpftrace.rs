@@ -2,6 +2,7 @@ use super::super::{
     ArtifactDisplay, GraphSection, PreflightContext, ProcessContext, ProcessData, StaticCollector,
 };
 use crate::measurements;
+use std::fmt::Write as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
 pub(super) static ADAPTER: StaticCollector = StaticCollector::new(
@@ -195,6 +196,7 @@ impl measurements::Session {
     /// keeps all probes scoped to the benchmarked agent rather than the host.
     fn start_bpftrace_profiles(&mut self, pid: u32) -> Result<(), String> {
         let profiles = self.state::<BpftraceState>().borrow().profiles.clone();
+        let prelude = process_tree_prelude(pid);
         for profile in &profiles {
             let name = format!("bpftrace-{}", profile.name);
             let stdout_path = self.dir.join(format!("{name}.stdout"));
@@ -205,7 +207,7 @@ impl measurements::Session {
                 .map_err(|error| format!("cannot create {name} error output: {error}"))?;
             let child = self
                 .command("bpftrace")
-                .args(["-e", profile.program])
+                .args(["-e", &format!("{prelude}\n{}", profile.program)])
                 .arg(pid.to_string())
                 .stdout(Stdio::from(stdout))
                 .stderr(Stdio::from(stderr))
@@ -234,6 +236,20 @@ impl measurements::Session {
         }
         Ok(())
     }
+}
+
+/// Seed the built-in probes with every process currently below the agent and
+/// keep the set current as the agent forks helpers. This prevents unrelated
+/// host tracepoints from entering a process-scoped measurement.
+fn process_tree_prelude(root: u32) -> String {
+    let mut prelude = String::from("BEGIN {\n");
+    for pid in measurements::process_tree_pids(root) {
+        let _ = writeln!(prelude, "  @asb_tree[{pid}] = 1;");
+    }
+    prelude.push_str(
+        "}\ntracepoint:sched:sched_process_fork /@asb_tree[args->parent_pid]/ { @asb_tree[args->child_pid] = 1; }\n",
+    );
+    prelude
 }
 
 /// A bounded, target-PID-scoped bpftrace program. Profiles use only stable

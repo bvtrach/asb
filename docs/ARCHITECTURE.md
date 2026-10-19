@@ -70,10 +70,11 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   and ASB preserves the native `.perfetto-trace`, a bounded JSON record, and
   one portable SVG per extracted metric for the comparison report;
   the perf adapter records both call stacks and stable `perf stat` counters
-  (task clock, context switches, migrations, faults, cycles, instructions) with
-  `-p <agent-pid>` for both modes; built-in BPFTrace profiles use the same
-  target PID and custom programs receive `-p <agent-pid>` but must still keep
-  tracepoint predicates target-scoped;
+  (task clock, context switches, migrations, faults, cycles, instructions) for
+  the complete process tree with explicit child inheritance; pidstat uses
+  `-T ALL` for the same tree. Built-in BPFTrace profiles seed and maintain a
+  process-tree map across forks, while custom programs receive the root PID and
+  must still keep their tracepoint predicates target-scoped;
   each adapter is isolated from the runner and can be extended without adding
   provider-specific fields to the benchmark configuration;
 - `workloads/`: one UTF-8 `.txt` prompt per workload name. Built-in supporting

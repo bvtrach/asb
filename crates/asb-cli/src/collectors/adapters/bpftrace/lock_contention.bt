@@ -1,6 +1,6 @@
-// Kernel lock contention attributable to the agent process. This profile needs
-// a kernel built with lock contention tracepoints. $1 is the agent TGID.
-tracepoint:lock:contention_begin /pid == $1/ {
+// Kernel lock contention attributable to the agent process tree. This profile
+// needs a kernel built with lock contention tracepoints.
+tracepoint:lock:contention_begin /@asb_tree[pid]/ {
   @asb_lock_start[tid] = nsecs;
 }
 

@@ -35,6 +35,8 @@ classDiagram
         -model: String
         -metrics: BTreeMap~String, f64~
         -series: BTreeMap~String, TimeSeries~
+        -host_metadata: Option~Value~
+        -components: Option~Value~
         -status: Option~String~
         -artifacts: Vec~String~
     }
