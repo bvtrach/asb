@@ -18,6 +18,12 @@ asb sweep SWEEP.toml [--record|--replay] [--cassette-root DIR] [--respect-record
 asb compare SWEEP.toml
 ```
 
+Before starting each sweep configuration, ASB prints its filename, agent,
+provider, model, workload, concurrency, and position within the sweep. The
+percentage indicates how far through the configuration list execution has
+reached, not how much of the current benchmark has completed. `--json` omits
+these human-readable progress lines.
+
 `setup tui` opens a Ratatui wizard with agent, provider, model, workload, and
 measurement steps. Select multiple entries with Space; Tab or Enter advances
 only after a selection. It writes one uniquely named test TOML per compatible

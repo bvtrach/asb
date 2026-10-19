@@ -1982,6 +1982,15 @@ fn partial_replay_sweep_preserves_both_results_and_writes_report() {
         &[("ASB_FIXTURE_BEHAVIOR", "fail-sweep-second")],
     );
     expect_failure(&result, "1 failed benchmark(s)");
+    let text = stdout(&result);
+    let first = text
+        .find("Starting benchmark (1/2; 50% reached): good.toml")
+        .unwrap();
+    let second = text
+        .find("Starting benchmark (2/2; 100% reached): bad.toml")
+        .unwrap();
+    assert!(first < second, "{text}");
+    assert_eq!(text.matches("Starting benchmark (").count(), 2, "{text}");
     for (id, status) in [("000-good", "completed"), ("001-bad", "failed")] {
         let log = project.0.join(format!("suite-results/{id}/run.log"));
         let value: serde_json::Value =
@@ -2000,6 +2009,25 @@ fn partial_replay_sweep_preserves_both_results_and_writes_report() {
             .join("results/suite-comparison/report.html")
             .is_file()
     );
+    let json = project.command_with_env(
+        &[
+            "sweep",
+            "suite.toml",
+            "--replay",
+            "--cassette-root",
+            "tapes",
+            "--json",
+        ],
+        &[("ASB_FIXTURE_BEHAVIOR", "fail-sweep-second")],
+    );
+    expect_failure(&json, "1 failed benchmark(s)");
+    let text = stdout(&json);
+    assert!(!text.contains("Starting benchmark"), "{text}");
+    assert!(!text.is_empty());
+    for line in text.lines() {
+        serde_json::from_str::<serde_json::Value>(line)
+            .expect("JSON stream contains only JSON records");
+    }
 }
 
 #[cfg(unix)]

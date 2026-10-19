@@ -129,6 +129,9 @@ pub fn run(
                     safe_component(&config.model)
                 ))
         });
+        if !json {
+            write_progress(output, index, sweep.configs.len(), &config_path, &config)?;
+        }
         if let Err(error) = runner::run_with_diagnostics(
             isolated_path.to_string_lossy().as_ref(),
             json,
@@ -179,6 +182,42 @@ pub fn run(
         }
         Err(Error::Run(details))
     }
+}
+
+fn write_progress(
+    output: &mut dyn Write,
+    index: usize,
+    total: usize,
+    config_path: &Path,
+    config: &BenchmarkConfig,
+) -> Result<(), Error> {
+    let name = config_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("benchmark");
+    // A manifest or model identifier may contain terminal control characters;
+    // keep this human-facing status to exactly one safe line.
+    let one_line = |value: &str| {
+        value
+            .chars()
+            .map(|ch| if ch.is_control() { ' ' } else { ch })
+            .collect::<String>()
+    };
+    writeln!(
+        output,
+        "Starting benchmark ({}/{}; {}% reached): {} — {}, {}, {}, {} (concurrency {})",
+        index + 1,
+        total,
+        (index + 1) * 100 / total,
+        one_line(name),
+        one_line(&config.agent),
+        one_line(&config.provider),
+        one_line(&config.model),
+        one_line(&config.workload),
+        config.concurrency,
+    )
+    .and_then(|_| output.flush())
+    .map_err(|error| Error::Io(format!("cannot write sweep progress: {error}")))
 }
 
 fn add_failure(failures: &mut Vec<(String, Vec<String>)>, config: String, message: String) {
@@ -269,7 +308,8 @@ fn safe_component(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::run;
+    use super::{run, write_progress};
+    use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_file(name: &str, contents: &str) -> std::path::PathBuf {
@@ -282,6 +322,71 @@ mod tests {
         let path = directory.join(name);
         std::fs::write(&path, contents).expect("file");
         path
+    }
+
+    #[test]
+    fn progress_is_flushed_and_keeps_untrusted_labels_to_one_line() {
+        #[derive(Default)]
+        struct Capture {
+            bytes: Vec<u8>,
+            flushed: bool,
+        }
+        impl Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.flushed = true;
+                Ok(())
+            }
+        }
+        let mut config: crate::benchmark::BenchmarkConfig =
+            toml::from_str("agent='pi'\nworkload='bug-fix'\nprovider='local'\nmodel='model'\n")
+                .unwrap();
+        config.model = "model\n\u{1b}[31m".into();
+        let mut capture = Capture::default();
+        write_progress(
+            &mut capture,
+            1,
+            3,
+            std::path::Path::new("bad\nname.toml"),
+            &config,
+        )
+        .unwrap();
+        let text = String::from_utf8(capture.bytes).unwrap();
+        assert!(capture.flushed);
+        assert!(text.contains("(2/3; 66% reached): bad name.toml"));
+        assert_eq!(text.lines().count(), 1);
+        assert!(!text.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn progress_output_failures_are_reported() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "closed",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let config: crate::benchmark::BenchmarkConfig =
+            toml::from_str("agent='pi'\nworkload='bug-fix'\nprovider='local'\nmodel='model'\n")
+                .unwrap();
+        let error = write_progress(
+            &mut Broken,
+            0,
+            1,
+            std::path::Path::new("test.toml"),
+            &config,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cannot write sweep progress"));
     }
 
     #[test]
