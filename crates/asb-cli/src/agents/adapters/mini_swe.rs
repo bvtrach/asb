@@ -141,6 +141,9 @@ mod tests {
 
         let artifacts = collect(&CollectionContext {
             workspace: &workspace,
+            run_dir: &workspace,
+            interface: None,
+            anthropic_input_includes_cache: false,
         });
 
         assert_eq!(artifacts.cleanup_paths, vec![trajectory]);
