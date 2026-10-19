@@ -500,11 +500,19 @@ fn run_mode(
         }
     }
     let elapsed_ms = started.elapsed().as_millis();
-    let process_success =
-        run_error.is_none() && process_successful(&child.status, &child.stdout, &child.stderr);
+    // Prefer the agent's structured final response when deciding whether a
+    // zero-exit process succeeded. Tool output can legitimately contain a
+    // transient failed command that the agent repairs before its final answer;
+    // scanning that whole transcript would incorrectly fail the run.
+    let final_response = agents::final_response(&config.agent, &bounded(&child.stdout), &workspace);
+    let process_success = run_error.is_none()
+        && process_successful_with_final_response(
+            &child.status,
+            &child.stdout,
+            &child.stderr,
+            final_response.as_deref(),
+        );
     let (workload_success, grading_error) = if process_success {
-        let final_response =
-            agents::final_response(&config.agent, &bounded(&child.stdout), &workspace);
         match workloads::evaluate(
             &config.workload,
             &workspace,
@@ -723,29 +731,49 @@ fn format_token(value: Option<u64>) -> String {
     value.map_or_else(|| "unknown".into(), |value| value.to_string())
 }
 
+#[cfg(test)]
 fn process_successful(status: &std::process::ExitStatus, stdout: &[u8], stderr: &[u8]) -> bool {
+    process_successful_with_final_response(status, stdout, stderr, None)
+}
+
+fn process_successful_with_final_response(
+    status: &std::process::ExitStatus,
+    stdout: &[u8],
+    stderr: &[u8],
+    final_response: Option<&str>,
+) -> bool {
     if !status.success() {
         return false;
     }
-    let output = format!(
+    let transcript = format!(
         "{}\n{}",
         String::from_utf8_lossy(stdout),
         String::from_utf8_lossy(stderr)
     );
-    let has_completion_evidence = output.contains("Agent finished")
+    // Once a structured final response exists, inspect that response only.
+    // Earlier command output is diagnostic evidence, not the agent outcome.
+    let output = final_response.unwrap_or(&transcript);
+    let has_completion_evidence = final_response.is_some()
+        || output.contains("Agent finished")
         || output.contains("Saved trajectory to '.asb-mini-swe.traj.json'")
         || output.contains("Saved trajectory to \".asb-mini-swe.traj.json\"");
-    let has_fatal_marker = [
+    // Provider and authentication failures are unambiguous and must remain
+    // fatal even when an agent emitted a later structured response. Generic
+    // command errors are ambiguous (the agent may have repaired them), so
+    // inspect those only in the final response when one is available.
+    let has_provider_fatal_marker = [
         "Authentication required. Please use /login command to sign in to your account",
         "Endpoint /v1/chat/completions was not found",
         "litellm.NotFoundError",
         "litellm.InternalServerError",
         "AnthropicException",
-        "unexpected keyword argument",
         "The API provider's servers are down or overloaded",
     ]
     .iter()
-    .any(|marker| output.contains(marker));
+    .any(|marker| transcript.contains(marker));
+    let has_command_fatal_marker = ["unexpected keyword argument"]
+        .iter()
+        .any(|marker| output.contains(marker));
     let has_refusal_marker = [
         "I can’t run tests",
         "I can't run tests",
@@ -763,7 +791,13 @@ fn process_successful(status: &std::process::ExitStatus, stdout: &[u8], stderr: 
     ]
     .iter()
     .any(|marker| output.contains(marker));
-    (!has_fatal_marker && !has_refusal_marker) || has_completion_evidence
+    if has_provider_fatal_marker {
+        false
+    } else if final_response.is_some() {
+        !has_provider_fatal_marker && !has_command_fatal_marker && !has_refusal_marker
+    } else {
+        (!has_command_fatal_marker && !has_refusal_marker) || has_completion_evidence
+    }
 }
 
 enum OutputChunk {
@@ -1292,6 +1326,30 @@ mod tests {
             &status,
             b"Tool returned TypeError: unexpected keyword argument 'reverse'\nSaved trajectory to '.asb-mini-swe.traj.json'",
             b""
+        ));
+        assert!(super::process_successful_with_final_response(
+            &status,
+            b"Tool returned TypeError: unexpected keyword argument 'reverse'",
+            b"",
+            Some("Updated the implementation and verified the supplied test passes."),
+        ));
+        assert!(!super::process_successful_with_final_response(
+            &status,
+            b"Tool output",
+            b"",
+            Some("I cannot modify files in the workspace."),
+        ));
+        assert!(!super::process_successful_with_final_response(
+            &status,
+            b"litellm.InternalServerError: upstream unavailable",
+            b"",
+            Some("Updated the implementation and verified the supplied test passes."),
+        ));
+        assert!(!super::process_successful_with_final_response(
+            &status,
+            b"litellm.InternalServerError: upstream unavailable\nAgent finished",
+            b"",
+            None,
         ));
     }
 
