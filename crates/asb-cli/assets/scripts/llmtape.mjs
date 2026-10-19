@@ -177,7 +177,8 @@ function normalizeCassetteBody(body) {
     // Shell directory listings include filesystem mtimes. They are not
     // provider input and naturally differ between record and replay.
     .replace(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2} \d{2}:\d{2}\b/g, "<asb-file-mtime>")
-    .replace(/\b20\d{2}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?\b/g, "<asb-file-mtime>");
+    .replace(/\b20\d{2}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?\b/g, "<asb-file-mtime>")
+    .replace(/Chunk ID: [0-9a-f]+/gi, "Chunk ID: <asb-chunk>");
   try {
     const sort = (value, key = "", path = []) => {
       // Claude Code embeds a fresh device identifier in metadata.user_id on
@@ -191,7 +192,17 @@ function normalizeCassetteBody(body) {
       if (typeof value === "string") {
         const hadParentGuidance = value.includes("../") && value.includes("AGENTS.md");
         const cleaned = value.replace(/\n?\.\.\/.*AGENTS\.md\n?/gm, "");
-        return hadParentGuidance ? cleaned.replace(/\n+$/g, "") : cleaned;
+        const withoutGuidance = hadParentGuidance ? cleaned.replace(/\n+$/g, "") : cleaned;
+        if (key === "output" && withoutGuidance.includes("Output:\n")) {
+          return withoutGuidance.replace(/(Output:\n)([\s\S]*?)(?=\nfatal:|$)/g, (match, prefix, listing) => {
+            const lines = listing.split("\n");
+            if (lines.every((line) => line === "" || line === "<asb-workspace>" || line.startsWith("external-workload/"))) {
+              return prefix + lines.sort().join("\n");
+            }
+            return match;
+          });
+        }
+        return withoutGuidance;
       }
       if (Array.isArray(value)) return value.map((item) => sort(item));
       if (value && typeof value === "object") {
