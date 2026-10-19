@@ -26,6 +26,7 @@ struct BenchmarkData {
     directory: PathBuf,
     agent: String,
     workload: String,
+    workload_evaluation: String,
     provider: String,
     model: String,
     metrics: BTreeMap<String, f64>,
@@ -100,6 +101,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 directory: result_dir.clone(),
                 agent: agent.clone(),
                 workload: workload.clone(),
+                workload_evaluation: "unknown".into(),
                 provider: provider.clone(),
                 model: model.clone(),
                 metrics: BTreeMap::new(),
@@ -126,6 +128,11 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 Some(status) => Some(status.to_owned()),
                 None => Some("unknown".into()),
             };
+            let workload_evaluation = run_value
+                .get("workload_evaluation")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_owned();
             let mut metrics = BTreeMap::new();
             flatten_numbers("", &run_value, &mut metrics);
             let mut series = BTreeMap::new();
@@ -189,6 +196,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 directory: result_dir.clone(),
                 agent: agent.clone(),
                 workload: workload.clone(),
+                workload_evaluation,
                 provider: provider.clone(),
                 model: model.clone(),
                 metrics,
@@ -237,6 +245,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             "directory": benchmark.directory,
             "agent": benchmark.agent,
             "workload": benchmark.workload,
+            "workload_evaluation": benchmark.workload_evaluation,
             "provider": benchmark.provider,
             "model": benchmark.model,
             "metrics": benchmark.metrics,
@@ -443,6 +452,10 @@ fn write_html_report(
                 .collect::<String>();
             format!("<details><summary>All metrics</summary><dl>{items}</dl></details>")
         };
+        let evaluation_details = format!(
+            "<p class=\"evaluation\">Workload evaluation: <code>{}</code></p>",
+            escape(&benchmark.workload_evaluation)
+        );
         let artifacts = if benchmark.artifacts.is_empty() {
             String::new()
         } else {
@@ -520,10 +533,11 @@ fn write_html_report(
                 "<details><summary>Run artifacts</summary>{perfetto_svgs}{bpftrace_svgs}{flamegraph_svgs}{flamegraph_status}<ul class=\"artifact-list\">{links}</ul></details>"
             )
         };
-        html.push_str(&format!("<tr data-dimension-benchmark=\"{}\" data-dimension-agent=\"{}\" data-dimension-provider=\"{}\" data-dimension-model=\"{}\" data-dimension-workload=\"{}\"><td><strong>{}</strong></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"details\">{}{}{}</td></tr>",
+        html.push_str(&format!("<tr data-dimension-benchmark=\"{}\" data-dimension-agent=\"{}\" data-dimension-provider=\"{}\" data-dimension-model=\"{}\" data-dimension-workload=\"{}\"><td><strong>{}</strong></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"details\">{}{}{}{}</td></tr>",
             escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
             escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
             runtime, success, tokens,
+            evaluation_details,
             metrics_details,
             artifacts,
             benchmark.status.as_ref().map_or(String::new(), |status| format!("<span class=\"status\">{}</span>", escape(status))),

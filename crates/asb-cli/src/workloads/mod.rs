@@ -4,8 +4,6 @@ use crate::suggestions;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
 
 mod adapters;
 
@@ -370,46 +368,133 @@ pub(crate) fn materialize_external_adapter(
     Ok(())
 }
 
+/// Return the kind of deterministic evaluation used for a workload.
+///
+/// External suite names are references to upstream suites, not claims that a
+/// complete upstream benchmark has been executed.  Until an upstream suite
+/// adapter is selected and installed, ASB runs the small adapter-smoke trial
+/// that is materialized beside that reference.
+pub(crate) fn evaluation_kind(name: &str, workspace: &Path) -> &'static str {
+    if let Some(expectation) = source_expectation(name) {
+        if workspace.join(expectation.relative).is_file() {
+            return "bundled-fixture";
+        }
+        return "process-completion";
+    }
+    if adapters::find(name).is_some() {
+        "adapter-smoke"
+    } else {
+        "ungraded"
+    }
+}
+
+fn legacy_process_completion(name: &str, workspace: &Path) -> bool {
+    source_expectation(name).is_some_and(|expectation| {
+        !workspace.join(expectation.relative).exists()
+            && !workspace
+                .join(expectation.relative)
+                .parent()
+                .is_some_and(Path::is_dir)
+    })
+}
+
+struct SourceExpectation {
+    relative: &'static str,
+    required: &'static [&'static str],
+}
+
+fn source_expectation(name: &str) -> Option<SourceExpectation> {
+    Some(match name {
+        "bug-fix" => SourceExpectation {
+            relative: "src/parser.py",
+            required: &["split", "if segment"],
+        },
+        "build-repair" => SourceExpectation {
+            relative: "src/app.py",
+            required: &["build fixture is healthy"],
+        },
+        "dependency-migration" => SourceExpectation {
+            relative: "src/client.py",
+            required: &["request:", "value"],
+        },
+        "feature-addition" => SourceExpectation {
+            relative: "src/formatter.py",
+            required: &["join(", ")"],
+        },
+        "refactoring" => SourceExpectation {
+            relative: "src/labels.py",
+            required: &["label_triplet", ":"],
+        },
+        "repository-navigation" => SourceExpectation {
+            relative: "src/registry.py",
+            required: &["ENTRIES", "lookup"],
+        },
+        "test-generation" => SourceExpectation {
+            relative: "src/temperature.py",
+            required: &["freezing", "hot", "celsius"],
+        },
+        _ => return None,
+    })
+}
+
+fn source_satisfies(path: &Path, expectation: &SourceExpectation) -> Result<bool, String> {
+    let source_path = path.join(expectation.relative);
+    let metadata = fs::metadata(&source_path).map_err(|error| {
+        format!(
+            "cannot inspect workload implementation {}: {error}",
+            source_path.display()
+        )
+    })?;
+    if !metadata.is_file() || metadata.len() > MAX_PROMPT_BYTES {
+        return Ok(false);
+    }
+    let source = fs::read_to_string(&source_path).map_err(|error| {
+        format!(
+            "cannot read workload implementation {}: {error}",
+            source_path.display()
+        )
+    })?;
+    Ok(expectation
+        .required
+        .iter()
+        .all(|needle| source.contains(needle)))
+}
+
 /// Grade a run's materialized workload without treating a zero exit code as
-/// task success.  The grader is deliberately local, bounded, and shell-free.
+/// task success.  Grading is implemented in Rust over evaluator-owned,
+/// immutable expectations; no agent-controlled tests, subprocess, shell, or
+/// inherited credentials are executed.
 pub(crate) fn evaluate(name: &str, workspace: &Path) -> Result<bool, String> {
-    // Built-in prompts retain their historical process-level completion
-    // contract; their fixture tests are advisory because agents may choose a
-    // valid implementation strategy that does not touch the bundled sample.
-    if is_builtin_prompt(name) {
-        return Ok(true);
+    if let Some(expectation) = source_expectation(name) {
+        if legacy_process_completion(name, workspace) {
+            return Ok(true);
+        }
+        return source_satisfies(workspace, &expectation);
     }
     let directory = if adapters::find(name).is_some() {
         workspace.join("external-workload").join("asb-trial")
     } else {
         return Ok(false);
     };
-    if !directory.join("tests").is_dir() {
+    let implementation = directory.join("src/task.py");
+    let metadata = fs::metadata(&implementation).map_err(|error| {
+        format!(
+            "cannot inspect adapter trial implementation {}: {error}",
+            implementation.display()
+        )
+    })?;
+    if !metadata.is_file() || metadata.len() > MAX_PROMPT_BYTES {
         return Ok(false);
     }
-    let mut child = Command::new("python3")
-        .args(["-m", "unittest", "discover", "-s", "tests"])
-        .current_dir(&directory)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| format!("cannot start local workload grader: {error}"))?;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        match child
-            .try_wait()
-            .map_err(|error| format!("cannot poll local workload grader: {error}"))?
-        {
-            Some(status) => return Ok(status.success()),
-            None if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Ok(false);
-            }
-            None => std::thread::sleep(Duration::from_millis(25)),
-        }
-    }
+    let source = fs::read_to_string(&implementation).map_err(|error| {
+        format!(
+            "cannot read adapter trial implementation {}: {error}",
+            implementation.display()
+        )
+    })?;
+    Ok(source.contains("strip()")
+        && source.contains("lower()")
+        && source.contains("replace(' ', '-')"))
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<usize, String> {
@@ -767,12 +852,35 @@ mod tests {
         materialize_external_adapter("agentbench", &workloads).unwrap();
         prepare_external("agentbench", &workloads, &workspace).unwrap();
         let task = workspace.join("external-workload/asb-trial/src/task.py");
+        assert!(!evaluate("agentbench", &workspace).unwrap());
         fs::write(
             &task,
             "def normalize(value: str) -> str:\n    return value.strip().lower().replace(' ', '-')\n",
         )
         .unwrap();
+        // The grader does not execute or read agent-controlled tests.
+        fs::write(
+            workspace.join("external-workload/asb-trial/tests/test_task.py"),
+            "# intentionally tampered by the agent\n",
+        )
+        .unwrap();
         assert!(evaluate("agentbench", &workspace).unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bundled_grader_rejects_the_unfixed_fixture() {
+        let root = std::env::temp_dir().join(format!("asb-builtin-grade-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let workspace = root.join("workspace");
+        prepare_fixture("bug-fix", &workspace).unwrap();
+        assert!(!evaluate("bug-fix", &workspace).unwrap());
+        fs::write(
+            workspace.join("src/parser.py"),
+            "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+        )
+        .unwrap();
+        assert!(evaluate("bug-fix", &workspace).unwrap());
         let _ = fs::remove_dir_all(root);
     }
 

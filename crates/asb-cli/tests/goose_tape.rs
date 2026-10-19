@@ -148,7 +148,7 @@ fetch(host + process.env.OPENAI_BASE_PATH, {method:'POST',headers:{'content-type
   .catch(e => { console.error(e); process.exitCode = 1; });
 "##).unwrap();
     std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
-    std::fs::write(root.join("benchmark.toml"), "agent='goose'\nworkload='bug-fix'\nprovider='openrouter'\nmodel='test-model'\nconcurrency=1\n").unwrap();
+    std::fs::write(root.join("benchmark.toml"), "agent='goose'\nworkload='feature-addition'\nprovider='openrouter'\nmodel='test-model'\nconcurrency=1\n").unwrap();
     let record = run(
         &root,
         &provider.endpoint,
