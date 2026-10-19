@@ -46,6 +46,7 @@ fn exercise_agent(agent: &str, binary: &str, executable: std::ffi::OsString) {
         }
     }
     let provider = std::env::var("ASB_REAL_PROVIDER").unwrap_or_else(|_| "openrouter".into());
+    let split_cache = std::env::var_os("ASB_TEST_SPLIT_CACHE").is_some();
     let model = std::env::var("ASB_REAL_MODEL").unwrap_or_else(|_| "fixture/model".into());
     let deadline = std::env::var("ASB_REAL_TIMEOUT").unwrap_or_else(|_| "25s".into());
     let stamp = SystemTime::now()
@@ -110,7 +111,7 @@ fn exercise_agent(agent: &str, binary: &str, executable: std::ffi::OsString) {
             let reply = if request.contains("What color is this image?") {
                 "red"
             } else {
-                "Fixture complete."
+                "src/cli.py src/registry.py lookup"
             };
             worker_seen.lock().unwrap().push(request);
             let (content_type, body) = if line.starts_with("GET /catalog ") {
@@ -126,11 +127,11 @@ fn exercise_agent(agent: &str, binary: &str, executable: std::ffi::OsString) {
                     serde_json::json!({"type":"response.created","sequence_number":0,"response":{"id":"resp_fixture","object":"response","created_at":1,"status":"in_progress","model":"fixture/model","output":[],"error":null,"incomplete_details":null}}),
                     serde_json::json!({"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"msg_fixture","type":"message","status":"in_progress","role":"assistant","content":[]}}),
                     serde_json::json!({"type":"response.content_part.added","sequence_number":2,"item_id":"msg_fixture","output_index":0,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]}}),
-                    serde_json::json!({"type":"response.output_text.delta","sequence_number":3,"item_id":"msg_fixture","output_index":0,"content_index":0,"delta":"Fixture complete."}),
-                    serde_json::json!({"type":"response.output_text.done","sequence_number":4,"item_id":"msg_fixture","output_index":0,"content_index":0,"text":"Fixture complete."}),
-                    serde_json::json!({"type":"response.content_part.done","sequence_number":5,"item_id":"msg_fixture","output_index":0,"content_index":0,"part":{"type":"output_text","text":"Fixture complete.","annotations":[]}}),
-                    serde_json::json!({"type":"response.output_item.done","sequence_number":6,"output_index":0,"item":{"id":"msg_fixture","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Fixture complete.","annotations":[]}]}}),
-                    serde_json::json!({"type":"response.completed","sequence_number":7,"response":{"id":"resp_fixture","object":"response","created_at":1,"status":"completed","model":"fixture/model","output":[{"id":"msg_fixture","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Fixture complete.","annotations":[]}]}],"error":null,"incomplete_details":null,"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":0},"output_tokens":3,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":13}}}),
+                    serde_json::json!({"type":"response.output_text.delta","sequence_number":3,"item_id":"msg_fixture","output_index":0,"content_index":0,"delta":reply}),
+                    serde_json::json!({"type":"response.output_text.done","sequence_number":4,"item_id":"msg_fixture","output_index":0,"content_index":0,"text":reply}),
+                    serde_json::json!({"type":"response.content_part.done","sequence_number":5,"item_id":"msg_fixture","output_index":0,"content_index":0,"part":{"type":"output_text","text":reply,"annotations":[]}}),
+                    serde_json::json!({"type":"response.output_item.done","sequence_number":6,"output_index":0,"item":{"id":"msg_fixture","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":reply,"annotations":[]}]}}),
+                    serde_json::json!({"type":"response.completed","sequence_number":7,"response":{"id":"resp_fixture","object":"response","created_at":1,"status":"completed","model":"fixture/model","output":[{"id":"msg_fixture","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":reply,"annotations":[]}]}],"error":null,"incomplete_details":null,"usage":{"input_tokens":10,"input_tokens_details":{"cached_tokens":0},"output_tokens":3,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":13}}}),
                 ];
                 (
                     "text/event-stream",
@@ -146,11 +147,12 @@ fn exercise_agent(agent: &str, binary: &str, executable: std::ffi::OsString) {
                 )
             } else if line.starts_with("POST /v1/chat/completions ") {
                 if !streaming {
-                    ("application/json", serde_json::json!({"id":"chatcmpl_fixture","object":"chat.completion","created":1,"model":"fixture/model","choices":[{"index":0,"message":{"role":"assistant","content":"Fixture complete."},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}).to_string())
+                    ("application/json", serde_json::json!({"id":"chatcmpl_fixture","object":"chat.completion","created":1,"model":"fixture/model","choices":[{"index":0,"message":{"role":"assistant","content":reply},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}).to_string())
                 } else {
                     ("text/event-stream", [
-                    serde_json::json!({"id":"chatcmpl_fixture","object":"chat.completion.chunk","created":1,"model":"fixture/model","choices":[{"index":0,"delta":{"role":"assistant","content":"Fixture complete."},"finish_reason":null}]}),
+                    serde_json::json!({"id":"chatcmpl_fixture","object":"chat.completion.chunk","created":1,"model":"fixture/model","choices":[{"index":0,"delta":{"role":"assistant","content":reply},"finish_reason":null}]}),
                     serde_json::json!({"id":"chatcmpl_fixture","object":"chat.completion.chunk","created":1,"model":"fixture/model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+                    serde_json::json!({"id":"chatcmpl_fixture","object":"chat.completion.chunk","created":1,"model":"fixture/model","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}),
                 ].iter().map(|event| format!("data: {event}\n\n")).collect::<String>() + "data: [DONE]\n\n")
                 }
             } else if line.starts_with("POST /v1/messages ")
@@ -160,9 +162,9 @@ fn exercise_agent(agent: &str, binary: &str, executable: std::ffi::OsString) {
                     ("application/json", serde_json::json!({"id":"msg_fixture","type":"message","role":"assistant","model":"fixture/model","content":[{"type":"text","text":reply}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":3}}).to_string())
                 } else {
                     let events = [
-                        serde_json::json!({"type":"message_start","message":{"id":"msg_fixture","type":"message","role":"assistant","model":"fixture/model","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":0}}}),
+                        serde_json::json!({"type":"message_start","message":{"id":"msg_fixture","type":"message","role":"assistant","model":"fixture/model","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":0,"cache_read_input_tokens":if split_cache {4} else {0},"cache_creation_input_tokens":if split_cache {2} else {0}}}}),
                         serde_json::json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
-                        serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Fixture complete."}}),
+                        serde_json::json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":reply}}),
                         serde_json::json!({"type":"content_block_stop","index":0}),
                         serde_json::json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":3}}),
                         serde_json::json!({"type":"message_stop"}),
@@ -225,7 +227,7 @@ fn exercise_agent(agent: &str, binary: &str, executable: std::ffi::OsString) {
     let bin_dir = root.join(".asb-tools").join(agent).join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
     symlink(executable, bin_dir.join(binary)).unwrap();
-    std::fs::write(root.join("benchmark.toml"), format!("agent='{agent}'\nworkload='bug-fix'\nprovider='{provider}'\nmodel='{model}'\nworkspace='workspace'\nlog_file='run.log'\n")).unwrap();
+    std::fs::write(root.join("benchmark.toml"), format!("agent='{agent}'\nworkload='repository-navigation'\nprovider='{provider}'\nmodel='{model}'\nworkspace='workspace'\nlog_file='run.log'\n")).unwrap();
     let output = run(&["run", "benchmark.toml", "--show-output"]);
     stop.store(true, Ordering::Relaxed);
     worker.join().unwrap();
@@ -291,6 +293,31 @@ fn exercise_agent(agent: &str, binary: &str, executable: std::ffi::OsString) {
             .any(|request| !request.contains("What color is this image?")),
         "the only model request was OpenJiuwen's image-capability probe, not the benchmark task"
     );
+    if matches!(agent, "qwen-code" | "openjiuwen") {
+        let run: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("run.log")).unwrap()).unwrap();
+        let usage = &run["token_usage"];
+        let calls = responses
+            .iter()
+            .filter(|request| !request.contains("What color is this image?"))
+            .count() as u64;
+        let input = if split_cache && provider == "anthropic" {
+            16
+        } else {
+            10
+        };
+        assert_eq!(
+            usage["input_tokens"],
+            calls * input,
+            "{agent} usage: {usage}"
+        );
+        assert_eq!(usage["output_tokens"], calls * 3, "{agent} usage: {usage}");
+        assert_eq!(
+            usage["total_tokens"],
+            calls * (input + 3),
+            "{agent} usage: {usage}"
+        );
+    }
     let headers = responses[0].to_ascii_lowercase();
     assert!(
         headers.contains("authorization: bearer fixture-key")

@@ -131,6 +131,10 @@ pub fn known_models(provider: &str) -> Option<&'static [&'static str]> {
     adapters::find(provider).and_then(|adapter| adapter.known_models())
 }
 
+pub(crate) fn anthropic_input_includes_cache(provider: &str) -> bool {
+    adapters::find(provider).is_some_and(|adapter| adapter.anthropic_input_includes_cache())
+}
+
 pub(crate) fn public_catalog(provider: &str, credential_present: bool) -> bool {
     adapters::find(provider).is_some_and(|adapter| adapter.public_catalog(credential_present))
 }

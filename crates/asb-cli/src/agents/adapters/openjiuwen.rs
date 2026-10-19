@@ -15,7 +15,55 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     command,
     prepare_adapter,
 )
-.with_replay_credential_vars(&["OPENJIUWEN_API_KEY"]);
+.with_replay_credential_vars(&["OPENJIUWEN_API_KEY"])
+.with_output_usage(output_usage)
+.with_final_response(final_response)
+.with_process(process);
+
+/// Launch the installed Python entry point with a narrow, in-process fix for
+/// upstream's loss of initial usage when a streaming delta carries a partial
+/// usage object. Non-Python custom executables continue to run unmodified.
+fn process(executable: &str) -> Result<std::process::Command, Error> {
+    use std::io::{BufRead, BufReader, Read};
+    use std::path::{Path, PathBuf};
+    let path = Path::new(executable);
+    let path = if path.components().count() > 1 {
+        Some(path.to_path_buf())
+    } else {
+        std::env::var_os("PATH").and_then(|value| {
+            std::env::split_paths(&value)
+                .map(|dir| dir.join(executable))
+                .find(|candidate| candidate.is_file())
+        })
+    };
+    let Some(path) = path else {
+        return Ok(std::process::Command::new(executable));
+    };
+    let first = std::fs::File::open(&path)
+        .ok()
+        .and_then(|file| BufReader::new(file.take(4096)).lines().next()?.ok());
+    let interpreter = first
+        .as_deref()
+        .and_then(|line| line.strip_prefix("#!"))
+        .map(str::trim)
+        .filter(|line| {
+            !line.contains(' ')
+                && Path::new(line)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|name| name.starts_with("python"))
+        })
+        .map(PathBuf::from);
+    let Some(interpreter) = interpreter else {
+        return Ok(std::process::Command::new(executable));
+    };
+    let mut command = std::process::Command::new(interpreter);
+    command
+        .arg("-c")
+        .arg(include_str!("openjiuwen/usage_compat.py"))
+        .arg(path);
+    Ok(command)
+}
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "openjiuwen".into(),
@@ -29,7 +77,7 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
             context.endpoint.unwrap_or_default(),
             "run",
             "-f",
-            "json",
+            "stream-json",
             &format!(
                 "{}\n\nDo not use todo/planning tools for this run. Execute the requested work directly and return a final response when complete.",
                 context.prompt
@@ -39,6 +87,90 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
         .map(str::to_owned)
         .collect(),
         append_prompt: false,
+    }
+}
+
+fn output_usage(
+    stdout: &str,
+    _stderr: &str,
+    input_includes_cache: bool,
+) -> crate::measurements::TokenUsage {
+    let mut sum = crate::measurements::TokenUsage::default();
+    let mut seen = false;
+    let mut cache_complete = true;
+    for event in stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+    {
+        if event.get("type").and_then(|v| v.as_str()) != Some("llm_usage") {
+            continue;
+        }
+        let Some(metadata) = event.pointer("/payload/usage_metadata") else {
+            return Default::default();
+        };
+        let mut usage = super::super::usage_fields(metadata);
+        // The SDK normally adds cache reads and writes to the wire input.
+        // Some compatible providers already include them in the wire input.
+        if input_includes_cache {
+            let extra = usage.cached_tokens.unwrap_or(0).saturating_add(
+                metadata
+                    .get("cache_creation_input_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            );
+            usage.input_tokens = usage
+                .input_tokens
+                .and_then(|input| input.checked_sub(extra));
+            usage.total_tokens = None;
+        }
+        if usage.input_tokens.is_none()
+            || usage.output_tokens.is_none()
+            || usage.input_tokens == Some(0)
+        {
+            return Default::default();
+        }
+        cache_complete &= usage.cached_tokens.is_some();
+        sum = sum.add(usage);
+        seen = true;
+    }
+    if seen {
+        if !cache_complete {
+            sum.cached_tokens = None;
+        }
+        sum.with_derived_total()
+    } else {
+        Default::default()
+    }
+}
+
+fn final_response(output: &str, _workspace: &std::path::Path) -> Option<String> {
+    let mut text = String::new();
+    let mut answer = String::new();
+    for event in output
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+    {
+        let target = match event.get("type").and_then(|v| v.as_str()) {
+            Some("llm_output") => &mut text,
+            Some("answer") => &mut answer,
+            _ => continue,
+        };
+        if let Some(payload) = event.get("payload") {
+            if let Some(content) = payload
+                .as_str()
+                .or_else(|| payload.get("content").and_then(|v| v.as_str()))
+                .or_else(|| payload.get("output").and_then(|v| v.as_str()))
+            {
+                target.push_str(content);
+            }
+        }
+    }
+    if !text.trim().is_empty() {
+        Some(text)
+    } else if !answer.trim().is_empty() {
+        Some(answer)
+    } else {
+        None
     }
 }
 
@@ -78,6 +210,118 @@ mod tests {
         });
         assert_eq!(spec.args.first().map(String::as_str), Some("-v"));
         assert!(!spec.args.iter().any(|arg| arg == "-w"));
+        assert!(
+            spec.args
+                .windows(2)
+                .any(|pair| pair[0] == "-f" && pair[1] == "stream-json")
+        );
+    }
+
+    #[test]
+    fn stream_usage_sums_real_calls_only_and_reassembles_output() {
+        let output = concat!(
+            "{\"type\":\"context_usage\",\"payload\":{\"input_tokens\":999999}}\n",
+            "{\"type\":\"llm_output\",\"payload\":{\"content\":\"src/cli.py \"}}\n",
+            "{\"type\":\"llm_usage\",\"payload\":{\"usage_metadata\":{\"input_tokens\":9326,\"output_tokens\":58,\"cache_read_tokens\":12}}}\n",
+            "{\"type\":\"llm_output\",\"payload\":{\"content\":\"src/registry.py lookup\"}}\n",
+            "{\"type\":\"llm_usage\",\"payload\":{\"usage_metadata\":{\"input_tokens\":9401,\"output_tokens\":66,\"cache_read_tokens\":34}}}\n",
+            "{\"type\":\"answer\",\"payload\":{\"content\":\"duplicate answer\"}}\n",
+        );
+        let usage = crate::measurements::token_usage_from_sources(
+            "anthropic",
+            "openjiuwen",
+            output,
+            "",
+            None,
+        );
+        assert_eq!(
+            (
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.cached_tokens,
+                usage.total_tokens
+            ),
+            (Some(18727), Some(124), Some(46), Some(18851))
+        );
+        assert_eq!(
+            super::final_response(output, std::path::Path::new(".")),
+            Some("src/cli.py src/registry.py lookup".into())
+        );
+        let unknown = crate::measurements::token_usage_from_sources(
+            "cli2key",
+            "openjiuwen",
+            "{\"type\":\"llm_usage\",\"payload\":{\"usage_metadata\":{\"input_tokens\":0,\"output_tokens\":0}}}\n",
+            "",
+            None,
+        );
+        assert_eq!(unknown.total_tokens, None);
+    }
+
+    #[test]
+    fn inclusive_wire_cache_is_not_counted_twice() {
+        let output = r#"{"type":"llm_usage","payload":{"usage_metadata":{"input_tokens":1000,"output_tokens":10,"cache_read_tokens":200,"cache_creation_input_tokens":50}}}"#;
+        let inclusive = super::output_usage(output, "", true);
+        assert_eq!(
+            (
+                inclusive.input_tokens,
+                inclusive.output_tokens,
+                inclusive.total_tokens
+            ),
+            (Some(750), Some(10), Some(760))
+        );
+        let standard = super::output_usage(output, "", false);
+        assert_eq!(
+            (standard.input_tokens, standard.total_tokens),
+            (Some(1000), Some(1010))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compatibility_launcher_preserves_split_stream_usage_without_changing_content() {
+        use std::os::unix::fs::PermissionsExt;
+        let root =
+            std::env::temp_dir().join(format!("asb-openjiuwen-usage-{}", std::process::id()));
+        let module = root.join("openjiuwen/core/foundation/llm/schema");
+        std::fs::create_dir_all(&module).unwrap();
+        std::fs::write(module.join("message_chunk.py"), r#"
+class Usage:
+    def __init__(self, **fields): self.__dict__.update(fields)
+    def model_copy(self, update): return Usage(**(self.__dict__ | update))
+class AssistantMessageChunk:
+    def __init__(self, content, usage_metadata): self.content, self.usage_metadata = content, usage_metadata
+    def __add__(self, other): return AssistantMessageChunk(self.content + other.content, other.usage_metadata or self.usage_metadata)
+"#).unwrap();
+        let python = std::process::Command::new("python3")
+            .args(["-c", "import sys; print(sys.executable)"])
+            .output()
+            .unwrap();
+        assert!(python.status.success());
+        let python = String::from_utf8(python.stdout).unwrap();
+        let entry = root.join("openjiuwen-test");
+        std::fs::write(&entry, format!(r#"#!{}
+from openjiuwen.core.foundation.llm.schema.message_chunk import AssistantMessageChunk as C, Usage
+first = C('left', Usage(input_tokens=120, output_tokens=0, cache_read_tokens=7))
+second = C('right', Usage(input_tokens=0, output_tokens=9, cache_read_tokens=0))
+value = first + second
+print(value.content, value.usage_metadata.input_tokens, value.usage_metadata.output_tokens, value.usage_metadata.cache_read_tokens, value.usage_metadata.total_tokens)
+"#, python.trim())).unwrap();
+        std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let output = super::process(entry.to_str().unwrap())
+            .unwrap()
+            .env("PYTHONPATH", &root)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "leftright 120 9 7 129"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
 

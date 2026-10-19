@@ -37,6 +37,7 @@ jobs:
           test -n "$package"
           archive=$(tar -tf "$package")
           for asset in \
+            src/agents/adapters/openjiuwen/usage_compat.py \
             assets/scripts/cli2key-proxy.mjs \
             assets/scripts/llmtape.mjs \
             assets/scripts/network-fetch.mjs \

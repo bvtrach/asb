@@ -23,11 +23,23 @@ pub(crate) trait AgentAdapter: Sync {
     fn supported_endpoints(&self) -> &'static [Support];
     fn command(&self, context: &CommandContext<'_>) -> CommandSpec;
     fn prepare(&self, context: &mut PreparationContext<'_>) -> Result<(), Error>;
+    fn process(&self, executable: &str) -> Result<Command, Error> {
+        Ok(Command::new(executable))
+    }
     fn replay_credential_vars(&self) -> &'static [&'static str] {
         &[]
     }
     fn collect(&self, _context: &CollectionContext<'_>) -> AgentArtifacts {
         AgentArtifacts::default()
+    }
+    /// `Some` means the adapter owns parsing of its output, even if usage is unavailable.
+    fn output_usage(
+        &self,
+        _stdout: &str,
+        _stderr: &str,
+        _input_includes_cache: bool,
+    ) -> Option<crate::measurements::TokenUsage> {
+        None
     }
     /// Extract the agent's structured final answer from machine-readable
     /// output.  Intermediate tool events and echoed prompts are never treated
@@ -72,6 +84,9 @@ pub(crate) struct CollectionContext<'a> {
 type CommandBuilder = for<'a> fn(&CommandContext<'a>) -> CommandSpec;
 type PreparationHook = for<'a> fn(&mut PreparationContext<'a>) -> Result<(), Error>;
 type CollectionHook = for<'a> fn(&CollectionContext<'a>) -> AgentArtifacts;
+type UsageHook = fn(&str, &str, bool) -> crate::measurements::TokenUsage;
+type FinalResponseHook = fn(&str, &Path) -> Option<String>;
+type ProcessHook = fn(&str) -> Result<Command, Error>;
 
 /// Trait-object implementation whose behavior is supplied by individual files.
 pub(super) struct StaticAdapter {
@@ -82,6 +97,9 @@ pub(super) struct StaticAdapter {
     command: CommandBuilder,
     prepare: PreparationHook,
     collect: Option<CollectionHook>,
+    output_usage: Option<UsageHook>,
+    final_response: Option<FinalResponseHook>,
+    process: Option<ProcessHook>,
     replay_credential_vars: &'static [&'static str],
 }
 impl StaticAdapter {
@@ -101,12 +119,30 @@ impl StaticAdapter {
             command,
             prepare,
             collect: None,
+            output_usage: None,
+            final_response: None,
+            process: None,
             replay_credential_vars: &[],
         }
     }
 
     pub(super) const fn with_collection(mut self, collect: CollectionHook) -> Self {
         self.collect = Some(collect);
+        self
+    }
+
+    pub(super) const fn with_output_usage(mut self, hook: UsageHook) -> Self {
+        self.output_usage = Some(hook);
+        self
+    }
+
+    pub(super) const fn with_final_response(mut self, hook: FinalResponseHook) -> Self {
+        self.final_response = Some(hook);
+        self
+    }
+
+    pub(super) const fn with_process(mut self, hook: ProcessHook) -> Self {
+        self.process = Some(hook);
         self
     }
 
@@ -137,6 +173,10 @@ impl AgentAdapter for StaticAdapter {
     fn prepare(&self, context: &mut PreparationContext<'_>) -> Result<(), Error> {
         (self.prepare)(context)
     }
+    fn process(&self, executable: &str) -> Result<Command, Error> {
+        self.process
+            .map_or_else(|| Ok(Command::new(executable)), |hook| hook(executable))
+    }
     fn replay_credential_vars(&self) -> &'static [&'static str] {
         self.replay_credential_vars
     }
@@ -144,6 +184,21 @@ impl AgentAdapter for StaticAdapter {
         self.collect
             .map(|collect| collect(context))
             .unwrap_or_default()
+    }
+    fn output_usage(
+        &self,
+        stdout: &str,
+        stderr: &str,
+        input_includes_cache: bool,
+    ) -> Option<crate::measurements::TokenUsage> {
+        self.output_usage
+            .map(|hook| hook(stdout, stderr, input_includes_cache))
+    }
+    fn final_response(&self, output: &str, workspace: &Path) -> Option<String> {
+        self.final_response.map_or_else(
+            || structured_final_response(output),
+            |hook| hook(output, workspace),
+        )
     }
 }
 pub(crate) fn prepare(agent: &str, context: &mut PreparationContext<'_>) -> Result<(), Error> {
@@ -170,6 +225,40 @@ pub(crate) fn names() -> impl Iterator<Item = &'static str> {
 }
 pub(crate) fn find(id: &str) -> Option<&'static dyn AgentAdapter> {
     REGISTRY.iter().copied().find(|adapter| adapter.id() == id)
+}
+
+/// Read explicit usage fields only; never infer token counts from text.
+pub(super) fn usage_fields(value: &serde_json::Value) -> crate::measurements::TokenUsage {
+    let number = |keys: &[&str]| {
+        keys.iter().find_map(|key| {
+            value
+                .get(key)
+                .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+        })
+    };
+    crate::measurements::TokenUsage {
+        input_tokens: number(&[
+            "input_tokens",
+            "prompt_tokens",
+            "inputTokens",
+            "promptTokens",
+        ]),
+        output_tokens: number(&[
+            "output_tokens",
+            "completion_tokens",
+            "outputTokens",
+            "completionTokens",
+        ]),
+        cached_tokens: number(&[
+            "cache_read_input_tokens",
+            "cache_read_tokens",
+            "cached_tokens",
+            "cached",
+            "cache_tokens",
+        ]),
+        total_tokens: number(&["total_tokens", "totalTokens", "total"]),
+        source: None,
+    }
 }
 
 pub(crate) fn final_response(id: &str, output: &str, workspace: &Path) -> Option<String> {

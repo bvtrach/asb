@@ -188,8 +188,13 @@ supported agent family, including Claude Code, Goose, Cline, and Continue,
 and maps provider aliases such as `prompt_tokens`, `inputTokens`,
 `promptTokenCount`, `cacheRead`, and `total` to the stable input, output, cached,
 and total fields. When input and output are present, total is canonicalized to
-their sum because cached input is a subset of input. OpenHands and OpenJiuwen are invoked in
-machine-readable JSON modes; mini-SWE writes a project-local trajectory that
+their sum because cached input is a subset of input. Qwen Code's adapter reads
+the final cumulative result; OpenJiuwen's adapter consumes per-model-call
+streaming usage, with a process-local compatibility shim for its pinned
+client's partial streaming metadata. Cassette accounting combines usage
+snapshots within each response and sums completed calls; incomplete accounting
+is not promoted to a whole-run total. OpenHands and OpenJiuwen use
+machine-readable output; mini-SWE writes a project-local trajectory that
 is parsed for nested provider usage before it is removed. Their terminal output is intentionally limited to success
 rate, elapsed time, and token usage; `--json` changes only the representation
 of those metrics.
