@@ -350,7 +350,10 @@ pub(crate) fn bpftrace_profile_probe(
     profile: BpftraceProfile,
     sudo: bool,
 ) -> Result<bool, String> {
-    let program = format!("{}\nBEGIN {{ exit(); }}", profile.program);
+    // Compile the same process-tree prelude used by the live collector. The
+    // preflight must not reject a valid profile merely because its tree map is
+    // populated by the runtime attach path.
+    let program = profile_probe_program(profile);
     let mut command = if sudo {
         let mut command = Command::new("sudo");
         command.args(["-n", "--"]);
@@ -409,6 +412,34 @@ pub(crate) fn write_bpftrace_profile_svg(
     svg.push_str("</svg>\n");
     fs::write(dir.join(format!("bpftrace-{profile}.svg")), svg)
         .map_err(|error| format!("cannot write bpftrace profile SVG: {error}"))
+}
+
+fn profile_probe_program(profile: BpftraceProfile) -> String {
+    format!(
+        "{}\n{}\ninterval:ms:1 {{ exit(); }}",
+        process_tree_prelude(0),
+        profile.program
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BPFTRACE_PROFILES, profile_probe_program};
+
+    #[test]
+    fn profile_preflight_uses_the_same_seeded_tree_program_as_runtime() {
+        let profile = BPFTRACE_PROFILES
+            .iter()
+            .find(|profile| profile.name == "sched-latency")
+            .copied()
+            .expect("built-in profile");
+        let program = profile_probe_program(profile);
+        assert!(program.contains("@asb_tree[0] = 1;"));
+        assert!(program.contains("sched_process_fork"));
+        assert!(program.contains(profile.program));
+        assert!(program.contains("interval:ms:1 { exit(); }"));
+        assert!(!program.contains("BEGIN { exit(); }"));
+    }
 }
 
 /// bpftrace prints aggregation maps as `@asb_metric: value`. Only these
