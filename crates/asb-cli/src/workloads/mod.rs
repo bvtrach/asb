@@ -467,6 +467,7 @@ fn source_expectation(name: &str) -> Option<SourceExpectation> {
                     "import unittest\n\nfrom src.temperature import classify\n\nclass TemperatureTests(unittest.TestCase):\n    def test_freezing(self):\n        self.assertEqual(classify(-1), \"freezing\")\n\n    def test_hot(self):\n        self.assertEqual(classify(31), \"hot\")\n\n    def test_mild_lower_boundary(self):\n        self.assertEqual(classify(0), \"mild\")\n\n    def test_mild_upper_boundary(self):\n        self.assertEqual(classify(30), \"mild\")\n\nif __name__ == \"__main__\":\n    unittest.main()\n",
                     "import math\n\nimport unittest\n\nfrom src.temperature import classify\n\nclass TemperatureTests(unittest.TestCase):\n    def test_freezing(self):\n        self.assertEqual(classify(-1), \"freezing\")\n\n    def test_hot(self):\n        self.assertEqual(classify(31), \"hot\")\n\n    def test_freezing_boundary(self):\n        cases = (\n            (math.nextafter(0.0, -math.inf), \"freezing\"),\n            (0.0, \"mild\"),\n            (math.nextafter(0.0, math.inf), \"mild\"),\n        )\n        for celsius, expected in cases:\n            with self.subTest(celsius=celsius):\n                self.assertEqual(classify(celsius), expected)\n\n    def test_hot_boundary(self):\n        cases = (\n            (math.nextafter(30.0, -math.inf), \"mild\"),\n            (30.0, \"mild\"),\n            (math.nextafter(30.0, math.inf), \"hot\")\n        )\n        for celsius, expected in cases:\n            with self.subTest(celsius=celsius):\n                self.assertEqual(classify(celsius), expected)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n",
                     "import unittest\n\nfrom src.temperature import classify\n\nclass TemperatureTests(unittest.TestCase):\n    def test_freezing(self):\n        self.assertEqual(classify(-1), \"freezing\")\n\n    def test_hot(self):\n        self.assertEqual(classify(31), \"hot\")\n\n    def test_freezing_boundary(self):\n        for celsius, expected in [\n            (-0.1, \"freezing\"),\n            (0, \"mild\"),\n            (0.1, \"mild\"),\n        ]:\n            with self.subTest(celsius=celsius):\n                self.assertEqual(classify(celsius), expected)\n\n    def test_hot_boundary(self):\n        for celsius, expected in [\n            (29.9, \"mild\"),\n            (30, \"mild\"),\n            (30.1, \"hot\"),\n        ]:\n            with self.subTest(celsius=celsius):\n                self.assertEqual(classify(celsius), expected)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n",
+                    "import unittest\n\nfrom src.temperature import classify\n\nclass TemperatureTests(unittest.TestCase):\n    def test_freezing(self):\n        self.assertEqual(classify(-1), \"freezing\")\n\n    def test_hot(self):\n        self.assertEqual(classify(31), \"hot\")\n\n    def test_freezing_boundary(self):\n        for celsius, expected in (\n            (-0.1, \"freezing\"),\n            (0, \"mild\"),\n            (0.1, \"mild\"),\n        ):\n            with self.subTest(celsius=celsius):\n                self.assertEqual(classify(celsius), expected)\n\n    def test_hot_boundary(self):\n        for celsius, expected in (\n            (29.9, \"mild\"),\n            (30, \"mild\"),\n            (30.1, \"hot\"),\n        ):\n            with self.subTest(celsius=celsius):\n                self.assertEqual(classify(celsius), expected)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n",
                 ],
             }],
         },
@@ -1022,6 +1023,24 @@ mod tests {
         .unwrap();
         assert!(evaluate("test-generation", &test_generation_workspace, "").unwrap());
 
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bundled_grader_accepts_multiline_tuple_test_generation_variant() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-test-generation-multiline-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let workspace = root.join("workspace");
+        prepare_fixture("test-generation", &workspace).unwrap();
+        fs::write(
+            workspace.join("tests/test_temperature.py"),
+            "import unittest\n\nfrom src.temperature import classify\n\nclass TemperatureTests(unittest.TestCase):\n    def test_freezing(self):\n        self.assertEqual(classify(-1), \"freezing\")\n\n    def test_hot(self):\n        self.assertEqual(classify(31), \"hot\")\n\n    def test_freezing_boundary(self):\n        for celsius, expected in (\n            (-0.1, \"freezing\"),\n            (0, \"mild\"),\n            (0.1, \"mild\"),\n        ):\n            with self.subTest(celsius=celsius):\n                self.assertEqual(classify(celsius), expected)\n\n    def test_hot_boundary(self):\n        for celsius, expected in (\n            (29.9, \"mild\"),\n            (30, \"mild\"),\n            (30.1, \"hot\"),\n        ):\n            with self.subTest(celsius=celsius):\n                self.assertEqual(classify(celsius), expected)\n\n\nif __name__ == \"__main__\":\n    unittest.main()\n",
+        )
+        .unwrap();
+        assert!(evaluate("test-generation", &workspace, "").unwrap());
         let _ = fs::remove_dir_all(root);
     }
 
