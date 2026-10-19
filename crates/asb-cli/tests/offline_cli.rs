@@ -92,6 +92,30 @@ fn expect_success(output: &Output) {
 }
 
 #[cfg(unix)]
+fn fake_perf_distribution(project: &Project, bin: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    for (name, script) in [
+        (
+            "apt-cache",
+            "#!/bin/sh\necho '  Depends: linux-test-tools-1'\n".to_owned(),
+        ),
+        ("apt-get", "#!/bin/sh\ntouch package.deb\n".to_owned()),
+        (
+            "dpkg-deb",
+            format!(
+                "#!/bin/sh\nmkdir -p \"$3/usr/bin\"\ncp '{}' \"$3/usr/bin/perf\"\nchmod +x \"$3/usr/bin/perf\"\n",
+                project.0.join(bin).join("perf").display()
+            ),
+        ),
+    ] {
+        let file = format!("{bin}/{name}");
+        project.write(&file, &script);
+        std::fs::set_permissions(project.0.join(file), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+    }
+}
+
+#[cfg(unix)]
 #[test]
 fn tui_selection_installs_locally_before_enabling_agent_or_workload() {
     use std::os::unix::fs::PermissionsExt;
@@ -115,6 +139,7 @@ fn tui_selection_installs_locally_before_enabling_agent_or_workload() {
             )
             .unwrap();
         }
+        fake_perf_distribution(&project, "fake-bin");
         let path = format!(
             "{}:{}",
             project.0.join("fake-bin").display(),
@@ -1510,6 +1535,7 @@ fn installing_flamegraph_installs_perf_dependency_without_replacing_existing_per
         std::fs::Permissions::from_mode(0o755),
     )
     .unwrap();
+    fake_perf_distribution(&project, "host-bin");
     let path = format!(
         "{}:{}",
         project.0.join("host-bin").display(),
@@ -1555,6 +1581,129 @@ fn installing_flamegraph_installs_perf_dependency_without_replacing_existing_per
 
 #[cfg(unix)]
 #[test]
+fn perf_installs_from_distribution_when_host_perf_is_unusable() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = Project::new();
+    project.init();
+    for (name, script) in [
+        ("perf", "#!/bin/sh\nexit 1\n"),
+        (
+            "apt-cache",
+            "#!/bin/sh\necho '  Depends: linux-test-tools-1'\n",
+        ),
+        ("apt-get", "#!/bin/sh\ntouch package.deb\n"),
+        (
+            "dpkg-deb",
+            "#!/bin/sh\nmkdir -p \"$3/usr/lib/linux-tools/test\"\nprintf '#!/bin/sh\\necho perf version fixture\\n' > \"$3/usr/lib/linux-tools/test/perf\"\nchmod +x \"$3/usr/lib/linux-tools/test/perf\"\n",
+        ),
+    ] {
+        project.write(&format!("fake-bin/{name}"), script);
+        std::fs::set_permissions(
+            project.0.join("fake-bin").join(name),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    let path = format!(
+        "{}:{}",
+        project.0.join("fake-bin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let result = project.command_with_env(&["tool", "install", "perf"], &[("PATH", &path)]);
+    expect_success(&result);
+    let installed = project.0.join(".asb-tools/perf/bin/perf");
+    assert!(installed.is_file());
+    assert!(
+        Command::new(installed)
+            .arg("--version")
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_perf_install_preserves_existing_project_binary() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = Project::new();
+    project.init();
+    for name in ["perf", "apt-get", "curl"] {
+        project.write(&format!("fake-bin/{name}"), "#!/bin/sh\nexit 1\n");
+        std::fs::set_permissions(
+            project.0.join("fake-bin").join(name),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    project.write(".asb-tools/perf/bin/perf", "existing perf");
+    let path = format!(
+        "{}:{}",
+        project.0.join("fake-bin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let result = project.command_with_env(&["tool", "install", "perf"], &[("PATH", &path)]);
+    assert!(!result.status.success());
+    assert!(
+        stderr(&result).contains("Could not build upstream perf"),
+        "{}",
+        stderr(&result)
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.0.join(".asb-tools/perf/bin/perf")).unwrap(),
+        "existing perf"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn perf_builds_from_verified_source_when_distribution_is_unavailable() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = Project::new();
+    project.init();
+    for (name, script) in [
+        ("apt-get", "#!/bin/sh\nexit 1\n"),
+        (
+            "curl",
+            "#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ \"$1\" = --output ]; then shift; printf fixture > \"$1\"; exit 0; fi; shift; done\nexit 1\n",
+        ),
+        (
+            "sha256sum",
+            "#!/bin/sh\necho 'e6c5bbaa1d7a80d8bb4ebd43aa15f2027b308a4cd2bdac9ba303e0e65f17081a  fixture'\n",
+        ),
+        (
+            "tar",
+            "#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ \"$1\" = -C ]; then shift; mkdir -p \"$1/tools/perf\"; exit 0; fi; shift; done\nexit 1\n",
+        ),
+        (
+            "make",
+            "#!/bin/sh\n[ \"$1\" = -C ] || exit 1\nprintf '#!/bin/sh\\necho perf version source-fixture\\n' > \"$2/perf\"\nchmod +x \"$2/perf\"\n",
+        ),
+    ] {
+        project.write(&format!("fake-bin/{name}"), script);
+        std::fs::set_permissions(
+            project.0.join("fake-bin").join(name),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    let path = format!(
+        "{}:{}",
+        project.0.join("fake-bin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let result = project.command_with_env(&["tool", "install", "perf"], &[("PATH", &path)]);
+    expect_success(&result);
+    let installed = project.0.join(".asb-tools/perf/bin/perf");
+    assert!(
+        std::fs::read_to_string(installed)
+            .unwrap()
+            .contains("source-fixture")
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn flamegraph_only_configuration_installs_and_starts_perf_for_concurrent_replay() {
     use std::os::unix::fs::PermissionsExt;
     let project = replay_project(2);
@@ -1576,6 +1725,7 @@ fn flamegraph_only_configuration_installs_and_starts_perf_for_concurrent_replay(
         std::fs::set_permissions(project.0.join(name), std::fs::Permissions::from_mode(0o755))
             .unwrap();
     }
+    fake_perf_distribution(&project, "host-bin");
     let config = std::fs::read_to_string(project.0.join("benchmark.toml")).unwrap()
         + "[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=['flamegraph']\n";
     project.write("benchmark.toml", &config);

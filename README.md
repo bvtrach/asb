@@ -147,10 +147,19 @@ If perf permissions,
 samples, or FlameGraph tools are unavailable, `flamegraph.json` records the
 reason and status as `unavailable`; an ordinary `asb run` is unaffected.
 Selecting `flamegraph` also selects `perf`. ASB installs the required `perf`
-tool in the project automatically from the host when installing FlameGraph,
-using setup, or starting an existing flamegraph-only configuration. If `perf`
-is not available on the host, install the distribution's kernel-compatible
-perf package first, then retry; ASB does not change system packages.
+tool in the project automatically when installing FlameGraph, using setup,
+or starting an existing flamegraph-only configuration. `asb tool install perf`
+first attempts to download and extract a matching perf package from the host's
+configured APT repositories (including Ubuntu kernel-specific packages). If no
+working package is available, it downloads a pinned, SHA-256-verified Linux
+6.12 perf source release from kernel.org and builds it locally. The fallback
+needs a C build toolchain, make, Python, flex, bison, libelf and the other
+development dependencies reported in `.asb/install.log`. A source-built perf
+may not support every event of a newer kernel; if libtraceevent development
+files are missing, tracepoint decoding is disabled in the fallback build.
+ASB does not install system
+packages or change tracing permissions. Network access is needed for installation;
+the resulting executable is stored in the project tools directory.
 Before a run starts, perf and configured BPFTrace collectors are probed without
 prompting. If direct access fails, ASB tries `sudo -n` and uses it for that
 collector only; if passwordless sudo is not already authorized, the run stops
