@@ -160,6 +160,14 @@ pub fn apply_network_proxy(command: &mut Command, start: &Path) -> Result<(), Er
     Ok(())
 }
 
+pub(crate) fn apply_python_path(
+    command: &mut Command,
+    root: &Path,
+    program: &Path,
+) -> Result<(), Error> {
+    crate::python_runtime::add_to_path(command, root, program)
+}
+
 /// Let ASB-owned Node sidecars terminate their outbound subprocesses before
 /// forcing termination, without signalling unrelated process groups.
 pub fn stop_network_child(child: &mut std::process::Child) -> std::io::Result<()> {
@@ -242,6 +250,10 @@ pub fn init(
     let text = toml::to_string_pretty(&config).map_err(|error| Error::Input(error.to_string()))?;
     fs::write(&path, text)
         .map_err(|error| Error::Io(format!("cannot write {}: {error}", path.display())))?;
+    if let Err(error) = crate::python_runtime::ensure(&root, output) {
+        writeln!(output, "Warning: project Python is not ready: {error}\nPython-based tool installation will retry setup; other ASB commands remain available.")
+            .map_err(super::io_error)?;
+    }
     writeln!(
         output,
         "Initialized ASB project at {}\nBundled workloads available: {bundled}\nFixture files available: {fixtures}",

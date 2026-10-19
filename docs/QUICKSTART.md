@@ -158,12 +158,13 @@ The built-in recipes are:
 | `continue` | pinned npm package | `cn` |
 | `cli2key` | pinned npm bridge package | `codex-bridge` |
 
-The npm recipes require `npm`; the Python recipes require `python3` with
-virtual-environment support. `asb tool install AGENT --dry-run` prints the
+The npm recipes require `npm`; Python recipes use the project's Python 3.12 or
+3.13 environment. Initialization uses an installed interpreter or uv, which
+can download Python 3.12 into the project if necessary. An unavailable Python
+does not prevent initialization; installation retries setup. `asb tool install AGENT --dry-run` prints the
 exact local installation plan without changing the project.
 
-If a prerequisite is missing, ASB stops before changing the tool and prints a
-copy-paste repair command. npm can be installed into the user account with
+If a prerequisite is missing, ASB explains what is needed. npm can be installed into the user account with
 `fnm`; Python can be provisioned with `uv`; missing `curl` or `tar` gets the
 matching package-manager command. Run the printed command in the same shell,
 then retry the original `asb tool install` or workload command.

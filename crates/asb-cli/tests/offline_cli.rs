@@ -90,6 +90,181 @@ fn expect_success(output: &Output) {
         stderr(output)
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn init_uses_uv_when_host_python_is_incompatible() {
+    use std::os::unix::fs::PermissionsExt;
+    let base = Project::new();
+    base.init();
+    let compatible = base.0.join(".asb/python/venv/bin/python");
+    assert!(compatible.is_file(), "test host needs a compatible Python");
+    let project = Project::new();
+    for name in ["python3", "python3.12", "python3.13"] {
+        project.write(&format!("fake-bin/{name}"), "#!/bin/sh\nprintf '3.14\\n'\n");
+        std::fs::set_permissions(
+            project.0.join("fake-bin").join(name),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    project.write("fake-bin/uv", &format!(
+        "#!/bin/sh\nif [ \"$1\" = python ]; then exit 1; fi\nprintf '%s\\n' \"$UV_PYTHON_INSTALL_DIR\" > '{}/uv-install-dir'\nfor arg do last=\"$arg\"; done\nexec '{}' -m venv --without-pip \"$last\"\n",
+        project.0.display(), compatible.display()));
+    std::fs::set_permissions(
+        project.0.join("fake-bin/uv"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let fake_path = project.0.join("fake-bin");
+    let result = project.command_with_env(&["init"], &[("PATH", fake_path.to_str().unwrap())]);
+    expect_success(&result);
+    assert!(stdout(&result).contains("using uv to download Python 3.12"));
+    let install_dir = std::fs::read_to_string(project.0.join("uv-install-dir")).unwrap();
+    let install_dir = std::path::Path::new(install_dir.trim());
+    assert!(install_dir.ends_with(".asb/python/uv-python"));
+    assert!(!install_dir.is_absolute() || install_dir.starts_with(&project.0));
+    let python = project.0.join(".asb/python/venv/bin/python");
+    assert!(python.is_file());
+    assert!(
+        Command::new(python)
+            .args([
+                "-c",
+                "import sys; assert (3, 12) <= sys.version_info[:2] < (3, 14)"
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "downloads a standalone Python; set ASB_TEST_UV to the uv executable"]
+fn init_downloads_real_project_local_python_with_uv() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let uv = std::env::var_os("ASB_TEST_UV").expect("set ASB_TEST_UV to an absolute uv path");
+    let project = Project::new();
+    for name in ["python3", "python3.12", "python3.13"] {
+        project.write(&format!("fake-bin/{name}"), "#!/bin/sh\nprintf '3.14\\n'\n");
+        std::fs::set_permissions(
+            project.0.join("fake-bin").join(name),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    symlink(uv, project.0.join("fake-bin/uv")).unwrap();
+    let fake_path = project.0.join("fake-bin");
+    let empty_uv = project.0.join("empty-uv");
+    let result = project.command_with_env(
+        &["init"],
+        &[
+            ("PATH", fake_path.to_str().unwrap()),
+            ("UV_PYTHON_INSTALL_DIR", empty_uv.to_str().unwrap()),
+        ],
+    );
+    expect_success(&result);
+    assert!(
+        stdout(&result).contains("using uv to download Python 3.12"),
+        "{}",
+        stdout(&result)
+    );
+    assert!(
+        !stdout(&result).contains("Warning: project Python"),
+        "{}",
+        stdout(&result)
+    );
+    let python = project.0.join(".asb/python/venv/bin/python");
+    let version = Command::new(python).arg("--version").output().unwrap();
+    assert!(version.status.success());
+    assert!(String::from_utf8_lossy(&version.stdout).starts_with("Python 3.12."));
+    assert!(project.0.join(".asb/python/uv-python").is_dir());
+}
+
+#[cfg(unix)]
+#[test]
+fn init_warns_when_no_compatible_python_or_uv_is_available() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = Project::new();
+    for name in ["python3", "python3.12", "python3.13"] {
+        project.write(&format!("fake-bin/{name}"), "#!/bin/sh\nprintf '3.14\\n'\n");
+        std::fs::set_permissions(
+            project.0.join("fake-bin").join(name),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
+    let fake_path = project.0.join("fake-bin");
+    let result = project.command_with_env(&["init"], &[("PATH", fake_path.to_str().unwrap())]);
+    expect_success(&result);
+    assert!(stdout(&result).contains("Warning: project Python is not ready"));
+    assert!(stdout(&result).contains("Install uv, or install Python 3.12 or 3.13"));
+    assert!(project.0.join(".asb/project.toml").is_file());
+    assert!(!project.0.join(".asb/python/venv/bin/python").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn python_agent_install_replaces_incompatible_venv_without_losing_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = Project::new();
+    project.init();
+    let python = project.0.join(".asb/python/venv/bin/python");
+    assert!(python.is_file(), "test host needs a compatible Python");
+    let wheel_builder = r#"
+import pathlib, sys, zipfile
+root = pathlib.Path(sys.argv[1]); root.mkdir()
+for name, ver in [('openjiuwen', '0.1.19.post2'), ('filelock', '3.32.7')]:
+    dist = f'{name}-{ver}.dist-info'
+    with zipfile.ZipFile(root / f'{name}-{ver}-py3-none-any.whl', 'w') as wheel:
+        wheel.writestr(f'{name}/__init__.py', 'def main():\n    print("fixture agent")\n')
+        wheel.writestr(f'{dist}/METADATA', f'Metadata-Version: 2.1\nName: {name}\nVersion: {ver}\nProvides-Extra: cli\n')
+        wheel.writestr(f'{dist}/WHEEL', 'Wheel-Version: 1.0\nGenerator: asb-test\nRoot-Is-Purelib: true\nTag: py3-none-any\n')
+        wheel.writestr(f'{dist}/RECORD', '')
+        if name == 'openjiuwen': wheel.writestr(f'{dist}/entry_points.txt', '[console_scripts]\nopenjiuwen = openjiuwen:main\n')
+"#;
+    let wheels = project.0.join("wheels");
+    assert!(
+        Command::new(&python)
+            .args(["-c", wheel_builder])
+            .arg(&wheels)
+            .status()
+            .unwrap()
+            .success()
+    );
+    project.write(
+        ".asb-tools/openjiuwen/venv/bin/python",
+        "#!/bin/sh\nprintf '3.14\\n'\n",
+    );
+    std::fs::set_permissions(
+        project.0.join(".asb-tools/openjiuwen/venv/bin/python"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    project.write(".asb-tools/openjiuwen/venv/keep.txt", "preserve me");
+    let result = project.command_with_env(
+        &["tool", "install", "openjiuwen"],
+        &[
+            ("PIP_NO_INDEX", "1"),
+            ("PIP_FIND_LINKS", wheels.to_str().unwrap()),
+        ],
+    );
+    expect_success(&result);
+    assert!(stdout(&result).contains("Preserved the previous tool Python environment"));
+    assert_eq!(
+        std::fs::read_to_string(
+            project
+                .0
+                .join(".asb-tools/openjiuwen/venv.asb-backup-1/venv/keep.txt")
+        )
+        .unwrap(),
+        "preserve me"
+    );
+    let executable = project.0.join(".asb-tools/openjiuwen/venv/bin/openjiuwen");
+    let output = Command::new(executable).output().unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("fixture agent"));
+}
 fn expect_failure(output: &Output, message: &str) {
     assert!(
         !output.status.success(),

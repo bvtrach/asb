@@ -575,6 +575,7 @@ fn run_mode(
             tape_mode.expect("tape URL implies tape mode"),
         );
     }
+    project::apply_python_path(&mut command, &project_root, Path::new(&program))?;
     let child = run_measured_agent(
         &mut command,
         &program,

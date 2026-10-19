@@ -81,6 +81,10 @@ the external program's Node version and does not add SOCKS support to it.
 
 Run `asb init` in a separate benchmark project directory; it intentionally
 refuses to modify the ASB source checkout.
+Initialization prepares a project-local Python environment using an available
+Python 3.12 or 3.13. If neither is available, it uses `uv` to download Python
+3.12 into the project. If this is not possible, it warns and Python tool
+installation retries setup later; non-Python functionality remains available.
 If the directory is already initialized, ASB warns and makes no changes;
 rerun with `--reset` to remove managed state and create a fresh project.
 For safety, reset accepts managed directories only as direct project children
@@ -302,9 +306,9 @@ the selected agent and provider, then writes the agent-specific configuration.
 Not every agent, provider, and model combination is compatible; ASB reports
 when there is no matching interface.
 
-If npm, Python, curl, or tar is unavailable, the failed command prints a
-copy-paste repair command. The npm repair uses user-local `fnm`; the Python
-repair uses user-local `uv`; after running the printed command, retry ASB.
+If npm, Python, curl, or tar is unavailable, the failed command describes the
+missing prerequisite. The npm repair uses user-local `fnm`; the Python setup
+can use `uv` and records details in `.asb/python/setup.log`.
 
 Pi is run in non-interactive print mode. With `provider = "cli2key"`, ASB
 maps the request to Pi's OpenAI-compatible provider and supplies the bridge
