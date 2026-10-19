@@ -11,7 +11,31 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     command,
     prepare_adapter,
 )
-.with_replay_credential_vars(&["CODEBUDDY_API_KEY", "CODEBUDDY_AUTH_TOKEN"]);
+.with_replay_credential_vars(&["CODEBUDDY_API_KEY", "CODEBUDDY_AUTH_TOKEN"])
+.with_output_usage(output_usage);
+
+fn output_usage(stdout: &str, stderr: &str, _: bool) -> crate::measurements::TokenUsage {
+    fn result(value: &serde_json::Value) -> Option<crate::measurements::TokenUsage> {
+        match value {
+            serde_json::Value::Array(events) => events.iter().rev().find_map(result),
+            serde_json::Value::Object(event)
+                if event.get("type").and_then(|v| v.as_str()) == Some("result") =>
+            {
+                event.get("usage").map(super::super::usage_fields)
+            }
+            _ => None,
+        }
+    }
+    serde_json::from_str::<serde_json::Value>(stdout)
+        .ok()
+        .and_then(|v| result(&v))
+        .unwrap_or_else(|| {
+            crate::collectors::adapters::token_usage::usage_from_text(&format!(
+                "{stdout}\n{stderr}"
+            ))
+        })
+        .with_derived_total()
+}
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "codebuddy".into(),

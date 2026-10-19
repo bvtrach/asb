@@ -700,7 +700,13 @@ classDiagram
         -packages: BTreeSet~String~
         -cores: BTreeSet~(String, String)~
     }
-    class C099["providers_ModelSpec"] {
+    class C099["measurements_Drop"] {
+        +drop() void
+    }
+    class C100["measurements_Fixture"] {
+        +new(contents: &str) Self
+    }
+    class C101["providers_ModelSpec"] {
         +name: &'static str
         +credential: Option~&'static str~
         +endpoint: Option~&'static str~
@@ -709,7 +715,7 @@ classDiagram
         +url(self) Option~String~
         +url_for_model(self, selected: Option~&str~) Option~String~
     }
-    class C100["providers_ProviderSpec"] {
+    class C102["providers_ProviderSpec"] {
         +name: &'static str
         +credential: Option~&'static str~
         +endpoint: Option~&'static str~
@@ -717,7 +723,7 @@ classDiagram
         +tape_endpoint_envs: &'static [&'static str]
         +bridge_tool: Option~&'static str~
     }
-    class C101["providers::adapters::cli2key_Bridge"] {
+    class C103["providers::adapters::cli2key_Bridge"] {
         -api_key: String
         -base_url: String
         -process: Option~Child~
@@ -728,10 +734,10 @@ classDiagram
         +api_key() &str
         +base_url() &str
     }
-    class C102["providers::adapters::cli2key_Drop"] {
+    class C104["providers::adapters::cli2key_Drop"] {
         +drop() void
     }
-    class C103["proxy::Chain"] {
+    class C105["proxy::Chain"] {
         -hops: Vec~Box<dyn ProxySession>~
         -url: String
         +start(names: &[String], upstream: Option~&str~, configurations: &HashMap~String, Box<dyn Any>~) Result~Self, Error~
@@ -739,29 +745,29 @@ classDiagram
         +url() &str
         +stop(self) Result~(), Error~
     }
-    class C104["proxy::Drop"] {
+    class C106["proxy::Drop"] {
         +drop() void
     }
-    class C105["proxy::adapters::Drop"] {
+    class C107["proxy::adapters::Drop"] {
         +drop() void
         +drop() void
         +drop() void
     }
-    class C106["proxy::adapters::LlmtapeAdapter"] {
+    class C108["proxy::adapters::LlmtapeAdapter"] {
     }
-    class C107["«trait» proxy::ProxyAdapter"] {
+    class C109["«trait» proxy::ProxyAdapter"] {
         +name() &'static str
         +start(upstream: Option~&str~, settings: Option~&dyn Any~) Result~Box<dyn ProxySession>, Error~
     }
-    class C108["proxy::adapters::ProxyExecutable"] {
+    class C110["proxy::adapters::ProxyExecutable"] {
         +command() Command
     }
-    class C109["«trait» proxy::ProxySession"] {
+    class C111["«trait» proxy::ProxySession"] {
         +url() &str
         +finish() Result~(), Error~
         +abort() void
     }
-    class C110["proxy::adapters::RunningLlmtape"] {
+    class C112["proxy::adapters::RunningLlmtape"] {
         -child: Option~Child~
         -url: String
         -progress: Option~PathBuf~
@@ -769,19 +775,19 @@ classDiagram
         -mode: Mode
         -_scratch: proxy::adapters::Scratch
     }
-    class C111["proxy::adapters::Scratch"] {
+    class C113["proxy::adapters::Scratch"] {
         -path: PathBuf
         +create(parent: &Path) Result~Self, Error~
     }
-    class C112["proxy::adapters::Settings"] {
+    class C114["proxy::adapters::Settings"] {
         -mode: Mode
         -cassette: PathBuf
         -respect_record_timings: bool
         -workspace: PathBuf
     }
-    class C113["proxy::adapters::StartingChild"] {
+    class C115["proxy::adapters::StartingChild"] {
     }
-    class C114["tools::StaticTool"] {
+    class C116["tools::StaticTool"] {
         -id: &'static str
         -recipe: Recipe
         -kind: ToolKind
@@ -790,39 +796,39 @@ classDiagram
         +with_post_install(self, hook: Write,
         ) -> Result~(), crate::Error~) Self
     }
-    class C115["«trait» tools::ToolAdapter"] {
+    class C117["«trait» tools::ToolAdapter"] {
         +id() &'static str
         +recipe() Recipe
         +kind() ToolKind
         +post_install(executable: &Path, progress: &mut dyn FnMut(u8, &str), output: tests_asb-cli_src_Write) Result~(), crate::Error~
     }
-    class C116["workloads_FileExpectation"] {
+    class C118["workloads_FileExpectation"] {
         -relative: &'static str
         -accepted: &'static [&'static str]
     }
-    class C117["workloads_Fixture"] {
+    class C119["workloads_Fixture"] {
         -name: &'static str
         -files: &'static [(&'static str, &'static str)]
     }
-    class C118["workloads_SourceExpectation"] {
+    class C120["workloads_SourceExpectation"] {
         -files: &'static [FileExpectation]
     }
-    class C119["workloads_Trial"] {
+    class C121["workloads_Trial"] {
         +id: String
         +description: String
     }
-    class C120["workloads_TrialSet"] {
+    class C122["workloads_TrialSet"] {
         +workload: String
         +trials: Vec~workloads_Trial~
     }
-    class C121["workloads::adapters::PromptAdapter"] {
+    class C123["workloads::adapters::PromptAdapter"] {
     }
-    class C122["workloads::adapters::StaticExternalAdapter"] {
+    class C124["workloads::adapters::StaticExternalAdapter"] {
         -id: &'static str
         -trials: &'static [(&'static str, &'static str)]
         +new(id: &'static str, trials: &'static [(&'static str, &'static str)]) Self
     }
-    class C123["«trait» workloads::adapters::WorkloadAdapter"] {
+    class C125["«trait» workloads::adapters::WorkloadAdapter"] {
         +id() &'static str
         +trial_ids() Vec~workloads_Trial~
         +prepare_source(workloads: &Path, workspace: &Path) Result~usize, String~
@@ -834,19 +840,19 @@ classDiagram
         +prepare_fixture(name: &str, workspace: &Path) Result~usize, String~
         +prepare_source(_workloads: &Path, _workspace: &Path) Result~usize, String~
     }
-    class C124["asb-cli_tests_Drop"] {
+    class C126["asb-cli_tests_Drop"] {
         +drop() void
         +drop() void
         +drop() void
     }
-    class C125["asb-cli_tests_MockProvider"] {
+    class C127["asb-cli_tests_MockProvider"] {
         -endpoint: String
         -requests: Arc~Mutex<Vec<String>>~
         -done: Arc~AtomicBool~
         -thread: Option~std::thread::JoinHandle<()>~
         +start() Self
     }
-    class C126["asb-cli_tests_Project"] {
+    class C128["asb-cli_tests_Project"] {
         +new() Self
         +command(args: &[&str]) Output
         +command_with_env(args: &[&str], extra: &[(&str, &str)]) Output
@@ -854,55 +860,55 @@ classDiagram
         +write(name: &str, contents: &str) void
         +init() void
     }
-    class C127["asb-cli_tests_WaitForFixtureExpiry"] {
+    class C129["asb-cli_tests_WaitForFixtureExpiry"] {
         -pid: u32
         -executable: PathBuf
     }
-    class C128["marker_tests_asb-cli_src_collectors_adapters_BadFile"] {
+    class C130["marker_tests_asb-cli_src_collectors_adapters_BadFile"] {
     }
-    class C129["marker_tests_asb-cli_src_collectors_adapters_Write"] {
+    class C131["marker_tests_asb-cli_src_collectors_adapters_Write"] {
         +write() Result~usize~
         +flush() Result~()~
     }
-    class C130["tests_asb-cli_src_Broken"] {
+    class C132["tests_asb-cli_src_Broken"] {
     }
-    class C131["tests_asb-cli_src_Capture"] {
+    class C133["tests_asb-cli_src_Capture"] {
         -bytes: Vec~u8~
         -flushed: bool
     }
-    class C132["tests_asb-cli_src_FailingWriter"] {
+    class C134["tests_asb-cli_src_FailingWriter"] {
         +write() Result~usize~
         +flush() Result~()~
     }
-    class C133["tests_asb-cli_src_Write"] {
+    class C135["tests_asb-cli_src_Write"] {
         +write(bytes: &[u8]) Result~usize~
         +flush() Result~()~
         +write() Result~usize~
         +flush() Result~()~
     }
-    class C134["tests_asb-cli_src_collectors_CollectorAdapter"] {
+    class C136["tests_asb-cli_src_collectors_CollectorAdapter"] {
         +id() &'static str
     }
-    class C135["tests_asb-cli_src_collectors_Minimal"] {
+    class C137["tests_asb-cli_src_collectors_Minimal"] {
     }
-    class C136["tests_asb-cli_src_proxy_FixtureAdapter"] {
+    class C138["tests_asb-cli_src_proxy_FixtureAdapter"] {
         -name: &'static str
         -fail: bool
         -fail_finish: bool
         -events: Arc~Mutex<Vec<String>>~
     }
-    class C137["tests_asb-cli_src_proxy_FixtureSession"] {
+    class C139["tests_asb-cli_src_proxy_FixtureSession"] {
         -name: &'static str
         -url: String
         -active: bool
         -fail_finish: bool
         -events: Arc~Mutex<Vec<String>>~
     }
-    class C138["tests_asb-cli_src_proxy_ProxyAdapter"] {
+    class C140["tests_asb-cli_src_proxy_ProxyAdapter"] {
         +name() &'static str
         +start(upstream: Option~&str~, settings: Option~&dyn Any~) Result~Box<dyn ProxySession>, Error~
     }
-    class C139["tests_asb-cli_src_proxy_ProxySession"] {
+    class C141["tests_asb-cli_src_proxy_ProxySession"] {
         +url() &str
         +finish() Result~(), Error~
         +abort() void
@@ -934,9 +940,9 @@ classDiagram
     C077 ..> C066
     C077 ..> C070
     C077 ..> C096
-    C110 --> C111
-    C120 --> C119
-    C123 ..> C119
+    C112 --> C113
+    C122 --> C121
+    C125 ..> C121
     C065 ..|> C059
     C074 ..|> C077
     C081 ..|> C077
@@ -949,8 +955,8 @@ classDiagram
     C093 ..|> C077
     C094 ..|> C077
     C097 ..|> C077
-    C106 ..|> C107
-    C110 ..|> C109
-    C114 ..|> C115
-    C121 ..|> C123
-    C122 ..|> C123
+    C108 ..|> C109
+    C112 ..|> C111
+    C116 ..|> C117
+    C123 ..|> C125
+    C124 ..|> C125

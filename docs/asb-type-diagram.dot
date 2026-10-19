@@ -156,6 +156,8 @@ digraph ASB_Rust_UML {
         "asb-cli_src_CollectorResult" [label="{CollectorResult|-schema_version: u32\l-collector: String\l-status: String\l-exit_code: Option\<i32\>\l-elapsed_ms: u128\l-stdout: String\l-stderr: String\l-artifact: Option\<String\>\l-metrics: BTreeMap\<String, f64\>\l-series: BTreeMap\<String, Vec\<f64\>\>\l-series_timestamps: BTreeMap\<String, Vec\<f64\>\>\l}", shape=record];
         "asb-cli_src_RunMeasurement" [label="{RunMeasurement|+schema_version: u32\l+run_id: String\l+status: &'a str\l+success: bool\l+process_success: bool\l+workload_success: Option\<bool\>\l+failure_kind: Option\<&'a str\>\l+failure_reason: Option\<&'a str\>\l+success_rate: f64\l+agent: &'a str\l+workload: &'a str\l+workload_evaluation: &'a str\l+provider: &'a str\l+model: &'a str\l+elapsed_ms: u128\l+exit_code: Option\<i32\>\l+token_usage: collectors_adapters_TokenUsage\l+steps: u64\l+started_unix_ms: u128\l}", shape=record];
         "asb-cli_src_TokenUsage" [label="{TokenUsage|+input_tokens: Option\<u64\>\l+output_tokens: Option\<u64\>\l+cached_tokens: Option\<u64\>\l+total_tokens: Option\<u64\>\l+source: Option\<String\>\l}", shape=record];
+        "asb-cli_src_measurements_Drop" [label="{measurements_Drop||+drop() void\l}", shape=record];
+        "asb-cli_src_measurements_Fixture" [label="{measurements_Fixture||+new(contents: &str) Self\l}", shape=record];
     }
 
     subgraph "cluster_models" {

@@ -12,7 +12,35 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     command,
     prepare_adapter,
 )
-.with_replay_credential_vars(&["ANTHROPIC_AUTH_TOKEN"]);
+.with_replay_credential_vars(&["ANTHROPIC_AUTH_TOKEN"])
+.with_output_usage(output_usage);
+
+fn output_usage(
+    stdout: &str,
+    stderr: &str,
+    input_includes_cache: bool,
+) -> crate::measurements::TokenUsage {
+    if let Ok(event) = serde_json::from_str::<serde_json::Value>(stdout.trim()) {
+        if event.get("type").and_then(|v| v.as_str()) == Some("result") {
+            if let Some(value) = event.get("usage") {
+                let mut usage = super::super::usage_fields(value);
+                if !input_includes_cache {
+                    usage.input_tokens = usage.input_tokens.map(|n| {
+                        n.saturating_add(usage.cached_tokens.unwrap_or(0))
+                            .saturating_add(
+                                value
+                                    .get("cache_creation_input_tokens")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(0),
+                            )
+                    });
+                }
+                return usage.with_derived_total();
+            }
+        }
+    }
+    crate::collectors::adapters::token_usage::usage_from_text(&format!("{stdout}\n{stderr}"))
+}
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "claude".into(),

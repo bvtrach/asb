@@ -13,7 +13,7 @@ mod runtime;
 mod steps;
 mod success_rate;
 mod system;
-mod token_usage;
+pub(crate) mod token_usage;
 
 pub(super) static REGISTRY: &[&dyn CollectorAdapter] = &[
     &system::ADAPTER,

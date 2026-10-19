@@ -37,6 +37,13 @@ clients on loopback, but CI never starts a real agent, bridge, or live provider.
 Run `asb run` with credentials only as an explicit local
 smoke/benchmark operation.
 
+Token accounting has synthetic, provider-free regression fixtures for all
+registered agent families, plus replay CLI checks for JSON, logs, and
+measurement files. Run the focused checks with `cargo test --offline --locked
+token_usage_mock_tests` and `cargo test --offline --locked --test offline_cli
+mock_replay_`. An offline Cargo flag prevents dependency downloads, and no
+test requires a provider key.
+
 The optional `local-host-checks` CI job repeats the ordinary checks on a local
 Linux x86-64 GitHub Actions runner labeled `asb-local-ci`. It runs only for
 pushes to `main` or a manual dispatch of `main`, and is disabled unless the repository variable
