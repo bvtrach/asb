@@ -1,2 +1,3 @@
 Trace the call path described in the fixture README, run the tests, and explain
-how the main modules fit together. Do not modify files.
+how the main modules fit together. Do not modify files. End your answer with
+`ASB_FINAL_RESPONSE:` followed only by the final explanation.

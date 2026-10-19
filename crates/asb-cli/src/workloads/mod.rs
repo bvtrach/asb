@@ -407,7 +407,12 @@ struct SourceExpectation {
 
 struct FileExpectation {
     relative: &'static str,
-    required: &'static [&'static str],
+    /// Complete evaluator-owned solutions accepted for this fixed fixture.
+    ///
+    /// The grader deliberately compares the whole bounded artifact instead of
+    /// looking for a few lexical markers.  That prevents dead, unreachable,
+    /// or unused code from being mistaken for a completed task.
+    accepted: &'static [&'static str],
 }
 
 fn source_expectation(name: &str) -> Option<SourceExpectation> {
@@ -415,41 +420,63 @@ fn source_expectation(name: &str) -> Option<SourceExpectation> {
         "bug-fix" => SourceExpectation {
             files: &[FileExpectation {
                 relative: "src/parser.py",
-                required: &["return", "split", "if segment"],
+                accepted: &[
+                    "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split(\"/\") if segment]\n",
+                    "def parse_path(value: str) -> list[str]:\n    \"\"\"Split a slash-separated path into non-empty segments.\"\"\"\n    return [segment for segment in value.split(\"/\") if segment]\n",
+                ],
             }],
         },
         "build-repair" => SourceExpectation {
             files: &[FileExpectation {
                 relative: "build.sh",
-                required: &["unittest discover -s tests"],
+                accepted: &[
+                    "#!/bin/sh\nset -eu\npython3 -m compileall -q src tests\npython3 -m unittest discover -s tests\npython3 src/app.py\n",
+                ],
             }],
         },
         "dependency-migration" => SourceExpectation {
             files: &[FileExpectation {
                 relative: "requirements.txt",
-                required: &["example-client==2.0"],
+                accepted: &["example-client==2.0\n"],
             }],
         },
         "feature-addition" => SourceExpectation {
             files: &[FileExpectation {
                 relative: "src/formatter.py",
-                required: &["reverse: bool", "reversed(items)"],
+                accepted: &[
+                    "def format_items(items: list[str], reverse: bool = False) -> str:\n    ordered = list(reversed(items)) if reverse else items\n    return \", \".join(ordered)\n",
+                ],
             }],
         },
         "refactoring" => SourceExpectation {
             files: &[FileExpectation {
                 relative: "src/labels.py",
-                required: &["def _join_labels", "_join_labels("],
+                accepted: &[
+                    "def _join_labels(*parts: str) -> str:\n    return \":\".join(parts)\n\ndef label_pair(left: str, right: str) -> str:\n    return _join_labels(left, right)\n\ndef label_triplet(first: str, second: str, third: str) -> str:\n    return _join_labels(first, second, third)\n",
+                ],
             }],
         },
         "test-generation" => SourceExpectation {
             files: &[FileExpectation {
                 relative: "tests/test_temperature.py",
-                required: &["classify(0)", "classify(30)"],
+                accepted: &[
+                    "import unittest\n\nfrom src.temperature import classify\n\nclass TemperatureTests(unittest.TestCase):\n    def test_freezing(self):\n        self.assertEqual(classify(-1), \"freezing\")\n\n    def test_hot(self):\n        self.assertEqual(classify(31), \"hot\")\n\n    def test_mild_lower_boundary(self):\n        self.assertEqual(classify(0), \"mild\")\n\n    def test_mild_upper_boundary(self):\n        self.assertEqual(classify(30), \"mild\")\n\nif __name__ == \"__main__\":\n    unittest.main()\n",
+                ],
             }],
         },
         _ => return None,
     })
+}
+
+fn canonical_source(source: &str) -> String {
+    source
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| line.replace('\'', "\""))
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn source_satisfies(path: &Path, expectation: &SourceExpectation) -> Result<bool, String> {
@@ -468,15 +495,12 @@ fn source_satisfies(path: &Path, expectation: &SourceExpectation) -> Result<bool
                 source_path.display()
             )
         })?;
-        let code_lines = source
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .collect::<Vec<_>>();
+        let actual = canonical_source(&source);
         if !file
-            .required
+            .accepted
             .iter()
-            .all(|needle| code_lines.iter().any(|line| line.contains(needle)))
+            .map(|candidate| canonical_source(candidate))
+            .any(|candidate| candidate == actual)
         {
             return Ok(false);
         }
@@ -490,7 +514,10 @@ fn source_satisfies(path: &Path, expectation: &SourceExpectation) -> Result<bool
 /// inherited credentials are executed.
 pub(crate) fn evaluate(name: &str, workspace: &Path, agent_output: &str) -> Result<bool, String> {
     if name == "repository-navigation" {
-        let response = agent_output.to_ascii_lowercase();
+        let Some(response) = final_response(agent_output) else {
+            return Ok(false);
+        };
+        let response = response.to_ascii_lowercase();
         return Ok(response.contains("src/cli.py")
             && response.contains("src/registry.py")
             && response.contains("lookup"));
@@ -519,10 +546,23 @@ pub(crate) fn evaluate(name: &str, workspace: &Path, agent_output: &str) -> Resu
             implementation.display()
         )
     })?;
-    Ok(source.contains("strip()")
-        && source.contains("lower()")
-        && source.contains("replace(' ', '-')")
-        && source.contains(&format!("return \"{}\"", adapter_trial_label(name))))
+    let expected = format!(
+        "def normalize(value: str) -> str:\n    return value.strip().lower().replace(' ', '-')\n\ndef suite_label() -> str:\n    return \"{}\"\n",
+        adapter_trial_label(name)
+    );
+    Ok(canonical_source(&source) == canonical_source(&expected))
+}
+
+/// Extract the agent's explicit final-response artifact from bounded output.
+/// Tool traces, command echoes, and intermediate events are intentionally not
+/// considered workload evidence.  Adapters ask the agent to emit this marker
+/// at the end of a response; taking the last marker also handles agents that
+/// retry before producing their final answer.
+fn final_response(output: &str) -> Option<&str> {
+    output
+        .rsplit_once("ASB_FINAL_RESPONSE:")
+        .map(|(_, response)| response.trim())
+        .filter(|response| !response.is_empty())
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<usize, String> {
@@ -909,6 +949,65 @@ mod tests {
         )
         .unwrap();
         assert!(evaluate("bug-fix", &workspace, "").unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bundled_grader_rejects_dead_or_unused_markers() {
+        let root =
+            std::env::temp_dir().join(format!("asb-builtin-semantic-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let workspace = root.join("workspace");
+        prepare_fixture("feature-addition", &workspace).unwrap();
+        fs::write(
+            workspace.join("src/formatter.py"),
+            "def format_items(items: list[str]) -> str:\n    reverse: bool = False\n    if False:\n        return \", \".join(reversed(items))\n    return \", \".join(items)\n",
+        )
+        .unwrap();
+        assert!(!evaluate("feature-addition", &workspace, "").unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repository_navigation_grades_only_the_explicit_final_response() {
+        let root =
+            std::env::temp_dir().join(format!("asb-navigation-grade-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let workspace = root.join("workspace");
+        prepare_fixture("repository-navigation", &workspace).unwrap();
+        let tool_trace =
+            "cat src/cli.py src/registry.py; lookup\nASB_FINAL_RESPONSE: unrelated answer";
+        assert!(!evaluate("repository-navigation", &workspace, tool_trace).unwrap());
+        let answer = "tool output omitted\nASB_FINAL_RESPONSE: The call path goes from src/cli.py to src/registry.py through lookup.";
+        assert!(evaluate("repository-navigation", &workspace, answer).unwrap());
+        assert!(
+            !evaluate(
+                "repository-navigation",
+                &workspace,
+                "src/cli.py src/registry.py lookup"
+            )
+            .unwrap()
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn external_grader_rejects_unreachable_adapter_code() {
+        let root =
+            std::env::temp_dir().join(format!("asb-external-semantic-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let workloads = root.join("workloads");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workloads).unwrap();
+        materialize_external_adapter("agentbench", &workloads).unwrap();
+        prepare_external("agentbench", &workloads, &workspace).unwrap();
+        let task = workspace.join("external-workload/asb-trial/src/task.py");
+        fs::write(
+            &task,
+            "def normalize(value: str) -> str:\n    if False:\n        return value.strip().lower().replace(' ', '-')\n    return value\n\ndef suite_label() -> str:\n    return \"agentbench\"\n",
+        )
+        .unwrap();
+        assert!(!evaluate("agentbench", &workspace, "").unwrap());
         let _ = fs::remove_dir_all(root);
     }
 
