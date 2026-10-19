@@ -305,24 +305,42 @@ impl App {
         expanded
     }
 
-    fn refresh_models(&mut self) {
+    fn refresh_models(&mut self) -> Option<String> {
+        self.refresh_models_with(models::discover_for_setup)
+    }
+
+    fn refresh_models_with(
+        &mut self,
+        mut discover: impl FnMut(&str) -> Result<Vec<String>, Error>,
+    ) -> Option<String> {
         let selected_providers = self.panes[1]
             .selected_choices()
             .map(|choice| choice.label.clone())
             .collect::<Vec<_>>();
         let mut choices = Vec::new();
+        let mut warnings = Vec::new();
         for provider in selected_providers {
-            let discovered = models::discover_for_setup(&provider).unwrap_or_default();
-            let models = if discovered.is_empty() {
-                providers::known_models(&provider)
-                    .map(|values| values.iter().map(|value| (*value).to_owned()).collect())
-                    .unwrap_or_else(|| vec![default_model(&provider).to_owned()])
-            } else {
-                discovered
+            let mut is_fallback = false;
+            let models = match discover(&provider) {
+                Ok(models) if models.is_empty() => {
+                    warnings.push(format!("{provider}: no tool-capable models returned. Check `asb provider models {provider}`."));
+                    Vec::new()
+                }
+                Ok(models) => models,
+                Err(error) => {
+                    is_fallback = true;
+                    warnings.push(format!("{provider}: lookup failed; fallback only. Run `asb provider models {provider}`. {error}"));
+                    providers::known_models(&provider)
+                        .map(|values| values.iter().map(|value| (*value).to_owned()).collect())
+                        .unwrap_or_else(|| vec![default_model(&provider).to_owned()])
+                }
             };
             for model in models {
                 choices.push(Choice {
-                    label: format!("{provider}:{model}"),
+                    label: format!(
+                        "{provider}:{model}{}",
+                        if is_fallback { " [fallback]" } else { "" }
+                    ),
                     provider: Some(provider.clone()),
                     model: Some(model),
                     availability: Availability::Unknown,
@@ -330,6 +348,7 @@ impl App {
             }
         }
         self.panes[2] = Pane::new(choices);
+        (!warnings.is_empty()).then(|| warnings.join(" | "))
     }
 
     fn advance(&mut self) -> Result<Option<Generated>, Error> {
@@ -337,12 +356,12 @@ impl App {
             self.message = "Select at least one item before continuing.".into();
             return Ok(None);
         }
-        if self.step == 1 {
-            self.refresh_models();
-        }
+        let model_warning = (self.step == 1).then(|| self.refresh_models()).flatten();
         if self.step + 1 < self.panes.len() {
             self.step += 1;
-            self.message = DESCRIPTIONS[self.step].into();
+            self.message = model_warning.unwrap_or_else(|| DESCRIPTIONS[self.step].into());
+            self.message_color = Color::Yellow;
+            self.message_until = None;
             Ok(None)
         } else {
             generate_configs(self).map(Some)
@@ -1862,6 +1881,64 @@ mod tests {
         app.back();
         assert_eq!(app.step, 0);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn failed_catalog_discovery_warns_that_models_are_fallbacks() {
+        let mut app = App::new(std::env::temp_dir(), ProjectConfig::default());
+        let index = app.panes[1]
+            .choices
+            .iter()
+            .position(|choice| choice.label == "openrouter")
+            .unwrap();
+        app.panes[1].selected[index] = true;
+        let warning = app
+            .refresh_models_with(|_| {
+                Err(crate::Error::Input(
+                    "HTTP 407: proxy authentication required".into(),
+                ))
+            })
+            .unwrap();
+        assert!(warning.contains("fallback only"));
+        assert!(warning.contains("HTTP 407"));
+        assert!(warning.contains("asb provider models openrouter"));
+        assert_eq!(app.panes[2].choices.len(), 1);
+        assert!(app.panes[2].choices[0].label.contains("gpt-4o-mini"));
+        assert!(app.panes[2].choices[0].label.contains("[fallback]"));
+        assert_eq!(
+            app.panes[2].choices[0].model.as_deref(),
+            Some("openai/gpt-4o-mini")
+        );
+    }
+
+    #[test]
+    fn empty_successful_catalog_does_not_invent_fallback_models() {
+        let mut app = App::new(std::env::temp_dir(), ProjectConfig::default());
+        let index = app.panes[1]
+            .choices
+            .iter()
+            .position(|choice| choice.label == "openrouter")
+            .unwrap();
+        app.panes[1].selected[index] = true;
+        let warning = app.refresh_models_with(|_| Ok(Vec::new())).unwrap();
+        assert!(warning.contains("no tool-capable models"));
+        assert!(app.panes[2].choices.is_empty());
+    }
+
+    #[test]
+    fn successful_catalog_keeps_all_discovered_models_without_fallback_warning() {
+        let mut app = App::new(std::env::temp_dir(), ProjectConfig::default());
+        let index = app.panes[1]
+            .choices
+            .iter()
+            .position(|choice| choice.label == "openrouter")
+            .unwrap();
+        app.panes[1].selected[index] = true;
+        assert!(
+            app.refresh_models_with(|_| Ok(vec!["a/model".into(), "b/model".into()]))
+                .is_none()
+        );
+        assert_eq!(app.panes[2].choices.len(), 2);
     }
 
     #[test]

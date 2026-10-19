@@ -4,11 +4,12 @@ use crate::Error;
 use crate::providers;
 use crate::suggestions;
 use serde_json::Value;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-const MAX_RESPONSE: usize = 1024 * 1024;
+const MAX_RESPONSE: usize = 16 * 1024 * 1024;
+const MAX_CATALOG: usize = 32 * 1024 * 1024;
 // Cassettes are bounded inputs, but multi-step agent runs can legitimately
 // exceed the former 16 MiB limit (for example Workbuddy/SWE-bench). Keep a
 // finite ceiling while allowing those recorded runs to be replayed.
@@ -268,6 +269,7 @@ fn fetch_pages(spec: providers::ModelSpec, url: &str) -> Result<Vec<u8>, Error> 
     collect_catalog_pages(spec.kind, url, |page| {
         fetch_config(curl_config(spec, page, None)?, spec.name)
     })
+    .map_err(|error| Error::Input(format!("{} model catalog: {error}", spec.name)))
 }
 
 // Some model catalogs are paginated. Keep requests,
@@ -308,8 +310,8 @@ fn collect_catalog_pages(
         };
         let body = fetch_page(&url)?;
         bytes += body.len();
-        if bytes > 8 * 1024 * 1024 {
-            return Err(Error::Input("provider model catalog exceeds 8 MiB".into()));
+        if bytes > MAX_CATALOG {
+            return Err(Error::Input("provider model catalog exceeds 32 MiB".into()));
         }
         let value: Value = serde_json::from_slice(&body)
             .map_err(|_| Error::Input("provider returned invalid model JSON".into()))?;
@@ -399,14 +401,16 @@ pub(crate) fn fetch_config(config: String, provider: &str) -> Result<Vec<u8>, Er
         "--max-time",
         "30",
         "--max-filesize",
-        "1048576",
+        "16777216",
         "--proto",
         "=http,https",
+        "--write-out",
+        "%{stderr}\nASB_HTTP_STATUS=%{http_code}\nASB_PROXY_STATUS=%{http_connect}\nASB_CONTENT_TYPE=%{content_type}\n",
     ]);
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
@@ -417,24 +421,166 @@ pub(crate) fn fetch_config(config: String, provider: &str) -> Result<Vec<u8>, Er
                 Error::Io(format!("cannot start curl for model discovery: {error}"))
             }
         })?;
-    child
+    let stderr = child.stderr.take().expect("curl stderr configured");
+    let stderr_reader = std::thread::spawn(move || {
+        // Drain the entire stream to avoid blocking curl, but retain only the
+        // last 8 KiB containing its write-out metadata. Never expose curl's
+        // diagnostic text, which may contain proxy URLs or credentials.
+        let mut tail = Vec::new();
+        let mut stderr = stderr;
+        let mut chunk = [0u8; 4096];
+        while let Ok(count) = stderr.read(&mut chunk) {
+            if count == 0 {
+                break;
+            }
+            tail.extend_from_slice(&chunk[..count]);
+            if tail.len() > 8192 {
+                tail.drain(..tail.len() - 8192);
+            }
+        }
+        tail
+    });
+    if let Err(error) = child
         .stdin
         .take()
         .expect("curl stdin configured")
         .write_all(config.as_bytes())
-        .map_err(|error| Error::Io(format!("cannot send model discovery request: {error}")))?;
-    let output = child
-        .wait_with_output()
-        .map_err(|error| Error::Io(format!("cannot finish model discovery request: {error}")))?;
-    if !output.status.success() {
-        return Err(Error::Input(format!(
-            "model discovery request failed for {provider}"
+    {
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = stderr_reader.join();
+        return Err(Error::Io(format!(
+            "cannot send model discovery request: {error}"
         )));
     }
-    if output.stdout.len() > MAX_RESPONSE {
-        return Err(Error::Input("provider model response exceeds 1 MiB".into()));
+    let mut body = Vec::new();
+    let read = child
+        .stdout
+        .take()
+        .expect("curl stdout configured")
+        .take(MAX_RESPONSE as u64 + 1)
+        .read_to_end(&mut body);
+    if read.is_err() || body.len() > MAX_RESPONSE {
+        let _ = child.kill();
     }
-    Ok(output.stdout)
+    let status = child
+        .wait()
+        .map_err(|error| Error::Io(format!("cannot finish model discovery request: {error}")))?;
+    let stderr = stderr_reader.join().unwrap_or_default();
+    let metadata = CurlMetadata::parse(&stderr);
+    read.map_err(|error| Error::Io(format!("cannot read model catalog for {provider}: {error}")))?;
+    if body.len() > MAX_RESPONSE || status.code() == Some(63) {
+        return Err(Error::Input(format!(
+            "model catalog for {provider} exceeds the 16 MiB response limit; retry later or contact the provider"
+        )));
+    }
+    if let Some(code) = metadata.proxy_status.filter(|code| *code >= 400) {
+        return Err(Error::Input(format!(
+            "model discovery for {provider} failed: HTTP proxy returned {code} while establishing the connection. Check the project's proxy configuration and proxy authentication."
+        )));
+    }
+    if let Some(code) = metadata.http_status.filter(|code| *code >= 300) {
+        let help = match code {
+            401 | 403 => "Check the provider API key and account access.",
+            407 => "Check proxy authentication and the project's proxy configuration.",
+            429 => "The service rate-limited the request; retry later.",
+            500..=599 => {
+                "The provider or proxy returned a server error; retry later and check the proxy."
+            }
+            300..=399 => {
+                "Redirects are not followed for model discovery; check the configured endpoint."
+            }
+            _ => "Check the provider endpoint and proxy configuration.",
+        };
+        return Err(Error::Input(format!(
+            "model discovery for {provider} returned HTTP {code}. {help}"
+        )));
+    }
+    if !status.success() {
+        let detail = match status.code() {
+            Some(5) => "could not resolve the configured proxy; check the proxy address and DNS",
+            Some(6) => "could not resolve the provider host; check DNS and the configured proxy",
+            Some(7) => {
+                "could not connect to the provider or proxy; check the endpoint and proxy settings"
+            }
+            Some(28) => "the request timed out; check the provider connection and proxy",
+            Some(35 | 51 | 60 | 77 | 90) => {
+                "TLS verification or negotiation failed; check certificates and any HTTPS proxy"
+            }
+            Some(56) => {
+                "the provider or proxy connection was interrupted; check the proxy and retry"
+            }
+            _ => "the provider connection failed; check the endpoint, network, and proxy settings",
+        };
+        return Err(Error::Input(format!(
+            "model discovery for {provider} failed (curl exit {}): {detail}.",
+            status
+                .code()
+                .map_or_else(|| "signal".into(), |code| code.to_string())
+        )));
+    }
+    if let Err(error) = serde_json::from_slice::<Value>(&body) {
+        let kind = if error.is_eof() {
+            "incomplete or truncated JSON"
+        } else {
+            "invalid JSON"
+        };
+        let content = metadata
+            .content_type
+            .as_deref()
+            .map(|value| format!(", content type {value}"))
+            .unwrap_or_default();
+        return Err(Error::Input(format!(
+            "model discovery for {provider} returned {kind} (HTTP {}{content}, {} bytes). A proxy or provider may have returned an error page or incomplete response; check proxy settings and retry.",
+            metadata
+                .http_status
+                .map_or_else(|| "unknown".into(), |code| code.to_string()),
+            body.len()
+        )));
+    }
+    Ok(body)
+}
+
+#[derive(Default)]
+struct CurlMetadata {
+    http_status: Option<u16>,
+    proxy_status: Option<u16>,
+    content_type: Option<String>,
+}
+
+impl CurlMetadata {
+    fn parse(stderr: &[u8]) -> Self {
+        let text = String::from_utf8_lossy(stderr);
+        let mut metadata = Self::default();
+        for line in text.lines() {
+            if let Some(value) = line.strip_prefix("ASB_HTTP_STATUS=") {
+                metadata.http_status = value
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|code| (100..=599).contains(code));
+            } else if let Some(value) = line.strip_prefix("ASB_PROXY_STATUS=") {
+                metadata.proxy_status = value
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|code| (100..=599).contains(code));
+            } else if let Some(value) = line.strip_prefix("ASB_CONTENT_TYPE=") {
+                let mime = value.split(';').next().unwrap_or_default().trim();
+                if !mime.is_empty() {
+                    metadata.content_type = Some(
+                        match mime.to_ascii_lowercase().as_str() {
+                            "application/json" => "application/json",
+                            "text/html" => "text/html",
+                            "text/plain" => "text/plain",
+                            "application/octet-stream" => "application/octet-stream",
+                            _ => "other",
+                        }
+                        .to_owned(),
+                    );
+                }
+            }
+        }
+        metadata
+    }
 }
 
 pub(crate) fn curl_config(

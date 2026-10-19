@@ -2222,6 +2222,261 @@ fn provider_models_fetches_all_authenticated_catalog_pages() {
     }
 }
 
+fn serve_catalog(
+    status: u16,
+    content_type: &'static str,
+    body: Vec<u8>,
+) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let thread = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                Err(error) => panic!("catalog fixture did not receive a connection: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut request = [0; 8192];
+        let _ = stream.read(&mut request);
+        let _ = write!(
+            stream,
+            "HTTP/1.1 {status} fixture\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(&body);
+    });
+    (base, thread)
+}
+
+#[test]
+fn catalog_diagnostics_distinguish_http_html_and_truncated_json_without_secrets() {
+    for (status, content_type, body, expected) in [
+        (
+            401,
+            "application/json",
+            "{\"error\":\"secret-response\"}",
+            "HTTP 401",
+        ),
+        (
+            429,
+            "application/json",
+            "{\"error\":\"secret-response\"}",
+            "HTTP 429",
+        ),
+        (
+            200,
+            "text/html",
+            "<html>secret-response</html>",
+            "invalid JSON",
+        ),
+        (
+            200,
+            "application/json",
+            "{\"data\":[",
+            "incomplete or truncated JSON",
+        ),
+    ] {
+        let project = Project::new();
+        let (base, server) = serve_catalog(status, content_type, body.as_bytes().to_vec());
+        let output = project.command_with_env(
+            &["provider", "models", "openrouter"],
+            &[
+                ("OPENROUTER_BASE_URL", &base),
+                ("OPENROUTER_API_KEY", "fixture-secret"),
+            ],
+        );
+        server.join().unwrap();
+        assert!(!output.status.success());
+        let error = stderr(&output);
+        assert!(error.contains(expected), "{error}");
+        assert!(error.contains("openrouter"), "{error}");
+        assert!(
+            !error.contains("fixture-secret") && !error.contains("secret-response"),
+            "{error}"
+        );
+        if content_type == "text/html" {
+            assert!(
+                error.contains("HTTP 200")
+                    && error.contains("text/html")
+                    && error.contains("proxy"),
+                "{error}"
+            );
+        }
+    }
+}
+
+#[test]
+fn catalog_above_one_mib_is_fully_enumerated() {
+    let project = Project::new();
+    let padding = "a".repeat(1_100_000);
+    let body = format!(
+        "{{\"data\":[{{\"id\":\"first\",\"description\":\"{padding}\"}},{{\"id\":\"second\"}}]}}"
+    );
+    let (base, server) = serve_catalog(200, "application/json", body.into_bytes());
+    let output = project.command_with_env(
+        &["provider", "models", "openrouter", "--json"],
+        &[
+            ("OPENROUTER_BASE_URL", &base),
+            ("OPENROUTER_API_KEY", "fixture-key"),
+        ],
+    );
+    server.join().unwrap();
+    expect_success(&output);
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["models"], serde_json::json!(["first", "second"]));
+}
+
+#[test]
+fn oversized_catalog_reports_limit_instead_of_invalid_json() {
+    let project = Project::new();
+    let (base, server) = serve_catalog(200, "application/json", vec![b'x'; 16 * 1024 * 1024 + 1]);
+    let output = project.command_with_env(
+        &["provider", "models", "openrouter"],
+        &[
+            ("OPENROUTER_BASE_URL", &base),
+            ("OPENROUTER_API_KEY", "fixture-key"),
+        ],
+    );
+    server.join().unwrap();
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("exceeds the 16 MiB"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn chunked_catalog_is_bounded_even_without_content_length() {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(5))
+                }
+                Err(error) => {
+                    panic!("chunked catalog fixture did not receive a connection: {error}")
+                }
+            }
+        };
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut request = [0; 4096];
+        let _ = stream.read(&mut request);
+        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n");
+        let chunk = vec![b'x'; 64 * 1024];
+        for _ in 0..257 {
+            if write!(stream, "{:X}\r\n", chunk.len())
+                .and_then(|_| stream.write_all(&chunk))
+                .and_then(|_| stream.write_all(b"\r\n"))
+                .is_err()
+            {
+                return;
+            }
+        }
+        let _ = stream.write_all(b"0\r\n\r\n");
+    });
+    let project = Project::new();
+    let output = project.command_with_env(
+        &["provider", "models", "openrouter"],
+        &[
+            ("OPENROUTER_BASE_URL", &base),
+            ("OPENROUTER_API_KEY", "fixture-key"),
+        ],
+    );
+    server.join().unwrap();
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("exceeds the 16 MiB"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn run_reports_catalog_http_failure_before_agent_starts() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = Project::new();
+    project.init();
+    project.write("benchmark.toml", "agent='codex'\nworkload='bug-fix'\nprovider='openrouter'\nmodel='fixture/model'\nworkspace='workspace'\nlog_file='run.log'\n");
+    project.write(
+        ".asb-tools/codex/bin/codex",
+        "#!/bin/sh\ntouch agent-started\n",
+    );
+    std::fs::set_permissions(
+        project.0.join(".asb-tools/codex/bin/codex"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let (base, server) = serve_catalog(502, "text/html", b"secret-proxy-response".to_vec());
+    let output = project.command_with_env(
+        &["run", "benchmark.toml"],
+        &[
+            ("OPENROUTER_BASE_URL", &base),
+            ("OPENROUTER_API_KEY", "fixture-secret"),
+        ],
+    );
+    server.join().unwrap();
+    assert!(!output.status.success());
+    let error = stderr(&output);
+    assert!(
+        error.contains("HTTP 502") && error.contains("openrouter"),
+        "{error}"
+    );
+    assert!(!error.contains("fixture-secret") && !error.contains("secret-proxy-response"));
+    assert!(!project.0.join("agent-started").exists());
+}
+
+#[test]
+fn catalog_connection_failure_reports_curl_code_without_proxy_credentials() {
+    let project = Project::new();
+    let output = project.command_with_env(
+        &["provider", "models", "openrouter"],
+        &[
+            ("OPENROUTER_BASE_URL", "https://provider.invalid/v1"),
+            ("OPENROUTER_API_KEY", "fixture-secret"),
+            ("https_proxy", "http://proxy-user:proxy-secret@127.0.0.1:1"),
+        ],
+    );
+    assert!(!output.status.success());
+    let error = stderr(&output);
+    assert!(
+        error.contains("curl exit 7") && error.contains("proxy"),
+        "{error}"
+    );
+    assert!(
+        !error.contains("fixture-secret")
+            && !error.contains("proxy-secret")
+            && !error.contains("proxy-user"),
+        "{error}"
+    );
+}
+
 #[test]
 fn together_provider_models_accepts_documented_array_response() {
     use std::io::{Read, Write};
@@ -2632,6 +2887,11 @@ fn saved_https_proxy_receives_tunnel_requests() {
     assert!(
         !output.status.success(),
         "the fixture intentionally rejects the HTTPS tunnel"
+    );
+    assert!(
+        stderr(&output).contains("HTTP proxy returned 502"),
+        "{}",
+        stderr(&output)
     );
 }
 
