@@ -53,6 +53,20 @@ jobs:
           manifest=$(find "$unpacked" -mindepth 2 -maxdepth 2 -name Cargo.toml -print -quit)
           test -n "$manifest"
           cargo test --locked --manifest-path "$manifest"
+      - name: Install and smoke-test packaged crate
+        shell: bash
+        run: |
+          set -euo pipefail
+          package=$(find target/package -maxdepth 1 -type f -name 'asb-cli-*.crate' -print | sort -V | tail -n1)
+          test -n "$package"
+          unpacked=$(mktemp -d)
+          install_root=$(mktemp -d)
+          trap 'rm -rf "$unpacked" "$install_root"' EXIT
+          tar -xzf "$package" -C "$unpacked"
+          manifest=$(find "$unpacked" -mindepth 2 -maxdepth 2 -name Cargo.toml -print -quit)
+          test -n "$manifest"
+          cargo install --locked --path "$(dirname "$manifest")" --root "$install_root"
+          "$install_root/bin/asb" --help
 
   local-host-checks:
     # This is disabled until the repository owner provisions an appropriately
@@ -91,3 +105,17 @@ jobs:
           manifest=$(find "$unpacked" -mindepth 2 -maxdepth 2 -name Cargo.toml -print -quit)
           test -n "$manifest"
           cargo test --locked --manifest-path "$manifest"
+      - name: Install and smoke-test packaged crate
+        shell: bash
+        run: |
+          set -euo pipefail
+          package=$(find target/package -maxdepth 1 -type f -name 'asb-cli-*.crate' -print | sort -V | tail -n1)
+          test -n "$package"
+          unpacked=$(mktemp -d)
+          install_root=$(mktemp -d)
+          trap 'rm -rf "$unpacked" "$install_root"' EXIT
+          tar -xzf "$package" -C "$unpacked"
+          manifest=$(find "$unpacked" -mindepth 2 -maxdepth 2 -name Cargo.toml -print -quit)
+          test -n "$manifest"
+          cargo install --locked --path "$(dirname "$manifest")" --root "$install_root"
+          "$install_root/bin/asb" --help
