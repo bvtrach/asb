@@ -59,6 +59,7 @@ fn process(
     session: &mut measurements::Session,
     context: &ProcessContext<'_>,
 ) -> Result<ProcessData, String> {
+    session.verify_perfetto_marker_capture()?;
     let mut result = ProcessData::from_output(context);
     result.metrics = session.perfetto_trace_metrics();
     (result.series, result.timestamps) = session.perfetto_trace_series();
@@ -117,22 +118,14 @@ fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
         return Err("Perfetto is required for the selected collector. Run `asb tool install perfetto` and retry.".into());
     }
     let marker = checked_trace_marker_path()?;
-    match probe_trace_marker_io(&marker) {
-        Ok(()) => preflight_perfetto(context, &executable),
-        Err(error) if marker_probe_allows_fallback(&marker, &error) => {
-            // Some container kernels expose a trace_marker inode but reject
-            // writes with EBADF. Perfetto can still collect scheduler data;
-            // post-processing falls back to the scoped process lifetime.
-            preflight_perfetto(context, &executable)
-        }
-        Err(error) => Err(marker_access_error(&marker, &error)),
-    }
+    open_trace_marker(&marker)?;
+    preflight_perfetto(context, &executable)
 }
 
 #[cfg(test)]
 fn preflight_with_marker(context: &mut PreflightContext<'_>, marker: &Path) -> Result<(), String> {
     let executable = measurements::resolve_executable(context.tool_dir, "perfetto");
-    probe_trace_marker(&marker)?;
+    open_trace_marker(marker)?;
     preflight_perfetto(context, &executable)
 }
 
@@ -228,6 +221,11 @@ impl measurements::Session {
         if !self.state::<PerfettoState>().borrow().enabled {
             return Ok(());
         }
+        let marker = checked_trace_marker_path()?;
+        self.start_perfetto_with_marker(&marker)
+    }
+
+    fn start_perfetto_with_marker(&mut self, marker: &Path) -> Result<(), String> {
         let config = self.dir.join("perfetto-scheduling.pbtx");
         fs::write(&config, perfetto_config(None))
             .map_err(|error| format!("cannot write Perfetto trace configuration: {error}"))?;
@@ -240,21 +238,7 @@ impl measurements::Session {
         let stderr_path = self.dir.join("perfetto.stderr");
         File::create(&stdout_path)
             .map_err(|error| format!("cannot create Perfetto output: {error}"))?;
-        let marker = checked_trace_marker_path()?;
-        let marker = match probe_trace_marker_io(&marker) {
-            Ok(()) => Some(marker),
-            Err(error) if marker_probe_allows_fallback(&marker, &error) => None,
-            Err(error) => return Err(marker_access_error(&marker, &error)),
-        };
-        let marker_output = marker
-            .as_ref()
-            .map(|marker| {
-                OpenOptions::new()
-                    .write(true)
-                    .open(marker)
-                    .map_err(|error| marker_access_error(marker, &error))
-            })
-            .transpose()?;
+        let mut marker_output = open_trace_marker(marker)?;
         let child = self
             .command("perfetto")
             .args(["--txt", "--notify-fd", "1", "-c"])
@@ -286,11 +270,6 @@ impl measurements::Session {
                         "Perfetto did not report that tracing is ready: {ready:?}"
                     ));
                 }
-                let state = self.state::<PerfettoState>();
-                let mut state = state.borrow_mut();
-                state.trace = Some(trace);
-                state.trace_marker = marker;
-                state.trace_marker_output = marker_output;
                 self.collectors.push(Collector {
                     name: "perfetto".into(),
                     adapter: collectors::find("perfetto").expect("registered collector"),
@@ -299,6 +278,14 @@ impl measurements::Session {
                     stdout_path,
                     stderr_path,
                 });
+                // Register the child before validating the live marker, so
+                // Session's drop path stops it if validation fails.
+                validate_active_marker(&mut marker_output, marker, &self.trace_id)?;
+                let state = self.state::<PerfettoState>();
+                let mut state = state.borrow_mut();
+                state.trace = Some(trace);
+                state.trace_marker = Some(marker.to_path_buf());
+                state.trace_marker_output = Some(marker_output);
             }
             Err(error) if !env_true("ASB_MEASURE_PERFETTO") => write_unavailable(
                 &self.dir.join("perfetto.json"),
@@ -324,11 +311,25 @@ impl measurements::Session {
         let Some(output) = state.trace_marker_output.as_mut() else {
             return Ok(());
         };
-        output
-            .write_all(event.as_bytes())
-            .map_err(|error| marker_access_error(&path, &error))?;
+        write_active_marker(output, &path, event)?;
         state.tracepoint_count = state.tracepoint_count.saturating_add(1);
         Ok(())
+    }
+
+    fn verify_perfetto_marker_capture(&mut self) -> Result<(), String> {
+        let state = self.state::<PerfettoState>();
+        let state = state.borrow();
+        let trace = state.trace.as_ref().ok_or_else(|| {
+            "Perfetto did not produce a trace to verify lifecycle markers".to_owned()
+        })?;
+        let tool_dir = self.tool_dir.as_ref().ok_or_else(|| {
+            "Perfetto trace processor is unavailable; cannot verify lifecycle markers".to_owned()
+        })?;
+        verify_trace_marker_capture(
+            &tool_dir.join("perfetto/bin/trace_processor_shell"),
+            trace,
+            &self.trace_id,
+        )
     }
 
     #[cfg(test)]
@@ -501,20 +502,90 @@ fn checked_trace_marker_path() -> Result<PathBuf, String> {
     }
 }
 
-fn probe_trace_marker_io(path: &Path) -> std::io::Result<()> {
-    let mut marker = OpenOptions::new().write(true).open(path)?;
-    // Probe as ASB's own user, not as the potentially privileged Tracebox.
-    // This fixed, non-secret event also tests failures that occur on write.
-    write!(marker, "I|{}|asb.preflight", std::process::id())
+fn open_trace_marker(path: &Path) -> Result<File, String> {
+    // Opening checks permissions without writing to an inactive trace buffer.
+    OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|error| marker_access_error(path, &error))
 }
 
-#[cfg(test)]
-fn probe_trace_marker(path: &Path) -> Result<(), String> {
-    probe_trace_marker_io(path).map_err(|error| marker_access_error(path, &error))
+fn tracing_status(path: &Path) -> Option<bool> {
+    let value = fs::read_to_string(path.parent()?.join("tracing_on")).ok()?;
+    match value.trim() {
+        "1" => Some(true),
+        "0" => Some(false),
+        _ => None,
+    }
 }
 
-fn marker_probe_allows_fallback(path: &Path, error: &std::io::Error) -> bool {
-    error.raw_os_error() == Some(9) && path.starts_with("/sys/kernel/")
+fn validate_active_marker(
+    output: &mut impl Write,
+    path: &Path,
+    trace_id: &str,
+) -> Result<(), String> {
+    if tracing_status(path) == Some(false) {
+        return Err(format!(
+            "Perfetto reported readiness, but tracing is off in {}. The benchmark was not started. Check the Perfetto collector logs and other tracing sessions; ASB will not change the host-wide tracing state.",
+            path.parent().unwrap_or(path).join("tracing_on").display()
+        ));
+    }
+    let marker = format!("I|{}|asb.trace.ready.{trace_id}", std::process::id());
+    write_active_marker(output, path, &marker)
+}
+
+fn write_active_marker(output: &mut impl Write, path: &Path, event: &str) -> Result<(), String> {
+    output.write_all(event.as_bytes()).map_err(|error| {
+        if error.raw_os_error() == Some(9) {
+            let state = match tracing_status(path) {
+                Some(true) => "on",
+                Some(false) => "off",
+                None => "unavailable to the current user",
+            };
+            format!("cannot write ASB lifecycle marker to {}: {error}. Tracefs rejected the write; tracing_on is {state}. The Perfetto trace may be incomplete. Check whether tracing was stopped by another session and inspect {} (for example, `sudo cat '{}'`); retry after resolving the tracing conflict. ASB does not change host-wide tracing state.", path.display(), path.parent().unwrap_or(path).join("tracing_on").display(), path.parent().unwrap_or(path).join("tracing_on").display())
+        } else {
+            marker_access_error(path, &error)
+        }
+    })
+}
+
+fn verify_trace_marker_capture(
+    processor: &Path,
+    trace: &Path,
+    trace_id: &str,
+) -> Result<(), String> {
+    // trace_id is generated from a process ID and atomic counter, not user input.
+    let query = format!("SELECT COUNT(*) FROM slice WHERE name='asb.trace.ready.{trace_id}'");
+    let output = Command::new(processor)
+        .arg("query")
+        .arg(trace)
+        .arg(query)
+        .output()
+        .map_err(|error| {
+            format!(
+                "cannot verify Perfetto lifecycle markers with {}: {error}",
+                processor.display()
+            )
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "cannot verify lifecycle markers in Perfetto trace {}: trace processor failed: {}",
+            trace.display(),
+            bounded(&output.stderr)
+        ));
+    }
+    let count = bounded(&output.stdout).lines().rev().find_map(parse_float);
+    match count {
+        Some(n) if n >= 1.0 => Ok(()),
+        Some(_) => Err(format!(
+            "Perfetto trace {} did not capture the ASB startup marker; its lifecycle timings may be incomplete. Check ftrace/print collection and conflicting tracing sessions, then retry.",
+            trace.display()
+        )),
+        None => Err(format!(
+            "cannot verify ASB lifecycle markers in Perfetto trace {}: trace processor returned an invalid result",
+            trace.display()
+        )),
+    }
 }
 
 fn marker_access_error(path: &Path, error: &std::io::Error) -> String {
@@ -721,18 +792,176 @@ mod marker_tests {
     }
 
     #[test]
-    fn ebadf_marker_probe_uses_process_bounds_fallback() {
-        let path = Path::new("/sys/kernel/tracing/trace_marker");
-        let error = std::io::Error::from_raw_os_error(9);
-        assert!(marker_probe_allows_fallback(path, &error));
+    fn ebadf_during_recording_reports_incomplete_trace_not_permissions() {
+        struct BadFile;
+        impl Write for BadFile {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from_raw_os_error(9))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let error = write_active_marker(
+            &mut BadFile,
+            Path::new("/no-such-tracefs/trace_marker"),
+            "event",
+        )
+        .unwrap_err();
+        assert!(error.contains("trace may be incomplete"), "{error}");
+        assert!(error.contains("tracing_on is unavailable"), "{error}");
+        assert!(!error.contains("systemd-tmpfiles"));
     }
 
     #[test]
-    fn permission_marker_probe_remains_fail_closed() {
+    fn permission_marker_failure_keeps_remediation() {
         let path = Path::new("/sys/kernel/tracing/trace_marker");
         let error = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
-        assert!(!marker_probe_allows_fallback(path, &error));
         assert!(marker_access_error(path, &error).contains("systemd-tmpfiles"));
+    }
+
+    #[test]
+    fn marker_probe_occurs_only_when_recording_is_ready() {
+        let root = std::env::temp_dir().join(format!("asb-marker-ready-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let marker = root.join("trace_marker");
+        let tracing_on = root.join("tracing_on");
+        fs::write(&marker, "").unwrap();
+        fs::write(&tracing_on, "0\n").unwrap();
+        let mut output = open_trace_marker(&marker).unwrap();
+        assert!(
+            fs::read(&marker).unwrap().is_empty(),
+            "permission check must not write"
+        );
+        let error = validate_active_marker(&mut output, &marker, "42-1").unwrap_err();
+        assert!(error.contains("tracing is off"), "{error}");
+        assert!(fs::read(&marker).unwrap().is_empty());
+        fs::write(&tracing_on, "1\n").unwrap();
+        validate_active_marker(&mut output, &marker, "42-1").unwrap();
+        assert_eq!(
+            fs::read_to_string(&marker).unwrap(),
+            format!("I|{}|asb.trace.ready.42-1", std::process::id())
+        );
+        fs::remove_file(&tracing_on).unwrap();
+        assert_eq!(tracing_status(&marker), None);
+        validate_active_marker(&mut Vec::new(), &marker, "42-2").unwrap();
+        fs::remove_file(marker).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tracebox_readiness_precedes_marker_write_and_failed_start_is_reaped() {
+        use std::os::unix::fs::PermissionsExt;
+        let root =
+            std::env::temp_dir().join(format!("asb-marker-lifecycle-{}", std::process::id()));
+        let bin = root.join("tools/perfetto/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let marker = root.join("trace_marker");
+        let tracing_on = root.join("tracing_on");
+        let executable = bin.join("tracebox");
+        fs::write(&marker, "").unwrap();
+        fs::write(&tracing_on, "0\n").unwrap();
+        // The fake collector refuses readiness if ASB wrote too early. It
+        // then enables the fixture's tracing flag before reporting ready.
+        fs::write(&executable, format!("#!/bin/sh\n[ \"$1\" = --version ] && exit 0\n[ ! -s '{}' ] || exit 1\nprintf '1\\n' > '{}'\nprintf '\\000'\nexec sleep 30\n", marker.display(), tracing_on.display())).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let tools = root.join("tools");
+        let mut session =
+            measurements::Session::start_with_collectors(&root.join("run"), &[], Some(&tools))
+                .unwrap();
+        session.start_perfetto_with_marker(&marker).unwrap();
+        let id = session.trace_id().to_owned();
+        session.write_trace_marker("I|1|asb.test.event").unwrap();
+        let contents = fs::read_to_string(&marker).unwrap();
+        assert!(
+            contents.contains(&format!("asb.trace.ready.{id}")),
+            "{contents}"
+        );
+        assert!(contents.contains("asb.test.event"), "{contents}");
+        drop(session);
+
+        fs::write(&marker, "").unwrap();
+        fs::write(&tracing_on, "0\n").unwrap();
+        fs::write(
+            &executable,
+            "#!/bin/sh\n[ \"$1\" = --version ] && exit 0\nprintf '\\000'\nexec sleep 30\n",
+        )
+        .unwrap();
+        let mut session =
+            measurements::Session::start_with_collectors(&root.join("failed"), &[], Some(&tools))
+                .unwrap();
+        let error = session.start_perfetto_with_marker(&marker).unwrap_err();
+        assert!(error.contains("tracing is off"), "{error}");
+        let pid = session.collectors[0].child.id();
+        drop(session);
+        assert!(
+            !Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success(),
+            "failed collector was not reaped"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trace_marker_capture_requires_actual_processor_evidence() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("asb-marker-capture-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let trace = root.join("trace");
+        fs::write(&trace, "fixture").unwrap();
+        for (name, script, expected) in [
+            ("found", "#!/bin/sh\nprintf '\"COUNT(*)\"\\n1\\n'\n", None),
+            (
+                "missing",
+                "#!/bin/sh\nprintf '\"COUNT(*)\"\\n0\\n'\n",
+                Some("did not capture"),
+            ),
+            (
+                "invalid",
+                "#!/bin/sh\nprintf 'invalid\\n'\n",
+                Some("invalid result"),
+            ),
+            (
+                "failed",
+                "#!/bin/sh\nexit 1\n",
+                Some("trace processor failed"),
+            ),
+        ] {
+            let processor = root.join(name);
+            fs::write(&processor, script).unwrap();
+            fs::set_permissions(&processor, fs::Permissions::from_mode(0o755)).unwrap();
+            let result = verify_trace_marker_capture(&processor, &trace, "10-1");
+            if let Some(expected) = expected {
+                let error = result.unwrap_err();
+                assert!(error.contains(expected), "{error}");
+            } else {
+                result.unwrap();
+            }
+            fs::remove_file(processor).unwrap();
+        }
+        fs::remove_file(trace).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "requires an installed Perfetto trace processor; no host tracing is used"]
+    fn real_trace_processor_verifies_synthetic_marker_capture() {
+        let tools = PathBuf::from(
+            std::env::var_os("ASB_TEST_PERFETTO_TOOLS").expect("set ASB_TEST_PERFETTO_TOOLS"),
+        );
+        let processor = tools.join("perfetto/bin/trace_processor_shell");
+        let trace =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/perfetto-marker.trace");
+        verify_trace_marker_capture(&processor, &trace, "42-1").unwrap();
+        let error = verify_trace_marker_capture(&processor, &trace, "42-2").unwrap_err();
+        assert!(error.contains("did not capture"), "{error}");
     }
 
     #[cfg(unix)]
@@ -808,9 +1037,13 @@ mod marker_tests {
     fn marker_probe_writes_a_fixed_non_secret_event() {
         let path = std::env::temp_dir().join(format!("asb-marker-probe-{}", std::process::id()));
         fs::write(&path, "").unwrap();
-        probe_trace_marker(&path).unwrap();
+        let mut output = open_trace_marker(&path).unwrap();
+        validate_active_marker(&mut output, &path, "123-1").unwrap();
         let data = fs::read_to_string(&path).unwrap();
-        assert_eq!(data, format!("I|{}|asb.preflight", std::process::id()));
+        assert_eq!(
+            data,
+            format!("I|{}|asb.trace.ready.123-1", std::process::id())
+        );
         fs::remove_file(path).unwrap();
     }
 
