@@ -194,6 +194,11 @@ Pass `--show-output` to stream the agent's stdout and stderr live for interactiv
 debugging when `concurrency = 1`; concurrent replicas buffer each bounded stream
 and emit it in replica order after completion so output cannot interleave
 unreadably. The same output remains in the configured log.
+ASB emits each identical provider warning once per run or sweep and groups
+identical replica failures with their one-based replica numbers; distinct
+failures remain separate. A sweep also groups identical failures across its
+benchmark configurations. Per-replica result records and explicitly requested
+agent output are not deduplicated. JSON result records remain per replica.
 The same flag is accepted by `asb sweep` and is forwarded to each underlying
 `run`, so sweeps do not maintain a second output path.
 An agent is not considered successful solely because its process exits with
@@ -243,6 +248,23 @@ collector can start, ASB probes that exact interface; it retries the collector
 through `sudo -n` only when the direct probe fails, and rejects the run before
 the agent starts when the needed passwordless authorization is absent. Normal
 commands and CI do not require kernel tracing access.
+Preparation also probes perf counter and record access, the project-local
+Perfetto trace processor, process-scoped pidstat
+CPU/I/O sampling, explicit flamegraph executables, and custom bpftrace program
+readability. CPU/I/O adapters prefer the project-local pidstat installed with
+either sysstat tool. Tape and local bridge startup occurs before the agent and
+reports executable and scratch-directory access failures. These checks cannot
+guarantee future access after permissions change, access to the yet-unspawned
+agent PID, or successful attachment of arbitrary custom bpftrace programs.
+Granting unrestricted passwordless sudo for a tracing executable can enable
+arbitrary privileged operations; ASB does not install sudoers rules.
+ASB also opens and writes a fixed, non-secret preflight marker as the benchmark
+user, before starting Tracebox: sudo access for Tracebox does not give ASB
+permission to write lifecycle markers. A permission failure provides a systemd
+tmpfiles command that assigns the marker to the current user with mode 0600;
+this replaces the marker's previous ownership and permissions. It does not
+grant parent-directory traversal or override MAC policy, and a later tracefs
+remount may reset the permissions. The probe can appear in other active traces.
 The `pi` agent uses the pinned `@mariozechner/pi-coding-agent` npm package and
 its non-interactive print mode. The generic endpoint negotiator selects a
 compatible API interface without coupling Pi to a particular provider.

@@ -110,7 +110,7 @@ impl Bridge {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|error| Error::Run(format!("could not start cli2key bridge: {error}")))?;
+            .map_err(|error| Error::Run(format!("could not start cli2key bridge at {executable}: {error}. Check directory access and reinstall with `asb tool install cli2key`.")))?;
         // Own the child immediately: every startup error must kill and reap it.
         let mut bridge = Self {
             api_key: String::new(),
@@ -213,7 +213,7 @@ impl Bridge {
             .spawn()
             .map_err(|error| {
                 Error::Run(format!(
-                    "could not start cli2key compatibility proxy: {error}"
+                    "could not start cli2key compatibility proxy: {error}. Check Node.js with `node --version` and verify the executable's permissions."
                 ))
             })?;
         let stdout = proxy.stdout.take().ok_or_else(|| {

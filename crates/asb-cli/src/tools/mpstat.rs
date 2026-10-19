@@ -9,13 +9,13 @@ pub(super) static ADAPTER: StaticTool = StaticTool::new(
 )
 .with_post_install(post_install);
 
-fn post_install(
+pub(super) fn post_install(
     executable: &std::path::Path,
     _progress: &mut dyn FnMut(u8, &str),
     _output: &mut dyn std::io::Write,
 ) -> Result<(), crate::Error> {
     let source = crate::install::host_executable("pidstat").map_err(|_| {
-        crate::Error::Io("mpstat installation also needs the matching sysstat `pidstat` binary for process-scoped collection; install sysstat and rerun `asb tool install mpstat`".into())
+        crate::Error::Io("CPU and I/O collection needs the matching sysstat `pidstat` binary; install sysstat and retry the ASB tool installation".into())
     })?;
     let destination = executable
         .parent()

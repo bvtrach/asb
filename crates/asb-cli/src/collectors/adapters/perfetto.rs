@@ -114,10 +114,18 @@ fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
     }
     let executable = measurements::resolve_executable(context.tool_dir, "perfetto");
     if !executable.is_file() {
-        return Ok(());
+        return Err("Perfetto is required for the selected collector. Run `asb tool install perfetto` and retry.".into());
     }
-    if trace_marker_path().is_none() {
-        return Err(perfetto_tracefs_error());
+    let marker = checked_trace_marker_path()?;
+    preflight_with_marker(context, &marker)
+}
+
+fn preflight_with_marker(context: &mut PreflightContext<'_>, marker: &Path) -> Result<(), String> {
+    let executable = measurements::resolve_executable(context.tool_dir, "perfetto");
+    probe_trace_marker(&marker)?;
+    probe_trace_processor(context.tool_dir)?;
+    if !executable.is_file() {
+        return Ok(());
     }
     if perfetto_probe(&executable, context.measurement_dir, false)? {
         return Ok(());
@@ -130,6 +138,48 @@ fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
             "perfetto",
             &executable,
         ))
+    }
+}
+
+fn probe_trace_processor(tool_dir: Option<&Path>) -> Result<(), String> {
+    let Some(processor) = tool_dir.map(|dir| dir.join("perfetto/bin/trace_processor_shell")) else {
+        return Err("Perfetto trace processing needs the project-local trace processor. Run `asb tool install perfetto` and retry.".into());
+    };
+    let mut child = Command::new(&processor)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("cannot execute Perfetto trace processor {}: {error}. Check directory access and run `asb tool install perfetto` to reinstall it.", processor.display()))?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => {
+                return Err(format!(
+                    "Perfetto trace processor {} failed its preflight ({status}). Run `asb tool install perfetto` to reinstall it.",
+                    processor.display()
+                ));
+            }
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(25)),
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "Perfetto trace processor {} timed out during preflight. Run `asb tool install perfetto` to reinstall it.",
+                    processor.display()
+                ));
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "cannot check Perfetto trace processor {}: {error}. Run `asb tool install perfetto` to reinstall it.",
+                    processor.display()
+                ));
+            }
+        }
     }
 }
 
@@ -176,13 +226,11 @@ impl measurements::Session {
         let stderr_path = self.dir.join("perfetto.stderr");
         File::create(&stdout_path)
             .map_err(|error| format!("cannot create Perfetto output: {error}"))?;
-        let marker = trace_marker_path().ok_or_else(perfetto_tracefs_error)?;
-        let marker_output = OpenOptions::new().write(true).open(&marker).map_err(|error| {
-            format!(
-                "cannot write ASB lifecycle markers to {}: {error}; grant the benchmark user write access to trace_marker before running with Perfetto",
-                marker.display()
-            )
-        })?;
+        let marker = checked_trace_marker_path()?;
+        let marker_output = OpenOptions::new()
+            .write(true)
+            .open(&marker)
+            .map_err(|error| marker_access_error(&marker, &error))?;
         let child = self
             .command("perfetto")
             .args(["--txt", "--notify-fd", "1", "-c"])
@@ -247,14 +295,14 @@ impl measurements::Session {
         let mut state = state.borrow_mut();
         let path = state
             .trace_marker
-            .as_ref()
-            .map_or_else(|| "trace_marker".into(), |path| path.display().to_string());
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("trace_marker"));
         let Some(output) = state.trace_marker_output.as_mut() else {
             return Ok(());
         };
         output
             .write_all(event.as_bytes())
-            .map_err(|error| format!("cannot write ASB lifecycle marker to {path}: {error}"))?;
+            .map_err(|error| marker_access_error(&path, &error))?;
         state.tracepoint_count = state.tracepoint_count.saturating_add(1);
         Ok(())
     }
@@ -406,13 +454,52 @@ pub(crate) fn write_perfetto_metric_svgs(
     Ok(())
 }
 
-pub(crate) fn trace_marker_path() -> Option<PathBuf> {
-    [
+fn checked_trace_marker_path() -> Result<PathBuf, String> {
+    let paths = [
         PathBuf::from("/sys/kernel/tracing/trace_marker"),
         PathBuf::from("/sys/kernel/debug/tracing/trace_marker"),
-    ]
-    .into_iter()
-    .find(|path| path.is_file())
+    ];
+    let mut denied = None;
+    for path in paths {
+        match fs::metadata(&path) {
+            Ok(metadata) if metadata.is_file() => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                if denied.is_none() {
+                    denied = Some((path, error));
+                }
+            }
+            _ => {}
+        }
+    }
+    match denied {
+        Some((path, error)) => Err(marker_access_error(&path, &error)),
+        None => Err(perfetto_tracefs_error()),
+    }
+}
+
+fn probe_trace_marker(path: &Path) -> Result<(), String> {
+    let mut marker = OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|error| marker_access_error(path, &error))?;
+    // Probe as ASB's own user, not as the potentially privileged Tracebox.
+    // This fixed, non-secret event also tests failures that occur on write.
+    write!(marker, "I|{}|asb.preflight", std::process::id())
+        .map_err(|error| marker_access_error(path, &error))
+}
+
+fn marker_access_error(path: &Path, error: &std::io::Error) -> String {
+    if error.kind() != std::io::ErrorKind::PermissionDenied {
+        return format!(
+            "cannot write ASB lifecycle markers to {}: {error}; check the tracefs mount and host security policy before rerunning",
+            path.display()
+        );
+    }
+    let quoted = format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"));
+    format!(
+        "cannot write ASB lifecycle markers to {}: {error}. Tracebox sudo access does not grant ASB marker access.\nWhat to do (systemd Linux; gives the current user ownership and mode 0600, replacing existing access on this marker):\n  printf 'z %s 0600 %s - -\\n' {quoted} \"$(id -u)\" | sudo sh -c 'set -C; cat > \"/etc/tmpfiles.d/asb-perfetto-marker-$1.conf\"' sh \"$(id -u)\" && sudo systemd-tmpfiles --create \"/etc/tmpfiles.d/asb-perfetto-marker-$(id -u).conf\"\nThis installs a boot-time rule and applies it now. If the rule already exists, inspect it before changing it. The user also needs search access to the parent directories; check with `namei -l {quoted}`. Remounting tracefs or a host security policy can still require additional administrator action.",
+        path.display()
+    )
 }
 
 /// Build Perfetto queries that restrict scheduler data to the benchmark
@@ -553,10 +640,174 @@ pub(crate) fn perfetto_probe(
                 .any(|marker| stderr.contains(marker)))
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound && sudo => Ok(false),
-        Err(error) => Err(format!("cannot probe Perfetto ftrace collector: {error}")),
+        Err(error) => Err(format!(
+            "cannot execute Perfetto at {}: {error}. Check parent-directory access and reinstall with `asb tool install perfetto`.",
+            executable.display()
+        )),
     }
 }
 
 pub(crate) fn perfetto_tracefs_error() -> String {
     "Perfetto needs the Linux tracefs ftrace interface, but ASB could not find trace_marker under /sys/kernel/tracing or /sys/kernel/debug/tracing. This is a host kernel interface, not an installable project tool. What to do: mount tracefs or enable kernel tracing, then rerun. If mounting tracefs requires privileges, grant the required passwordless sudo access before starting the benchmark; ASB never prompts for a password.".into()
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+
+    #[test]
+    fn permission_failure_has_persistent_scoped_remediation() {
+        let path = Path::new("/sys/kernel/tracing/trace_marker");
+        let error = marker_access_error(
+            path,
+            &std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        assert!(
+            error
+                .contains("cannot write ASB lifecycle markers to /sys/kernel/tracing/trace_marker")
+        );
+        assert!(error.contains("systemd-tmpfiles --create"));
+        assert!(error.contains("$(id -u)"));
+        assert!(error.contains("mode 0600"));
+        assert!(error.contains("parent directories"));
+        let command = error
+            .lines()
+            .find(|line| line.trim_start().starts_with("printf "))
+            .unwrap()
+            .trim();
+        assert!(
+            Command::new("sh")
+                .args(["-n", "-c", command])
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    #[test]
+    fn non_permission_failure_does_not_suggest_changing_permissions() {
+        let error = marker_access_error(Path::new("/dev/full"), &std::io::Error::other("full"));
+        assert!(error.contains("check the tracefs mount"));
+        assert!(!error.contains("systemd-tmpfiles"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trace_processor_preflight_checks_missing_and_executable_tools() {
+        use std::os::unix::fs::PermissionsExt;
+        let root =
+            std::env::temp_dir().join(format!("asb-processor-preflight-{}", std::process::id()));
+        let bin = root.join("perfetto/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let error = probe_trace_processor(Some(&root)).unwrap_err();
+        assert!(error.contains("asb tool install perfetto"), "{error}");
+        let processor = bin.join("trace_processor_shell");
+        fs::write(&processor, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&processor, fs::Permissions::from_mode(0o644)).unwrap();
+        if Command::new(&processor).arg("--version").spawn().is_err() {
+            let error = probe_trace_processor(Some(&root)).unwrap_err();
+            assert!(
+                error.contains("cannot execute Perfetto trace processor"),
+                "{error}"
+            );
+            assert!(error.contains("asb tool install perfetto"), "{error}");
+        }
+        fs::set_permissions(&processor, fs::Permissions::from_mode(0o755)).unwrap();
+        probe_trace_processor(Some(&root)).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preflight_stops_before_perfetto_when_marker_is_unwritable() {
+        use std::os::unix::fs::PermissionsExt;
+        let root =
+            std::env::temp_dir().join(format!("asb-marker-preflight-{}", std::process::id()));
+        fs::create_dir_all(root.join("tools/perfetto/bin")).unwrap();
+        let marker = root.join("trace_marker");
+        fs::write(&marker, "").unwrap();
+        fs::set_permissions(&marker, fs::Permissions::from_mode(0o400)).unwrap();
+        // A privileged test process can legitimately bypass these permissions.
+        if OpenOptions::new().write(true).open(&marker).is_err() {
+            let executable = root.join("tools/perfetto/bin/perfetto");
+            let sentinel = root.join("perfetto-ran");
+            fs::write(
+                &executable,
+                format!("#!/bin/sh\ntouch '{}'\n", sentinel.display()),
+            )
+            .unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+            let tools = root.join("tools");
+            let mut sudo_collectors = std::collections::BTreeSet::new();
+            let mut context = PreflightContext {
+                measurement_dir: &root,
+                selected: &[],
+                tool_dir: Some(&tools),
+                sudo_collectors: &mut sudo_collectors,
+            };
+            let error = preflight_with_marker(&mut context, &marker).unwrap_err();
+            assert!(
+                error.contains("cannot write ASB lifecycle markers"),
+                "{error}"
+            );
+            assert!(
+                !sentinel.exists(),
+                "collector must not start before the marker check"
+            );
+        }
+        fs::set_permissions(&marker, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn marker_probe_writes_a_fixed_non_secret_event() {
+        let path = std::env::temp_dir().join(format!("asb-marker-probe-{}", std::process::id()));
+        fs::write(&path, "").unwrap();
+        probe_trace_marker(&path).unwrap();
+        let data = fs::read_to_string(&path).unwrap();
+        assert_eq!(data, format!("I|{}|asb.preflight", std::process::id()));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tmpfiles_rule_applies_to_an_isolated_marker_fixture() {
+        use std::os::unix::fs::PermissionsExt;
+        if Command::new("systemd-tmpfiles")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("asb-marker-tmpfiles-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let marker = root.join("marker");
+        let rule = root.join("asb.conf");
+        fs::write(&marker, "").unwrap();
+        fs::set_permissions(&marker, fs::Permissions::from_mode(0o644)).unwrap();
+        let uid = Command::new("id").arg("-u").output().unwrap();
+        let uid = String::from_utf8(uid.stdout).unwrap();
+        fs::write(
+            &rule,
+            format!("z {} 0600 {} - -\n", marker.display(), uid.trim()),
+        )
+        .unwrap();
+        let output = Command::new("systemd-tmpfiles")
+            .arg("--create")
+            .arg(&rule)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            fs::metadata(&marker).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 }

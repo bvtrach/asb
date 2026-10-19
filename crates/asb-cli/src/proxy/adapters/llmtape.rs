@@ -133,9 +133,14 @@ impl ProxyAdapter for LlmtapeAdapter {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let child = command.spawn().map_err(|error| {
-            Error::Run(format!(
-                "cannot start ASB's built-in tape proxy; install Node.js or set ASB_LLM_TAPE to an explicit compatible executable: {error}"
-            ))
+            let help = match (&executable, error.kind()) {
+                (ProxyExecutable::Override(path), std::io::ErrorKind::PermissionDenied) => format!(
+                    "Check parent-directory access; if you own the override executable, run `chmod u+x -- {}` and retry.", shell_quote(Path::new(path))
+                ),
+                (ProxyExecutable::Override(path), _) => format!("Check the ASB_LLM_TAPE executable at {} and retry.", path),
+                (ProxyExecutable::Builtin(_), _) => "Install Node.js or set ASB_LLM_TAPE to a compatible executable; check Node with `node --version`.".to_owned(),
+            };
+            Error::Run(format!("cannot start the tape proxy: {error}. {help}"))
         })?;
         let mut child = StartingChild(Some(child));
         let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
@@ -294,9 +299,17 @@ impl Scratch {
                 Ok(()) => return Ok(Self { path }),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => {
+                    let help = if error.kind() == std::io::ErrorKind::PermissionDenied {
+                        format!(
+                            " Check parent-directory access; if you own the directory, run `chmod u+rwx -- {}` and retry.",
+                            shell_quote(parent)
+                        )
+                    } else {
+                        String::new()
+                    };
                     return Err(Error::Run(format!(
-                        "cannot create tape session directory {}: {error}",
-                        path.display()
+                        "cannot create a tape session directory in {}: {error}.{help}",
+                        parent.display()
                     )));
                 }
             }
@@ -305,6 +318,10 @@ impl Scratch {
             "cannot allocate a unique tape session directory".into(),
         ))
     }
+}
+
+fn shell_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
 }
 
 impl Drop for Scratch {

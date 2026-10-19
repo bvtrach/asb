@@ -513,63 +513,63 @@
 <!-- asb&#45;cli_src_Session -->
 <g id="node33" class="node">
 <title>asb&#45;cli_src_Session</title>
-<path fill="#f8fafc" stroke="#64748b" d="M124,-4181C124,-4181 1000,-4181 1000,-4181 1006,-4181 1012,-4187 1012,-4193 1012,-4193 1012,-4357 1012,-4357 1012,-4363 1006,-4369 1000,-4369 1000,-4369 124,-4369 124,-4369 118,-4369 112,-4363 112,-4357 112,-4357 112,-4193 112,-4193 112,-4187 118,-4181 124,-4181"/>
-<text text-anchor="middle" x="137" y="-4272.8" font-family="Helvetica,sans-Serif" font-size="9.00">Session</text>
-<polyline fill="none" stroke="#64748b" points="162,-4181 162,-4369 "/>
-<text text-anchor="start" x="170" y="-4357.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;dir: PathBuf</text>
-<text text-anchor="start" x="170" y="-4347.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;tool_dir: Option&lt;PathBuf&gt;</text>
-<text text-anchor="start" x="170" y="-4337.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;started_unix_ms: u128</text>
-<text text-anchor="start" x="170" y="-4327.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;collectors: Vec&lt;Collector&gt;</text>
-<text text-anchor="start" x="170" y="-4317.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;states: BTreeMap&lt;TypeId, Box&lt;dyn Any&gt;&gt;</text>
-<text text-anchor="start" x="170" y="-4307.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;shared_artifacts: BTreeMap&lt;collectors::SharedArtifact, PathBuf&gt;</text>
-<text text-anchor="start" x="170" y="-4297.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;run_started: bool</text>
-<text text-anchor="start" x="170" y="-4287.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;run_failed: bool</text>
-<text text-anchor="start" x="170" y="-4277.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;run_finishing: bool</text>
-<text text-anchor="start" x="170" y="-4267.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;lifecycle_started: Instant</text>
-<text text-anchor="start" x="170" y="-4257.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;lifecycle: Vec&lt;LifecycleRecord&gt;</text>
-<text text-anchor="start" x="170" y="-4247.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;test_attach_failure: bool</text>
-<text text-anchor="start" x="170" y="-4237.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;trace_id: String</text>
-<text text-anchor="start" x="170" y="-4227.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;sudo_collectors: BTreeSet&lt;String&gt;</text>
-<text text-anchor="start" x="170" y="-4217.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;component_starts: BTreeMap&lt;String, Instant&gt;</text>
-<text text-anchor="start" x="170" y="-4207.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;component_timings: BTreeMap&lt;String, ComponentTiming&gt;</text>
-<text text-anchor="start" x="170" y="-4197.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;process_sampler: Option&lt;ProcessSampler&gt;</text>
-<text text-anchor="start" x="170" y="-4187.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;clock_ticks_per_second: Option&lt;u64&gt;</text>
-<polyline fill="none" stroke="#64748b" points="473,-4181 473,-4369 "/>
-<text text-anchor="start" x="481" y="-4352.8" font-family="Helvetica,sans-Serif" font-size="9.00">+started_unix_ms() u128</text>
-<text text-anchor="start" x="481" y="-4342.8" font-family="Helvetica,sans-Serif" font-size="9.00">+start_with_collectors(dir: &amp;Path, selected: &amp;[String], tool_dir: Option&lt;&amp;Path&gt;) Result&lt;Self, String&gt;</text>
-<text text-anchor="start" x="481" y="-4332.8" font-family="Helvetica,sans-Serif" font-size="9.00">+event(event: LifecycleEvent) Result&lt;(), String&gt;</text>
-<text text-anchor="start" x="481" y="-4322.8" font-family="Helvetica,sans-Serif" font-size="9.00">+record_component_event(event: LifecycleEvent) void</text>
-<text text-anchor="start" x="481" y="-4312.8" font-family="Helvetica,sans-Serif" font-size="9.00">+finish_component(name: &amp;str, now: Instant) void</text>
-<text text-anchor="start" x="481" y="-4302.8" font-family="Helvetica,sans-Serif" font-size="9.00">+start_process_sampler(pid: u32) void</text>
-<text text-anchor="start" x="481" y="-4292.8" font-family="Helvetica,sans-Serif" font-size="9.00">+stop_process_sampler() void</text>
-<text text-anchor="start" x="481" y="-4282.8" font-family="Helvetica,sans-Serif" font-size="9.00">+write_component_measurements(elapsed_ms: u128) Result&lt;(), String&gt;</text>
-<text text-anchor="start" x="481" y="-4272.8" font-family="Helvetica,sans-Serif" font-size="9.00">+trace_id() &amp;str</text>
-<text text-anchor="start" x="481" y="-4262.8" font-family="Helvetica,sans-Serif" font-size="9.00">+state() Rc&lt;RefCell&lt;T&gt;&gt;</text>
-<text text-anchor="start" x="481" y="-4252.8" font-family="Helvetica,sans-Serif" font-size="9.00">+set_artifact(kind: SharedArtifact, path: PathBuf) void</text>
-<text text-anchor="start" x="481" y="-4242.8" font-family="Helvetica,sans-Serif" font-size="9.00">+artifact(kind: SharedArtifact) Option&lt;&amp;Path&gt;</text>
-<text text-anchor="start" x="481" y="-4232.8" font-family="Helvetica,sans-Serif" font-size="9.00">+attach_pid(pid: u32) Result&lt;(), String&gt;</text>
-<text text-anchor="start" x="481" y="-4222.8" font-family="Helvetica,sans-Serif" font-size="9.00">+finish(self, measurement: RunMeasurement&lt;&#39;a&gt;) Result&lt;(), String&gt;</text>
-<text text-anchor="start" x="481" y="-4212.8" font-family="Helvetica,sans-Serif" font-size="9.00">+start_snapshot(name: &amp;str, variable: &amp;str, args: &amp;[&amp;str], enabled: bool, command_name: &amp;str) Result&lt;(), String&gt;</text>
-<text text-anchor="start" x="481" y="-4202.8" font-family="Helvetica,sans-Serif" font-size="9.00">+command(name: &amp;str) Command</text>
-<text text-anchor="start" x="481" y="-4192.8" font-family="Helvetica,sans-Serif" font-size="9.00">+executable(name: &amp;str) PathBuf</text>
+<path fill="#f8fafc" stroke="#64748b" d="M133,-4181C133,-4181 991,-4181 991,-4181 997,-4181 1003,-4187 1003,-4193 1003,-4193 1003,-4357 1003,-4357 1003,-4363 997,-4369 991,-4369 991,-4369 133,-4369 133,-4369 127,-4369 121,-4363 121,-4357 121,-4357 121,-4193 121,-4193 121,-4187 127,-4181 133,-4181"/>
+<text text-anchor="middle" x="146" y="-4272.8" font-family="Helvetica,sans-Serif" font-size="9.00">Session</text>
+<polyline fill="none" stroke="#64748b" points="171,-4181 171,-4369 "/>
+<text text-anchor="start" x="179" y="-4357.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;dir: PathBuf</text>
+<text text-anchor="start" x="179" y="-4347.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;tool_dir: Option&lt;PathBuf&gt;</text>
+<text text-anchor="start" x="179" y="-4337.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;started_unix_ms: u128</text>
+<text text-anchor="start" x="179" y="-4327.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;collectors: Vec&lt;Collector&gt;</text>
+<text text-anchor="start" x="179" y="-4317.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;states: BTreeMap&lt;TypeId, Box&lt;dyn Any&gt;&gt;</text>
+<text text-anchor="start" x="179" y="-4307.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;shared_artifacts: BTreeMap&lt;collectors::SharedArtifact, PathBuf&gt;</text>
+<text text-anchor="start" x="179" y="-4297.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;run_started: bool</text>
+<text text-anchor="start" x="179" y="-4287.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;run_failed: bool</text>
+<text text-anchor="start" x="179" y="-4277.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;run_finishing: bool</text>
+<text text-anchor="start" x="179" y="-4267.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;lifecycle_started: Instant</text>
+<text text-anchor="start" x="179" y="-4257.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;lifecycle: Vec&lt;LifecycleRecord&gt;</text>
+<text text-anchor="start" x="179" y="-4247.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;test_attach_failure: bool</text>
+<text text-anchor="start" x="179" y="-4237.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;trace_id: String</text>
+<text text-anchor="start" x="179" y="-4227.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;sudo_collectors: BTreeSet&lt;String&gt;</text>
+<text text-anchor="start" x="179" y="-4217.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;component_starts: BTreeMap&lt;String, Instant&gt;</text>
+<text text-anchor="start" x="179" y="-4207.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;component_timings: BTreeMap&lt;String, ComponentTiming&gt;</text>
+<text text-anchor="start" x="179" y="-4197.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;process_sampler: Option&lt;ProcessSampler&gt;</text>
+<text text-anchor="start" x="179" y="-4187.8" font-family="Helvetica,sans-Serif" font-size="9.00">&#45;clock_ticks_per_second: Option&lt;u64&gt;</text>
+<polyline fill="none" stroke="#64748b" points="482,-4181 482,-4369 "/>
+<text text-anchor="start" x="490" y="-4352.8" font-family="Helvetica,sans-Serif" font-size="9.00">+started_unix_ms() u128</text>
+<text text-anchor="start" x="490" y="-4342.8" font-family="Helvetica,sans-Serif" font-size="9.00">+start_with_collectors(dir: &amp;Path, selected: &amp;[String], tool_dir: Option&lt;&amp;Path&gt;) Result&lt;Self, String&gt;</text>
+<text text-anchor="start" x="490" y="-4332.8" font-family="Helvetica,sans-Serif" font-size="9.00">+event(event: LifecycleEvent) Result&lt;(), String&gt;</text>
+<text text-anchor="start" x="490" y="-4322.8" font-family="Helvetica,sans-Serif" font-size="9.00">+record_component_event(event: LifecycleEvent) void</text>
+<text text-anchor="start" x="490" y="-4312.8" font-family="Helvetica,sans-Serif" font-size="9.00">+finish_component(name: &amp;str, now: Instant) void</text>
+<text text-anchor="start" x="490" y="-4302.8" font-family="Helvetica,sans-Serif" font-size="9.00">+start_process_sampler(pid: u32) void</text>
+<text text-anchor="start" x="490" y="-4292.8" font-family="Helvetica,sans-Serif" font-size="9.00">+stop_process_sampler() void</text>
+<text text-anchor="start" x="490" y="-4282.8" font-family="Helvetica,sans-Serif" font-size="9.00">+write_component_measurements(elapsed_ms: u128) Result&lt;(), String&gt;</text>
+<text text-anchor="start" x="490" y="-4272.8" font-family="Helvetica,sans-Serif" font-size="9.00">+trace_id() &amp;str</text>
+<text text-anchor="start" x="490" y="-4262.8" font-family="Helvetica,sans-Serif" font-size="9.00">+state() Rc&lt;RefCell&lt;T&gt;&gt;</text>
+<text text-anchor="start" x="490" y="-4252.8" font-family="Helvetica,sans-Serif" font-size="9.00">+set_artifact(kind: SharedArtifact, path: PathBuf) void</text>
+<text text-anchor="start" x="490" y="-4242.8" font-family="Helvetica,sans-Serif" font-size="9.00">+artifact(kind: SharedArtifact) Option&lt;&amp;Path&gt;</text>
+<text text-anchor="start" x="490" y="-4232.8" font-family="Helvetica,sans-Serif" font-size="9.00">+attach_pid(pid: u32) Result&lt;(), String&gt;</text>
+<text text-anchor="start" x="490" y="-4222.8" font-family="Helvetica,sans-Serif" font-size="9.00">+finish(self, measurement: RunMeasurement&lt;&#39;a&gt;) Result&lt;(), String&gt;</text>
+<text text-anchor="start" x="490" y="-4212.8" font-family="Helvetica,sans-Serif" font-size="9.00">+start_snapshot(name: &amp;str, variable: &amp;str, args: &amp;[&amp;str], enabled: bool, executable: &amp;Path) Result&lt;(), String&gt;</text>
+<text text-anchor="start" x="490" y="-4202.8" font-family="Helvetica,sans-Serif" font-size="9.00">+command(name: &amp;str) Command</text>
+<text text-anchor="start" x="490" y="-4192.8" font-family="Helvetica,sans-Serif" font-size="9.00">+executable(name: &amp;str) PathBuf</text>
 </g>
 <!-- asb&#45;cli_src_Session&#45;&gt;asb&#45;cli_src_ComponentTiming -->
 <g id="edge15" class="edge">
 <title>asb&#45;cli_src_Session&#45;&gt;asb&#45;cli_src_ComponentTiming</title>
-<path fill="none" stroke="#94a3b8" d="M1012.13,-4363.18C1069.12,-4374.37 1108,-4382 1108,-4382 1108,-4382 1343.11,-4641.14 1434.38,-4741.74"/>
+<path fill="none" stroke="#94a3b8" d="M1003.24,-4361.43C1065.04,-4373.57 1108,-4382 1108,-4382 1108,-4382 1343.11,-4641.14 1434.38,-4741.74"/>
 <polygon fill="#94a3b8" stroke="#94a3b8" points="1439.14,-4746.98 1432.1,-4743.91 1436.78,-4744.39 1434.43,-4741.8 1434.43,-4741.8 1434.43,-4741.8 1436.78,-4744.39 1436.77,-4739.68 1439.14,-4746.98 1439.14,-4746.98"/>
 </g>
 <!-- asb&#45;cli_src_Session&#45;&gt;asb&#45;cli_src_LifecycleRecord -->
 <g id="edge16" class="edge">
 <title>asb&#45;cli_src_Session&#45;&gt;asb&#45;cli_src_LifecycleRecord</title>
-<path fill="none" stroke="#94a3b8" d="M1012.18,-4275C1142.79,-4275 1273.88,-4275 1362.1,-4275"/>
-<polygon fill="#94a3b8" stroke="#94a3b8" points="1369.17,-4275 1362.17,-4278.15 1365.67,-4275 1362.17,-4275 1362.17,-4275 1362.17,-4275 1365.67,-4275 1362.17,-4271.85 1369.17,-4275 1369.17,-4275"/>
+<path fill="none" stroke="#94a3b8" d="M1003.22,-4275C1136.81,-4275 1271.94,-4275 1362.18,-4275"/>
+<polygon fill="#94a3b8" stroke="#94a3b8" points="1369.42,-4275 1362.42,-4278.15 1365.92,-4275 1362.42,-4275 1362.42,-4275 1362.42,-4275 1365.92,-4275 1362.42,-4271.85 1369.42,-4275 1369.42,-4275"/>
 </g>
 <!-- asb&#45;cli_src_Session&#45;&gt;asb&#45;cli_src_ProcessSampler -->
 <g id="edge17" class="edge">
 <title>asb&#45;cli_src_Session&#45;&gt;asb&#45;cli_src_ProcessSampler</title>
-<path fill="none" stroke="#94a3b8" d="M1012.18,-4327C1114.17,-4338.81 1216.45,-4350.65 1298.38,-4360.13"/>
-<polygon fill="#94a3b8" stroke="#94a3b8" points="1305.75,-4360.98 1298.43,-4363.31 1302.27,-4360.58 1298.79,-4360.18 1298.79,-4360.18 1298.79,-4360.18 1302.27,-4360.58 1299.15,-4357.05 1305.75,-4360.98 1305.75,-4360.98"/>
+<path fill="none" stroke="#94a3b8" d="M1003.22,-4325.96C1108.25,-4338.12 1214.23,-4350.39 1298.6,-4360.16"/>
+<polygon fill="#94a3b8" stroke="#94a3b8" points="1305.67,-4360.98 1298.35,-4363.3 1302.19,-4360.57 1298.71,-4360.17 1298.71,-4360.17 1298.71,-4360.17 1302.19,-4360.57 1299.08,-4357.04 1305.67,-4360.98 1305.67,-4360.98"/>
 </g>
 <!-- asb&#45;cli_src_Collector -->
 <g id="node84" class="node">
@@ -587,7 +587,7 @@
 <!-- asb&#45;cli_src_Session&#45;&gt;asb&#45;cli_src_Collector -->
 <g id="edge14" class="edge">
 <title>asb&#45;cli_src_Session&#45;&gt;asb&#45;cli_src_Collector</title>
-<path fill="none" stroke="#94a3b8" d="M1012.13,-4186.82C1069.12,-4175.63 1108,-4168 1108,-4168 1108,-4168 1191,-892 1191,-892 1191,-892 1270.15,-871.29 1344.13,-851.93"/>
+<path fill="none" stroke="#94a3b8" d="M1003.24,-4188.57C1065.04,-4176.43 1108,-4168 1108,-4168 1108,-4168 1191,-892 1191,-892 1191,-892 1270.15,-871.29 1344.13,-851.93"/>
 <polygon fill="#94a3b8" stroke="#94a3b8" points="1351.27,-850.06 1345.3,-854.88 1347.89,-850.95 1344.5,-851.84 1344.5,-851.84 1344.5,-851.84 1347.89,-850.95 1343.7,-848.79 1351.27,-850.06 1351.27,-850.06"/>
 </g>
 <!-- asb&#45;cli_src_SetupArgs -->

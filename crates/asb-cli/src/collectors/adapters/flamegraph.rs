@@ -1,6 +1,7 @@
 use super::super::{ArtifactDisplay, StaticCollector};
 pub(super) static ADAPTER: StaticCollector =
     StaticCollector::new("flamegraph", None, Some("flamegraph"), true)
+        .with_preflight(preflight)
         .with_artifacts(
             |name| name == "flamegraph.svg" || name == "flamegraph.json",
             |name| match name {
@@ -27,6 +28,73 @@ use std::time::{Duration, Instant};
 
 const FLAMEGRAPH_TIMEOUT: Duration = Duration::from_secs(60);
 
+fn flamegraph_commands(
+    tool_dir: Option<&Path>,
+) -> (Option<std::ffi::OsString>, Option<std::ffi::OsString>) {
+    let collapse = std::env::var_os("ASB_FLAMEGRAPH_STACKCOLLAPSE").or_else(|| {
+        tool_dir.and_then(|dir| {
+            [
+                dir.join("flamegraph/bin/stackcollapse-perf.pl"),
+                dir.join("bin/stackcollapse-perf.pl"),
+            ]
+            .into_iter()
+            .find(|path| path.is_file())
+            .map(|path| path.into_os_string())
+        })
+    });
+    let render = std::env::var_os("ASB_FLAMEGRAPH_RENDER").or_else(|| {
+        tool_dir.and_then(|dir| {
+            [
+                dir.join("flamegraph/bin/flamegraph"),
+                dir.join("bin/flamegraph"),
+            ]
+            .into_iter()
+            .find(|path| path.is_file())
+            .map(|path| path.into_os_string())
+        })
+    });
+    (collapse, render)
+}
+
+fn preflight(context: &mut super::super::PreflightContext<'_>) -> Result<(), String> {
+    if !context.selected.iter().any(|item| item == "flamegraph") {
+        return Ok(());
+    }
+    if !super::super::selected_or_environment("perf", context.selected) {
+        return Err("the selected flamegraph collector needs the perf collector; select `perf` as well and retry.".into());
+    }
+    let (Some(collapse), Some(render)) = flamegraph_commands(context.tool_dir) else {
+        return Err("flamegraph scripts are required for the selected collector. Install them with `asb tool install flamegraph` and retry.".into());
+    };
+    for executable in [collapse, render] {
+        let mut child = Command::new(&executable).arg("--help").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
+            .map_err(|error| format!("cannot execute flamegraph tool {}: {error}. Check directory access and reinstall with `asb tool install flamegraph`.", Path::new(&executable).display()))?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break, // Some script versions return nonzero for --help.
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(25))
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "flamegraph tool {} did not finish its preflight; check `asb tool install flamegraph`.",
+                        Path::new(&executable).display()
+                    ));
+                }
+                Err(error) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("cannot check flamegraph tool: {error}"));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 impl measurements::Session {
     pub(crate) fn write_flamegraph(&self) -> Result<(), String> {
         let Some(data) = self.artifact(super::super::SharedArtifact::StackSamples) else {
@@ -45,28 +113,7 @@ impl measurements::Session {
                 "perf produced no samples; check perf.json and host perf permissions",
             );
         }
-        let collapse = std::env::var_os("ASB_FLAMEGRAPH_STACKCOLLAPSE").or_else(|| {
-            self.tool_dir.as_ref().and_then(|dir| {
-                [
-                    dir.join("flamegraph/bin/stackcollapse-perf.pl"),
-                    dir.join("bin/stackcollapse-perf.pl"),
-                ]
-                .into_iter()
-                .find(|path| path.is_file())
-                .map(|path| path.into_os_string())
-            })
-        });
-        let render = std::env::var_os("ASB_FLAMEGRAPH_RENDER").or_else(|| {
-            self.tool_dir.as_ref().and_then(|dir| {
-                [
-                    dir.join("flamegraph/bin/flamegraph"),
-                    dir.join("bin/flamegraph"),
-                ]
-                .into_iter()
-                .find(|path| path.is_file())
-                .map(|path| path.into_os_string())
-            })
-        });
+        let (collapse, render) = flamegraph_commands(self.tool_dir.as_deref());
         let (Some(collapse), Some(render)) = (collapse, render) else {
             return write_flamegraph_status(
                 &self.dir,

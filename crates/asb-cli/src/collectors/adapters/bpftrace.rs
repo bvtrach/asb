@@ -56,7 +56,22 @@ fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
     let custom = super::super::selected_or_environment("bpftrace", context.selected)
         && std::env::var_os("ASB_BPFTRACE_PROGRAMS").is_some();
     if !custom && profiles.is_empty() {
+        if super::super::selected_or_environment("bpftrace", context.selected) {
+            return Err("bpftrace is enabled but no program or profile is configured. Select a profile, or set `ASB_BPFTRACE_PROFILES=all` and retry.".into());
+        }
         return Ok(());
+    }
+    if custom {
+        for (program, _) in custom_programs()? {
+            std::fs::File::open(&program).map_err(|error| {
+                let quoted = format!("'{}'", program.replace('\'', "'\\''"));
+                if error.kind() == std::io::ErrorKind::PermissionDenied {
+                    format!("cannot read bpftrace program {program}: {error}. Check parent-directory access; if you own the file, run `chmod u+r -- {quoted}` and retry.")
+                } else {
+                    format!("cannot read bpftrace program {program}: {error}. Check the configured path in `ASB_BPFTRACE_PROGRAMS` and retry.")
+                }
+            })?;
+        }
     }
     let executable = measurements::resolve_executable(context.tool_dir, "bpftrace");
     let args = ["-e", "BEGIN { exit(); }"];
@@ -84,8 +99,8 @@ fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
                 ));
             }
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("cannot probe bpftrace collector: {error}")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err("bpftrace is required for the selected collector. Run `asb tool install bpftrace` and retry.".into()),
+        Err(error) => return Err(format!("cannot execute bpftrace at {}: {error}. Check parent-directory access and reinstall with `asb tool install bpftrace`.", executable.display())),
     }
     if !profiles.is_empty() && !executable.is_file() {
         return Err("selected bpftrace profiles need a project-local bpftrace executable. What to do: run `asb tool install bpftrace` in this project, then rerun the benchmark.".into());
@@ -135,24 +150,11 @@ impl measurements::Session {
     }
 
     fn start_bpftrace(&mut self, pid: u32) -> Result<(), String> {
-        let specs = std::env::var("ASB_BPFTRACE_PROGRAMS")
-            .map_err(|_| "ASB_MEASURE_BPFTRACE=1 requires ASB_BPFTRACE_PROGRAMS".to_owned())?;
-        for (index, spec) in specs
-            .split(';')
-            .filter(|s| !s.trim().is_empty())
-            .enumerate()
-        {
-            let (program, params) = spec.split_once('?').map_or((spec, ""), |parts| parts);
+        for (index, (program, params)) in custom_programs()?.into_iter().enumerate() {
             let mut command = self.command("bpftrace");
             command.args(["-p", &pid.to_string()]);
-            command.arg(program);
-            for parameter in params.split('&').filter(|s| !s.is_empty()) {
-                let (key, value) = parameter.split_once('=').ok_or_else(|| {
-                    format!("invalid bpftrace parameter `{parameter}`; use PROGRAM?name=value")
-                })?;
-                if key.is_empty() || value.is_empty() {
-                    return Err(format!("invalid bpftrace parameter `{parameter}`"));
-                }
+            command.arg(&program);
+            for (key, value) in params {
                 command.args(["-D", &format!("{key}={value}")]);
             }
             let stdout_path = self.dir.join(format!("bpftrace-{index}.stdout"));
@@ -236,6 +238,27 @@ impl measurements::Session {
         }
         Ok(())
     }
+}
+
+fn custom_programs() -> Result<Vec<(String, Vec<(String, String)>)>, String> {
+    let specs = std::env::var("ASB_BPFTRACE_PROGRAMS")
+        .map_err(|_| "ASB_MEASURE_BPFTRACE=1 requires ASB_BPFTRACE_PROGRAMS".to_owned())?;
+    let mut programs = Vec::new();
+    for spec in specs.split(';').filter(|s| !s.trim().is_empty()) {
+        let (program, params) = spec.split_once('?').map_or((spec, ""), |parts| parts);
+        let mut parsed = Vec::new();
+        for parameter in params.split('&').filter(|s| !s.is_empty()) {
+            let (key, value) = parameter.split_once('=').ok_or_else(|| {
+                format!("invalid bpftrace parameter `{parameter}`; use PROGRAM?name=value")
+            })?;
+            if key.is_empty() || value.is_empty() {
+                return Err(format!("invalid bpftrace parameter `{parameter}`"));
+            }
+            parsed.push((key.into(), value.into()));
+        }
+        programs.push((program.into(), parsed));
+    }
+    Ok(programs)
 }
 
 /// Seed the built-in probes with every process currently below the agent and
