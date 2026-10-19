@@ -113,6 +113,14 @@ repair command.
 
 Install Perfetto locally with `asb tool install perfetto`. It installs both the
 project-local Tracebox collector and the project-local Perfetto trace processor.
+
+The `system` collector records bounded, non-secret host metadata in
+`system.json`: CPU model/vendor and Arm implementer/part identifiers,
+package/core/thread topology, governors and frequency limits, NUMA node count,
+VM/container class, compiler/runtime and selected collector versions, and
+relevant kernel settings. Unavailable fields are omitted rather than guessed;
+raw proc/sysfs, cgroup, command output, credentials, and private paths are never
+retained.
 When the `perfetto` collector is selected (or `ASB_MEASURE_PERFETTO=1` is set),
 ASB validates the exact ftrace configuration before the agent starts, then
 starts Tracebox after the agent PID is known, filters scheduler events to that

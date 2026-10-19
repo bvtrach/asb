@@ -50,6 +50,12 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   interval programs may add series), while Perfetto retains its timestamped
   trace and extracts timestamped scheduler-event and scheduler-duration
   series; those trace timestamps are used as line-chart x coordinates;
+  the `system` record also captures bounded host-comparison metadata: CPU model,
+  vendor and Arm implementer/part, package/core/thread topology, frequency
+  governors and limits, NUMA node count, VM/container classification, compiler,
+  runtime and selected collector versions, and relevant kernel settings. It
+  records only sanitized values (never raw proc/sysfs/cgroup text, command
+  paths, credentials, or provider data) and omits unavailable fields.
   the Perfetto adapter validates tracefs/ftrace access and starts project-local
   Tracebox before preparation begins. It waits for recording readiness before
   emitting fixed, non-secret lifecycle tracepoints; after the agent is spawned,
