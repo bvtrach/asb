@@ -294,7 +294,26 @@ pub fn tool_with_progress(
 /// Install only collector dependencies, not the selected collectors themselves.
 /// Existing project-local binaries are never overwritten by this automatic path.
 pub(crate) fn tool_installed_locally(id: &str, tools_root: &Path) -> bool {
-    tools::find(id).is_some_and(|tool| executable(tool.recipe(), &tools_root.join(id)).is_file())
+    tools::find(id)
+        .is_some_and(|tool| executable_file(&executable(tool.recipe(), &tools_root.join(id))))
+}
+
+fn executable_file(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 pub(crate) fn ensure_collector_dependencies(
@@ -313,7 +332,13 @@ pub(crate) fn ensure_collector_dependencies(
         let root = tools_root.join(id);
         let destination = executable(recipe, &root);
         if destination.is_file() {
-            continue;
+            if executable_file(&destination) {
+                continue;
+            }
+            return Err(Error::Io(format!(
+                "required tool `{id}` at {} is not executable; make it executable or reinstall it, then retry",
+                destination.display()
+            )));
         }
         if dry_run {
             writeln!(
@@ -427,9 +452,9 @@ pub fn tool_available(name: &str, tools_root: &Path) -> bool {
     };
     let local = executable(plan, &tools_root.join(name));
     if local.is_file() {
-        return true;
+        return executable_file(&local);
     }
-    matches!(plan, Recipe::Host { executable } if host_executable(executable).is_ok())
+    matches!(plan, Recipe::Host { executable } if host_executable(executable).is_ok_and(|path| executable_file(&path)))
 }
 
 /// All installable IDs, composed from the agent and non-agent registries.
@@ -1111,6 +1136,37 @@ mod tests {
     use crate::tools::bpftrace::{
         bpftrace_host_commands, bpftrace_missing_dependency, bpftrace_source_commands,
     };
+
+    #[cfg(unix)]
+    #[test]
+    fn non_executable_dependency_is_not_reported_as_ready_or_overwritten() {
+        use std::os::unix::fs::PermissionsExt;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "asb-dependency-mode-{}-{stamp}",
+            std::process::id()
+        ));
+        let perf = root.join("perf/bin/perf");
+        fs::create_dir_all(perf.parent().unwrap()).unwrap();
+        fs::write(&perf, b"preserve this tool").unwrap();
+        fs::set_permissions(&perf, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!tool_installed_locally("perf", &root));
+        assert!(!tool_available("perf", &root));
+        let result = ensure_collector_dependencies(
+            &["flamegraph".into()],
+            &root,
+            &root,
+            &mut Vec::new(),
+            &mut |_, _| {},
+            false,
+        );
+        assert!(result.unwrap_err().to_string().contains("not executable"));
+        assert_eq!(fs::read(&perf).unwrap(), b"preserve this tool");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn installer_catalogue_is_composed_from_adapter_registries() {

@@ -93,6 +93,106 @@ fn expect_success(output: &Output) {
 
 #[cfg(unix)]
 #[test]
+fn tui_selection_installs_locally_before_enabling_agent_or_workload() {
+    use std::os::unix::fs::PermissionsExt;
+    for mode in [
+        "success",
+        "failure",
+        "no-executable",
+        "not-runnable",
+        "workload",
+        "collector",
+    ] {
+        let project = Project::new();
+        project.init();
+        project.write("fake-bin/npm", "#!/bin/sh\ncase \"$ASB_TEST_INSTALL_MODE\" in failure) exit 1;; no-executable) exit 0;; esac\nmkdir -p \"$3/node_modules/.bin\"\nprintf '#!/bin/sh\\nexit 0\\n' > \"$3/node_modules/.bin/codex\"\n[ \"$ASB_TEST_INSTALL_MODE\" = not-runnable ] || chmod +x \"$3/node_modules/.bin/codex\"\nexit 0\n");
+        project.write("fake-bin/curl", "#!/bin/sh\nwhile [ $# -gt 0 ]; do if [ \"$1\" = --output ]; then shift; printf '#!/bin/sh\\nexit 0\\n' > \"$1\"; exit 0; fi; shift; done\nexit 1\n");
+        project.write("fake-bin/perf", "#!/bin/sh\nexit 0\n");
+        for name in ["npm", "curl", "perf"] {
+            std::fs::set_permissions(
+                project.0.join("fake-bin").join(name),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        let path = format!(
+            "{}:{}",
+            project.0.join("fake-bin").display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let output = Command::new("python3")
+            .arg("-c")
+            .arg(include_str!("tui_auto_install_pty.py"))
+            .arg(env!("CARGO_BIN_EXE_asb"))
+            .arg(&project.0)
+            .arg(mode)
+            .env_clear()
+            .env("HOME", &project.0)
+            .env("PATH", path)
+            .env("TERM", "xterm-256color")
+            .env("ASB_TEST_INSTALL_MODE", mode)
+            .output()
+            .expect("start PTY test");
+        assert!(
+            output.status.success(),
+            "{mode}: stdout={} stderr={}",
+            stdout(&output),
+            stderr(&output)
+        );
+        let agent = project.0.join(".asb-tools/codex/node_modules/.bin/codex");
+        assert_eq!(
+            agent.is_file(),
+            matches!(mode, "success" | "collector" | "not-runnable"),
+            "{mode}"
+        );
+        if mode == "workload" {
+            assert!(project.0.join("workloads/agentbench.txt").is_file());
+            assert!(
+                project
+                    .0
+                    .join("workloads/agentbench/asb-trial/ASB-ADAPTER-FIXTURE")
+                    .is_file()
+            );
+        }
+        if mode == "collector" {
+            assert!(project.0.join(".asb-tools/perf/bin/perf").is_file());
+            assert!(
+                project
+                    .0
+                    .join(".asb-tools/flamegraph/bin/flamegraph")
+                    .is_file()
+            );
+            let config = std::fs::read_dir(&project.0)
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| {
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| {
+                            name.starts_with("asb-test-") && name.ends_with(".toml")
+                        })
+                })
+                .expect("generated benchmark");
+            let text = std::fs::read_to_string(config).unwrap();
+            let config: toml::Value = toml::from_str(&text).unwrap();
+            let collectors = config["measurements"]["collectors"].as_array().unwrap();
+            assert!(
+                collectors
+                    .iter()
+                    .any(|value| value.as_str() == Some("flamegraph"))
+            );
+            assert!(
+                collectors
+                    .iter()
+                    .any(|value| value.as_str() == Some("perf"))
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn init_uses_uv_when_host_python_is_incompatible() {
     use std::os::unix::fs::PermissionsExt;
     let base = Project::new();

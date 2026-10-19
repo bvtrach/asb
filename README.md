@@ -33,10 +33,14 @@ writes `<workload>.workload.toml` files; `setup tui` presents those trial sets
 as selectable workload entries and generates one benchmark configuration per
 enabled trial. Both TUIs prefix every selectable item with a colored `ⓘ`:
 green means runnable, red means missing, and yellow means not locally
-verifiable (for example a remote provider catalog). On an agent, external
-workload, or collector, `Ctrl-I` invokes the bounded project-local installer
-when one exists and refreshes the status; providers and models remain
-discovery-only. While an installer runs, the footer is refreshed live as
+verifiable (for example a remote provider catalog). Selecting a missing agent,
+external workload, or tool-backed collector with Space immediately runs its
+project-local installer, and the item is checked only after installation
+succeeds. Missing collectors are not preselected. An installation error leaves
+the item unchecked and shows the reason; selecting it again retries. Providers
+and models are discovered or configured rather than installed. `Ctrl-I` can
+also explicitly reinstall an item on terminals that distinguish it from Tab;
+Tab always navigates. While an installer runs, the footer is refreshed live as
 `Installing (XX%)`; completion is shown in green and failure/unavailability in
 red. Installer subprocess output is appended to `.asb/install.log` instead of
 overwriting the TUI. `init` writes `.asb/project.toml` with project-local tool, workload, and
