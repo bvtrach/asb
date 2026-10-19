@@ -504,6 +504,39 @@ mod tests {
     }
 
     #[test]
+    fn replay_ignores_volatile_claude_user_metadata() {
+        let root = test_root();
+        let cassette = root.join("record.jsonl");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let upstream = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut connection, _) = listener.accept().unwrap();
+            let mut request = [0u8; 8192];
+            let _ = connection.read(&mut request).unwrap();
+            connection.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}",
+            ).unwrap();
+        });
+        let recorded = r#"{"model":"m","metadata":{"user_id":"{\"device_id\":\"recorded\",\"session_id\":\"<asb-uuid>\"}"},"messages":[{"content":{"device_id":"recorded","text":"work"}}]}"#;
+        let session =
+            Session::start(Mode::Record, &cassette, Some(&upstream), false, &root).unwrap();
+        assert!(request(&session, recorded).contains("200 OK"));
+        session.stop().unwrap();
+        server.join().unwrap();
+
+        let replayed = r#"{"model":"m","metadata":{"user_id":"{\"device_id\":\"replayed\",\"session_id\":\"<asb-uuid>\"}"},"messages":[{"content":{"device_id":"recorded","text":"work"}}]}"#;
+        let session = Session::start(Mode::Replay, &cassette, None, false, &root).unwrap();
+        assert!(request(&session, replayed).contains("200 OK"));
+        session.stop().unwrap();
+
+        let changed_outside_metadata = r#"{"model":"m","metadata":{"user_id":"{\"device_id\":\"replayed-again\",\"session_id\":\"<asb-uuid>\"}"},"messages":[{"content":{"device_id":"changed","text":"work"}}]}"#;
+        let session = Session::start(Mode::Replay, &cassette, None, false, &root).unwrap();
+        assert!(request(&session, changed_outside_metadata).contains("409 Conflict"));
+        assert!(session.stop().unwrap_err().to_string().contains("rejected"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn replay_can_honor_recorded_response_delay() {
         let root = test_root();
         let cassette = cassette(&root);
