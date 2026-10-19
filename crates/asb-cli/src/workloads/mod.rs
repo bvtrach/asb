@@ -455,6 +455,7 @@ fn source_expectation(name: &str) -> Option<SourceExpectation> {
                 relative: "src/labels.py",
                 accepted: &[
                     "def _join_labels(*parts: str) -> str:\n    return \":\".join(parts)\n\ndef label_pair(left: str, right: str) -> str:\n    return _join_labels(left, right)\n\ndef label_triplet(first: str, second: str, third: str) -> str:\n    return _join_labels(first, second, third)\n",
+                    "def _join_labels(*parts: str) -> str:\n    return \":\".join(f\"{part}\" for part in parts)\n\ndef label_pair(left: str, right: str) -> str:\n    return _join_labels(left, right)\n\ndef label_triplet(first: str, second: str, third: str) -> str:\n    return _join_labels(first, second, third)\n",
                 ],
             }],
         },
@@ -462,6 +463,7 @@ fn source_expectation(name: &str) -> Option<SourceExpectation> {
             files: &[FileExpectation {
                 relative: "tests/test_temperature.py",
                 accepted: &[
+                    "import unittest\n\nfrom src.temperature import classify\n\nclass TemperatureTests(unittest.TestCase):\n    def test_freezing(self):\n        self.assertEqual(classify(-1), \"freezing\")\n\n    def test_hot(self):\n        self.assertEqual(classify(31), \"hot\")\n\n    def test_freezing_boundary(self):\n        for celsius, expected in ((-0.1, \"freezing\"), (0, \"mild\"), (0.1, \"mild\")):\n            with self.subTest(celsius=celsius):\n                self.assertEqual(classify(celsius), expected)\n\n    def test_hot_boundary(self):\n        for celsius, expected in ((29.9, \"mild\"), (30, \"mild\"), (30.1, \"hot\")):\n            with self.subTest(celsius=celsius):\n                self.assertEqual(classify(celsius), expected)\n\nif __name__ == \"__main__\":\n    unittest.main()\n",
                     "import unittest\n\nfrom src.temperature import classify\n\nclass TemperatureTests(unittest.TestCase):\n    def test_freezing(self):\n        self.assertEqual(classify(-1), \"freezing\")\n\n    def test_hot(self):\n        self.assertEqual(classify(31), \"hot\")\n\n    def test_mild_lower_boundary(self):\n        self.assertEqual(classify(0), \"mild\")\n\n    def test_mild_upper_boundary(self):\n        self.assertEqual(classify(30), \"mild\")\n\nif __name__ == \"__main__\":\n    unittest.main()\n",
                 ],
             }],
@@ -973,6 +975,39 @@ mod tests {
         )
         .unwrap();
         assert!(evaluate("feature-addition", &workspace, "").unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bundled_grader_accepts_valid_refactoring_and_test_generation_variants() {
+        let root =
+            std::env::temp_dir().join(format!("asb-builtin-variants-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+
+        let refactoring_workspace = root.join("refactoring");
+        prepare_fixture("refactoring", &refactoring_workspace).unwrap();
+        fs::write(
+            refactoring_workspace.join("src/labels.py"),
+            "def _join_labels(*parts: str) -> str:\n    return \":\".join(f\"{part}\" for part in parts)\n\ndef label_pair(left: str, right: str) -> str:\n    return _join_labels(left, right)\n\ndef label_triplet(first: str, second: str, third: str) -> str:\n    return _join_labels(first, second, third)\n",
+        )
+        .unwrap();
+        assert!(evaluate("refactoring", &refactoring_workspace, "").unwrap());
+
+        let test_generation_workspace = root.join("test-generation");
+        prepare_fixture("test-generation", &test_generation_workspace).unwrap();
+        fs::write(
+            test_generation_workspace.join("tests/test_temperature.py"),
+            "import unittest\n\nfrom src.temperature import classify\n\nclass TemperatureTests(unittest.TestCase):\n    def test_freezing(self):\n        self.assertEqual(classify(-1), \"freezing\")\n\n    def test_hot(self):\n        self.assertEqual(classify(31), \"hot\")\n\n    def test_freezing_boundary(self):\n        for celsius, expected in ((-0.1, \"freezing\"), (0, \"mild\"), (0.1, \"mild\")):\n            with self.subTest(celsius=celsius):\n                self.assertEqual(classify(celsius), expected)\n\n    def test_hot_boundary(self):\n        for celsius, expected in ((29.9, \"mild\"), (30, \"mild\"), (30.1, \"hot\")):\n            with self.subTest(celsius=celsius):\n                self.assertEqual(classify(celsius), expected)\n\nif __name__ == \"__main__\":\n    unittest.main()\n",
+        )
+        .unwrap();
+        assert!(evaluate("test-generation", &test_generation_workspace, "").unwrap());
+        fs::write(
+            test_generation_workspace.join("tests/test_temperature.py"),
+            "import unittest\n\nfrom src.temperature import classify\n\nclass TemperatureTests(unittest.TestCase):\n    def test_freezing(self):\n        self.assertEqual(classify(-1), \"freezing\")\n\n    def test_hot(self):\n        self.assertEqual(classify(31), \"hot\")\n\n    def test_mild_lower_boundary(self):\n        self.assertEqual(classify(0), \"mild\")\n\n    def test_mild_upper_boundary(self):\n        self.assertEqual(classify(30), \"mild\")\n\nif __name__ == \"__main__\":\n    unittest.main()\n",
+        )
+        .unwrap();
+        assert!(evaluate("test-generation", &test_generation_workspace, "").unwrap());
+
         let _ = fs::remove_dir_all(root);
     }
 
