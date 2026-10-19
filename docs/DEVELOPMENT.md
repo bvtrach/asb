@@ -89,6 +89,9 @@ working tracefs permissions: set `ASB_TEST_PERFETTO_TOOLS` to the project's
 tools directory and run the ignored `live_perfetto` tests serially. They use an
 offline replay fixture, not a live provider; ordinary CI does not require
 privileged tracing.
+The separate ignored `real_trace_processor_verifies_synthetic_marker_capture`
+test uses the same tool path but only reads a synthetic trace; it does not
+start tracing or require tracing privileges.
 
 Each completed run records `process_success` separately from
 `workload_success`. External workload aliases install a pinned reference plus a

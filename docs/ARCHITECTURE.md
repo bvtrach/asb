@@ -268,13 +268,19 @@ guarantee future access after permissions change, access to the yet-unspawned
 agent PID, or successful attachment of arbitrary custom bpftrace programs.
 Granting unrestricted passwordless sudo for a tracing executable can enable
 arbitrary privileged operations; ASB does not install sudoers rules.
-ASB also opens and writes a fixed, non-secret preflight marker as the benchmark
-user, before starting Tracebox: sudo access for Tracebox does not give ASB
-permission to write lifecycle markers. A permission failure provides a systemd
+ASB opens the marker as the benchmark user during preflight: sudo access for
+Tracebox does not give ASB permission to write lifecycle markers. After
+Tracebox reports readiness, ASB checks the matching `tracing_on` if readable
+and writes a non-secret, run-specific startup marker before starting the agent.
+It does not enable or disable host-wide tracing. An inactive trace or failed
+marker write stops the run with a tracing-specific diagnostic. After recording,
+the trace processor must find the startup marker in the trace; missing markers
+are reported as an incomplete trace rather than silently accepted. A permission
+failure provides a systemd
 tmpfiles command that assigns the marker to the current user with mode 0600;
 this replaces the marker's previous ownership and permissions. It does not
 grant parent-directory traversal or override MAC policy, and a later tracefs
-remount may reset the permissions. The probe can appear in other active traces.
+remount may reset the permissions. The startup marker can appear in other active traces.
 The `pi` agent uses the pinned `@mariozechner/pi-coding-agent` npm package and
 its non-interactive print mode. The generic endpoint negotiator selects a
 compatible API interface without coupling Pi to a particular provider.
