@@ -174,9 +174,18 @@ pub fn workload_available(name: &str, directory: &Path) -> bool {
     if bundle_spec(name).is_some() {
         directory.join(name).join("ASB-BUNDLE").is_file()
             && directory.join(name).join("source").is_dir()
+            && directory
+                .join(name)
+                .join("asb-trial/ASB-ADAPTER-FIXTURE")
+                .is_file()
             && directory.join(format!("{name}.txt")).is_file()
     } else {
         directory.join(format!("{name}.txt")).is_file()
+            && (external_workload(name).is_none()
+                || directory
+                    .join(name)
+                    .join("asb-trial/ASB-ADAPTER-FIXTURE")
+                    .is_file())
     }
 }
 
@@ -380,9 +389,20 @@ pub fn workload_with_progress(
         install_bundle(&name, bundle, &directory, output, progress)?;
         return Ok(());
     }
-    progress(30, "downloading prompt");
+    progress(30, "downloading reference");
+    let reference = directory.join(format!("{name}.reference.md"));
+    install_source(&source, &reference, "workload reference")?;
+    workloads::materialize_external_adapter(&name, &directory)
+        .map_err(|error| Error::Io(format!("cannot materialize {name} adapter trial: {error}")))?;
     let destination = directory.join(format!("{name}.txt"));
-    install_source(&source, &destination, "workload")?;
+    if !destination.is_file() {
+        fs::copy(&reference, &destination).map_err(|error| {
+            Error::Io(format!(
+                "cannot create workload prompt {}: {error}",
+                destination.display()
+            ))
+        })?;
+    }
     progress(100, "ready");
     writeln!(
         output,
@@ -426,6 +446,9 @@ fn install_bundle(
                 ))
             })?;
         }
+        workloads::materialize_external_adapter(name, directory).map_err(|error| {
+            Error::Io(format!("cannot materialize {name} adapter trial: {error}"))
+        })?;
         workloads::write_default_trial_set(name, directory)
             .map_err(|error| Error::Io(format!("cannot write {name} trial set: {error}")))?;
         writeln!(
@@ -511,6 +534,8 @@ fn install_bundle(
             ))
         })?;
     }
+    workloads::materialize_external_adapter(name, directory)
+        .map_err(|error| Error::Io(format!("cannot materialize {name} adapter trial: {error}")))?;
     workloads::write_default_trial_set(name, directory)
         .map_err(|error| Error::Io(format!("cannot write {name} trial set: {error}")))?;
     let _ = fs::remove_file(&archive);

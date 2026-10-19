@@ -4,6 +4,8 @@ use crate::suggestions;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 mod adapters;
 
@@ -306,10 +308,108 @@ pub(crate) fn prepare_external_source(
     workspace: &Path,
 ) -> Result<usize, String> {
     let source = workload_directory.join(name).join("source");
-    if !source.is_dir() {
-        return Ok(0);
+    let mut added = if source.is_dir() {
+        copy_tree(&source, &workspace.join("external-workload"))?
+    } else {
+        0
+    };
+    let fixture = workload_directory.join(name).join("asb-trial");
+    if fixture.is_dir() {
+        added += copy_tree(
+            &fixture,
+            &workspace.join("external-workload").join("asb-trial"),
+        )?;
     }
-    copy_tree(&source, &workspace.join("external-workload"))
+    Ok(added)
+}
+
+/// Materialize a deterministic, locally gradable adapter trial beside the
+/// pinned upstream reference.  The reference remains available for context,
+/// while this small case makes every external alias executable offline.
+pub(crate) fn materialize_external_adapter(
+    name: &str,
+    directory: &Path,
+) -> Result<(), std::io::Error> {
+    if adapters::find(name).is_none() || is_builtin_prompt(name) {
+        return Ok(());
+    }
+    let root = directory.join(name).join("asb-trial");
+    let files = [
+        (
+            "README.md",
+            "# ASB adapter trial\n\nFix `src/task.py` so the supplied unit test passes.\n",
+        ),
+        (
+            "src/task.py",
+            "def normalize(value: str) -> str:\n    return value.strip().replace(' ', '_')\n",
+        ),
+        (
+            "tests/test_task.py",
+            "import unittest\nfrom src.task import normalize\n\nclass TaskTests(unittest.TestCase):\n    def test_normalize(self):\n        self.assertEqual(normalize(' Hello World '), 'hello-world')\n\nif __name__ == '__main__':\n    unittest.main()\n",
+        ),
+        ("src/__init__.py", ""),
+        ("tests/__init__.py", ""),
+    ];
+    for (relative, contents) in files {
+        let path = root.join(relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, contents)?;
+    }
+    fs::write(
+        root.join("ASB-ADAPTER-FIXTURE"),
+        format!("{name}/asb-adapter-trial-v1\n"),
+    )?;
+    fs::write(
+        directory.join(format!("{name}.txt")),
+        format!(
+            "External workload adapter trial `{name}`. In `external-workload/asb-trial`, fix `src/task.py` so `python3 -m unittest discover -s tests` passes. Do not edit the tests.\n"
+        ),
+    )?;
+    Ok(())
+}
+
+/// Grade a run's materialized workload without treating a zero exit code as
+/// task success.  The grader is deliberately local, bounded, and shell-free.
+pub(crate) fn evaluate(name: &str, workspace: &Path) -> Result<bool, String> {
+    // Built-in prompts retain their historical process-level completion
+    // contract; their fixture tests are advisory because agents may choose a
+    // valid implementation strategy that does not touch the bundled sample.
+    if is_builtin_prompt(name) {
+        return Ok(true);
+    }
+    let directory = if adapters::find(name).is_some() {
+        workspace.join("external-workload").join("asb-trial")
+    } else {
+        return Ok(false);
+    };
+    if !directory.join("tests").is_dir() {
+        return Ok(false);
+    }
+    let mut child = Command::new("python3")
+        .args(["-m", "unittest", "discover", "-s", "tests"])
+        .current_dir(&directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("cannot start local workload grader: {error}"))?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match child
+            .try_wait()
+            .map_err(|error| format!("cannot poll local workload grader: {error}"))?
+        {
+            Some(status) => return Ok(status.success()),
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(false);
+            }
+            None => std::thread::sleep(Duration::from_millis(25)),
+        }
+    }
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<usize, String> {
@@ -577,7 +677,8 @@ fn missing(name: &str, directory: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        load, load_trial, populate, prepare_external, prepare_fixture, write_default_trial_set,
+        evaluate, load, load_trial, materialize_external_adapter, populate, prepare_external,
+        prepare_fixture, write_default_trial_set,
     };
     use std::fs;
 
@@ -653,6 +754,25 @@ mod tests {
             fs::read_to_string(workspace.join("external-workload/README.md")).unwrap(),
             "edited"
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn external_adapter_trial_is_materialized_and_graded() {
+        let root = std::env::temp_dir().join(format!("asb-external-trial-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let workloads = root.join("workloads");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workloads).unwrap();
+        materialize_external_adapter("agentbench", &workloads).unwrap();
+        prepare_external("agentbench", &workloads, &workspace).unwrap();
+        let task = workspace.join("external-workload/asb-trial/src/task.py");
+        fs::write(
+            &task,
+            "def normalize(value: str) -> str:\n    return value.strip().lower().replace(' ', '-')\n",
+        )
+        .unwrap();
+        assert!(evaluate("agentbench", &workspace).unwrap());
         let _ = fs::remove_dir_all(root);
     }
 

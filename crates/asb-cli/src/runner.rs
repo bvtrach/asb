@@ -28,6 +28,8 @@ struct RunResult<'a> {
     workload: &'a str,
     provider: &'a str,
     model: &'a str,
+    process_success: bool,
+    workload_success: Option<bool>,
     success_rate: f64,
     elapsed_ms: u128,
     exit_code: Option<i32>,
@@ -497,8 +499,17 @@ fn run_mode(
         }
     }
     let elapsed_ms = started.elapsed().as_millis();
-    let success =
+    let process_success =
         run_error.is_none() && process_successful(&child.status, &child.stdout, &child.stderr);
+    let (workload_success, grading_error) = if process_success {
+        match workloads::evaluate(&config.workload, &workspace) {
+            Ok(value) => (Some(value), None),
+            Err(error) => (Some(false), Some(error)),
+        }
+    } else {
+        (Some(false), None)
+    };
+    let success = process_success && workload_success == Some(true);
     let adapter_artifacts = agents::find(&config.agent)
         .map(|adapter| {
             adapter.collect(&agents::CollectionContext {
@@ -534,12 +545,19 @@ fn run_mode(
         stderr.push_str(error);
         stderr.push('\n');
     }
+    if let Some(error) = grading_error.as_deref() {
+        stderr.push_str("\nASB workload grader error: ");
+        stderr.push_str(error);
+        stderr.push('\n');
+    }
     let result = RunResult {
         status: if success { "completed" } else { "failed" },
         agent: &config.agent,
         workload: &config.workload,
         provider: &config.provider,
         model: &config.model,
+        process_success,
+        workload_success,
         success_rate: if success { 1.0 } else { 0.0 },
         elapsed_ms,
         exit_code: child.status.code(),
@@ -558,6 +576,8 @@ fn run_mode(
             run_id: format!("{}-{}", result.workload, result.elapsed_ms),
             status: result.status,
             success,
+            process_success: result.process_success,
+            workload_success: result.workload_success,
             success_rate: result.success_rate,
             agent: result.agent,
             workload: result.workload,
@@ -660,13 +680,17 @@ fn resolve_log_path(config_path: &Path, configured_path: &str) -> PathBuf {
 
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
     let summary = serde_json::json!({
+        "process_success": result.process_success,
+        "workload_success": result.workload_success,
         "success_rate": result.success_rate,
         "elapsed_ms": result.elapsed_ms,
         "steps": result.steps,
         "token_usage": result.token_usage,
     });
-    serde_json::to_writer_pretty(&mut *output, &summary)
-        .map_err(|error| Error::Io(error.to_string()))?;
+    // Sweep output is JSONL: keep each run summary on exactly one line so
+    // callers can stream and parse it without having to recover pretty JSON
+    // objects from a mixed human transcript.
+    serde_json::to_writer(&mut *output, &summary).map_err(|error| Error::Io(error.to_string()))?;
     writeln!(output).map_err(io_error)
 }
 
@@ -1018,6 +1042,8 @@ mod tests {
             workload: "bug-fix",
             provider: "openrouter",
             model: "test-model",
+            process_success: true,
+            workload_success: Some(true),
             success_rate: 1.0,
             elapsed_ms: 12,
             exit_code: Some(0),
@@ -1060,6 +1086,7 @@ mod tests {
         assert_eq!(value["token_usage"]["total_tokens"], 7);
         assert_eq!(value["token_usage"]["cached_tokens"], 1);
         assert!(value.get("stdout").is_none());
+        assert_eq!(output.iter().filter(|byte| **byte == b'\n').count(), 1);
     }
 
     #[test]
