@@ -118,6 +118,16 @@ same input, output, cached, and total fields whenever the provider reports
 them. A missing usage field remains `null`; ASB never guesses token counts from
 text length.
 
+Failed runs report whether the agent failed, a workload check rejected its
+output, the grader itself could not evaluate it, or another run operation
+failed. The terminal includes an actionable reason; the run log, JSON summary,
+and measurement `run.json` include `failure_kind` and `failure_reason`.
+`workload_success` is `null` when grading did not run or could not complete,
+and `false` when the grader ran and rejected the output. Comparison reports
+include available failure reasons. Bundled fixture graders use fixed accepted
+solutions, so a rejection does not necessarily prove an alternative solution is
+incorrect; external suite adapter-smoke checks are not full upstream grades.
+
 Measurement collectors are opt-in environment switches so normal and CI runs
 remain deterministic: `ASB_MEASURE_MPSTAT=1`, `ASB_MEASURE_IOSTAT=1`, and
 `ASB_MEASURE_PERF=1` start the corresponding local tools. BPFTrace programs
