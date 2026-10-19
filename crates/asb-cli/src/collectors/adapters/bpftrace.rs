@@ -242,8 +242,12 @@ impl measurements::Session {
 /// keep the set current as the agent forks helpers. This prevents unrelated
 /// host tracepoints from entering a process-scoped measurement.
 fn process_tree_prelude(root: u32) -> String {
+    process_tree_prelude_from_pids(measurements::process_tree_pids(root))
+}
+
+fn process_tree_prelude_from_pids(pids: impl IntoIterator<Item = u32>) -> String {
     let mut prelude = String::from("BEGIN {\n");
-    for pid in measurements::process_tree_pids(root) {
+    for pid in pids {
         let _ = writeln!(prelude, "  @asb_tree[{pid}] = 1;");
     }
     prelude.push_str(
@@ -343,8 +347,8 @@ pub(crate) fn selected_bpftrace_profiles(
 }
 
 /// Compile and attach a concrete profile before the agent starts. The appended
-/// BEGIN exit keeps the probe bounded while exercising the exact tracepoints,
-/// predicates, and target-PID parameter form used during the run.
+/// interval exit keeps the probe bounded while exercising the exact tracepoints,
+/// predicates, and process-tree parameter form used during the run.
 pub(crate) fn bpftrace_profile_probe(
     executable: &Path,
     profile: BpftraceProfile,
@@ -417,7 +421,9 @@ pub(crate) fn write_bpftrace_profile_svg(
 fn profile_probe_program(profile: BpftraceProfile) -> String {
     format!(
         "{}\n{}\ninterval:ms:1 {{ exit(); }}",
-        process_tree_prelude(0),
+        // PID 0 is only a compile-time seed. Expanding its live process tree
+        // would accidentally scope the preflight to the host init tree.
+        process_tree_prelude_from_pids([0]),
         profile.program
     )
 }
@@ -438,6 +444,7 @@ mod tests {
         assert!(program.contains("sched_process_fork"));
         assert!(program.contains(profile.program));
         assert!(program.contains("interval:ms:1 { exit(); }"));
+        assert!(!program.contains("@asb_tree[1] = 1;"));
         assert!(!program.contains("BEGIN { exit(); }"));
     }
 }
