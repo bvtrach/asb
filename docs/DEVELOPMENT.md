@@ -23,6 +23,15 @@ diagram explicitly shows trait implementation edges and never publishes local
 paths or branch names. It supplements the maintained architecture overview;
 review both when changing public or private type relationships.
 
+`make build` writes its generated diagrams and interactive views under `target/`,
+leaving the tracked documentation unchanged. Run `make uml` and
+`make interactive` explicitly when updating the published diagrams in `docs/`.
+`make update` saves changes to legacy generated diagram paths in a Git stash
+before pulling; it reports the stash and does not touch unrelated changes.
+The backup may contain manual edits: inspect it with `git stash show -p` and
+restore it deliberately if needed. A conflicting unrelated edit can still
+prevent the fast-forward, and no stash is automatically discarded.
+
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
 Run `asb run` with credentials only as an explicit local

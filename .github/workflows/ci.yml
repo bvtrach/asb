@@ -21,6 +21,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Run tests
         run: cargo test --locked
+      - name: Test checkout updates
+        run: python3 scripts/test_update_checkout.py
       - name: Build
         run: cargo build --locked
       - name: Remove test-generated workspace files
@@ -88,6 +90,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Run tests
         run: cargo test --locked
+      - name: Test checkout updates
+        run: python3 scripts/test_update_checkout.py
       - name: Build
         run: cargo build --locked
       - name: Remove test-generated workspace files
