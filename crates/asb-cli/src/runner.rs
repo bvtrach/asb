@@ -49,6 +49,8 @@ struct RunResult<'a> {
     process_success: bool,
     workload_success: Option<bool>,
     workload_evaluation: &'static str,
+    failure_kind: Option<&'static str>,
+    failure_reason: Option<String>,
     success_rate: f64,
     elapsed_ms: u128,
     exit_code: Option<i32>,
@@ -626,14 +628,14 @@ fn run_mode(
     // transient failed command that the agent repairs before its final answer;
     // scanning that whole transcript would incorrectly fail the run.
     let final_response = agents::final_response(&config.agent, &bounded(&child.stdout), &workspace);
-    let process_success = run_error.is_none()
-        && process_successful_with_final_response(
-            &child.status,
-            &child.stdout,
-            &child.stderr,
-            final_response.as_deref(),
-        );
-    let (workload_success, grading_error) = if process_success {
+    let agent_failure = process_failure_reason(
+        &child.status,
+        &child.stdout,
+        &child.stderr,
+        final_response.as_deref(),
+    );
+    let process_success = agent_failure.is_none();
+    let (workload_success, grading_failure) = if process_success && run_error.is_none() {
         match instrument_operation(
             measurement_session.as_mut(),
             LifecyclePhase::WorkloadEvaluation,
@@ -645,13 +647,42 @@ fn run_mode(
                 )
             },
         )? {
-            Ok(value) => (Some(value), None),
-            Err(error) => (Some(false), Some(error.to_string())),
+            Ok(workloads::Evaluation::Passed) => (Some(true), None),
+            Ok(workloads::Evaluation::Failed(reason)) => {
+                if let Some(session) = measurement_session.as_mut() {
+                    session
+                        .event(LifecycleEvent::PhaseFailed(
+                            LifecyclePhase::WorkloadEvaluation,
+                        ))
+                        .map_err(Error::Run)?;
+                }
+                (
+                    Some(false),
+                    Some((
+                        "workload_check_failed",
+                        format!("workload check failed: {reason}"),
+                    )),
+                )
+            }
+            Err(error) => (
+                None,
+                Some((
+                    "grader_error",
+                    format!("workload grader could not evaluate the result: {error}"),
+                )),
+            ),
         }
     } else {
-        (Some(false), None)
+        (None, None)
     };
-    let success = process_success && workload_success == Some(true);
+    let success = run_error.is_none() && process_success && workload_success == Some(true);
+    let failure = if let Some(error) = run_error.as_ref() {
+        Some(("run_error", error.clone()))
+    } else if let Some(error) = agent_failure {
+        Some(("agent_failure", error))
+    } else {
+        grading_failure
+    };
     let adapter_artifacts = agents::find(&config.agent)
         .map(|adapter| {
             adapter.collect(&agents::CollectionContext {
@@ -687,9 +718,11 @@ fn run_mode(
         stderr.push_str(error);
         stderr.push('\n');
     }
-    if let Some(error) = grading_error.as_deref() {
-        stderr.push_str("\nASB workload grader error: ");
-        stderr.push_str(error);
+    if let Some((kind, reason)) = &failure {
+        stderr.push_str("\nASB failure (");
+        stderr.push_str(kind);
+        stderr.push_str("): ");
+        stderr.push_str(reason);
         stderr.push('\n');
     }
     let run_metrics = crate::collectors::run_metrics(&crate::collectors::RunObservation {
@@ -705,6 +738,8 @@ fn run_mode(
         process_success,
         workload_success,
         workload_evaluation: workloads::evaluation_kind(&config.workload, &workspace),
+        failure_kind: failure.as_ref().map(|(kind, _)| *kind),
+        failure_reason: failure.as_ref().map(|(_, reason)| reason.clone()),
         success_rate: run_metrics.success_rate,
         elapsed_ms: run_metrics.elapsed_ms,
         exit_code: child.status.code(),
@@ -734,6 +769,8 @@ fn run_mode(
             success,
             process_success: result.process_success,
             workload_success: result.workload_success,
+            failure_kind: result.failure_kind,
+            failure_reason: result.failure_reason.as_deref(),
             workload_evaluation: result.workload_evaluation,
             success_rate: result.success_rate,
             agent: result.agent,
@@ -753,13 +790,7 @@ fn run_mode(
     } else {
         render_human(&result, output)?;
     }
-    if let Some(error) = run_error {
-        Err(Error::Run(error))
-    } else if success {
-        Ok(())
-    } else {
-        Err(Error::Run("agent exited unsuccessfully".into()))
-    }
+    failure.map_or(Ok(()), |(_, reason)| Err(Error::Run(reason)))
 }
 
 fn instrument_operation<T, E>(
@@ -929,6 +960,8 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
         "process_success": result.process_success,
         "workload_success": result.workload_success,
         "workload_evaluation": result.workload_evaluation,
+        "failure_kind": result.failure_kind,
+        "failure_reason": result.failure_reason,
         "success_rate": result.success_rate,
         "elapsed_ms": result.elapsed_ms,
         "steps": result.steps,
@@ -965,14 +998,26 @@ fn process_successful(status: &std::process::ExitStatus, stdout: &[u8], stderr: 
     process_successful_with_final_response(status, stdout, stderr, None)
 }
 
+#[cfg(test)]
 fn process_successful_with_final_response(
     status: &std::process::ExitStatus,
     stdout: &[u8],
     stderr: &[u8],
     final_response: Option<&str>,
 ) -> bool {
+    process_failure_reason(status, stdout, stderr, final_response).is_none()
+}
+
+fn process_failure_reason(
+    status: &std::process::ExitStatus,
+    stdout: &[u8],
+    stderr: &[u8],
+    final_response: Option<&str>,
+) -> Option<String> {
     if !status.success() {
-        return false;
+        return Some(format!(
+            "agent exited unsuccessfully ({status}); inspect the benchmark log for agent output"
+        ));
     }
     let transcript = format!(
         "{}\n{}",
@@ -1003,10 +1048,14 @@ fn process_successful_with_final_response(
     let has_command_fatal_marker = ["unexpected keyword argument"]
         .iter()
         .any(|marker| output.contains(marker));
-    let has_refusal_marker = [
+    let cannot_run_tests = [
         "I can’t run tests",
         "I can't run tests",
         "I cannot run tests",
+    ]
+    .iter()
+    .any(|marker| output.contains(marker));
+    let has_refusal_marker = [
         "can't inspect",
         "cannot inspect",
         "don't have access to the terminal",
@@ -1021,11 +1070,29 @@ fn process_successful_with_final_response(
     .iter()
     .any(|marker| output.contains(marker));
     if has_provider_fatal_marker {
-        false
-    } else if final_response.is_some() {
-        !has_provider_fatal_marker && !has_command_fatal_marker && !has_refusal_marker
+        let message = if transcript.contains(
+            "Authentication required. Please use /login command to sign in to your account",
+        ) {
+            "agent reported an authentication failure; check its credentials and provider configuration"
+        } else if transcript.contains("Endpoint /v1/chat/completions was not found")
+            || transcript.contains("litellm.NotFoundError")
+        {
+            "agent reported a missing provider endpoint; check the provider URL and API compatibility"
+        } else {
+            "agent reported a provider error; inspect the benchmark log and check provider availability"
+        };
+        Some(message.into())
+    } else if (final_response.is_some() || !has_completion_evidence) && has_command_fatal_marker {
+        Some("agent reported an incompatible command or argument; inspect the benchmark log and agent configuration".into())
+    } else if (final_response.is_some() || !has_completion_evidence) && cannot_run_tests {
+        Some(
+            "agent reported it could not run tests; inspect the benchmark log and test environment"
+                .into(),
+        )
+    } else if (final_response.is_some() || !has_completion_evidence) && has_refusal_marker {
+        Some("agent reported it could not access the terminal or workspace, or could not modify files; inspect the benchmark log and permissions".into())
     } else {
-        (!has_command_fatal_marker && !has_refusal_marker) || has_completion_evidence
+        None
     }
 }
 
@@ -1441,6 +1508,8 @@ mod tests {
                 success: true,
                 process_success: true,
                 workload_success: Some(true),
+                failure_kind: None,
+                failure_reason: None,
                 success_rate: 1.0,
                 agent: "fixture",
                 workload: "fixture",
@@ -1582,6 +1651,8 @@ mod tests {
             process_success: true,
             workload_success: Some(true),
             workload_evaluation: "bundled-fixture",
+            failure_kind: None,
+            failure_reason: None,
             success_rate: 1.0,
             elapsed_ms: 12,
             exit_code: Some(0),
@@ -1803,6 +1874,36 @@ mod tests {
             b"The workspace appears to be read-only; I can't modify files",
             b""
         ));
+    }
+
+    #[test]
+    fn agent_failure_reasons_are_specific_without_exposing_transcript() {
+        let status = std::process::Command::new("true").status().unwrap();
+        for (output, expected) in [
+            (
+                "Authentication required. Please use /login command to sign in to your account secret-value",
+                "authentication failure",
+            ),
+            (
+                "Endpoint /v1/chat/completions was not found secret-value",
+                "missing provider endpoint",
+            ),
+            ("litellm.InternalServerError secret-value", "provider error"),
+            (
+                "unexpected keyword argument secret-value",
+                "incompatible command or argument",
+            ),
+            ("I can't run tests secret-value", "could not run tests"),
+            (
+                "workspace is read-only secret-value",
+                "could not access the terminal or workspace",
+            ),
+        ] {
+            let reason =
+                super::process_failure_reason(&status, output.as_bytes(), b"", None).unwrap();
+            assert!(reason.contains(expected), "{reason}");
+            assert!(!reason.contains("secret-value"));
+        }
     }
 
     #[test]

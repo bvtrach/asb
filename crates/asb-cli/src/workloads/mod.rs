@@ -380,19 +380,12 @@ fn adapter_trial_label(name: &str) -> String {
 /// complete upstream benchmark has been executed.  Until an upstream suite
 /// adapter is selected and installed, ASB runs the small adapter-smoke trial
 /// that is materialized beside that reference.
-pub(crate) fn evaluation_kind(name: &str, workspace: &Path) -> &'static str {
+pub(crate) fn evaluation_kind(name: &str, _workspace: &Path) -> &'static str {
     if name == "repository-navigation" {
         return "response-review";
     }
-    if let Some(expectation) = source_expectation(name) {
-        if expectation
-            .files
-            .iter()
-            .all(|file| workspace.join(file.relative).is_file())
-        {
-            return "bundled-fixture";
-        }
-        return "ungraded";
+    if source_expectation(name).is_some() {
+        return "bundled-fixture";
     }
     if adapters::find(name).is_some() {
         "adapter-smoke"
@@ -487,20 +480,46 @@ fn canonical_source(source: &str) -> String {
         .to_owned()
 }
 
-fn source_satisfies(path: &Path, expectation: &SourceExpectation) -> Result<bool, String> {
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Evaluation {
+    Passed,
+    Failed(String),
+}
+
+fn source_satisfies(path: &Path, expectation: &SourceExpectation) -> Result<Evaluation, String> {
     for file in expectation.files {
         let source_path = path.join(file.relative);
         let metadata = match fs::metadata(&source_path) {
             Ok(metadata) => metadata,
-            Err(_) => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Evaluation::Failed(format!(
+                    "required output file `{}` is missing",
+                    file.relative
+                )));
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect output file `{}`: {error}",
+                    file.relative
+                ));
+            }
         };
-        if !metadata.is_file() || metadata.len() > MAX_PROMPT_BYTES {
-            return Ok(false);
+        if !metadata.is_file() {
+            return Ok(Evaluation::Failed(format!(
+                "required output `{}` is not a file",
+                file.relative
+            )));
+        }
+        if metadata.len() > MAX_PROMPT_BYTES {
+            return Ok(Evaluation::Failed(format!(
+                "output file `{}` exceeds the {} byte grading limit",
+                file.relative, MAX_PROMPT_BYTES
+            )));
         }
         let source = fs::read_to_string(&source_path).map_err(|error| {
             format!(
                 "cannot read workload implementation {}: {error}",
-                source_path.display()
+                file.relative
             )
         })?;
         let actual = canonical_source(&source);
@@ -510,22 +529,38 @@ fn source_satisfies(path: &Path, expectation: &SourceExpectation) -> Result<bool
             .map(|candidate| canonical_source(candidate))
             .any(|candidate| candidate == actual)
         {
-            return Ok(false);
+            return Ok(Evaluation::Failed(format!(
+                "output file `{}` does not match an accepted solution for this fixed fixture; inspect the workload instructions and file (equivalent solutions may not be recognized)",
+                file.relative
+            )));
         }
     }
-    Ok(true)
+    Ok(Evaluation::Passed)
 }
 
 /// Grade a run's materialized workload without treating a zero exit code as
 /// task success.  Grading is implemented in Rust over evaluator-owned,
 /// immutable expectations; no agent-controlled tests, subprocess, shell, or
 /// inherited credentials are executed.
-pub(crate) fn evaluate(name: &str, workspace: &Path, agent_output: &str) -> Result<bool, String> {
+pub(crate) fn evaluate(
+    name: &str,
+    workspace: &Path,
+    agent_output: &str,
+) -> Result<Evaluation, String> {
     if name == "repository-navigation" {
         let response = agent_output.to_ascii_lowercase();
-        return Ok(response.contains("src/cli.py")
-            && response.contains("src/registry.py")
-            && response.contains("lookup"));
+        let missing = ["src/cli.py", "src/registry.py", "lookup"]
+            .into_iter()
+            .filter(|item| !response.contains(item))
+            .collect::<Vec<_>>();
+        return Ok(if missing.is_empty() {
+            Evaluation::Passed
+        } else {
+            Evaluation::Failed(format!(
+                "final response is missing required references: {}",
+                missing.join(", ")
+            ))
+        });
     }
     if let Some(expectation) = source_expectation(name) {
         return source_satisfies(workspace, &expectation);
@@ -533,29 +568,52 @@ pub(crate) fn evaluate(name: &str, workspace: &Path, agent_output: &str) -> Resu
     let directory = if adapters::find(name).is_some() {
         workspace.join("external-workload").join("asb-trial")
     } else {
-        return Ok(false);
+        return Err(format!("no grader is available for workload `{name}`"));
     };
     let implementation = directory.join("src/task.py");
-    let metadata = fs::metadata(&implementation).map_err(|error| {
-        format!(
-            "cannot inspect adapter trial implementation {}: {error}",
-            implementation.display()
-        )
-    })?;
-    if !metadata.is_file() || metadata.len() > MAX_PROMPT_BYTES {
-        return Ok(false);
+    let relative = "external-workload/asb-trial/src/task.py";
+    let metadata = match fs::metadata(&implementation) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Evaluation::Failed(format!(
+                "required adapter trial output `{relative}` is missing"
+            )));
+        }
+        Err(error) => {
+            return Err(format!(
+                "cannot inspect adapter trial output `{relative}`: {error}"
+            ));
+        }
+    };
+    if !metadata.is_file() {
+        return Ok(Evaluation::Failed(format!(
+            "adapter trial output `{relative}` is not a file"
+        )));
+    }
+    if metadata.len() > MAX_PROMPT_BYTES {
+        return Ok(Evaluation::Failed(format!(
+            "adapter trial output `{relative}` exceeds the {MAX_PROMPT_BYTES} byte grading limit"
+        )));
     }
     let source = fs::read_to_string(&implementation).map_err(|error| {
         format!(
             "cannot read adapter trial implementation {}: {error}",
-            implementation.display()
+            relative
         )
     })?;
     let expected = format!(
         "def normalize(value: str) -> str:\n    return value.strip().lower().replace(' ', '-')\n\ndef suite_label() -> str:\n    return \"{}\"\n",
         adapter_trial_label(name)
     );
-    Ok(canonical_source(&source) == canonical_source(&expected))
+    Ok(
+        if canonical_source(&source) == canonical_source(&expected) {
+            Evaluation::Passed
+        } else {
+            Evaluation::Failed(format!(
+                "adapter-smoke output `{relative}` does not match the accepted trial implementation; check normalize and suite_label (equivalent solutions may not be recognized)"
+            ))
+        },
+    )
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<usize, String> {
@@ -868,11 +926,52 @@ fn missing(name: &str, directory: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        copy_plan, copy_tree, evaluate, load, load_trial, materialize_external_adapter, populate,
+        copy_plan, copy_tree, load, load_trial, materialize_external_adapter, populate,
         prepare_external, prepare_fixture, write_default_trial_set,
     };
     use std::fs;
     use std::path::PathBuf;
+
+    fn evaluate(name: &str, workspace: &std::path::Path, output: &str) -> Result<bool, String> {
+        super::evaluate(name, workspace, output).map(|value| value == super::Evaluation::Passed)
+    }
+
+    #[test]
+    fn grade_explains_missing_wrong_large_and_unavailable_inputs() {
+        use super::Evaluation;
+        let root =
+            std::env::temp_dir().join(format!("asb-diagnostic-grades-{}", std::process::id()));
+        fs::create_dir_all(root.join("src")).unwrap();
+        let grade = |name: &str, output: &str| super::evaluate(name, &root, output).unwrap();
+        assert_eq!(
+            grade("bug-fix", ""),
+            Evaluation::Failed("required output file `src/parser.py` is missing".into())
+        );
+        fs::write(root.join("src/parser.py"), "not the solution").unwrap();
+        assert!(
+            matches!(grade("bug-fix", ""), Evaluation::Failed(message) if message.contains("does not match an accepted solution") && !message.contains("not the solution"))
+        );
+        fs::write(
+            root.join("src/parser.py"),
+            vec![b'x'; super::MAX_PROMPT_BYTES as usize + 1],
+        )
+        .unwrap();
+        assert!(
+            matches!(grade("bug-fix", ""), Evaluation::Failed(message) if message.contains("exceeds") && message.contains("src/parser.py"))
+        );
+        assert!(
+            matches!(grade("repository-navigation", "src/cli.py"), Evaluation::Failed(message) if message.contains("src/registry.py") && message.contains("lookup") && !message.contains("src/cli.py"))
+        );
+        assert!(
+            super::evaluate("unknown", &root, "")
+                .unwrap_err()
+                .contains("no grader is available")
+        );
+        assert!(
+            matches!(grade("agentbench", ""), Evaluation::Failed(message) if message.contains("adapter trial output") && message.contains("missing"))
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn loads_original_alias_and_rejects_path_traversal() {

@@ -111,7 +111,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                     host_metadata: None,
                     components: None,
                 status: Some(format!(
-                    "missing measurements: expected {} (run entry failed before writing measurements)",
+                    "missing measurements: expected {} (measurement collection may be disabled, or the run stopped before writing results)",
                     run_path.display()
                 )),
                 artifacts,
@@ -120,15 +120,19 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             }
             let run_value = read_json(&run_path)?;
             let run_status = match run_value.get("status").and_then(Value::as_str) {
-                Some(status) if run_value.get("success") == Some(&Value::Bool(false)) => {
-                    Some(format!(
-                        "benchmark run failed (status={status}, exit_code={})",
-                        run_value
-                            .get("exit_code")
-                            .map(Value::to_string)
-                            .unwrap_or_else(|| "null".into())
-                    ))
-                }
+                Some(status) if run_value.get("success") == Some(&Value::Bool(false)) => Some(
+                    if let Some(reason) = run_value.get("failure_reason").and_then(Value::as_str) {
+                        format!("benchmark run failed: {reason}")
+                    } else {
+                        format!(
+                            "benchmark run failed (status={status}, exit_code={})",
+                            run_value
+                                .get("exit_code")
+                                .map(Value::to_string)
+                                .unwrap_or_else(|| "null".into())
+                        )
+                    },
+                ),
                 Some(status) => Some(status.to_owned()),
                 None => Some("unknown".into()),
             };
@@ -1502,6 +1506,7 @@ mod tests {
         let summary =
             std::fs::read_to_string(root.join("results/sweep-comparison/comparison.json")).unwrap();
         assert!(summary.contains("missing measurements"));
+        assert!(summary.contains("measurement collection may be disabled"));
         let _ = std::fs::remove_dir_all(root);
     }
 }

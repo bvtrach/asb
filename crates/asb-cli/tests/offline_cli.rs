@@ -993,8 +993,11 @@ async function main() {
   if (behavior === 'extra') response = await send();
   if (!response.ok) { console.error('fixture-rejected', response.status); process.exitCode = 8; return; }
   if (behavior === 'delete') { fs.rmSync('src/parser.py'); console.log('fixture-deleted'); return; }
+  if (behavior === 'mismatch-solution') fs.writeFileSync('src/parser.py', 'def parse_path(value): return []\n');
+  if (behavior === 'invalid-utf8') fs.writeFileSync('src/parser.py', Buffer.from([255]));
+  if (behavior === 'not-a-file') { fs.rmSync('src/parser.py'); fs.mkdirSync('src/parser.py'); }
   console.log('fixture-agent-output');
-  if (behavior === 'fatal') console.error('Authentication required. Please use /login command to sign in to your account');
+  if (behavior === 'fatal') console.error('Authentication required. Please use /login command to sign in to your account fixture-secret');
   if (behavior === 'exit' || (behavior === 'fail-second' && process.cwd().endsWith('concurrency-2')) ||
       (behavior === 'fail-sweep-second' && process.cwd().includes('/001-bad/'))) process.exitCode = 7;
 }
@@ -1311,10 +1314,18 @@ fn replay_reports_agent_exit_and_zero_exit_fatal_output() {
     for behavior in ["exit", "fatal"] {
         let project = replay_project(1);
         let result = replay(&project, behavior, &[]);
-        expect_failure(&result, "agent exited unsuccessfully");
+        let expected = if behavior == "exit" {
+            "agent exited unsuccessfully (exit status: 7)"
+        } else {
+            "agent reported an authentication failure"
+        };
+        expect_failure(&result, expected);
+        assert!(!stderr(&result).contains("fixture-secret"));
         let log: serde_json::Value =
             serde_json::from_slice(&std::fs::read(project.0.join("run.log")).unwrap()).unwrap();
         assert_eq!(log["status"], "failed");
+        assert_eq!(log["failure_kind"], "agent_failure");
+        assert_eq!(log["workload_success"], serde_json::Value::Null);
         assert_tape_scratch_cleaned(&project);
     }
 }
@@ -1324,12 +1335,121 @@ fn replay_reports_agent_exit_and_zero_exit_fatal_output() {
 fn zero_exit_without_workload_change_is_not_success() {
     let project = replay_project(1);
     let result = replay(&project, "delete", &[]);
-    expect_failure(&result, "agent exited unsuccessfully");
+    expect_failure(&result, "required output file `src/parser.py` is missing");
     let log: serde_json::Value =
         serde_json::from_slice(&std::fs::read(project.0.join("run.log")).unwrap()).unwrap();
     assert_eq!(log["process_success"], true);
     assert_eq!(log["workload_success"], false);
+    assert_eq!(log["workload_evaluation"], "bundled-fixture");
+    assert_eq!(log["failure_kind"], "workload_check_failed");
+    assert!(
+        log["failure_reason"]
+            .as_str()
+            .unwrap()
+            .contains("src/parser.py")
+    );
     assert_eq!(log["success_rate"], 0.0);
+}
+
+#[cfg(unix)]
+#[test]
+fn grader_failures_and_errors_are_specific_in_human_and_json_output() {
+    for (behavior, kind, success, expected) in [
+        (
+            "mismatch-solution",
+            "workload_check_failed",
+            Some(false),
+            "does not match an accepted solution",
+        ),
+        (
+            "not-a-file",
+            "workload_check_failed",
+            Some(false),
+            "is not a file",
+        ),
+        (
+            "invalid-utf8",
+            "grader_error",
+            None,
+            "cannot read workload implementation src/parser.py",
+        ),
+    ] {
+        let project = replay_project(1);
+        let result = replay(&project, behavior, &["--json"]);
+        expect_failure(&result, expected);
+        let json: serde_json::Value = serde_json::from_str(stdout(&result).trim()).unwrap();
+        assert_eq!(json["process_success"], true);
+        assert_eq!(json["workload_success"], serde_json::json!(success));
+        assert_eq!(json["failure_kind"], kind);
+        assert!(json["failure_reason"].as_str().unwrap().contains(expected));
+        let log: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(project.0.join("run.log")).unwrap()).unwrap();
+        assert_eq!(log["failure_kind"], kind);
+        assert!(log["failure_reason"].as_str().unwrap().contains(expected));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn concurrent_grading_failures_are_deduplicated_and_recorded_per_replica() {
+    let project = replay_project(4);
+    let result = replay(&project, "delete", &[]);
+    expect_failure(&result, "replicas 1, 2, 3, 4");
+    let error = stderr(&result);
+    assert_eq!(
+        error
+            .matches("required output file `src/parser.py` is missing")
+            .count(),
+        1,
+        "{error}"
+    );
+    for index in 1..=4 {
+        let log: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(project.0.join(format!("run-concurrency-{index}.log"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(log["process_success"], true);
+        assert_eq!(log["workload_success"], false);
+        assert_eq!(log["failure_kind"], "workload_check_failed");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn grading_failure_is_reported_in_measurements_and_lifecycle() {
+    let project = replay_project(1);
+    let result = replay(&project, "delete", &["--measurements", "measurements"]);
+    expect_failure(&result, "required output file `src/parser.py` is missing");
+    let run: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(project.0.join("measurements/run.json")).unwrap())
+            .unwrap();
+    assert_eq!(run["failure_kind"], "workload_check_failed");
+    assert!(
+        run["failure_reason"]
+            .as_str()
+            .unwrap()
+            .contains("src/parser.py")
+    );
+    let events: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(project.0.join("measurements/lifecycle.json")).unwrap(),
+    )
+    .unwrap();
+    let events = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["event"].clone())
+        .collect::<Vec<_>>();
+    let position =
+        |event: serde_json::Value| events.iter().position(|actual| actual == &event).unwrap();
+    let begin = position(serde_json::json!({"kind":"phase_begin","phase":"workload_evaluation"}));
+    let end = position(serde_json::json!({"kind":"phase_end","phase":"workload_evaluation"}));
+    let failed = position(serde_json::json!({"kind":"phase_failed","phase":"workload_evaluation"}));
+    let run_failed = position(serde_json::json!({"kind":"run_failed"}));
+    assert!(
+        begin < end && end < failed && failed < run_failed,
+        "{events:?}"
+    );
 }
 
 #[cfg(unix)]
@@ -2008,6 +2128,12 @@ fn partial_replay_sweep_preserves_both_results_and_writes_report() {
             .0
             .join("results/suite-comparison/report.html")
             .is_file()
+    );
+    let report =
+        std::fs::read_to_string(project.0.join("results/suite-comparison/report.html")).unwrap();
+    assert!(
+        report.contains("agent exited unsuccessfully (exit status: 7)"),
+        "{report}"
     );
     let json = project.command_with_env(
         &[
