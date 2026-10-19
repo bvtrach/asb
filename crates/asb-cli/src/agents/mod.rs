@@ -32,7 +32,7 @@ pub(crate) trait AgentAdapter: Sync {
     /// Extract the agent's structured final answer from machine-readable
     /// output.  Intermediate tool events and echoed prompts are never treated
     /// as a final response.
-    fn final_response(&self, output: &str) -> Option<String> {
+    fn final_response(&self, output: &str, _workspace: &Path) -> Option<String> {
         structured_final_response(output)
     }
 }
@@ -172,11 +172,16 @@ pub(crate) fn find(id: &str) -> Option<&'static dyn AgentAdapter> {
     REGISTRY.iter().copied().find(|adapter| adapter.id() == id)
 }
 
-pub(crate) fn final_response(id: &str, output: &str) -> Option<String> {
-    find(id).and_then(|adapter| adapter.final_response(output))
+pub(crate) fn final_response(id: &str, output: &str, workspace: &Path) -> Option<String> {
+    if id == "mini-swe" {
+        if let Some(response) = adapters::mini_swe_final_response(workspace) {
+            return Some(response);
+        }
+    }
+    find(id).and_then(|adapter| adapter.final_response(output, workspace))
 }
 
-fn structured_final_response(output: &str) -> Option<String> {
+pub(super) fn structured_final_response(output: &str) -> Option<String> {
     output.lines().rev().find_map(|line| {
         let line = line
             .trim()
@@ -202,17 +207,41 @@ fn final_text_from_event(value: &serde_json::Value) -> Option<String> {
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_ascii_lowercase)
                 .unwrap_or_default();
+            if event_type.contains("tool") || event_type.contains("command") {
+                return None;
+            }
+            if event_type == "item.completed" {
+                return object.get("item").and_then(final_text_from_event);
+            }
+            if event_type == "text" {
+                return object
+                    .get("part")
+                    .and_then(text_value)
+                    .or_else(|| object.get("text").and_then(text_value));
+            }
+            if event_type == "message_update" {
+                return object
+                    .get("assistantMessageEvent")
+                    .and_then(final_text_from_event);
+            }
+            if event_type == "agent_end" {
+                return object.get("messages").and_then(final_text_from_event);
+            }
             let final_event = event_type.contains("output_text.done")
                 || event_type.contains("response.completed")
                 || matches!(
                     event_type.as_str(),
-                    "result" | "final" | "assistant" | "message"
+                    "result" | "final" | "assistant" | "message" | "agent_message"
                 )
-                || role == "assistant";
-            if !final_event || event_type.contains("tool") || event_type.contains("command") {
+                || event_type.contains("assistantmessage")
+                || role == "assistant"
+                || object.contains_key("messages");
+            if !final_event {
                 return None;
             }
-            for key in ["text", "result", "final", "content", "message", "output"] {
+            for key in [
+                "text", "result", "final", "content", "message", "messages", "output",
+            ] {
                 if let Some(child) = object.get(key) {
                     if let Some(text) = text_value(child) {
                         return Some(text);
@@ -389,13 +418,41 @@ mod tests {
 
     #[test]
     fn final_response_uses_structured_events_not_prompt_or_tool_text() {
+        let root = std::env::temp_dir().join(format!("asb-final-response-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
         let echoed = "Trace src/cli.py src/registry.py lookup\nASB_FINAL_RESPONSE: echoed prompt\n{\"type\":\"tool_call\",\"command\":\"cat src/registry.py\"}";
-        assert!(final_response("codex", echoed).is_none());
+        assert!(final_response("codex", echoed, &root).is_none());
         let structured = "{\"type\":\"tool_call\",\"command\":\"cat src/registry.py\"}\n{\"type\":\"response.output_text.done\",\"text\":\"The call path is src/cli.py -> src/registry.py through lookup.\"}";
         assert_eq!(
-            final_response("codex", structured).as_deref(),
+            final_response("codex", structured, &root).as_deref(),
             Some("The call path is src/cli.py -> src/registry.py through lookup.")
         );
+
+        let codex =
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"codex final"}}"#;
+        assert_eq!(
+            final_response("codex", codex, &root).as_deref(),
+            Some("codex final")
+        );
+        let opencode = r#"{"type":"text","part":{"type":"text","text":"opencode final"}}"#;
+        assert_eq!(
+            final_response("opencode", opencode, &root).as_deref(),
+            Some("opencode final")
+        );
+        let pi = r#"{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"pi final"}]}]}"#;
+        assert_eq!(final_response("pi", pi, &root).as_deref(), Some("pi final"));
+        let mini_root = root.join("mini");
+        std::fs::create_dir_all(&mini_root).unwrap();
+        std::fs::write(
+            mini_root.join(".asb-mini-swe.traj.json"),
+            r#"{"messages":[{"role":"assistant","content":[{"type":"text","text":"mini final"}]}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            final_response("mini-swe", "", &mini_root).as_deref(),
+            Some("mini final")
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
