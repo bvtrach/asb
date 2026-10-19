@@ -36,6 +36,10 @@ use Interface::{
     AnthropicMessages as Messages, Gemini, OpenAiChat as Chat, OpenAiResponses as Responses,
 };
 pub(super) trait ProviderAdapter: Sync {
+    /// Whether Anthropic-compatible input usage already includes cached input.
+    fn anthropic_input_includes_cache(&self) -> bool {
+        false
+    }
     fn tape_environment(&self) -> &'static [&'static str];
     fn tape_root_environment(&self) -> &'static [&'static str] {
         &[]

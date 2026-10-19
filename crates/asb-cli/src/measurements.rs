@@ -1292,7 +1292,7 @@ mod tests {
             ),
             (
                 "openjiuwen",
-                r#"{"benchmark_usage":{"task_summary":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}}"#,
+                r#"{"type":"llm_usage","payload":{"usage_metadata":{"input_tokens":7,"output_tokens":3,"total_tokens":10}}}"#,
                 7,
                 3,
                 10,
@@ -1375,11 +1375,11 @@ mod tests {
             ),
             (
                 "openjiuwen",
-                r#"Token usage: input_tokens=41 output_tokens=9 cacheReadInputTokens=6 totalTokens=50"#,
+                r#"{"type":"llm_usage","payload":{"usage_metadata":{"input_tokens":41,"output_tokens":9,"cache_read_tokens":6,"total_tokens":50}}}"#,
             ),
         ];
         for (agent, output) in cases {
-            let usage = token_usage_from_sources("cli2key", agent, output, "", None);
+            let usage = token_usage_from_sources("anthropic", agent, output, "", None);
             assert_eq!(
                 usage.input_tokens,
                 Some(if agent == "workbuddy" {

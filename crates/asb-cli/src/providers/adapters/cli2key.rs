@@ -21,6 +21,9 @@ adapter!(
     DataUnpaginated,
     "gpt-6.1-sol",
     cli2key_offers,
+    fn anthropic_input_includes_cache(&self) -> bool {
+        true
+    },
     fn prepare(
         &self,
         command: &mut std::process::Command,

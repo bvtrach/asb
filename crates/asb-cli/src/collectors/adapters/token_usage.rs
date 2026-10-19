@@ -22,14 +22,151 @@ fn from_sources(
     cassette: Option<&Path>,
 ) -> TokenUsage {
     let mut usage = usage_from_environment(provider, agent);
-    let output_usage = usage_from_text(stdout).merge(usage_from_text(stderr));
-    usage = usage.merge_with_source(output_usage, "agent-output");
-    if let Some(path) = cassette {
-        if let Ok(text) = read_bounded_text(path, 16 * 1024 * 1024) {
-            usage = usage.merge_with_source(usage_from_text(&text), "cassette");
+    let inclusive = crate::providers::anthropic_input_includes_cache(provider);
+    let specialized = crate::agents::find(agent)
+        .and_then(|adapter| adapter.output_usage(stdout, stderr, inclusive));
+    let output_usage = specialized
+        .clone()
+        .unwrap_or_else(|| usage_from_text(stdout).merge(usage_from_text(stderr)));
+    let output_complete =
+        output_usage.input_tokens.is_some() && output_usage.output_tokens.is_some();
+    let mut cassette_usage = TokenUsage::default();
+    if !output_complete || specialized.is_none() {
+        if let Some(path) = cassette {
+            if let Ok(text) = read_bounded_text(path, 16 * 1024 * 1024) {
+                cassette_usage = usage_from_cassette(&text, inclusive);
+            }
+        }
+    }
+    if specialized.is_some()
+        && !output_complete
+        && cassette_usage.input_tokens.is_some()
+        && cassette_usage.output_tokens.is_some()
+    {
+        usage = usage.merge_with_source(cassette_usage, "cassette");
+    } else {
+        usage = usage.merge_with_source(output_usage, "agent-output");
+        if specialized.is_none() {
+            usage = usage.merge_with_source(cassette_usage, "cassette");
         }
     }
     usage.with_derived_total()
+}
+
+/// A cassette has one response per request. SSE usage snapshots within one
+/// response are cumulative, not separate calls; only sum across responses.
+fn usage_from_cassette(text: &str, input_includes_cache: bool) -> TokenUsage {
+    let mut sum = TokenUsage::default();
+    let mut cache_complete = true;
+    for line in text.lines() {
+        let Ok(record) = serde_json::from_str::<serde_json::Value>(line) else {
+            return TokenUsage::default();
+        };
+        let Some(response) = record.get("response") else {
+            return TokenUsage::default();
+        };
+        if response
+            .get("status")
+            .and_then(|v| v.as_u64())
+            .is_some_and(|s| !(200..300).contains(&s))
+        {
+            continue;
+        }
+        let url = record
+            .pointer("/request/url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if !url.is_empty()
+            && ![
+                "/messages",
+                "/chat/completions",
+                "/responses",
+                "/api/chat",
+                "/api/generate",
+            ]
+            .iter()
+            .any(|suffix| url.split('?').next().unwrap_or(url).ends_with(suffix))
+        {
+            continue;
+        }
+        let Some(body) = response.get("body").and_then(|v| v.as_str()) else {
+            return TokenUsage::default();
+        };
+        let mut call = TokenUsage::default();
+        let mut cache_write = None;
+        let mut found = false;
+        let mut take = |event: &serde_json::Value| {
+            let Some(value) = event
+                .get("usage")
+                .or_else(|| event.pointer("/message/usage"))
+                .or_else(|| event.pointer("/response/usage"))
+                .or_else(|| event.get("usageMetadata"))
+            else {
+                return;
+            };
+            let observed = usage_from_json(value);
+            if observed.any() {
+                found = true;
+                let max = |a: Option<u64>, b: Option<u64>| match (a, b) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (a, b) => a.or(b),
+                };
+                call.input_tokens = max(call.input_tokens, observed.input_tokens);
+                call.output_tokens = max(call.output_tokens, observed.output_tokens);
+                call.cached_tokens = max(call.cached_tokens, observed.cached_tokens);
+                call.total_tokens = max(call.total_tokens, observed.total_tokens);
+                cache_write = max(
+                    cache_write,
+                    value
+                        .get("cache_creation_input_tokens")
+                        .and_then(|v| v.as_u64()),
+                );
+            }
+        };
+        let mut terminated = true;
+        if let Ok(event) = serde_json::from_str::<serde_json::Value>(body) {
+            take(&event);
+        } else {
+            terminated = false;
+            for line in body.lines() {
+                if let Some(data) = line.trim_start().strip_prefix("data:") {
+                    if data.trim() == "[DONE]" {
+                        terminated = true;
+                    }
+                    if let Ok(event) = serde_json::from_str::<serde_json::Value>(data.trim()) {
+                        if matches!(
+                            event.get("type").and_then(|v| v.as_str()),
+                            Some("message_stop" | "response.completed" | "response.incomplete")
+                        ) {
+                            terminated = true;
+                        }
+                        take(&event);
+                    }
+                }
+            }
+        }
+        if !terminated
+            || !found
+            || call.input_tokens.is_none()
+            || call.output_tokens.is_none()
+            || (call.input_tokens == Some(0) && call.output_tokens == Some(0))
+        {
+            // A partially observed cassette is not the usage of the complete run.
+            return TokenUsage::default();
+        }
+        if url.split('?').next().unwrap_or(url).ends_with("/messages") && !input_includes_cache {
+            call.input_tokens = call.input_tokens.map(|n| {
+                n.saturating_add(call.cached_tokens.unwrap_or(0))
+                    .saturating_add(cache_write.unwrap_or(0))
+            });
+        }
+        cache_complete &= call.cached_tokens.is_some();
+        sum = sum.add(call.with_derived_total());
+    }
+    if !cache_complete {
+        sum.cached_tokens = None;
+    }
+    sum.with_derived_total()
 }
 
 /// Read a bounded machine-readable agent artifact (for example mini-SWE's
@@ -60,7 +197,7 @@ impl TokenUsage {
         }
     }
 
-    fn add(self, other: Self) -> Self {
+    pub(crate) fn add(self, other: Self) -> Self {
         Self {
             input_tokens: add_values(self.input_tokens, other.input_tokens),
             output_tokens: add_values(self.output_tokens, other.output_tokens),
@@ -287,7 +424,6 @@ fn usage_from_json(value: &serde_json::Value) -> TokenUsage {
             &[
                 "cached_tokens",
                 "cache_read_input_tokens",
-                "cache_creation_input_tokens",
                 "cachedTokens",
                 "cache_read_tokens",
                 "cacheRead",
@@ -507,10 +643,56 @@ fn parse_token_count(value: &str) -> Option<u64> {
 fn read_bounded_text(path: &Path, max_bytes: u64) -> Result<String, std::io::Error> {
     let file = File::open(path)?;
     let mut bytes = Vec::new();
-    file.take(max_bytes).read_to_end(&mut bytes)?;
+    file.take(max_bytes + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "usage artifact exceeds size limit",
+        ));
+    }
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn env_u64(name: &str) -> Option<u64> {
     std::env::var(name).ok()?.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::usage_from_cassette;
+
+    #[test]
+    fn cassette_aggregates_stream_usage_once_per_request() {
+        let call = |body: &str| {
+            serde_json::json!({"request":{"url":"/v1/messages"},"response":{"status":200,"body":body}}).to_string()
+        };
+        let probe = call(r#"{"usage":{"input_tokens":29,"output_tokens":22}}"#);
+        let stream = call(concat!(
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":9326,\"output_tokens\":58,\"cache_read_input_tokens\":20}}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":9326,\"output_tokens\":58,\"cache_read_input_tokens\":20}}\n\n",
+            "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+        ));
+        let usage = usage_from_cassette(&format!("{probe}\n{stream}\n"), true);
+        assert_eq!(
+            (
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.cached_tokens,
+                usage.total_tokens
+            ),
+            (Some(9355), Some(80), None, Some(9435))
+        );
+        // Never present just the probe as the total for a partially recorded run.
+        let missing = call("data: {\"type\":\"message_stop\"}\n\n");
+        assert_eq!(
+            usage_from_cassette(&format!("{probe}\n{missing}\n"), true).total_tokens,
+            None
+        );
+        let anthropic = usage_from_cassette(&format!("{probe}\n{stream}\n"), false);
+        assert_eq!(anthropic.input_tokens, Some(9375));
+        assert_eq!(anthropic.total_tokens, Some(9455));
+        let truncated = call("data: {\"usage\":{\"input_tokens\":10,\"output_tokens\":3}}\n\n");
+        assert_eq!(usage_from_cassette(&truncated, false).total_tokens, None);
+    }
 }

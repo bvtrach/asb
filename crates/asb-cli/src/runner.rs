@@ -515,7 +515,10 @@ fn run_mode(
         program = local;
     }
     let started = Instant::now();
-    let mut command = Command::new(&program);
+    let mut command = agents::find(&config.agent).map_or_else(
+        || Ok(Command::new(&program)),
+        |adapter| adapter.process(&program),
+    )?;
     project::apply_network_proxy(&mut command, config_path)?;
     command.args(specification.args);
     // Do not leak an enclosing Codex session into the benchmark agent. These
@@ -693,8 +696,8 @@ fn run_mode(
     let mut token_usage = measurements::token_usage_from_sources(
         &config.provider,
         &config.agent,
-        &bounded(&child.stdout),
-        &bounded(&child.stderr),
+        &String::from_utf8_lossy(&child.stdout),
+        &String::from_utf8_lossy(&child.stderr),
         tape_cassette
             .as_ref()
             .map(|(_, cassette)| cassette.as_path()),
@@ -1779,7 +1782,7 @@ mod tests {
             command
                 .args
                 .windows(2)
-                .any(|pair| pair[0] == "-f" && pair[1] == "json")
+                .any(|pair| pair[0] == "-f" && pair[1] == "stream-json")
         );
     }
 

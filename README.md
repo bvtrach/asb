@@ -118,6 +118,15 @@ same input, output, cached, and total fields whenever the provider reports
 them. A missing usage field remains `null`; ASB never guesses token counts from
 text length.
 
+Qwen Code usage comes from its final run summary rather than intermediate
+message snapshots. OpenJiuwen uses its per-model-call streaming usage events;
+ASB applies a process-local compatibility fix for the pinned client's loss of
+input counts between streaming events. Those events cover calls reported by the
+agent, not necessarily separate startup probes. Recorded cassettes can also
+provide per-request usage, including streamed provider responses. If a source
+does not provide enough usage information, ASB reports it as unavailable
+instead of treating a partial count as a complete run total.
+
 Failed runs report whether the agent failed, a workload check rejected its
 output, the grader itself could not evaluate it, or another run operation
 failed. The terminal includes an actionable reason; the run log, JSON summary,

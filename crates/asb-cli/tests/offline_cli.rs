@@ -1025,6 +1025,57 @@ fn replay(project: &Project, behavior: &str, additional: &[&str]) -> Output {
 }
 
 #[cfg(unix)]
+#[test]
+fn qwen_and_openjiuwen_replay_report_agent_usage_in_json_and_measurements() {
+    use std::os::unix::fs::PermissionsExt;
+    for agent in ["qwen-code", "openjiuwen"] {
+        let project = replay_project(1);
+        project.write("benchmark.toml", &format!("agent='{agent}'\nworkload='bug-fix'\nprovider='cli2key'\nmodel='test-model'\nworkspace='workspace'\nlog_file='run.log'\n"));
+        let (binary, path) = if agent == "qwen-code" {
+            ("qwen", "/v1/chat/completions")
+        } else {
+            ("openjiuwen", "/v1/messages")
+        };
+        let body =
+            serde_json::json!({"model":"test-model","messages":[],"tools":[{"type":"function"}],"temperature":0})
+                .to_string();
+        let cassette = serde_json::json!({"request":{"method":"POST","url":path,"body":body},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{}"}});
+        project.write("tape.jsonl", &format!("{cassette}\n"));
+        let executable = format!(".asb-tools/{agent}/bin/{binary}");
+        project.write(&executable, r##"#!/usr/bin/env node
+const isQwen = process.argv[1].endsWith('/qwen');
+const endpoint = isQwen ? process.env.OPENAI_BASE_URL : process.argv[process.argv.indexOf('--api-base') + 1];
+const target = endpoint.replace(/\/$/, '') + (isQwen ? '/chat/completions' : '/messages');
+fetch(target, {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({model:'test-model',messages:[],tools:[{type:'function'}],temperature:0})}).then(async response => {
+  if (!response.ok) { process.exitCode = 1; return; }
+  if (isQwen) console.log(JSON.stringify([{type:'message',usage:{input_tokens:0,output_tokens:0}},{type:'result',result:'done',usage:{input_tokens:100,output_tokens:5,total_tokens:105}}]));
+  else { console.log(JSON.stringify({type:'llm_output',payload:{content:'done'}})); console.log(JSON.stringify({type:'llm_usage',payload:{usage_metadata:{input_tokens:40,output_tokens:3}}})); console.log(JSON.stringify({type:'llm_usage',payload:{usage_metadata:{input_tokens:60,output_tokens:2}}})); }
+}).catch(() => { process.exitCode = 1; });
+"##);
+        std::fs::set_permissions(
+            project.0.join(&executable),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let result = replay(
+            &project,
+            "success",
+            &["--json", "--measurements", "measurements"],
+        );
+        expect_success(&result);
+        let json: serde_json::Value = serde_json::from_str(stdout(&result).trim()).unwrap();
+        assert_eq!(json["token_usage"]["input_tokens"], 100, "{agent}");
+        assert_eq!(json["token_usage"]["output_tokens"], 5, "{agent}");
+        assert_eq!(json["token_usage"]["total_tokens"], 105, "{agent}");
+        let measurement: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(project.0.join("measurements/run.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(measurement["token_usage"]["total_tokens"], 105, "{agent}");
+    }
+}
+
+#[cfg(unix)]
 fn assert_tape_scratch_cleaned(project: &Project) {
     let scratch = std::fs::read_dir(&project.0)
         .unwrap()
