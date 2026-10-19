@@ -27,6 +27,20 @@ jobs:
         run: rm -f crates/asb-cli/.asb/install.log
       - name: Verify package
         run: cargo package --locked
+      - name: Verify packaged runtime assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          package=$(find target/package -maxdepth 1 -type f -name 'asb-cli-*.crate' -print | sort -V | tail -n1)
+          test -n "$package"
+          archive=$(tar -tf "$package")
+          for asset in \
+            assets/scripts/cli2key-proxy.mjs \
+            assets/scripts/llmtape.mjs \
+            assets/workloads/bug-fix.txt \
+            assets/workloads/fixtures/bug-fix/src/parser.py; do
+            printf '%s\n' "$archive" | grep -Fq "/$asset"
+          done
 
   local-host-checks:
     # This is disabled until the repository owner provisions an appropriately
