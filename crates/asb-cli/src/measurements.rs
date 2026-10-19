@@ -97,7 +97,7 @@ struct ProcessSampler {
 
 impl ProcessSampler {
     fn start(pid: u32, interval_ms: u64) -> Option<Self> {
-        let initial = read_process_sample(pid)?;
+        let initial = read_process_tree_sample(pid)?;
         let stop = Arc::new(AtomicBool::new(false));
         let accounting = Arc::new(Mutex::new(ProcessAccounting {
             first: initial,
@@ -110,14 +110,14 @@ impl ProcessSampler {
             .name("asb-process-timing".into())
             .spawn(move || {
                 while !thread_stop.load(Ordering::Relaxed) {
-                    if let Some(sample) = read_process_sample(pid)
+                    if let Some(sample) = read_process_tree_sample(pid)
                         && let Ok(mut state) = thread_accounting.lock()
                     {
                         state.update(sample);
                     }
                     std::thread::sleep(Duration::from_millis(interval_ms));
                 }
-                if let Some(sample) = read_process_sample(pid)
+                if let Some(sample) = read_process_tree_sample(pid)
                     && let Ok(mut state) = thread_accounting.lock()
                 {
                     state.update(sample);
@@ -950,6 +950,75 @@ fn read_process_sample(pid: u32) -> Option<ProcessSample> {
     parse_process_sample(&stat, schedstat.as_deref())
 }
 
+/// Return the root process and every live descendant, including descendants
+/// created after the collector attached.  Process-scoped collectors must use
+/// this tree rather than a single PID so bridge/agent helper processes are not
+/// silently omitted while unrelated host processes remain excluded.
+pub(crate) fn process_tree_pids(root: u32) -> Vec<u32> {
+    let mut children: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return vec![root];
+    };
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Ok(pid) = name.parse::<u32>() else {
+            continue;
+        };
+        let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        let Some(parent) = parse_process_parent(&stat) else {
+            continue;
+        };
+        children.entry(parent).or_default().push(pid);
+    }
+    descendant_pids(root, &children)
+}
+
+fn descendant_pids(root: u32, children: &BTreeMap<u32, Vec<u32>>) -> Vec<u32> {
+    let mut tree = vec![root];
+    let mut seen = BTreeSet::from([root]);
+    let mut index = 0;
+    while index < tree.len() {
+        let pid = tree[index];
+        if let Some(descendants) = children.get(&pid) {
+            for descendant in descendants {
+                if seen.insert(*descendant) {
+                    tree.push(*descendant);
+                }
+            }
+        }
+        index += 1;
+    }
+    tree.sort_unstable();
+    tree.dedup();
+    tree
+}
+
+fn read_process_tree_sample(root: u32) -> Option<ProcessSample> {
+    let mut total = ProcessSample::default();
+    let mut observed = false;
+    for pid in process_tree_pids(root) {
+        let Some(sample) = read_process_sample(pid) else {
+            continue;
+        };
+        total.user_ticks = total.user_ticks.saturating_add(sample.user_ticks);
+        total.system_ticks = total.system_ticks.saturating_add(sample.system_ticks);
+        total.io_delay_ticks = total.io_delay_ticks.saturating_add(sample.io_delay_ticks);
+        total.runqueue_ns = total.runqueue_ns.saturating_add(sample.runqueue_ns);
+        observed = true;
+    }
+    observed.then_some(total)
+}
+
+fn parse_process_parent(stat: &str) -> Option<u32> {
+    let (_, rest) = stat.rsplit_once(')')?;
+    let fields = rest.split_whitespace().collect::<Vec<_>>();
+    fields.get(1)?.parse().ok()
+}
+
 fn parse_process_sample(stat: &str, schedstat: Option<&str>) -> Option<ProcessSample> {
     let fields = stat
         .rsplit_once(')')?
@@ -1446,7 +1515,7 @@ mod tests {
         assert!(
             profiles
                 .iter()
-                .all(|profile| profile.program.contains("$1"))
+                .all(|profile| profile.program.contains("@asb_tree"))
         );
         assert!(
             profiles
@@ -1573,5 +1642,16 @@ mod tests {
     fn malformed_process_accounting_is_unavailable_not_zero_guesswork() {
         assert!(parse_process_sample("not a proc stat", None).is_none());
         assert!(parse_process_sample("123 (agent) S", None).is_none());
+    }
+
+    #[test]
+    fn process_tree_includes_nested_helpers_but_not_unrelated_processes() {
+        let children = BTreeMap::from([(10, vec![11, 12]), (11, vec![13]), (99, vec![100])]);
+        assert_eq!(descendant_pids(10, &children), vec![10, 11, 12, 13]);
+    }
+
+    #[test]
+    fn parses_process_parent_from_proc_stat_with_spaces_in_command() {
+        assert_eq!(parse_process_parent("42 (agent helper) S 7 8 9"), Some(7));
     }
 }

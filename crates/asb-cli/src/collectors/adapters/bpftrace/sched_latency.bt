@@ -1,9 +1,9 @@
-// Agent wakeup-to-run latency. $1 is the agent process TGID.
-tracepoint:sched:sched_wakeup /args->pid == $1/ {
+// Agent wakeup-to-run latency across the full process tree.
+tracepoint:sched:sched_wakeup /@asb_tree[args->pid]/ {
   @asb_wakeup_start[args->pid] = nsecs;
 }
 
-tracepoint:sched:sched_wakeup_new /args->pid == $1/ {
+tracepoint:sched:sched_wakeup_new /@asb_tree[args->pid]/ {
   @asb_wakeup_start[args->pid] = nsecs;
 }
 

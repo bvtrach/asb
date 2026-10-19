@@ -1,5 +1,5 @@
-// Futex wait pressure for all threads in the agent process. $1 is its TGID.
-tracepoint:syscalls:sys_enter_futex /pid == $1/ {
+// Futex wait pressure for all threads in the agent process tree.
+tracepoint:syscalls:sys_enter_futex /@asb_tree[pid]/ {
   @asb_futex_start[tid] = nsecs;
   @asb_futex_calls = count();
 }

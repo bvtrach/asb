@@ -31,7 +31,7 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_BenchmarkData" [label="{BenchmarkData|-label: String\l-directory: PathBuf\l-agent: String\l-workload: String\l-workload_evaluation: String\l-provider: String\l-model: String\l-metrics: BTreeMap\<String, f64\>\l-series: BTreeMap\<String, TimeSeries\>\l-status: Option\<String\>\l-artifacts: Vec\<String\>\l}", shape=record];
+        "asb-cli_src_BenchmarkData" [label="{BenchmarkData|-label: String\l-directory: PathBuf\l-agent: String\l-workload: String\l-workload_evaluation: String\l-provider: String\l-model: String\l-metrics: BTreeMap\<String, f64\>\l-series: BTreeMap\<String, TimeSeries\>\l-host_metadata: Option\<Value\>\l-components: Option\<Value\>\l-status: Option\<String\>\l-artifacts: Vec\<String\>\l}", shape=record];
     }
 
     subgraph "cluster_core" {

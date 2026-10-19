@@ -124,7 +124,11 @@ retained.
 Measured runs additionally write `components.json` with separate lifecycle
 component wall times and process-accounted user/system CPU, block-I/O delay,
 and scheduler wait for agent execution. Network wait remains `null` unless a
-collector directly observes it; residual time is never guessed.
+collector directly observes it; residual time is never guessed. Process-scoped
+collectors include the complete agent process tree: pidstat uses child
+aggregation, perf enables inherited counters for the root and discovered
+descendants, and built-in bpftrace profiles track descendants as they fork.
+Unrelated host processes are excluded.
 When the `perfetto` collector is selected (or `ASB_MEASURE_PERFETTO=1` is set),
 ASB validates the exact ftrace configuration before the agent starts, then
 starts Tracebox after the agent PID is known, filters scheduler events to that

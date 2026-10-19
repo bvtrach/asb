@@ -86,12 +86,17 @@ impl measurements::Session {
         let stdout_path = self.dir.join("perf.stdout");
         let stdout = File::create(&stdout_path)
             .map_err(|e| format!("cannot create perf standard output: {e}"))?;
+        let target_pids = measurements::process_tree_pids(pid)
+            .into_iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
         let child = match self
             .command("perf")
             // Keep perf data bounded enough for the offline flamegraph
             // renderer while retaining process-scoped call samples.
-            .args(["record", "-g", "-F", "19", "-p"])
-            .arg(pid.to_string())
+            .args(["record", "-g", "-F", "19", "--inherit", "-p"])
+            .arg(&target_pids)
             .args(["-o"])
             .arg(&data)
             .stderr(Stdio::from(output))
@@ -134,9 +139,10 @@ impl measurements::Session {
                 "-x,",
                 "-e",
                 "task-clock,context-switches,cpu-migrations,page-faults,cycles,instructions",
+                "--inherit",
                 "-p",
             ])
-            .arg(pid.to_string())
+            .arg(&target_pids)
             .stdout(Stdio::from(stat_stdout))
             .stderr(Stdio::from(stat_stderr))
             .spawn();
