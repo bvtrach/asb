@@ -72,7 +72,7 @@ fn start(session: &mut Session) -> Result<(), String> {
     let physical_cores = (!topology.cores.is_empty()).then_some(topology.cores.len());
     let physical_packages = (!topology.packages.is_empty()).then_some(topology.packages.len());
     let threads_per_core = physical_cores
-        .filter(|cores| *cores > 0 && logical_cpus % cores == 0)
+        .filter(|cores| *cores > 0 && logical_cpus.is_multiple_of(*cores))
         .map(|cores| logical_cpus / cores);
     let virtualization = classify_virtualization(
         marker_exists("/.dockerenv") || marker_exists("/run/.containerenv"),

@@ -20,10 +20,10 @@ fn output_usage(stdout: &str, stderr: &str, _: bool) -> crate::measurements::Tok
         .rev()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
     {
-        if event.get("type").and_then(|v| v.as_str()) == Some("run_result") {
-            if let Some(usage) = event.get("aggregateUsage").or_else(|| event.get("usage")) {
-                return super::super::usage_fields(usage).with_derived_total();
-            }
+        if event.get("type").and_then(|v| v.as_str()) == Some("run_result")
+            && let Some(usage) = event.get("aggregateUsage").or_else(|| event.get("usage"))
+        {
+            return super::super::usage_fields(usage).with_derived_total();
         }
     }
     crate::collectors::adapters::token_usage::usage_from_text(&format!("{stdout}\n{stderr}"))

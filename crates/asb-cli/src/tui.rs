@@ -431,10 +431,10 @@ pub fn setup(output: &mut dyn Write) -> Result<(), Error> {
         start_terminal().map_err(|error| Error::Io(format!("cannot start setup TUI: {error}")))?;
     let result = run_loop(&mut terminal, &mut app);
     let cleanup = stop_terminal(terminal);
-    if let Err(error) = cleanup {
-        if result.is_ok() {
-            return Err(Error::Io(format!("cannot restore terminal: {error}")));
-        }
+    if let Err(error) = cleanup
+        && result.is_ok()
+    {
+        return Err(Error::Io(format!("cannot restore terminal: {error}")));
     }
     let generated = result?;
     writeln!(output, "{}", generated_summary(&generated)).map_err(crate::io_error)?;
@@ -1357,15 +1357,15 @@ fn render_choice_pane(
     for index in visible {
         let choice = &pane.choices[index];
         let section = pane.sections.get(index).copied().flatten();
-        if let Some(section) = section {
-            if previous_section != Some(section) {
-                items.push(ListItem::new(Line::from(Span::styled(
-                    format!("── {section} ──"),
-                    Style::default()
-                        .fg(Color::DarkGray)
-                        .add_modifier(Modifier::BOLD),
-                ))));
-            }
+        if let Some(section) = section
+            && previous_section != Some(section)
+        {
+            items.push(ListItem::new(Line::from(Span::styled(
+                format!("── {section} ──"),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD),
+            ))));
         }
         let is_selected = index == pane.cursor;
         if is_selected {
@@ -1756,10 +1756,9 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
     })
 }
 
-fn selected_trials(
-    app: &App,
-    choice: &str,
-) -> Result<(String, Option<String>, Vec<Option<String>>), Error> {
+type TrialSelection = (String, Option<String>, Vec<Option<String>>);
+
+fn selected_trials(app: &App, choice: &str) -> Result<TrialSelection, Error> {
     let Some(workload) = choice.strip_suffix(" [trial set]") else {
         return Ok((choice.to_owned(), None, vec![None]));
     };

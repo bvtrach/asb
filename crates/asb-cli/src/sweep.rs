@@ -134,12 +134,14 @@ pub fn run(
         }
         if let Err(error) = runner::run_with_diagnostics(
             isolated_path.to_string_lossy().as_ref(),
-            json,
-            show_output,
-            None,
-            mode,
-            cassette.as_deref().and_then(|path| path.to_str()),
-            respect_record_timings,
+            runner::RunOptions {
+                json,
+                show_output,
+                measurement_dir: None,
+                mode,
+                cassette: cassette.as_deref().and_then(|path| path.to_str()),
+                respect_record_timings,
+            },
             output,
             &warnings,
         ) {

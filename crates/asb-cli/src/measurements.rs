@@ -23,7 +23,7 @@ const MAX_CAPTURE: usize = 256 * 1024;
 const MAX_RUNS: usize = 10_000;
 static NEXT_TRACE_ID: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct TokenUsage {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,

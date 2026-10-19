@@ -69,6 +69,8 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
         program: "openjiuwen".into(),
         args: [
             "-v",
+            "-w",
+            context.config.workspace.as_str(),
             "--model",
             context.config.model.as_str(),
             "--provider",
@@ -155,14 +157,13 @@ fn final_response(output: &str, _workspace: &std::path::Path) -> Option<String> 
             Some("answer") => &mut answer,
             _ => continue,
         };
-        if let Some(payload) = event.get("payload") {
-            if let Some(content) = payload
+        if let Some(payload) = event.get("payload")
+            && let Some(content) = payload
                 .as_str()
                 .or_else(|| payload.get("content").and_then(|v| v.as_str()))
                 .or_else(|| payload.get("output").and_then(|v| v.as_str()))
-            {
-                target.push_str(content);
-            }
+        {
+            target.push_str(content);
         }
     }
     if !text.trim().is_empty() {
@@ -172,6 +173,15 @@ fn final_response(output: &str, _workspace: &std::path::Path) -> Option<String> 
     } else {
         None
     }
+}
+
+fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
+    let connection = context.connection;
+    context.command.env(
+        "OPENJIUWEN_API_KEY",
+        connection.credential.as_deref().unwrap_or("asb-local"),
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -209,7 +219,11 @@ mod tests {
             prompt: "repair",
         });
         assert_eq!(spec.args.first().map(String::as_str), Some("-v"));
-        assert!(!spec.args.iter().any(|arg| arg == "-w"));
+        assert!(
+            spec.args
+                .windows(2)
+                .any(|pair| pair[0] == "-w" && pair[1] == "workspace")
+        );
         assert!(
             spec.args
                 .windows(2)
@@ -323,13 +337,4 @@ print(value.content, value.usage_metadata.input_tokens, value.usage_metadata.out
         );
         std::fs::remove_dir_all(root).unwrap();
     }
-}
-
-fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
-    let connection = context.connection;
-    context.command.env(
-        "OPENJIUWEN_API_KEY",
-        connection.credential.as_deref().unwrap_or("asb-local"),
-    );
-    Ok(())
 }

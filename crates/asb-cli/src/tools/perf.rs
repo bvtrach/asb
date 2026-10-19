@@ -113,19 +113,18 @@ fn distribution_perf(stage: &Path) -> Result<PathBuf, String> {
     }
     let meta = format!("linux-tools-{kernel}");
     let mut packages = vec![meta.clone()];
-    if let Ok(output) = Command::new("apt-cache").args(["depends", &meta]).output() {
-        if output.status.success() {
-            for line in String::from_utf8_lossy(&output.stdout).lines() {
-                if let Some(name) = line.trim().strip_prefix("Depends: ") {
-                    if name.starts_with("linux-")
-                        && name.contains("tools")
-                        && name
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b))
-                    {
-                        packages.insert(0, name.to_string());
-                    }
-                }
+    if let Ok(output) = Command::new("apt-cache").args(["depends", &meta]).output()
+        && output.status.success()
+    {
+        for line in String::from_utf8_lossy(&output.stdout).lines() {
+            if let Some(name) = line.trim().strip_prefix("Depends: ")
+                && name.starts_with("linux-")
+                && name.contains("tools")
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b".-+".contains(&b))
+            {
+                packages.insert(0, name.to_string());
             }
         }
     }

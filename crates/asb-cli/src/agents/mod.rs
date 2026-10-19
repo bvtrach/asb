@@ -265,10 +265,10 @@ pub(super) fn usage_fields(value: &serde_json::Value) -> crate::measurements::To
 }
 
 pub(crate) fn final_response(id: &str, output: &str, workspace: &Path) -> Option<String> {
-    if id == "mini-swe" {
-        if let Some(response) = adapters::mini_swe_final_response(workspace) {
-            return Some(response);
-        }
+    if id == "mini-swe"
+        && let Some(response) = adapters::mini_swe_final_response(workspace)
+    {
+        return Some(response);
     }
     find(id).and_then(|adapter| adapter.final_response(output, workspace))
 }

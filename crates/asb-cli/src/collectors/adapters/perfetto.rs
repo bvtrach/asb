@@ -185,16 +185,15 @@ fn preflight_perfetto(context: &mut PreflightContext<'_>, executable: &Path) -> 
     if !executable.is_file() {
         return Ok(());
     }
-    if perfetto_probe(&executable, context.measurement_dir, false)? {
+    if perfetto_probe(executable, context.measurement_dir, false)? {
         return Ok(());
     }
-    if perfetto_probe(&executable, context.measurement_dir, true)? {
+    if perfetto_probe(executable, context.measurement_dir, true)? {
         context.sudo_collectors.insert("perfetto".into());
         Ok(())
     } else {
         Err(measurements::passwordless_sudo_error(
-            "perfetto",
-            &executable,
+            "perfetto", executable,
         ))
     }
 }

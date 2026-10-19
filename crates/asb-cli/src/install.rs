@@ -241,7 +241,7 @@ pub fn tool_with_progress(
     let root = tools_root.join(&id);
     let built_in = built_in_tool(&id);
     ensure_collector_dependencies(
-        &[id.clone()],
+        std::slice::from_ref(&id),
         &project_root,
         &tools_root,
         output,

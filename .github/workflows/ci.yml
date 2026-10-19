@@ -21,6 +21,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Run tests
         run: cargo test --locked
+      - name: Check Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Test checkout updates
         run: python3 scripts/test_update_checkout.py
       - name: Build
@@ -87,6 +89,8 @@ jobs:
           node-version: '22'
       - name: Use the runner's Rust toolchain
         run: echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Check Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Run tests

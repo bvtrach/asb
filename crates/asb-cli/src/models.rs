@@ -88,13 +88,14 @@ fn discover_for_model(
     }
     let public_catalog =
         providers::public_catalog(provider, providers::credential(provider).is_some());
-    if let Some(credential) = spec.credential {
-        if !public_catalog && providers::credential(provider).is_none() {
-            return Err(Error::Input(format!(
-                "missing {credential} or ~/.api_key_{}",
-                spec.name
-            )));
-        }
+    if let Some(credential) = spec.credential
+        && !public_catalog
+        && providers::credential(provider).is_none()
+    {
+        return Err(Error::Input(format!(
+            "missing {credential} or ~/.api_key_{}",
+            spec.name
+        )));
     }
     let Some(url) = spec.url_for_model(selected) else {
         if let Some(message) = providers::catalog_url_error(provider) {
@@ -593,7 +594,7 @@ pub(crate) fn curl_config(
             "provider endpoint contains invalid newline characters".into(),
         ));
     }
-    let mut config = format!("url = \"{}\"\n", escape_config(&url));
+    let mut config = format!("url = \"{}\"\n", escape_config(url));
     if let Some(credential) = spec.credential {
         let key = match key_override {
             Some(value) => value.to_owned(),

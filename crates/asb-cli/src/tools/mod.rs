@@ -44,13 +44,14 @@ pub(crate) trait ToolAdapter: Sync {
     }
 }
 
+type PostInstallHook =
+    fn(&Path, &mut dyn FnMut(u8, &str), &mut dyn std::io::Write) -> Result<(), crate::Error>;
+
 pub(crate) struct StaticTool {
     id: &'static str,
     recipe: Recipe,
     kind: ToolKind,
-    post_install: Option<
-        fn(&Path, &mut dyn FnMut(u8, &str), &mut dyn std::io::Write) -> Result<(), crate::Error>,
-    >,
+    post_install: Option<PostInstallHook>,
 }
 impl StaticTool {
     pub(crate) const fn new(id: &'static str, recipe: Recipe, kind: ToolKind) -> Self {
@@ -61,14 +62,7 @@ impl StaticTool {
             post_install: None,
         }
     }
-    pub(crate) const fn with_post_install(
-        mut self,
-        hook: fn(
-            &Path,
-            &mut dyn FnMut(u8, &str),
-            &mut dyn std::io::Write,
-        ) -> Result<(), crate::Error>,
-    ) -> Self {
+    pub(crate) const fn with_post_install(mut self, hook: PostInstallHook) -> Self {
         self.post_install = Some(hook);
         self
     }
