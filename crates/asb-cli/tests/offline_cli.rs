@@ -749,6 +749,225 @@ fn replay_returns_json_and_writes_completed_log_offline() {
 
 #[cfg(unix)]
 #[test]
+fn offline_replay_writes_ordered_lifecycle_events_for_all_executed_phases() {
+    let project = replay_project(1);
+    let result = replay(&project, "success", &["--measurements", "measurements"]);
+    expect_success(&result);
+    let records: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(project.0.join("measurements/lifecycle.json")).unwrap(),
+    )
+    .unwrap();
+    let events = records
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|record| record["event"].clone())
+        .collect::<Vec<_>>();
+    let expected = vec![
+        serde_json::json!({"kind":"run_started"}),
+        serde_json::json!({"kind":"phase_begin","phase":"provider_discovery"}),
+        serde_json::json!({"kind":"phase_end","phase":"provider_discovery"}),
+        serde_json::json!({"kind":"phase_begin","phase":"provider_setup"}),
+        serde_json::json!({"kind":"phase_end","phase":"provider_setup"}),
+        serde_json::json!({"kind":"phase_begin","phase":"workload_preparation"}),
+        serde_json::json!({"kind":"phase_end","phase":"workload_preparation"}),
+        serde_json::json!({"kind":"phase_begin","phase":"proxy_preparation"}),
+        serde_json::json!({"kind":"phase_end","phase":"proxy_preparation"}),
+        serde_json::json!({"kind":"phase_begin","phase":"agent_preparation"}),
+        serde_json::json!({"kind":"phase_end","phase":"agent_preparation"}),
+        serde_json::json!({"kind":"measurements_ready"}),
+        serde_json::json!({"kind":"agent_spawn"}),
+        serde_json::json!({"kind":"agent_execute_begin"}),
+        serde_json::json!({"kind":"agent_started"}),
+        serde_json::json!({"kind":"agent_execute_end"}),
+        serde_json::json!({"kind":"agent_exited"}),
+        serde_json::json!({"kind":"phase_begin","phase":"workload_evaluation"}),
+        serde_json::json!({"kind":"phase_end","phase":"workload_evaluation"}),
+        serde_json::json!({"kind":"run_finishing"}),
+    ];
+    assert_eq!(events, expected);
+    for (index, record) in records.as_array().unwrap().iter().enumerate() {
+        assert_eq!(record["sequence"].as_u64(), Some(index as u64));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_agent_spawn_persists_failure_lifecycle_events() {
+    let project = replay_project(1);
+    project.write(
+        ".asb-tools/pi/bin/pi",
+        "#!/nonexistent/asb-fixture-interpreter\n",
+    );
+    let result = replay(&project, "success", &["--measurements", "measurements"]);
+    assert!(!result.status.success());
+    let records: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(project.0.join("measurements/lifecycle.json")).unwrap(),
+    )
+    .unwrap();
+    let kinds = records
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|record| record["event"]["kind"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        kinds.ends_with(&[
+            "agent_spawn",
+            "agent_execute_begin",
+            "agent_execute_end",
+            "agent_spawn_failed",
+            "run_failed"
+        ]),
+        "{kinds:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_workload_preparation_closes_its_span_and_records_failure() {
+    let project = replay_project(1);
+    project.write("benchmark.toml", "agent='pi'\nworkload='missing-workload'\nprovider='cli2key'\nmodel='test-model'\nworkspace='workspace'\nlog_file='run.log'\n");
+    let result = replay(&project, "success", &["--measurements", "measurements"]);
+    assert!(!result.status.success());
+    let records: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(project.0.join("measurements/lifecycle.json")).unwrap(),
+    )
+    .unwrap();
+    let events = records
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|record| record["event"].clone())
+        .collect::<Vec<_>>();
+    assert!(
+        events.ends_with(&[
+            serde_json::json!({"kind":"phase_begin","phase":"workload_preparation"}),
+            serde_json::json!({"kind":"phase_end","phase":"workload_preparation"}),
+            serde_json::json!({"kind":"phase_failed","phase":"workload_preparation"}),
+            serde_json::json!({"kind":"run_failed"}),
+        ]),
+        "{events:?}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires project-local Perfetto and host tracing privileges"]
+fn offline_replay_emits_every_success_lifecycle_phase_into_a_real_perfetto_trace() {
+    let tools = PathBuf::from(std::env::var_os("ASB_TEST_PERFETTO_TOOLS").unwrap());
+    let project = replay_project(1);
+    std::fs::create_dir_all(project.0.join(".asb-tools")).unwrap();
+    std::os::unix::fs::symlink(
+        tools.join("perfetto"),
+        project.0.join(".asb-tools/perfetto"),
+    )
+    .unwrap();
+    let result = project.command_with_env(
+        &[
+            "run",
+            "benchmark.toml",
+            "--replay",
+            "--cassette",
+            "tape.jsonl",
+            "--measurements",
+            "measurements",
+        ],
+        &[
+            ("ASB_FIXTURE_BEHAVIOR", "success"),
+            ("ASB_MEASURE_PERFETTO", "1"),
+        ],
+    );
+    expect_success(&result);
+    let trace = project
+        .0
+        .join("measurements/perfetto-scheduling.perfetto-trace");
+    let output = Command::new(tools.join("perfetto/bin/trace_processor_shell"))
+        .arg("query")
+        .arg(trace)
+        .arg("SELECT name, dur FROM slice WHERE name GLOB 'asb.*' ORDER BY ts")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let rows = stdout(&output);
+    let names = [
+        "asb.run.started.",
+        "asb.provider.discovery.",
+        "asb.provider.setup.",
+        "asb.workload.prepare.",
+        "asb.proxy.prepare.",
+        "asb.agent.prepare.",
+        "asb.measurements.ready.",
+        "asb.agent.spawn.",
+        "asb.agent.execute.",
+        "asb.agent.started.",
+        "asb.agent.exited.",
+        "asb.workload.evaluate.",
+        "asb.run.finishing.",
+    ];
+    let mut cursor = 0;
+    for name in names {
+        let offset = rows[cursor..]
+            .find(name)
+            .unwrap_or_else(|| panic!("missing {name}: {rows}"));
+        cursor += offset + name.len();
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires project-local Perfetto and host tracing privileges"]
+fn live_perfetto_preserves_failure_markers_and_closes_the_collector_on_early_error() {
+    let tools = PathBuf::from(std::env::var_os("ASB_TEST_PERFETTO_TOOLS").unwrap());
+    let project = replay_project(1);
+    project.write("benchmark.toml", "agent='pi'\nworkload='missing-workload'\nprovider='cli2key'\nmodel='test-model'\nworkspace='workspace'\nlog_file='run.log'\n");
+    std::fs::create_dir_all(project.0.join(".asb-tools")).unwrap();
+    std::os::unix::fs::symlink(
+        tools.join("perfetto"),
+        project.0.join(".asb-tools/perfetto"),
+    )
+    .unwrap();
+    let result = project.command_with_env(
+        &[
+            "run",
+            "benchmark.toml",
+            "--replay",
+            "--cassette",
+            "tape.jsonl",
+            "--measurements",
+            "measurements",
+        ],
+        &[
+            ("ASB_FIXTURE_BEHAVIOR", "success"),
+            ("ASB_MEASURE_PERFETTO", "1"),
+        ],
+    );
+    assert!(!result.status.success());
+    let trace = project
+        .0
+        .join("measurements/perfetto-scheduling.perfetto-trace");
+    let output = Command::new(tools.join("perfetto/bin/trace_processor_shell"))
+        .arg("query")
+        .arg(trace)
+        .arg("SELECT name, dur FROM slice WHERE name GLOB 'asb.*' ORDER BY ts")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let rows = stdout(&output);
+    let begun = rows
+        .find("asb.workload.prepare.")
+        .expect("missing workload span");
+    let failed = rows
+        .find("asb.workload.prepare.failed.")
+        .expect("missing workload failure marker");
+    let run_failed = rows
+        .find("asb.run.failed.")
+        .expect("missing run failure marker");
+    assert!(begun < failed && failed < run_failed, "{rows}");
+}
+
+#[cfg(unix)]
+#[test]
 fn show_output_streams_mock_agent_output_on_replay() {
     let project = replay_project(1);
     let result = replay(&project, "success", &["--show-output"]);

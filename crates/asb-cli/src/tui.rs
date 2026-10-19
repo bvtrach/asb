@@ -261,10 +261,14 @@ impl App {
             };
         }
         for choice in &mut self.panes[4].choices {
-            choice.availability = match choice.label.as_str() {
-                "token_usage" | "steps" | "success_rate" => Availability::Available,
-                name if install::tool_available(name, &tools) => Availability::Available,
-                _ => Availability::Missing,
+            choice.availability = if crate::collectors::find(&choice.label).is_some_and(|adapter| {
+                adapter
+                    .tool_id()
+                    .is_none_or(|tool| install::tool_available(tool, &tools))
+            }) {
+                Availability::Available
+            } else {
+                Availability::Missing
             };
         }
     }

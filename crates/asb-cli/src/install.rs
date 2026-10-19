@@ -11,22 +11,6 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
-const BPFTRACE_SOURCE: &str =
-    "https://github.com/bpftrace/bpftrace/archive/refs/tags/v0.20.2.tar.gz";
-const PERFETTO_LINUX_X86_64_URL: &str =
-    "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v58.2/linux-amd64/tracebox";
-const PERFETTO_LINUX_X86_64_SHA256: &str =
-    "5348e5f3513dec2e70f02d3e4296cfed546e6ebc7f9a7cc6b5499f363b4aea03";
-const PERFETTO_LINUX_AARCH64_URL: &str =
-    "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v58.2/linux-arm64/tracebox";
-const PERFETTO_LINUX_AARCH64_SHA256: &str =
-    "2d21883e9c55818f851fd8c391afb9b366032b3110076b4fd41f31f30b5849fa";
-const PERFETTO_PROCESSOR_LINUX_X86_64_URL: &str = "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v58.2/linux-amd64/trace_processor_shell";
-const PERFETTO_PROCESSOR_LINUX_X86_64_SHA256: &str =
-    "58042408e6cc861fb1a731c26bb082dc222285561eaa4e12a48a8b2b90dca7b9";
-const PERFETTO_PROCESSOR_LINUX_AARCH64_URL: &str = "https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v58.2/linux-arm64/trace_processor_shell";
-const PERFETTO_PROCESSOR_LINUX_AARCH64_SHA256: &str =
-    "0e6e0c5452c505c8d46fe472fd196a0d17d963460727e2ce2013b02aa1309555";
 const GOOSE_X86_64_URL: &str = "https://github.com/aaif-goose/goose/releases/download/v1.54.0/goose-x86_64-unknown-linux-gnu.tar.gz";
 const GOOSE_X86_64_SHA256: &str =
     "ab396c95aebbd28b4d38c175234be8d4a3ea0c96e7ccb24c307e4618c9be57e1";
@@ -55,6 +39,8 @@ impl LoggedStatus for Command {
     }
 }
 
+type CustomInstall = fn(&Path, &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error>;
+
 #[derive(Clone, Copy)]
 pub(crate) enum Recipe {
     Npm {
@@ -69,9 +55,12 @@ pub(crate) enum Recipe {
     Host {
         executable: &'static str,
     },
-    Bpftrace,
-    Perfetto,
-    Flamegraph,
+    Custom {
+        executable: &'static str,
+        description: &'static str,
+        summary: &'static str,
+        install: CustomInstall,
+    },
     Goose,
 }
 
@@ -616,10 +605,10 @@ fn install_recipe(
         Recipe::Npm { package, .. } => {
             progress(15, "installing npm package");
             Command::new("npm")
-            .args(["install", "--prefix"])
-            .arg(root)
-            .args(["--no-save", package])
-            .logged_status()
+                .args(["install", "--prefix"])
+                .arg(root)
+                .args(["--no-save", package])
+                .logged_status()
         }
         Recipe::Python {
             package,
@@ -658,7 +647,9 @@ fn install_recipe(
             let status = Command::new(&python)
                 .args(["-m", "pip", "install", package])
                 .logged_status()
-                .map_err(|error| Error::Io(format!("cannot install Python package {package}: {error}")))?;
+                .map_err(|error| {
+                    Error::Io(format!("cannot install Python package {package}: {error}"))
+                })?;
             if !status.success() {
                 return Err(Error::Io(format!(
                     "Python package installation failed for {package}"
@@ -696,52 +687,10 @@ fn install_recipe(
                 ))
             })?;
             make_executable(&destination)?;
-            if executable == "mpstat" {
-                // Process-scoped CPU/I/O collection uses pidstat from the
-                // same sysstat package; retain it beside the copied mpstat
-                // tool so runs do not silently fall back to host-wide data.
-                let pidstat = host_executable("pidstat").map_err(|_| {
-                    Error::Io(
-                        "mpstat installation also needs the matching sysstat `pidstat` binary for process-scoped collection; install sysstat and rerun `asb tool install mpstat`".into(),
-                    )
-                })?;
-                let pidstat_destination = root.join("bin").join("pidstat");
-                fs::copy(&pidstat, &pidstat_destination).map_err(|error| {
-                    Error::Io(format!(
-                        "cannot copy process-scoped pidstat tool {} to {}: {error}",
-                        pidstat.display(),
-                        pidstat_destination.display()
-                    ))
-                })?;
-                make_executable(&pidstat_destination)?;
-            }
             return Ok(destination);
         }
-        Recipe::Bpftrace => return install_bpftrace(root, progress),
-        Recipe::Perfetto => return install_perfetto(root, progress),
+        Recipe::Custom { install, .. } => return install(root, progress),
         Recipe::Goose => return install_goose(root, progress),
-        Recipe::Flamegraph => {
-            progress(25, "downloading FlameGraph scripts");
-            let bin = root.join("bin");
-            fs::create_dir_all(&bin)
-                .map_err(|error| Error::Io(format!("cannot create {}: {error}", bin.display())))?;
-            for (name, url) in [
-                (
-                    "stackcollapse-perf.pl",
-                    "https://raw.githubusercontent.com/brendangregg/FlameGraph/41fee1f99f9276008b7cd112fca19dc3ea84ac32/stackcollapse-perf.pl",
-                ),
-                (
-                    "flamegraph",
-                    "https://raw.githubusercontent.com/brendangregg/FlameGraph/41fee1f99f9276008b7cd112fca19dc3ea84ac32/flamegraph.pl",
-                ),
-            ] {
-                let destination = bin.join(name);
-                install_source(url, &destination, "flamegraph tool")?;
-                make_executable(&destination)?;
-                progress(if name == "flamegraph" { 90 } else { 60 }, "installing FlameGraph scripts");
-            }
-            return Ok(bin.join("flamegraph"));
-        }
     }
     .map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
@@ -749,9 +698,7 @@ fn install_recipe(
                 Recipe::Npm { .. } => "npm",
                 Recipe::Python { .. } => "python3",
                 Recipe::Host { .. } => "host measurement binary",
-                Recipe::Bpftrace => "bpftrace and uname",
-                Recipe::Perfetto => "curl and sha256sum",
-                Recipe::Flamegraph => "curl",
+                Recipe::Custom { .. } => "custom installer dependency",
                 Recipe::Goose => "curl, tar, and sha256sum",
             };
             missing_dependency(dependency, "agent installation", error)
@@ -821,74 +768,11 @@ fn install_goose(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<Path
     Ok(destination)
 }
 
-/// Download a pinned official Perfetto Tracebox binary into the benchmark
-/// project. Tracebox is the Linux Perfetto collector used by the optional
-/// scheduler and userspace tracepoint measurement adapter.
-fn install_perfetto(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
-    let ((tracebox_url, tracebox_hash), (processor_url, processor_hash)) =
-        match std::env::consts::ARCH {
-            "x86_64" => (
-                (PERFETTO_LINUX_X86_64_URL, PERFETTO_LINUX_X86_64_SHA256),
-                (
-                    PERFETTO_PROCESSOR_LINUX_X86_64_URL,
-                    PERFETTO_PROCESSOR_LINUX_X86_64_SHA256,
-                ),
-            ),
-            "aarch64" => (
-                (PERFETTO_LINUX_AARCH64_URL, PERFETTO_LINUX_AARCH64_SHA256),
-                (
-                    PERFETTO_PROCESSOR_LINUX_AARCH64_URL,
-                    PERFETTO_PROCESSOR_LINUX_AARCH64_SHA256,
-                ),
-            ),
-            architecture => {
-                return Err(Error::Input(format!(
-                    "Perfetto Tracebox is currently packaged by ASB only for Linux x86_64 and aarch64; this project is running on {architecture}"
-                )));
-            }
-        };
-    let bin = root.join("bin");
-    fs::create_dir_all(&bin)
-        .map_err(|error| Error::Io(format!("cannot create {}: {error}", bin.display())))?;
-    let destination = bin.join("tracebox");
-    progress(20, "downloading pinned Perfetto Tracebox");
-    install_source(tracebox_url, &destination, "Perfetto Tracebox")?;
-    progress(45, "verifying Perfetto Tracebox checksum");
-    verify_sha256(&destination, tracebox_hash, "Perfetto Tracebox")?;
-    make_executable(&destination)?;
-    let processor = bin.join("trace_processor_shell");
-    progress(60, "downloading pinned Perfetto trace processor");
-    install_source(processor_url, &processor, "Perfetto trace processor")?;
-    progress(80, "verifying Perfetto trace processor checksum");
-    verify_sha256(&processor, processor_hash, "Perfetto trace processor")?;
-    make_executable(&processor)?;
-    progress(90, "checking project-local Perfetto tools");
-    let version = Command::new(&destination)
-        .arg("--version")
-        .logged_status()
-        .map_err(|error| Error::Io(format!("cannot start installed Perfetto Tracebox: {error}")))?;
-    if !version.success() {
-        return Err(Error::Io(
-            "installed Perfetto Tracebox did not report a usable version".into(),
-        ));
-    }
-    let processor_version = Command::new(&processor)
-        .arg("--version")
-        .logged_status()
-        .map_err(|error| {
-            Error::Io(format!(
-                "cannot start installed Perfetto trace processor: {error}"
-            ))
-        })?;
-    if !processor_version.success() {
-        return Err(Error::Io(
-            "installed Perfetto trace processor did not report a usable version".into(),
-        ));
-    }
-    Ok(destination)
-}
-
-fn verify_sha256(destination: &Path, expected_hash: &str, label: &str) -> Result<(), Error> {
+pub(crate) fn verify_sha256(
+    destination: &Path,
+    expected_hash: &str,
+    label: &str,
+) -> Result<(), Error> {
     let digest = command_output(
         &PathBuf::from("sha256sum"),
         &[destination.to_string_lossy().as_ref()],
@@ -904,184 +788,7 @@ fn verify_sha256(destination: &Path, expected_hash: &str, label: &str) -> Result
     Ok(())
 }
 
-/// Copy the host bpftrace binary and persist the kernel pairing used to
-/// install it.  bpftrace is kernel-sensitive; using the exact host binary and
-/// recording `uname -r` prevents silently reusing a project tool from another
-/// machine or kernel image.
-fn install_bpftrace(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
-    progress(10, "checking host bpftrace");
-    let source = match host_executable("bpftrace") {
-        Ok(source) => source,
-        Err(host_error) => match build_bpftrace(root, progress) {
-            Ok(source) => source,
-            Err(build_error) => {
-                return Err(Error::Io(format!(
-                    "could not install bpftrace: {host_error}\n\n{build_error}\n\nTo install a matching host tool instead, run one of these commands:\n{}",
-                    bpftrace_host_commands()
-                )));
-            }
-        },
-    };
-    let version = command_output(&source, &["--version"], "bpftrace version")?;
-    progress(95, "recording kernel compatibility");
-    let kernel = command_output(Path::new("uname"), &["-r"], "kernel release")?;
-    let machine = command_output(Path::new("uname"), &["-m"], "kernel architecture")?;
-    let bin = root.join("bin");
-    fs::create_dir_all(&bin)
-        .map_err(|error| Error::Io(format!("cannot create {}: {error}", bin.display())))?;
-    let destination = bin.join("bpftrace");
-    fs::copy(&source, &destination).map_err(|error| {
-        Error::Io(format!(
-            "cannot copy host bpftrace {} to {}: {error}",
-            source.display(),
-            destination.display()
-        ))
-    })?;
-    make_executable(&destination)?;
-    let metadata = format!(
-        "{{\n  \"schema_version\": 1,\n  \"tool\": \"bpftrace\",\n  \"version\": {},\n  \"kernel_release\": {},\n  \"kernel_architecture\": {}\n}}\n",
-        json_string(&version),
-        json_string(&kernel),
-        json_string(&machine)
-    );
-    fs::write(root.join("bpftrace-compatibility.json"), metadata).map_err(|error| {
-        Error::Io(format!(
-            "cannot write bpftrace compatibility metadata: {error}"
-        ))
-    })?;
-    progress(100, "ready");
-    Ok(destination)
-}
-
-fn build_bpftrace(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
-    let source_dir = root.join("source");
-    let build_dir = root.join("build");
-    let archive = root.join(".bpftrace-source.tar.gz");
-    if !source_dir.is_dir() {
-        fs::create_dir_all(root)
-            .map_err(|error| Error::Io(format!("cannot create {}: {error}", root.display())))?;
-        let status = Command::new("curl")
-            .args([
-                "--fail",
-                "--location",
-                "--silent",
-                "--show-error",
-                "--output",
-            ])
-            .arg(&archive)
-            .arg(BPFTRACE_SOURCE)
-            .logged_status()
-            .map_err(|error| bpftrace_missing_dependency("curl", error))?;
-        if !status.success() {
-            return Err(Error::Io(format!(
-                "could not download pinned bpftrace source from {BPFTRACE_SOURCE}; verify network access and retry\n\n{}",
-                bpftrace_source_commands()
-            )));
-        }
-        progress(25, "downloading bpftrace source");
-        fs::create_dir_all(&source_dir).map_err(|error| {
-            Error::Io(format!("cannot create bpftrace source directory: {error}"))
-        })?;
-        let status = Command::new("tar")
-            .args(["-xzf"])
-            .arg(&archive)
-            .args(["-C"])
-            .arg(&source_dir)
-            .args(["--strip-components=1"])
-            .logged_status()
-            .map_err(|error| bpftrace_missing_dependency("tar", error))?;
-        if !status.success() {
-            return Err(Error::Io(format!(
-                "could not extract the pinned bpftrace source; install tar and retry\n\n{}",
-                bpftrace_dependency_commands("tar")
-            )));
-        }
-        progress(40, "extracting bpftrace source");
-    }
-    let status = Command::new("cmake")
-        .args(["-S"])
-        .arg(&source_dir)
-        .args(["-B"])
-        .arg(&build_dir)
-        .args(["-DBUILD_TESTING=OFF", "-DBPFTRACE_BUILD_TESTING=OFF"])
-        .logged_status()
-        .map_err(|error| bpftrace_missing_dependency("cmake", error))?;
-    if !status.success() {
-        return Err(Error::Io(format!(
-            "cmake could not configure bpftrace; the BCC, libbpf, libclang, compiler, or CMake development packages are missing. Install them and rerun `asb tool install bpftrace`:\n\n{}",
-            bpftrace_source_commands()
-        )));
-    }
-    progress(60, "configuring bpftrace build");
-    let status = Command::new("cmake")
-        .args(["--build"])
-        .arg(&build_dir)
-        .args(["--target", "bpftrace", "--parallel"])
-        .logged_status()
-        .map_err(|error| bpftrace_missing_dependency("cmake", error))?;
-    if !status.success() {
-        return Err(Error::Io(format!(
-            "bpftrace source compilation failed; install the compiler and BCC/libbpf/libclang development packages, then rerun `asb tool install bpftrace`:\n\n{}",
-            bpftrace_source_commands()
-        )));
-    }
-    progress(90, "building bpftrace");
-    find_built_bpftrace(&build_dir).ok_or_else(|| {
-        Error::Io(format!(
-            "bpftrace built without a discoverable executable under {}",
-            build_dir.display()
-        ))
-    })
-}
-
-fn find_built_bpftrace(directory: &Path) -> Option<PathBuf> {
-    let mut entries = fs::read_dir(directory).ok()?.filter_map(Result::ok);
-    while let Some(entry) = entries.next() {
-        let path = entry.path();
-        if path.file_name().and_then(|name| name.to_str()) == Some("bpftrace") && path.is_file() {
-            return Some(path);
-        }
-        if path.is_dir()
-            && path.file_name().and_then(|name| name.to_str()) != Some("CMakeFiles")
-            && let Some(found) = find_built_bpftrace(&path)
-        {
-            return Some(found);
-        }
-    }
-    None
-}
-
-fn bpftrace_host_commands() -> &'static str {
-    "Red Hat/Fedora:\n  sudo dnf install -y bpftrace\nDebian/Ubuntu:\n  sudo apt-get update && sudo apt-get install -y bpftrace\nopenEuler:\n  sudo dnf install -y bpftrace"
-}
-
-fn bpftrace_source_commands() -> &'static str {
-    "Red Hat/Fedora:\n  sudo dnf install -y bcc-devel libbpf-devel libclang-devel clang llvm cmake make gcc-c++ curl tar\nDebian/Ubuntu:\n  sudo apt-get update && sudo apt-get install -y libbpfcc-dev libbpf-dev libclang-dev clang llvm cmake build-essential curl tar\nopenEuler:\n  sudo dnf install -y bcc-devel libbpf-devel clang llvm cmake make gcc-c++ curl tar"
-}
-
-fn bpftrace_dependency_commands(dependency: &str) -> &'static str {
-    match dependency {
-        "curl" => {
-            "Red Hat/Fedora:\n  sudo dnf install -y curl\nDebian/Ubuntu:\n  sudo apt-get update && sudo apt-get install -y curl\nopenEuler:\n  sudo dnf install -y curl"
-        }
-        "tar" => {
-            "Red Hat/Fedora:\n  sudo dnf install -y tar\nDebian/Ubuntu:\n  sudo apt-get update && sudo apt-get install -y tar\nopenEuler:\n  sudo dnf install -y tar"
-        }
-        "cmake" => {
-            "Red Hat/Fedora:\n  sudo dnf install -y cmake make gcc-c++\nDebian/Ubuntu:\n  sudo apt-get update && sudo apt-get install -y cmake build-essential\nopenEuler:\n  sudo dnf install -y cmake make gcc-c++"
-        }
-        _ => bpftrace_source_commands(),
-    }
-}
-
-fn bpftrace_missing_dependency(dependency: &str, error: std::io::Error) -> Error {
-    Error::Io(format!(
-        "bpftrace source build needs `{dependency}`, but it could not be started: {error}. Install it, then rerun `asb tool install bpftrace`:\n\n{}",
-        bpftrace_dependency_commands(dependency)
-    ))
-}
-
-fn command_output(program: &Path, args: &[&str], label: &str) -> Result<String, Error> {
+pub(crate) fn command_output(program: &Path, args: &[&str], label: &str) -> Result<String, Error> {
     let output = Command::new(program)
         .args(args)
         .output()
@@ -1101,7 +808,7 @@ fn command_output(program: &Path, args: &[&str], label: &str) -> Result<String, 
     Ok(text)
 }
 
-fn json_string(value: &str) -> String {
+pub(crate) fn json_string(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"unavailable\"".into())
 }
 
@@ -1110,9 +817,7 @@ fn executable(recipe: Recipe, root: &Path) -> PathBuf {
         Recipe::Npm { executable, .. } => root.join("node_modules/.bin").join(executable),
         Recipe::Python { executable, .. } => root.join("venv/bin").join(executable),
         Recipe::Host { executable } => root.join("bin").join(executable),
-        Recipe::Bpftrace => root.join("bin").join("bpftrace"),
-        Recipe::Perfetto => root.join("bin").join("tracebox"),
-        Recipe::Flamegraph => root.join("bin").join("flamegraph"),
+        Recipe::Custom { executable, .. } => root.join("bin").join(executable),
         Recipe::Goose => root.join("bin").join("goose"),
     }
 }
@@ -1138,18 +843,7 @@ fn describe(recipe: Recipe, root: &Path) -> String {
         Recipe::Host { executable } => {
             format!("copy host `{executable}` into {}/bin", root.display())
         }
-        Recipe::Bpftrace => format!(
-            "copy the host-compatible bpftrace into {}/bin and record uname metadata",
-            root.display()
-        ),
-        Recipe::Perfetto => format!(
-            "download pinned Perfetto Tracebox and trace processor into {}/bin and verify their SHA-256 checksums",
-            root.display()
-        ),
-        Recipe::Flamegraph => format!(
-            "download pinned FlameGraph scripts into {}/bin",
-            root.display()
-        ),
+        Recipe::Custom { description, .. } => format!("{description} into {}/bin", root.display()),
         Recipe::Goose => format!(
             "download and verify pinned Goose binary into {}/bin",
             root.display()
@@ -1170,14 +864,12 @@ fn tool_summary(recipe: Recipe) -> String {
             ..
         } => format!("python {package} -> {executable}"),
         Recipe::Host { executable } => format!("host binary -> {executable}"),
-        Recipe::Bpftrace => "host-compatible bpftrace + kernel metadata".into(),
-        Recipe::Perfetto => "pinned Perfetto Tracebox + trace processor".into(),
-        Recipe::Flamegraph => "pinned FlameGraph scripts -> flamegraph".into(),
+        Recipe::Custom { summary, .. } => summary.into(),
         Recipe::Goose => "pinned Goose binary (x86_64/aarch64) -> goose".into(),
     }
 }
 
-fn host_executable(name: &str) -> Result<PathBuf, Error> {
+pub(crate) fn host_executable(name: &str) -> Result<PathBuf, Error> {
     let path = std::env::var_os("PATH")
         .into_iter()
         .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
@@ -1256,7 +948,7 @@ fn missing_dependency(tool: &str, operation: &str, error: std::io::Error) -> Err
     ))
 }
 
-fn install_source(source: &str, destination: &Path, kind: &str) -> Result<(), Error> {
+pub(crate) fn install_source(source: &str, destination: &Path, kind: &str) -> Result<(), Error> {
     if source.starts_with("https://") || source.starts_with("http://") {
         let status = Command::new("curl")
             .args([
@@ -1294,7 +986,7 @@ fn install_source(source: &str, destination: &Path, kind: &str) -> Result<(), Er
     Ok(())
 }
 
-fn make_executable(path: &Path) -> Result<(), Error> {
+pub(crate) fn make_executable(path: &Path) -> Result<(), Error> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -1315,6 +1007,9 @@ fn make_executable(path: &Path) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::bpftrace::{
+        bpftrace_host_commands, bpftrace_missing_dependency, bpftrace_source_commands,
+    };
 
     #[test]
     fn installer_catalogue_is_composed_from_adapter_registries() {

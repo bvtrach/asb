@@ -92,7 +92,7 @@ mod adapter_layout_tests {
     #[test]
     fn registered_adapters_have_consistent_paths() {
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let categories: [(&str, Vec<&str>, &[&str]); 4] = [
+        let categories: [(&str, Vec<&str>, &[&str]); 5] = [
             ("agents", super::agents::names().collect(), &["mod.rs"]),
             (
                 "providers",
@@ -105,6 +105,11 @@ mod adapter_layout_tests {
                 &["mod.rs"],
             ),
             ("proxy", super::proxy::names().collect(), &["mod.rs"]),
+            (
+                "collectors",
+                super::collectors::names().collect(),
+                &["mod.rs"],
+            ),
         ];
         for (category, ids, root_modules) in categories {
             let root = source.join(category);
