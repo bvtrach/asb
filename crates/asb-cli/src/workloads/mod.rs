@@ -446,6 +446,7 @@ fn source_expectation(name: &str) -> Option<SourceExpectation> {
                 relative: "src/formatter.py",
                 accepted: &[
                     "def format_items(items: list[str], reverse: bool = False) -> str:\n    ordered = list(reversed(items)) if reverse else items\n    return \", \".join(ordered)\n",
+                    "def format_items(items: list[str], reverse: bool = False) -> str:\n    return \", \".join(reversed(items) if reverse else items)\n",
                 ],
             }],
         },
@@ -957,6 +958,21 @@ mod tests {
         )
         .unwrap();
         assert!(!evaluate("feature-addition", &workspace, "").unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bundled_grader_accepts_the_equivalent_inline_feature_solution() {
+        let root = std::env::temp_dir().join(format!("asb-feature-variant-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let workspace = root.join("workspace");
+        prepare_fixture("feature-addition", &workspace).unwrap();
+        fs::write(
+            workspace.join("src/formatter.py"),
+            "def format_items(items: list[str], reverse: bool = False) -> str:\n    return \", \".join(reversed(items) if reverse else items)\n",
+        )
+        .unwrap();
+        assert!(evaluate("feature-addition", &workspace, "").unwrap());
         let _ = fs::remove_dir_all(root);
     }
 
