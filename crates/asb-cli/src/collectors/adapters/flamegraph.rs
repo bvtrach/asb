@@ -1,6 +1,7 @@
 use super::super::{ArtifactDisplay, StaticCollector};
 pub(super) static ADAPTER: StaticCollector =
     StaticCollector::new("flamegraph", None, Some("flamegraph"), true)
+        .with_dependencies(&["perf"])
         .with_preflight(preflight)
         .with_artifacts(
             |name| name == "flamegraph.svg" || name == "flamegraph.json",
@@ -59,9 +60,6 @@ fn flamegraph_commands(
 fn preflight(context: &mut super::super::PreflightContext<'_>) -> Result<(), String> {
     if !context.selected.iter().any(|item| item == "flamegraph") {
         return Ok(());
-    }
-    if !super::super::selected_or_environment("perf", context.selected) {
-        return Err("the selected flamegraph collector needs the perf collector; select `perf` as well and retry.".into());
     }
     let (Some(collapse), Some(render)) = flamegraph_commands(context.tool_dir) else {
         return Err("flamegraph scripts are required for the selected collector. Install them with `asb tool install flamegraph` and retry.".into());

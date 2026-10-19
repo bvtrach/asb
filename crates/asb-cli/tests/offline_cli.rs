@@ -1399,6 +1399,131 @@ fn concurrent_perf_record_preflight_reports_permission_once() {
 
 #[cfg(unix)]
 #[test]
+fn installing_flamegraph_installs_perf_dependency_without_replacing_existing_perf() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = Project::new();
+    project.init();
+    project.write("host-bin/perf", "#!/bin/sh\necho host-perf\n");
+    project.write("flamegraph-source", "#!/bin/sh\nexit 0\n");
+    std::fs::set_permissions(
+        project.0.join("host-bin/perf"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let path = format!(
+        "{}:{}",
+        project.0.join("host-bin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let source = project.0.join("flamegraph-source");
+    let source = source.to_str().unwrap();
+    let dry = project.command_with_env(
+        &[
+            "tool",
+            "install",
+            "flamegraph",
+            "--source",
+            source,
+            "--dry-run",
+        ],
+        &[("PATH", &path)],
+    );
+    expect_success(&dry);
+    assert!(stdout(&dry).contains("Required dependency perf"));
+    let perf = project.0.join(".asb-tools/perf/bin/perf");
+    assert!(!perf.exists());
+    let installed = project.command_with_env(
+        &["tool", "install", "flamegraph", "--source", source],
+        &[("PATH", &path)],
+    );
+    expect_success(&installed);
+    assert_eq!(
+        std::fs::read_to_string(&perf).unwrap(),
+        "#!/bin/sh\necho host-perf\n"
+    );
+    std::fs::write(&perf, "#!/bin/sh\necho preserved\n").unwrap();
+    let repeat = project.command_with_env(
+        &["tool", "install", "flamegraph", "--source", source],
+        &[("PATH", &path)],
+    );
+    expect_success(&repeat);
+    assert_eq!(
+        std::fs::read_to_string(&perf).unwrap(),
+        "#!/bin/sh\necho preserved\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn flamegraph_only_configuration_installs_and_starts_perf_for_concurrent_replay() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = replay_project(2);
+    let calls = project.0.join("perf-calls");
+    project.write("host-bin/perf", &format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \"$1\" in\nrecord) while [ $# -gt 0 ]; do if [ \"$1\" = -o ]; then shift; [ \"$1\" = - ] || printf sample > \"$1\"; break; fi; shift; done ;;\nscript) printf 'sample stack\\n' ;;\nesac\nexit 0\n", calls.display()));
+    project.write(
+        ".asb-tools/flamegraph/bin/stackcollapse-perf.pl",
+        "#!/bin/sh\ncat\n",
+    );
+    project.write(
+        ".asb-tools/flamegraph/bin/flamegraph",
+        "#!/bin/sh\nprintf '<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>\\n'\n",
+    );
+    for name in [
+        "host-bin/perf",
+        ".asb-tools/flamegraph/bin/stackcollapse-perf.pl",
+        ".asb-tools/flamegraph/bin/flamegraph",
+    ] {
+        std::fs::set_permissions(project.0.join(name), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+    }
+    let config = std::fs::read_to_string(project.0.join("benchmark.toml")).unwrap()
+        + "[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=['flamegraph']\n";
+    project.write("benchmark.toml", &config);
+    let path = format!(
+        "{}:{}",
+        project.0.join("host-bin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let result = project.command_with_env(
+        &[
+            "run",
+            "benchmark.toml",
+            "--replay",
+            "--cassette",
+            "tape.jsonl",
+            "--json",
+        ],
+        &[("PATH", &path)],
+    );
+    expect_success(&result);
+    for line in stdout(&result).lines() {
+        let _: serde_json::Value = serde_json::from_str(line).expect(
+            "each concurrent JSON result remains machine readable during automatic installation",
+        );
+    }
+    assert!(project.0.join(".asb-tools/perf/bin/perf").is_file());
+    let calls = std::fs::read_to_string(calls).unwrap();
+    assert!(
+        calls
+            .lines()
+            .any(|line| line.starts_with("record ") && line.contains(" -p ")),
+        "{calls}"
+    );
+    for index in 1..=2 {
+        let dir = project.0.join(format!("measurements-concurrency-{index}"));
+        assert!(
+            dir.join("flamegraph.svg").is_file(),
+            "no flamegraph in {}",
+            dir.display()
+        );
+        let status = std::fs::read_to_string(dir.join("flamegraph.json")).unwrap();
+        assert!(status.contains("completed"), "{status}");
+    }
+    assert!(!stderr(&result).contains("select 'perf'"));
+}
+
+#[cfg(unix)]
+#[test]
 fn concurrent_flamegraph_tool_permission_is_checked_before_agent() {
     use std::os::unix::fs::PermissionsExt;
     let project = replay_project(4);

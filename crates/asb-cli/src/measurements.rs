@@ -281,6 +281,8 @@ impl Session {
         selected: &[String],
         tool_dir: Option<&Path>,
     ) -> Result<Self, String> {
+        let selected = collectors::expand_dependencies(selected);
+        let selected = selected.as_slice();
         fs::create_dir_all(dir).map_err(|e| {
             format!(
                 "cannot create measurements directory {}: {e}; inspect access with `namei -l '{}'`",

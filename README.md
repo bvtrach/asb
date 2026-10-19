@@ -142,6 +142,11 @@ trace processor; those timestamps are used as the line-chart x coordinates.
 If perf permissions,
 samples, or FlameGraph tools are unavailable, `flamegraph.json` records the
 reason and status as `unavailable`; an ordinary `asb run` is unaffected.
+Selecting `flamegraph` also selects `perf`. ASB installs the required `perf`
+tool in the project automatically from the host when installing FlameGraph,
+using setup, or starting an existing flamegraph-only configuration. If `perf`
+is not available on the host, install the distribution's kernel-compatible
+perf package first, then retry; ASB does not change system packages.
 Before a run starts, perf and configured BPFTrace collectors are probed without
 prompting. If direct access fails, ASB tries `sudo -n` and uses it for that
 collector only; if passwordless sudo is not already authorized, the run stops
