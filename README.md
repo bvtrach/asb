@@ -274,6 +274,12 @@ those providers. OpenCode Zen model discovery is public and does not require
 an API key. Model
 discovery uses the provider credential and endpoint environment variables but
 never writes or prints credential values.
+Failures distinguish provider HTTP errors, proxy tunnel errors, connection and
+TLS failures, invalid or truncated responses, and the 16 MiB per-response
+limit. Response bodies and proxy credentials are never included in diagnostics.
+If a setup TUI lookup fails, its limited built-in choices are marked
+`[fallback]` and the TUI shows a warning; run `asb provider models PROVIDER`
+for the full diagnostic, then go back and retry discovery.
 Models explicitly reported as lacking tool support are excluded; models whose
 catalog does not report tool support remain selectable, with a warning before
 a run. `run` and `run --record` revalidate the selected model before launch;
