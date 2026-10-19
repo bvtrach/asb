@@ -3,6 +3,7 @@ use super::{
     StaticAdapter,
 };
 use crate::{Error, install::Recipe};
+use std::path::Path;
 pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     "mini-swe",
     "mini",
@@ -16,6 +17,12 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     prepare_adapter,
 )
 .with_collection(collect);
+
+pub(super) fn final_response(workspace: &Path) -> Option<String> {
+    let trajectory = workspace.join(".asb-mini-swe.traj.json");
+    let output = std::fs::read_to_string(trajectory).ok()?;
+    super::super::structured_final_response_document(&output)
+}
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "mini".into(),

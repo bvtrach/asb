@@ -52,6 +52,12 @@ impl Project {
 
     fn init(&self) {
         expect_success(&self.command(&["init"]));
+        // The routing fixtures use a completed bundled task so these tests
+        // exercise provider/tape behavior without masking workload grading.
+        self.write(
+            "workspace/src/parser.py",
+            "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+        );
     }
 }
 
@@ -642,6 +648,16 @@ fn replay_project(concurrency: usize) -> Project {
     use std::os::unix::fs::PermissionsExt;
     let project = Project::new();
     project.init();
+    project.write(
+        "workspace/src/parser.py",
+        "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+    );
+    for index in 1..=concurrency {
+        project.write(
+            &format!("workspace-concurrency-{index}/src/parser.py"),
+            "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+        );
+    }
     project.write("benchmark.toml", &format!(
         "agent='pi'\nworkload='bug-fix'\nprovider='cli2key'\nmodel='test-model'\nconcurrency={concurrency}\nworkspace='workspace'\nlog_file='run.log'\n"
     ));
@@ -667,6 +683,7 @@ async function main() {
   let response = await send();
   if (behavior === 'extra') response = await send();
   if (!response.ok) { console.error('fixture-rejected', response.status); process.exitCode = 8; return; }
+  if (behavior === 'delete') { fs.rmSync('src/parser.py'); console.log('fixture-deleted'); return; }
   console.log('fixture-agent-output');
   if (behavior === 'fatal') console.error('Authentication required. Please use /login command to sign in to your account');
   if (behavior === 'exit' || (behavior === 'fail-second' && process.cwd().endsWith('concurrency-2')) ||
@@ -776,6 +793,19 @@ fn replay_reports_agent_exit_and_zero_exit_fatal_output() {
 
 #[cfg(unix)]
 #[test]
+fn zero_exit_without_workload_change_is_not_success() {
+    let project = replay_project(1);
+    let result = replay(&project, "delete", &[]);
+    expect_failure(&result, "agent exited unsuccessfully");
+    let log: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(project.0.join("run.log")).unwrap()).unwrap();
+    assert_eq!(log["process_success"], true);
+    assert_eq!(log["workload_success"], false);
+    assert_eq!(log["success_rate"], 0.0);
+}
+
+#[cfg(unix)]
+#[test]
 fn concurrent_replay_isolates_replica_outputs_and_reports_partial_failure() {
     let project = replay_project(2);
     let result = replay(&project, "fail-second", &[]);
@@ -803,6 +833,12 @@ fn partial_replay_sweep_preserves_both_results_and_writes_report() {
     project.write("good.toml", &config);
     project.write("bad.toml", &config);
     project.write("suite.toml", "configs=['good.toml','bad.toml']\n");
+    for id in ["000-good", "001-bad"] {
+        project.write(
+            &format!("suite-results/{id}/workspace/src/parser.py"),
+            "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+        );
+    }
     let tape = std::fs::read_to_string(project.0.join("tape.jsonl")).unwrap();
     for id in ["000-good", "001-bad"] {
         project.write(

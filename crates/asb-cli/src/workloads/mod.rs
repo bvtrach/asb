@@ -4,8 +4,6 @@ use crate::suggestions;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
 
 mod adapters;
 
@@ -334,14 +332,15 @@ pub(crate) fn materialize_external_adapter(
         return Ok(());
     }
     let root = directory.join(name).join("asb-trial");
+    let trial_label = adapter_trial_label(name);
     let files = [
         (
             "README.md",
-            "# ASB adapter trial\n\nFix `src/task.py` so the supplied unit test passes.\n",
+            "# ASB adapter trial\n\nFix `src/task.py` so the supplied unit test passes. Preserve the suite-specific `suite_label()` value.\n",
         ),
         (
             "src/task.py",
-            "def normalize(value: str) -> str:\n    return value.strip().replace(' ', '_')\n",
+            "def normalize(value: str) -> str:\n    return value.strip().replace(' ', '_')\n\ndef suite_label() -> str:\n    return \"__ASB_TRIAL_LABEL__\"\n",
         ),
         (
             "tests/test_task.py",
@@ -351,6 +350,7 @@ pub(crate) fn materialize_external_adapter(
         ("tests/__init__.py", ""),
     ];
     for (relative, contents) in files {
+        let contents = contents.replace("__ASB_TRIAL_LABEL__", &trial_label);
         let path = root.join(relative);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -364,52 +364,191 @@ pub(crate) fn materialize_external_adapter(
     fs::write(
         directory.join(format!("{name}.txt")),
         format!(
-            "External workload adapter trial `{name}`. In `external-workload/asb-trial`, fix `src/task.py` so `python3 -m unittest discover -s tests` passes. Do not edit the tests.\n"
+            "External workload adapter trial `{name}`. In `external-workload/asb-trial`, fix `src/task.py` so `normalize` returns lowercase hyphenated text and preserve suite_label()=`{trial_label}`. Do not edit the tests.\n"
         ),
     )?;
     Ok(())
 }
 
+fn adapter_trial_label(name: &str) -> String {
+    name.replace('-', "_")
+}
+
+/// Return the kind of deterministic evaluation used for a workload.
+///
+/// External suite names are references to upstream suites, not claims that a
+/// complete upstream benchmark has been executed.  Until an upstream suite
+/// adapter is selected and installed, ASB runs the small adapter-smoke trial
+/// that is materialized beside that reference.
+pub(crate) fn evaluation_kind(name: &str, workspace: &Path) -> &'static str {
+    if name == "repository-navigation" {
+        return "response-review";
+    }
+    if let Some(expectation) = source_expectation(name) {
+        if expectation
+            .files
+            .iter()
+            .all(|file| workspace.join(file.relative).is_file())
+        {
+            return "bundled-fixture";
+        }
+        return "ungraded";
+    }
+    if adapters::find(name).is_some() {
+        "adapter-smoke"
+    } else {
+        "ungraded"
+    }
+}
+
+struct SourceExpectation {
+    files: &'static [FileExpectation],
+}
+
+struct FileExpectation {
+    relative: &'static str,
+    /// Complete evaluator-owned solutions accepted for this fixed fixture.
+    ///
+    /// The grader deliberately compares the whole bounded artifact instead of
+    /// looking for a few lexical markers.  That prevents dead, unreachable,
+    /// or unused code from being mistaken for a completed task.
+    accepted: &'static [&'static str],
+}
+
+fn source_expectation(name: &str) -> Option<SourceExpectation> {
+    Some(match name {
+        "bug-fix" => SourceExpectation {
+            files: &[FileExpectation {
+                relative: "src/parser.py",
+                accepted: &[
+                    "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split(\"/\") if segment]\n",
+                    "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+                    "def parse_path(value: str) -> list[str]:\n    \"\"\"Split a slash-separated path into non-empty segments.\"\"\"\n    return [segment for segment in value.split(\"/\") if segment]\n",
+                ],
+            }],
+        },
+        "build-repair" => SourceExpectation {
+            files: &[FileExpectation {
+                relative: "build.sh",
+                accepted: &[
+                    "#!/bin/sh\nset -eu\npython3 -m compileall -q src tests\npython3 -m unittest discover -s tests\npython3 src/app.py\n",
+                ],
+            }],
+        },
+        "dependency-migration" => SourceExpectation {
+            files: &[FileExpectation {
+                relative: "requirements.txt",
+                accepted: &["example-client==2.0\n"],
+            }],
+        },
+        "feature-addition" => SourceExpectation {
+            files: &[FileExpectation {
+                relative: "src/formatter.py",
+                accepted: &[
+                    "def format_items(items: list[str], reverse: bool = False) -> str:\n    ordered = list(reversed(items)) if reverse else items\n    return \", \".join(ordered)\n",
+                ],
+            }],
+        },
+        "refactoring" => SourceExpectation {
+            files: &[FileExpectation {
+                relative: "src/labels.py",
+                accepted: &[
+                    "def _join_labels(*parts: str) -> str:\n    return \":\".join(parts)\n\ndef label_pair(left: str, right: str) -> str:\n    return _join_labels(left, right)\n\ndef label_triplet(first: str, second: str, third: str) -> str:\n    return _join_labels(first, second, third)\n",
+                ],
+            }],
+        },
+        "test-generation" => SourceExpectation {
+            files: &[FileExpectation {
+                relative: "tests/test_temperature.py",
+                accepted: &[
+                    "import unittest\n\nfrom src.temperature import classify\n\nclass TemperatureTests(unittest.TestCase):\n    def test_freezing(self):\n        self.assertEqual(classify(-1), \"freezing\")\n\n    def test_hot(self):\n        self.assertEqual(classify(31), \"hot\")\n\n    def test_mild_lower_boundary(self):\n        self.assertEqual(classify(0), \"mild\")\n\n    def test_mild_upper_boundary(self):\n        self.assertEqual(classify(30), \"mild\")\n\nif __name__ == \"__main__\":\n    unittest.main()\n",
+                ],
+            }],
+        },
+        _ => return None,
+    })
+}
+
+fn canonical_source(source: &str) -> String {
+    source
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim_end()
+        .to_owned()
+}
+
+fn source_satisfies(path: &Path, expectation: &SourceExpectation) -> Result<bool, String> {
+    for file in expectation.files {
+        let source_path = path.join(file.relative);
+        let metadata = match fs::metadata(&source_path) {
+            Ok(metadata) => metadata,
+            Err(_) => return Ok(false),
+        };
+        if !metadata.is_file() || metadata.len() > MAX_PROMPT_BYTES {
+            return Ok(false);
+        }
+        let source = fs::read_to_string(&source_path).map_err(|error| {
+            format!(
+                "cannot read workload implementation {}: {error}",
+                source_path.display()
+            )
+        })?;
+        let actual = canonical_source(&source);
+        if !file
+            .accepted
+            .iter()
+            .map(|candidate| canonical_source(candidate))
+            .any(|candidate| candidate == actual)
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Grade a run's materialized workload without treating a zero exit code as
-/// task success.  The grader is deliberately local, bounded, and shell-free.
-pub(crate) fn evaluate(name: &str, workspace: &Path) -> Result<bool, String> {
-    // Built-in prompts retain their historical process-level completion
-    // contract; their fixture tests are advisory because agents may choose a
-    // valid implementation strategy that does not touch the bundled sample.
-    if is_builtin_prompt(name) {
-        return Ok(true);
+/// task success.  Grading is implemented in Rust over evaluator-owned,
+/// immutable expectations; no agent-controlled tests, subprocess, shell, or
+/// inherited credentials are executed.
+pub(crate) fn evaluate(name: &str, workspace: &Path, agent_output: &str) -> Result<bool, String> {
+    if name == "repository-navigation" {
+        let response = agent_output.to_ascii_lowercase();
+        return Ok(response.contains("src/cli.py")
+            && response.contains("src/registry.py")
+            && response.contains("lookup"));
+    }
+    if let Some(expectation) = source_expectation(name) {
+        return source_satisfies(workspace, &expectation);
     }
     let directory = if adapters::find(name).is_some() {
         workspace.join("external-workload").join("asb-trial")
     } else {
         return Ok(false);
     };
-    if !directory.join("tests").is_dir() {
+    let implementation = directory.join("src/task.py");
+    let metadata = fs::metadata(&implementation).map_err(|error| {
+        format!(
+            "cannot inspect adapter trial implementation {}: {error}",
+            implementation.display()
+        )
+    })?;
+    if !metadata.is_file() || metadata.len() > MAX_PROMPT_BYTES {
         return Ok(false);
     }
-    let mut child = Command::new("python3")
-        .args(["-m", "unittest", "discover", "-s", "tests"])
-        .current_dir(&directory)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| format!("cannot start local workload grader: {error}"))?;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        match child
-            .try_wait()
-            .map_err(|error| format!("cannot poll local workload grader: {error}"))?
-        {
-            Some(status) => return Ok(status.success()),
-            None if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Ok(false);
-            }
-            None => std::thread::sleep(Duration::from_millis(25)),
-        }
-    }
+    let source = fs::read_to_string(&implementation).map_err(|error| {
+        format!(
+            "cannot read adapter trial implementation {}: {error}",
+            implementation.display()
+        )
+    })?;
+    let expected = format!(
+        "def normalize(value: str) -> str:\n    return value.strip().lower().replace(' ', '-')\n\ndef suite_label() -> str:\n    return \"{}\"\n",
+        adapter_trial_label(name)
+    );
+    Ok(canonical_source(&source) == canonical_source(&expected))
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<usize, String> {
@@ -767,12 +906,97 @@ mod tests {
         materialize_external_adapter("agentbench", &workloads).unwrap();
         prepare_external("agentbench", &workloads, &workspace).unwrap();
         let task = workspace.join("external-workload/asb-trial/src/task.py");
+        assert!(!evaluate("agentbench", &workspace, "").unwrap());
         fs::write(
             &task,
-            "def normalize(value: str) -> str:\n    return value.strip().lower().replace(' ', '-')\n",
+            "def normalize(value: str) -> str:\n    return value.strip().lower().replace(' ', '-')\n\ndef suite_label() -> str:\n    return \"agentbench\"\n",
         )
         .unwrap();
-        assert!(evaluate("agentbench", &workspace).unwrap());
+        // The grader does not execute or read agent-controlled tests.
+        fs::write(
+            workspace.join("external-workload/asb-trial/tests/test_task.py"),
+            "# intentionally tampered by the agent\n",
+        )
+        .unwrap();
+        assert!(evaluate("agentbench", &workspace, "").unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bundled_grader_rejects_the_unfixed_fixture() {
+        let root = std::env::temp_dir().join(format!("asb-builtin-grade-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let workspace = root.join("workspace");
+        prepare_fixture("bug-fix", &workspace).unwrap();
+        assert!(!evaluate("bug-fix", &workspace, "").unwrap());
+        fs::write(
+            workspace.join("src/parser.py"),
+            "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+        )
+        .unwrap();
+        assert!(evaluate("bug-fix", &workspace, "").unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn bundled_grader_rejects_dead_or_unused_markers() {
+        let root =
+            std::env::temp_dir().join(format!("asb-builtin-semantic-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let workspace = root.join("workspace");
+        prepare_fixture("feature-addition", &workspace).unwrap();
+        fs::write(
+            workspace.join("src/formatter.py"),
+            "def format_items(items: list[str]) -> str:\n    reverse: bool = False\n    if False:\n        return \", \".join(reversed(items))\n    return \", \".join(items)\n",
+        )
+        .unwrap();
+        assert!(!evaluate("feature-addition", &workspace, "").unwrap());
+        fs::write(
+            workspace.join("src/formatter.py"),
+            "def format_items(items: list[str], reverse: bool = False) -> str:\nordered = list(reversed(items)) if reverse else items\n    return \", \".join(ordered)\n",
+        )
+        .unwrap();
+        assert!(!evaluate("feature-addition", &workspace, "").unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn repository_navigation_grades_only_the_explicit_final_response() {
+        let root =
+            std::env::temp_dir().join(format!("asb-navigation-grade-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let workspace = root.join("workspace");
+        prepare_fixture("repository-navigation", &workspace).unwrap();
+        let tool_trace = "unrelated final answer";
+        assert!(!evaluate("repository-navigation", &workspace, tool_trace).unwrap());
+        let answer = "The call path goes from src/cli.py to src/registry.py through lookup.";
+        assert!(evaluate("repository-navigation", &workspace, answer).unwrap());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn external_grader_rejects_unreachable_adapter_code() {
+        let root =
+            std::env::temp_dir().join(format!("asb-external-semantic-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let workloads = root.join("workloads");
+        let workspace = root.join("workspace");
+        fs::create_dir_all(&workloads).unwrap();
+        materialize_external_adapter("agentbench", &workloads).unwrap();
+        prepare_external("agentbench", &workloads, &workspace).unwrap();
+        let task = workspace.join("external-workload/asb-trial/src/task.py");
+        fs::write(
+            &task,
+            "def normalize(value: str) -> str:\n    if False:\n        return value.strip().lower().replace(' ', '-')\n    return value\n\ndef suite_label() -> str:\n    return \"agentbench\"\n",
+        )
+        .unwrap();
+        assert!(!evaluate("agentbench", &workspace, "").unwrap());
+        fs::write(
+            &task,
+            "def normalize(value: str) -> str:\n    return value.strip().lower().replace('     ', '-')\n\ndef suite_label() -> str:\n    return \"agentbench\"\n",
+        )
+        .unwrap();
+        assert!(!evaluate("agentbench", &workspace, "").unwrap());
         let _ = fs::remove_dir_all(root);
     }
 

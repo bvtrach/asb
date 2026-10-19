@@ -57,6 +57,17 @@ fetch(url + '/responses', {method:'POST', headers:{'content-type':'application/j
     )
     .unwrap();
     std::fs::write(root.join("sweep.toml"), "configs=['benchmark.toml']\n").unwrap();
+    for index in 1..=8 {
+        let workspace = root.join(format!(
+            "sweep-results/000-benchmark/workspace-concurrency-{index}/src"
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(
+            workspace.join("parser.py"),
+            "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+        )
+        .unwrap();
+    }
     let cassette_dir = root.join("tapes/000-benchmark/cassettes");
     std::fs::create_dir_all(&cassette_dir).unwrap();
     let cassette = cassette_dir.join("benchmark-pi-bug-fix-test-model.jsonl");

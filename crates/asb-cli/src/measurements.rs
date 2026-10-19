@@ -90,6 +90,7 @@ pub struct RunMeasurement<'a> {
     pub success_rate: f64,
     pub agent: &'a str,
     pub workload: &'a str,
+    pub workload_evaluation: &'a str,
     pub provider: &'a str,
     pub model: &'a str,
     pub elapsed_ms: u128,
@@ -1980,7 +1981,7 @@ fn perfetto_metric_queries(pid: Option<u32>) -> Vec<(String, String)> {
         (
             "perfetto.scheduler_events".into(),
             format!(
-                "{scope} SELECT COUNT(*) FROM sched s JOIN thread th ON s.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND s.ts < bounds.end_ts AND s.ts+s.dur > bounds.start_ts"
+                "{scope} SELECT COUNT(*) FROM sched s JOIN thread th ON s.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND s.ts >= bounds.start_ts AND s.ts < bounds.end_ts"
             ),
         ),
         (
@@ -2003,13 +2004,13 @@ fn perfetto_series_queries(pid: Option<u32>) -> Vec<(String, String)> {
         (
             "perfetto.scheduler_events_per_s".into(),
             format!(
-                "{scope} SELECT (s.ts-bounds.start_ts)/1000000000.0 AS timestamp_s, COUNT(*) AS value FROM sched s JOIN thread th ON s.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND s.ts < bounds.end_ts AND s.ts+s.dur > bounds.start_ts GROUP BY timestamp_s ORDER BY timestamp_s"
+                "{scope} SELECT CAST((s.ts-bounds.start_ts)/1000000000 AS INTEGER) AS timestamp_s, COUNT(*) AS value FROM sched s JOIN thread th ON s.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND s.ts >= bounds.start_ts AND s.ts < bounds.end_ts GROUP BY timestamp_s ORDER BY timestamp_s"
             ),
         ),
         (
             "perfetto.scheduler_duration_ms_per_s".into(),
             format!(
-                "{scope} SELECT (s.ts-bounds.start_ts)/1000000000.0 AS timestamp_s, SUM(s.dur)/1000000.0 AS value FROM sched s JOIN thread th ON s.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND s.ts < bounds.end_ts AND s.ts+s.dur > bounds.start_ts GROUP BY timestamp_s ORDER BY timestamp_s"
+                "{scope}, relevant AS (SELECT s.ts, s.dur FROM sched s JOIN thread th ON s.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND s.ts < bounds.end_ts AND s.ts+s.dur > bounds.start_ts), bucket_ranges(bucket) AS (SELECT 0 UNION ALL SELECT bucket+1 FROM bucket_ranges CROSS JOIN bounds WHERE bounds.start_ts+(bucket+1)*1000000000 < bounds.end_ts) SELECT bucket_ranges.bucket AS timestamp_s, COALESCE(SUM(MAX(0, MIN(r.ts+r.dur,bounds.start_ts+(bucket_ranges.bucket+1)*1000000000)-MAX(r.ts,bounds.start_ts+bucket_ranges.bucket*1000000000)))/1000000.0,0) AS value FROM bucket_ranges CROSS JOIN bounds LEFT JOIN relevant r ON r.ts < bounds.start_ts+(bucket_ranges.bucket+1)*1000000000 AND r.ts+r.dur > bounds.start_ts+bucket_ranges.bucket*1000000000 GROUP BY bucket_ranges.bucket ORDER BY bucket_ranges.bucket"
             ),
         ),
     ]
@@ -2777,6 +2778,7 @@ mod tests {
             success_rate: 1.0,
             agent: "a",
             workload: "w",
+            workload_evaluation: "bundled-fixture",
             provider: "p",
             model: "m",
             elapsed_ms: 2,
@@ -3209,6 +3211,19 @@ mod tests {
             series
                 .iter()
                 .all(|(_, query)| query.contains("bounds.start_ts"))
+        );
+        let event_series = &series[0].1;
+        assert!(event_series.contains("CAST((s.ts-bounds.start_ts)/1000000000 AS INTEGER)"));
+        assert!(event_series.contains("s.ts >= bounds.start_ts"));
+        let duration_series = &series[1].1;
+        assert!(duration_series.contains("bucket_ranges(bucket)"));
+        assert!(duration_series.contains("relevant AS"));
+        assert!(
+            duration_series
+                .contains("MIN(r.ts+r.dur,bounds.start_ts+(bucket_ranges.bucket+1)*1000000000)")
+        );
+        assert!(
+            duration_series.contains("MAX(r.ts,bounds.start_ts+bucket_ranges.bucket*1000000000)")
         );
         assert!(perfetto_metric_queries(None).is_empty());
     }

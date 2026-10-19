@@ -127,6 +127,12 @@ fn goose_routes_record_and_replay_through_tape_without_live_credentials() {
         "{}",
         String::from_utf8_lossy(&init.stderr)
     );
+    std::fs::create_dir_all(root.join("asb-workspace/src")).unwrap();
+    std::fs::write(
+        root.join("asb-workspace/src/parser.py"),
+        "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+    )
+    .unwrap();
     let agent_dir = root.join(".asb-tools/goose/bin");
     std::fs::create_dir_all(&agent_dir).unwrap();
     let agent = agent_dir.join("goose");

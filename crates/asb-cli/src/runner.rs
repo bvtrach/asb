@@ -30,6 +30,7 @@ struct RunResult<'a> {
     model: &'a str,
     process_success: bool,
     workload_success: Option<bool>,
+    workload_evaluation: &'static str,
     success_rate: f64,
     elapsed_ms: u128,
     exit_code: Option<i32>,
@@ -502,7 +503,13 @@ fn run_mode(
     let process_success =
         run_error.is_none() && process_successful(&child.status, &child.stdout, &child.stderr);
     let (workload_success, grading_error) = if process_success {
-        match workloads::evaluate(&config.workload, &workspace) {
+        let final_response =
+            agents::final_response(&config.agent, &bounded(&child.stdout), &workspace);
+        match workloads::evaluate(
+            &config.workload,
+            &workspace,
+            final_response.as_deref().unwrap_or_default(),
+        ) {
             Ok(value) => (Some(value), None),
             Err(error) => (Some(false), Some(error)),
         }
@@ -558,6 +565,7 @@ fn run_mode(
         model: &config.model,
         process_success,
         workload_success,
+        workload_evaluation: workloads::evaluation_kind(&config.workload, &workspace),
         success_rate: if success { 1.0 } else { 0.0 },
         elapsed_ms,
         exit_code: child.status.code(),
@@ -578,6 +586,7 @@ fn run_mode(
             success,
             process_success: result.process_success,
             workload_success: result.workload_success,
+            workload_evaluation: result.workload_evaluation,
             success_rate: result.success_rate,
             agent: result.agent,
             workload: result.workload,
@@ -682,6 +691,7 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
     let summary = serde_json::json!({
         "process_success": result.process_success,
         "workload_success": result.workload_success,
+        "workload_evaluation": result.workload_evaluation,
         "success_rate": result.success_rate,
         "elapsed_ms": result.elapsed_ms,
         "steps": result.steps,
@@ -1044,6 +1054,7 @@ mod tests {
             model: "test-model",
             process_success: true,
             workload_success: Some(true),
+            workload_evaluation: "bundled-fixture",
             success_rate: 1.0,
             elapsed_ms: 12,
             exit_code: Some(0),
