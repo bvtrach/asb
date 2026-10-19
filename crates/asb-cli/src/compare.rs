@@ -31,6 +31,8 @@ struct BenchmarkData {
     model: String,
     metrics: BTreeMap<String, f64>,
     series: BTreeMap<String, TimeSeries>,
+    host_metadata: Option<Value>,
+    components: Option<Value>,
     status: Option<String>,
     artifacts: Vec<String>,
 }
@@ -106,6 +108,8 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 model: model.clone(),
                 metrics: BTreeMap::new(),
                 series: BTreeMap::new(),
+                    host_metadata: None,
+                    components: None,
                 status: Some(format!(
                     "missing measurements: expected {} (run entry failed before writing measurements)",
                     run_path.display()
@@ -136,6 +140,8 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             let mut metrics = BTreeMap::new();
             flatten_numbers("", &run_value, &mut metrics);
             let mut series = BTreeMap::new();
+            let mut host_metadata = None;
+            let mut components = None;
             for entry in
                 fs::read_dir(&measurement_dir).map_err(|error| Error::Input(error.to_string()))?
             {
@@ -152,6 +158,16 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                     .file_stem()
                     .and_then(|value| value.to_str())
                     .unwrap_or("collector");
+                if name == "system" {
+                    host_metadata = Some(collector.clone());
+                    flatten_numbers("host", &collector, &mut metrics);
+                }
+                if name == "components" {
+                    components = Some(collector.clone());
+                    if let Some(component_values) = collector.get("components") {
+                        flatten_numbers("component", component_values, &mut metrics);
+                    }
+                }
                 if let Some(collector_metrics) = collector.get("metrics") {
                     flatten_numbers(name, collector_metrics, &mut metrics);
                 }
@@ -201,6 +217,8 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 model: model.clone(),
                 metrics,
                 series,
+                host_metadata,
+                components,
                 status: run_status,
                 artifacts,
             });
@@ -249,6 +267,8 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             "provider": benchmark.provider,
             "model": benchmark.model,
             "metrics": benchmark.metrics,
+            "host_metadata": benchmark.host_metadata,
+            "components": benchmark.components,
             "series": benchmark.series.iter().map(|(name, series)| (name, &series.values)).collect::<BTreeMap<_, _>>(),
             "series_timestamps": benchmark.series.iter().filter_map(|(name, series)| series.timestamps_ms.as_ref().map(|timestamps| (name, timestamps))).collect::<BTreeMap<_, _>>(),
             "status": benchmark.status,
@@ -405,14 +425,14 @@ fn write_html_report(
     html = html.replacen(
         "</style></head>",
         &format!(
-            "{}\n{}\n{}\n</style></head>",
-            INTERACTIVE_STYLE, MODAL_STYLE, INLINE_SVG_STYLE
+            "{}\n{}\n{}\n{}\n</style></head>",
+            INTERACTIVE_STYLE, MODAL_STYLE, INLINE_SVG_STYLE, JSON_DETAILS_STYLE
         ),
         1,
     );
     html.push_str("<main class=\"shell\">");
     html.push_str("<header class=\"hero\"><p class=\"eyebrow\">ASB BENCHMARK REPORT</p><h1>Sweep comparison</h1><p>Explore benchmark results and measurements from this sweep. Use the filters to focus the report without rerunning anything.</p></header>");
-    html.push_str("<section class=\"explain\"><strong>How to read this report</strong><p>Each row is one agent/provider/model/workload combination. Runtime, success rate, token usage, and structured system measurements are summarized in the table and charts. The complete machine-readable evidence inventory is available in comparison.json.</p></section>");
+    html.push_str("<section class=\"explain\"><strong>How to read this report</strong><p>Each row is one agent/provider/model/workload combination. Runtime, success rate, token usage, host metadata, component timings, and structured collector measurements are summarized in the table and charts. Network wait remains null unless directly observed. The complete machine-readable evidence inventory is available in comparison.json.</p></section>");
     html.push_str("<section class=\"filters\"><div class=\"section-title\"><h2>Filter results</h2><div><button type=\"button\" data-action=\"all\">Select all</button><button type=\"button\" data-action=\"none\">Clear all</button></div></div><div class=\"filter-grid\">");
     for (group, values) in &dimensions {
         html.push_str(&format!("<fieldset><legend>{}</legend>", title_case(group)));
@@ -450,6 +470,27 @@ fn write_html_report(
         let evaluation_details = format!(
             "<p class=\"evaluation\">Workload evaluation: <code>{}</code></p>",
             escape(&benchmark.workload_evaluation)
+        );
+        let host_details = benchmark.host_metadata.as_ref().map_or_else(
+            || String::new(),
+            |metadata| {
+                let text = serde_json::to_string_pretty(metadata).unwrap_or_else(|_| "{}".into());
+                format!(
+                    "<details><summary>Host metadata</summary><pre class=\"json-details\">{}</pre></details>",
+                    escape(&text)
+                )
+            },
+        );
+        let component_details = benchmark.components.as_ref().map_or_else(
+            || String::new(),
+            |components| {
+                let text =
+                    serde_json::to_string_pretty(components).unwrap_or_else(|_| "{}".into());
+                format!(
+                    "<details><summary>Component timings</summary><pre class=\"json-details\">{}</pre></details>",
+                    escape(&text)
+                )
+            },
         );
         let artifacts = if benchmark.artifacts.is_empty() {
             String::new()
@@ -498,11 +539,13 @@ fn write_html_report(
                 "<details><summary>Run artifacts</summary>{previews}<ul class=\"artifact-list\">{links}</ul></details>"
             )
         };
-        html.push_str(&format!("<tr data-dimension-benchmark=\"{}\" data-dimension-agent=\"{}\" data-dimension-provider=\"{}\" data-dimension-model=\"{}\" data-dimension-workload=\"{}\"><td><strong>{}</strong></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"details\">{}{}{}{}</td></tr>",
+        html.push_str(&format!("<tr data-dimension-benchmark=\"{}\" data-dimension-agent=\"{}\" data-dimension-provider=\"{}\" data-dimension-model=\"{}\" data-dimension-workload=\"{}\"><td><strong>{}</strong></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td class=\"details\">{}{}{}{}{}{}</td></tr>",
             escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
             escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
             runtime, success, tokens,
             evaluation_details,
+            component_details,
+            host_details,
             metrics_details,
             artifacts,
             benchmark.status.as_ref().map_or(String::new(), |status| format!("<span class=\"status\">{}</span>", escape(status))),
@@ -600,6 +643,8 @@ const INTERACTIVE_STYLE: &str = r#".interactive-chart{position:relative;overflow
 const MODAL_STYLE: &str = r#"body.chart-open{overflow:hidden}.chart-backdrop{display:none;position:fixed;inset:0;background:#081522c9;z-index:30}.interactive-chart.expanded{position:fixed;overflow:visible;z-index:31;left:10vw;top:10vh;width:80vw;height:80vh;margin:0;padding:18px;background:var(--panel);border:1px solid #b9c9d8;border-radius:16px;box-shadow:0 24px 80px #08152299}.interactive-chart.expanded .chart-backdrop{display:block;z-index:0}.interactive-chart.expanded .chart-toolbar{position:relative;z-index:32}.interactive-chart.expanded .chart-stage{position:relative;z-index:1;height:calc(80vh - 92px);min-height:0}.interactive-chart.expanded .chart-stage svg{height:100%;min-height:0}.interactive-chart.expanded figcaption{position:relative;z-index:32}@media(max-width:700px){.interactive-chart.expanded{left:3vw;top:3vh;width:94vw;height:94vh;padding:10px}.interactive-chart.expanded .chart-stage{height:calc(94vh - 78px)}}"#;
 
 const INLINE_SVG_STYLE: &str = r#".embedded-svg{display:block;overflow:auto;border:1px solid var(--line);border-radius:8px;background:#fff;margin:8px 0}.embedded-svg svg{display:block;width:100%;height:auto}.embedded-svg.perfetto-metric{width:min(760px,100%);max-height:260px}.embedded-svg.bpftrace-profile{width:min(760px,100%);max-height:300px}.embedded-svg.flamegraph{width:100%;max-height:520px}.embedded-svg.flamegraph svg{min-width:900px}"#;
+
+const JSON_DETAILS_STYLE: &str = ".json-details{max-height:360px;overflow:auto;background:#f4f7fa;border:1px solid var(--line);border-radius:7px;padding:10px;font:12px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap}";
 
 const INTERACTIVE_SCRIPT: &str = r#"<script>
 document.querySelectorAll('.interactive-chart').forEach(chart=>{
@@ -732,6 +777,8 @@ fn flatten_numbers(prefix: &str, value: &Value, output: &mut BTreeMap<String, f6
                 && !prefix.is_empty()
                 && !prefix.ends_with("schema_version")
                 && !prefix.ends_with("started_unix_ms")
+                && !prefix.ends_with("collected_unix_ms")
+                && !prefix.ends_with("clock_ticks_per_second")
             {
                 output.insert(prefix.to_owned(), number);
             }
@@ -1186,6 +1233,16 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
+            root.join("sweep-results/000-one/measurements/system.json"),
+            r#"{"schema_version":2,"architecture":"aarch64","cpu_model":"Neoverse-N1","logical_cpus":8,"memory_total_kib":16384,"kernel_settings":{"numa_balancing":"1"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("sweep-results/000-one/measurements/components.json"),
+            r#"{"schema_version":1,"clock_ticks_per_second":100,"components":{"agent.execute":{"wall_ms":12,"cpu_user_ms":3.5,"cpu_system_ms":1.5,"io_wait_ms":2.0,"scheduler_wait_ms":1.0,"network_wait_ms":null}}}"#,
+        )
+        .unwrap();
+        std::fs::write(
             root.join("sweep-results/000-one/measurements/mpstat.json"),
             r#"{"stdout":"sample 1\nsample 2\n","metrics":{"cpu.user_pct":12.5,"cpu.iowait_pct":3.0}}"#,
         )
@@ -1229,6 +1286,14 @@ mod tests {
             root.join("results/sweep-comparison/metric-elapsed_ms.svg")
                 .is_file()
         );
+        assert!(
+            root.join("results/sweep-comparison/metric-component.agent.execute.cpu_user_ms.svg")
+                .is_file()
+        );
+        assert!(
+            root.join("results/sweep-comparison/metric-host.logical_cpus.svg")
+                .is_file()
+        );
         let elapsed_svg =
             std::fs::read_to_string(root.join("results/sweep-comparison/metric-elapsed_ms.svg"))
                 .unwrap();
@@ -1269,6 +1334,15 @@ mod tests {
         assert!(report.contains("data-group=\"agent\""));
         assert!(report.contains(">Details</th>"));
         assert!(report.contains("All metrics"));
+        assert!(report.contains("Host metadata"));
+        assert!(report.contains("Neoverse-N1"));
+        assert!(report.contains("Component timings"));
+        assert!(report.contains("network_wait_ms"));
+        assert!(comparison["benchmarks"][0]["host_metadata"]["architecture"] == "aarch64");
+        assert_eq!(
+            comparison["benchmarks"][0]["components"]["components"]["agent.execute"]["cpu_user_ms"],
+            3.5
+        );
         assert!(!report.contains("run.json"));
         assert!(report.contains("Perfetto metric SVG"));
         assert!(report.contains("perfetto-metric-scheduler_events.svg"));
