@@ -1,4 +1,7 @@
-use super::{CommandContext, CommandSpec, PreparationContext, StaticAdapter};
+use super::{
+    AgentArtifacts, CollectionContext, CommandContext, CommandSpec, PreparationContext,
+    StaticAdapter,
+};
 use crate::{Error, install::Recipe};
 pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     "continue",
@@ -11,7 +14,8 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     command,
     prepare_adapter,
 )
-.with_replay_credential_vars(&["CONTINUE_API_KEY"]);
+.with_replay_credential_vars(&["CONTINUE_API_KEY"])
+.with_collection(collect);
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "cn".into(),
@@ -29,7 +33,7 @@ fn command(context: &CommandContext<'_>) -> CommandSpec {
 }
 fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
     let connection = context.connection;
-    let directory = context.runtime_dir.join("continue/config");
+    let directory = context.run_dir.join("continue/config");
     let provider = match connection.interface {
         crate::endpoint::Interface::AnthropicMessages => "anthropic",
         crate::endpoint::Interface::OpenAiChat => "openai",
@@ -53,6 +57,78 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
         .env("CONTINUE_API_BASE", url)
         .env("CONTINUE_MODEL", context.model);
     Ok(())
+}
+
+fn collect(context: &CollectionContext<'_>) -> AgentArtifacts {
+    let sessions = context.run_dir.join("continue/config/sessions");
+    let Some(value) = super::super::single_usage_document(&sessions, |path| {
+        path.extension().is_some_and(|s| s == "json")
+            && path.file_name().is_some_and(|s| s != "sessions.json")
+    }) else {
+        return AgentArtifacts::default();
+    };
+    AgentArtifacts {
+        token_usage: Some(session_usage(
+            &value,
+            context.interface == Some(crate::endpoint::Interface::AnthropicMessages)
+                && !context.anthropic_input_includes_cache,
+        )),
+        cleanup_paths: Vec::new(),
+    }
+}
+
+fn session_usage(
+    value: &serde_json::Value,
+    add_anthropic_cache: bool,
+) -> crate::measurements::TokenUsage {
+    let Some(history) = value.get("history").and_then(|v| v.as_array()) else {
+        return Default::default();
+    };
+    let mut sum = crate::measurements::TokenUsage::default();
+    let mut seen = false;
+    let mut cache_complete = true;
+    for item in history {
+        let Some(message) = item.get("message") else {
+            return Default::default();
+        };
+        if message.get("role").and_then(|v| v.as_str()) != Some("assistant") {
+            continue;
+        }
+        // Continue can put estimates in its aggregate session usage. Only
+        // per-message usage exists when its upstream returned usage metadata.
+        let Some(usage) = message.get("usage") else {
+            return Default::default();
+        };
+        let mut parsed = super::super::usage_fields(usage);
+        parsed.cached_tokens = usage
+            .pointer("/prompt_tokens_details/cache_read_tokens")
+            .or_else(|| usage.pointer("/prompt_tokens_details/cached_tokens"))
+            .and_then(|v| v.as_u64())
+            .or(parsed.cached_tokens);
+        if add_anthropic_cache {
+            let write = usage
+                .pointer("/prompt_tokens_details/cache_write_tokens")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            parsed.input_tokens = parsed.input_tokens.map(|v| {
+                v.saturating_add(parsed.cached_tokens.unwrap_or(0))
+                    .saturating_add(write)
+            });
+        }
+        if parsed.input_tokens.is_none() || parsed.output_tokens.is_none() {
+            return Default::default();
+        }
+        cache_complete &= parsed.cached_tokens.is_some();
+        sum = sum.add(parsed);
+        seen = true;
+    }
+    if !seen {
+        return Default::default();
+    }
+    if !cache_complete {
+        sum.cached_tokens = None;
+    }
+    sum.with_derived_total()
 }
 
 fn configure(
@@ -84,6 +160,57 @@ fn configure(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uses_provider_reported_per_message_usage_not_estimated_session_total() {
+        let document = serde_json::json!({"usage":{"promptTokens":9999,"completionTokens":999},"history":[
+            {"message":{"role":"user"}},
+            {"message":{"role":"assistant","usage":{"prompt_tokens":10,"completion_tokens":3,"prompt_tokens_details":{"cache_read_tokens":4}}}},
+            {"message":{"role":"assistant","usage":{"prompt_tokens":11,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":5}}}}
+        ]});
+        let result = session_usage(&document, false);
+        assert_eq!(
+            (
+                result.input_tokens,
+                result.output_tokens,
+                result.cached_tokens,
+                result.total_tokens
+            ),
+            (Some(21), Some(5), Some(9), Some(26))
+        );
+        let incomplete = serde_json::json!({"usage":{"promptTokens":9999,"completionTokens":999},"history":[{"message":{"role":"assistant","usage":{"prompt_tokens":10,"completion_tokens":3}}},{"message":{"role":"assistant"}}]});
+        assert_eq!(session_usage(&incomplete, false).total_tokens, None);
+    }
+
+    #[test]
+    fn anthropic_separate_cache_is_included_only_when_needed() {
+        let doc = serde_json::json!({"history":[{"message":{"role":"assistant","usage":{"prompt_tokens":10,"completion_tokens":3,"prompt_tokens_details":{"cache_read_tokens":4,"cache_write_tokens":2}}}}]});
+        assert_eq!(session_usage(&doc, true).total_tokens, Some(19));
+        assert_eq!(session_usage(&doc, false).total_tokens, Some(13));
+    }
+
+    #[test]
+    fn refuses_ambiguous_or_missing_run_sessions() {
+        let root = std::env::temp_dir().join(format!("asb-continue-token-{}", std::process::id()));
+        let directory = root.join("continue/config/sessions");
+        std::fs::create_dir_all(&directory).unwrap();
+        let doc = r#"{"history":[{"message":{"role":"assistant","usage":{"prompt_tokens":10,"completion_tokens":3}}}]}"#;
+        std::fs::write(directory.join("first.json"), doc).unwrap();
+        std::fs::write(directory.join("sessions.json"), "[]").unwrap();
+        let context = CollectionContext {
+            workspace: &root,
+            run_dir: &root,
+            interface: None,
+            anthropic_input_includes_cache: false,
+        };
+        assert_eq!(
+            collect(&context).token_usage.unwrap().total_tokens,
+            Some(13)
+        );
+        std::fs::write(directory.join("second.json"), doc).unwrap();
+        assert!(collect(&context).token_usage.is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn provider_configuration_is_owned_by_the_continue_adapter() {

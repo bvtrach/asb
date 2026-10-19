@@ -1162,6 +1162,112 @@ fetch(process.env.CONTINUE_API_BASE.replace(/\/$/, '') + '/chat/completions', {m
 }
 
 #[cfg(unix)]
+#[test]
+fn continue_and_openhands_collect_isolated_mock_usage_artifacts() {
+    use std::os::unix::fs::PermissionsExt;
+    for agent in ["continue", "openhands"] {
+        let project = replay_project(2);
+        project.write("benchmark.toml", &format!("agent='{agent}'\nworkload='bug-fix'\nprovider='cli2key'\nmodel='test-model'\nworkspace='workspace'\nlog_file='run.log'\n"));
+        let body =
+            serde_json::json!({"model":"test-model","messages":[],"tools":[{"type":"function"}]})
+                .to_string();
+        let cassette = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{}"}});
+        project.write("tape.jsonl", &format!("{cassette}\n"));
+        let binary = if agent == "continue" {
+            "cn"
+        } else {
+            "openhands"
+        };
+        let executable = format!(".asb-tools/{agent}/bin/{binary}");
+        project.write(&executable, r##"#!/usr/bin/env node
+const fs = require('fs'), path = require('path');
+const n = Number(process.env.ASB_FIXTURE_INPUT || '10'), isContinue = process.argv[1].endsWith('/cn');
+const endpoint = isContinue ? process.env.CONTINUE_API_BASE : process.env.LLM_BASE_URL;
+const body = {model:'test-model',messages:[],tools:[{type:'function'}]};
+fetch(endpoint.replace(/\/$/, '') + (isContinue ? '/chat/completions' : '/v1/chat/completions'), {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(response => {
+  if (!response.ok) { process.exitCode = 1; return; }
+  if (isContinue) {
+    const dir = path.join(process.env.CONTINUE_GLOBAL_DIR, 'sessions'); fs.mkdirSync(dir, {recursive:true});
+    fs.writeFileSync(path.join(dir,'session.json'), JSON.stringify({history:[{message:{role:'assistant',usage:{prompt_tokens:n,completion_tokens:3,prompt_tokens_details:{cache_read_tokens:4}}}}]}));
+  } else {
+    const dir = path.join(process.env.OPENHANDS_CONVERSATIONS_DIR, 'fixture'); fs.mkdirSync(dir, {recursive:true});
+    // LiteLLM adds the separate cache count even when the bridge's wire input already includes it.
+    fs.writeFileSync(path.join(dir,'base_state.json'), JSON.stringify({stats:{usage_to_metrics:{agent:{response_latencies:[{}],token_usages:[{prompt_tokens:n+4,completion_tokens:3,cache_read_tokens:4}]}}}}));
+  }
+  console.log(JSON.stringify({usage:{input_tokens:999,output_tokens:999}}));
+}).catch(() => { process.exitCode = 1; });
+"##);
+        std::fs::set_permissions(
+            project.0.join(&executable),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        for input in ["10", "20"] {
+            let output = project.command_with_env(
+                &[
+                    "run",
+                    "benchmark.toml",
+                    "--replay",
+                    "--cassette",
+                    "tape.jsonl",
+                    "--json",
+                    "--measurements",
+                    "measurements",
+                ],
+                &[("ASB_FIXTURE_INPUT", input)],
+            );
+            assert!(
+                output.status.success(),
+                "{agent}: stdout={} stderr={}",
+                stdout(&output),
+                stderr(&output)
+            );
+            let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            let measurement: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(project.0.join("measurements/run.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(json["token_usage"], measurement["token_usage"], "{agent}");
+            assert_eq!(
+                json["token_usage"]["input_tokens"],
+                input.parse::<u64>().unwrap(),
+                "{agent}"
+            );
+            assert_eq!(json["token_usage"]["output_tokens"], 3, "{agent}");
+            assert_eq!(json["token_usage"]["cached_tokens"], 4, "{agent}");
+            assert_eq!(json["token_usage"]["source"], "agent-artifact", "{agent}");
+        }
+        let recorded = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":7,\"prompt_tokens_details\":{\"cached_tokens\":8}}}"}});
+        project.write("tape.jsonl", &format!("{recorded}\n"));
+        let output = replay(&project, "success", &["--json"]);
+        assert!(output.status.success(), "{agent}: {}", stderr(&output));
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["token_usage"]["input_tokens"], 100, "{agent}");
+        assert_eq!(json["token_usage"]["output_tokens"], 7, "{agent}");
+        assert_eq!(json["token_usage"]["cached_tokens"], 8, "{agent}");
+        assert_eq!(json["token_usage"]["source"], "cassette", "{agent}");
+        project.write("tape.jsonl", &format!("{cassette}\n"));
+        project.write("benchmark.toml", &format!("agent='{agent}'\nworkload='bug-fix'\nprovider='cli2key'\nmodel='test-model'\nconcurrency=2\nworkspace='workspace'\nlog_file='run.log'\n"));
+        let output = replay(&project, "success", &["--json"]);
+        assert!(output.status.success(), "{agent}: {}", stderr(&output));
+        for index in 1..=2 {
+            let log: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(project.0.join(format!("run-concurrency-{index}.log"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                log["token_usage"]["input_tokens"], 10,
+                "{agent} replica {index}"
+            );
+            assert_eq!(
+                log["token_usage"]["total_tokens"], 13,
+                "{agent} replica {index}"
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
 fn assert_tape_scratch_cleaned(project: &Project) {
     let scratch = std::fs::read_dir(&project.0)
         .unwrap()

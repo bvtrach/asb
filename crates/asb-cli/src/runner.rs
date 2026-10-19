@@ -570,6 +570,18 @@ fn run_mode(
     let mut runtime_path = workspace.as_os_str().to_os_string();
     runtime_path.push(".asb-agent-runtime");
     let runtime_path = PathBuf::from(runtime_path);
+    // Run-specific agent artifacts must not be confused with earlier runs or
+    // simultaneous replicas, including after process IDs are reused.
+    static RUN_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let run_dir = runtime_path.join("runs").join(format!(
+        "{}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+        RUN_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+    ));
     instrument_phase(
         measurement_session.as_mut(),
         LifecyclePhase::AgentPreparation,
@@ -582,6 +594,7 @@ fn run_mode(
                         model: &config.model,
                         connection,
                         runtime_dir: &runtime_path,
+                        run_dir: &run_dir,
                     },
                 )?;
             }
@@ -694,6 +707,11 @@ fn run_mode(
         .map(|adapter| {
             adapter.collect(&agents::CollectionContext {
                 workspace: &workspace,
+                run_dir: &run_dir,
+                interface: connection.as_ref().map(|connection| connection.interface),
+                anthropic_input_includes_cache: crate::providers::anthropic_input_includes_cache(
+                    &config.provider,
+                ),
             })
         })
         .unwrap_or_default();
@@ -707,9 +725,21 @@ fn run_mode(
             .map(|(_, cassette)| cassette.as_path()),
     );
     if let Some(artifact_usage) = adapter_artifacts.token_usage {
-        token_usage = token_usage
-            .merge_with_source(artifact_usage, "agent-artifact")
-            .with_derived_total();
+        let artifact_complete =
+            artifact_usage.input_tokens.is_some() && artifact_usage.output_tokens.is_some();
+        match token_usage.source.as_deref() {
+            Some(source) if source.contains("cassette") => {}
+            None | Some("agent-output") if artifact_complete => {
+                token_usage = measurements::TokenUsage::default()
+                    .merge_with_source(artifact_usage, "agent-artifact")
+                    .with_derived_total();
+            }
+            _ => {
+                token_usage = token_usage
+                    .merge_with_source(artifact_usage, "agent-artifact")
+                    .with_derived_total();
+            }
+        }
     }
     for path in adapter_artifacts.cleanup_paths {
         let _ = std::fs::remove_file(path);

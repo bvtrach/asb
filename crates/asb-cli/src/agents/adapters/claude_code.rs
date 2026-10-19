@@ -127,6 +127,7 @@ mod tests {
                 model: "fixture",
                 connection: &connection,
                 runtime_dir: &root,
+                run_dir: &root,
             })
             .unwrap();
             let env = command

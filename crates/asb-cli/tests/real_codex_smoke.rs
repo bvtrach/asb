@@ -15,7 +15,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 #[ignore = "requires ASB_REAL_CODEX pointing to a local Codex executable"]
 fn real_codex_uses_selected_openrouter_responses_endpoint() {
     let executable = std::env::var_os("ASB_REAL_CODEX").expect("set ASB_REAL_CODEX");
-    exercise_agent("codex", "codex", executable);
+    exercise_agent("codex", "codex", executable, false);
 }
 
 #[test]
@@ -25,10 +25,21 @@ fn real_agent_uses_selected_openrouter_endpoint() {
     let binary = std::env::var("ASB_REAL_AGENT_BIN").expect("set ASB_REAL_AGENT_BIN");
     let executable =
         std::env::var_os("ASB_REAL_AGENT_EXECUTABLE").expect("set ASB_REAL_AGENT_EXECUTABLE");
-    exercise_agent(&id, &binary, executable);
+    exercise_agent(&id, &binary, executable, false);
 }
 
-fn exercise_agent(agent: &str, binary: &str, executable: std::ffi::OsString) {
+#[test]
+#[ignore = "requires an installed ASB_REAL_AGENT_ID, ASB_REAL_AGENT_BIN and ASB_REAL_AGENT_EXECUTABLE"]
+fn real_agent_reports_provider_usage_from_loopback_fixture() {
+    let id = std::env::var("ASB_REAL_AGENT_ID").expect("set ASB_REAL_AGENT_ID");
+    assert!(["continue", "openhands"].contains(&id.as_str()));
+    let binary = std::env::var("ASB_REAL_AGENT_BIN").expect("set ASB_REAL_AGENT_BIN");
+    let executable =
+        std::env::var_os("ASB_REAL_AGENT_EXECUTABLE").expect("set ASB_REAL_AGENT_EXECUTABLE");
+    exercise_agent(&id, &binary, executable, true);
+}
+
+fn exercise_agent(agent: &str, binary: &str, executable: std::ffi::OsString, usage_only: bool) {
     // Real agents may ignore a configured base URL. Refuse to launch them
     // unless all network routes are confined to this namespace's loopback.
     for path in ["/proc/net/route", "/proc/net/ipv6_route"] {
@@ -147,19 +158,19 @@ fn exercise_agent(agent: &str, binary: &str, executable: std::ffi::OsString) {
                 )
             } else if line.starts_with("POST /v1/chat/completions ") {
                 if !streaming {
-                    ("application/json", serde_json::json!({"id":"chatcmpl_fixture","object":"chat.completion","created":1,"model":"fixture/model","choices":[{"index":0,"message":{"role":"assistant","content":reply},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}).to_string())
+                    ("application/json", serde_json::json!({"id":"chatcmpl_fixture","object":"chat.completion","created":1,"model":"fixture/model","choices":[{"index":0,"message":{"role":"assistant","content":reply},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13,"prompt_tokens_details":{"cached_tokens":if split_cache {4} else {0}}}}).to_string())
                 } else {
                     ("text/event-stream", [
                     serde_json::json!({"id":"chatcmpl_fixture","object":"chat.completion.chunk","created":1,"model":"fixture/model","choices":[{"index":0,"delta":{"role":"assistant","content":reply},"finish_reason":null}]}),
                     serde_json::json!({"id":"chatcmpl_fixture","object":"chat.completion.chunk","created":1,"model":"fixture/model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
-                    serde_json::json!({"id":"chatcmpl_fixture","object":"chat.completion.chunk","created":1,"model":"fixture/model","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}),
+                    serde_json::json!({"id":"chatcmpl_fixture","object":"chat.completion.chunk","created":1,"model":"fixture/model","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13,"prompt_tokens_details":{"cached_tokens":if split_cache {4} else {0}}}}),
                 ].iter().map(|event| format!("data: {event}\n\n")).collect::<String>() + "data: [DONE]\n\n")
                 }
             } else if line.starts_with("POST /v1/messages ")
                 || line.starts_with("POST /v1/messages?")
             {
                 if !streaming {
-                    ("application/json", serde_json::json!({"id":"msg_fixture","type":"message","role":"assistant","model":"fixture/model","content":[{"type":"text","text":reply}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":3}}).to_string())
+                    ("application/json", serde_json::json!({"id":"msg_fixture","type":"message","role":"assistant","model":"fixture/model","content":[{"type":"text","text":reply}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":3,"cache_read_input_tokens":if split_cache {4} else {0},"cache_creation_input_tokens":if split_cache {2} else {0}}}).to_string())
                 } else {
                     let events = [
                         serde_json::json!({"type":"message_start","message":{"id":"msg_fixture","type":"message","role":"assistant","model":"fixture/model","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":0,"cache_read_input_tokens":if split_cache {4} else {0},"cache_creation_input_tokens":if split_cache {2} else {0}}}}),
@@ -197,6 +208,7 @@ fn exercise_agent(agent: &str, binary: &str, executable: std::ffi::OsString) {
             .env("HOME", &root)
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("PYTHONUNBUFFERED", "1")
+            .env("LITELLM_LOCAL_MODEL_COST_MAP", "True")
             .env("OPENROUTER_API_KEY", "fixture-key")
             .env("OPENROUTER_BASE_URL", format!("http://{address}/v1"))
             .env("ANTHROPIC_API_KEY", "fixture-key")
@@ -232,7 +244,9 @@ fn exercise_agent(agent: &str, binary: &str, executable: std::ffi::OsString) {
     stop.store(true, Ordering::Relaxed);
     worker.join().unwrap();
     assert!(
-        output.status.success(),
+        output.status.success()
+            || (usage_only
+                && String::from_utf8_lossy(&output.stderr).contains("workload check failed:")),
         "agent={agent} stdout={} stderr={} requests={:?}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
@@ -293,7 +307,7 @@ fn exercise_agent(agent: &str, binary: &str, executable: std::ffi::OsString) {
             .any(|request| !request.contains("What color is this image?")),
         "the only model request was OpenJiuwen's image-capability probe, not the benchmark task"
     );
-    if matches!(agent, "qwen-code" | "openjiuwen") {
+    if matches!(agent, "qwen-code" | "openjiuwen") || usage_only {
         let run: serde_json::Value =
             serde_json::from_slice(&std::fs::read(root.join("run.log")).unwrap()).unwrap();
         let usage = &run["token_usage"];
@@ -312,6 +326,13 @@ fn exercise_agent(agent: &str, binary: &str, executable: std::ffi::OsString) {
             "{agent} usage: {usage}"
         );
         assert_eq!(usage["output_tokens"], calls * 3, "{agent} usage: {usage}");
+        if split_cache && usage_only {
+            assert_eq!(
+                usage["cached_tokens"],
+                calls * 4,
+                "{agent} cached usage: {usage}"
+            );
+        }
         assert_eq!(
             usage["total_tokens"],
             calls * (input + 3),
