@@ -6,4 +6,5 @@ pub(super) static ADAPTER: StaticTool = StaticTool::new(
         executable: "iostat",
     },
     ToolKind::Collector,
-);
+)
+.with_post_install(super::mpstat::post_install);

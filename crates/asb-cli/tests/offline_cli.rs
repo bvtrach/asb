@@ -1038,6 +1038,11 @@ fn concurrent_replay_isolates_replica_outputs_and_reports_partial_failure() {
     let project = replay_project(2);
     let result = replay(&project, "fail-second", &[]);
     expect_failure(&result, "1 concurrent benchmark replica(s) failed");
+    assert!(
+        stderr(&result).contains("replica 2:"),
+        "{}",
+        stderr(&result)
+    );
     for (index, status) in [(1, "completed"), (2, "failed")] {
         let file = project.0.join(format!("run-concurrency-{index}.log"));
         let log: serde_json::Value = serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
@@ -1050,6 +1055,348 @@ fn concurrent_replay_isolates_replica_outputs_and_reports_partial_failure() {
         );
     }
     assert_tape_scratch_cleaned(&project);
+}
+
+#[cfg(unix)]
+#[test]
+fn concurrent_perf_permission_failure_reports_remediation_only_once() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = replay_project(3);
+    let perf = project.0.join(".asb-tools/perf/bin/perf");
+    project.write(
+        ".asb-tools/perf/bin/perf",
+        "#!/bin/sh\necho 'Permission denied' >&2\nexit 1\n",
+    );
+    std::fs::set_permissions(perf, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let config = std::fs::read_to_string(project.0.join("benchmark.toml")).unwrap()
+        + "[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=['perf']\n";
+    project.write("benchmark.toml", &config);
+    for json in [false, true] {
+        let mut args = vec!["--measurements", "measurements"];
+        if json {
+            args.push("--json");
+        }
+        let result = replay(&project, "success", &args);
+        let error = stderr(&result);
+        expect_failure(&result, "3 concurrent benchmark replica(s) failed");
+        assert_eq!(
+            error
+                .matches("sudo sysctl -w kernel.perf_event_paranoid=-1")
+                .count(),
+            1,
+            "{error}"
+        );
+        assert!(error.contains("replicas 1, 2, 3:"), "{error}");
+        if json {
+            assert!(stdout(&result).is_empty());
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn concurrent_bpftrace_sudo_help_and_sweep_failures_are_reported_once() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = replay_project(3);
+    for name in [".asb-tools/bpftrace/bin/bpftrace", "bin/sudo"] {
+        project.write(name, "#!/bin/sh\nexit 1\n");
+        std::fs::set_permissions(project.0.join(name), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+    }
+    let path = format!(
+        "{}:{}",
+        project.0.join("bin").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let config = std::fs::read_to_string(project.0.join("benchmark.toml")).unwrap()
+        + "[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=['bpftrace']\n";
+    project.write("first.toml", &config);
+    project.write("second.toml", &config);
+    project.write("suite.toml", "configs=['first.toml','second.toml']\n");
+    let result = project.command_with_env(&["sweep", "suite.toml", "--replay"], &[("PATH", &path)]);
+    let error = stderr(&result);
+    expect_failure(&result, "2 failed benchmark(s)");
+    assert_eq!(
+        error.matches("passwordless sudo is unavailable").count(),
+        1,
+        "{error}"
+    );
+    assert_eq!(error.matches("What to do:").count(), 1, "{error}");
+    assert!(
+        error.contains("first.toml") && error.contains("second.toml"),
+        "{error}"
+    );
+    assert!(error.contains("replicas 1, 2, 3:"), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn concurrent_sysstat_permission_preflight_is_deduplicated_before_agent_start() {
+    use std::os::unix::fs::PermissionsExt;
+    for collector in ["mpstat", "iostat"] {
+        let project = replay_project(4);
+        let pidstat = ".asb-tools/mpstat/bin/pidstat";
+        project.write(pidstat, "#!/bin/sh\nexit 0\n");
+        std::fs::set_permissions(
+            project.0.join(pidstat),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let config = std::fs::read_to_string(project.0.join("benchmark.toml")).unwrap()
+            + &format!(
+                "[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=['{collector}']\n"
+            );
+        project.write("benchmark.toml", &config);
+        let result = replay(&project, "success", &[]);
+        let error = stderr(&result);
+        expect_failure(&result, "4 concurrent benchmark replica(s) failed");
+        assert_eq!(
+            error.matches("cannot execute pidstat").count(),
+            1,
+            "{error}"
+        );
+        assert_eq!(error.matches("chmod u+x").count(), 1, "{error}");
+        assert!(error.contains("replicas 1, 2, 3, 4"), "{error}");
+        assert!(!project.0.join("run-concurrency-1.log").exists());
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn cpu_and_io_collectors_use_project_local_pidstat_in_preflight_and_run() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = replay_project(1);
+    let calls = project.0.join("pidstat-calls");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
+        calls.display()
+    );
+    project.write(".asb-tools/mpstat/bin/pidstat", &script);
+    std::fs::set_permissions(
+        project.0.join(".asb-tools/mpstat/bin/pidstat"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let config = std::fs::read_to_string(project.0.join("benchmark.toml")).unwrap()
+        + "[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=['mpstat','iostat']\n";
+    project.write("benchmark.toml", &config);
+    let result = replay(&project, "success", &[]);
+    expect_success(&result);
+    let calls = std::fs::read_to_string(calls).unwrap();
+    assert_eq!(
+        calls.lines().filter(|line| line.starts_with("-u ")).count(),
+        2,
+        "{calls}"
+    );
+    assert_eq!(
+        calls.lines().filter(|line| line.starts_with("-d ")).count(),
+        2,
+        "{calls}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn concurrent_perf_record_preflight_reports_permission_once() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = replay_project(4);
+    let perf = ".asb-tools/perf/bin/perf";
+    project.write(
+        perf,
+        "#!/bin/sh\nif [ \"$1\" = stat ]; then exit 0; fi\necho 'Permission denied' >&2\nexit 1\n",
+    );
+    std::fs::set_permissions(project.0.join(perf), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let config = std::fs::read_to_string(project.0.join("benchmark.toml")).unwrap()
+        + "[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=['perf']\n";
+    project.write("benchmark.toml", &config);
+    let result = replay(&project, "success", &[]);
+    let error = stderr(&result);
+    expect_failure(&result, "4 concurrent benchmark replica(s) failed");
+    assert_eq!(
+        error
+            .matches("sudo sysctl -w kernel.perf_event_paranoid=-1")
+            .count(),
+        1,
+        "{error}"
+    );
+    assert!(!project.0.join("run-concurrency-1.log").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn concurrent_flamegraph_tool_permission_is_checked_before_agent() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = replay_project(4);
+    for (path, mode) in [
+        (".asb-tools/perf/bin/perf", 0o755),
+        (".asb-tools/flamegraph/bin/stackcollapse-perf.pl", 0o644),
+        (".asb-tools/flamegraph/bin/flamegraph", 0o755),
+    ] {
+        project.write(path, "#!/bin/sh\nexit 0\n");
+        std::fs::set_permissions(project.0.join(path), std::fs::Permissions::from_mode(mode))
+            .unwrap();
+    }
+    let config = std::fs::read_to_string(project.0.join("benchmark.toml")).unwrap()
+        + "[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=['perf','flamegraph']\n";
+    project.write("benchmark.toml", &config);
+    let result = replay(&project, "success", &[]);
+    let error = stderr(&result);
+    expect_failure(&result, "4 concurrent benchmark replica(s) failed");
+    assert_eq!(
+        error.matches("cannot execute flamegraph tool").count(),
+        1,
+        "{error}"
+    );
+    assert_eq!(
+        error.matches("asb tool install flamegraph").count(),
+        1,
+        "{error}"
+    );
+    assert!(!project.0.join("run-concurrency-1.log").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn concurrent_custom_bpftrace_program_access_is_checked_before_agent() {
+    let project = replay_project(4);
+    let result = project.command_with_env(
+        &[
+            "run",
+            "benchmark.toml",
+            "--replay",
+            "--cassette",
+            "tape.jsonl",
+            "--measurements",
+            "measurements",
+        ],
+        &[
+            ("ASB_MEASURE_BPFTRACE", "1"),
+            ("ASB_BPFTRACE_PROGRAMS", "missing.bt"),
+        ],
+    );
+    let error = stderr(&result);
+    expect_failure(&result, "4 concurrent benchmark replica(s) failed");
+    assert_eq!(
+        error
+            .matches("cannot read bpftrace program missing.bt")
+            .count(),
+        1,
+        "{error}"
+    );
+    assert!(error.contains("ASB_BPFTRACE_PROGRAMS"));
+    assert!(!project.0.join("run-concurrency-1.log").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn concurrent_tape_directory_permission_failure_uses_stable_parent() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = replay_project(4);
+    let cassette = std::fs::read_to_string(project.0.join("tape.jsonl")).unwrap();
+    project.write("blocked/tape.jsonl", &cassette);
+    let directory = project.0.join("blocked");
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o555)).unwrap();
+    if std::fs::create_dir(directory.join("permission-check")).is_err() {
+        let result = project.command(&[
+            "run",
+            "benchmark.toml",
+            "--replay",
+            "--cassette",
+            "blocked/tape.jsonl",
+        ]);
+        let error = stderr(&result);
+        expect_failure(&result, "4 concurrent benchmark replica(s) failed");
+        assert_eq!(
+            error
+                .matches("cannot create a tape session directory in")
+                .count(),
+            1,
+            "{error}"
+        );
+        assert_eq!(error.matches("chmod u+rwx").count(), 1, "{error}");
+        assert!(!project.0.join("run-concurrency-1.log").exists());
+    } else {
+        std::fs::remove_dir(directory.join("permission-check")).unwrap();
+    }
+    std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn concurrent_provider_warning_is_deduplicated_and_json_stays_clean() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Arc, atomic::AtomicBool};
+    use std::time::Duration;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let base = format!("http://{}/api/v1", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
+    let server = std::thread::spawn(move || {
+        while !server_stop.load(Ordering::Relaxed) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut bytes = [0; 4096];
+                    let _ = stream.read(&mut bytes);
+                    let body = r#"{"data":[{"id":"fixture/model"}]}"#;
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .unwrap();
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                Err(error) => panic!("fixture server: {error}"),
+            }
+        }
+    });
+    let project = Project::new();
+    project.init();
+    let config = "agent='codex'\nworkload='bug-fix'\nprovider='openrouter'\nmodel='fixture/model'\nconcurrency=3\n";
+    project.write("first.toml", config);
+    project.write("second.toml", config);
+    project.write("suite.toml", "configs=['first.toml','second.toml']\n");
+    project.write(".asb-tools/codex/bin/codex", "#!/bin/sh\nexit 0\n");
+    std::fs::set_permissions(
+        project.0.join(".asb-tools/codex/bin/codex"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let env = [
+        ("OPENROUTER_BASE_URL", base.as_str()),
+        ("OPENROUTER_API_KEY", "fixture-key"),
+    ];
+    let run = project.command_with_env(&["run", "first.toml"], &env);
+    let sweep = project.command_with_env(&["sweep", "suite.toml"], &env);
+    let json = project.command_with_env(&["run", "first.toml", "--json"], &env);
+    stop.store(true, Ordering::Relaxed);
+    server.join().unwrap();
+    for output in [&run, &sweep] {
+        let text = stdout(output);
+        assert_eq!(
+            text.matches("does not report whether it supports tools")
+                .count(),
+            1,
+            "{text}"
+        );
+    }
+    assert_eq!(stdout(&run).matches("success_rate=").count(), 3);
+    assert_eq!(stdout(&sweep).matches("success_rate=").count(), 6);
+    assert!(!stdout(&json).contains("Warning:"));
+    assert_eq!(stdout(&json).lines().count(), 3);
+    for line in stdout(&json).lines() {
+        serde_json::from_str::<serde_json::Value>(line)
+            .expect("JSON output contains only JSON records");
+    }
 }
 
 #[cfg(unix)]

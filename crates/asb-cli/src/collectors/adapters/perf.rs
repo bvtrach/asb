@@ -49,17 +49,43 @@ fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
         return Ok(());
     }
     let executable = measurements::resolve_executable(context.tool_dir, "perf");
-    match Command::new(executable)
-        .args(["stat", "-e", "task-clock", "--", "sleep", "0.01"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-    {
-        Ok(status) if status.success() => Ok(()),
-        Ok(_) => Err(perf_permission_error()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("cannot probe perf collector: {error}")),
+    for (name, args) in [
+        (
+            "stat",
+            &[
+                "stat",
+                "-e",
+                "task-clock,context-switches,cpu-migrations,page-faults,cycles,instructions",
+                "--inherit",
+                "--",
+                "sleep",
+                "0.01",
+            ][..],
+        ),
+        (
+            "record",
+            &["record", "-g", "-F", "19", "-o", "-", "--", "sleep", "0.01"][..],
+        ),
+    ] {
+        let output = Command::new(&executable)
+            .args(args)
+            .stdout(Stdio::null())
+            .output();
+        match output {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+                if stderr.contains("permission") || stderr.contains("perf_event_paranoid") || stderr.contains("access to performance monitoring") || stderr.contains("operation not permitted") {
+                    return Err(perf_permission_error());
+                }
+                return Err(format!("perf {name} preflight failed ({}). Inspect the host configuration with `perf {name} -- sleep 0.01` and retry.", output.status));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err("perf is required for the selected collector. Install the host perf package, then run `asb tool install perf` and retry.".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return Err(format!("cannot execute perf at {}: {error}. Check parent-directory access and reinstall with `asb tool install perf`.", executable.display())),
+            Err(error) => return Err(format!("cannot probe perf collector: {error}; check with `perf --version`")),
+        }
     }
+    Ok(())
 }
 
 use crate::collectors;
@@ -245,5 +271,5 @@ fn perf_metric_name(event: &str) -> Option<&'static str> {
 }
 
 pub(crate) fn perf_permission_error() -> String {
-    "perf cannot access performance counters because kernel.perf_event_paranoid is too restrictive.\nWhat to do: allow user-space perf access, then rerun the benchmark:\n  sudo sysctl -w kernel.perf_event_paranoid=-1\nTo persist the setting across reboots:\n  printf 'kernel.perf_event_paranoid=-1\\n' | sudo tee /etc/sysctl.d/99-asb-perf.conf\nASB does not create sudoers rules for perf.".into()
+    "perf was denied access to performance events. A restrictive kernel.perf_event_paranoid setting is one possible cause.\nWhat to do: if your administrator approves system-wide perf access, run:\n  sudo sysctl -w kernel.perf_event_paranoid=-1\nTo persist the setting across reboots:\n  printf 'kernel.perf_event_paranoid=-1\\n' | sudo tee /etc/sysctl.d/99-asb-perf.conf\nThis changes access for the whole host; containers, capabilities, security policy or other restrictions may still prevent tracing. ASB does not create sudoers rules for perf.".into()
 }

@@ -302,7 +302,7 @@ classDiagram
         +artifact(kind: SharedArtifact) Option~&Path~
         +attach_pid(pid: u32) Result~(), String~
         +finish(self, measurement: RunMeasurement~'a~) Result~(), String~
-        +start_snapshot(name: &str, variable: &str, args: &[&str], enabled: bool, command_name: &str) Result~(), String~
+        +start_snapshot(name: &str, variable: &str, args: &[&str], enabled: bool, executable: &Path) Result~(), String~
         +command(name: &str) Command
         +executable(name: &str) PathBuf
     }

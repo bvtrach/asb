@@ -12,15 +12,32 @@ use crate::suggestions;
 use crate::tape;
 use crate::workloads;
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::Mutex;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 use std::time::Instant;
 
 const MAX_OUTPUT: usize = 1024 * 1024;
 const MAX_AGENT_RUNTIME: Duration = Duration::from_secs(15 * 60);
+
+fn emit_warning(
+    warnings: &Mutex<BTreeSet<String>>,
+    output: &mut dyn Write,
+    message: String,
+) -> Result<(), Error> {
+    let mut seen = warnings
+        .lock()
+        .map_err(|_| Error::Run("warning state unavailable".into()))?;
+    if !seen.contains(&message) {
+        writeln!(output, "{message}").map_err(io_error)?;
+        seen.insert(message);
+    }
+    Ok(())
+}
 
 #[derive(Serialize)]
 struct RunResult<'a> {
@@ -54,6 +71,30 @@ pub fn run_with_tape(
     respect_record_timings: bool,
     output: &mut dyn Write,
 ) -> Result<(), Error> {
+    run_with_diagnostics(
+        path,
+        json,
+        show_output,
+        measurement_dir,
+        mode,
+        cassette,
+        respect_record_timings,
+        output,
+        &Mutex::new(BTreeSet::new()),
+    )
+}
+
+pub(crate) fn run_with_diagnostics(
+    path: &str,
+    json: bool,
+    show_output: bool,
+    measurement_dir: Option<&str>,
+    mode: Option<tape::Mode>,
+    cassette: Option<&str>,
+    respect_record_timings: bool,
+    output: &mut dyn Write,
+    warnings: &Mutex<BTreeSet<String>>,
+) -> Result<(), Error> {
     let config_path = Path::new(path);
     let text = read_config(config_path)?;
     let config: BenchmarkConfig = toml::from_str(&text)
@@ -69,6 +110,7 @@ pub fn run_with_tape(
             tape_request,
             respect_record_timings,
             output,
+            warnings,
         );
     }
     run_mode(
@@ -80,6 +122,7 @@ pub fn run_with_tape(
         tape_request,
         respect_record_timings,
         output,
+        warnings,
     )
 }
 
@@ -96,6 +139,7 @@ fn run_concurrent(
     tape_request: Option<(tape::Mode, Option<&str>)>,
     respect_record_timings: bool,
     output: &mut dyn Write,
+    warnings: &Mutex<BTreeSet<String>>,
 ) -> Result<(), Error> {
     let mut jobs = Vec::with_capacity(config.concurrency);
     for index in 1..=config.concurrency {
@@ -138,6 +182,7 @@ fn run_concurrent(
                             mode.map(|mode| (mode, cassette_path)),
                             respect_record_timings,
                             &mut buffer,
+                            warnings,
                         );
                         (index, result, buffer)
                     })
@@ -152,11 +197,11 @@ fn run_concurrent(
     });
 
     completed.sort_by_key(|(index, _, _)| *index);
-    let mut failures = Vec::new();
+    let mut failures: Vec<(String, Vec<usize>)> = Vec::new();
     for (index, result, buffer) in completed {
         output.write_all(&buffer).map_err(io_error)?;
         if let Err(error) = result {
-            failures.push(format!("replica {index}: {error}"));
+            add_replica_failure(&mut failures, index + 1, error.to_string());
         }
     }
     if failures.is_empty() {
@@ -164,9 +209,32 @@ fn run_concurrent(
     } else {
         Err(Error::Run(format!(
             "{} concurrent benchmark replica(s) failed: {}",
-            failures.len(),
-            failures.join("; ")
+            failures
+                .iter()
+                .map(|(_, indexes)| indexes.len())
+                .sum::<usize>(),
+            failures
+                .iter()
+                .map(|(message, indexes)| format!(
+                    "replica{} {}: {message}",
+                    if indexes.len() == 1 { "" } else { "s" },
+                    indexes
+                        .iter()
+                        .map(usize::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+                .collect::<Vec<_>>()
+                .join("; ")
         )))
+    }
+}
+
+fn add_replica_failure(failures: &mut Vec<(String, Vec<usize>)>, index: usize, message: String) {
+    if let Some((_, indexes)) = failures.iter_mut().find(|(item, _)| *item == message) {
+        indexes.push(index);
+    } else {
+        failures.push((message, vec![index]));
     }
 }
 
@@ -212,6 +280,7 @@ fn run_mode(
     tape_request: Option<(tape::Mode, Option<&str>)>,
     respect_record_timings: bool,
     output: &mut dyn Write,
+    warnings: &Mutex<BTreeSet<String>>,
 ) -> Result<(), Error> {
     let tape_cassette = tape_request.map(|(mode, requested)| {
         (
@@ -273,7 +342,7 @@ fn run_mode(
                 let (offers, snapshot_fallback, tool_support) = providers::discover_endpoints(&config.provider, &config.model);
                 discovered_tool_support = tool_support;
                 if snapshot_fallback && !json {
-                    writeln!(output, "Warning: current endpoint metadata is unavailable for provider `{}` and model `{}`; using the built-in endpoint snapshot, which may be out of date.", config.provider, config.model).map_err(crate::io_error)?;
+                    emit_warning(warnings, output, format!("Warning: current endpoint metadata is unavailable for provider `{}` and model `{}`; using the built-in endpoint snapshot, which may be out of date.", config.provider, config.model))?;
                 }
                 offers
             };
@@ -318,7 +387,14 @@ fn run_mode(
                     && discovered_tool_support != Some(true)
                     && !json
                 {
-                    writeln!(output, "Warning: provider `{}` lists model `{}` but does not report whether it supports tools; the agent may fail if the model cannot use tools.", config.provider, config.model).map_err(crate::io_error)?;
+                    emit_warning(
+                        warnings,
+                        output,
+                        format!(
+                            "Warning: provider `{}` lists model `{}` but does not report whether it supports tools; the agent may fail if the model cannot use tools.",
+                            config.provider, config.model
+                        ),
+                    )?;
                 }
             }
             Ok(bridge)
@@ -1127,6 +1203,31 @@ mod tests {
     };
     use crate::benchmark::BenchmarkConfig;
     use crate::measurements::TokenUsage;
+
+    #[test]
+    fn replica_failures_group_only_exact_matches() {
+        let mut failures = Vec::new();
+        super::add_replica_failure(&mut failures, 1, "permission denied\nrepair A".into());
+        super::add_replica_failure(&mut failures, 2, "permission denied\nrepair B".into());
+        super::add_replica_failure(&mut failures, 3, "permission denied\nrepair A".into());
+        assert_eq!(
+            failures,
+            vec![
+                ("permission denied\nrepair A".into(), vec![1, 3]),
+                ("permission denied\nrepair B".into(), vec![2]),
+            ]
+        );
+    }
+
+    #[test]
+    fn identical_perfetto_marker_errors_are_grouped_across_four_replicas() {
+        let mut failures = Vec::new();
+        let error = "cannot write ASB lifecycle markers to /sys/kernel/tracing/trace_marker: Permission denied.\nWhat to do:\n  repair command";
+        for replica in 1..=4 {
+            super::add_replica_failure(&mut failures, replica, error.into());
+        }
+        assert_eq!(failures, vec![(error.into(), vec![1, 2, 3, 4])]);
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

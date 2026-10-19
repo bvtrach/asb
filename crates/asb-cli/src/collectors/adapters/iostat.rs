@@ -4,6 +4,13 @@ use crate::measurements::{parse_float, parse_pidstat_columns};
 use std::collections::BTreeMap;
 pub(super) static ADAPTER: StaticCollector =
     StaticCollector::new("iostat", Some("ASB_MEASURE_IOSTAT"), Some("iostat"), true)
+        .with_preflight(|context| {
+            if super::super::selected_or_environment("iostat", context.selected) {
+                super::pidstat::preflight(context.tool_dir, "-d")
+            } else {
+                Ok(())
+            }
+        })
         .with_configure(|session, selected| {
             session.state::<IoState>().borrow_mut().enabled =
                 super::super::selected_or_environment("iostat", selected);
@@ -53,7 +60,7 @@ impl measurements::Session {
             "ASB_MEASURE_IOSTAT",
             &["-d", "-T", "ALL", "-p", &pid.to_string(), &interval],
             enabled,
-            "pidstat",
+            &super::pidstat::executable(self.tool_dir.as_deref()),
         )
     }
 }

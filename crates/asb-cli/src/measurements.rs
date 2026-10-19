@@ -281,8 +281,14 @@ impl Session {
         selected: &[String],
         tool_dir: Option<&Path>,
     ) -> Result<Self, String> {
-        fs::create_dir_all(dir)
-            .map_err(|e| format!("cannot create measurements directory: {e}"))?;
+        fs::create_dir_all(dir).map_err(|e| {
+            format!(
+                "cannot create measurements directory {}: {e}; inspect access with `namei -l '{}'`",
+                dir.display(),
+                shell_quote(&dir.to_string_lossy())
+            )
+        })?;
+        check_measurement_directory(dir)?;
         // Privilege and tracefs checks must complete before any agent process
         // is prepared. This prevents a partially measured benchmark run.
         let sudo_collectors = preflight_collectors(dir, selected, tool_dir)?;
@@ -518,15 +524,14 @@ impl Session {
         variable: &str,
         args: &[&str],
         enabled: bool,
-        command_name: &str,
+        executable: &Path,
     ) -> Result<(), String> {
         if !enabled {
             return Ok(());
         }
         let stdout_path = self.dir.join(format!("{name}.stdout"));
         let stderr_path = self.dir.join(format!("{name}.stderr"));
-        let child = match self
-            .command(command_name)
+        let child = match Command::new(executable)
             .args(args)
             .stdout(Stdio::from(
                 File::create(&stdout_path)
@@ -586,6 +591,39 @@ impl Session {
             }
         }
         PathBuf::from(tool_binary_name(name))
+    }
+}
+
+fn check_measurement_directory(dir: &Path) -> Result<(), String> {
+    let path = dir.join(format!(
+        ".asb-write-probe-{}-{}",
+        std::process::id(),
+        NEXT_TRACE_ID.fetch_add(1, Ordering::Relaxed)
+    ));
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(file) => {
+            drop(file);
+            fs::remove_file(&path).map_err(|error| {
+                format!(
+                    "cannot remove ASB's measurement write probe in {}: {error}",
+                    dir.display()
+                )
+            })?;
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Err(format!(
+            "cannot write to measurements directory {}: {error}. Check parent-directory access; if you own the directory, run `chmod u+rwx -- '{}'` and retry.",
+            dir.display(),
+            shell_quote(&dir.to_string_lossy())
+        )),
+        Err(error) => Err(format!(
+            "cannot write to measurements directory {}: {error}; check disk space, mount state, and access",
+            dir.display()
+        )),
     }
 }
 
@@ -921,17 +959,14 @@ pub(crate) fn resolve_executable(tool_dir: Option<&Path>, name: &str) -> PathBuf
 pub(crate) fn passwordless_sudo_error(name: &str, executable: &Path) -> String {
     let command = sudoers_repair_command(name, executable);
     format!(
-        "{name} collector needs elevated access, but its direct probe failed and passwordless sudo is unavailable.\nWhat to do: grant only this executable passwordless sudo, then rerun:\n  {command}\nThe generated rule should authorize `{}` for the current user; ASB never prompts for a sudo password.",
+        "{name} collector needs elevated access, but its direct probe failed and passwordless sudo is unavailable.\nWhat to do: ask the host administrator to configure the necessary non-interactive access for `{}`; edit and validate a policy with:\n  {command}\nGranting unrestricted sudo access to a tracing program can allow arbitrary privileged operations. ASB does not modify sudoers or prompt for a password.",
         executable.display()
     )
 }
 
-fn sudoers_repair_command(name: &str, executable: &Path) -> String {
-    let path = shell_quote(&executable.to_string_lossy());
+fn sudoers_repair_command(name: &str, _executable: &Path) -> String {
     let file = format!("/etc/sudoers.d/asb-{name}");
-    format!(
-        "sudo sh -c 'printf \"%s ALL=(root) NOPASSWD: {path}\\n\" \"$USER\" > {file} && chmod 440 {file} && visudo -cf {file}'"
-    )
+    format!("sudo visudo -f {file}")
 }
 
 fn shell_quote(value: &str) -> String {

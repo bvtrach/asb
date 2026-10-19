@@ -8,6 +8,7 @@ pub(crate) mod iostat;
 pub(crate) mod mpstat;
 pub(crate) mod perf;
 pub(crate) mod perfetto;
+mod pidstat;
 mod runtime;
 mod steps;
 mod success_rate;

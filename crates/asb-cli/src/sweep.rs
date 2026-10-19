@@ -4,8 +4,10 @@ use crate::benchmark::BenchmarkConfig;
 use crate::runner;
 use crate::{Error, compare, read_config};
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 const MAX_SWEEP_BYTES: u64 = 64 * 1024;
 const MAX_CONFIGS: usize = 256;
@@ -68,7 +70,8 @@ pub fn run(
         ))
     })?;
 
-    let mut failures = Vec::new();
+    let mut failures: Vec<(String, Vec<String>)> = Vec::new();
+    let warnings = Mutex::new(BTreeSet::new());
     for (index, reference) in sweep.configs.iter().enumerate() {
         let config_path = checked_reference(parent, reference, path)?;
         let config_text = read_config(&config_path)?;
@@ -79,10 +82,11 @@ pub fn run(
             ))
         })?;
         if config_value.get("configs").is_some() {
-            failures.push(format!(
-                "{} is a nested sweep; sweep entries must be normal benchmark TOMLs",
-                config_path.display()
-            ));
+            add_failure(
+                &mut failures,
+                config_path.display().to_string(),
+                "is a nested sweep; sweep entries must be normal benchmark TOMLs".into(),
+            );
             continue;
         }
         let config: BenchmarkConfig = config_value.try_into().map_err(|error| {
@@ -125,7 +129,7 @@ pub fn run(
                     safe_component(&config.model)
                 ))
         });
-        if let Err(error) = runner::run_with_tape(
+        if let Err(error) = runner::run_with_diagnostics(
             isolated_path.to_string_lossy().as_ref(),
             json,
             show_output,
@@ -134,8 +138,13 @@ pub fn run(
             cassette.as_deref().and_then(|path| path.to_str()),
             respect_record_timings,
             output,
+            &warnings,
         ) {
-            failures.push(format!("{}: {error}", config_path.display()));
+            add_failure(
+                &mut failures,
+                config_path.display().to_string(),
+                error.to_string(),
+            );
         }
     }
     // Always regenerate the comparison artifacts after the execution loop,
@@ -155,13 +164,28 @@ pub fn run(
     } else {
         let mut details = format!(
             "sweep completed with {} failed benchmark(s): {}",
-            failures.len(),
-            failures.join("; ")
+            failures
+                .iter()
+                .map(|(_, configs)| configs.len())
+                .sum::<usize>(),
+            failures
+                .iter()
+                .map(|(error, configs)| format!("{}: {error}", configs.join(", ")))
+                .collect::<Vec<_>>()
+                .join("; ")
         );
         if let Some(error) = comparison_error {
             details.push_str(&format!("; comparison failed: {error}"));
         }
         Err(Error::Run(details))
+    }
+}
+
+fn add_failure(failures: &mut Vec<(String, Vec<String>)>, config: String, message: String) {
+    if let Some((_, configs)) = failures.iter_mut().find(|(item, _)| *item == message) {
+        configs.push(config);
+    } else {
+        failures.push((message, vec![config]));
     }
 }
 
