@@ -7,7 +7,9 @@ const MAX_ENDPOINT_CATALOG: usize = 8 * 1024 * 1024;
 pub(in crate::providers) fn fetch_endpoint_catalog() -> Result<Vec<u8>, Error> {
     let catalog_url = std::env::var("ASB_ENDPOINT_CATALOG_URL")
         .unwrap_or_else(|_| "https://models.dev/api.json".into());
-    let output = Command::new("curl")
+    let mut command = Command::new("curl");
+    crate::project::apply_network_proxy(&mut command, std::path::Path::new("."))?;
+    let output = command
         .args([
             "--disable",
             "--fail",

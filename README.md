@@ -46,6 +46,39 @@ files for every built-in workload. `run` copies the selected fixture into the
 workspace without overwriting existing edits. `setup` writes a human-readable
 TOML configuration; when `--output` is supplied it also prints the exact
 `asb run <file>` command for that configuration.
+
+`init` detects the standard `http_proxy`, `https_proxy`, `all_proxy` and
+`no_proxy` environment variables (also their uppercase counterparts; SOCKS
+may also be supplied as `socks_proxy`) and saves credential-free values under
+`[proxy]` in `.asb/project.toml`. You can edit these settings, for example:
+
+```toml
+[proxy]
+http = "http://proxy.example:8080"
+https = "http://proxy.example:8080"
+socks = "socks5h://proxy.example:1080"
+no_proxy = "internal.example"
+```
+
+`socks` is the all-protocol fallback, so HTTP/HTTPS settings take precedence
+in clients such as curl; use `socks5h` for proxy-side DNS. At execution time,
+explicit environment values override the corresponding project setting; an
+empty environment value disables that setting. ASB always adds `localhost`,
+`127.0.0.1`, and `::1` to the bypass list for its child processes. Values
+containing credentials or query data are never saved by `init`; keep them in
+the environment instead. Detection reads environment variables, not desktop or
+system proxy configuration. ASB uses the settings for model and endpoint
+discovery, downloads, and the built-in record/compatibility proxies. Benchmark
+agents, provider bridges and installer subprocesses receive the same standard
+environment variables; third-party programs must support those variables
+themselves. The Node.js sidecars use `curl` when a proxy is configured, so
+HTTP, HTTPS and SOCKS proxy behavior does not depend on the Node version.
+When proxied, these sidecars follow same-origin redirects but reject
+cross-origin redirects rather than risk sending provider credentials elsewhere.
+For external Node programs, ASB also enables Node's HTTP(S) proxy opt-in when
+applicable, unless `NODE_USE_ENV_PROXY` was explicitly set. This depends on
+the external program's Node version and does not add SOCKS support to it.
+
 Run `asb init` in a separate benchmark project directory; it intentionally
 refuses to modify the ASB source checkout.
 If the directory is already initialized, ASB warns and makes no changes;

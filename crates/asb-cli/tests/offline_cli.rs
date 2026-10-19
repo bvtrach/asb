@@ -29,9 +29,18 @@ impl Project {
     }
 
     fn command_with_env(&self, args: &[&str], extra: &[(&str, &str)]) -> Output {
+        self.command_in_with_env(&self.0, args, extra)
+    }
+
+    fn command_in_with_env(
+        &self,
+        dir: &std::path::Path,
+        args: &[&str],
+        extra: &[(&str, &str)],
+    ) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_asb"));
         command
-            .current_dir(&self.0)
+            .current_dir(dir)
             .args(args)
             .env_clear()
             .env("HOME", &self.0)
@@ -1507,4 +1516,629 @@ fn cli2key_failed_startup_must_stop_its_mock_bridge() {
         !std::path::Path::new(&format!("/proc/{pid}")).exists(),
         "bridge survived failed startup"
     );
+}
+
+#[test]
+fn init_detects_network_proxies_without_persisting_credentials() {
+    let project = Project::new();
+    let output = project.command_with_env(
+        &["init"],
+        &[
+            ("http_proxy", "http://proxy.example:8080"),
+            ("HTTPS_PROXY", "http://user:secret@proxy.example:8080"),
+            ("SOCKS_PROXY", "socks5h://proxy.example:1080"),
+            ("NO_PROXY", "internal.example"),
+        ],
+    );
+    expect_success(&output);
+    let config = std::fs::read_to_string(project.0.join(".asb/project.toml")).unwrap();
+    assert!(config.contains("http://proxy.example:8080"));
+    assert!(config.contains("socks5h://proxy.example:1080"));
+    assert!(config.contains("internal.example"));
+    assert!(!config.contains("secret"));
+    assert!(!stdout(&output).contains("secret"));
+    assert!(stdout(&output).contains("not saved"));
+}
+
+#[test]
+fn saved_http_and_socks_proxies_route_model_discovery_without_live_network() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    for socks in [false, true] {
+        let project = Project::new();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let proxy = format!(
+            "{}://{}",
+            if socks { "socks5h" } else { "http" },
+            listener.local_addr().unwrap()
+        );
+        let variable = if socks { "all_proxy" } else { "http_proxy" };
+        expect_success(&project.command_with_env(&["init"], &[(variable, &proxy)]));
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(12);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && std::time::Instant::now() < deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(10))
+                    }
+                    Err(error) => panic!("proxy did not receive a connection: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            if socks {
+                let mut greeting = [0; 2];
+                stream.read_exact(&mut greeting).unwrap();
+                assert_eq!(greeting[0], 5);
+                let mut methods = vec![0; greeting[1] as usize];
+                stream.read_exact(&mut methods).unwrap();
+                stream.write_all(&[5, 0]).unwrap();
+                let mut request = [0; 4];
+                stream.read_exact(&mut request).unwrap();
+                assert_eq!(&request[..3], &[5, 1, 0]);
+                assert_eq!(
+                    request[3], 3,
+                    "socks5h must send the domain name to the proxy"
+                );
+                let mut len = [0; 1];
+                stream.read_exact(&mut len).unwrap();
+                let mut host_and_port = vec![0; len[0] as usize + 2];
+                stream.read_exact(&mut host_and_port).unwrap();
+                assert_eq!(&host_and_port[..len[0] as usize], b"provider.invalid");
+                stream
+                    .write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 80])
+                    .unwrap();
+            }
+            let mut request = Vec::new();
+            let mut byte = [0; 1];
+            while !request.ends_with(b"\r\n\r\n") && request.len() < 16384 {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            let request = String::from_utf8(request).unwrap();
+            assert!(request.starts_with("GET "));
+            if !socks {
+                assert!(request.contains("http://provider.invalid/v1/models"));
+            }
+            let body = r#"{"data":[{"id":"offline-proxy-test"}]}"#;
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let nested = project.0.join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        let result = project.command_in_with_env(
+            &nested,
+            &["provider", "models", "opencode-zen", "--json"],
+            &[("OPENCODE_ZEN_BASE_URL", "http://provider.invalid/v1")],
+        );
+        server.join().unwrap();
+        expect_success(&result);
+        assert!(stdout(&result).contains("offline-proxy-test"));
+    }
+}
+
+#[test]
+fn configured_proxy_does_not_intercept_loopback_provider() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    let project = Project::new();
+    expect_success(&project.command_with_env(
+        &["init"],
+        &[
+            ("http_proxy", "http://127.0.0.1:1"),
+            ("no_proxy", "unrelated.invalid"),
+        ],
+    ));
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        listener.set_nonblocking(true).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(12);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(error) => panic!("loopback provider did not receive a connection: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut byte = [0; 1];
+        while !request.ends_with(b"\r\n\r\n") && request.len() < 16384 {
+            stream.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+        }
+        let body = r#"{"data":[{"id":"local-model"}]}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+    let result = project.command_with_env(
+        &["provider", "models", "opencode-zen", "--json"],
+        &[("OPENCODE_ZEN_BASE_URL", &base)],
+    );
+    server.join().unwrap();
+    expect_success(&result);
+    assert!(stdout(&result).contains("local-model"));
+}
+
+#[test]
+fn saved_https_proxy_receives_tunnel_requests() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    let project = Project::new();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let proxy = format!("http://{}", listener.local_addr().unwrap());
+    expect_success(&project.command_with_env(&["init"], &[("https_proxy", &proxy)]));
+    let server = std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(12);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(error) => panic!("HTTPS proxy was not reached: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut byte = [0; 1];
+        while !request.ends_with(b"\r\n\r\n") && request.len() < 16384 {
+            stream.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+        }
+        assert!(
+            String::from_utf8(request)
+                .unwrap()
+                .starts_with("CONNECT provider.invalid:443 ")
+        );
+        stream
+            .write_all(
+                b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
+    });
+    let output = project.command_with_env(
+        &["provider", "models", "opencode-zen"],
+        &[("OPENCODE_ZEN_BASE_URL", "https://provider.invalid/v1")],
+    );
+    server.join().unwrap();
+    assert!(
+        !output.status.success(),
+        "the fixture intentionally rejects the HTTPS tunnel"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn record_uses_benchmark_project_proxy_even_when_invoked_elsewhere() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+
+    for socks in [false, true] {
+        let project = Project::new();
+        let outside = Project::new();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let proxy = format!(
+            "{}://{}",
+            if socks { "socks5h" } else { "http" },
+            listener.local_addr().unwrap()
+        );
+        expect_success(&project.command_with_env(
+            &["init"],
+            &[(if socks { "all_proxy" } else { "http_proxy" }, &proxy)],
+        ));
+        project.write("workspace/src/parser.py", "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n");
+        project.write("benchmark.toml", "agent='codex'\nworkload='bug-fix'\nprovider='openrouter'\nmodel='fixture/model'\nworkspace='workspace'\nlog_file='run.log'\n");
+        let agent = ".asb-tools/codex/bin/codex";
+        project.write(agent, r##"#!/usr/bin/env node
+const fs = require('fs');
+if (!(process.env.http_proxy || process.env.all_proxy) || !process.env.no_proxy.includes('127.0.0.1')) process.exit(16);
+const cfg = fs.readFileSync(process.env.CODEX_HOME + '/config.toml', 'utf8');
+const endpoint = cfg.match(/base_url = "([^"]+)"/)[1];
+const body = JSON.stringify({model:'fixture/model',input:'offline test',tools:[{type:'function',name:'read_file'}]});
+fetch(endpoint + '/responses', {method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+process.env.ASB_AGENT_API_KEY},body}).then(r => {if (!r.ok) process.exit(14); console.log('offline-proxy-agent');}).catch(() => process.exit(15));
+"##);
+        std::fs::set_permissions(
+            project.0.join(agent),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            let mut requests = Vec::new();
+            while requests.len() < 2 && Instant::now() < deadline {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(pair) => pair,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("fixture proxy: {error}"),
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                if socks {
+                    let mut greeting = [0; 2];
+                    stream.read_exact(&mut greeting).unwrap();
+                    assert_eq!(greeting[0], 5);
+                    let mut methods = vec![0; greeting[1] as usize];
+                    stream.read_exact(&mut methods).unwrap();
+                    stream.write_all(&[5, 0]).unwrap();
+                    let mut request = [0; 4];
+                    stream.read_exact(&mut request).unwrap();
+                    assert_eq!(request, [5, 1, 0, 3]);
+                    let mut len = [0; 1];
+                    stream.read_exact(&mut len).unwrap();
+                    let mut host_and_port = vec![0; len[0] as usize + 2];
+                    stream.read_exact(&mut host_and_port).unwrap();
+                    assert_eq!(&host_and_port[..len[0] as usize], b"provider.invalid");
+                    stream
+                        .write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 80])
+                        .unwrap();
+                }
+                let mut bytes = Vec::new();
+                let mut chunk = [0; 4096];
+                loop {
+                    let count = stream.read(&mut chunk).unwrap();
+                    if count == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&chunk[..count]);
+                    if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                        let header = String::from_utf8_lossy(&bytes[..end]);
+                        let length = header
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if bytes.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                let request = String::from_utf8(bytes).unwrap();
+                let first = request.lines().next().unwrap_or_default();
+                let request_path = if socks { "" } else { "http://provider.invalid" };
+                let response = if first.starts_with(&format!("GET {request_path}/api/v1/models ")) {
+                    r#"{"data":[{"id":"fixture/model","supported_parameters":["tools"]}]}"#
+                } else if first.starts_with(&format!("POST {request_path}/api/v1/responses ")) {
+                    assert!(
+                        request
+                            .to_ascii_lowercase()
+                            .contains("authorization: bearer fixture-secret")
+                    );
+                    assert!(request.contains("offline test"));
+                    r#"{"id":"resp_fixture","object":"response","output":[]}"#
+                } else {
+                    panic!("unexpected proxy request: {first}")
+                };
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+                requests.push(request);
+            }
+            requests
+        });
+        let benchmark = project.0.join("benchmark.toml");
+        let cassette = project.0.join("tape.jsonl");
+        let output = project.command_in_with_env(
+            &outside.0,
+            &[
+                "run",
+                benchmark.to_str().unwrap(),
+                "--record",
+                "--cassette",
+                cassette.to_str().unwrap(),
+            ],
+            &[
+                ("OPENROUTER_BASE_URL", "http://provider.invalid/api/v1"),
+                ("OPENROUTER_API_KEY", "fixture-secret"),
+            ],
+        );
+        let requests = server.join().unwrap();
+        expect_success(&output);
+        assert_eq!(
+            requests.len(),
+            2,
+            "model discovery and recorded request must both use the proxy"
+        );
+        let tape = std::fs::read_to_string(cassette).unwrap();
+        assert!(tape.contains("resp_fixture"));
+        assert!(!tape.contains("fixture-secret"));
+    }
+}
+
+#[test]
+fn tool_and_workload_downloads_use_the_project_proxy() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    let project = Project::new();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let proxy = format!("http://{}", listener.local_addr().unwrap());
+    expect_success(&project.command_with_env(&["init"], &[("http_proxy", &proxy)]));
+    let server = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(12);
+        let mut paths = Vec::new();
+        while paths.len() < 2 && Instant::now() < deadline {
+            let (mut stream, _) = match listener.accept() {
+                Ok(pair) => pair,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                Err(error) => panic!("fixture proxy: {error}"),
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0; 1];
+            while !request.ends_with(b"\r\n\r\n") && request.len() < 16384 {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+            }
+            paths.push(String::from_utf8(request).unwrap());
+            let body = "fixture-download";
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+        paths
+    });
+    let tool = project.command(&[
+        "tool",
+        "install",
+        "fixture-tool",
+        "--source",
+        "http://downloads.invalid/tool",
+    ]);
+    let workload = project.command(&["workload", "install", "http://downloads.invalid/task.txt"]);
+    let requests = server.join().unwrap();
+    expect_success(&tool);
+    expect_success(&workload);
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.starts_with("GET http://downloads.invalid/tool "))
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.starts_with("GET http://downloads.invalid/task.txt "))
+    );
+}
+
+#[test]
+fn node_sidecar_uses_https_proxy_and_redacts_proxy_failure() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let proxy = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                Err(error) => panic!("sidecar HTTPS proxy was not reached: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut byte = [0; 1];
+        while !request.ends_with(b"\r\n\r\n") && request.len() < 16384 {
+            stream.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+        }
+        assert!(
+            String::from_utf8(request)
+                .unwrap()
+                .starts_with("CONNECT provider.invalid:443 ")
+        );
+        stream
+            .write_all(
+                b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
+    });
+    let module = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/scripts/network-fetch.mjs");
+    let output = Command::new("node")
+        .args(["--input-type=module", "-e", "const {networkFetch}=await import(process.argv[1]); try {await networkFetch('https://provider.invalid/v1', {headers:{authorization:'Bearer secret-for-test'}}); process.exit(1)} catch(e) { console.log(e.message) }"])
+        .arg(module)
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("https_proxy", proxy)
+        .output().unwrap();
+    server.join().unwrap();
+    expect_success(&output);
+    assert!(stdout(&output).contains("outbound proxy request failed"));
+    assert!(!stdout(&output).contains("secret-for-test"));
+    assert!(!stderr(&output).contains("secret-for-test"));
+}
+
+#[test]
+fn sidecar_cancels_active_proxy_request_and_removes_private_scratch() {
+    use std::io::Read;
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    let project = Project::new();
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/scripts/network-fetch.mjs");
+    let module = project.0.join("network-fetch.mjs");
+    std::fs::copy(source, &module).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let proxy = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(5))
+                }
+                Err(error) => panic!("proxy was not reached: {error}"),
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut bytes = [0; 4096];
+        loop {
+            match stream.read(&mut bytes) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(error) => panic!("request was not cancelled: {error}"),
+            }
+        }
+    });
+    let output = Command::new("node")
+        .args(["--input-type=module", "-e", "const {networkFetch,cancelNetworkRequests}=await import(process.argv[1]); const request=networkFetch('http://provider.invalid/v1', {method:'POST',body:'sensitive test body'}); setTimeout(cancelNetworkRequests,300); try {await request;process.exit(1)} catch(e) {console.log(e.message)}"])
+        .arg(module)
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("http_proxy", proxy)
+        .output().unwrap();
+    server.join().unwrap();
+    expect_success(&output);
+    assert!(!stdout(&output).contains("sensitive test body"));
+    assert!(!std::fs::read_dir(&project.0).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".network-request-")
+    }));
+}
+
+#[test]
+fn sidecar_follows_same_origin_redirects_but_refuses_cross_origin_credentials() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    for cross_origin in [false, true] {
+        let project = Project::new();
+        let source =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("assets/scripts/network-fetch.mjs");
+        let module = project.0.join("network-fetch.mjs");
+        std::fs::copy(source, &module).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let proxy = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(8);
+            let mut count = 0;
+            while count < if cross_origin { 1 } else { 2 } && Instant::now() < deadline {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(pair) => pair,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("fixture proxy: {error}"),
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut byte = [0; 1];
+                while !request.ends_with(b"\r\n\r\n") && request.len() < 16384 {
+                    stream.read_exact(&mut byte).unwrap();
+                    request.push(byte[0]);
+                }
+                let request = String::from_utf8(request).unwrap();
+                assert!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer fixture-secret")
+                );
+                if count == 0 {
+                    let location = if cross_origin {
+                        "http://other.invalid/leak"
+                    } else {
+                        "/second"
+                    };
+                    write!(stream, "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                } else {
+                    assert!(request.starts_with("GET http://provider.invalid/second "));
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+                        )
+                        .unwrap();
+                }
+                count += 1;
+            }
+            count
+        });
+        let output = Command::new("node")
+            .args(["--input-type=module", "-e", "const {networkFetch}=await import(process.argv[1]); try {const r=await networkFetch('http://provider.invalid/first',{headers:{authorization:'Bearer fixture-secret'}}); let b='';for await(const c of r.body)b+=Buffer.from(c).toString();console.log('ok:'+b)}catch(e){console.log('error:'+e.message)}"])
+            .arg(module).env_clear().env("PATH", std::env::var_os("PATH").unwrap_or_default()).env("http_proxy", proxy).output().unwrap();
+        let count = server.join().unwrap();
+        expect_success(&output);
+        if cross_origin {
+            assert_eq!(count, 1);
+            assert!(stdout(&output).contains("refused a cross-origin redirect"));
+        } else {
+            assert_eq!(count, 2);
+            assert!(stdout(&output).contains("ok:ok"));
+        }
+    }
 }
