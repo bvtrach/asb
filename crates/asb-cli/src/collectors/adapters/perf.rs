@@ -80,7 +80,7 @@ fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
                 }
                 return Err(format!("perf {name} preflight failed ({}). Inspect the host configuration with `perf {name} -- sleep 0.01` and retry.", output.status));
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err("perf is required for the selected collector. Install the host perf package, then run `asb tool install perf` and retry.".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err("perf is required for the selected collector. Run `asb tool install perf` and retry.".into()),
             Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return Err(format!("cannot execute perf at {}: {error}. Check parent-directory access and reinstall with `asb tool install perf`.", executable.display())),
             Err(error) => return Err(format!("cannot probe perf collector: {error}; check with `perf --version`")),
         }
