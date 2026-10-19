@@ -493,7 +493,7 @@ fn source_satisfies(path: &Path, expectation: &SourceExpectation) -> Result<Eval
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Ok(Evaluation::Failed(format!(
-                    "required output file `{}` is missing",
+                    "required output file `{}` is missing from the workload workspace; inspect the agent log and workload instructions",
                     file.relative
                 )));
             }
@@ -576,7 +576,7 @@ pub(crate) fn evaluate(
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(Evaluation::Failed(format!(
-                "required adapter trial output `{relative}` is missing"
+                "required adapter trial output `{relative}` is missing from the workload workspace; inspect the agent log and trial instructions"
             )));
         }
         Err(error) => {
@@ -945,7 +945,7 @@ mod tests {
         let grade = |name: &str, output: &str| super::evaluate(name, &root, output).unwrap();
         assert_eq!(
             grade("bug-fix", ""),
-            Evaluation::Failed("required output file `src/parser.py` is missing".into())
+            Evaluation::Failed("required output file `src/parser.py` is missing from the workload workspace; inspect the agent log and workload instructions".into())
         );
         fs::write(root.join("src/parser.py"), "not the solution").unwrap();
         assert!(
