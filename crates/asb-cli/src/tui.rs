@@ -15,6 +15,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
 use serde::Serialize;
+use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, Stdout, Write};
@@ -56,6 +57,9 @@ struct Pane {
     cursor: usize,
     search: String,
     sections: Vec<Option<&'static str>>,
+    // Ratatui adjusts this on each render to keep the cursor visible. Retain
+    // it between frames so moving within the viewport does not scroll it.
+    viewport_offset: Cell<usize>,
 }
 
 impl Pane {
@@ -66,6 +70,7 @@ impl Pane {
             choices,
             cursor: 0,
             search: String::new(),
+            viewport_offset: Cell::new(0),
         }
     }
 
@@ -1381,6 +1386,13 @@ fn render_choice_pane(
     }
     let mut state = ListState::default();
     state.select(selected.or_else(|| (!items.is_empty()).then_some(0)));
+    // Shrinking the filtered list or expanding the terminal must not leave
+    // empty rows below the list or hide a section header unnecessarily.
+    let viewport_rows = usize::from(body[1].height.saturating_sub(2));
+    *state.offset_mut() = pane
+        .viewport_offset
+        .get()
+        .min(items.len().saturating_sub(viewport_rows));
     frame.render_stateful_widget(
         List::new(items).block(
             Block::default()
@@ -1390,6 +1402,7 @@ fn render_choice_pane(
         body[1],
         &mut state,
     );
+    pane.viewport_offset.set(state.offset());
 }
 
 fn choice_row_style(selected: bool) -> Style {
@@ -1968,6 +1981,144 @@ mod tests {
             }
         }
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn choice_viewport_scrolls_only_when_cursor_leaves_visible_rows() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut pane = Pane::new(
+            (0..8)
+                .map(|index| choice(&format!("item-{index}")))
+                .collect(),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(40, 7)).unwrap();
+        let draw = |terminal: &mut Terminal<TestBackend>, pane: &Pane| {
+            terminal
+                .draw(|frame| super::render_choice_pane(frame, frame.area(), pane, false))
+                .unwrap();
+            (2..6)
+                .map(|y| {
+                    (0..40)
+                        .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        draw(&mut terminal, &pane);
+        for _ in 0..5 {
+            pane.move_cursor(1);
+            draw(&mut terminal, &pane);
+        }
+        let before = draw(&mut terminal, &pane);
+        assert!(before[0].contains("item-2"));
+        assert!(before[3].contains("item-5"));
+        assert_eq!(
+            terminal.backend().buffer()[(2, 5)].bg,
+            ratatui::style::Color::Gray
+        );
+        pane.move_cursor(-1);
+        let after = draw(&mut terminal, &pane);
+        assert_eq!(
+            before, after,
+            "moving within the viewport must not scroll it"
+        );
+        assert_eq!(
+            terminal.backend().buffer()[(2, 4)].bg,
+            ratatui::style::Color::Gray
+        );
+        for _ in 0..3 {
+            pane.move_cursor(-1);
+            draw(&mut terminal, &pane);
+        }
+        let scrolled = draw(&mut terminal, &pane);
+        assert!(scrolled[0].contains("item-1"));
+        assert!(scrolled[3].contains("item-4"));
+        for _ in 0..3 {
+            pane.move_cursor(1);
+            assert_eq!(draw(&mut terminal, &pane), scrolled);
+        }
+        pane.move_cursor(1);
+        let scrolled_down = draw(&mut terminal, &pane);
+        assert!(scrolled_down[0].contains("item-2"));
+        assert!(scrolled_down[3].contains("item-5"));
+    }
+
+    #[test]
+    fn choice_viewport_handles_sections_filtering_and_resize() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut pane = Pane::new(
+            (0..8)
+                .map(|index| choice(&format!("item-{index}")))
+                .collect(),
+        );
+        pane.sections = vec![
+            Some("first"),
+            Some("first"),
+            Some("first"),
+            Some("first"),
+            Some("second"),
+            Some("second"),
+            Some("second"),
+            Some("second"),
+        ];
+        let mut terminal = Terminal::new(TestBackend::new(40, 7)).unwrap();
+        let draw = |terminal: &mut Terminal<TestBackend>, pane: &Pane| {
+            terminal
+                .draw(|frame| super::render_choice_pane(frame, frame.area(), pane, false))
+                .unwrap();
+        };
+        for _ in 0..6 {
+            pane.move_cursor(1);
+            draw(&mut terminal, &pane);
+        }
+        let offset = pane.viewport_offset.get();
+        pane.move_cursor(-1);
+        draw(&mut terminal, &pane);
+        assert_eq!(pane.viewport_offset.get(), offset);
+
+        pane.search = "item-7".into();
+        pane.search_changed();
+        draw(&mut terminal, &pane);
+        assert_eq!(pane.viewport_offset.get(), 0);
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("item-7"));
+        pane.search = "not found".into();
+        pane.search_changed();
+        draw(&mut terminal, &pane);
+        assert_eq!(pane.viewport_offset.get(), 0);
+
+        pane.search.clear();
+        pane.search_changed();
+        pane.cursor = 7;
+        let mut small = Terminal::new(TestBackend::new(40, 5)).unwrap();
+        draw(&mut small, &pane);
+        let rendered = small
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("item-7"));
+        let mut large = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        draw(&mut large, &pane);
+        let rendered = large
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("item-7"));
     }
 
     #[test]
