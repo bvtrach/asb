@@ -29,6 +29,12 @@ pub(crate) trait AgentAdapter: Sync {
     fn collect(&self, _context: &CollectionContext<'_>) -> AgentArtifacts {
         AgentArtifacts::default()
     }
+    /// Extract the agent's structured final answer from machine-readable
+    /// output.  Intermediate tool events and echoed prompts are never treated
+    /// as a final response.
+    fn final_response(&self, output: &str) -> Option<String> {
+        structured_final_response(output)
+    }
 }
 
 pub(crate) struct PreparationContext<'a> {
@@ -164,6 +170,78 @@ pub(crate) fn names() -> impl Iterator<Item = &'static str> {
 }
 pub(crate) fn find(id: &str) -> Option<&'static dyn AgentAdapter> {
     REGISTRY.iter().copied().find(|adapter| adapter.id() == id)
+}
+
+pub(crate) fn final_response(id: &str, output: &str) -> Option<String> {
+    find(id).and_then(|adapter| adapter.final_response(output))
+}
+
+fn structured_final_response(output: &str) -> Option<String> {
+    output.lines().rev().find_map(|line| {
+        let line = line
+            .trim()
+            .strip_prefix("data:")
+            .map(str::trim)
+            .unwrap_or(line.trim());
+        let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
+        final_text_from_event(&value)
+    })
+}
+
+fn final_text_from_event(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Array(values) => values.iter().rev().find_map(final_text_from_event),
+        serde_json::Value::Object(object) => {
+            let event_type = object
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_ascii_lowercase)
+                .unwrap_or_default();
+            let role = object
+                .get("role")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_ascii_lowercase)
+                .unwrap_or_default();
+            let final_event = event_type.contains("output_text.done")
+                || event_type.contains("response.completed")
+                || matches!(
+                    event_type.as_str(),
+                    "result" | "final" | "assistant" | "message"
+                )
+                || role == "assistant";
+            if !final_event || event_type.contains("tool") || event_type.contains("command") {
+                return None;
+            }
+            for key in ["text", "result", "final", "content", "message", "output"] {
+                if let Some(child) = object.get(key) {
+                    if let Some(text) = text_value(child) {
+                        return Some(text);
+                    }
+                    if let Some(text) = final_text_from_event(child) {
+                        return Some(text);
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn text_value(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(text) if !text.trim().is_empty() => Some(text.clone()),
+        serde_json::Value::Array(values) => values.iter().rev().find_map(text_value),
+        serde_json::Value::Object(object) => {
+            for key in ["text", "value", "content"] {
+                if let Some(text) = object.get(key).and_then(text_value) {
+                    return Some(text);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 pub(crate) fn resolve_executable(
@@ -307,6 +385,17 @@ mod tests {
         assert_eq!(ids.len(), all().len());
         assert!(ids.contains("codex"));
         assert!(ids.contains("continue"));
+    }
+
+    #[test]
+    fn final_response_uses_structured_events_not_prompt_or_tool_text() {
+        let echoed = "Trace src/cli.py src/registry.py lookup\nASB_FINAL_RESPONSE: echoed prompt\n{\"type\":\"tool_call\",\"command\":\"cat src/registry.py\"}";
+        assert!(final_response("codex", echoed).is_none());
+        let structured = "{\"type\":\"tool_call\",\"command\":\"cat src/registry.py\"}\n{\"type\":\"response.output_text.done\",\"text\":\"The call path is src/cli.py -> src/registry.py through lookup.\"}";
+        assert_eq!(
+            final_response("codex", structured).as_deref(),
+            Some("The call path is src/cli.py -> src/registry.py through lookup.")
+        );
     }
 
     #[test]

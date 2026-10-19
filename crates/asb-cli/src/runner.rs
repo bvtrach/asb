@@ -503,7 +503,12 @@ fn run_mode(
     let process_success =
         run_error.is_none() && process_successful(&child.status, &child.stdout, &child.stderr);
     let (workload_success, grading_error) = if process_success {
-        match workloads::evaluate(&config.workload, &workspace, &bounded(&child.stdout)) {
+        let final_response = agents::final_response(&config.agent, &bounded(&child.stdout));
+        match workloads::evaluate(
+            &config.workload,
+            &workspace,
+            final_response.as_deref().unwrap_or_default(),
+        ) {
             Ok(value) => (Some(value), None),
             Err(error) => (Some(false), Some(error)),
         }

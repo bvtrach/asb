@@ -422,6 +422,7 @@ fn source_expectation(name: &str) -> Option<SourceExpectation> {
                 relative: "src/parser.py",
                 accepted: &[
                     "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split(\"/\") if segment]\n",
+                    "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
                     "def parse_path(value: str) -> list[str]:\n    \"\"\"Split a slash-separated path into non-empty segments.\"\"\"\n    return [segment for segment in value.split(\"/\") if segment]\n",
                 ],
             }],
@@ -471,12 +472,12 @@ fn source_expectation(name: &str) -> Option<SourceExpectation> {
 fn canonical_source(source: &str) -> String {
     source
         .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(|line| line.replace('\'', "\""))
-        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
         .collect::<Vec<_>>()
         .join("\n")
+        .trim_end()
+        .to_owned()
 }
 
 fn source_satisfies(path: &Path, expectation: &SourceExpectation) -> Result<bool, String> {
@@ -514,10 +515,7 @@ fn source_satisfies(path: &Path, expectation: &SourceExpectation) -> Result<bool
 /// inherited credentials are executed.
 pub(crate) fn evaluate(name: &str, workspace: &Path, agent_output: &str) -> Result<bool, String> {
     if name == "repository-navigation" {
-        let Some(response) = final_response(agent_output) else {
-            return Ok(false);
-        };
-        let response = response.to_ascii_lowercase();
+        let response = agent_output.to_ascii_lowercase();
         return Ok(response.contains("src/cli.py")
             && response.contains("src/registry.py")
             && response.contains("lookup"));
@@ -551,18 +549,6 @@ pub(crate) fn evaluate(name: &str, workspace: &Path, agent_output: &str) -> Resu
         adapter_trial_label(name)
     );
     Ok(canonical_source(&source) == canonical_source(&expected))
-}
-
-/// Extract the agent's explicit final-response artifact from bounded output.
-/// Tool traces, command echoes, and intermediate events are intentionally not
-/// considered workload evidence.  Adapters ask the agent to emit this marker
-/// at the end of a response; taking the last marker also handles agents that
-/// retry before producing their final answer.
-fn final_response(output: &str) -> Option<&str> {
-    output
-        .rsplit_once("ASB_FINAL_RESPONSE:")
-        .map(|(_, response)| response.trim())
-        .filter(|response| !response.is_empty())
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<usize, String> {
@@ -965,6 +951,12 @@ mod tests {
         )
         .unwrap();
         assert!(!evaluate("feature-addition", &workspace, "").unwrap());
+        fs::write(
+            workspace.join("src/formatter.py"),
+            "def format_items(items: list[str], reverse: bool = False) -> str:\nordered = list(reversed(items)) if reverse else items\n    return \", \".join(ordered)\n",
+        )
+        .unwrap();
+        assert!(!evaluate("feature-addition", &workspace, "").unwrap());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -975,19 +967,10 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let workspace = root.join("workspace");
         prepare_fixture("repository-navigation", &workspace).unwrap();
-        let tool_trace =
-            "cat src/cli.py src/registry.py; lookup\nASB_FINAL_RESPONSE: unrelated answer";
+        let tool_trace = "unrelated final answer";
         assert!(!evaluate("repository-navigation", &workspace, tool_trace).unwrap());
-        let answer = "tool output omitted\nASB_FINAL_RESPONSE: The call path goes from src/cli.py to src/registry.py through lookup.";
+        let answer = "The call path goes from src/cli.py to src/registry.py through lookup.";
         assert!(evaluate("repository-navigation", &workspace, answer).unwrap());
-        assert!(
-            !evaluate(
-                "repository-navigation",
-                &workspace,
-                "src/cli.py src/registry.py lookup"
-            )
-            .unwrap()
-        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -1005,6 +988,12 @@ mod tests {
         fs::write(
             &task,
             "def normalize(value: str) -> str:\n    if False:\n        return value.strip().lower().replace(' ', '-')\n    return value\n\ndef suite_label() -> str:\n    return \"agentbench\"\n",
+        )
+        .unwrap();
+        assert!(!evaluate("agentbench", &workspace, "").unwrap());
+        fs::write(
+            &task,
+            "def normalize(value: str) -> str:\n    return value.strip().lower().replace('     ', '-')\n\ndef suite_label() -> str:\n    return \"agentbench\"\n",
         )
         .unwrap();
         assert!(!evaluate("agentbench", &workspace, "").unwrap());
