@@ -90,6 +90,18 @@ fetch(url + '/responses', {method:'POST', headers:{'content-type':'application/j
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
     );
+    let progress = String::from_utf8_lossy(&result.stdout);
+    assert_eq!(
+        progress.matches("Starting benchmark (").count(),
+        1,
+        "{progress}"
+    );
+    assert!(
+        progress.contains(
+            "(1/1; 100% reached): benchmark.toml — pi, cli2key, test-model, bug-fix (concurrency 8)"
+        ),
+        "{progress}"
+    );
     for index in 1..=8 {
         let log = root.join(format!(
             "sweep-results/000-benchmark/run-concurrency-{index}.log"
