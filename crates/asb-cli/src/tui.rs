@@ -273,6 +273,21 @@ impl App {
         }
     }
 
+    fn sync_collector_dependencies(&mut self) -> Vec<String> {
+        let selected = self.panes[4]
+            .selected_choices()
+            .map(|choice| choice.label.clone())
+            .collect::<Vec<_>>();
+        let expanded = crate::collectors::expand_dependencies(&selected);
+        let pane = &mut self.panes[4];
+        for (choice, enabled) in pane.choices.iter().zip(pane.selected.iter_mut()) {
+            if expanded.contains(&choice.label) {
+                *enabled = true;
+            }
+        }
+        expanded
+    }
+
     fn refresh_models(&mut self) {
         let selected_providers = self.panes[1]
             .selected_choices()
@@ -959,6 +974,9 @@ fn run_loop(
                 code: KeyCode::Tab | KeyCode::Enter,
                 ..
             } => {
+                if app.step == 4 && !install_setup_dependencies(terminal, app)? {
+                    continue;
+                }
                 if let Some(generated) = app.advance()? {
                     return Ok(generated);
                 }
@@ -967,8 +985,108 @@ fn run_loop(
                 code: KeyCode::Char(' '),
                 ..
             } if app.step == 5 => app.panes[5].toggle_single(),
+            KeyEvent {
+                code: KeyCode::Char(' '),
+                ..
+            } if app.step == 4 => {
+                app.panes[4].toggle();
+                install_setup_dependencies(terminal, app)?;
+            }
             key if handle_pane_key(&mut app.panes[app.step], key) => {}
             _ => {}
+        }
+    }
+}
+
+fn install_setup_dependencies(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    app: &mut App,
+) -> Result<bool, Error> {
+    let selected = app.sync_collector_dependencies();
+    let tools_root = project::resolve(&app.root, &app.project.tools_dir);
+    if crate::collectors::dependency_tools(&selected)
+        .iter()
+        .all(|id| install::tool_installed_locally(id, &tools_root))
+    {
+        return Ok(true);
+    }
+    let project_root = app.root.clone();
+    let progress_state = std::sync::Arc::new(std::sync::Mutex::new((
+        5_u8,
+        "preparing dependencies".to_owned(),
+    )));
+    let worker_progress = std::sync::Arc::clone(&progress_state);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut output = Vec::new();
+        let mut progress = |percent, stage: &str| {
+            if let Ok(mut state) = worker_progress.lock() {
+                *state = (percent, stage.to_owned());
+            }
+        };
+        let result = install::ensure_collector_dependencies(
+            &selected,
+            &project_root,
+            &tools_root,
+            &mut output,
+            &mut progress,
+            false,
+        );
+        let _ = sender.send(result);
+    });
+    let started = Instant::now();
+    let mut tick = 0;
+    let result = loop {
+        match receiver.try_recv() {
+            Ok(result) => break result,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                break Err(Error::Io(
+                    "collector dependency installation stopped unexpectedly".into(),
+                ));
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+        let (percent, stage) = progress_state
+            .lock()
+            .map(|state| state.clone())
+            .unwrap_or((5, "installing dependencies".into()));
+        set_message(
+            &mut app.message,
+            &mut app.message_color,
+            &mut app.message_until,
+            install_status_message(percent, &stage, started, tick),
+            Color::Cyan,
+            false,
+        );
+        terminal.draw(|frame| draw(frame, app)).map_err(|error| {
+            Error::Io(format!("cannot draw dependency install status: {error}"))
+        })?;
+        tick = tick.wrapping_add(1);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    app.refresh_availability();
+    match result {
+        Ok(()) => {
+            set_message(
+                &mut app.message,
+                &mut app.message_color,
+                &mut app.message_until,
+                "Required collector tools are installed and selected.",
+                Color::Green,
+                true,
+            );
+            Ok(true)
+        }
+        Err(error) => {
+            set_message(
+                &mut app.message,
+                &mut app.message_color,
+                &mut app.message_until,
+                format!("Cannot install required collector tool: {error}"),
+                Color::Red,
+                false,
+            );
+            Ok(false)
         }
     }
 }
@@ -1382,10 +1500,12 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
         .selected_choices()
         .map(|choice| choice.label.clone())
         .collect::<Vec<_>>();
-    let measures = app.panes[4]
-        .selected_choices()
-        .map(|choice| choice.label.clone())
-        .collect::<Vec<_>>();
+    let measures = crate::collectors::expand_dependencies(
+        &app.panes[4]
+            .selected_choices()
+            .map(|choice| choice.label.clone())
+            .collect::<Vec<_>>(),
+    );
     let concurrency = app.panes[5]
         .selected_choices()
         .next()
@@ -1507,6 +1627,32 @@ mod tests {
             model: None,
             availability: Availability::Unknown,
         }
+    }
+
+    #[test]
+    fn selecting_collector_selects_and_keeps_required_dependency() {
+        let mut app = App::new(std::env::temp_dir(), ProjectConfig::default());
+        let flamegraph = app.panes[4]
+            .choices
+            .iter()
+            .position(|c| c.label == "flamegraph")
+            .unwrap();
+        let perf = app.panes[4]
+            .choices
+            .iter()
+            .position(|c| c.label == "perf")
+            .unwrap();
+        app.panes[4].selected.fill(false);
+        app.panes[4].selected[flamegraph] = true;
+        app.sync_collector_dependencies();
+        assert!(app.panes[4].selected[perf]);
+        app.panes[4].selected[perf] = false;
+        app.sync_collector_dependencies();
+        assert!(app.panes[4].selected[perf]);
+        app.panes[4].selected[flamegraph] = false;
+        app.panes[4].selected[perf] = false;
+        app.sync_collector_dependencies();
+        assert!(!app.panes[4].selected[perf]);
     }
 
     #[test]

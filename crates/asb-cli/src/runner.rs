@@ -99,6 +99,22 @@ pub(crate) fn run_with_diagnostics(
     let text = read_config(config_path)?;
     let config: BenchmarkConfig = toml::from_str(&text)
         .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
+    if let Some(measures) = config.measurements.as_ref().filter(|value| value.enabled) {
+        let (root, project_config) = project::load(config_path)?;
+        let tools_root = project::resolve(&root, &project_config.tools_dir);
+        let mut messages = Vec::new();
+        crate::install::ensure_collector_dependencies(
+            &measures.collectors,
+            &root,
+            &tools_root,
+            &mut messages,
+            &mut |_, _| {},
+            false,
+        )?;
+        if !json {
+            output.write_all(&messages).map_err(io_error)?;
+        }
+    }
     let tape_request = mode.map(|value| (value, cassette));
     if config.concurrency > 1 {
         return run_concurrent(

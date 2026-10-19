@@ -134,6 +134,9 @@ pub(crate) trait CollectorAdapter: Sync {
     fn id(&self) -> &'static str;
     fn environment_flag(&self) -> Option<&'static str>;
     fn tool_id(&self) -> Option<&'static str>;
+    fn dependencies(&self) -> &'static [&'static str] {
+        &[]
+    }
     fn requires_pid(&self) -> bool;
     fn usage(&self, _context: &UsageContext<'_>) -> Option<crate::measurements::TokenUsage> {
         None
@@ -210,6 +213,7 @@ pub(crate) struct StaticCollector {
     id: &'static str,
     environment_flag: Option<&'static str>,
     tool_id: Option<&'static str>,
+    dependencies: &'static [&'static str],
     requires_pid: bool,
     usage: Option<fn(&UsageContext<'_>) -> crate::measurements::TokenUsage>,
     usage_file: Option<fn(&Path) -> crate::measurements::TokenUsage>,
@@ -238,6 +242,7 @@ impl StaticCollector {
             id,
             environment_flag,
             tool_id,
+            dependencies: &[],
             requires_pid,
             usage: None,
             usage_file: None,
@@ -255,6 +260,10 @@ impl StaticCollector {
             finish: None,
             lifecycle_event: None,
         }
+    }
+    const fn with_dependencies(mut self, dependencies: &'static [&'static str]) -> Self {
+        self.dependencies = dependencies;
+        self
     }
     const fn with_usage(
         mut self,
@@ -351,6 +360,9 @@ impl CollectorAdapter for StaticCollector {
     fn tool_id(&self) -> Option<&'static str> {
         self.tool_id
     }
+    fn dependencies(&self) -> &'static [&'static str] {
+        self.dependencies
+    }
     fn requires_pid(&self) -> bool {
         self.requires_pid
     }
@@ -437,6 +449,40 @@ pub(crate) fn run_metrics(observation: &RunObservation) -> RunMetrics {
 pub(crate) fn find(id: &str) -> Option<&'static dyn CollectorAdapter> {
     all().iter().copied().find(|collector| collector.id() == id)
 }
+
+/// Resolve transitive dependencies once, keeping user-selected order stable.
+pub(crate) fn expand_dependencies(selected: &[String]) -> Vec<String> {
+    let mut expanded = selected.to_vec();
+    let mut index = 0;
+    while index < expanded.len() {
+        if let Some(adapter) = find(&expanded[index]) {
+            for dependency in adapter.dependencies() {
+                if !expanded.iter().any(|item| item == dependency) {
+                    expanded.push((*dependency).into());
+                }
+            }
+        }
+        index += 1;
+    }
+    expanded
+}
+
+pub(crate) fn dependency_tools(selected: &[String]) -> Vec<&'static str> {
+    let expanded = expand_dependencies(selected);
+    let mut tools = Vec::new();
+    for id in &expanded {
+        if let Some(adapter) = find(id) {
+            for dependency in adapter.dependencies() {
+                if let Some(tool) = find(dependency).and_then(|item| item.tool_id())
+                    && !tools.contains(&tool)
+                {
+                    tools.push(tool);
+                }
+            }
+        }
+    }
+    tools
+}
 pub(crate) fn prioritizes_artifact(name: &str) -> bool {
     all()
         .iter()
@@ -466,6 +512,16 @@ pub(crate) fn selected_or_environment(id: &str, selected: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn flamegraph_automatically_resolves_perf_once() {
+        let selected = vec!["flamegraph".to_owned()];
+        assert_eq!(expand_dependencies(&selected), ["flamegraph", "perf"]);
+        assert_eq!(dependency_tools(&selected), ["perf"]);
+        let both = vec!["perf".to_owned(), "flamegraph".to_owned()];
+        assert_eq!(expand_dependencies(&both), both);
+        assert_eq!(dependency_tools(&both), ["perf"]);
+        assert!(dependency_tools(&["perf".into()]).is_empty());
+    }
     #[test]
     fn registry_has_unique_names_and_declares_tool_backed_collectors() {
         let ids = names().collect::<std::collections::BTreeSet<_>>();

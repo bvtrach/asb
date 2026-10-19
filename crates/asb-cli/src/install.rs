@@ -234,12 +234,20 @@ pub fn tool_with_progress(
         return Err(Error::Input(format!("invalid tool name `{id}`")));
     }
     let (project_root, project_config) = project::load(Path::new("."))?;
-    let root = dir
+    let tools_root = dir
         .map(|value| project::resolve(&project_root, &value.to_string_lossy()))
         .unwrap_or_else(|| project::resolve(&project_root, &project_config.tools_dir));
     progress(2, "preparing");
-    let root = root.join(&id);
+    let root = tools_root.join(&id);
     let built_in = built_in_tool(&id);
+    ensure_collector_dependencies(
+        &[id.clone()],
+        &project_root,
+        &tools_root,
+        output,
+        progress,
+        dry_run,
+    )?;
     if let Some(source) = source {
         let destination = root
             .join("bin")
@@ -281,6 +289,109 @@ pub fn tool_with_progress(
     writeln!(output, "Installed {kind} {id} at {}", executable.display())
         .map_err(super::io_error)?;
     Ok(())
+}
+
+/// Install only collector dependencies, not the selected collectors themselves.
+/// Existing project-local binaries are never overwritten by this automatic path.
+pub(crate) fn tool_installed_locally(id: &str, tools_root: &Path) -> bool {
+    tools::find(id).is_some_and(|tool| executable(tool.recipe(), &tools_root.join(id)).is_file())
+}
+
+pub(crate) fn ensure_collector_dependencies(
+    selected: &[String],
+    project_root: &Path,
+    tools_root: &Path,
+    output: &mut dyn std::io::Write,
+    progress: &mut dyn FnMut(u8, &str),
+    dry_run: bool,
+) -> Result<(), Error> {
+    for id in crate::collectors::dependency_tools(selected) {
+        let tool = tools::find(id).ok_or_else(|| {
+            Error::Input(format!("collector dependency `{id}` has no tool installer"))
+        })?;
+        let recipe = tool.recipe();
+        let root = tools_root.join(id);
+        let destination = executable(recipe, &root);
+        if destination.is_file() {
+            continue;
+        }
+        if dry_run {
+            writeln!(
+                output,
+                "Required dependency {id}: {}",
+                describe(recipe, &root)
+            )
+            .map_err(super::io_error)?;
+            continue;
+        }
+        progress(5, &format!("installing required {id}"));
+        let installed = match recipe {
+            Recipe::Host { executable } => install_host_dependency(executable, &destination)?,
+            _ => install_recipe(recipe, &root, project_root, output, progress)?,
+        };
+        tool.post_install(&installed, progress, output)?;
+        writeln!(
+            output,
+            "Installed required tool {id} at {}",
+            installed.display()
+        )
+        .map_err(super::io_error)?;
+    }
+    Ok(())
+}
+
+fn install_host_dependency(name: &str, destination: &Path) -> Result<PathBuf, Error> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+    let source = host_executable(name)?;
+    let parent = destination.parent().expect("dependency has a parent");
+    fs::create_dir_all(parent)
+        .map_err(|error| Error::Io(format!("cannot create {}: {error}", parent.display())))?;
+    let temporary = parent.join(format!(
+        ".asb-{name}-{}-{}",
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut created = false;
+    let result = (|| -> Result<(), Error> {
+        let mut input = fs::File::open(&source)
+            .map_err(|error| Error::Io(format!("cannot read {}: {error}", source.display())))?;
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| {
+                Error::Io(format!("cannot create {}: {error}", temporary.display()))
+            })?;
+        created = true;
+        io::copy(&mut input, &mut output)
+            .map_err(|error| Error::Io(format!("cannot install {name}: {error}")))?;
+        drop(output);
+        fs::set_permissions(
+            &temporary,
+            input
+                .metadata()
+                .map_err(|error| Error::Io(error.to_string()))?
+                .permissions(),
+        )
+        .map_err(|error| Error::Io(error.to_string()))?;
+        make_executable(&temporary)?;
+        match fs::hard_link(&temporary, destination) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists && destination.is_file() => {
+                Ok(())
+            }
+            Err(error) => Err(Error::Io(format!(
+                "cannot install {name} at {}: {error}",
+                destination.display()
+            ))),
+        }
+    })();
+    if created {
+        let _ = fs::remove_file(&temporary);
+    }
+    result?;
+    Ok(destination.to_path_buf())
 }
 
 /// List every built-in tool recipe and its project-local executable.
