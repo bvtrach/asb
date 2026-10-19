@@ -171,10 +171,18 @@ function normalizeCassetteBody(body) {
     .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, "<asb-uuid>")
     .replace(/\b1[0-9]{12,}\b/g, "<asb-timestamp>");
   try {
-    const sort = (value) => {
-      if (Array.isArray(value)) return value.map(sort);
+    const sort = (value, key = "", path = []) => {
+      // Claude Code embeds a fresh device identifier in metadata.user_id on
+      // every process. It is client telemetry, not provider input, and must
+      // not make an otherwise identical recording unreplayable. Keep this
+      // exception path-scoped so same-named fields in prompts and tool input
+      // remain request-significant.
+      if (path.length === 2 && path[0] === "metadata" && path[1] === "user_id" && key === "user_id") {
+        return "<asb-user-id>";
+      }
+      if (Array.isArray(value)) return value.map((item) => sort(item));
       if (value && typeof value === "object") {
-        return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sort(value[key])]));
+        return Object.fromEntries(Object.keys(value).sort().map((child) => [child, sort(value[child], child, [...path, child])]));
       }
       return value;
     };
