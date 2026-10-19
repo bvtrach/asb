@@ -350,7 +350,14 @@ pub(crate) fn bpftrace_profile_probe(
     profile: BpftraceProfile,
     sudo: bool,
 ) -> Result<bool, String> {
-    let program = format!("{}\nBEGIN {{ exit(); }}", profile.program);
+    // Compile the same process-tree prelude used by the live collector. The
+    // preflight must not reject a valid profile merely because its tree map is
+    // populated by the runtime attach path.
+    let program = format!(
+        "{}\n{}\ninterval:ms:1 {{ exit(); }}",
+        process_tree_prelude(0),
+        profile.program
+    );
     let mut command = if sudo {
         let mut command = Command::new("sudo");
         command.args(["-n", "--"]);
