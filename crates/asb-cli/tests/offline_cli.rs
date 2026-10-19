@@ -1076,6 +1076,92 @@ fetch(target, {method:'POST',headers:{'content-type':'application/json'},body:JS
 }
 
 #[cfg(unix)]
+#[test]
+fn pi_mock_replay_counts_cumulative_snapshots_once_in_every_output() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = replay_project(1);
+    let executable = ".asb-tools/pi/bin/pi";
+    project.write(executable, r##"#!/usr/bin/env node
+const fs = require('fs');
+const endpoint = JSON.parse(fs.readFileSync(process.env.PI_CODING_AGENT_DIR + '/models.json')).providers.asb.baseUrl;
+const body = {model:'test-model',input:'offline',tools:[{type:'function'}]};
+fetch(endpoint + '/responses', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
+  .then(response => {
+    if (!response.ok) { process.exitCode = 1; return; }
+    for (const type of ['message_update', 'message_end', 'turn_end', 'agent_end'])
+      console.log(JSON.stringify({type, usage:{input:10,output:3,cacheRead:0,totalTokens:13}}));
+  }).catch(() => { process.exitCode = 1; });
+"##);
+    std::fs::set_permissions(
+        project.0.join(executable),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let result = replay(
+        &project,
+        "success",
+        &["--json", "--measurements", "measurements"],
+    );
+    expect_success(&result);
+    let json: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    let log: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(project.0.join("run.log")).unwrap()).unwrap();
+    let measurement: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(project.0.join("measurements/run.json")).unwrap())
+            .unwrap();
+    assert_eq!(json["token_usage"], log["token_usage"]);
+    assert_eq!(json["token_usage"], measurement["token_usage"]);
+    assert_eq!(json["token_usage"]["input_tokens"], 10);
+    assert_eq!(json["token_usage"]["output_tokens"], 3);
+    assert_eq!(json["token_usage"]["cached_tokens"], 0);
+    assert_eq!(json["token_usage"]["total_tokens"], 13);
+}
+
+#[cfg(unix)]
+#[test]
+fn continue_mock_replay_uses_cassette_usage_in_every_output() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = replay_project(1);
+    project.write("benchmark.toml", "agent='continue'\nworkload='bug-fix'\nprovider='cli2key'\nmodel='test-model'\nworkspace='workspace'\nlog_file='run.log'\n");
+    let body =
+        serde_json::json!({"model":"test-model","messages":[],"tools":[{"type":"function"}]})
+            .to_string();
+    let response = serde_json::json!({"usage":{"prompt_tokens":10,"completion_tokens":3,"prompt_tokens_details":{"cached_tokens":4}}}).to_string();
+    let cassette = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body},"response":{"status":200,"headers":{"content-type":"application/json"},"body":response}});
+    project.write("tape.jsonl", &format!("{cassette}\n"));
+    let executable = ".asb-tools/continue/bin/cn";
+    project.write(executable, r##"#!/usr/bin/env node
+const body = {model:'test-model',messages:[],tools:[{type:'function'}]};
+fetch(process.env.CONTINUE_API_BASE.replace(/\/$/, '') + '/chat/completions', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
+  .then(response => { if (!response.ok) { process.exitCode = 1; return; } console.log(JSON.stringify({response:'done',status:'success'})); })
+  .catch(() => { process.exitCode = 1; });
+"##);
+    std::fs::set_permissions(
+        project.0.join(executable),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let result = replay(
+        &project,
+        "success",
+        &["--json", "--measurements", "measurements"],
+    );
+    expect_success(&result);
+    let json: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    let log: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(project.0.join("run.log")).unwrap()).unwrap();
+    let measurement: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(project.0.join("measurements/run.json")).unwrap())
+            .unwrap();
+    assert_eq!(json["token_usage"], log["token_usage"]);
+    assert_eq!(json["token_usage"], measurement["token_usage"]);
+    assert_eq!(json["token_usage"]["input_tokens"], 10);
+    assert_eq!(json["token_usage"]["output_tokens"], 3);
+    assert_eq!(json["token_usage"]["cached_tokens"], 4);
+    assert_eq!(json["token_usage"]["total_tokens"], 13);
+}
+
+#[cfg(unix)]
 fn assert_tape_scratch_cleaned(project: &Project) {
     let scratch = std::fs::read_dir(&project.0)
         .unwrap()

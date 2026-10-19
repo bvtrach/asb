@@ -797,6 +797,10 @@ pub fn token_usage_from_path(path: &Path) -> TokenUsage {
         .find_map(|adapter| adapter.usage_file(path))
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+#[path = "measurements/token_usage_mock_tests.rs"]
+mod token_usage_mock_tests;
 /// Count bounded agent actions and turns.
 pub fn steps_from_sources(agent: &str, stdout: &str, stderr: &str) -> u64 {
     collectors::all()

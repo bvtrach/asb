@@ -80,9 +80,50 @@ fn collect(context: &CollectionContext<'_>) -> AgentArtifacts {
         return AgentArtifacts::default();
     }
     AgentArtifacts {
-        token_usage: Some(crate::measurements::token_usage_from_path(&trajectory)),
+        token_usage: Some(trajectory_usage(&trajectory)),
         cleanup_paths: vec![trajectory],
     }
+}
+
+fn trajectory_usage(path: &Path) -> crate::measurements::TokenUsage {
+    let fallback = || crate::measurements::token_usage_from_path(path);
+    if std::fs::metadata(path).map_or(true, |m| m.len() > 16 * 1024 * 1024) {
+        return Default::default();
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return Default::default();
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Default::default();
+    };
+    let Some(messages) = value.get("messages").and_then(|v| v.as_array()) else {
+        return fallback();
+    };
+    let mut sum = crate::measurements::TokenUsage::default();
+    let mut seen = false;
+    let mut cache_complete = true;
+    for message in messages {
+        let Some(response) = message.pointer("/extra/response") else {
+            continue;
+        };
+        let Some(value) = response.get("usage") else {
+            return Default::default();
+        };
+        let usage = crate::collectors::adapters::token_usage::usage_from_json(value);
+        if usage.input_tokens.is_none() || usage.output_tokens.is_none() {
+            return Default::default();
+        }
+        cache_complete &= usage.cached_tokens.is_some();
+        sum = sum.add(usage);
+        seen = true;
+    }
+    if !seen {
+        return fallback();
+    }
+    if !cache_complete {
+        sum.cached_tokens = None;
+    }
+    sum.with_derived_total()
 }
 
 #[cfg(test)]

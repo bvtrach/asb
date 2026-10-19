@@ -11,7 +11,23 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     command,
     prepare_adapter,
 )
-.with_replay_credential_vars(&["CLINE_API_KEY"]);
+.with_replay_credential_vars(&["CLINE_API_KEY"])
+.with_output_usage(output_usage);
+
+fn output_usage(stdout: &str, stderr: &str, _: bool) -> crate::measurements::TokenUsage {
+    for event in stdout
+        .lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+    {
+        if event.get("type").and_then(|v| v.as_str()) == Some("run_result") {
+            if let Some(usage) = event.get("aggregateUsage").or_else(|| event.get("usage")) {
+                return super::super::usage_fields(usage).with_derived_total();
+            }
+        }
+    }
+    crate::collectors::adapters::token_usage::usage_from_text(&format!("{stdout}\n{stderr}"))
+}
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "cline".into(),

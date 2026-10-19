@@ -191,7 +191,14 @@ and total fields. When input and output are present, total is canonicalized to
 their sum because cached input is a subset of input. Qwen Code's adapter reads
 the final cumulative result; OpenJiuwen's adapter consumes per-model-call
 streaming usage, with a process-local compatibility shim for its pinned
-client's partial streaming metadata. Cassette accounting combines usage
+client's partial streaming metadata. Cline uses its final aggregate, Pi and
+OpenCode sum their completed per-turn or per-step records, and mini-SWE sums
+the provider responses in its trajectory. A complete recording takes
+precedence over agent output, because it also includes auxiliary provider
+calls that an agent may omit from its own summary. Without recording, token
+counts are limited to the usage reported by the agent; for example, Goose and
+OpenCode can omit a separate title-generation call, and some agents do not
+report usage at all. Missing values are not estimated. Cassette accounting combines usage
 snapshots within each response and sums completed calls; incomplete accounting
 is not promoted to a whole-run total. OpenHands and OpenJiuwen use
 machine-readable output; mini-SWE writes a project-local trajectory that

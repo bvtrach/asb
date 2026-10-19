@@ -14,7 +14,51 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     ],
     command,
     prepare_adapter,
-);
+)
+.with_output_usage(output_usage);
+
+fn output_usage(stdout: &str, stderr: &str, _: bool) -> crate::measurements::TokenUsage {
+    let mut sum = crate::measurements::TokenUsage::default();
+    let mut seen = false;
+    let mut cache_complete = true;
+    for event in stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+    {
+        if event.get("type").and_then(|v| v.as_str()) != Some("step_finish") {
+            continue;
+        }
+        let Some(tokens) = event.pointer("/part/tokens") else {
+            return Default::default();
+        };
+        let number = |name: &str| tokens.get(name).and_then(|v| v.as_u64());
+        let (Some(input), Some(output)) = (number("input"), number("output")) else {
+            return Default::default();
+        };
+        let read = tokens.pointer("/cache/read").and_then(|v| v.as_u64());
+        let write = tokens.pointer("/cache/write").and_then(|v| v.as_u64());
+        cache_complete &= read.is_some();
+        sum = sum.add(crate::measurements::TokenUsage {
+            input_tokens: Some(
+                input
+                    .saturating_add(read.unwrap_or(0))
+                    .saturating_add(write.unwrap_or(0)),
+            ),
+            output_tokens: Some(output),
+            cached_tokens: read,
+            ..Default::default()
+        });
+        seen = true;
+    }
+    if seen {
+        if !cache_complete {
+            sum.cached_tokens = None;
+        }
+        sum.with_derived_total()
+    } else {
+        crate::collectors::adapters::token_usage::usage_from_text(&format!("{stdout}\n{stderr}"))
+    }
+}
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     let model = format!("asb/{}", context.config.model);
     CommandSpec {
