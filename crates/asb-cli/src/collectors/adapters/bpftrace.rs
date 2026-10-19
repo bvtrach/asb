@@ -295,9 +295,35 @@ fn validate_custom_program_scope(path: &Path) -> Result<(), String> {
     }
     let source = fs::read_to_string(path)
         .map_err(|error| format!("cannot read bpftrace program {}: {error}", path.display()))?;
-    if !source.contains("@asb_tree") {
+    // A substring check is insufficient: a comment or an unrelated helper map
+    // must not make an otherwise host-wide probe acceptable. Require every
+    // process-observing probe to carry the tree predicate in its probe clause.
+    let mut saw_probe = false;
+    for line in source.lines() {
+        let line = line.split("//").next().unwrap_or("").trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some(open) = line.find('{') else { continue };
+        let header = line[..open].trim();
+        if !header.contains(':') || header.starts_with("BEGIN") || header.starts_with("END") {
+            continue;
+        }
+        saw_probe = true;
+        let predicate = header
+            .split_once('/')
+            .and_then(|(_, rest)| rest.split_once('/').map(|(value, _)| value))
+            .unwrap_or("");
+        if !predicate.contains("@asb_tree[") {
+            return Err(format!(
+                "bpftrace program {} contains an unscoped probe and is not process-tree scoped; every probe must use a predicate containing `@asb_tree[pid]` (comments and unused references do not count)",
+                path.display()
+            ));
+        }
+    }
+    if !saw_probe {
         return Err(format!(
-            "bpftrace program {} is not process-tree scoped; add predicates using `@asb_tree[pid]` (or the relevant tracepoint PID) so it cannot measure unrelated host processes",
+            "bpftrace program {} has no process-tree-scoped probe; add predicates using `@asb_tree[pid]` (or the relevant tracepoint PID) so it cannot measure unrelated host processes",
             path.display()
         ));
     }
@@ -615,6 +641,18 @@ mod tests {
         )
         .expect("write scoped fixture");
         validate_custom_program_scope(&root).expect("scoped program");
+        std::fs::write(
+            &root,
+            "// @asb_tree[pid]\ntracepoint:syscalls:sys_enter_openat { @host = count(); }\n",
+        )
+        .expect("write comment-only fixture");
+        validate_custom_program_scope(&root).expect_err("comment must not scope a probe");
+        std::fs::write(
+            &root,
+            "tracepoint:syscalls:sys_enter_openat /@asb_tree[pid]/ { @host = count(); }\ntracepoint:sched:sched_switch { @host = count(); }\n",
+        )
+        .expect("write mixed fixture");
+        validate_custom_program_scope(&root).expect_err("mixed probes must fail closed");
         std::fs::remove_file(root).expect("remove fixture");
     }
 }
