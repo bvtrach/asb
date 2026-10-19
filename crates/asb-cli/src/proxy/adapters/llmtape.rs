@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(8);
 const BUILTIN_PROXY: &str = include_str!("../../../assets/scripts/llmtape.mjs");
+const NETWORK_FETCH: &str = include_str!("../../../assets/scripts/network-fetch.mjs");
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(0);
 static START_LOCK: Mutex<()> = Mutex::new(());
 
@@ -100,6 +101,7 @@ impl ProxyAdapter for LlmtapeAdapter {
         let port = free_port()?;
         let executable = resolve_executable(&scratch.path)?;
         let mut command = executable.command();
+        crate::project::apply_network_proxy(&mut command, Path::new("."))?;
         command
             .arg(match request.mode {
                 Mode::Record => "record",
@@ -177,9 +179,7 @@ impl ProxySession for RunningLlmtape {
         let Some(mut child) = self.child.take() else {
             return Ok(());
         };
-        let _ = child.kill();
-        child
-            .wait()
+        crate::project::stop_network_child(&mut child)
             .map_err(|error| Error::Run(format!("could not stop proxy adapter: {error}")))?;
         if self.mode == Mode::Replay {
             let progress = self
@@ -222,8 +222,7 @@ impl ProxySession for RunningLlmtape {
 
     fn abort(&mut self) {
         if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            let _ = crate::project::stop_network_child(&mut child);
         }
     }
 }
@@ -264,6 +263,8 @@ fn resolve_executable(directory: &Path) -> Result<ProxyExecutable, Error> {
         return Ok(ProxyExecutable::Override(override_path));
     }
     let script = directory.join(".asb-tape-proxy.mjs");
+    std::fs::write(directory.join("network-fetch.mjs"), NETWORK_FETCH)
+        .map_err(|error| Error::Run(format!("cannot materialize tape network client: {error}")))?;
     std::fs::write(&script, BUILTIN_PROXY).map_err(|error| {
         Error::Run(format!(
             "cannot materialize ASB's built-in tape proxy at {}: {error}",

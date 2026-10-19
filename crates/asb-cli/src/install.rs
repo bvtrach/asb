@@ -24,6 +24,8 @@ pub(crate) trait LoggedStatus {
 
 impl LoggedStatus for Command {
     fn logged_status(&mut self) -> io::Result<ExitStatus> {
+        project::apply_network_proxy(self, Path::new("."))
+            .map_err(|error| io::Error::other(error.to_string()))?;
         let log_path = Path::new(".asb/install.log");
         if let Some(parent) = log_path.parent() {
             fs::create_dir_all(parent)?;

@@ -227,6 +227,7 @@ fn run_mode(
             "cannot resolve benchmark project directory: {error}"
         ))
     })?;
+    let _network_project = project::network_project(&project_root);
     let configured_measurements = config
         .measurements
         .as_ref()
@@ -421,6 +422,7 @@ fn run_mode(
     }
     let started = Instant::now();
     let mut command = Command::new(&program);
+    project::apply_network_proxy(&mut command, config_path)?;
     command.args(specification.args);
     // Do not leak an enclosing Codex session into the benchmark agent. These
     // variables are host-runner integration state; if inherited, a project

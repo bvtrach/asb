@@ -386,6 +386,7 @@ fn fetch_authenticated(spec: providers::ModelSpec, url: &str, key: &str) -> Resu
 
 pub(crate) fn fetch_config(config: String, provider: &str) -> Result<Vec<u8>, Error> {
     let mut command = Command::new("curl");
+    crate::project::apply_network_proxy(&mut command, std::path::Path::new("."))?;
     command.args([
         "--disable",
         "--config",

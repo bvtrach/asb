@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 const BUILTIN_COMPAT_PROXY: &str = include_str!("../../../../assets/scripts/cli2key-proxy.mjs");
+const NETWORK_FETCH: &str = include_str!("../../../../assets/scripts/network-fetch.mjs");
 
 pub(in crate::providers) fn prepare(
     command: &mut Command,
@@ -99,7 +100,9 @@ impl Bridge {
             host.as_str()
         };
         let base_url = format!("http://{client_host}:{port_number}/v1");
-        let process = Command::new(executable)
+        let mut command = Command::new(executable);
+        crate::project::apply_network_proxy(&mut command, std::path::Path::new("."))?;
+        let process = command
             .arg("serve")
             .env("CODEX_BRIDGE_HOST", &host)
             .env("CODEX_BRIDGE_PORT", &port)
@@ -185,6 +188,11 @@ impl Bridge {
                 proxy_root.display()
             ))
         })?;
+        std::fs::write(proxy_root.join("network-fetch.mjs"), NETWORK_FETCH).map_err(|error| {
+            Error::Run(format!(
+                "cannot materialize cli2key network client: {error}"
+            ))
+        })?;
         let proxy_script = proxy_root.join(format!("cli2key-proxy-{}.mjs", std::process::id()));
         std::fs::write(&proxy_script, BUILTIN_COMPAT_PROXY).map_err(|error| {
             Error::Run(format!(
@@ -194,7 +202,9 @@ impl Bridge {
         })?;
         let proxy_port = free_port()?;
         let upstream = bridge.base_url.clone();
-        let mut proxy = Command::new("node")
+        let mut command = Command::new("node");
+        crate::project::apply_network_proxy(&mut command, std::path::Path::new("."))?;
+        let mut proxy = command
             .arg(&proxy_script)
             .args(["--port", &proxy_port.to_string(), "--upstream", &upstream])
             .stdin(Stdio::null())
@@ -258,10 +268,7 @@ impl Bridge {
 impl Drop for Bridge {
     fn drop(&mut self) {
         if let Some(proxy) = self.proxy.as_mut() {
-            if proxy.try_wait().ok().flatten().is_none() {
-                let _ = proxy.kill();
-            }
-            let _ = proxy.wait();
+            let _ = crate::project::stop_network_child(proxy);
         }
         if let Some(process) = self.process.as_mut() {
             if process.try_wait().ok().flatten().is_none() {

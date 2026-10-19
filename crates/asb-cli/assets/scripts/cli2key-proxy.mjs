@@ -7,6 +7,7 @@
 
 import http from "node:http";
 import { Readable } from "node:stream";
+import { cancelNetworkRequests, networkFetch } from "./network-fetch.mjs";
 
 function usage(message) {
   if (message) console.error(`asb cli2key proxy: ${message}`);
@@ -59,13 +60,18 @@ const server = http.createServer(async (request, response) => {
   delete headers.connection;
   delete headers["content-length"];
   try {
-    const result = await fetch(target, {
+    const result = await networkFetch(target, {
       method: request.method,
       headers,
       body: body || undefined,
     });
     response.writeHead(result.status, Object.fromEntries(result.headers));
-    if (result.body) Readable.fromWeb(result.body).pipe(response);
+    if (result.body) {
+      const bodyStream = Readable.fromWeb(result.body);
+      bodyStream.on("error", () => response.destroy());
+      response.on("close", () => bodyStream.destroy());
+      bodyStream.pipe(response);
+    }
     else response.end();
   } catch (error) {
     response.writeHead(502, { "content-type": "application/json" });
@@ -80,6 +86,6 @@ server.on("error", (error) => {
 server.listen(port, "127.0.0.1", () => {
   console.log("ASB cli2key proxy ready");
 });
-const shutdown = () => server.close(() => process.exit(0));
+const shutdown = () => { cancelNetworkRequests(); server.close(() => process.exit(0)); };
 process.once("SIGINT", shutdown);
 process.once("SIGTERM", shutdown);

@@ -37,6 +37,7 @@ jobs:
           for asset in \
             assets/scripts/cli2key-proxy.mjs \
             assets/scripts/llmtape.mjs \
+            assets/scripts/network-fetch.mjs \
             assets/workloads/bug-fix.txt \
             assets/workloads/fixtures/bug-fix/src/parser.py; do
             printf '%s\n' "$archive" | grep -Fq "/$asset"

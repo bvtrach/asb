@@ -4,6 +4,28 @@ use crate::Error;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+
+thread_local! {
+    static NETWORK_PROJECT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Restrict implicit network lookups to the benchmark's project for this
+/// thread, including discovery and provider-owned subprocesses.
+pub struct NetworkProjectGuard(Option<PathBuf>, std::marker::PhantomData<std::rc::Rc<()>>);
+
+impl Drop for NetworkProjectGuard {
+    fn drop(&mut self) {
+        NETWORK_PROJECT.with(|project| *project.borrow_mut() = self.0.take());
+    }
+}
+
+pub fn network_project(root: &Path) -> NetworkProjectGuard {
+    NetworkProjectGuard(
+        NETWORK_PROJECT.with(|project| project.borrow_mut().replace(root.to_path_buf())),
+        std::marker::PhantomData,
+    )
+}
 
 const CONFIG_DIR: &str = ".asb";
 const CONFIG_FILE: &str = "project.toml";
@@ -13,6 +35,154 @@ pub struct ProjectConfig {
     pub tools_dir: String,
     pub workloads_dir: String,
     pub workspace_dir: String,
+    #[serde(default)]
+    pub proxy: NetworkProxy,
+}
+
+/// Network proxies are separate from ASB's record/replay proxy adapters.
+/// Credentials must stay in the environment, not in project files.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct NetworkProxy {
+    pub http: Option<String>,
+    pub https: Option<String>,
+    pub socks: Option<String>,
+    pub no_proxy: Option<String>,
+}
+
+impl NetworkProxy {
+    fn detect(get: &impl Fn(&str) -> Option<String>) -> (Self, bool) {
+        let mut omitted = false;
+        let mut save = |names: &[&str]| {
+            let value = names.iter().find_map(|name| get(name));
+            value.and_then(|value| {
+                if value.is_empty() {
+                    None
+                } else if value.contains(['@', '?', '#', '\n', '\r']) {
+                    omitted = true;
+                    None
+                } else {
+                    Some(value)
+                }
+            })
+        };
+        // curl ignores HTTP_PROXY in CGI environments to prevent HTTPoxy.
+        let http_names: &[&str] = if get("REQUEST_METHOD").is_some() {
+            &["http_proxy"]
+        } else {
+            &["http_proxy", "HTTP_PROXY"]
+        };
+        let config = Self {
+            http: save(http_names),
+            https: save(&["https_proxy", "HTTPS_PROXY"]),
+            socks: save(&["all_proxy", "ALL_PROXY", "socks_proxy", "SOCKS_PROXY"]),
+            no_proxy: save(&["no_proxy", "NO_PROXY"]),
+        };
+        (config, omitted)
+    }
+
+    fn apply(&self, command: &mut Command, get: &impl Fn(&str) -> Option<String>) {
+        let select = |names: &[&str], configured: &Option<String>| {
+            names
+                .iter()
+                .find_map(|name| get(name))
+                .or_else(|| configured.clone())
+        };
+        let http_names: &[&str] = if get("REQUEST_METHOD").is_some() {
+            &["http_proxy"]
+        } else {
+            &["http_proxy", "HTTP_PROXY"]
+        };
+        let http = select(http_names, &self.http);
+        if get("REQUEST_METHOD").is_some() {
+            command.env_remove("HTTP_PROXY");
+        }
+        let https = select(&["https_proxy", "HTTPS_PROXY"], &self.https);
+        let socks = select(
+            &["all_proxy", "ALL_PROXY", "socks_proxy", "SOCKS_PROXY"],
+            &self.socks,
+        );
+        let no_proxy = select(&["no_proxy", "NO_PROXY"], &self.no_proxy);
+        for (lower, upper, value) in [
+            ("http_proxy", "HTTP_PROXY", &http),
+            ("https_proxy", "HTTPS_PROXY", &https),
+            ("all_proxy", "ALL_PROXY", &socks),
+        ] {
+            if let Some(value) = value {
+                command.env(lower, value);
+                if upper != "HTTP_PROXY" || get("REQUEST_METHOD").is_none() {
+                    command.env(upper, value);
+                } else {
+                    command.env_remove(upper);
+                }
+            }
+        }
+        // Recent Node versions require an explicit opt-in for their standard
+        // HTTP(S) proxy variables. Preserve an explicit user choice and do not
+        // claim this enables Node's unsupported SOCKS/all-protocol fallback.
+        if get("NODE_USE_ENV_PROXY").is_none()
+            && [&http, &https].iter().any(|value| {
+                value.as_ref().is_some_and(|proxy| {
+                    proxy.starts_with("http://") || proxy.starts_with("https://")
+                })
+            })
+        {
+            command.env("NODE_USE_ENV_PROXY", "1");
+        }
+        // Local agents, replay and provider bridges must not be sent to a
+        // corporate proxy, even if the existing bypass list is incomplete.
+        if http.is_some() || https.is_some() || socks.is_some() || no_proxy.is_some() {
+            let mut bypass = no_proxy.unwrap_or_default();
+            for host in ["localhost", "127.0.0.1", "::1"] {
+                if !bypass
+                    .split(',')
+                    .any(|item| item.trim().eq_ignore_ascii_case(host))
+                {
+                    if !bypass.is_empty() {
+                        bypass.push(',');
+                    }
+                    bypass.push_str(host);
+                }
+            }
+            command.env("no_proxy", &bypass).env("NO_PROXY", &bypass);
+        }
+    }
+}
+
+/// Apply the invoking project's settings to one child, without modifying the
+/// process environment or other concurrently running projects.
+pub fn apply_network_proxy(command: &mut Command, start: &Path) -> Result<(), Error> {
+    let scoped = NETWORK_PROJECT.with(|project| project.borrow().clone());
+    let (_, config) = load(scoped.as_deref().unwrap_or(start))?;
+    config
+        .proxy
+        .apply(command, &|name| std::env::var(name).ok());
+    Ok(())
+}
+
+/// Let ASB-owned Node sidecars terminate their outbound subprocesses before
+/// forcing termination, without signalling unrelated process groups.
+pub fn stop_network_child(child: &mut std::process::Child) -> std::io::Result<()> {
+    if child.try_wait()?.is_some() {
+        return Ok(());
+    }
+    let signalled = Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if signalled {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if child.try_wait()?.is_some() {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+    let _ = child.kill();
+    child.wait().map(|_| ())
 }
 
 impl Default for ProjectConfig {
@@ -21,6 +191,7 @@ impl Default for ProjectConfig {
             tools_dir: ".asb-tools".into(),
             workloads_dir: "workloads".into(),
             workspace_dir: "asb-workspace".into(),
+            proxy: NetworkProxy::default(),
         }
     }
 }
@@ -53,7 +224,11 @@ pub fn init(
     }
     fs::create_dir_all(path.parent().expect("config parent"))
         .map_err(|error| Error::Io(format!("cannot create project configuration: {error}")))?;
-    let config = ProjectConfig::default();
+    let (proxy, omitted_credentials) = NetworkProxy::detect(&|name| std::env::var(name).ok());
+    let config = ProjectConfig {
+        proxy,
+        ..ProjectConfig::default()
+    };
     fs::create_dir_all(resolve(&root, &config.tools_dir))
         .map_err(|error| Error::Io(format!("cannot create tools directory: {error}")))?;
     fs::create_dir_all(resolve(&root, &config.workloads_dir))
@@ -72,7 +247,29 @@ pub fn init(
         "Initialized ASB project at {}\nBundled workloads available: {bundled}\nFixture files available: {fixtures}",
         path.display()
     )
-    .map_err(super::io_error)
+    .map_err(super::io_error)?;
+    let detected = [
+        ("HTTP", config.proxy.http.is_some()),
+        ("HTTPS", config.proxy.https.is_some()),
+        ("SOCKS/all-protocol", config.proxy.socks.is_some()),
+    ]
+    .into_iter()
+    .filter_map(|(name, present)| present.then_some(name))
+    .collect::<Vec<_>>();
+    if detected.is_empty() {
+        writeln!(output, "No credential-free network proxies detected. Configure [proxy] in .asb/project.toml if needed.").map_err(super::io_error)?;
+    } else {
+        writeln!(
+            output,
+            "Saved detected network proxy settings: {}.",
+            detected.join(", ")
+        )
+        .map_err(super::io_error)?;
+    }
+    if omitted_credentials {
+        writeln!(output, "Proxy settings containing credentials or query data were not saved. Keep the corresponding proxy environment variables set when running ASB.").map_err(super::io_error)?;
+    }
+    Ok(())
 }
 
 fn reset_project(root: &Path, config_path: &Path) -> Result<(), Error> {
@@ -154,8 +351,17 @@ fn is_asb_source_checkout(root: &Path) -> bool {
 }
 
 pub fn load(start: &Path) -> Result<(PathBuf, ProjectConfig), Error> {
-    let mut directory = if start.is_dir() {
+    // Relative paths such as `.` cannot be walked into their parent with
+    // PathBuf::pop; anchor them first so subdirectories find the project.
+    let start = if start.is_absolute() {
         start.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| Error::Io(format!("cannot locate current directory: {error}")))?
+            .join(start)
+    };
+    let mut directory = if start.is_dir() {
+        start
     } else {
         start
             .parent()
@@ -193,6 +399,153 @@ pub fn resolve(root: &Path, value: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn vars<'a>(values: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |name| {
+            values
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_owned())
+        }
+    }
+
+    #[test]
+    fn proxy_detection_respects_precedence_and_does_not_persist_credentials() {
+        let (proxy, omitted) = NetworkProxy::detect(&vars(&[
+            ("http_proxy", "http://preferred:8080"),
+            ("HTTP_PROXY", "http://ignored:8080"),
+            ("HTTPS_PROXY", "http://user:secret@proxy:8080"),
+            ("SOCKS_PROXY", "socks5h://socks:1080"),
+            ("NO_PROXY", "internal.example"),
+        ]));
+        assert!(omitted);
+        assert_eq!(proxy.http.as_deref(), Some("http://preferred:8080"));
+        assert_eq!(proxy.https, None);
+        assert_eq!(proxy.socks.as_deref(), Some("socks5h://socks:1080"));
+        let encoded = toml::to_string(&proxy).unwrap();
+        assert!(!encoded.contains("secret"));
+        assert_eq!(proxy.no_proxy.as_deref(), Some("internal.example"));
+    }
+
+    #[test]
+    fn proxy_apply_respects_environment_empty_values_and_loopback() {
+        let config = NetworkProxy {
+            http: Some("http://configured:8080".into()),
+            https: Some("http://configured:8081".into()),
+            socks: Some("socks5h://configured:1080".into()),
+            no_proxy: Some("internal.example".into()),
+        };
+        let mut command = Command::new("unused");
+        config.apply(
+            &mut command,
+            &vars(&[("http_proxy", ""), ("HTTPS_PROXY", "http://override:8000")]),
+        );
+        let env: std::collections::HashMap<_, _> = command.get_envs().collect();
+        assert_eq!(env[std::ffi::OsStr::new("http_proxy")].unwrap(), "");
+        assert_eq!(
+            env[std::ffi::OsStr::new("https_proxy")].unwrap(),
+            "http://override:8000"
+        );
+        assert_eq!(
+            env[std::ffi::OsStr::new("all_proxy")].unwrap(),
+            "socks5h://configured:1080"
+        );
+        assert_eq!(
+            env[std::ffi::OsStr::new("NODE_USE_ENV_PROXY")].unwrap(),
+            "1"
+        );
+        let bypass = env[std::ffi::OsStr::new("no_proxy")]
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(bypass, "internal.example,localhost,127.0.0.1,::1");
+    }
+
+    #[test]
+    fn cgi_http_proxy_is_ignored_and_removed() {
+        let env = [
+            ("REQUEST_METHOD", "GET"),
+            ("HTTP_PROXY", "http://attacker:80"),
+        ];
+        let (config, _) = NetworkProxy::detect(&vars(&env));
+        assert!(config.http.is_none());
+        let mut command = Command::new("unused");
+        config.apply(&mut command, &vars(&env));
+        assert!(
+            command
+                .get_envs()
+                .any(|(name, value)| name == "HTTP_PROXY" && value.is_none())
+        );
+    }
+
+    #[test]
+    fn node_proxy_opt_in_respects_explicit_choice_and_does_not_claim_socks_support() {
+        let http = NetworkProxy {
+            http: Some("http://proxy:8080".into()),
+            ..NetworkProxy::default()
+        };
+        let mut command = Command::new("unused");
+        http.apply(&mut command, &vars(&[("NODE_USE_ENV_PROXY", "0")]));
+        assert!(
+            !command
+                .get_envs()
+                .any(|(name, _)| name == "NODE_USE_ENV_PROXY")
+        );
+        let socks = NetworkProxy {
+            socks: Some("socks5h://proxy:1080".into()),
+            ..NetworkProxy::default()
+        };
+        let mut command = Command::new("unused");
+        socks.apply(&mut command, &vars(&[]));
+        assert!(
+            !command
+                .get_envs()
+                .any(|(name, _)| name == "NODE_USE_ENV_PROXY")
+        );
+    }
+
+    #[test]
+    fn network_project_scope_is_nested_and_thread_local() {
+        let first = Path::new("/project-one");
+        let second = Path::new("/project-two");
+        let initial = NETWORK_PROJECT.with(|project| project.borrow().clone());
+        {
+            let _first = network_project(first);
+            assert_eq!(
+                NETWORK_PROJECT.with(|project| project.borrow().clone()),
+                Some(first.to_path_buf())
+            );
+            {
+                let _second = network_project(second);
+                assert_eq!(
+                    NETWORK_PROJECT.with(|project| project.borrow().clone()),
+                    Some(second.to_path_buf())
+                );
+                assert!(
+                    std::thread::spawn(
+                        || NETWORK_PROJECT.with(|project| project.borrow().is_none())
+                    )
+                    .join()
+                    .unwrap()
+                );
+            }
+            assert_eq!(
+                NETWORK_PROJECT.with(|project| project.borrow().clone()),
+                Some(first.to_path_buf())
+            );
+        }
+        assert_eq!(
+            NETWORK_PROJECT.with(|project| project.borrow().clone()),
+            initial
+        );
+    }
+
+    #[test]
+    fn old_project_configuration_loads_without_proxy_section() {
+        let old = "tools_dir = '.asb-tools'\nworkloads_dir = 'workloads'\nworkspace_dir = 'asb-workspace'\n";
+        let config: ProjectConfig = toml::from_str(old).unwrap();
+        assert_eq!(config.proxy, NetworkProxy::default());
+    }
 
     #[test]
     fn init_writes_config_and_directories() {

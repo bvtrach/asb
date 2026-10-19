@@ -6,6 +6,7 @@
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { performance } from "node:perf_hooks";
+import { cancelNetworkRequests, networkFetch } from "./network-fetch.mjs";
 
 const MAX_BODY = 16 * 1024 * 1024;
 const MAX_DELAY_MS = 60 * 60 * 1000;
@@ -299,7 +300,7 @@ async function handle(request, response) {
   delete forwardedHeaders.host;
   delete forwardedHeaders.connection;
   delete forwardedHeaders["content-length"];
-  const upstreamResponse = await fetch(target, {
+  const upstreamResponse = await networkFetch(target, {
     method: recordedRequest.method,
     headers: forwardedHeaders,
     body: body.length ? Buffer.from(normalizedBody) : undefined,
@@ -337,5 +338,5 @@ if (mode === "record") {
 }
 server.listen(port, "127.0.0.1");
 for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => server.close(() => process.exit(0)));
+  process.on(signal, () => { cancelNetworkRequests(); server.close(() => process.exit(0)); });
 }

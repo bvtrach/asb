@@ -46,12 +46,14 @@ digraph ASB_Rust_UML {
         "asb-cli_src_ComponentTiming" [label="{ComponentTiming|+wall_ms: u128\l+cpu_user_ms: Option\<f64\>\l+cpu_system_ms: Option\<f64\>\l+io_wait_ms: Option\<f64\>\l+scheduler_wait_ms: Option\<f64\>\l+network_wait_ms: Option\<f64\>\l}", shape=record];
         "asb-cli_src_Connection" [label="{Connection|+interface: Interface\l+base_url: String\l+credential: Option\<String\>\l+authentication: Authentication\l}", shape=record];
         "asb-cli_src_Default" [label="{Default||+default() Self\l}", shape=record];
-        "asb-cli_src_Drop" [label="{Drop||+drop() void\l+drop() void\l}", shape=record];
+        "asb-cli_src_Drop" [label="{Drop||+drop() void\l}", shape=record];
         "asb-cli_src_From" [label="{From||+from(value: SetupArgs) Self\l+from(value: ModelArgs) Self\l+from(value: ToolInstallArgs) Self\l+from(value: WorkloadInstallArgs) Self\l+from(value: WorkloadListArgs) Self\l}", shape=record];
         "asb-cli_src_InitArgs" [label="{InitArgs|-root: Option\<PathBuf\>\l-reset: bool\l}", shape=record];
         "asb-cli_src_LifecycleRecord" [label="{LifecycleRecord|-sequence: usize\l-elapsed_us: u128\l-event: LifecycleEvent\l}", shape=record];
         "asb-cli_src_ModelArgs" [label="{ModelArgs|-provider: Option\<String\>\l-json: bool\l-free: bool\l}", shape=record];
         "asb-cli_src_ModelListOptions" [label="{ModelListOptions|+provider: Option\<String\>\l+json: bool\l+free_only: bool\l}", shape=record];
+        "asb-cli_src_NetworkProjectGuard" [label="{NetworkProjectGuard}", shape=record];
+        "asb-cli_src_NetworkProxy" [label="{NetworkProxy|+http: Option\<String\>\l+https: Option\<String\>\l+socks: Option\<String\>\l+no_proxy: Option\<String\>\l|+detect(get: &impl Fn(&str) -\> Option\<String\>) (Self, bool)\l+apply(command: &mut Command, get: &impl Fn(&str) -\> Option\<String\>) void\l}", shape=record];
         "asb-cli_src_Offer" [label="{Offer|+interface: Interface\l+authentication: Authentication\l+address: Address\l}", shape=record];
         "asb-cli_src_OwnedChild" [label="{OwnedChild||+deref() Target\l+deref_mut() Target\l}", shape=record];
         "asb-cli_src_ProcessAccounting" [label="{ProcessAccounting|-first: ProcessSample\l-latest: ProcessSample\l-initialized: bool\l|+update(sample: ProcessSample) void\l+delta(self) ProcessSample\l}", shape=record];
@@ -100,7 +102,7 @@ digraph ASB_Rust_UML {
         "asb-cli_src_collectors_adapters_Topology" [label="{collectors_adapters_Topology|-packages: BTreeSet\<String\>\l-cores: BTreeSet\<(String, String)\>\l}", shape=record];
         "asb-cli_tests_Drop" [label="{asb-cli_tests_Drop||+drop() void\l+drop() void\l}", shape=record];
         "asb-cli_tests_MockProvider" [label="{asb-cli_tests_MockProvider|-endpoint: String\l-requests: Arc\<Mutex\<Vec\<String\>\>\>\l-done: Arc\<AtomicBool\>\l-thread: Option\<std::thread::JoinHandle\<()\>\>\l|+start() Self\l}", shape=record];
-        "asb-cli_tests_Project" [label="{asb-cli_tests_Project||+new() Self\l+command(args: &[&str]) Output\l+command_with_env(args: &[&str], extra: &[(&str, &str)]) Output\l+write(name: &str, contents: &str) void\l+init() void\l}", shape=record];
+        "asb-cli_tests_Project" [label="{asb-cli_tests_Project||+new() Self\l+command(args: &[&str]) Output\l+command_with_env(args: &[&str], extra: &[(&str, &str)]) Output\l+command_in_with_env(dir: Path, args: &[&str], extra: &[(&str, &str)]) Output\l+write(name: &str, contents: &str) void\l+init() void\l}", shape=record];
         "asb-cli_tests_WaitForFixtureExpiry" [label="{asb-cli_tests_WaitForFixtureExpiry|-pid: u32\l-executable: PathBuf\l}", shape=record];
         "tests_asb-cli_src_FailingWriter" [label="{tests_FailingWriter||+write() Result\<usize\>\l+flush() Result\<()\>\l}", shape=record];
         "tests_asb-cli_src_proxy_FixtureAdapter" [label="{tests_proxy_FixtureAdapter|-name: &'static str\l-fail: bool\l-fail_finish: bool\l-events: Arc\<Mutex\<Vec\<String\>\>\>\l}", shape=record];
@@ -143,7 +145,7 @@ digraph ASB_Rust_UML {
         color="#cbd5e1";
         fontcolor="#334155";
         style="rounded,dashed";
-        "asb-cli_src_ProjectConfig" [label="{ProjectConfig|+tools_dir: String\l+workloads_dir: String\l+workspace_dir: String\l}", shape=record];
+        "asb-cli_src_ProjectConfig" [label="{ProjectConfig|+tools_dir: String\l+workloads_dir: String\l+workspace_dir: String\l+proxy: NetworkProxy\l}", shape=record];
     }
 
     subgraph "cluster_providers" {
@@ -229,6 +231,7 @@ digraph ASB_Rust_UML {
     "asb-cli_src_ProcessAccounting" -> "asb-cli_src_ProcessSample" [arrowhead="vee", style="dashed"];
     "asb-cli_src_ProcessAccounting" -> "asb-cli_src_ProcessSample" [arrowhead="vee"];
     "asb-cli_src_ProcessSampler" -> "asb-cli_src_ProcessSample" [arrowhead="vee", style="dashed"];
+    "asb-cli_src_ProjectConfig" -> "asb-cli_src_NetworkProxy" [arrowhead="vee"];
     "asb-cli_src_RunMeasurement" -> "asb-cli_src_collectors_adapters_TokenUsage" [arrowhead="vee"];
     "asb-cli_src_RunResult" -> "asb-cli_src_collectors_adapters_TokenUsage" [arrowhead="vee"];
     "asb-cli_src_Session" -> "asb-cli_src_Collector" [arrowhead="vee"];
