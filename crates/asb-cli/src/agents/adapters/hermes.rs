@@ -27,11 +27,11 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
 .with_final_response(final_response);
 
 fn command(context: &CommandContext<'_>) -> CommandSpec {
-    let provider = match context.interface {
-        Some(crate::endpoint::Interface::AnthropicMessages) => "anthropic",
-        Some(crate::endpoint::Interface::OpenAiResponses) => "openai-api",
-        _ => "openai-api",
-    };
+    // Provider-specific aliases are selected by the provider layer. This
+    // keeps Hermes independent of provider identifiers while ensuring bridge
+    // endpoints do not fall back to Hermes' generic chat transport.
+    let provider =
+        crate::providers::agent_provider_name(&context.config.provider, context.interface);
     CommandSpec {
         program: "hermes".into(),
         args: vec![
@@ -56,6 +56,36 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
             hermes_home.display()
         ))
     })?;
+    {
+        let (api_mode, key_env) = match connection.interface {
+            crate::endpoint::Interface::OpenAiResponses => ("codex_responses", "OPENAI_API_KEY"),
+            crate::endpoint::Interface::AnthropicMessages => {
+                ("anthropic_messages", "ANTHROPIC_API_KEY")
+            }
+            _ => {
+                return Err(Error::Input(
+                    "Hermes requires a negotiated OpenAI Responses or Anthropic Messages endpoint"
+                        .into(),
+                ));
+            }
+        };
+        let base_url = if api_mode == "anthropic_messages" {
+            connection.base_url.trim_end_matches("/v1")
+        } else {
+            connection.base_url.as_str()
+        };
+        let config = format!(
+            "providers:\n  asb-cli2key:\n    base_url: {}\n    api_mode: {}\n    key_env: {}\n",
+            yaml_quote(base_url),
+            api_mode,
+            key_env
+        );
+        std::fs::write(hermes_home.join("config.yaml"), config).map_err(|error| {
+            Error::Run(format!(
+                "cannot write Hermes cli2key provider configuration: {error}"
+            ))
+        })?;
+    }
     let usage_file = context.run_dir.join("hermes/usage.json");
     if let Some(parent) = usage_file.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
@@ -100,6 +130,10 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
         }
     }
     Ok(())
+}
+
+fn yaml_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 fn collect(context: &CollectionContext<'_>) -> AgentArtifacts {
@@ -188,8 +222,35 @@ mod tests {
         assert_eq!(env["OPENAI_API_KEY"], "fixture-key");
         assert_eq!(env["OPENAI_BASE_URL"], "http://127.0.0.1:4242/v1");
         assert!(env["HERMES_HOME"].contains("hermes"));
+        let provider_config = std::fs::read_to_string(root.join("hermes/config.yaml")).unwrap();
+        assert!(provider_config.contains("api_mode: codex_responses"));
+        assert!(provider_config.contains("base_url: 'http://127.0.0.1:4242/v1'"));
         assert!(command.get_args().any(|arg| arg == "--usage-file"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cli2key_command_uses_named_responses_provider() {
+        let config = crate::benchmark::BenchmarkConfig {
+            agent: "hermes".into(),
+            provider: "cli2key".into(),
+            model: "gpt-6.1-sol".into(),
+            workload: "terminal-bench".into(),
+            concurrency: 2,
+            trial_set: None,
+            trial: None,
+            workspace: "./asb-workspace".into(),
+            log_file: "benchmark.log".into(),
+            measurements: None,
+        };
+        let spec = command(&CommandContext {
+            config: &config,
+            endpoint: Some("http://127.0.0.1:1/v1"),
+            interface: Some(crate::endpoint::Interface::OpenAiResponses),
+            prompt: "solve the fixture",
+        });
+        assert!(spec.args.contains(&"asb-cli2key".into()));
+        assert!(!spec.args.contains(&"openai-api".into()));
     }
 
     #[test]
