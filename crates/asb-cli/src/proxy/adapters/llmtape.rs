@@ -422,6 +422,26 @@ mod tests {
     }
 
     #[test]
+    fn replay_normalizes_sweep_result_workspace_slugs() {
+        let root = test_root();
+        let cassette = root.join("sweep-workspace.jsonl");
+        let recorded = r#"{"model":"m","messages":[{"content":"write to srv-data-projects-asb-e2e-v0141-project-sweep-record-v0141-results-003-v0141-workbuddy-swe-bench-workspace/memory"}]}"#;
+        let line = serde_json::json!({
+            "request": {"method":"POST", "url":"/v1/chat/completions", "body": recorded},
+            "response": {"status":200,"headers":{"content-type":"application/json"},"body":"{\"ok\":true}"}
+        });
+        std::fs::write(&cassette, format!("{line}\n")).unwrap();
+        let workspace = Path::new(
+            "/srv/data/projects/asb-e2e-v0142-project/sweep-replay-v0142-results/003-v0141-workbuddy-swe-bench/workspace",
+        );
+        let session = Session::start(Mode::Replay, &cassette, None, false, workspace).unwrap();
+        let replayed = r#"{"model":"m","messages":[{"content":"write to srv-data-projects-asb-e2e-v0142-project-sweep-replay-v0142-results-003-v0141-workbuddy-swe-bench-workspace/memory"}]}"#;
+        assert!(request(&session, replayed).contains("200 OK"));
+        session.stop().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn replay_rejects_changed_body_and_extra_requests() {
         let root = test_root();
         let cassette = cassette(&root);

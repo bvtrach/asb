@@ -195,7 +195,7 @@ function normalizeCassetteBody(body) {
     .replace(/\b20\d{2}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?\b/g, "<asb-file-mtime>")
     // WorkBuddy derives a memory-project slug from the absolute workspace;
     // canonicalize that generated slug when record and replay roots differ.
-    .replace(/srv-data-projects-[A-Za-z0-9_.-]+-(?:sweep-record-[A-Za-z0-9_.-]+-workspace|workspaces-replay-[A-Za-z0-9_.-]+)/g, "<asb-project-workspace>")
+    .replace(/srv-data-projects-[A-Za-z0-9_.-]+-(?:sweep-(?:record|replay)-[A-Za-z0-9_.-]+|workspaces(?:-replay)?-[A-Za-z0-9_.-]+)/g, "<asb-project-workspace>")
     // Codex includes a diagnostic token count in shell-tool output. It is
     // derived from the rendered transcript and can change during replay; it
     // is not provider request semantics.
