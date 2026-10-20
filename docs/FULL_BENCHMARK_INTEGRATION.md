@@ -266,3 +266,32 @@ task definitions load. For Terminal-Bench 2.1, the pinned public checkout
 all 89 load with Harbor 0.24.0, including its verifier/input-path validation.
 An additional template `task.toml` outside the task directory is not a 90th
 benchmark instance. These are schema checks, not runtime execution evidence.
+
+### Selected-agent guest qualification
+
+The workload-neutral `__asb-agent` driver reuses the normal Rust agent adapter
+registry, endpoint contract, preparation, output parsing and artifact accounting.
+Its private request is passed through the controller environment, not argv or
+an agent-visible request file. It pauses after adapter preparation, before the
+client starts, so the execution controller can attach measurements. Standard
+output and error remain distinct, and private result metadata retains usage,
+final response and process status independently of task grading.
+
+Project-local Node.js (including npm) and static uv recipes now support task
+environment bootstrapping through the existing tool registry. npm download
+caches stay within the project. Runtime PATH handling is shared rather than
+implemented as agent-specific installer branches.
+
+Qualification used the actual installed Pi package, official Node distribution
+and a static ASB binary inside the official Astropy task image. ASB installed
+the tools from public project caches inside the container; no host venv or
+host directory was mounted. External container networking was disconnected
+before execution, and a synthetic provider ran on container loopback. Actual
+tool use created a file, provider-reported usage matched exact fixture counts,
+patch capture included the file, and owned-container cleanup passed (11 seconds).
+This proves selected-client execution, not an AI solution to the Astropy issue.
+The complete native test suite and strict Clippy also passed after this change.
+
+This remains a qualification path: normal run/sweep controller integration,
+automatic portable-helper provisioning, local endpoint forwarding, container
+collector targeting and both Terminal-Bench runtime engines are still open.

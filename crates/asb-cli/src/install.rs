@@ -771,6 +771,7 @@ fn install_recipe(
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", root.display())))?;
     let status = match recipe {
         Recipe::Npm { package, .. } => {
+            ensure_runtime_dependency("node", project_root, root.parent().expect("tool parent"), output, progress)?;
             let manifest = root.join("package.json");
             if !manifest.exists() {
                 fs::write(&manifest, NPM_INSTALL_MANIFEST).map_err(|error| {
@@ -778,10 +779,12 @@ fn install_recipe(
                 })?;
             }
             progress(15, "installing npm package");
-            Command::new("npm")
-                .args(["install", "--prefix"])
+            let mut command = Command::new("npm");
+            tools::apply_runtime_path(&mut command, project_root, &root.parent().expect("tool parent").to_string_lossy())?;
+            command.args(["install", "--prefix"])
                 .arg(root)
                 .args(["--no-save", package])
+                .env("NPM_CONFIG_CACHE", project_root.join(".asb-cache/npm"))
                 .logged_status()
         }
         Recipe::Python {
@@ -873,6 +876,32 @@ fn install_recipe(
     }
     let executable = executable(recipe, root);
     Ok(executable)
+}
+
+/// Reuse a compatible host runtime or install its registered project-local recipe.
+pub(crate) fn ensure_runtime_dependency(
+    id: &str,
+    project_root: &Path,
+    tools_root: &Path,
+    output: &mut dyn std::io::Write,
+    progress: &mut dyn FnMut(u8, &str),
+) -> Result<(), Error> {
+    let tool = tools::find(id)
+        .ok_or_else(|| Error::Input(format!("runtime dependency `{id}` is not registered")))?;
+    if tool_installed_locally(id, tools_root) || tool.host_runtime_usable() {
+        return Ok(());
+    }
+    let destination = install_recipe(
+        tool.recipe(),
+        &tools_root.join(id),
+        project_root,
+        output,
+        progress,
+    )?;
+    tool.post_install(&destination, progress, output)?;
+    writeln!(output, "Installed required runtime {id} for this project.")
+        .map_err(crate::io_error)?;
+    Ok(())
 }
 
 fn install_goose(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {

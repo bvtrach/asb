@@ -57,17 +57,17 @@ class ManagedDockerWorkspace:
             raise
 
     def execute(self, argv, environment=None, timeout=900, output_limit=256 * 1024, before_resume=None,
-                on_output=None, cancelled=None):
+                on_output=None, cancelled=None, gate="shell"):
         if self.container is None:
             raise ExecutionError("workspace is not running")
         if not self.active.acquire(blocking=False):
             raise ExecutionError("one command is already running in this task workspace")
         try:
-            return self._execute(argv, environment or {}, timeout, output_limit, before_resume, on_output, cancelled)
+            return self._execute(argv, environment or {}, timeout, output_limit, before_resume, on_output, cancelled, gate)
         finally:
             self.active.release()
 
-    def _execute(self, argv, environment, timeout, output_limit, before_resume, on_output, cancelled):
+    def _execute(self, argv, environment, timeout, output_limit, before_resume, on_output, cancelled, gate):
         if (not isinstance(argv, list) or not argv or len(argv) > 10000
                 or any(not isinstance(value, str) or "\x00" in value for value in argv)
                 or not isinstance(environment, dict)
@@ -80,6 +80,8 @@ class ManagedDockerWorkspace:
             raise ExecutionError("invalid execution timeout or output limit")
         if cancelled is not None and cancelled.is_set():
             raise ExecutionError("execution was cancelled before starting")
+        if gate not in ["shell", "application"]:
+            raise ExecutionError("unknown execution gate protocol")
         container, api = self.container, self.client.api
         done, expired, interrupted = threading.Event(), threading.Event(), threading.Event()
         reset_needed = threading.Event()
@@ -109,7 +111,8 @@ class ManagedDockerWorkspace:
         stream = None
         result = None
         try:
-            created = api.exec_create(container.id, cmd=["/bin/sh", "-c", GATE, "asb-gate", *argv],
+            command = argv if gate == "application" else ["/bin/sh", "-c", GATE, "asb-gate", *argv]
+            created = api.exec_create(container.id, cmd=command,
                                       environment=environment, workdir=self.workdir, stdout=True, stderr=True)
             exec_id = created["Id"]
             stream = api.exec_start(exec_id, stream=True, demux=True)

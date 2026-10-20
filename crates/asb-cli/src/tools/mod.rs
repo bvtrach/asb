@@ -10,10 +10,13 @@ mod flamegraph;
 mod harbor;
 mod iostat;
 mod mpstat;
+mod node;
 mod perf;
 mod perfetto;
+mod runtime;
 mod swebench;
 mod terminal_bench;
+mod uv;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum ToolKind {
@@ -25,6 +28,12 @@ pub(crate) trait ToolAdapter: Sync {
     fn id(&self) -> &'static str;
     fn recipe(&self) -> Recipe;
     fn kind(&self) -> ToolKind;
+    fn runtime_path(&self, _root: &Path) -> Option<std::path::PathBuf> {
+        None
+    }
+    fn host_runtime_usable(&self) -> bool {
+        self.executable().is_some_and(host_program_on_path)
+    }
     fn post_install(
         &self,
         _executable: &Path,
@@ -55,6 +64,8 @@ pub(crate) struct StaticTool {
     recipe: Recipe,
     kind: ToolKind,
     post_install: Option<PostInstallHook>,
+    runtime_path: bool,
+    host_probe: Option<fn() -> bool>,
 }
 impl StaticTool {
     pub(crate) const fn new(id: &'static str, recipe: Recipe, kind: ToolKind) -> Self {
@@ -63,10 +74,20 @@ impl StaticTool {
             recipe,
             kind,
             post_install: None,
+            runtime_path: false,
+            host_probe: None,
         }
     }
     pub(crate) const fn with_post_install(mut self, hook: PostInstallHook) -> Self {
         self.post_install = Some(hook);
+        self
+    }
+    pub(crate) const fn with_runtime_path(mut self) -> Self {
+        self.runtime_path = true;
+        self
+    }
+    pub(crate) const fn with_host_probe(mut self, probe: fn() -> bool) -> Self {
+        self.host_probe = Some(probe);
         self
     }
 }
@@ -80,6 +101,17 @@ impl ToolAdapter for StaticTool {
     fn kind(&self) -> ToolKind {
         self.kind
     }
+    fn runtime_path(&self, root: &Path) -> Option<std::path::PathBuf> {
+        self.runtime_path
+            .then(|| root.join("bin"))
+            .filter(|path| path.is_dir())
+    }
+    fn host_runtime_usable(&self) -> bool {
+        if let Some(probe) = self.host_probe {
+            return probe();
+        }
+        self.executable().is_some_and(host_program_on_path)
+    }
     fn post_install(
         &self,
         executable: &Path,
@@ -91,7 +123,31 @@ impl ToolAdapter for StaticTool {
     }
 }
 
+fn host_program_on_path(program: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|directory| {
+            let Ok(metadata) = std::fs::metadata(directory.join(program)) else {
+                return false;
+            };
+            if !metadata.is_file() {
+                return false;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                metadata.permissions().mode() & 0o111 != 0
+            }
+            #[cfg(not(unix))]
+            {
+                true
+            }
+        })
+    })
+}
+
 static REGISTRY: &[&dyn ToolAdapter] = &[
+    &node::ADAPTER,
+    &uv::ADAPTER,
     &cli2key::ADAPTER,
     &mpstat::ADAPTER,
     &iostat::ADAPTER,
@@ -111,6 +167,35 @@ pub(crate) fn find(id: &str) -> Option<&'static dyn ToolAdapter> {
 }
 pub(crate) fn names() -> impl Iterator<Item = &'static str> {
     REGISTRY.iter().map(|tool| tool.id())
+}
+
+pub(crate) fn apply_runtime_path(
+    command: &mut std::process::Command,
+    root: &Path,
+    tools_dir: &str,
+) -> Result<(), crate::Error> {
+    let tools = project::resolve(root, tools_dir);
+    let mut paths = REGISTRY
+        .iter()
+        .filter_map(|tool| tool.runtime_path(&tools.join(tool.id())))
+        .collect::<Vec<_>>();
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let original = command
+        .get_envs()
+        .find(|(name, _)| *name == "PATH")
+        .map(|(_, value)| value.map(std::ffi::OsStr::to_os_string))
+        .unwrap_or_else(|| std::env::var_os("PATH"));
+    if let Some(original) = original {
+        paths.extend(std::env::split_paths(&original));
+    }
+    command.env(
+        "PATH",
+        std::env::join_paths(paths)
+            .map_err(|error| crate::Error::Input(format!("invalid runtime PATH: {error}")))?,
+    );
+    Ok(())
 }
 
 /// Resolve a tool executable through its registered project-local layout.

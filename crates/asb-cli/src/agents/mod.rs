@@ -4,6 +4,7 @@
 //! shape and provider-specific adjustment lives in the owning adapter module.
 
 mod adapters;
+pub(crate) mod driver;
 use adapters::REGISTRY;
 
 use crate::Error;

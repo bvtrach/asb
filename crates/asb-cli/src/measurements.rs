@@ -32,6 +32,29 @@ pub struct TokenUsage {
     pub source: Option<String>,
 }
 
+pub(crate) fn with_artifact_usage(
+    mut usage: TokenUsage,
+    artifact: Option<TokenUsage>,
+) -> TokenUsage {
+    if let Some(artifact) = artifact {
+        let complete = artifact.input_tokens.is_some() && artifact.output_tokens.is_some();
+        match usage.source.as_deref() {
+            Some(source) if source.contains("cassette") => {}
+            None | Some("agent-output") if complete => {
+                usage = TokenUsage::default()
+                    .merge_with_source(artifact, "agent-artifact")
+                    .with_derived_total();
+            }
+            _ => {
+                usage = usage
+                    .merge_with_source(artifact, "agent-artifact")
+                    .with_derived_total()
+            }
+        }
+    }
+    usage
+}
+
 /// Wall-clock and process-accounting measurements for one benchmark component.
 ///
 /// Values that cannot be observed portably are left `null`; ASB never infers

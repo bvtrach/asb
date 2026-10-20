@@ -134,6 +134,12 @@ class ExecutionTests(unittest.TestCase):
         workspace.close()
         self.assertEqual(container.events.count("remove"), 1)
 
+    def test_application_gate_preserves_self_contained_adapter_driver(self):
+        workspace, _container, api, _ = self.workspace()
+        with workspace:
+            self.assertEqual(workspace.execute(["/opt/asb/asb", "__asb-agent"], gate="application")["exit_code"], 0)
+            self.assertEqual(api.calls[0]["cmd"], ["/opt/asb/asb", "__asb-agent"])
+
     def test_nonzero_exit_preserves_workspace_and_output_is_bounded(self):
         workspace, container, api, _ = self.workspace()
         api.status = 7

@@ -31,6 +31,9 @@ use std::process::ExitCode;
 /// Run the process CLI.
 #[must_use]
 pub fn entry(args: Vec<OsString>) -> ExitCode {
+    if args.first().is_some_and(|arg| arg == "__asb-agent") {
+        return agents::driver::entry();
+    }
     if args.first().is_some_and(|arg| arg == "__asb-gate") {
         return process_gate::run_gate(&args[1..]);
     }
@@ -98,7 +101,11 @@ mod adapter_layout_tests {
     fn registered_adapters_have_consistent_paths() {
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let categories: [(&str, Vec<&str>, &[&str]); 5] = [
-            ("agents", super::agents::names().collect(), &["mod.rs"]),
+            (
+                "agents",
+                super::agents::names().collect(),
+                &["mod.rs", "driver.rs"],
+            ),
             (
                 "providers",
                 super::providers::names().to_vec(),

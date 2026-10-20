@@ -164,12 +164,17 @@ pub(crate) fn ensure(root: &Path, output: &mut dyn std::io::Write) -> Result<Pat
                 ))
             })?
     } else {
+        let (_, config) = project::load(root)?;
+        let tools_root = project::resolve(root, &config.tools_dir);
+        crate::install::ensure_runtime_dependency("uv", root, &tools_root, output, &mut |_, _| {})
+            .map_err(|error| Error::Io(format!("could not bootstrap project Python: {error}. Install uv, or install Python 3.12 or 3.13 and retry.")))?;
         writeln!(
             output,
             "No compatible Python found; using uv to download Python 3.12 for this project."
         )
         .map_err(crate::io_error)?;
         let mut command = Command::new("uv");
+        crate::tools::apply_runtime_path(&mut command, root, &config.tools_dir)?;
         command
             .args(["venv", "--no-project", "--no-config", "--python", "3.12"])
             .arg(&env_dir)

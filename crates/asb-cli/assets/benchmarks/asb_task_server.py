@@ -84,6 +84,7 @@ def serve(task, source, destination, idle_timeout=900):
                             request.get("argv"), request.get("environment"),
                             timeout=request.get("timeout", 900), output_limit=request.get("output_limit", 256 * 1024),
                             before_resume=attach, on_output=output, cancelled=peer_closed,
+                            gate=request.get("gate", "shell"),
                         )
                         result = dict(result)
                         for stream in ["stdout", "stderr"]:

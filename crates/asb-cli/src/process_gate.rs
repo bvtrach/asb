@@ -92,7 +92,7 @@ pub(crate) fn resume(pid: u32) -> io::Result<()> {
 }
 
 #[cfg(unix)]
-fn pause_current() -> io::Result<()> {
+pub(crate) fn pause_current() -> io::Result<()> {
     if unsafe { libc::raise(libc::SIGSTOP) } == 0 {
         Ok(())
     } else {

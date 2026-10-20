@@ -527,21 +527,7 @@ fn run_mode(
     // variables are host-runner integration state; if inherited, a project
     // local Codex CLI can advertise the coordinator's tools as an
     // `additional_tools` request that cli2key does not support.
-    for variable in [
-        "CODEX_REMOTE_PAYLOAD",
-        "CODEX_SESSION_ID",
-        "CODEX_THREAD_ID",
-        "CODEX_PERMISSION_PROFILE",
-        "CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS",
-        "CODEX_MANAGED_PACKAGE_ROOT",
-        "CODEX_MANAGED_BY_NPM",
-        "CODEX_MANAGED_BY_BUN",
-        "CODEX_MANAGED_BY_PNPM",
-        "CODEX_MANAGED_BY_VITE_PLUS",
-        "CODEX_CI",
-    ] {
-        command.env_remove(variable);
-    }
+    agents::driver::isolate_parent_state(&mut command);
     if specification.append_prompt {
         command.arg(&prompt);
     }
@@ -615,6 +601,7 @@ fn run_mode(
         apply_replay_network_guard(&mut command);
     }
     project::apply_python_path(&mut command, &project_root, Path::new(&program))?;
+    crate::tools::apply_runtime_path(&mut command, &project_root, &project_config.tools_dir)?;
     // The process gate must execute the fully prepared command, not the
     // adapter's original executable. Some adapters (for example OpenJiuwen)
     // install a process wrapper that carries compatibility and output fixes;
@@ -725,7 +712,7 @@ fn run_mode(
             })
         })
         .unwrap_or_default();
-    let mut token_usage = measurements::token_usage_from_sources(
+    let token_usage = measurements::token_usage_from_sources(
         &config.provider,
         &config.agent,
         &String::from_utf8_lossy(&child.stdout),
@@ -734,23 +721,7 @@ fn run_mode(
             .as_ref()
             .map(|(_, cassette)| cassette.as_path()),
     );
-    if let Some(artifact_usage) = adapter_artifacts.token_usage {
-        let artifact_complete =
-            artifact_usage.input_tokens.is_some() && artifact_usage.output_tokens.is_some();
-        match token_usage.source.as_deref() {
-            Some(source) if source.contains("cassette") => {}
-            None | Some("agent-output") if artifact_complete => {
-                token_usage = measurements::TokenUsage::default()
-                    .merge_with_source(artifact_usage, "agent-artifact")
-                    .with_derived_total();
-            }
-            _ => {
-                token_usage = token_usage
-                    .merge_with_source(artifact_usage, "agent-artifact")
-                    .with_derived_total();
-            }
-        }
-    }
+    let token_usage = measurements::with_artifact_usage(token_usage, adapter_artifacts.token_usage);
     for path in adapter_artifacts.cleanup_paths {
         let _ = std::fs::remove_file(path);
     }
@@ -1273,9 +1244,31 @@ impl Drop for OwnedChild {
 /// stdout or stderr pipe. The complete bounded-by-the-existing-runner capture
 /// is still returned for logging and token parsing.
 fn wait_with_output(
+    child: OwnedChild,
+    show_output: bool,
+    output: &mut dyn Write,
+) -> std::io::Result<Output> {
+    wait_with_output_streams(child, show_output, output, None)
+}
+
+pub(crate) fn run_guest_process(
+    command: &mut Command,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<Output, Error> {
+    let child = command
+        .spawn()
+        .map(OwnedChild)
+        .map_err(|error| Error::Run(format!("cannot start guest agent: {error}")))?;
+    wait_with_output_streams(child, true, stdout, Some(stderr))
+        .map_err(|error| Error::Run(format!("cannot wait for guest agent: {error}")))
+}
+
+fn wait_with_output_streams(
     mut child: OwnedChild,
     show_output: bool,
     output: &mut dyn Write,
+    mut error_output: Option<&mut dyn Write>,
 ) -> std::io::Result<Output> {
     let stdout = child
         .stdout
@@ -1307,8 +1300,13 @@ fn wait_with_output(
             }
             Ok(OutputChunk::Stderr(chunk)) => {
                 if show_output {
-                    output.write_all(&chunk)?;
-                    output.flush()?;
+                    if let Some(error_output) = error_output.as_deref_mut() {
+                        error_output.write_all(&chunk)?;
+                        error_output.flush()?;
+                    } else {
+                        output.write_all(&chunk)?;
+                        output.flush()?;
+                    }
                 }
                 stderr_capture.extend_from_slice(&chunk);
             }
