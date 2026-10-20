@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -23,6 +23,15 @@ struct State {
     channels: Channels,
     stopping: AtomicBool,
     next: AtomicU32,
+    readers: AtomicUsize,
+}
+
+struct ReaderGuard<'a>(&'a AtomicUsize);
+
+impl Drop for ReaderGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 fn invalid() -> io::Error {
@@ -127,14 +136,19 @@ fn accept(state: &Arc<State>, listener: &TcpListener, target: u32) -> io::Result
                 }
                 {
                     let mut channels = state.channels.lock().map_err(|_| invalid())?;
-                    if channels.len() >= MAX_CHANNELS || workers.len() >= MAX_CHANNELS {
+                    if channels.len() >= MAX_CHANNELS
+                        || workers.len() >= MAX_CHANNELS
+                        || state.readers.load(Ordering::Acquire) >= MAX_CHANNELS
+                    {
                         continue;
                     }
                     channels.insert(channel, socket.try_clone()?);
+                    state.readers.fetch_add(1, Ordering::AcqRel);
                 }
                 state.send(OPEN, channel, &target.to_be_bytes())?;
                 let state = Arc::clone(state);
                 workers.push(std::thread::spawn(move || {
+                    let _reader = ReaderGuard(&state.readers);
                     read_socket(&state, channel, socket)
                 }));
             }
@@ -150,10 +164,11 @@ fn accept(state: &Arc<State>, listener: &TcpListener, target: u32) -> io::Result
     Ok(())
 }
 
-fn serve(count: usize) -> io::Result<()> {
-    let listeners = (0..count)
-        .map(|_| {
-            let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))?;
+fn serve(addresses: &[std::net::IpAddr]) -> io::Result<()> {
+    let listeners = addresses
+        .iter()
+        .map(|address| {
+            let listener = TcpListener::bind((*address, 0))?;
             listener.set_nonblocking(true)?;
             Ok(listener)
         })
@@ -169,6 +184,7 @@ fn serve(count: usize) -> io::Result<()> {
         channels: Mutex::new(HashMap::new()),
         stopping: AtomicBool::new(false),
         next: AtomicU32::new(1),
+        readers: AtomicUsize::new(0),
     });
     state.send(READY, 0, &ports)?;
     std::thread::scope(|scope| {
@@ -226,7 +242,28 @@ pub(crate) fn entry(args: &[std::ffi::OsString]) -> std::process::ExitCode {
         .and_then(|value| value.to_str())
         .and_then(|value| value.parse::<usize>().ok());
     let result = match count {
-        Some(count) if args.len() == 1 && (1..=64).contains(&count) => serve(count),
+        Some(count) if (1..=64).contains(&count) => {
+            let addresses = if args.len() == 1 {
+                Ok(vec![
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+                    count
+                ])
+            } else if args.len() == count + 1 {
+                args[1..]
+                    .iter()
+                    .map(|address| {
+                        address
+                            .to_str()
+                            .and_then(|value| value.parse::<std::net::IpAddr>().ok())
+                            .filter(std::net::IpAddr::is_loopback)
+                            .ok_or_else(invalid)
+                    })
+                    .collect::<io::Result<Vec<_>>>()
+            } else {
+                Err(invalid())
+            };
+            addresses.and_then(|addresses| serve(&addresses))
+        }
         _ => Err(invalid()),
     };
     if result.is_ok() {

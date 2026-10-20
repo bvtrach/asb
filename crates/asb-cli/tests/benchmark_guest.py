@@ -8,6 +8,7 @@ import tarfile
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).parents[1] / "assets/benchmarks"))
@@ -42,6 +43,60 @@ class Container:
 
 
 class GuestBootstrapTests(unittest.TestCase):
+    def test_local_forwarding_precedes_install_and_is_closed_on_install_failure_or_success(self):
+        for failure in (False, True):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / ".asb").mkdir()
+                (root / ".asb/project.toml").write_text("tools_dir='tools'\n")
+                binary = root / "asb"
+                binary.write_bytes(elf())
+                container = Container()
+                container.id = "owned-container-fixture"
+                container.exec_run = lambda _: SimpleNamespace(exit_code=1)
+                calls, resources = [], []
+                class Relay:
+                    ports = (10001, 10002)
+                    closed = False
+                    def __init__(self, targets, command, cancelled):
+                        self.targets = targets
+                        resources.append(self)
+                    def close(self):
+                        self.closed = True
+                    def check(self):
+                        if self.closed:
+                            raise ExecutionError("relay closed")
+                def execute(argv, **options):
+                    self.assertFalse(resources[0].closed)
+                    self.assertEqual(options["environment"]["HTTP_PROXY"], "http://localhost:10002")
+                    calls.append((argv, options))
+                    return {"stdout":b"", "stderr":b"", "exit_code":1 if failure else 0,
+                            "timed_out":False, "cancelled":False}
+                def checked(argv, **_options):
+                    return json.dumps({"schema_version":1,"exit_code":0,"final_response":"done",
+                                       "token_usage":{},"steps":None}).encode() if argv[0] == "cat" else b""
+                task = SimpleNamespace(workspace=SimpleNamespace(container=container, execute=execute),
+                                       artifacts=root, checked=checked)
+                request = {"binary":str(binary),"project_root":str(root),"tools_root":str(root/"tools"),
+                    "project_configuration":"tools_dir='tools'\n[proxy]\nhttp='http://localhost:3128'\n",
+                    "environment":{"HTTP_PROXY":"http://localhost:3128"},
+                    "bootstrap":{"runtime_tools":[],"assets":[]},
+                    "request":{"config":{"agent":"pi"},"connection":{"base_url":"http://localhost:8000/v1"}}}
+                with patch("asb_guest.HostRelay", Relay), patch("asb_docker.docker_command", return_value=["docker-fixture"]):
+                    if failure:
+                        with self.assertRaises(ExecutionError):
+                            execute_agent(task,request,None,None,None)
+                    else:
+                        execute_agent(task,request,None,None,None)
+                self.assertTrue(resources[0].closed)
+                self.assertEqual(resources[0].targets, [("localhost",8000),("localhost",3128)])
+                project = next(data for destination,name,data in container.files
+                               if destination == "/opt/asb-project/.asb" and name == "project.toml")
+                self.assertIn(b"http://localhost:10002",project)
+                if not failure:
+                    guest = json.loads(calls[-1][1]["environment"]["ASB_GUEST_AGENT_REQUEST"])
+                    self.assertEqual(guest["connection"]["base_url"],"http://localhost:10001/v1")
+
     def test_declared_assets_and_runtime_order_do_not_depend_on_agent_names(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

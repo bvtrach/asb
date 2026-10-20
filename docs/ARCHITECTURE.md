@@ -326,8 +326,13 @@ its matching loader and libraries for the same-architecture Linux task image.
 The scoped launcher does not replace guest system libraries or export a
 library search path to benchmark clients. `ASB_GUEST_BINARY` is an optional
 development override, not a required build/install step. Host-loopback endpoint
-forwarding, container collector targeting and
-full-population planning remain unfinished. See the full benchmark delivery
+forwarding uses a private, bounded raw TCP relay over the owned Docker exec
+stream: only task-loopback listeners are opened, and host destinations remain
+on the host. Endpoint and HTTP/HTTPS/SOCKS proxy ports are rewritten before
+installation; TLS hostnames and raw protocol bytes are preserved. The relay
+spans installation/execution and closes on cancellation or any failure.
+Container collector targeting and full-population planning remain unfinished.
+See the full benchmark delivery
 checklist before claiming complete upstream benchmark support.
 The explicit `terminal-bench-1.0` and `terminal-bench-2.1` adapters likewise
 install their original complete task catalogs and own environment sessions.

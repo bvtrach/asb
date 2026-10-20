@@ -133,20 +133,6 @@ impl Session {
         let connection = context
             .connection
             .ok_or("isolated execution needs a negotiated API connection")?;
-        let authority = connection
-            .base_url
-            .split("://")
-            .nth(1)
-            .unwrap_or("")
-            .split('/')
-            .next()
-            .unwrap_or("");
-        if authority.starts_with("127.")
-            || authority.starts_with("localhost:")
-            || authority.starts_with("[::1]")
-        {
-            return Err("the selected endpoint is host loopback; isolated endpoint forwarding is still being integrated".into());
-        }
         let binary = std::env::var_os("ASB_GUEST_BINARY")
             .map(PathBuf::from)
             .or_else(|| std::env::current_exe().ok())
@@ -176,6 +162,8 @@ impl Session {
             "HTTPS_PROXY",
             "all_proxy",
             "ALL_PROXY",
+            "socks_proxy",
+            "SOCKS_PROXY",
             "no_proxy",
             "NO_PROXY",
             "NPM_CONFIG_OFFLINE",

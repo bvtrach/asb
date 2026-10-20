@@ -627,3 +627,64 @@ tests, ten benchmark protocol suites and the guest/runtime, diagram and replay
 integration checks. The expanded relay capacity/streaming checks also passed
 separately after that run. Strict Clippy, `make build` and package verification
 passed. These are local development gates, not hosted CI or release evidence.
+
+### Host-loopback provider, tape and outbound-proxy forwarding
+
+The host side now forwards only the selected explicit loopback destinations
+through an owned `docker exec -i` stream. No host listener, network-host mode,
+firewall change or extra host authorization is required. The guest binds the
+same loopback address family (including IPv6 and non-default 127/8 addresses).
+Opaque raw bytes preserve HTTP/SSE, TLS and SOCKS protocol traffic. URL rewrites
+change only the port, retaining the TLS hostname, userinfo and escaped path.
+Host endpoint credentials and URLs are not printed or placed in arguments.
+
+Local API endpoints, lowercase/uppercase HTTP/HTTPS/all/SOCKS proxy environment
+variables and typed project proxy configuration are all rewritten before
+runtime/client installation. The relay remains owned through client execution;
+success, preparation failure, execution failure and cancellation close its
+sockets, streams and CLI process. Transport failure interrupts the installer
+or client instead of leaving its retries running until the full task timeout.
+The old blanket rejection of host-loopback connections is removed.
+
+Provider-free regression tests exercise both sides of the real ASB relay:
+binary streaming, repeated independent targets, IPv6-only localhost servers,
+non-default loopback addresses, half-closes, cancellation, channel/frame limits,
+malformed startup cleanup, URL/proxy configuration rewrites and immutable host
+configuration. Guest-bootstrap tests prove rewriting precedes installation and
+the owner closes the relay on both installation success and failure. These
+tests do not require Docker, a real client or any provider credential.
+
+Actual normal CLI qualification with real Pi and a host-loopback synthetic
+provider passed one original task from each population with official grading:
+
+- SWE-bench Full: 48.0 seconds.
+- SWE-bench Lite: 48.7 seconds.
+- SWE-bench Verified: 47.5 seconds.
+- Terminal-Bench 1.0: 30.2 seconds.
+- Terminal-Bench 2.1: 36.0 seconds.
+
+The fixture directs a known deterministic repair; these are runtime/evaluator
+qualifications, not AI-solving claims or complete population scores. Original
+task environments, usage, selected identity and owned-container cleanup are
+checked by each test. Terminal-Bench 1.0 also passed normal recording (28.0
+seconds) and replay (28.9 seconds) through the embedded host tape proxy. A final
+replay after the cancellation repair passed in 26.2 seconds and explicitly
+verified zero provider inference OR catalog requests. No live LLM was contacted.
+
+The first live check caught a mismatch between a cancellation Event and the
+relay's callback contract. The relay now accepts both and the Event case has
+an ordinary regression. Full offline tests, strict Clippy and the development
+build passed; expanded protocol checks passed again after the last changes.
+Hosted CI for preceding signed milestone `c8e278e` passed. Current changes still
+require their own final package/hosted evidence before any delivery claim.
+
+Final local gates passed again after bounding reader threads across all
+listeners: the complete ordinary suite, strict Clippy, full `make build`,
+package verification and archive integrity. The packaged crate's full suite
+passed before that final bound adjustment; its ten protocol suites passed again
+against the final packaged source. Owned qualification provider/relay processes
+were confirmed absent after the tests.
+
+Remaining full-goal gates include measured container targets, complete selected
+population scheduling/resume/reporting, abrupt-crash recovery, SWE-bench source
+image fallback, full-diff review, PR merge, exact-main CI and release `0.2.0`.

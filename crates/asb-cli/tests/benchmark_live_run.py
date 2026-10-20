@@ -28,6 +28,8 @@ class NormalRunQualification(unittest.TestCase):
         terminal = suite.startswith("terminal-bench-")
         instance = ("hello-world" if suite.endswith("1.0") else "cancel-async-tasks") if terminal else "astropy__astropy-12907"
         resolved = os.environ.get("ASB_TEST_BENCHMARK_RESOLVED") == "1"
+        tape_mode = os.environ.get("ASB_TEST_BENCHMARK_TAPE_MODE")
+        self.assertIn(tape_mode, [None, "record", "replay"])
         binary = Path(os.environ["ASB_TEST_BENCHMARK_ASB"]).absolute()
         artifacts = Path(tempfile.mkdtemp(prefix="normal-cli-guest-", dir=root))
         print(f"Retained normal-run qualification: {artifacts}", flush=True)
@@ -91,6 +93,30 @@ class NormalRunQualification(unittest.TestCase):
                     provider.container.reload()
                     address = provider.container.attrs["NetworkSettings"]["Networks"][network_name]["IPAddress"]
                     base = f"http://{address}:{int(port.output.strip())}/v1"
+                    host_provider = os.environ.get("ASB_TEST_HOST_PROVIDER") == "1"
+                    if host_provider:
+                        host_root = artifacts / "host-provider"
+                        host_root.mkdir()
+                        if resolved:
+                            (host_root / "command.txt").write_text(command)
+                        process = subprocess.Popen([sys.executable,
+                            str(Path(__file__).parent / "guest_provider_fixture.py"), str(host_root)],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        def stop_provider():
+                            if process.poll() is None:
+                                process.terminate()
+                            try:
+                                process.wait(timeout=3)
+                            except subprocess.TimeoutExpired:
+                                process.kill()
+                                process.wait(timeout=3)
+                        self.addCleanup(stop_provider)
+                        for _ in range(100):
+                            if (host_root / "port").is_file() or process.poll() is not None:
+                                break
+                            time.sleep(.05)
+                        self.assertIsNone(process.poll())
+                        base = f"http://127.0.0.1:{int((host_root / 'port').read_text())}/v1"
                     configuration = artifacts / "benchmark.toml"
                     configuration.write_text(f"agent='pi'\nprovider='openrouter'\nmodel='fixture-model'\nworkload='{suite}'\ntrial='{instance}'\n"
                                              + f"workspace='{artifacts}/workspace'\nlog_file='{artifacts}/run.log'\n")
@@ -102,7 +128,10 @@ class NormalRunQualification(unittest.TestCase):
                         environment["ASB_GUEST_BINARY"] = os.environ["ASB_TEST_GUEST_BINARY"]
                     if cold:
                         environment.pop("NPM_CONFIG_OFFLINE")
-                    result = subprocess.run([binary, "run", configuration, "--json"], cwd=root,
+                    command_line = [binary, "run", configuration, "--json"]
+                    if tape_mode:
+                        command_line += ["--" + tape_mode, "--cassette", os.environ["ASB_TEST_BENCHMARK_CASSETTE"]]
+                    result = subprocess.run(command_line, cwd=root,
                                             env=environment, capture_output=True, timeout=240)
                     (artifacts / "asb.stdout").write_bytes(result.stdout)
                     (artifacts / "asb.stderr").write_bytes(result.stderr)
@@ -114,8 +143,18 @@ class NormalRunQualification(unittest.TestCase):
                     self.assertEqual(record["workload_baseline"]["kind"], "upstream-environment-definition" if terminal else "upstream-task-definition")
                     self.assertIsNone(record["workload_baseline_passed"])
                     self.assertEqual(record["success_rate"], 1.0 if resolved else 0.0)
-                    calls = json.loads(provider.container.exec_run(["cat", "/tmp/calls.json"]).output)["calls"]
-                    self.assertGreaterEqual(calls, 2)
+                    if tape_mode == "replay":
+                        if host_provider:
+                            self.assertFalse((host_root / "calls.json").exists(), "replay contacted the provider")
+                            self.assertFalse((host_root / "requests.json").exists(), "replay contacted the provider catalog")
+                        else:
+                            self.assertNotEqual(provider.container.exec_run(["test", "-e", "/tmp/calls.json"]).exit_code, 0)
+                            self.assertNotEqual(provider.container.exec_run(["test", "-e", "/tmp/requests.json"]).exit_code, 0)
+                        calls = 2  # The deterministic recorded fixture has two calls.
+                    else:
+                        calls = json.loads((host_root / "calls.json").read_text() if host_provider else
+                                           provider.container.exec_run(["cat", "/tmp/calls.json"]).output)["calls"]
+                        self.assertGreaterEqual(calls, 2)
                     self.assertEqual(record["token_usage"]["total_tokens"], calls * 22)
                     identity = record["task"]
                     self.assertEqual(identity["task_id"], instance)

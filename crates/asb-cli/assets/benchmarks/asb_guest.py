@@ -5,6 +5,7 @@ configuration and output interpretation remain in the same Rust adapters used
 by native execution. Host homes, venvs and project directories are not mounted.
 """
 import io
+from contextlib import ExitStack
 import hashlib
 import json
 from pathlib import Path
@@ -14,6 +15,7 @@ import tempfile
 
 from asb_execution import ExecutionError
 from asb_runtime import bundle
+from asb_relay import HostRelay, ForwardingCancellation, forward_request
 
 
 def upload(container, destination, files, temporary_dir=None):
@@ -100,7 +102,7 @@ def stage_bootstrap(task, plan, tools):
     return runtimes
 
 
-def prepare_agent(task, request, cancelled):
+def prepare_agent(task, request, cancelled, resources=None, relays=None):
     """Install the exact selected client independently of provider execution."""
     guest = request.get("request")
     if not isinstance(guest, dict):
@@ -123,6 +125,20 @@ def prepare_agent(task, request, cancelled):
     configuration = request.get("project_configuration", "tools_dir='.asb-tools'\nworkloads_dir='workloads'\nworkspace_dir='workspace'\n")
     if not isinstance(configuration, str) or len(configuration.encode()) > 64 * 1024:
         raise ExecutionError("guest project configuration exceeds its limit")
+    if relays is None:
+        relays = []
+    def start_relay(targets):
+        if resources is None:
+            raise ExecutionError("local endpoint forwarding needs an owned execution scope")
+        from asb_docker import docker_command
+        relay = HostRelay(targets, [*docker_command(), "exec", "-i", container.id,
+                                   "/opt/asb-runtime/asb", "__asb-relay"], cancelled)
+        resources.callback(relay.close)
+        relays.append(relay)
+        return relay
+    request = forward_request(dict(request, project_configuration=configuration), start_relay)
+    configuration = request["project_configuration"]
+    guest = request["request"]
     upload(container, "/opt/asb-project/.asb", [("project.toml", configuration.encode(), 0o600)],temporary_dir=task.artifacts)
     runtimes = stage_bootstrap(task,request.get("bootstrap"),tools)
     if request["bootstrap"].get("public_package_cache",False):
@@ -130,7 +146,10 @@ def prepare_agent(task, request, cancelled):
     environment = request.get("environment", {})
     for selected in [*runtimes, tool]:
         result = task.workspace.execute(["/bin/sh", "-c", 'cd /opt/asb-project && exec /opt/asb-runtime/asb tool install "$1"', "asb", selected],
-                                        environment=environment, timeout=900, output_limit=256 * 1024, cancelled=cancelled)
+                                        environment=environment, timeout=900, output_limit=256 * 1024,
+                                        cancelled=ForwardingCancellation(cancelled, relays))
+        for relay in relays:
+            relay.check()
         for stream in ["stdout", "stderr"]:
             path = task.artifacts / f"install-{selected}.{stream}"
             path.write_bytes(result[stream])
@@ -148,7 +167,14 @@ def prepare_agent(task, request, cancelled):
 
 
 def execute_agent(task, request, before_resume, on_output, cancelled):
-    guest,environment = prepare_agent(task,request,cancelled)
+    # The relay spans package installation AND agent execution and is closed
+    # on success, cancellation and every preparation/execution exception.
+    with ExitStack() as resources:
+        return _execute_agent(task, request, before_resume, on_output, cancelled, resources, [])
+
+
+def _execute_agent(task, request, before_resume, on_output, cancelled, resources, relays):
+    guest,environment = prepare_agent(task,request,cancelled,resources,relays)
     container = task.workspace.container
     network = request.get("network")
     if network:
@@ -165,7 +191,9 @@ def execute_agent(task, request, before_resume, on_output, cancelled):
     result = task.workspace.execute(["/opt/asb-runtime/asb", "__asb-agent"], environment=environment,
                                     timeout=request.get("timeout", getattr(task, "agent_timeout", 900)), output_limit=256 * 1024,
                                     gate="application", before_resume=before_resume,
-                                    on_output=on_output, cancelled=cancelled)
+                                    on_output=on_output, cancelled=ForwardingCancellation(cancelled, relays))
+    for relay in relays:
+        relay.check()
     observation = {key: result.get(key) for key in ["exit_code", "timed_out", "cancelled",
                    "output_truncated", "elapsed_seconds", "target"]}
     journal = task.artifacts / "execution.json"

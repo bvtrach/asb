@@ -6,6 +6,7 @@ import sys
 
 root = Path(sys.argv[1])
 calls = 0
+requests = 0
 
 
 def command():
@@ -17,7 +18,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
 
+    def observe(self):
+        global requests
+        requests += 1
+        # Count contacts without retaining credentials, prompts or bodies.
+        (root / "requests.json").write_text(json.dumps({"requests": requests}))
+
     def do_GET(self):
+        self.observe()
         if self.path != "/v1/models":
             self.send_error(404)
             return
@@ -29,6 +37,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        self.observe()
         global calls
         if self.path not in ["/v1/chat/completions", "/v1/responses"] or self.headers.get("Authorization") != "Bearer fixture-token":
             self.send_error(400)
