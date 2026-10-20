@@ -347,7 +347,7 @@ fn artifact_links(sweep_parent: &Path, measurement_dir: &Path) -> Vec<String> {
     // them before the bounded recursive inventory so a large external
     // workload workspace cannot crowd collector artifacts out of the
     // HTML report's artifact links.
-    if let Ok(entries) = fs::read_dir(&measurement_dir) {
+    if let Ok(entries) = fs::read_dir(measurement_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_file()
@@ -362,7 +362,7 @@ fn artifact_links(sweep_parent: &Path, measurement_dir: &Path) -> Vec<String> {
     }
     // Do not inventory external workload workspaces; only measurement output
     // is comparison evidence and should appear in the report.
-    collect_artifacts(&measurement_dir, 0, &mut files);
+    collect_artifacts(measurement_dir, 0, &mut files);
     files.sort();
     files.dedup();
     files
