@@ -116,7 +116,10 @@ def render(functions: list[Function], relations: set[tuple[str, str, str]], kind
         '    graph [bgcolor="white", compound=true, fontname="Helvetica", '
         f'fontsize=18, label="ASB {kind} flow (Rust functions)", labelloc=t, '
         'newrank=true, nodesep=0.18, pad=0.25, rankdir=LR, ranksep=0.8, '
-        'splines=polyline, concentrate=true];',
+        # Edge concentration can corrupt clustered layouts in Graphviz 2.43
+        # (contain_nodes/rebuild_vlists errors and a segmentation fault).
+        # Keep each call edge explicit; this also preserves its hover label.
+        'splines=polyline, concentrate=false];',
         '    node [color="#64748b", fillcolor="#f8fafc", fontname="Helvetica", '
         'fontsize=8, shape=box, style="filled,rounded"];',
         '    edge [color="#94a3b8", fontname="Helvetica", fontsize=7, arrowsize=0.55];',
@@ -149,14 +152,13 @@ def render(functions: list[Function], relations: set[tuple[str, str, str]], kind
     if kind == "control":
         roots = sorted({function.ident for function in functions} - {target for _, target, _ in relations})
         leaves = sorted({function.ident for function in functions} - {source for source, _, _ in relations})
-        lines.extend([
-            '    entry [label="entry points", shape=oval, fillcolor="#dcfce7"];',
-            '    exit [label="terminal functions", shape=oval, fillcolor="#fee2e2"];',
-        ])
+        # Annotate actual roots/leaves instead of adding global synthetic
+        # entry/exit edges across every module cluster. Those edges are not
+        # function calls and destabilize rank assignment on older Graphviz.
         for ident in roots:
-            lines.append(f'    entry -> {ident} [color="#16a34a", style=dotted];')
+            lines.append(f'    {ident} [color="#16a34a", penwidth=2];')
         for ident in leaves:
-            lines.append(f'    {ident} -> exit [color="#dc2626", style=dotted];')
+            lines.append(f'    {ident} [color="#dc2626", penwidth=2];')
     lines.append("}")
     return "\n".join(lines) + "\n"
 
