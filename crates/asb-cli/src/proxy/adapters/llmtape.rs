@@ -98,14 +98,23 @@ impl ProxyAdapter for LlmtapeAdapter {
                 ))
             })?;
         }
-        // Hold the startup lock until the proxy is listening so sibling
-        // replicas do not select the same released ephemeral port.
+        // Legacy overrides still choose a released port: serialize sibling
+        // startup, without claiming this excludes other ASB processes.
         let _start_guard = START_LOCK
             .lock()
             .map_err(|_| Error::Run("tape startup lock was poisoned".into()))?;
-        let port = free_port()?;
         let executable = resolve_executable(&scratch.path)?;
+        // The built-in child binds its own ephemeral port and publishes it
+        // only after listening. A released parent-selected port can be taken
+        // by a different ASB process; a TCP connect does not prove ownership.
+        let builtin = matches!(executable, ProxyExecutable::Builtin(_));
+        let port = if builtin { 0 } else { free_port()? };
+        let ready_file = scratch.path.join("ready.json");
         let mut command = executable.command();
+        command.env_remove("ASB_TAPE_READY_FILE");
+        if builtin {
+            command.env("ASB_TAPE_READY_FILE", &ready_file);
+        }
         crate::project::apply_network_proxy(&mut command, Path::new("."))?;
         command
             .arg(match request.mode {
@@ -154,37 +163,108 @@ impl ProxyAdapter for LlmtapeAdapter {
             Error::Run(format!("cannot start the tape proxy: {error}. {help}"))
         })?;
         let mut child = StartingChild(Some(child));
-        let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-        let deadline = Instant::now() + STARTUP_TIMEOUT;
-        while Instant::now() < deadline {
-            if TcpStream::connect_timeout(&address, Duration::from_millis(100)).is_ok() {
-                return Ok(Box::new(RunningLlmtape {
-                    child: child.0.take(),
-                    url: format!("http://127.0.0.1:{port}/v1"),
-                    progress: (request.mode == Mode::Replay)
-                        .then(|| replay_cassette.with_extension("jsonl.progress.json")),
-                    cassette: cassette.clone(),
-                    mode: request.mode,
-                    cleanup_confirmed: false,
-                    _scratch: scratch,
-                }));
-            }
-            if child
-                .0
-                .as_mut()
-                .expect("startup child is present")
+        let port = wait_for_ready(
+            &mut child,
+            builtin.then_some(ready_file.as_path()),
+            port,
+            STARTUP_TIMEOUT,
+        )?;
+        Ok(Box::new(RunningLlmtape {
+            child: child.0.take(),
+            url: format!("http://127.0.0.1:{port}/v1"),
+            progress: (request.mode == Mode::Replay)
+                .then(|| replay_cassette.with_extension("jsonl.progress.json")),
+            cassette: cassette.clone(),
+            mode: request.mode,
+            cleanup_confirmed: false,
+            _scratch: scratch,
+        }))
+    }
+}
+
+fn wait_for_ready(
+    child: &mut StartingChild,
+    ready_file: Option<&Path>,
+    legacy_port: u16,
+    timeout: Duration,
+) -> Result<u16, Error> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        let process = child.0.as_mut().expect("startup child is present");
+        if process
+            .try_wait()
+            .map_err(|error| Error::Run(format!("cannot inspect tape proxy: {error}")))?
+            .is_some()
+        {
+            return Err(Error::Run("ASB's tape proxy exited before becoming ready; verify Node.js and the cassette format".into()));
+        }
+        let port = if let Some(path) = ready_file {
+            read_ready_port(path, process.id())?
+        } else {
+            // Explicit legacy overrides retain their fixed-port protocol.
+            // Their listener ownership is the override's responsibility.
+            TcpStream::connect_timeout(
+                &SocketAddr::from((Ipv4Addr::LOCALHOST, legacy_port)),
+                Duration::from_millis(100),
+            )
+            .is_ok()
+            .then_some(legacy_port)
+        };
+        if let Some(port) = port {
+            if process
                 .try_wait()
                 .map_err(|error| Error::Run(format!("cannot inspect tape proxy: {error}")))?
                 .is_some()
             {
-                return Err(Error::Run("ASB's tape proxy exited before becoming ready; verify Node.js and the cassette format".into()));
+                return Err(Error::Run(
+                    "tape proxy exited during readiness publication; no agent was started".into(),
+                ));
             }
-            thread::sleep(Duration::from_millis(50));
+            return Ok(port);
         }
-        Err(Error::Run(
-            "ASB's tape proxy did not become ready within 8 seconds; verify Node.js and the cassette format".into(),
-        ))
+        thread::sleep(Duration::from_millis(50));
     }
+    Err(Error::Run("ASB's tape proxy did not become ready within the startup deadline; verify Node.js and the cassette format".into()))
+}
+
+/// Accept only the private, bounded publication from the intended child.
+fn read_ready_port(path: &Path, child_id: u32) -> Result<Option<u16>, Error> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(Error::Run(format!("cannot read tape readiness: {error}"))),
+    };
+    if !file.metadata().map_err(crate::io_error)?.is_file() {
+        return Err(Error::Run("tape readiness is not a regular file".into()));
+    }
+    let mut bytes = Vec::new();
+    file.take(1025)
+        .read_to_end(&mut bytes)
+        .map_err(|error| Error::Run(format!("cannot read tape readiness: {error}")))?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|_| Error::Run("tape proxy published malformed readiness".into()))?;
+    let port = value["port"]
+        .as_u64()
+        .and_then(|port| u16::try_from(port).ok());
+    if bytes.len() > 1024
+        || value["schema_version"] != 1
+        || value["pid"] != child_id
+        || value["host"] != "127.0.0.1"
+        || port.is_none_or(|port| port == 0)
+    {
+        return Err(Error::Run(
+            "tape proxy published invalid endpoint ownership; no agent was started".into(),
+        ));
+    }
+    Ok(port)
 }
 
 impl ProxySession for RunningLlmtape {
@@ -375,11 +455,104 @@ fn free_port() -> Result<u16, Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ProxyExecutable, resolve_executable};
+    use super::{
+        ProxyExecutable, StartingChild, read_ready_port, resolve_executable, wait_for_ready,
+    };
     use crate::proxy::parse_chain;
     use crate::tape::{Mode, Session};
     use std::io::{Read, Write};
     use std::net::TcpStream;
+
+    #[test]
+    fn builtin_startup_rejects_foreign_listener_and_reaps_unready_child() {
+        let root = test_root();
+        let foreign = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = foreign.local_addr().unwrap();
+        assert!(TcpStream::connect(address).is_ok());
+        let process = std::process::Command::new("node")
+            .args(["-e", "setInterval(()=>{},1000)"])
+            .spawn()
+            .unwrap();
+        let pid = process.id();
+        let mut child = StartingChild(Some(process));
+        let result = wait_for_ready(
+            &mut child,
+            Some(&root.join("absent.json")),
+            address.port(),
+            std::time::Duration::from_millis(150),
+        );
+        assert!(
+            result.is_err(),
+            "foreign listener must never supply readiness"
+        );
+        assert!(child.0.as_mut().unwrap().try_wait().unwrap().is_none());
+        drop(child);
+        #[cfg(target_os = "linux")]
+        assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        #[cfg(not(target_os = "linux"))]
+        let _ = pid;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn builtin_publishes_private_receipt_for_its_served_port() {
+        let root = test_root();
+        let cassette = cassette(&root);
+        let session = Session::start(Mode::Replay, &cassette, None, false, &root).unwrap();
+        let ready = std::fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join("ready.json"))
+            .find(|path| path.is_file())
+            .unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&ready).unwrap()).unwrap();
+        assert_eq!(
+            session.url(),
+            format!("http://127.0.0.1:{}/v1", value["port"])
+        );
+        assert!(value["pid"].as_u64().unwrap() > 0);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&ready).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert!(request(&session, r#"{"model":"m","messages":[{"content":"work in <asb-workspace>"}],"tools":[{"type":"function"}]}"#).contains("200 OK"));
+        session.stop().unwrap();
+        assert!(!ready.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unrelated_listener_cannot_supply_builtin_readiness() {
+        let root = test_root();
+        let ready = root.join("ready.json");
+        let unrelated = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = unrelated.local_addr().unwrap();
+        assert!(TcpStream::connect(address).is_ok());
+        assert_eq!(read_ready_port(&ready, 42).unwrap(), None);
+        for invalid in [
+            serde_json::json!({"schema_version":1,"pid":43,"host":"127.0.0.1","port":address.port()}),
+            serde_json::json!({"schema_version":1,"pid":42,"host":"0.0.0.0","port":address.port()}),
+            serde_json::json!({"schema_version":1,"pid":42,"host":"127.0.0.1","port":0}),
+            serde_json::json!({"schema_version":1,"pid":42,"host":"127.0.0.1","port":65536}),
+            serde_json::json!({"schema_version":2,"pid":42,"host":"127.0.0.1","port":address.port()}),
+        ] {
+            std::fs::write(&ready, invalid.to_string()).unwrap();
+            assert!(read_ready_port(&ready, 42).is_err());
+        }
+        let valid = serde_json::json!({"schema_version":1,"pid":42,"host":"127.0.0.1","port":address.port()}).to_string();
+        std::fs::write(&ready, &valid).unwrap();
+        assert_eq!(read_ready_port(&ready, 42).unwrap(), Some(address.port()));
+        std::fs::write(&ready, format!("{valid}{}", " ".repeat(1025))).unwrap();
+        assert!(read_ready_port(&ready, 42).is_err());
+        std::fs::write(&ready, b"not json").unwrap();
+        assert!(read_ready_port(&ready, 42).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
