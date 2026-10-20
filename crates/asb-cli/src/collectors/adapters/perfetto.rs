@@ -229,12 +229,13 @@ fn probe_trace_processor(tool_dir: Option<&Path>) -> Result<(), String> {
     let Some(processor) = tool_dir.map(|dir| dir.join("perfetto/bin/trace_processor_shell")) else {
         return Err("Perfetto trace processing needs the project-local trace processor. Run `asb tool install perfetto` and retry.".into());
     };
-    let mut child = Command::new(&processor)
+    let mut command = Command::new(&processor);
+    command
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+        .stderr(Stdio::null());
+    let mut child = retry_executable_busy(|| command.spawn())
         .map_err(|error| format!("cannot execute Perfetto trace processor {}: {error}. Check directory access and run `asb tool install perfetto` to reinstall it.", processor.display()))?;
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -481,12 +482,7 @@ impl measurements::Session {
             return metrics;
         }
         for (metric, query) in perfetto_metric_queries(state.pid, &self.trace_id) {
-            let Ok(output) = Command::new(&processor)
-                .args(["query"])
-                .arg(trace)
-                .arg(query)
-                .output()
-            else {
+            let Ok(output) = processor_query(&processor, trace, &query) else {
                 continue;
             };
             if output.status.success()
@@ -519,12 +515,7 @@ impl measurements::Session {
             return (series, timestamps);
         }
         for (name, query) in perfetto_series_queries(state.pid, &self.trace_id) {
-            let Ok(output) = Command::new(&processor)
-                .args(["query"])
-                .arg(trace)
-                .arg(query)
-                .output()
-            else {
+            let Ok(output) = processor_query(&processor, trace, &query) else {
                 continue;
             };
             if !output.status.success() {
@@ -626,11 +617,7 @@ fn write_state_timeline_svg(
         "{} SELECT th.tid, st.ts, st.dur, st.state, COALESCE(st.io_wait,0) FROM thread_state st JOIN thread th ON st.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND st.ts >= bounds.start_ts AND st.ts < bounds.end_ts AND st.dur > 0 ORDER BY th.tid, st.ts LIMIT 4096",
         perfetto_scope_sql(pid, trace_id)
     );
-    let output = Command::new(processor)
-        .args(["query"])
-        .arg(trace)
-        .arg(query)
-        .output()
+    let output = processor_query(processor, trace, &query)
         .map_err(|e| format!("cannot extract Perfetto state timeline: {e}"))?;
     if !output.status.success() {
         return write_timeline_notice(
@@ -833,6 +820,35 @@ fn write_active_marker_io(
     output.write_all(event.as_bytes())
 }
 
+/// Concurrent fork/exec can briefly retain another thread's writable file
+/// descriptor to a freshly installed executable. Retry only ETXTBSY, before
+/// execution has occurred; never retry a failed query or another launch error.
+fn retry_executable_busy<T>(mut launch: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let deadline = Instant::now() + Duration::from_millis(250);
+    loop {
+        match launch() {
+            Err(error) if error.raw_os_error() == Some(26) && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            result => return result,
+        }
+    }
+}
+
+fn processor_query(
+    processor: &Path,
+    trace: &Path,
+    query: &str,
+) -> std::io::Result<std::process::Output> {
+    retry_executable_busy(|| {
+        Command::new(processor)
+            .arg("query")
+            .arg(trace)
+            .arg(query)
+            .output()
+    })
+}
+
 fn verify_trace_marker_capture(
     processor: &Path,
     trace: &Path,
@@ -840,17 +856,12 @@ fn verify_trace_marker_capture(
 ) -> Result<(), String> {
     // trace_id is generated from a process ID and atomic counter, not user input.
     let query = format!("SELECT COUNT(*) FROM slice WHERE name='asb.trace.ready.{trace_id}'");
-    let output = Command::new(processor)
-        .arg("query")
-        .arg(trace)
-        .arg(query)
-        .output()
-        .map_err(|error| {
-            format!(
-                "cannot verify Perfetto lifecycle markers with {}: {error}",
-                processor.display()
-            )
-        })?;
+    let output = processor_query(processor, trace, &query).map_err(|error| {
+        format!(
+            "cannot verify Perfetto lifecycle markers with {}: {error}",
+            processor.display()
+        )
+    })?;
     if !output.status.success() {
         return Err(format!(
             "cannot verify lifecycle markers in Perfetto trace {}: trace processor failed: {}",
@@ -1281,6 +1292,57 @@ mod marker_tests {
         }
         fs::remove_file(trace).unwrap();
         fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn executable_busy_retry_is_bounded_and_other_errors_are_immediate() {
+        let mut calls = 0;
+        let result = retry_executable_busy(|| {
+            calls += 1;
+            if calls < 3 {
+                Err(std::io::Error::from_raw_os_error(26))
+            } else {
+                Ok(42)
+            }
+        })
+        .unwrap();
+        assert_eq!(result, 42);
+        assert_eq!(calls, 3);
+        calls = 0;
+        let result: std::io::Result<()> = retry_executable_busy(|| {
+            calls += 1;
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        });
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(calls, 1);
+        let result: std::io::Result<()> =
+            retry_executable_busy(|| Err(std::io::Error::from_raw_os_error(26)));
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(26));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn trace_processor_waits_for_a_writable_executable_to_close() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("asb-marker-busy-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let processor = root.join("processor");
+        let mut writer = File::create(&processor).unwrap();
+        writer
+            .write_all(b"#!/bin/sh\nprintf '\"COUNT(*)\"\\n1\\n'\n")
+            .unwrap();
+        fs::set_permissions(&processor, fs::Permissions::from_mode(0o755)).unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            drop(writer);
+        });
+        let result = verify_trace_marker_capture(&processor, &root.join("trace"), "10-1");
+        release.join().unwrap();
+        result.unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
