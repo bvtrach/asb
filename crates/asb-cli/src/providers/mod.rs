@@ -212,6 +212,23 @@ pub(crate) fn offered_endpoints(provider: &str, model: &str) -> Vec<crate::endpo
     adapters::find(provider).map_or_else(Vec::new, |adapter| adapter.offered_endpoints(model))
 }
 
+/// Return the provider label an agent CLI should receive for a negotiated
+/// connection. Provider-specific aliases stay in the provider layer so agent
+/// adapters remain independent of provider identifiers.
+pub(crate) fn agent_provider_name(
+    provider: &str,
+    interface: Option<crate::endpoint::Interface>,
+) -> &'static str {
+    if provider == "cli2key" {
+        "asb-cli2key"
+    } else {
+        match interface {
+            Some(crate::endpoint::Interface::AnthropicMessages) => "anthropic",
+            _ => "openai-api",
+        }
+    }
+}
+
 /// Refresh model-specific endpoint metadata where the provider publishes it.
 /// Other providers retain their documented interface registry and explicit URL
 /// overrides; a model list alone does not establish wire-protocol support.
