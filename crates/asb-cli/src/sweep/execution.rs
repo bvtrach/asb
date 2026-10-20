@@ -19,6 +19,7 @@ pub(super) struct Execution<'a> {
     pub restore_recordings: bool,
     pub options: Options<'a>,
     pub warnings: &'a Mutex<BTreeSet<String>>,
+    pub checkpoint: Option<&'a super::checkpoint::Inputs>,
 }
 
 impl Execution<'_> {
@@ -34,7 +35,10 @@ impl Execution<'_> {
     }
 
     pub(super) fn output_path(&self, index: usize) -> PathBuf {
-        self.directory(index).join(".terminal-output.tmp")
+        // Keep temporary presentation bytes outside the immutable task result
+        // tree. Evidence hashing must not omit similarly named grader files.
+        self.results
+            .join(format!(".terminal-output-{index:06}.tmp"))
     }
 
     pub(super) fn run(&self, index: usize) -> Result<(), Error> {
@@ -92,7 +96,7 @@ impl Execution<'_> {
                 .join("cassettes")
                 .join(cassette_filename(config))
         });
-        runner::run_with_diagnostics(
+        let result = runner::run_with_diagnostics(
             isolated_path.to_string_lossy().as_ref(),
             runner::RunOptions {
                 json: self.options.json,
@@ -104,6 +108,12 @@ impl Execution<'_> {
             },
             output,
             self.warnings,
-        )
+        );
+        // Preserve official false grades too. Failure to produce a complete
+        // evidence seal must not change the benchmark result or retry a task.
+        if let Some(checkpoint) = self.checkpoint {
+            let _ = checkpoint.completed(index, &resolved, entry);
+        }
+        result
     }
 }

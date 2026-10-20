@@ -153,6 +153,7 @@ pub(crate) fn run_with_options(
         replay_inputs: replay_inputs.as_deref(),
         options,
         warnings: &warnings,
+        checkpoint: checkpoint.as_ref(),
         restore_recordings: cassette_root.is_none()
             || relocated_input
                 .as_ref()

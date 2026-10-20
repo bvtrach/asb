@@ -10,8 +10,9 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const HELPER: &str = include_str!("../../assets/benchmarks/asb_fingerprint.py");
+mod completed;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Root {
     pub name: String,
@@ -49,7 +50,7 @@ impl Root {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Fingerprint {
     pub schema_version: u32,

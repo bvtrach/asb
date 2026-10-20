@@ -179,9 +179,19 @@ not a resume receipt: host runtime/proxy/cassette input closure remains required
 After workload cleanup and measurement completion, the runner writes private
 `.asb-completions/` outcome records beside the run log, including unresolved
 outcomes, actual task identity, cleanup status and workload-owned evaluator
-evidence paths. These records omit agent stdout/stderr. They are not yet sealed
-for reuse and never suppress execution or change the grade. No `--resume`
-behavior is provided by these foundations alone.
+evidence paths. These records omit agent stdout/stderr. After a configuration's
+replicas finish, the checkpoint binds its complete result tree and all declared
+evaluator roots into `.checkpoint/completed/<index>.json`. Every replica must
+have a unique, matching task identity, an actual boolean evaluator outcome,
+supported baseline evidence and confirmed cleanup. Enabled measurement records
+must agree with the outcome summaries. Both resolved and unresolved grades are
+sealed; incomplete, malformed or mismatched groups are not. Publication cannot
+replace an existing receipt, and verification rejects changed results, evidence,
+selection or input identity. Temporary output spools live outside the per-task
+result tree, so hashing excludes no evidence filenames. These outcome-only
+seals still lack complete runtime/proxy/cassette input closure and never suppress
+execution or change the grade. No `--resume` behavior is provided by these
+foundations alone.
 Sessions may execute through a workload-owned controller rather than the
 native process path. The generic execution context carries the selected
 configuration and negotiated connection, and the owning session returns

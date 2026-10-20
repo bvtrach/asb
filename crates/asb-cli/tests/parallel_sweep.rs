@@ -174,6 +174,25 @@ const expected=['first-1','first-2','second'];
     let seal = read_json(&root.join("sweep-results/.checkpoint/inputs.json"));
     assert_eq!(seal["scope"], "input-stability-only-not-a-resume-receipt");
     assert_eq!(seal["status"], "stable");
+    for index in 0..2 {
+        let completion = read_json(&root.join(format!(
+            "sweep-results/.checkpoint/completed/{index:06}.json"
+        )));
+        assert_eq!(
+            completion["scope"],
+            "outcome-evidence-only-not-complete-input-closure"
+        );
+        assert_eq!(completion["input_digest"], seal["initial"]["digest"]);
+        assert_eq!(
+            completion["fingerprint"]["digest"].as_str().unwrap().len(),
+            64
+        );
+        assert!(
+            !root
+                .join(format!("sweep-results/.terminal-output-{index:06}.tmp"))
+                .exists()
+        );
+    }
     let report = read_json(&comparison);
     assert_eq!(report["benchmarks"].as_array().unwrap().len(), 3);
     assert_eq!(report["evaluation_coverage"]["evaluated_attempts"], 3);
@@ -320,6 +339,20 @@ const expected=['first-1','first-2','second'];
     for record in completions(root, "000-first") {
         assert_eq!(record["summary"]["workload_success"], false);
         assert_eq!(record["workload_cleanup_confirmed"], true);
+    }
+    for index in 0..2 {
+        assert!(
+            root.join(format!(
+                "sweep-results/.checkpoint/completed/{index:06}.json"
+            ))
+            .is_file(),
+            "completed false grades must be sealed too"
+        );
+        assert!(
+            !root
+                .join(format!("sweep-results/.terminal-output-{index:06}.tmp"))
+                .exists()
+        );
     }
     let report = read_json(&comparison);
     assert_eq!(report["benchmarks"].as_array().unwrap().len(), 3);

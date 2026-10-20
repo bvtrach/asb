@@ -1214,3 +1214,55 @@ successful task and both unresolved replicas. All source/build gates passed
 again after the repair. Checkpoint commit `b4860e3032cafaa0c702ae4b7eb4298a6e5e3c71`
 passed clean packaging, the full packaged suite and hosted CI `39474879476`
 (optional local-host job skipped); GitHub verified its signature.
+
+### Content-bound evaluator outcomes
+
+Checkpoint continuation now has per-configuration outcome/evidence seals under
+`.checkpoint/completed/`. Before publication, every expected replica must have
+a unique actual task/attempt identity matching its selected dataset, agent,
+provider, model and grader; a boolean resolved/unresolved grade; supported
+baseline evidence; and cleanup confirmation. Dataset attempts must retain
+evaluator evidence. Enabled measurement records must match each unique outcome,
+including grade, provenance, process status, timing and reported usage. Wrong,
+missing, duplicated or mismatched records cannot become sealed completions.
+
+The keyed digest covers the entire configuration result tree and each
+adapter-owned evaluator root, bound to the planned entry and original input
+digest. Temporary terminal spools moved outside task result trees; there are
+no filename exclusions from the evidence hash. Receipt publication uses an
+atomic non-replacing link and syncs the containing directory on Unix. Existing
+receipts can be verified but never overwritten: changing evidence, results,
+selection, input identity or the receipt itself is rejected. Optional seal
+failure does not change a grade or block execution. No historical failed grade
+is treated as a request to retry it.
+
+Six provider-free unit checks cover true/false outcomes, metadata/privacy,
+result/evaluator mutation, non-replacement, selection/input binding, wrong or
+incomplete populations, record bounds/symlinks and measurement consistency.
+The parallel loopback replay integration now requires seals for both failed
+replicas as well as the independent successful task and checks that all
+temporary output spools are removed. The first full suite exposed a raw-file
+lock fixture race when another test forked before descriptor close; the product
+guard already explicitly unlocks, and the fixture now does the same rather
+than relying on close of every inherited descriptor. The focused check and
+complete suite passed after repair.
+
+The full source gates passed 401 unit tests (six opt-in ignored), 87 offline
+CLI tests, all twelve protocol suites, seven guest-driver checks, existing
+parallel/replay/diagram regressions, strict Clippy and `make build`. Live
+container, package and hosted qualification are recorded below when complete.
+These seals are deliberately outcome-only: complete input closure, interrupted
+replica handling and actual resume dispatch remain open, as do scalable
+population presentation, abrupt-crash recovery and final delivery/release.
+
+The mixed actual SWE-bench Lite/original Terminal-Bench 1.0 qualification
+passed in 78.1 seconds, now requiring both keyed result/evaluator seals,
+matching outcome/measurement identities, official grades, scoped collectors
+and container/spool cleanup. The input seal remained stable. Its two outcome
+seals bound approximately 817 KB and 136 KB respectively, including the
+workload-owned official evaluator roots; no whole SDK/client installation is
+duplicated into those output hashes. Artifacts are retained under
+`target/benchmark-runtime/parallel-original-tasks-zhm1uyr7`. As before, these
+are known-repair/synthetic-provider qualifications, not full-population or
+autonomous AI-solving claims. Previous checkpoint `4ef04e6` also passed its
+exact-head hosted CI `39475840348` (optional local-host job skipped).

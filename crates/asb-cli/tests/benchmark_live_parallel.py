@@ -104,9 +104,14 @@ class ParallelOriginalTaskQualification(unittest.TestCase):
                         self.assertEqual(record["agent"], "pi")
                         self.assertEqual(record["provider"], "openrouter")
                     targets = []
-                    for name in ["000-swe", "001-terminal"]:
+                    for index, name in enumerate(["000-swe", "001-terminal"]):
                         directory = artifacts / "sweep-results" / name
                         self.assertFalse((directory / ".terminal-output.tmp").exists())
+                        self.assertFalse((artifacts / "sweep-results" / f".terminal-output-{index:06}.tmp").exists())
+                        receipt = json.loads((artifacts / "sweep-results/.checkpoint/completed" / f"{index:06}.json").read_bytes())
+                        self.assertEqual(receipt["scope"], "outcome-evidence-only-not-complete-input-closure")
+                        self.assertEqual(len(receipt["fingerprint"]["digest"]), 64)
+                        self.assertEqual(len(receipt["roots"]), 2)
                         completions = list((directory / ".asb-completions").glob("*.json"))
                         self.assertEqual(len(completions), 1)
                         completion = json.loads(completions[0].read_bytes())

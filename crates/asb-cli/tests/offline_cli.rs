@@ -776,6 +776,10 @@ fn competing_sweep_leaves_existing_results_and_reports_untouched() {
     );
     assert!(!project.0.join("sweep-history").exists());
     assert!(!project.0.join("sweep-results/plan.json").exists());
+    // Other tests can fork this multi-threaded test process while the raw
+    // descriptor is open. Unlock explicitly, just like OutputLock::drop,
+    // rather than depending on every inherited copy reaching exec first.
+    lock.unlock().unwrap();
     drop(lock);
     let next = project.command(&["sweep", "sweep.toml"]);
     assert!(!next.status.success());
