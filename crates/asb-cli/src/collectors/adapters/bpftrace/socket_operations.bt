@@ -1,0 +1,32 @@
+// Elapsed socket call duration includes both on-CPU work and off-CPU waits.
+// It is contextual evidence, not an exclusive network-wait state. No socket
+// buffers, addresses, credentials or request content are collected.
+tracepoint:syscalls:sys_enter_connect,
+tracepoint:syscalls:sys_enter_recvfrom,
+tracepoint:syscalls:sys_enter_recvmsg /@asb_tree[pid] || @asb_tree[tid]/ {
+  @socket_operation_start[tid] = nsecs;
+}
+
+tracepoint:syscalls:sys_exit_connect,
+tracepoint:syscalls:sys_exit_recvfrom,
+tracepoint:syscalls:sys_exit_recvmsg /@socket_operation_start[tid]/ {
+  $elapsed = nsecs - @socket_operation_start[tid];
+  @asb_socket_calls = count();
+  @asb_socket_elapsed_total_ns = sum($elapsed);
+  @asb_socket_elapsed_max_ns = max($elapsed);
+  if (args->ret < 0) { @asb_socket_failed_calls = count(); }
+  delete(@socket_operation_start[tid]);
+}
+
+tracepoint:sched:sched_process_exit /@socket_operation_start[tid]/ {
+  @asb_socket_incomplete_calls = count();
+  delete(@socket_operation_start[tid]);
+}
+
+interval:s:1 {
+  print(@asb_socket_calls);
+  print(@asb_socket_elapsed_total_ns);
+  print(@asb_socket_elapsed_max_ns);
+  print(@asb_socket_failed_calls);
+  print(@asb_socket_incomplete_calls);
+}

@@ -291,6 +291,7 @@ mod tests {
     #[test]
     fn registry_preserves_metadata_and_shutdown_policy_for_every_adapter() {
         let expected = [
+            ("cpu-accounting", None, None, true),
             ("system", None, None, false),
             ("runtime", None, None, false),
             ("mpstat", Some("ASB_MEASURE_MPSTAT"), Some("mpstat"), true),

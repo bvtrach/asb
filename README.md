@@ -147,6 +147,16 @@ are selected with `ASB_MEASURE_BPFTRACE=1` and a semicolon-separated
 `lock-contention`. Select them in a benchmark configuration as
 `bpftrace:PROFILE` entries in `measurements.collectors`, or set
 `ASB_BPFTRACE_PROFILES=sched-latency,futex-wait` (use `all` for every profile).
+Two additional profiles are explicit opt-ins: `bpftrace:socket-operations`
+records elapsed connect/receive syscall time, including CPU work, and
+`bpftrace:io-wait` records completed kernel-accounted I/O waits. Their times
+overlap scheduler states; they are diagnostic measures rather than exclusive
+parts of wall time. The I/O profile requires `CONFIG_SCHEDSTATS` and
+`kernel.sched_schedstats=1`. Its preflight gives the command
+`sudo sysctl -w kernel.sched_schedstats=1` when needed; ASB does not change
+that host setting. Plain `bpftrace` keeps the original default profiles;
+`all` includes these optional profiles. Built-in probes acknowledge readiness
+before the paused agent begins execution.
 Each profile writes its own JSON result and SVG; `asb compare` embeds those
 artifacts and produces one cross-run graph per numeric profile metric. The
 profiles deliberately do not include a generic NUMA or language-runtime data
@@ -209,6 +219,18 @@ collectors include the complete agent process tree: pidstat uses child
 aggregation, perf enables inherited counters for the root and discovered
 descendants, and built-in bpftrace profiles track descendants as they fork.
 Unrelated host processes are excluded.
+For user/system CPU totals that retain exited children, run ASB with writable
+cgroup-v2 delegation. On systemd Linux this needs no system-wide changes:
+
+```sh
+systemd-run --user --scope -p Delegate=yes -- asb run CONFIG.toml
+systemd-run --user --scope -p Delegate=yes -- asb sweep SWEEP.toml
+```
+
+ASB creates an exclusive accounting leaf for each replica and removes it when
+empty. `cpu-accounting.json` records whether cgroup totals or sampled process
+accounting were used and any cleanup limitation. `ASB_CGROUP_PARENT` can name
+an existing writable delegated cgroup-v2 directory for other launchers.
 When the `perfetto` collector is selected (or `ASB_MEASURE_PERFETTO=1` is set),
 ASB validates the exact ftrace configuration before the agent starts, then
 starts Tracebox after the agent PID is known, filters scheduler events to that

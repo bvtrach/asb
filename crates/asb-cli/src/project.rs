@@ -281,6 +281,8 @@ pub fn init(
     if omitted_credentials {
         writeln!(output, "Proxy settings containing credentials or query data were not saved. Keep the corresponding proxy environment variables set when running ASB.").map_err(super::io_error)?;
     }
+    #[cfg(target_os = "linux")]
+    writeln!(output, "For complete CPU accounting across short-lived child processes, use writable cgroup-v2 delegation. On systemd Linux, run:\n  systemd-run --user --scope -p Delegate=yes -- asb run CONFIG.toml\nFor a sweep, replace `asb run CONFIG.toml` with `asb sweep SWEEP.toml`. Other delegated setups can set ASB_CGROUP_PARENT to a writable cgroup-v2 directory. Without delegation, ASB uses sampled process accounting.").map_err(super::io_error)?;
     Ok(())
 }
 
@@ -565,6 +567,11 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let mut output = Vec::new();
         init(Some(root.clone()), false, &mut output).expect("init succeeds");
+        #[cfg(target_os = "linux")]
+        assert!(
+            String::from_utf8_lossy(&output)
+                .contains("systemd-run --user --scope -p Delegate=yes -- asb run CONFIG.toml")
+        );
         let (loaded_root, config) = load(&root).expect("config loads");
         assert_eq!(loaded_root, root);
         assert!(root.join(".asb/project.toml").is_file());

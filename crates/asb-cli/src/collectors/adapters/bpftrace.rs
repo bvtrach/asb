@@ -136,6 +136,11 @@ fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
         return Err("selected bpftrace profiles need a project-local bpftrace executable. What to do: run `asb tool install bpftrace` in this project, then rerun the benchmark.".into());
     }
     for profile in profiles {
+        if profile.name == "io-wait" {
+            check_scheduler_statistics(
+                &fs::read_to_string("/proc/sys/kernel/sched_schedstats").unwrap_or_default(),
+            )?;
+        }
         if bpftrace_profile_probe(&executable, profile, false)? {
             continue;
         }
@@ -245,20 +250,36 @@ impl measurements::Session {
                 .map_err(|error| format!("cannot create {name} error output: {error}"))?;
             let child = self
                 .command("bpftrace")
+                .args(["-B", "line"])
                 .args(["-e", &format!("{prelude}\n{}", profile.program)])
                 .arg(pid.to_string())
                 .stdout(Stdio::from(stdout))
                 .stderr(Stdio::from(stderr))
                 .spawn();
             match child {
-                Ok(child) => self.collectors.push(Collector {
-                    name,
-                    adapter: collectors::find("bpftrace").expect("registered collector"),
-                    child,
-                    started: Instant::now(),
-                    stdout_path,
-                    stderr_path,
-                }),
+                Ok(mut child) => {
+                    if let Err(error) = wait_for_profile_ready(
+                        &mut child,
+                        &stdout_path,
+                        &stderr_path,
+                        std::time::Duration::from_secs(30),
+                    ) {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(format!(
+                            "bpftrace profile {} did not become ready: {error}",
+                            profile.name
+                        ));
+                    }
+                    self.collectors.push(Collector {
+                        name,
+                        adapter: collectors::find("bpftrace").expect("registered collector"),
+                        child,
+                        started: Instant::now(),
+                        stdout_path,
+                        stderr_path,
+                    });
+                }
                 Err(error) if !env_true("ASB_MEASURE_BPFTRACE") => write_unavailable(
                     &self.dir.join(format!("bpftrace-{}.json", profile.name)),
                     &format!("bpftrace-{}", profile.name),
@@ -373,9 +394,35 @@ fn process_tree_prelude_from_pids(pids: impl IntoIterator<Item = u32>) -> String
         let _ = writeln!(prelude, "  @asb_tree[{pid}] = 1;");
     }
     prelude.push_str(
-        "}\ntracepoint:sched:sched_process_fork /@asb_tree[args->parent_pid]/ { @asb_tree[args->child_pid] = 1; }\n",
+        "  printf(\"ASB_BPFTRACE_READY\\n\");\n}\ntracepoint:sched:sched_process_fork /@asb_tree[args->parent_pid]/ { @asb_tree[args->child_pid] = 1; }\n",
     );
     prelude
+}
+
+fn wait_for_profile_ready(
+    child: &mut std::process::Child,
+    stdout: &Path,
+    stderr: &Path,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    use std::io::Read;
+    let deadline = Instant::now() + timeout;
+    loop {
+        let mut text = String::new();
+        let _ = File::open(stdout).and_then(|f| f.take(4096).read_to_string(&mut text));
+        if text.lines().any(|line| line == "ASB_BPFTRACE_READY") {
+            return Ok(());
+        }
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            let mut diagnostic = String::new();
+            let _ = File::open(stderr).and_then(|f| f.take(4096).read_to_string(&mut diagnostic));
+            return Err(format!("exited {status}: {diagnostic}"));
+        }
+        if Instant::now() >= deadline {
+            return Err("timed out waiting for attachment acknowledgement".into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 /// A bounded, target-PID-scoped bpftrace program. Profiles use only stable
@@ -386,6 +433,7 @@ pub(crate) struct BpftraceProfile {
     pub(crate) name: &'static str,
     pub(crate) description: &'static str,
     pub(crate) program: &'static str,
+    default_selection: bool,
 }
 
 const BPFTRACE_PROFILES: &[BpftraceProfile] = &[
@@ -393,26 +441,43 @@ const BPFTRACE_PROFILES: &[BpftraceProfile] = &[
         name: "sched-latency",
         description: "wakeup-to-run latency for agent tasks",
         program: include_str!("bpftrace/sched_latency.bt"),
+        default_selection: true,
     },
     BpftraceProfile {
         name: "cpu-migrations",
         description: "agent task migrations between CPUs",
         program: include_str!("bpftrace/cpu_migrations.bt"),
+        default_selection: true,
     },
     BpftraceProfile {
         name: "futex-wait",
         description: "futex wait count and duration for agent threads",
         program: include_str!("bpftrace/futex_wait.bt"),
+        default_selection: true,
     },
     BpftraceProfile {
         name: "syscall-rate",
         description: "aggregate system-call pressure from the agent process",
         program: include_str!("bpftrace/syscall_rate.bt"),
+        default_selection: true,
     },
     BpftraceProfile {
         name: "lock-contention",
         description: "kernel lock contention for agent threads when supported",
         program: include_str!("bpftrace/lock_contention.bt"),
+        default_selection: true,
+    },
+    BpftraceProfile {
+        name: "socket-operations",
+        description: "elapsed connect/recv socket syscall time, including CPU work (overlaps scheduler states)",
+        program: include_str!("bpftrace/socket_operations.bt"),
+        default_selection: false,
+    },
+    BpftraceProfile {
+        name: "io-wait",
+        description: "completed kernel-accounted I/O waits; requires enabled scheduler statistics",
+        program: include_str!("bpftrace/io_wait.bt"),
+        default_selection: false,
     },
 ];
 
@@ -443,6 +508,7 @@ pub(crate) fn selected_bpftrace_profiles(
         requested.extend(
             BPFTRACE_PROFILES
                 .iter()
+                .filter(|profile| profile.default_selection)
                 .map(|profile| profile.name.to_owned()),
         );
     }
@@ -466,6 +532,13 @@ pub(crate) fn selected_bpftrace_profiles(
                 })
         })
         .collect()
+}
+
+fn check_scheduler_statistics(value: &str) -> Result<(), String> {
+    if value.trim() == "1" {
+        return Ok(());
+    }
+    Err("bpftrace profile `io-wait` needs enabled scheduler statistics. If the host supports CONFIG_SCHEDSTATS, enable it with `sudo sysctl -w kernel.sched_schedstats=1`, then retry. Otherwise deselect `bpftrace:io-wait`; no I/O wait is inferred from generic sleep.".into())
 }
 
 /// Compile and attach a concrete profile before the agent starts. The appended
@@ -504,6 +577,24 @@ pub(crate) fn write_bpftrace_profile_svg(
     metrics: &BTreeMap<String, f64>,
 ) -> Result<(), String> {
     let mut lines = vec![format!("status: {status}")];
+    if let Some(profile) = BPFTRACE_PROFILES
+        .iter()
+        .find(|candidate| candidate.name == profile)
+    {
+        let mut line = String::new();
+        for word in profile.description.split_whitespace() {
+            if line.len() + word.len() + 1 > 70 {
+                lines.push(std::mem::take(&mut line));
+            }
+            if !line.is_empty() {
+                line.push(' ');
+            }
+            line.push_str(word);
+        }
+        if !line.is_empty() {
+            lines.push(line);
+        }
+    }
     for (name, value) in metrics {
         lines.push(format!(
             "{}: {:.0}",
@@ -515,9 +606,14 @@ pub(crate) fn write_bpftrace_profile_svg(
         lines.push("no aggregate values emitted; inspect the paired JSON result".into());
     }
     let height = 76 + lines.len() * 26;
+    let description = BPFTRACE_PROFILES
+        .iter()
+        .find(|candidate| candidate.name == profile)
+        .map_or("Custom process-tree profile", |profile| profile.description);
     let mut svg = format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"760\" height=\"{height}\" viewBox=\"0 0 760 {height}\"><title>bpftrace {}</title><rect width=\"760\" height=\"{height}\" fill=\"#101827\"/><rect x=\"16\" y=\"16\" width=\"728\" height=\"{}\" rx=\"10\" fill=\"#182334\"/><text x=\"36\" y=\"48\" fill=\"#e5edf8\" font-family=\"sans-serif\" font-size=\"20\" font-weight=\"bold\">bpftrace: {}</text>",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"760\" height=\"{height}\" viewBox=\"0 0 760 {height}\"><title>bpftrace {}</title><desc>{}</desc><rect width=\"760\" height=\"{height}\" fill=\"#101827\"/><rect x=\"16\" y=\"16\" width=\"728\" height=\"{}\" rx=\"10\" fill=\"#182334\"/><text x=\"36\" y=\"48\" fill=\"#e5edf8\" font-family=\"sans-serif\" font-size=\"20\" font-weight=\"bold\">bpftrace: {}</text>",
         escape_svg(profile),
+        escape_svg(description),
         height - 32,
         escape_svg(profile)
     );
@@ -601,6 +697,81 @@ pub(crate) fn parse_bpftrace_series(profile: &str, output: &str) -> BTreeMap<Str
 #[cfg(test)]
 mod tests {
     use super::{BPFTRACE_PROFILES, profile_probe_program, validate_custom_program_scope};
+
+    #[test]
+    fn optional_wait_profiles_have_explicit_semantics_and_requirements() {
+        let socket = BPFTRACE_PROFILES
+            .iter()
+            .find(|p| p.name == "socket-operations")
+            .unwrap();
+        assert!(!socket.default_selection);
+        assert!(socket.description.contains("overlaps scheduler states"));
+        let io = BPFTRACE_PROFILES
+            .iter()
+            .find(|p| p.name == "io-wait")
+            .unwrap();
+        assert!(!io.default_selection);
+        assert!(super::check_scheduler_statistics("1\n").is_ok());
+        for input in ["", "0", "unavailable"] {
+            let error = super::check_scheduler_statistics(input).unwrap_err();
+            assert!(error.contains("sudo sysctl -w kernel.sched_schedstats=1"));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "requires ASB_TEST_BPFTRACE and host tracepoint privileges; PID-zero compile/attach probes only"]
+    fn live_optional_wait_profiles_compile_and_attach() {
+        let executable = std::env::var_os("ASB_TEST_BPFTRACE").expect("set ASB_TEST_BPFTRACE");
+        for profile in BPFTRACE_PROFILES
+            .iter()
+            .filter(|profile| !profile.default_selection)
+        {
+            assert!(
+                super::bpftrace_profile_probe(std::path::Path::new(&executable), *profile, false)
+                    .unwrap()
+                    || super::bpftrace_profile_probe(
+                        std::path::Path::new(&executable),
+                        *profile,
+                        true
+                    )
+                    .unwrap(),
+                "profile {} must compile and attach on this host",
+                profile.name
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn readiness_failure_reports_startup_diagnostics_and_timeout() {
+        use std::{fs, process::Command, time::Duration};
+        let dir = std::env::temp_dir().join(format!("asb-bpf-ready-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let stdout = dir.join("stdout");
+        let stderr = dir.join("stderr");
+        fs::write(&stdout, "").unwrap();
+        fs::write(&stderr, "missing kernel tracepoint").unwrap();
+        let mut failed = Command::new("sh").args(["-c", "exit 2"]).spawn().unwrap();
+        let error =
+            super::wait_for_profile_ready(&mut failed, &stdout, &stderr, Duration::from_secs(2))
+                .unwrap_err();
+        assert!(error.contains("missing kernel tracepoint"));
+        let _ = failed.wait();
+        let mut waiting = Command::new("sleep").arg("10").spawn().unwrap();
+        assert!(
+            super::wait_for_profile_ready(&mut waiting, &stdout, &stderr, Duration::ZERO)
+                .unwrap_err()
+                .contains("timed out")
+        );
+        fs::write(&stdout, "ASB_BPFTRACE_READY\n").unwrap();
+        assert!(
+            super::wait_for_profile_ready(&mut waiting, &stdout, &stderr, Duration::ZERO).is_ok()
+        );
+        let _ = waiting.kill();
+        let _ = waiting.wait();
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn profile_preflight_uses_the_same_seeded_tree_program_as_runtime() {

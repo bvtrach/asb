@@ -112,3 +112,18 @@ subreaper. This retains helpers that daemonize or outlive an intermediate
 wrapper under the benchmark root, so perf inheritance, bpftrace fork tracking,
 pidstat sampling, and process-accounted timing include the complete relevant
 tree without collecting unrelated host processes.
+
+Two opt-in host checks exercise the accounting and BPF paths without a provider:
+
+```sh
+systemd-run --user --scope -p Delegate=yes -- env CARGO_NET_OFFLINE=true cargo test --offline --locked --test offline_cli live_delegated_cgroup_replay_keeps_exited_child_cpu -- --ignored --nocapture
+ASB_TEST_BPFTRACE=/usr/bin/bpftrace cargo test --offline --locked --test offline_cli live_bpftrace_socket_profile_captures_replay_and_generates_graphs -- --ignored --nocapture
+```
+
+The cgroup test checks two concurrent replicas, exited CPU children, published
+component counters and leaf cleanup. The BPF test needs an installed bpftrace
+and existing tracepoint permissions or passwordless sudo. It checks actual
+socket syscall counts and the generated SVG/HTML comparison from loopback
+replay. The additional `io-wait` profile needs enabled scheduler statistics;
+preflight rejects a disabled or unavailable host setting with a copyable
+command. Tests never change this host-wide setting.
