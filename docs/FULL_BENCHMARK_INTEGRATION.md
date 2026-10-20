@@ -1146,4 +1146,12 @@ eleven protocol suites, seven guest-driver checks, the parallel integration
 (including failure isolation and sequential streaming), existing replay/graph
 tests, strict all-target/all-feature Clippy and `make build`. After adding
 compact JSON identity fields, the actual mixed-original-task qualification
-passed again in 65.9 seconds with independent grades, scoped collectors,+graphs and cleanup. Package/main-sync/hosted CI checks follow separately.
+passed again in 65.9 seconds with independent grades, scoped collectors,
+graphs and cleanup. Package/main-sync/hosted CI checks follow separately.
+
+Scheduling implementation `e180246` was merged with current main
+`ff5d58d515622b08d567d468fd7f0bb72a7cac0c` (PR #240's partial-replay token
+repair), producing `eb88d6654b8e0132beee192fa3e9d541245bda7b`. The combined
+tree passed strict Clippy, 390 unit tests, 87 offline CLI tests, all protocol/
+runtime/parallel/replay/graph tests and `make build`. The extra main regression
+ensures an unconsumed replay cannot report the full cassette's token totals.
