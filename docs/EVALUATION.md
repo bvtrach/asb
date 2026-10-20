@@ -2,13 +2,17 @@
 
 ## What was being measured
 
-The external workload aliases currently materialize a tiny ASB adapter trial
-beside downloaded upstream references. For `swe-bench`, this is a Python
+The legacy external workload aliases materialized a tiny ASB adapter trial
+beside downloaded upstream references. Historically, for `swe-bench`, this was a Python
 string-normalization task under `external-workload/asb-trial`, not a real
 SWE-bench issue. Four-digit token counts and a few agent iterations can be
 plausible for that exercise; they do not demonstrate that an upstream issue or
 the complete benchmark was solved. A run is one task attempt, never a whole
 suite. Concurrency creates repeated attempts, not additional unique issues.
+The development integration now gives the three original SWE-bench variants
+real task catalogs and official evaluation, and adds original Terminal-Bench
+1.0 task execution. These paths must not be confused with the legacy smoke
+records or with completed full-suite support; see the integration status below.
 
 Before schema version 2, these exercises could produce `success_rate = 1.0`.
 That number was an adapter smoke pass, not a valid upstream benchmark score.
@@ -67,7 +71,11 @@ New records explicitly identify baseline provenance in `workload_baseline`:
 `measured` retains a measured pass/fail/unknown result, while
 `upstream-task-definition` identifies an official clean base commit without
 claiming ASB observed failing tests. The latter is eligible only for an
-`upstream-harness` evaluator, not local fixtures. Unknown/malformed evidence
+`upstream-harness` evaluator, not local fixtures.
+`upstream-environment-definition` identifies a pinned original task source
+revision and definition hash for environment-based tasks such as Terminal-Bench;
+it likewise does not claim a measured test baseline or invent a Git base.
+Unknown/malformed evidence
 cannot earn credit. Legacy records without this field retain their existing
 `workload_baseline_passed` interpretation; malformed explicit evidence cannot
 fall back to a legacy flag. The official session must validate dataset and
@@ -88,19 +96,25 @@ are ASB-local tasks, not upstream benchmark equivalents. External structural
 smoke grading is deliberately conservative: arbitrary equivalent code may be
 unrecognized, and agent-controlled tests are never executed as trusted grading.
 
-## Missing upstream execution
+## Upstream integration status
 
-No current external adapter executes its upstream suite's official evaluator.
-ASB cannot truthfully report an official SWE-bench resolution rate from the
-existing smoke results. Actual support still requires selecting dataset
-instance IDs and split, materializing the correct repository/base commit and
-issue instructions, capturing the generated patch, running the official
-isolated harness with its test patch and resource limits, and retaining
-instance-bound evaluation evidence. Missing or stale reports, partial fixes,
-test regressions and missing patches must not pass. Those suite-specific
-operations belong in the owning workload adapter, not branches in run/sweep.
-This repair corrects scoring; it does not claim to have implemented that
-missing full-suite executor or retroactively evaluated previous runs.
+The development SWE-bench adapters select real pinned dataset instances,
+prepare their base repositories in owned containers, capture candidate patches,
+and invoke the official SDK evaluator. Original Terminal-Bench 1.0 instead
+retains its in-place task environment and delegates test injection, execution
+and result parsing to its original SDK. These are adapter-owned sessions; the
+runner does not select a benchmark-specific grader. Missing/stale reports,
+partial fixes, regressions and missing patches cannot earn resolution credit.
+An empty parsed Terminal-Bench test map cannot count as success.
+
+Representative correct/incorrect fixture submissions have qualified these
+normal CLI paths without live LLM providers. This does not mean the full
+populations have been benchmarked. Terminal-Bench 2.1 has a real installed
+catalog but its Harbor runtime remains unfinished; local endpoint forwarding,
+container measurement and complete-population planning/reporting are also
+unfinished. See the exact requirements and evidence in
+[the full integration ledger](FULL_BENCHMARK_INTEGRATION.md).
+No old smoke result is retroactively interpreted as an upstream grade.
 
 ## Steps and tokens
 
