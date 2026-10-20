@@ -358,7 +358,7 @@ def install_catalog(arguments):
     }
 
 
-def remove_evaluation_container(client, task_id, run_id):
+def remove_evaluation_container(client, task_id, run_id, expected_labels=None):
     if (not re.fullmatch(r"asb-[0-9a-f]{32}", run_id)
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,255}", task_id)):
         raise CatalogError("refused cleanup without an ASB evaluator identity")
@@ -366,7 +366,9 @@ def remove_evaluation_container(client, task_id, run_id):
     cleanup = {"container": name, "status": "absent"}
     try:
         container = client.containers.get(name)
-        if container.name.lstrip("/") != name:
+        labels = container.attrs.get("Config", {}).get("Labels", {}) or {}
+        required = {"asb.owner":"asb", "asb.attempt":run_id, **(expected_labels or {})}
+        if container.name.lstrip("/") != name or any(labels.get(key) != value for key, value in required.items()):
             raise CatalogError("refused cleanup of a different evaluator container")
         container.remove(force=True)
         cleanup["status"] = "removed"
@@ -379,6 +381,7 @@ def remove_evaluation_container(client, task_id, run_id):
 def official_harness(arguments):
     """Run the pinned SDK with scoped Docker transport and no root Python."""
     from asb_docker import DockerSession
+    from asb_resources import ResourceJournal, RecoveryError
     from swebench.harness import run_evaluation
     import docker.errors
     identity = sdk_identity()
@@ -396,11 +399,30 @@ def official_harness(arguments):
     signal.signal(signal.SIGTERM, interrupted)
     with DockerSession() as client:
         owned_name = f"sweb.eval.{arguments.instance_ids[0].lower()}.{arguments.run_id}"
+        journal = ResourceJournal(client, Path.cwd(), arguments.run_id)
+        class ScopedContainers:
+            def get(self, name):
+                if name != owned_name:
+                    raise RecoveryError("evaluator requested a container outside this attempt")
+                container = client.containers.get(name)
+                labels = container.attrs.get("Config", {}).get("Labels", {}) or {}
+                if any(labels.get(key) != value for key, value in journal.labels.items()):
+                    raise RecoveryError("evaluator container belongs to a different owner")
+                return container
+            def create(self, *args, **kwargs):
+                if kwargs.get("name") != owned_name:
+                    raise RecoveryError("evaluator cannot change its declared container identity")
+                kwargs.setdefault("labels", {}).update(journal.declare("containers", owned_name))
+                return client.containers.create(*args, **kwargs)
+        class ScopedClient:
+            containers = ScopedContainers()
+            def __getattr__(self, name):
+                return getattr(client, name)
         original_create = run_evaluation.create_container
         def create_container(test_spec, docker_client, run_id, logger):
             if cancelled.is_set():
                 raise InterruptedError("ASB evaluation was cancelled before container creation")
-            container = original_create(test_spec, docker_client, run_id, logger)
+            container = original_create(test_spec, ScopedClient(), run_id, logger)
             try:
                 if cancelled.is_set():
                     raise InterruptedError("ASB evaluation was cancelled during container creation")
@@ -434,7 +456,7 @@ def official_harness(arguments):
         def caretaker():
             while not finished.is_set():
                 if cancelled.wait(0.05):
-                    cleanup = remove_evaluation_container(client, arguments.instance_ids[0], arguments.run_id)
+                    cleanup = remove_evaluation_container(client, arguments.instance_ids[0], arguments.run_id, journal.labels)
                     if cleanup["status"] == "removed":
                         return
                     time.sleep(0.05)
@@ -461,8 +483,11 @@ def official_harness(arguments):
             # unrelated containers or prune host images.
             finished.set()
             care.join(timeout=2)
-            cleanup = remove_evaluation_container(client, arguments.instance_ids[0], arguments.run_id)
-            atomic_write(Path.cwd() / "cleanup.json", encoded(cleanup))
+            try:
+                cleanup = remove_evaluation_container(client, arguments.instance_ids[0], arguments.run_id, journal.labels)
+                atomic_write(Path.cwd() / "cleanup.json", encoded(cleanup))
+            finally:
+                journal.close()
     return {"status": "evaluated", "run_id": arguments.run_id}
 
 

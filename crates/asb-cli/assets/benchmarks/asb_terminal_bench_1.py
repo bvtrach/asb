@@ -21,6 +21,7 @@ import uuid
 
 from asb_docker import DockerSession, docker_command
 from asb_execution import ExecutionError, ManagedDockerWorkspace
+from asb_resources import ResourceJournal
 from asb_terminal_catalog import verify, tree_manifest
 
 
@@ -76,6 +77,7 @@ class TerminalBenchTask:
         self.attempt = "asb-" + uuid.uuid4().hex
         self.workspace, self.terminal, self.invocation = None, None, None
         self.cancelled = None
+        self.journal = None
 
     @quiet_sdk
     def __enter__(self):
@@ -91,6 +93,7 @@ class TerminalBenchTask:
             raise ExecutionError("selected original Terminal-Bench task is not installed")
         self.definition = self.catalog_path.parent / selected["definition"]
         self.artifacts.mkdir(mode=0o700, parents=True, exist_ok=False)
+        self.journal = ResourceJournal(self.client, self.artifacts, self.attempt)
         self.handler = TrialHandler(self.attempt, self.definition, self.artifacts / "official")
         self.agent_timeout = self.handler.task.max_agent_timeout_sec
         # Only these SDK test/parser operations are used. No SDK default agent,
@@ -101,6 +104,7 @@ class TerminalBenchTask:
         self.evaluator._logger = logging.getLogger("asb.original-terminal-bench")
         command, attempt, artifacts = docker_command(), self.attempt, self.artifacts
         definition = self.definition
+        journal = self.journal
 
         class ScopedCompose(DockerComposeManager):
             def get_docker_compose_command(manager, arguments):
@@ -174,6 +178,7 @@ class TerminalBenchTask:
                     volume["name"] = attempt + "-" + name
                     volume.setdefault("labels", {}).update({"asb.owner": "asb", "asb.attempt": attempt})
                 manager.asb_config = artifacts / "compose.json"
+                journal.compose(config)
                 write_json(manager.asb_config, config)
                 return super().start()
 
@@ -271,6 +276,8 @@ class TerminalBenchTask:
                 docker.from_env, terminal_module.DockerComposeManager = self.original_client, self.original_manager
             if self.artifacts.is_dir():
                 write_json(self.artifacts / "task-cleanup.json", {"attempt_id":self.attempt,"status":status})
+            if self.journal is not None:
+                self.journal.close()
 
 
 def main():

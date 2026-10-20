@@ -1,6 +1,11 @@
 //! Provider-free tests of the upstream workload protocol's pure data layer.
 
 #[test]
+fn resource_recovery_preserves_evidence_and_only_quiesces_declared_owners() {
+    python_protocol("benchmark_resources.py");
+}
+
+#[test]
 fn swebench_catalog_materialization_is_bounded_private_and_reproducible() {
     python_protocol("swebench_catalog.py");
 }

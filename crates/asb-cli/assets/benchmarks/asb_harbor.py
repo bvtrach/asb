@@ -21,6 +21,7 @@ import uuid
 
 from asb_docker import DockerSession, docker_command
 from asb_execution import ExecutionError, ManagedDockerWorkspace
+from asb_resources import ResourceJournal
 from asb_terminal_catalog import verify, tree_manifest
 from asb_terminal_bench_1 import quiet_sdk, restore_task_networks, write_json
 
@@ -80,7 +81,7 @@ def scoped_configuration(config, attempt, artifacts, environment):
     return config
 
 
-def environment_class(command, attempt, artifacts):
+def environment_class(command, attempt, artifacts, journal=None):
     from harbor.environments.base import ExecResult
     from harbor.environments.docker.docker import DockerEnvironment
     from harbor.environments.docker.runtime import ContainerRuntime
@@ -113,6 +114,8 @@ def environment_class(command, attempt, artifacts):
                 if len(expanded.stdout) > 4 * 1024**2:
                     raise ExecutionError("expanded Harbor Compose definition exceeds 4 MiB")
                 config = scoped_configuration(json.loads(expanded.stdout), attempt, artifacts, self.environment_dir)
+                if journal is not None:
+                    journal.compose(config)
                 private = artifacts / "harbor-compose.json"
                 write_json(private, config)
                 return invoke(command + ["compose", "-p", attempt, "-f", str(private), *arguments], stdin_data)
@@ -151,6 +154,7 @@ class HarborTask:
         self.workspace, self.environment, self.invocation = None, None, None
         self.cancelled = None
         self.loop = asyncio.new_event_loop()
+        self.journal = None
 
     def wait(self, operation, timeout):
         pending = self.loop.create_task(asyncio.wait_for(operation, timeout=timeout))
@@ -180,6 +184,7 @@ class HarborTask:
         if self.task.has_steps or self.task.config.environment.os != TaskOS.LINUX:
             raise ExecutionError("this original dataset session expects its single-step Linux task definition")
         self.artifacts.mkdir(mode=0o700, parents=True, exist_ok=False)
+        self.journal = ResourceJournal(self.client, self.artifacts, self.attempt)
         self.paths = TrialPaths(self.artifacts / "official")
         self.paths.mkdir()
         self.paths.chmod_dir()
@@ -190,7 +195,7 @@ class HarborTask:
         mounts = [{"type":"bind", "source":str(path), "target":"/logs/" + name}
                   for name, path in [("agent",self.paths.agent_dir), ("verifier",self.paths.verifier_dir),
                                      ("artifacts",self.paths.artifacts_dir)]]
-        owned = environment_class(docker_command(), self.attempt, self.artifacts)
+        owned = environment_class(docker_command(), self.attempt, self.artifacts, self.journal)
         self.previous_tempdir = tempfile.tempdir
         sdk_temp = self.artifacts / "sdk-tmp"
         sdk_temp.mkdir(mode=0o700)
@@ -290,6 +295,8 @@ class HarborTask:
             if self.artifacts.is_dir():
                 write_json(self.artifacts / "task-cleanup.json", {"attempt_id":self.attempt,"status":status})
             self.loop.close()
+            if self.journal is not None:
+                self.journal.close()
 
 
 def main():

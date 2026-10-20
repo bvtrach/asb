@@ -26,6 +26,10 @@ class TaskEnvironmentQualification(unittest.TestCase):
                     with SweBenchTask(client, root / "workloads" / suite / "catalog.json",
                                       "astropy__astropy-12907", artifacts / suite) as task:
                         container_id = task.workspace.container.id
+                        resources = json.loads((task.artifacts / "resources.json").read_bytes())
+                        self.assertEqual(resources["attempt"], task.attempt)
+                        self.assertIn({"kind":"containers","name":task.attempt}, resources["resources"])
+                        self.assertEqual(task.workspace.container.attrs["Config"]["Labels"]["asb.recovery"], resources["token"])
                         self.assertEqual(task.invocation["identity"]["workload"], suite)
                         self.assertEqual(task.invocation["baseline"]["kind"], "upstream-task-definition")
                         self.assertFalse(task.workspace.container.attrs.get("Mounts"))

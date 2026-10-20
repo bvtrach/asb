@@ -1591,3 +1591,59 @@ This closes dispatch-context disclosure, not the overall delivery checklist.
 Owned-resource recovery for already-started unfinished attempts, scalable
 population presentation, cold-cache qualification, final review/merge, exact
 main CI and the minor release remain outstanding.
+
+### Durable owned-resource recovery foundation
+
+Task environments for all three SWE-bench populations, original Terminal-Bench
+1.0 and original Terminal-Bench 2.1 now persist bounded resource declarations
+before creation. A shared private journal binds exact container/network/volume
+names to the unique attempt, a random ownership label and the selected Docker
+daemon ID. Its OS lock rejects concurrent recovery. Compose expansion publishes
+the labels and declarations before starting services. The installed support
+helper can quiesce only those explicitly declared resources; all declarations
+and observed ownership are validated before any stop operation.
+
+Recovery stops containers by their resolved SDK identity and preserves their
+files, all volumes and the journal. It performs no host-wide listing/pruning,
+PID signalling, agent launch or grading. An absent resource is only a current
+observation: an in-flight daemon operation could still finish later. The output
+explicitly is not a retry receipt, and sweep continuation still refuses an
+already-started unsealed slot. Source images, controller-to-slot recovery
+binding, interrupted submission/evaluator handling, native/proxy process
+ownership and final sweep reconciliation remain required work.
+
+Official SWE-bench evaluator subprocesses also journal their container before
+creation. The pinned SDK's pre-create removal is wrapped so a matching name
+alone cannot remove another owner's container, and its conflict fallback cannot
+silently choose an undeclared name. Parent cancellation/cleanup additionally
+checks attempt labels rather than relying on the name alone.
+
+Eleven provider-free journal checks cover active and SIGKILL-released locks,
+private files, symlink/FIFO refusal, wrong daemons/tokens, duplicate/malformed/
+oversized declarations, idempotent publication, preserved volumes and refusal
+without partial mutation when any owner is wrong. A real Docker SIGKILL check
+passed in 3.5 seconds: it stopped only the dead controller's container, read its
+preserved partial file and verified an unrelated running sibling survived.
+Artifacts: `target/benchmark-runtime/resource-recovery-bsq6_vrr`.
+
+Actual task-environment/journal checks passed for Full/Lite/Verified in 19.0
+seconds. Original Terminal-Bench 1.0 correct/incorrect official grading passed
+in 36.7 seconds; original Terminal-Bench 2.1 passed in 38.3 seconds. All 89
+installed 2.1 task definitions were additionally checked as single-step Linux
+tasks, matching the existing session contract. The normal mixed real-Pi/
+synthetic-provider SWE-bench Lite/Terminal-Bench 1.0 sweep, reuse, collectors,
+graphs and cleanup passed in 76.8 seconds, retaining artifacts under
+`target/benchmark-runtime/parallel-original-tasks-7yxo9hv6`.
+
+These are warm-cache representative runtime qualifications, not a claim that
+agents solved full populations or that resource quiescence completes crash
+recovery. Final source/package/hosted gates and the separate six official
+SWE-bench grader checks are recorded after completion.
+
+All six official SWE-bench grader checks then passed in 211.9 seconds: known
+gold resolved and deliberately incorrect patches remained unresolved for each
+of Full/Lite/Verified, with scoped cleanup. Their artifacts are retained at
+`target/benchmark-runtime/official-swebench-7jyj0bhg`. These use known submissions,
+not LLM task solving. Final source gates passed 425 unit tests, 87 offline CLI
+tests, all fourteen protocol suites, guest/diagram/parallel/replay/resume
+regressions, strict Clippy and `make build`. Packaging and hosted gates follow.

@@ -34,6 +34,10 @@ class HarborQualification(unittest.TestCase):
                 artifacts = Path(tempfile.mkdtemp(prefix="harbor-qualification-", dir=root)) / "task"
                 print(f"Harbor SDK qualification artifacts: {artifacts}; reference={resolved} (not an AI solution)", flush=True)
                 with HarborTask(client, root / "workloads/terminal-bench-2.1/catalog.json", "cancel-async-tasks", artifacts) as task:
+                    resources = json.loads((artifacts / "resources.json").read_bytes())
+                    self.assertEqual(resources["attempt"], task.attempt)
+                    self.assertIn({"kind":"containers","name":task.attempt}, resources["resources"])
+                    self.assertEqual(task.workspace.container.attrs["Config"]["Labels"]["asb.recovery"], resources["token"])
                     self.assertEqual(task.workspace.container.exec_run(["test", "!", "-e", "/tests/test.sh"]).exit_code, 0)
                     for path in [task.environment._mounts_compose_path, task.environment._resources_compose_path,
                                  task.environment._env_compose_path]:

@@ -161,7 +161,9 @@ class EvaluationTests(unittest.TestCase):
         task_id, run_id = "owner__repo-1", "asb-" + "a" * 32
         expected = f"sweb.eval.{task_id}.{run_id}"
         removed, looked_up = [], []
-        container = SimpleNamespace(name=expected, remove=lambda **kwargs: removed.append(kwargs))
+        labels = {"asb.owner":"asb", "asb.attempt":run_id}
+        container = SimpleNamespace(name=expected, attrs={"Config":{"Labels":labels}},
+                                    remove=lambda **kwargs: removed.append(kwargs))
         def get(name):
             looked_up.append(name)
             return container
@@ -170,6 +172,10 @@ class EvaluationTests(unittest.TestCase):
         self.assertEqual(looked_up, [expected])
         self.assertEqual(removed, [{"force": True}])
         container.name = "someone-elses-container"
+        self.assertEqual(CATALOG.remove_evaluation_container(client, task_id, run_id)["status"], "error")
+        self.assertEqual(len(removed), 1)
+        container.name = expected
+        labels["asb.attempt"] = "different-owner"
         self.assertEqual(CATALOG.remove_evaluation_container(client, task_id, run_id)["status"], "error")
         self.assertEqual(len(removed), 1)
         with self.assertRaises(CATALOG.CatalogError):

@@ -132,7 +132,19 @@ official grades, lifecycle journals, scoped collectors, comparison graphs and
 container cleanup. It never contacts a live LLM provider. Do not rebuild or
 package over the selected executable while a runtime qualification is using it.
 Ordinary CI
-uses synthetic provider-free protocol tests. See
+uses synthetic provider-free protocol tests.
+`benchmark_live_resources.py` additionally checks actual abrupt controller
+SIGKILL with an installed SWE-bench task image: the durable ownership journal
+quiesces only its recorded container, retains a partial output file and leaves
+a simultaneously running unrelated fixture container untouched. Run it with
+the evaluator virtual environment and explicit `ASB_TEST_SWECATALOG_ROOT`.
+Artifacts are retained under that project; fixture containers are removed only
+after the preservation assertions. This check does not authorize a new
+benchmark attempt, assign a task grade or prove absence of in-flight daemon
+creation operations. Ordinary CI covers the same ownership/locking contracts
+with standard-library fixtures and requires no Docker access.
+
+See
 [evaluation semantics](EVALUATION.md). Perfetto
 post-processing scopes scheduler counts and series to the benchmark process
 tree and lifecycle interval; it never compares host-wide scheduler noise.

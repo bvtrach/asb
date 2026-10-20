@@ -479,6 +479,20 @@ original error and any cleanup failure. Normal completion still requires a
 successful explicit close. Session destruction also attempts bounded owner
 cleanup when a failure between preparation and execution bypasses both paths;
 abrupt process termination still requires a recovery mechanism.
+Task controllers now persist a private `resources.json` before creating their
+declared containers, Compose networks and volumes. The journal binds the exact
+names to one attempt, a random ownership label and the Docker daemon identity;
+an operating-system lock excludes recovery while the controller owns it. The
+installed `asb_resources.py --quiesce ATTEMPT_DIRECTORY` helper validates the
+entire declaration and observed ownership before stopping any container. It
+looks up only the declared names and uses their immutable SDK objects, never a
+host-wide listing, pruning or PID signals. Stopped containers, their files and
+volumes are preserved. Live-controller refusal, wrong-daemon/owner rejection
+and actual SIGKILL recovery are covered by provider-free tests.
+This is observed resource quiescence, not a resume or grading receipt: a
+daemon-side pending creation can finish after its controller dies. Source-build
+images, interrupted evaluator recovery, native/proxy processes, recovered
+submission grading and sweep-slot reconciliation still require integration.
 See the full benchmark delivery
 checklist before claiming complete upstream benchmark support.
 Their shared installer also downloads a checksum-pinned original

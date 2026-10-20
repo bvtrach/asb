@@ -8,6 +8,7 @@ from asb_swebench import (CatalogError, MAX_PATCH_BYTES, agent_instruction,
                           atomic_write, encoded, evaluate_submission, read_task,
                           remove_evaluation_container, run_harness, sdk_identity)
 from asb_swebench_sources import build_image, remove_owned_image, resolve_image
+from asb_resources import ResourceJournal
 
 
 class SweBenchTask:
@@ -21,6 +22,7 @@ class SweBenchTask:
         self.cancelled = None
         self.attempt = "asb-" + uuid.uuid4().hex
         self.source_image_tag = None
+        self.journal = None
 
     def __enter__(self):
         from swebench.harness.utils import make_test_spec
@@ -30,13 +32,15 @@ class SweBenchTask:
         spec = make_test_spec(self.row)
         self.artifacts.mkdir(mode=0o700, parents=True, exist_ok=False)
         try:
+            self.journal = ResourceJournal(self.client, self.artifacts, self.attempt)
             image, source = resolve_image(self.client, spec.image, lambda: build_image(
                 self.client, self.row, self.catalog["dataset"], self.artifacts, self.attempt,
                 cancelled=self.cancelled))
             self.source_image_tag = source.get("tag")
             if self.source_image_tag is not None:
                 atomic_write(self.artifacts / "source-image.json", encoded(source))
-            self.workspace = ManagedDockerWorkspace(self.client, image, self.attempt, CONTAINER_WORKDIR)
+            self.workspace = ManagedDockerWorkspace(self.client, image, self.attempt, CONTAINER_WORKDIR,
+                                                    journal=self.journal)
             self.workspace.__enter__()
             base = self.row["base_commit"]
             self.checked(["git", "cat-file", "-e", base + "^{commit}"])
@@ -101,12 +105,16 @@ class SweBenchTask:
                         "attempt_id": self.attempt, "status": self.workspace.cleanup_status,
                     }))
         finally:
-            if self.source_image_tag is not None:
-                status = remove_owned_image(self.client, self.source_image_tag, self.attempt)
-                atomic_write(self.artifacts / "source-image-cleanup.json", encoded({
-                    "attempt_id": self.attempt, "tag": self.source_image_tag, "status": status,
-                }))
-                self.source_image_tag = None
+            try:
+                if self.source_image_tag is not None:
+                    status = remove_owned_image(self.client, self.source_image_tag, self.attempt)
+                    atomic_write(self.artifacts / "source-image-cleanup.json", encoded({
+                        "attempt_id": self.attempt, "tag": self.source_image_tag, "status": status,
+                    }))
+                    self.source_image_tag = None
+            finally:
+                if self.journal is not None:
+                    self.journal.close()
 
     def evaluate(self, timeout=1800):
         submission = self.capture_submission()

@@ -21,6 +21,10 @@ class OriginalTerminalQualification(unittest.TestCase):
                 artifacts = Path(tempfile.mkdtemp(prefix="original-terminal-qualification-", dir=root)) / "task"
                 print(f"Original SDK qualification artifacts: {artifacts}; known-good fixture={resolved}", flush=True)
                 with TerminalBenchTask(client, root / "workloads/terminal-bench-1.0/catalog.json", "hello-world", artifacts) as task:
+                    resources = json.loads((artifacts / "resources.json").read_bytes())
+                    self.assertEqual(resources["attempt"], task.attempt)
+                    self.assertIn({"kind":"containers","name":task.attempt}, resources["resources"])
+                    self.assertEqual(task.workspace.container.attrs["Config"]["Labels"]["asb.recovery"], resources["token"])
                     result = task.workspace.execute(["/bin/sh", "-c", "printf 'Hello, world!\\n' > hello.txt" if resolved else "true"])
                     self.assertEqual(result["exit_code"], 0)
                     before = task.workspace.container.exec_run(["test", "!", "-e", "/tests/test_outputs.py"])

@@ -41,7 +41,7 @@ class ManagedDockerWorkspace:
         return workspace
 
     def __init__(self, client, image, attempt, workdir, memory_bytes=4 * 1024**3,
-                 cpus=2, pids=512):
+                 cpus=2, pids=512, journal=None):
         if not re.fullmatch(r"asb-[0-9a-f]{32}", attempt):
             raise ExecutionError("workspace requires a unique ASB attempt identity")
         if not isinstance(workdir, str) or not workdir.startswith("/") or "\x00" in workdir:
@@ -53,6 +53,7 @@ class ManagedDockerWorkspace:
         self.client, self.image, self.attempt, self.workdir = client, image, attempt, workdir
         self.limits = {"memory_bytes": memory_bytes, "cpus": cpus, "pids": pids}
         self.container = None
+        self.journal = journal
         self.active = threading.Lock()
         self.cleanup_status = "not_created"
         self.image_identity = {"image_id": image.id, "repository_digests": image.attrs.get("RepoDigests", []),
@@ -61,10 +62,13 @@ class ManagedDockerWorkspace:
     def __enter__(self):
         if self.container is not None:
             raise ExecutionError("workspace has already been created")
+        labels = {"asb.owner": "asb", "asb.attempt": self.attempt}
+        if self.journal is not None:
+            labels.update(self.journal.declare("containers", self.attempt))
         self.container = self.client.containers.create(
             image=self.image.id, name=self.attempt, command=["/bin/sh", "-c", "exec tail -f /dev/null"],
             detach=True, working_dir=self.workdir,
-            labels={"asb.owner": "asb", "asb.attempt": self.attempt},
+            labels=labels,
             mem_limit=self.limits["memory_bytes"], nano_cpus=int(self.limits["cpus"] * 10**9),
             pids_limit=self.limits["pids"],
         )
