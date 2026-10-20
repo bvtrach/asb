@@ -25,3 +25,20 @@ pub(in crate::providers) fn model_account(model: &str) -> Option<&str> {
         && parts.next().is_none())
     .then_some(account)
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn fireworks_account_is_derived_only_from_complete_model_resources() {
+        assert_eq!(
+            super::model_account("accounts/my-account/models/model"),
+            Some("my-account")
+        );
+        assert_eq!(super::model_account("accounts/my-account/models/"), None);
+        assert_eq!(
+            super::model_account("accounts/my-account/models/model/extra"),
+            None
+        );
+        assert_eq!(super::model_account("unqualified-model"), None);
+    }
+}

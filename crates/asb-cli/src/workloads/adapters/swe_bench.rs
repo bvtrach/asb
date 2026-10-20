@@ -19,6 +19,28 @@ pub(super) static ADAPTER: SweBenchAdapter = SweBenchAdapter {
     expected_tasks: 2294,
 };
 
+#[cfg(test)]
+mod tests {
+    use crate::workloads::adapters::find;
+    use std::fs;
+
+    #[test]
+    fn original_swebench_populations_require_installed_tasks_not_smoke_defaults() {
+        let root = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("missing-catalog", None).attempt_id);
+        fs::create_dir_all(&root).unwrap();
+        for name in ["swe-bench", "swe-bench-lite", "swe-bench-verified"] {
+            let adapter = find(name).unwrap();
+            assert!(adapter.trial_ids().is_empty());
+            assert_eq!(adapter.installed_available(&root), Some(false));
+            let error = adapter.installed_trials(&root).unwrap_err();
+            assert!(error.contains(&format!("asb workload install {name}")));
+            assert!(adapter.prepare_source(&root, &root).is_err());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
 impl WorkloadAdapter for SweBenchAdapter {
     fn id(&self) -> &'static str {
         self.id

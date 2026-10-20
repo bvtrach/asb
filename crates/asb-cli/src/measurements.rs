@@ -353,6 +353,7 @@ impl Drop for Collector {
 pub struct Session {
     pub(crate) dir: PathBuf,
     pub(crate) tool_dir: Option<PathBuf>,
+    pub(crate) cgroup_parent: Option<PathBuf>,
     started_unix_ms: u128,
     pub(crate) collectors: Vec<Collector>,
     states: BTreeMap<TypeId, Box<dyn Any>>,
@@ -405,10 +406,21 @@ impl Session {
     /// Start with the stable collector names from a generated configuration.
     /// An empty list means environment-only opt-in, useful for tests and
     /// hand-written configurations.
+    #[cfg(test)]
     pub fn start_with_collectors(
         dir: &Path,
         selected: &[String],
         tool_dir: Option<&Path>,
+    ) -> Result<Self, String> {
+        Self::start_with_collectors_and_parent(dir, selected, tool_dir, None)
+    }
+
+    /// Start collectors with an optional project-initialized delegated cgroup.
+    pub fn start_with_collectors_and_parent(
+        dir: &Path,
+        selected: &[String],
+        tool_dir: Option<&Path>,
+        cgroup_parent: Option<&Path>,
     ) -> Result<Self, String> {
         let selected = collectors::expand_dependencies(selected);
         let selected = selected.as_slice();
@@ -427,6 +439,7 @@ impl Session {
         let mut session = Self {
             dir: dir.to_path_buf(),
             tool_dir: tool_dir.map(Path::to_path_buf),
+            cgroup_parent: cgroup_parent.map(Path::to_path_buf),
             started_unix_ms,
             collectors: Vec::new(),
             states: BTreeMap::new(),
@@ -571,6 +584,10 @@ impl Session {
     pub(crate) fn sampled_cpu_accounting(&self) -> Option<(f64, f64)> {
         let timing = self.component_timings.get("agent.execute")?;
         Some((timing.cpu_user_ms?, timing.cpu_system_ms?))
+    }
+
+    pub(crate) fn cgroup_parent(&self) -> Option<&Path> {
+        self.cgroup_parent.as_deref()
     }
 
     pub(crate) fn trace_id(&self) -> &str {

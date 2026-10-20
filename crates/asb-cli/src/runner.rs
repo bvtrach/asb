@@ -323,10 +323,15 @@ fn run_mode(
     let mut measurement_session = measurement_path
         .as_deref()
         .map(|dir| {
-            measurements::Session::start_with_collectors(
+            measurements::Session::start_with_collectors_and_parent(
                 dir,
                 measurement_collectors,
                 Some(&project::resolve(&project_root, &project_config.tools_dir)),
+                std::env::var_os("ASB_CGROUP_PARENT")
+                    .is_none()
+                    .then_some(project_config.cgroup_parent.as_deref())
+                    .flatten()
+                    .map(Path::new),
             )
         })
         .transpose()

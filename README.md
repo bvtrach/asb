@@ -4,7 +4,7 @@ ASB is a small command-line benchmark runner. Initialize a project, install an
 agent/workload, create a configuration, then run it:
 
 ```text
-asb init [PROJECT_DIR] [--reset]
+asb init [PROJECT_DIR] [--reset] [--yes|-y]
 asb tool list
 asb tool install AGENT
 asb workload list
@@ -97,6 +97,13 @@ Python 3.12 or 3.13. If neither is available, it uses `uv` to download Python
 installation retries setup later; non-Python functionality remains available.
 If the directory is already initialized, ASB warns and makes no changes;
 rerun with `--reset` to remove managed state and create a fresh project.
+On Linux, init lists every privileged command it may run (including sysctl
+changes and delegated-cgroup setup) and asks for explicit `y`/`n` approval for
+each setup group; Enter is never treated as approval. Use `asb init --yes` (or
+`-y`) only when all listed commands are already reviewed and should be
+approved automatically. If passwordless sudo is unavailable, approved sysctl
+commands use the normal sudo password prompt; delegated-cgroup commands remain
+passwordless-only.
 For safety, reset accepts managed directories only as direct project children
 and refuses symbolic links. If your project uses nested or external managed
 directories, move their contents manually and update `.asb/project.toml` before
@@ -180,7 +187,11 @@ overlap scheduler states; they are diagnostic measures rather than exclusive
 parts of wall time. The I/O profile requires `CONFIG_SCHEDSTATS` and
 `kernel.sched_schedstats=1`. Its preflight gives the command
 `sudo sysctl -w kernel.sched_schedstats=1` when needed; ASB does not change
-that host setting. Plain `bpftrace` keeps the original default profiles;
+that host setting automatically. During `asb init`, if either setting is needed,
+ASB prints the exact `sudo sysctl -w ...` commands and requires an explicit
+`y` or `n` answer (Enter is not a default). After `y`, passwordless sudo is
+used when available; otherwise sudo may prompt for the user's password. Plain
+`bpftrace` keeps the original default profiles;
 `all` includes these optional profiles. Built-in probes acknowledge readiness
 before the paused agent begins execution.
 Each profile writes its own JSON result and SVG; `asb compare` embeds those
@@ -257,6 +268,12 @@ ASB creates an exclusive accounting leaf for each replica and removes it when
 empty. `cpu-accounting.json` records whether cgroup totals or sampled process
 accounting were used and any cleanup limitation. `ASB_CGROUP_PARENT` can name
 an existing writable delegated cgroup-v2 directory for other launchers.
+On Linux, `asb init` also attempts (using only `sudo -n`) to create a
+user-owned `asb.slice` under the current systemd user slice, enable the CPU
+controller, and save that parent in `.asb/project.toml`; measured runs use it
+automatically. If the host is not using a compatible systemd cgroup layout, or
+the setup fails, init reports the reason and ASB continues with sampled
+process accounting. It never changes resource limits or edits sudoers.
 When the `perfetto` collector is selected (or `ASB_MEASURE_PERFETTO=1` is set),
 ASB validates the exact ftrace configuration before the agent starts, then
 starts Tracebox after the agent PID is known, filters scheduler events to that

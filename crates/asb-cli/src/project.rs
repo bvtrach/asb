@@ -30,11 +30,29 @@ pub fn network_project(root: &Path) -> NetworkProjectGuard {
 const CONFIG_DIR: &str = ".asb";
 const CONFIG_FILE: &str = "project.toml";
 
+#[cfg(target_os = "linux")]
+const HOST_SETTINGS: &[(&str, &str, &str)] = &[
+    (
+        "kernel.perf_event_paranoid",
+        "-1",
+        "perf process-tree counters",
+    ),
+    (
+        "kernel.sched_schedstats",
+        "1",
+        "bpftrace io-wait scheduler statistics",
+    ),
+];
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ProjectConfig {
     pub tools_dir: String,
     pub workloads_dir: String,
     pub workspace_dir: String,
+    /// Optional project-owned delegated cgroup parent for process accounting.
+    /// This is populated by `asb init` only when the host permits safe setup.
+    #[serde(default)]
+    pub cgroup_parent: Option<String>,
     #[serde(default)]
     pub proxy: NetworkProxy,
 }
@@ -199,6 +217,7 @@ impl Default for ProjectConfig {
             tools_dir: ".asb-tools".into(),
             workloads_dir: "workloads".into(),
             workspace_dir: "asb-workspace".into(),
+            cgroup_parent: None,
             proxy: NetworkProxy::default(),
         }
     }
@@ -207,6 +226,7 @@ impl Default for ProjectConfig {
 pub fn init(
     root: Option<PathBuf>,
     reset: bool,
+    yes: bool,
     output: &mut dyn std::io::Write,
 ) -> Result<(), Error> {
     let root = root.unwrap_or_else(|| PathBuf::from("."));
@@ -233,8 +253,10 @@ pub fn init(
     fs::create_dir_all(path.parent().expect("config parent"))
         .map_err(|error| Error::Io(format!("cannot create project configuration: {error}")))?;
     let (proxy, omitted_credentials) = NetworkProxy::detect(&|name| std::env::var(name).ok());
+    let cgroup_parent = configure_host_capabilities(output, yes)?;
     let config = ProjectConfig {
         proxy,
+        cgroup_parent,
         ..ProjectConfig::default()
     };
     fs::create_dir_all(resolve(&root, &config.tools_dir))
@@ -281,47 +303,118 @@ pub fn init(
     if omitted_credentials {
         writeln!(output, "Proxy settings containing credentials or query data were not saved. Keep the corresponding proxy environment variables set when running ASB.").map_err(super::io_error)?;
     }
-    configure_host_capabilities(output)?;
     #[cfg(target_os = "linux")]
     writeln!(output, "For complete CPU accounting across short-lived child processes, use writable cgroup-v2 delegation. On systemd Linux, run:\n  systemd-run --user --scope -p Delegate=yes -- asb run CONFIG.toml\nFor a sweep, replace `asb run CONFIG.toml` with `asb sweep SWEEP.toml`. Other delegated setups can set ASB_CGROUP_PARENT to a writable cgroup-v2 directory. Without delegation, ASB uses sampled process accounting.").map_err(super::io_error)?;
     Ok(())
 }
 
-/// Apply host-wide collector prerequisites only when the user has already
-/// granted non-interactive sudo. Init is deliberately best-effort: it never
-/// prompts, edits sudoers, or makes a project unusable when a setting cannot
-/// be changed. The settings are safe, explicit sysctls used by perf and the
-/// optional scheduler-statistics BPF profile.
-fn configure_host_capabilities(output: &mut dyn std::io::Write) -> Result<(), Error> {
+/// Apply host-wide collector prerequisites after explicit user consent. Init
+/// never changes system-wide tracing settings silently: it prints the exact
+/// sysctl commands and requires an explicit `y` or `n` answer. If passwordless
+/// sudo is unavailable, an approved change may use interactive sudo so the
+/// user can enter the password at the normal sudo prompt.
+fn configure_host_capabilities(
+    output: &mut dyn std::io::Write,
+    yes: bool,
+) -> Result<Option<String>, Error> {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = output;
-        return Ok(());
+        return Ok(None);
     }
 
     #[cfg(target_os = "linux")]
     {
-        let sudo_ready = Command::new("sudo")
-            .args(["-n", "true"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success());
         let current = |setting: &str| {
             let proc_name = setting.strip_prefix("kernel.").unwrap_or(setting);
             fs::read_to_string(format!("/proc/sys/kernel/{proc_name}")).ok()
         };
-        let set = |assignment: &str| {
-            Command::new("sudo")
-                .args(["-n", "sysctl", "-w", assignment])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .is_ok_and(|status| status.success())
-        };
-        configure_host_capabilities_with(output, sudo_ready, current, set)
+
+        let pending = HOST_SETTINGS
+            .iter()
+            .filter(|(setting, wanted, _)| {
+                current(setting).is_none_or(|value| value.trim() != *wanted)
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        if pending.is_empty() {
+            writeln!(
+                output,
+                "Checking passwordless sudo with: sudo -n true (read-only capability probe)."
+            )
+            .map_err(super::io_error)?;
+            let sudo_ready = passwordless_sudo_available();
+            configure_host_capabilities_with(output, sudo_ready, current, |_| true)?;
+            if sudo_ready {
+                return configure_cgroup_parent(output, yes);
+            }
+        } else {
+            writeln!(
+                output,
+                "Host capability setup needs to change these system-wide kernel tracing settings:"
+            )
+            .map_err(super::io_error)?;
+            for (setting, wanted, purpose) in &pending {
+                writeln!(output, "  sudo sysctl -w {setting}={wanted}  ({purpose})")
+                    .map_err(super::io_error)?;
+            }
+            writeln!(
+                output,
+                "These changes affect the whole host. Enter y or n explicitly; pressing Enter is not accepted."
+            )
+            .map_err(super::io_error)?;
+            if request_sudo_consent(output, yes)? {
+                writeln!(
+                    output,
+                    "Checking passwordless sudo with: sudo -n true (read-only capability probe)."
+                )
+                .map_err(super::io_error)?;
+                let sudo_ready = passwordless_sudo_available();
+                if sudo_ready {
+                    writeln!(
+                        output,
+                        "Applying the commands above with passwordless sudo."
+                    )
+                    .map_err(super::io_error)?;
+                } else {
+                    writeln!(output, "Passwordless sudo is unavailable. Because you explicitly approved the commands above, sudo will now ask for your password.")
+                        .map_err(super::io_error)?;
+                }
+                {
+                    for (setting, wanted, purpose) in pending {
+                        let assignment = format!("{setting}={wanted}");
+                        if run_sysctl(&assignment, sudo_ready) {
+                            writeln!(
+                                output,
+                                "Host capability setup: changed {assignment} ({purpose})."
+                            )
+                            .map_err(super::io_error)?;
+                        } else {
+                            writeln!(output, "Host capability setup: could not change {assignment}; continuing without changing that setting ({purpose}).")
+                                .map_err(super::io_error)?;
+                        }
+                    }
+                }
+                if sudo_ready {
+                    return configure_cgroup_parent(output, yes);
+                }
+            } else {
+                writeln!(
+                    output,
+                    "Host capability setup: system-wide tracing settings unchanged by user request."
+                )
+                .map_err(super::io_error)?;
+                writeln!(
+                    output,
+                    "Checking passwordless sudo with: sudo -n true (read-only capability probe)."
+                )
+                .map_err(super::io_error)?;
+                if passwordless_sudo_available() {
+                    return configure_cgroup_parent(output, yes);
+                }
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -332,19 +425,6 @@ fn configure_host_capabilities_with(
     current: impl Fn(&str) -> Option<String>,
     set: impl Fn(&str) -> bool,
 ) -> Result<(), Error> {
-    const SETTINGS: &[(&str, &str, &str)] = &[
-        (
-            "kernel.perf_event_paranoid",
-            "-1",
-            "perf process-tree counters",
-        ),
-        (
-            "kernel.sched_schedstats",
-            "1",
-            "bpftrace io-wait scheduler statistics",
-        ),
-    ];
-
     if !sudo_ready {
         writeln!(
             output,
@@ -354,7 +434,7 @@ fn configure_host_capabilities_with(
         return Ok(());
     }
 
-    for (setting, wanted, purpose) in SETTINGS {
+    for (setting, wanted, purpose) in HOST_SETTINGS {
         if current(setting).is_some_and(|value| value.trim() == *wanted) {
             writeln!(
                 output,
@@ -380,6 +460,213 @@ fn configure_host_capabilities_with(
         }
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn parse_host_settings_confirmation(answer: &str) -> Option<bool> {
+    match answer.trim() {
+        "y" | "Y" => Some(true),
+        "n" | "N" => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn request_sudo_consent(output: &mut dyn std::io::Write, yes: bool) -> Result<bool, Error> {
+    if yes {
+        writeln!(
+            output,
+            "Privileged host setup approved by --yes; no confirmation prompt will be shown."
+        )
+        .map_err(super::io_error)?;
+        return Ok(true);
+    }
+    write!(output, "Apply the listed privileged commands? y/N: ").map_err(super::io_error)?;
+    output.flush().map_err(super::io_error)?;
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|error| Error::Io(format!("cannot read host capability confirmation: {error}")))?;
+    match parse_host_settings_confirmation(&answer) {
+        Some(value) => Ok(value),
+        None => {
+            writeln!(output, "Host capability setup: no valid y/n answer was provided; privileged commands were not run.")
+                .map_err(super::io_error)?;
+            Ok(false)
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn passwordless_sudo_available() -> bool {
+    Command::new("sudo")
+        .args(["-n", "true"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(target_os = "linux")]
+fn run_sysctl(assignment: &str, passwordless: bool) -> bool {
+    let mut command = Command::new("sudo");
+    if passwordless {
+        command.arg("-n");
+    }
+    command
+        .args(["sysctl", "-w", assignment])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(target_os = "linux")]
+fn configure_cgroup_parent(
+    output: &mut dyn std::io::Write,
+    yes: bool,
+) -> Result<Option<String>, Error> {
+    use std::os::unix::fs::MetadataExt;
+
+    let relative = fs::read_to_string("/proc/self/cgroup")
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("0::"))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| PathBuf::from(value.trim_start_matches('/')))
+        });
+    let Some(relative) = relative else {
+        writeln!(output, "Host capability setup: unified cgroup-v2 membership was not found; no delegated project cgroup was created.")
+            .map_err(super::io_error)?;
+        return Ok(None);
+    };
+    let Some(session_name) = relative.file_name().and_then(|name| name.to_str()) else {
+        writeln!(output, "Host capability setup: the current cgroup layout is not systemd-delegatable; no delegated project cgroup was created.")
+            .map_err(super::io_error)?;
+        return Ok(None);
+    };
+    if !session_name.ends_with(".scope") {
+        writeln!(output, "Host capability setup: the current cgroup is not a systemd session scope; no delegated project cgroup was created.")
+            .map_err(super::io_error)?;
+        return Ok(None);
+    }
+    let parent_relative = relative.parent().map(Path::to_path_buf).unwrap_or_default();
+    if parent_relative.as_os_str().is_empty()
+        || parent_relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        writeln!(output, "Host capability setup: the current cgroup path is unsafe to delegate; no project cgroup was created.")
+            .map_err(super::io_error)?;
+        return Ok(None);
+    }
+    let parent = Path::new("/sys/fs/cgroup").join(parent_relative);
+    let project_parent = parent.join("asb.slice");
+    let uid = fs::metadata("/proc/self")
+        .map(|metadata| metadata.uid())
+        .map_err(|error| {
+            Error::Io(format!(
+                "cannot determine current user id for cgroup setup: {error}"
+            ))
+        })?;
+    let gid = fs::metadata("/proc/self")
+        .map(|metadata| metadata.gid())
+        .map_err(|error| {
+            Error::Io(format!(
+                "cannot determine current group id for cgroup setup: {error}"
+            ))
+        })?;
+    let owner = format!("{uid}:{gid}");
+    let path = project_parent.to_string_lossy().into_owned();
+    let controller_file = parent.join("cgroup.subtree_control");
+    let enable_cpu = controller_file.is_file()
+        && !read_trimmed_path(&controller_file)
+            .is_some_and(|value| value.split_whitespace().any(|item| item == "cpu"));
+    writeln!(
+        output,
+        "Host capability setup may run these privileged commands:"
+    )
+    .map_err(super::io_error)?;
+    writeln!(output, "  sudo -n mkdir -p {path}").map_err(super::io_error)?;
+    writeln!(output, "  sudo -n chown {owner} {path}").map_err(super::io_error)?;
+    writeln!(output, "  sudo -n chmod 0750 {path}").map_err(super::io_error)?;
+    let controller_path = controller_file.to_string_lossy().into_owned();
+    if enable_cpu {
+        writeln!(
+            output,
+            "  printf '+cpu\\n' | sudo -n tee {controller_path} >/dev/null"
+        )
+        .map_err(super::io_error)?;
+    }
+    writeln!(output, "These commands create a user-owned delegated cgroup and enable CPU accounting; they do not change resource limits or sudoers.")
+        .map_err(super::io_error)?;
+    if !request_sudo_consent(output, yes)? {
+        writeln!(
+            output,
+            "Host capability setup: delegated cgroup commands were not run by user request."
+        )
+        .map_err(super::io_error)?;
+        return Ok(None);
+    }
+    let created = run_sudo_status(&["mkdir", "-p", &path])
+        && run_sudo_status(&["chown", &owner, &path])
+        && run_sudo_status(&["chmod", "0750", &path]);
+    if !created {
+        writeln!(output, "Host capability setup: passwordless sudo could not create or delegate {path}; sampled process accounting remains available.")
+            .map_err(super::io_error)?;
+        return Ok(None);
+    }
+    if enable_cpu && !run_sudo_write(&controller_path, b"+cpu\n") {
+        writeln!(output, "Host capability setup: created {path}, but could not enable the CPU controller; sampled process accounting remains available.")
+            .map_err(super::io_error)?;
+        return Ok(None);
+    }
+    writeln!(output, "Host capability setup: created writable delegated cgroup parent {path} for process-tree CPU accounting.")
+        .map_err(super::io_error)?;
+    Ok(Some(path))
+}
+
+#[cfg(target_os = "linux")]
+fn read_trimmed_path(path: &Path) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn run_sudo_status(args: &[&str]) -> bool {
+    Command::new("sudo")
+        .args(["-n"])
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(target_os = "linux")]
+fn run_sudo_write(path: &str, contents: &[u8]) -> bool {
+    use std::io::Write;
+    let Ok(mut child) = Command::new("sudo")
+        .args(["-n", "tee", path])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let wrote = child
+        .stdin
+        .take()
+        .and_then(|mut stdin| stdin.write_all(contents).ok())
+        .is_some();
+    wrote && child.wait().is_ok_and(|status| status.success())
 }
 
 fn reset_project(root: &Path, config_path: &Path) -> Result<(), Error> {
@@ -655,6 +942,7 @@ mod tests {
         let old = "tools_dir = '.asb-tools'\nworkloads_dir = 'workloads'\nworkspace_dir = 'asb-workspace'\n";
         let config: ProjectConfig = toml::from_str(old).unwrap();
         assert_eq!(config.proxy, NetworkProxy::default());
+        assert_eq!(config.cgroup_parent, None);
     }
 
     #[test]
@@ -662,7 +950,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("asb-project-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let mut output = Vec::new();
-        init(Some(root.clone()), false, &mut output).expect("init succeeds");
+        init(Some(root.clone()), false, false, &mut output).expect("init succeeds");
         #[cfg(target_os = "linux")]
         assert!(
             String::from_utf8_lossy(&output)
@@ -730,6 +1018,15 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn host_settings_confirmation_requires_explicit_answer() {
+        assert_eq!(parse_host_settings_confirmation("y\n"), Some(true));
+        assert_eq!(parse_host_settings_confirmation("N\n"), Some(false));
+        assert_eq!(parse_host_settings_confirmation("\n"), None);
+        assert_eq!(parse_host_settings_confirmation("yes\n"), None);
+    }
+
     #[test]
     fn init_rejects_the_asb_source_checkout_layout() {
         let root = std::env::temp_dir().join(format!("asb-source-checkout-{}", std::process::id()));
@@ -738,7 +1035,7 @@ mod tests {
         fs::create_dir_all(root.join("workloads")).unwrap();
         fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
         fs::write(root.join("crates/asb-cli/Cargo.toml"), "[package]\n").unwrap();
-        let error = init(Some(root.clone()), false, &mut Vec::new())
+        let error = init(Some(root.clone()), false, false, &mut Vec::new())
             .expect_err("source checkout must be rejected");
         assert!(error.to_string().contains("source checkout"));
         assert!(!root.join(".asb").exists());
@@ -750,10 +1047,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!("asb-init-warning-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let mut output = Vec::new();
-        init(Some(root.clone()), false, &mut output).expect("initial init succeeds");
+        init(Some(root.clone()), false, false, &mut output).expect("initial init succeeds");
         fs::write(root.join("workloads/custom.txt"), "keep").unwrap();
-        let error =
-            init(Some(root.clone()), false, &mut output).expect_err("second init requires reset");
+        let error = init(Some(root.clone()), false, false, &mut output)
+            .expect_err("second init requires reset");
         assert!(error.to_string().contains("already initialized"));
         let text = String::from_utf8(output).unwrap();
         assert!(text.contains("Warning:"));
@@ -769,10 +1066,10 @@ mod tests {
     fn init_reset_removes_managed_state_before_recreating_it() {
         let root = std::env::temp_dir().join(format!("asb-init-reset-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        init(Some(root.clone()), false, &mut Vec::new()).expect("initial init succeeds");
+        init(Some(root.clone()), false, false, &mut Vec::new()).expect("initial init succeeds");
         fs::write(root.join("workloads/custom.txt"), "remove").unwrap();
         let mut output = Vec::new();
-        init(Some(root.clone()), true, &mut output).expect("reset succeeds");
+        init(Some(root.clone()), true, false, &mut output).expect("reset succeeds");
         assert!(!root.join("workloads/custom.txt").exists());
         assert!(root.join("workloads/bug-fix.txt").is_file());
         assert!(

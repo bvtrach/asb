@@ -90,10 +90,24 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   `/sys/fs/cgroup` to an existing cgroup-v2 directory. To obtain delegation on
   systemd Linux, run `systemd-run --user --scope -p Delegate=yes -- asb run
   CONFIG.toml` (or use `asb sweep SWEEP.toml`); `asb init` prints this advice.
-  During init, ASB also best-effort enables `kernel.perf_event_paranoid=-1`
-  and `kernel.sched_schedstats=1` when `sudo -n true` succeeds. It reports each
-  setting as already enabled, changed, or unchanged; it never prompts, edits
-  sudoers, or blocks initialization when passwordless sudo is unavailable.
+  During init, ASB checks `kernel.perf_event_paranoid=-1` and
+  `kernel.sched_schedstats=1`. If either is needed, it prints the exact
+  `sudo sysctl -w ...` commands and requires an explicit `y` or `n` answer
+  (Enter is not accepted as a default) before changing system-wide settings.
+  After explicit approval it uses passwordless sudo when available, or lets
+  sudo prompt for the user's password when it is not. Init separately lists
+  every delegated-cgroup command (`mkdir`, `chown`, `chmod`, and, when needed,
+  controller enablement) and asks for explicit approval before running them.
+  `asb init --yes` (or `-y`) approves all listed setup groups without prompts.
+  Declining, an invalid answer, or a failed command leaves the setting or
+  delegation unchanged; init remains usable. It never edits sudoers or changes
+  these settings silently.
+  On a systemd cgroup-v2 host, the same best-effort init path creates a
+  user-owned `asb.slice` beneath the current user slice, enables the CPU
+  controller, and records its parent in `.asb/project.toml`; measured runs use
+  that parent automatically. A non-systemd layout or failed setup is reported
+  and falls back to process sampling. Init never changes resource limits or
+  edits sudoers.
   `asb compare` also writes an execution-composition SVG with user CPU, system
   CPU, block-I/O delay, runnable scheduler delay, and explicitly-labelled
   remaining wall time. CPU categories are process-tree totals and may overlap

@@ -57,3 +57,43 @@ adapter!(
             .map(|session| Some(Box::new(session) as Box<dyn crate::providers::ProviderSession>))
     }
 );
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+
+    fn values(command: &Command) -> std::collections::HashMap<String, String> {
+        command
+            .get_envs()
+            .filter_map(|(name, value)| {
+                value.map(|value| {
+                    (
+                        name.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cli2key_preparation_sets_protocol_compatible_environment() {
+        let mut command = Command::new("bridge-client");
+        crate::providers::preparation::apply_with_tape(
+            &mut command,
+            "cli2key",
+            "gpt-test",
+            Some(("cb_test", "http://127.0.0.1:3456/v1")),
+            None,
+            false,
+        )
+        .expect("preparation succeeds");
+        let values = values(&command);
+        assert_eq!(values.get("CLI2KEY_MODEL"), Some(&"gpt-test".to_owned()));
+        assert_eq!(values.get("OPENAI_API_KEY"), Some(&"cb_test".to_owned()));
+        assert_eq!(
+            values.get("ANTHROPIC_BASE_URL"),
+            Some(&"http://127.0.0.1:3456".to_owned())
+        );
+    }
+}

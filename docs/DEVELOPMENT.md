@@ -4,6 +4,10 @@ Keep the project small and offline-buildable after dependencies are installed.
 New behavior belongs in one of the three CLI modules and should preserve the
 existing `setup` and `run` command forms.
 
+Keep adapter-specific unit tests in the owning adapter module (or beside its
+implementation helper). Shared modules keep registry, dispatch, and
+cross-adapter tests; provider preparation cases belong to their providers.
+
 Use the pinned Rust toolchain and run:
 
 ```sh
