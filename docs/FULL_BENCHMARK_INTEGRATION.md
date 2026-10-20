@@ -430,3 +430,12 @@ The ordinary offline suite passed: 319 unit tests, 80 CLI tests, seven Python
 protocol suites, three guest-driver tests and the remaining layout/graph/
 replay checks. Strict Clippy and `make build` passed. None of these results
 closes the remaining delivery checklist or qualifies the full task populations.
+
+Current main was merged into the development branch after its native Hermes
+adapter and collector repairs landed. The only textual conflict was resolved
+by preserving both sources of step metadata: guest-returned metadata for
+isolated execution and adapter-artifact/fallback parsing for native execution.
+A new provider-free Hermes guest fixture additionally proves artifact-reported
+steps and exact usage survive the guest driver (four calls, 42 fixture tokens).
+The post-integration full offline suite and strict Clippy passed; hosted PR
+checks restarted once the merge conflict was removed.

@@ -205,7 +205,9 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
             Path::new(&request.config.workspace),
         ),
         token_usage: usage,
-        steps: adapter.step_count(&stdout, &stderr),
+        steps: artifacts
+            .steps
+            .or_else(|| adapter.step_count(&stdout, &stderr)),
         execution_failure: adapter.execution_failure(&stdout, &stderr),
     };
     let destination = request.run_dir.join("agent-result.json");
