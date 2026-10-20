@@ -119,6 +119,11 @@ identities include source, revision and split. Generic contracts live in
 [full benchmark integration](FULL_BENCHMARK_INTEGRATION.md) extends this
 boundary with actual upstream catalogs, submissions, environments and
 evaluators; a session by itself is not proof of full benchmark support.
+Sessions may execute through a workload-owned controller rather than the
+native process path. The generic execution context carries the selected
+configuration and negotiated connection, and the owning session returns
+separate process output, adapter-parsed results and observed execution time.
+The runner does not choose container images, dataset formats or graders.
 
 The CLI is the stable user boundary. A benchmark configuration names an agent,
 workload, provider, model, concurrency, workspace, and log file. `concurrency`
@@ -283,9 +288,13 @@ alias downloads a pinned upstream source archive into a local bundle directory;
 the runner copies those sources into `external-workload/` in the workspace.
 The three original SWE-bench family adapters now own a pinned official task
 catalog installer, SDK dependency and installed-task discovery. They do not
-fall back to synthetic trial IDs. Per-instance execution and grading through
-the new session boundary are still being integrated; see the full benchmark
-delivery checklist before claiming upstream benchmark support.
+fall back to synthetic trial IDs. The development run path connects those
+sessions to actual instance execution and official grading, reusing the
+selected Rust agent adapter inside the task environment. It currently needs
+an explicit static `ASB_GUEST_BINARY`; automatic portable-runtime installation,
+host-loopback endpoint forwarding, container collector targeting and
+full-population planning remain unfinished. See the full benchmark delivery
+checklist before claiming complete upstream benchmark support.
 Other aliases install pinned prompt metadata. These commands do not handle
 credentials.
 `asb init` prepares `.asb/python/venv` using an installed Python 3.12 or 3.13,

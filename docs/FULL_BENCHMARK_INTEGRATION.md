@@ -251,11 +251,11 @@ ASB_TEST_SWECATALOG_ROOT="$BENCHMARK_PROJECT" \
   crates/asb-cli/tests/benchmark_live_task_server.py
 ```
 
-This is an actual execution/submission/evaluation helper, **not yet a usable
-ASB run path**. Rust session/runner wiring, selected-tool bootstrap and private
-runtime artifacts, container-aware collector accounting, local provider/tape
-connectivity, crash recovery, full-suite planning/reporting and both original
-Terminal-Bench runtime integrations remain required before merge/release.
+At this stage execution/submission/evaluation were helper-only. The normal
+ASB connection is described in the later ledger entry. Container-aware
+collector accounting, local provider/tape connectivity, crash recovery,
+full-suite planning/reporting and both original Terminal-Bench runtime
+integrations remain required before merge/release.
 
 ### Terminal-Bench dataset compatibility checks
 
@@ -322,3 +322,59 @@ Function diagrams now disable edge concentration and mark real entry/terminal
 functions instead of introducing synthetic cross-cluster entry/exit calls.
 Regression checks render both actual project graphs within a bounded timeout
 and verify that every function and real call edge survives into SVG.
+
+### Normal SWE-bench run integration
+
+The generic workload-session execution hook now connects all three original
+SWE-bench adapters to their owned Python/Docker sessions. Each receives the
+negotiated endpoint and selected configuration from Rust, installs the chosen
+client using ASB's actual tool recipes inside the task environment, executes
+the same Rust agent adapter, and returns its independently parsed metadata.
+The host never launches that client against an empty host workspace. Public
+package caches are reused without mounting host homes/venvs; credential-bearing
+registry caches are not staged. Private stdout/stderr, task/submission/evaluator
+evidence and cleanup status remain under the project. Observed execution time
+comes from the guest execution span, excluding tool installation and grading.
+
+The controller transport uses bounded JSON-lines messages/queues, response
+deadlines, byte-preserving output, private stdin requests and EOF cancellation.
+Its tests exercise framing, padding, request round trips and child reaping.
+Bootstrap tests use no Docker daemon, agent installation or live provider.
+An actual Pi API failure with exit zero uncovered during qualification now
+has an adapter-owned terminal-failure hook for both native and guest runs;
+tests verify failures without echoing provider bodies and allow recovered turns.
+
+Actual **normal `asb run`** qualification passed six cases in 281.5 seconds:
+the real instance `astropy__astropy-12907` in Full, Lite and Verified, each with
+an unrelated change and a deterministic known-good repair. ASB installed and
+ran real Pi, negotiated the Responses API against a synthetic provider in an
+internal Docker network, captured its real tool changes and exact reported
+usage, invoked the official evaluator, and returned unresolved/resolved task
+outcomes respectively. Each owned task/provider container and fixture network
+was cleaned up. This is explicitly an oracle/provider fixture, not evidence
+that an AI solved these issues or that a full population was benchmarked.
+The final Lite positive case was repeated after the execution-time journal
+was added (45.4 seconds); its reported agent elapsed time matches the guest
+observation rather than tool installation or evaluator time. Explicit task-set
+selection is validated independently of prompt files before the environment
+starts. Final provider-free tests and strict Clippy pass.
+
+Development limitations remain explicit: provide a static `ASB_GUEST_BINARY`;
+host-loopback endpoints (including tape/local bridges) and measured container
+runs currently report that their integration is unfinished. Automatic helper
+provisioning, collector targeting, complete-suite scheduling/reporting/resume,
+background-agent quiescence before submission freezing, both Terminal-Bench
+engines, official image-build fallback when a prebuilt image is unavailable,
+final PR/merge/main CI and the minor release remain required.
+
+Optional normal-run qualification (cached public tools/image; no live LLM):
+
+```sh
+ASB_TEST_SWECATALOG_ROOT="$BENCHMARK_PROJECT" \
+  ASB_TEST_BENCHMARK_ASB="$PWD/target/debug/asb" \
+  ASB_TEST_GUEST_BINARY="$PWD/target/x86_64-unknown-linux-musl/debug/asb" \
+  ASB_TEST_BENCHMARK_SUITE=swe-bench-lite \
+  ASB_TEST_BENCHMARK_RESOLVED=1 \
+  "$BENCHMARK_PROJECT/.asb-tools/swebench/venv/bin/python" \
+  crates/asb-cli/tests/benchmark_live_run.py
+```

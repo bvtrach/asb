@@ -1,5 +1,6 @@
 //! Shared official engine for the three original SWE-bench populations.
 mod catalog;
+mod runtime;
 use super::WorkloadAdapter;
 use crate::workloads::{InstallationContext, Trial};
 use std::path::Path;
@@ -56,11 +57,7 @@ impl WorkloadAdapter for SweBenchAdapter {
         &self,
         context: &crate::workloads::PreparationContext<'_>,
     ) -> Result<Box<dyn crate::workloads::WorkloadSession>, String> {
-        catalog::read(self, context.workload_directory)?;
-        Err(format!(
-            "{} requires its official execution session; full benchmark runtime integration is still in development",
-            self.id
-        ))
+        runtime::prepare(self, context)
     }
 
     fn prepare_source(&self, _workloads: &Path, _workspace: &Path) -> Result<usize, String> {

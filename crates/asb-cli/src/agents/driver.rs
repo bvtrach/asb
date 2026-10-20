@@ -24,13 +24,14 @@ pub(crate) struct GuestRequest {
     pub replay: bool,
 }
 
-#[derive(Serialize)]
-struct GuestResult {
-    schema_version: u32,
-    exit_code: Option<i32>,
-    final_response: Option<String>,
-    token_usage: crate::measurements::TokenUsage,
-    steps: Option<u64>,
+#[derive(Deserialize, Serialize)]
+pub(crate) struct GuestResult {
+    pub schema_version: u32,
+    pub exit_code: Option<i32>,
+    pub final_response: Option<String>,
+    pub token_usage: crate::measurements::TokenUsage,
+    pub steps: Option<u64>,
+    pub execution_failure: Option<String>,
 }
 
 /// Remove enclosing host/guest orchestration state from a benchmark client.
@@ -192,6 +193,7 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
         ),
         token_usage: usage,
         steps: adapter.step_count(&stdout, &stderr),
+        execution_failure: adapter.execution_failure(&stdout, &stderr),
     };
     let destination = request.run_dir.join("agent-result.json");
     let temporary = request

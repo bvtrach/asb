@@ -6,7 +6,7 @@
 //! terminal output.
 
 use crate::collectors;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,7 +23,7 @@ const MAX_CAPTURE: usize = 256 * 1024;
 const MAX_RUNS: usize = 10_000;
 static NEXT_TRACE_ID: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct TokenUsage {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,

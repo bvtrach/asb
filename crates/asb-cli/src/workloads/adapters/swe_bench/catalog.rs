@@ -16,6 +16,7 @@ const DOCKER_TRANSPORT: &str = include_str!("../../../../assets/benchmarks/asb_d
 const EXECUTION: &str = include_str!("../../../../assets/benchmarks/asb_execution.py");
 const TASK_SESSION: &str = include_str!("../../../../assets/benchmarks/asb_swebench_task.py");
 const TASK_SERVER: &str = include_str!("../../../../assets/benchmarks/asb_task_server.py");
+const GUEST: &str = include_str!("../../../../assets/benchmarks/asb_guest.py");
 const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Deserialize)]
@@ -148,12 +149,8 @@ pub(super) fn install(
         )?;
     }
     let tool_root = context.tools_root.join("swebench");
+    ensure_helpers(&tool_root)?;
     let helper = tool_root.join("asb_swebench.py");
-    publish_helper(&helper, MATERIALIZER)?;
-    publish_helper(&tool_root.join("asb_docker.py"), DOCKER_TRANSPORT)?;
-    publish_helper(&tool_root.join("asb_execution.py"), EXECUTION)?;
-    publish_helper(&tool_root.join("asb_swebench_task.py"), TASK_SESSION)?;
-    publish_helper(&tool_root.join("asb_task_server.py"), TASK_SERVER)?;
     let python = tool_root.join("venv/bin/python");
     let status = Command::new(&python)
         .arg(&helper)
@@ -258,6 +255,20 @@ pub(super) fn install(
         catalog.tasks.len()
     )
     .map_err(crate::io_error)?;
+    Ok(())
+}
+
+pub(super) fn ensure_helpers(root: &Path) -> Result<(), Error> {
+    for (name, source) in [
+        ("asb_swebench.py", MATERIALIZER),
+        ("asb_docker.py", DOCKER_TRANSPORT),
+        ("asb_execution.py", EXECUTION),
+        ("asb_swebench_task.py", TASK_SESSION),
+        ("asb_task_server.py", TASK_SERVER),
+        ("asb_guest.py", GUEST),
+    ] {
+        publish_helper(&root.join(name), source)?;
+    }
     Ok(())
 }
 

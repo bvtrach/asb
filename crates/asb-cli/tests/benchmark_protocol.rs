@@ -20,6 +20,11 @@ fn private_task_protocol_preserves_events_and_cleans_up_on_disconnect() {
     python_protocol("benchmark_task_server.py");
 }
 
+#[test]
+fn guest_bootstrap_reuses_adapters_without_exposing_host_state() {
+    python_protocol("benchmark_guest.py");
+}
+
 fn python_protocol(test: &str) {
     let output = std::process::Command::new("python3")
         .arg(

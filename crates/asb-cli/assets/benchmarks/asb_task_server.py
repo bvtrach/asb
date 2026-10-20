@@ -79,13 +79,17 @@ def serve(task, source, destination, idle_timeout=900):
                 if operation == "close":
                     break
                 try:
-                    if operation == "execute":
-                        result = task.workspace.execute(
-                            request.get("argv"), request.get("environment"),
-                            timeout=request.get("timeout", 900), output_limit=request.get("output_limit", 256 * 1024),
-                            before_resume=attach, on_output=output, cancelled=peer_closed,
-                            gate=request.get("gate", "shell"),
-                        )
+                    if operation in ["execute", "agent"]:
+                        if operation == "agent":
+                            from asb_guest import execute_agent
+                            result = execute_agent(task, request, attach, output, peer_closed)
+                        else:
+                            result = task.workspace.execute(
+                                request.get("argv"), request.get("environment"),
+                                timeout=request.get("timeout", 900), output_limit=request.get("output_limit", 256 * 1024),
+                                before_resume=attach, on_output=output, cancelled=peer_closed,
+                                gate=request.get("gate", "shell"),
+                            )
                         result = dict(result)
                         for stream in ["stdout", "stderr"]:
                             result[stream] = base64.b64encode(result[stream]).decode("ascii")

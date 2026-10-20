@@ -501,129 +501,154 @@ fn run_mode(
             )
         })
         .transpose()?;
-    // Adapters run with the benchmark workspace as their current directory.
-    // Pass the canonical workspace explicitly so a relative configuration
-    // value is not resolved a second time inside that directory (which is
-    // especially important for OpenJiuwen's persistent workspace).
-    let mut command_config = config.clone();
-    command_config.workspace = workspace.to_string_lossy().into_owned();
-    let specification = command_for_with_interface(
-        &command_config,
-        connection
-            .as_ref()
-            .map(|connection| connection.base_url.as_str())
-            .or(provider_endpoint),
-        &prompt,
-        connection.as_ref().map(|connection| connection.interface),
-    )?;
-    let mut program = specification.program;
-    if let Some(local) = agents::resolve(&config.agent, &project_root, &project_config.tools_dir) {
-        program = local;
-    }
     let started = Instant::now();
-    let mut command = agents::find(&config.agent).map_or_else(
-        || Ok(Command::new(&program)),
-        |adapter| adapter.process(&program),
-    )?;
-    project::apply_network_proxy(&mut command, config_path)?;
-    command.args(specification.args);
-    // Do not leak an enclosing Codex session into the benchmark agent. These
-    // variables are host-runner integration state; if inherited, a project
-    // local Codex CLI can advertise the coordinator's tools as an
-    // `additional_tools` request that cli2key does not support.
-    agents::driver::isolate_parent_state(&mut command);
-    if specification.append_prompt {
-        command.arg(&prompt);
-    }
-    command
-        .current_dir(&workspace)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    providers::configure(
-        &mut command,
-        &config.provider,
-        &config.model,
-        tape_mode == Some(tape::Mode::Replay),
-    );
-    if tape_mode == Some(tape::Mode::Replay) {
-        agents::mask_replay_credentials(&mut command);
-    }
-    providers::apply_with_tape(
-        &mut command,
-        &config.provider,
-        &config.model,
-        provider_credentials,
-        tape_url,
-        tape_mode == Some(tape::Mode::Replay),
-    )?;
-    // Agent state must not appear inside the workload checkout, where it can
-    // affect git status, tools, and therefore the recorded agent trajectory.
-    let mut runtime_path = workspace.as_os_str().to_os_string();
-    runtime_path.push(".asb-agent-runtime");
-    let runtime_path = PathBuf::from(runtime_path);
-    // Run-specific agent artifacts must not be confused with earlier runs or
-    // simultaneous replicas, including after process IDs are reused.
-    static RUN_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let run_dir = runtime_path.join("runs").join(format!(
-        "{}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos(),
-        RUN_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-    ));
-    instrument_phase(
-        measurement_session.as_mut(),
-        LifecyclePhase::AgentPreparation,
-        || {
-            if let Some(connection) = connection.as_ref() {
-                agents::prepare(
-                    &config.agent,
-                    &mut agents::PreparationContext {
-                        command: &mut command,
-                        model: &config.model,
-                        connection,
-                        runtime_dir: &runtime_path,
-                        run_dir: &run_dir,
-                    },
-                )?;
-            }
-            Ok(())
+    let isolated = workload_session.execute(
+        &workloads::ExecutionContext {
+            config: &config,
+            connection: connection.as_ref(),
+            project_root: &project_root,
+            project_config: &project_config,
+            replay: tape_mode == Some(tape::Mode::Replay),
+            measured: measurement_session.is_some(),
+            show_output,
         },
-    )?;
-    if let Some(url) = tape_url {
-        providers::configure_tape(
+        output,
+    );
+    let (child, run_dir, guest, execution_elapsed_ms) = if let Some(result) = isolated {
+        let result = result.map_err(Error::Run)?;
+        (
+            result.output,
+            PathBuf::new(),
+            Some(result.metadata),
+            result.elapsed_ms,
+        )
+    } else {
+        // Adapters run with the benchmark workspace as their current directory.
+        // Pass the canonical workspace explicitly so a relative configuration
+        // value is not resolved a second time inside that directory (which is
+        // especially important for OpenJiuwen's persistent workspace).
+        let mut command_config = config.clone();
+        command_config.workspace = workspace.to_string_lossy().into_owned();
+        let specification = command_for_with_interface(
+            &command_config,
+            connection
+                .as_ref()
+                .map(|connection| connection.base_url.as_str())
+                .or(provider_endpoint),
+            &prompt,
+            connection.as_ref().map(|connection| connection.interface),
+        )?;
+        let mut program = specification.program;
+        if let Some(local) =
+            agents::resolve(&config.agent, &project_root, &project_config.tools_dir)
+        {
+            program = local;
+        }
+        let mut command = agents::find(&config.agent).map_or_else(
+            || Ok(Command::new(&program)),
+            |adapter| adapter.process(&program),
+        )?;
+        project::apply_network_proxy(&mut command, config_path)?;
+        command.args(specification.args);
+        // Do not leak an enclosing Codex session into the benchmark agent. These
+        // variables are host-runner integration state; if inherited, a project
+        // local Codex CLI can advertise the coordinator's tools as an
+        // `additional_tools` request that cli2key does not support.
+        agents::driver::isolate_parent_state(&mut command);
+        if specification.append_prompt {
+            command.arg(&prompt);
+        }
+        command
+            .current_dir(&workspace)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        providers::configure(
             &mut command,
             &config.provider,
-            url,
-            tape_mode.expect("tape URL implies tape mode"),
+            &config.model,
+            tape_mode == Some(tape::Mode::Replay),
         );
-    }
-    if tape_mode == Some(tape::Mode::Replay) {
-        apply_replay_network_guard(&mut command);
-    }
-    project::apply_python_path(&mut command, &project_root, Path::new(&program))?;
-    crate::tools::apply_runtime_path(&mut command, &project_root, &project_config.tools_dir)?;
-    // The process gate must execute the fully prepared command, not the
-    // adapter's original executable. Some adapters (for example OpenJiuwen)
-    // install a process wrapper that carries compatibility and output fixes;
-    // bypassing it at the gate would silently undo those fixes while still
-    // appearing to attach collectors correctly.
-    let gate_program = command.get_program().to_string_lossy().into_owned();
-    let gate_args = command
-        .get_args()
-        .map(|value| value.to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    let child = run_measured_agent(
-        &mut command,
-        &gate_program,
-        Some(&gate_args),
-        measurement_session.as_mut(),
-        show_output,
-        output,
-    )?;
+        if tape_mode == Some(tape::Mode::Replay) {
+            agents::mask_replay_credentials(&mut command);
+        }
+        providers::apply_with_tape(
+            &mut command,
+            &config.provider,
+            &config.model,
+            provider_credentials,
+            tape_url,
+            tape_mode == Some(tape::Mode::Replay),
+        )?;
+        // Agent state must not appear inside the workload checkout, where it can
+        // affect git status, tools, and therefore the recorded agent trajectory.
+        let mut runtime_path = workspace.as_os_str().to_os_string();
+        runtime_path.push(".asb-agent-runtime");
+        let runtime_path = PathBuf::from(runtime_path);
+        // Run-specific agent artifacts must not be confused with earlier runs or
+        // simultaneous replicas, including after process IDs are reused.
+        static RUN_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let run_dir = runtime_path.join("runs").join(format!(
+            "{}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+            RUN_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        instrument_phase(
+            measurement_session.as_mut(),
+            LifecyclePhase::AgentPreparation,
+            || {
+                if let Some(connection) = connection.as_ref() {
+                    agents::prepare(
+                        &config.agent,
+                        &mut agents::PreparationContext {
+                            command: &mut command,
+                            model: &config.model,
+                            connection,
+                            runtime_dir: &runtime_path,
+                            run_dir: &run_dir,
+                        },
+                    )?;
+                }
+                Ok(())
+            },
+        )?;
+        if let Some(url) = tape_url {
+            providers::configure_tape(
+                &mut command,
+                &config.provider,
+                url,
+                tape_mode.expect("tape URL implies tape mode"),
+            );
+        }
+        if tape_mode == Some(tape::Mode::Replay) {
+            apply_replay_network_guard(&mut command);
+        }
+        project::apply_python_path(&mut command, &project_root, Path::new(&program))?;
+        crate::tools::apply_runtime_path(&mut command, &project_root, &project_config.tools_dir)?;
+        // The process gate must execute the fully prepared command, not the
+        // adapter's original executable. Some adapters (for example OpenJiuwen)
+        // install a process wrapper that carries compatibility and output fixes;
+        // bypassing it at the gate would silently undo those fixes while still
+        // appearing to attach collectors correctly.
+        let gate_program = command.get_program().to_string_lossy().into_owned();
+        let gate_args = command
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let child = run_measured_agent(
+            &mut command,
+            &gate_program,
+            Some(&gate_args),
+            measurement_session.as_mut(),
+            show_output,
+            output,
+        )?;
+        (child, run_dir, None, None)
+    };
     let mut run_error = tape_session
         .take()
         .and_then(|session| session.stop().err())
@@ -645,13 +670,26 @@ fn run_mode(
             }
         }
     }
-    let elapsed_ms = started.elapsed().as_millis();
+    let elapsed_ms = execution_elapsed_ms.unwrap_or_else(|| started.elapsed().as_millis());
     // Prefer the agent's structured final response when deciding whether a
     // zero-exit process succeeded. Tool output can legitimately contain a
     // transient failed command that the agent repairs before its final answer;
     // scanning that whole transcript would incorrectly fail the run.
-    let final_response = agents::final_response(&config.agent, &bounded(&child.stdout), &workspace);
-    let agent_failure = if config.agent == "openjiuwen" && final_response.is_none() {
+    let final_response = match guest.as_ref() {
+        Some(metadata) => metadata.final_response.clone(),
+        None => agents::final_response(&config.agent, &bounded(&child.stdout), &workspace),
+    };
+    let adapter_failure = guest
+        .as_ref()
+        .and_then(|metadata| metadata.execution_failure.clone())
+        .or_else(|| {
+            agents::find(&config.agent).and_then(|adapter| {
+                adapter.execution_failure(&bounded(&child.stdout), &bounded(&child.stderr))
+            })
+        });
+    let agent_failure = if adapter_failure.is_some() {
+        adapter_failure
+    } else if config.agent == "openjiuwen" && final_response.is_none() {
         Some("OpenJiuwen exited without a final response; the last event appears to be an unexecuted tool call. Retry with a compatible OpenJiuwen client or inspect the benchmark log.".into())
     } else {
         process_failure_reason(
@@ -711,7 +749,10 @@ fn run_mode(
     } else {
         grading_failure
     };
-    let adapter_artifacts = agents::find(&config.agent)
+    let adapter_artifacts = guest
+        .is_none()
+        .then(|| agents::find(&config.agent))
+        .flatten()
         .map(|adapter| {
             adapter.collect(&agents::CollectionContext {
                 workspace: &workspace,
@@ -733,14 +774,22 @@ fn run_mode(
             .map(|(_, cassette)| cassette.as_path()),
     );
     let token_usage = measurements::with_artifact_usage(token_usage, adapter_artifacts.token_usage);
+    let token_usage = measurements::with_artifact_usage(
+        token_usage,
+        guest.as_ref().map(|metadata| metadata.token_usage.clone()),
+    );
     for path in adapter_artifacts.cleanup_paths {
         let _ = std::fs::remove_file(path);
     }
-    let steps = measurements::steps_from_sources(
-        &config.agent,
-        &bounded(&child.stdout),
-        &bounded(&child.stderr),
-    );
+    let steps = if let Some(metadata) = guest.as_ref() {
+        metadata.steps
+    } else {
+        measurements::steps_from_sources(
+            &config.agent,
+            &bounded(&child.stdout),
+            &bounded(&child.stderr),
+        )
+    };
     let mut stderr = bounded(&child.stderr);
     if let Some(error) = run_error.as_deref() {
         stderr.push_str("\nASB run error: ");

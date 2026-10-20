@@ -1006,6 +1006,7 @@ async function main() {
     }
   }
   console.log('fixture-agent-output');
+  if (behavior === 'api-error-event') console.log(JSON.stringify({type:'agent_end',messages:[{role:'assistant',stopReason:'error',errorMessage:'400 fixture-secret'}]}));
   if (behavior === 'fatal') console.error('Authentication required. Please use /login command to sign in to your account fixture-secret');
   const unresolvedFailure = behavior === 'exit-unresolved' ||
       (behavior === 'fail-second' && process.cwd().endsWith('concurrency-2')) ||
@@ -1717,13 +1718,15 @@ fn replay_rejects_partially_consumed_cassettes() {
 #[cfg(unix)]
 #[test]
 fn replay_reports_agent_exit_and_zero_exit_fatal_output() {
-    for behavior in ["exit", "fatal"] {
+    for behavior in ["exit", "fatal", "api-error-event"] {
         let project = replay_project(1);
         let result = replay(&project, behavior, &[]);
         let expected = if behavior == "exit" {
             "agent exited unsuccessfully (exit status: 7)"
-        } else {
+        } else if behavior == "fatal" {
             "agent reported an authentication failure"
+        } else {
+            "agent reported a terminal API request failure"
         };
         expect_failure(&result, expected);
         assert!(!stderr(&result).contains("fixture-secret"));

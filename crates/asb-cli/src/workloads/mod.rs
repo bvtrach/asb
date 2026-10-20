@@ -6,10 +6,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 mod adapters;
+mod controller;
 mod session;
 pub(crate) use session::BaselineEvidence;
 pub use session::TaskIdentity;
-pub(crate) use session::{PreparationContext, WorkloadSession};
+pub(crate) use session::{ExecutionContext, PreparationContext, WorkloadSession};
 
 pub(crate) struct InstallationContext<'a> {
     pub project_root: &'a Path,
@@ -882,6 +883,27 @@ pub fn load_trial(
     let Some(trial) = trial else {
         return Ok(prompt);
     };
+    let selected = selected_trial(name, trial, trial_set, directory)?;
+    let trial_prompt = directory
+        .join(name)
+        .join("trials")
+        .join(format!("{}.txt", selected.id));
+    if trial_prompt.is_file() {
+        return load_prompt_file(&trial_prompt, name);
+    }
+    Ok(format!(
+        "{prompt}\n\nSelected external workload trial: {}\n{}\n",
+        selected.id, selected.description
+    ))
+}
+
+/// Validate an explicit selection independently of prompt-file materialization.
+pub(crate) fn selected_trial(
+    name: &str,
+    trial: &str,
+    trial_set: Option<&str>,
+    directory: &Path,
+) -> Result<Trial, String> {
     let set_name = trial_set.ok_or_else(|| {
         format!(
             "workload `{name}` selected trial `{trial}` without a trial-set TOML; run `asb workload tui`"
@@ -903,27 +925,16 @@ pub fn load_trial(
             config.workload
         ));
     }
-    let selected = config
+    config
         .trials
-        .iter()
+        .into_iter()
         .find(|candidate| candidate.id == trial)
         .ok_or_else(|| {
             format!(
                 "trial `{trial}` is not enabled in {}",
                 config_path.display()
             )
-        })?;
-    let trial_prompt = directory
-        .join(name)
-        .join("trials")
-        .join(format!("{}.txt", selected.id));
-    if trial_prompt.is_file() {
-        return load_prompt_file(&trial_prompt, name);
-    }
-    Ok(format!(
-        "{prompt}\n\nSelected external workload trial: {}\n{}\n",
-        selected.id, selected.description
-    ))
+        })
 }
 
 pub fn read_trial_set(path: &Path) -> Result<TrialSet, String> {
@@ -1473,6 +1484,44 @@ mod tests {
             .is_err()
         );
         let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn selected_manifest_is_checked_without_loading_a_prompt_or_environment() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-selection-{}",
+            super::TaskIdentity::local("selection", None).attempt_id
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("selection.toml"),
+            "workload='official-suite'\n[[trials]]\nid='case-1'\ndescription='Selected case'\n",
+        )
+        .unwrap();
+        assert_eq!(
+            super::selected_trial("official-suite", "case-1", Some("selection.toml"), &root)
+                .unwrap()
+                .id,
+            "case-1"
+        );
+        assert!(
+            super::selected_trial("official-suite", "case-2", Some("selection.toml"), &root)
+                .unwrap_err()
+                .contains("not enabled")
+        );
+        assert!(
+            super::selected_trial("different-suite", "case-1", Some("selection.toml"), &root)
+                .unwrap_err()
+                .contains("belongs to")
+        );
+        for unsafe_path in ["../selection.toml", "/selection.toml"] {
+            assert!(
+                super::selected_trial("official-suite", "case-1", Some(unsafe_path), &root)
+                    .unwrap_err()
+                    .contains("invalid workload trial-set path")
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 }
 #[test]

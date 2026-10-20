@@ -12,7 +12,67 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     command,
     prepare_adapter,
 )
-.with_output_usage(output_usage);
+.with_output_usage(output_usage)
+.with_execution_failure(execution_failure);
+
+fn execution_failure(stdout: &str, _: &str) -> Option<String> {
+    let mut failed = false;
+    for event in stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+    {
+        let message = if event["type"] == "turn_end" {
+            event.get("message")
+        } else if event["type"] == "agent_end" {
+            event
+                .get("messages")
+                .and_then(|messages| messages.as_array())
+                .and_then(|messages| {
+                    messages
+                        .iter()
+                        .rev()
+                        .find(|message| message["role"] == "assistant")
+                })
+        } else {
+            None
+        };
+        if let Some(reason) = message
+            .and_then(|message| message.get("stopReason"))
+            .and_then(|reason| reason.as_str())
+        {
+            failed = matches!(reason, "error" | "aborted");
+        }
+    }
+    failed.then(|| "agent reported a terminal API request failure or cancellation; inspect the private agent log".into())
+}
+
+#[cfg(test)]
+mod execution_tests {
+    use super::execution_failure;
+
+    #[test]
+    fn terminal_api_errors_are_failures_without_echoing_provider_bodies() {
+        let output = serde_json::json!({"type":"agent_end","messages":[{"role":"assistant",
+            "stopReason":"error","errorMessage":"400 private-provider-body"}]})
+        .to_string();
+        let failure = execution_failure(&output, "").unwrap();
+        assert!(failure.contains("API request"));
+        assert!(!failure.contains("private-provider-body"));
+    }
+
+    #[test]
+    fn recovered_turn_is_not_failed_by_an_earlier_error() {
+        let output = [
+            serde_json::json!({"type":"turn_end","message":{"stopReason":"error"}}),
+            serde_json::json!({"type":"turn_end","message":{"stopReason":"stop"}}),
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+        assert!(execution_failure(&output, "").is_none());
+    }
+}
 
 fn output_usage(stdout: &str, stderr: &str, _: bool) -> crate::measurements::TokenUsage {
     let mut sum = crate::measurements::TokenUsage::default();

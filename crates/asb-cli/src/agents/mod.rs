@@ -53,6 +53,10 @@ pub(crate) trait AgentAdapter: Sync {
     fn step_count(&self, _stdout: &str, _stderr: &str) -> Option<u64> {
         None
     }
+    /// A terminal client/protocol failure that a zero process exit can hide.
+    fn execution_failure(&self, _stdout: &str, _stderr: &str) -> Option<String> {
+        None
+    }
 }
 
 pub(crate) struct PreparationContext<'a> {
@@ -139,6 +143,7 @@ type UsageHook = fn(&str, &str, bool) -> crate::measurements::TokenUsage;
 type FinalResponseHook = fn(&str, &Path) -> Option<String>;
 type ProcessHook = fn(&str) -> Result<Command, Error>;
 type StepCountHook = fn(&str, &str) -> Option<u64>;
+type FailureHook = fn(&str, &str) -> Option<String>;
 
 /// Trait-object implementation whose behavior is supplied by individual files.
 pub(super) struct StaticAdapter {
@@ -153,6 +158,7 @@ pub(super) struct StaticAdapter {
     final_response: Option<FinalResponseHook>,
     process: Option<ProcessHook>,
     step_count: Option<StepCountHook>,
+    failure: Option<FailureHook>,
     replay_credential_vars: &'static [&'static str],
 }
 impl StaticAdapter {
@@ -176,6 +182,7 @@ impl StaticAdapter {
             final_response: None,
             process: None,
             step_count: None,
+            failure: None,
             replay_credential_vars: &[],
         }
     }
@@ -197,6 +204,11 @@ impl StaticAdapter {
 
     pub(super) const fn with_final_response(mut self, hook: FinalResponseHook) -> Self {
         self.final_response = Some(hook);
+        self
+    }
+
+    pub(super) const fn with_execution_failure(mut self, hook: FailureHook) -> Self {
+        self.failure = Some(hook);
         self
     }
 
@@ -261,6 +273,9 @@ impl AgentAdapter for StaticAdapter {
     }
     fn step_count(&self, stdout: &str, stderr: &str) -> Option<u64> {
         self.step_count.and_then(|hook| hook(stdout, stderr))
+    }
+    fn execution_failure(&self, stdout: &str, stderr: &str) -> Option<String> {
+        self.failure.and_then(|hook| hook(stdout, stderr))
     }
 }
 pub(crate) fn prepare(agent: &str, context: &mut PreparationContext<'_>) -> Result<(), Error> {

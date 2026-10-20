@@ -63,6 +63,23 @@ pub(crate) struct TaskInvocation {
     pub workspace: PathBuf,
 }
 
+/// The runner provides negotiated connections, never workload/agent dispatch.
+pub(crate) struct ExecutionContext<'a> {
+    pub config: &'a crate::benchmark::BenchmarkConfig,
+    pub connection: Option<&'a crate::endpoint::Connection>,
+    pub project_root: &'a Path,
+    pub project_config: &'a crate::project::ProjectConfig,
+    pub replay: bool,
+    pub measured: bool,
+    pub show_output: bool,
+}
+
+pub(crate) struct ExecutionResult {
+    pub output: std::process::Output,
+    pub metadata: crate::agents::driver::GuestResult,
+    pub elapsed_ms: Option<u128>,
+}
+
 /// Baseline provenance is not a boolean: an official clean task definition
 /// does not claim that ASB ran its initial failing tests.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -119,6 +136,13 @@ pub(crate) trait WorkloadSession {
         }
     }
     fn evaluate(&mut self, final_response: &str) -> Result<Evaluation, String>;
+    fn execute(
+        &mut self,
+        _context: &ExecutionContext<'_>,
+        _output: &mut dyn std::io::Write,
+    ) -> Option<Result<ExecutionResult, String>> {
+        None
+    }
 }
 
 pub(super) type Evaluator = fn(&str, &Path, &str) -> Result<Evaluation, String>;
