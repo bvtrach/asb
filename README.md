@@ -284,9 +284,15 @@ in parallel. ASB's tape routing is not a network sandbox for arbitrary agents.
 
 Replay checks each ordered request's method, path and normalized full body,
 including prompt and tool definitions. Workspace paths, UUIDs and long
-timestamps are normalized to allow different replica directories and sessions;
-other differences are rejected. Older recordings that normalized paths
-differently may need to be recorded again. Replaying responses does not freeze
+timestamps are normalized to allow different replica directories and sessions.
+Known credential-free health probes may be omitted by a client, and a client
+retry may omit already-consumed tool-result turns; those cases are accepted
+only when the endpoint, model, and initial user prompt still match. Other
+differences are rejected. During replay ASB also replaces inherited HTTP(S)
+and all-protocol proxies with a refused local proxy while exempting loopback,
+so provider, updater, and telemetry traffic cannot leave the host. Older
+recordings that normalized paths differently may need to be recorded again.
+Replaying responses does not freeze
 external tools or filesystem state, and without `--respect-record-timings`
 provider delays are not reproduced.
 

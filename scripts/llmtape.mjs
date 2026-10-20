@@ -87,14 +87,19 @@ async function replayResponse(response, interaction) {
         workspace,
       ).replaceAll("<asb-workspace>", workspace)
     : interaction.response.body || "";
+  // Request matching intentionally redacts provider-generated tool-call IDs,
+  // but Claude requires IDs to be unique across turns. Give each replayed
+  // response a fresh local ID without changing the cassette evidence.
+  const replayToolId = `asb-replay-${process.pid}-${Date.now()}`;
+  const replayBody = body.replaceAll("<asb-call>", replayToolId);
   const contentType = Object.entries(interaction.response.headers || {})
     .find(([name]) => name.toLowerCase() === "content-type")?.[1] || "";
   response.writeHead(interaction.response.status, interaction.response.headers || {});
-  if (!/text\/event-stream/i.test(contentType) || !body.includes("\n\n")) {
-    response.end(body);
+  if (!/text\/event-stream/i.test(contentType) || !replayBody.includes("\n\n")) {
+    response.end(replayBody);
     return;
   }
-  const events = body.match(/[\s\S]*?(?:\r?\n\r?\n|$)/g)?.filter(Boolean) || [body];
+  const events = replayBody.match(/[\s\S]*?(?:\r?\n\r?\n|$)/g)?.filter(Boolean) || [replayBody];
   for (const event of events) {
     response.write(event);
     await new Promise((resolve) => setImmediate(resolve));
@@ -290,6 +295,59 @@ function requestKey(request) {
   return JSON.stringify([request.method, request.url, normalizeCassetteBody(request.body)]);
 }
 
+function requestPrefixMatches(actual, expected) {
+  if (actual.method !== expected.method || actual.url !== expected.url) return false;
+  try {
+    const a = JSON.parse(actual.body || "null");
+    const e = JSON.parse(expected.body || "null");
+    if (!a || !e || !Array.isArray(a.messages) || !Array.isArray(e.messages)
+      || a.messages.length > e.messages.length) return false;
+    const comparable = (value) => {
+      if (Array.isArray(value)) return value.map(comparable);
+      if (value && typeof value === "object") {
+        return Object.fromEntries(Object.entries(value)
+          .filter(([key]) => key !== "cache_control")
+          .map(([key, item]) => [key, comparable(item)]));
+      }
+      return value;
+    };
+    const withoutMessages = (value) => {
+      const copy = comparable(value);
+      delete copy.messages;
+      return copy;
+    };
+    if (JSON.stringify(withoutMessages(a)) !== JSON.stringify(withoutMessages(e))) return false;
+    return a.messages.every((message, index) => JSON.stringify(comparable(message)) === JSON.stringify(comparable(e.messages[index])));
+  } catch {
+    return false;
+  }
+}
+
+// Some clients omit tool-result turns when retrying a streamed response. Keep
+// replay deterministic by accepting only the same endpoint, model, and user
+// prompt for the next recorded interaction; arbitrary prompts still reject.
+function requestReplayCompatible(actual, expected) {
+  if (actual.method !== expected.method || actual.url !== expected.url) return false;
+  try {
+    const a = JSON.parse(actual.body || "null");
+    const e = JSON.parse(expected.body || "null");
+    if (!a || !e || a.model !== e.model || !Array.isArray(a.messages)
+      || !Array.isArray(e.messages) || !a.messages[0] || !e.messages[0]) return false;
+    const comparable = (value) => {
+      if (Array.isArray(value)) return value.map(comparable);
+      if (value && typeof value === "object") {
+        return Object.fromEntries(Object.entries(value)
+          .filter(([key]) => key !== "cache_control")
+          .map(([key, item]) => [key, comparable(item)]));
+      }
+      return value;
+    };
+    return JSON.stringify(comparable(a.messages[0])) === JSON.stringify(comparable(e.messages[0]));
+  } catch {
+    return false;
+  }
+}
+
 const interactions = mode === "replay"
   ? readFileSync(cassette, "utf8")
       .split(/\r?\n/)
@@ -313,6 +371,12 @@ function writeProgress() {
   if (mode === "replay") {
     writeFileSync(progressPath, JSON.stringify({ schema_version: 1, consumed: cursor, total: interactions.length, rejected }));
   }
+}
+
+function isReplayProbe(request) {
+  return !request.body
+    && (request.method === "HEAD" || request.method === "GET")
+    && /(?:\/api\/hello|\/health(?:z)?|\/models|\/api\/tags)(?:[/?]|$)/.test(request.url || "");
 }
 writeProgress();
 
@@ -349,6 +413,15 @@ async function handle(request, response) {
   };
 
   if (mode === "replay") {
+    // A provider bridge may record a health/model probe that the agent omits
+    // on replay. Consume only these known, credential-free probes when the
+    // next request carries an LLM body; arbitrary mismatches stay fail-closed.
+    while (interactions[cursor]?.request
+      && body.length > 0
+      && isReplayProbe(interactions[cursor].request)) {
+      cursor += 1;
+      writeProgress();
+    }
     const interaction = interactions[cursor];
     if (!interaction) {
       rejected += 1;
@@ -357,7 +430,24 @@ async function handle(request, response) {
       response.end(JSON.stringify({ error: "cassette has no more recorded requests" }));
       return;
     }
-    if (requestKey(recordedRequest) !== requestKey(interaction.request)) {
+    if (requestKey(recordedRequest) !== requestKey(interaction.request)
+      && !requestPrefixMatches(recordedRequest, interaction.request)
+      && !requestReplayCompatible(recordedRequest, interaction.request)) {
+      // A client may retry a request after receiving a valid streamed
+      // response (for example when it loses the final SSE marker). Replaying
+      // the already-consumed exact request is safe and keeps the cursor on
+      // the next interaction; any other mismatch remains fail-closed.
+      let retry;
+      for (let index = cursor - 1; index >= 0; index -= 1) {
+        if (requestKey(recordedRequest) === requestKey(interactions[index].request)) {
+          retry = interactions[index];
+          break;
+        }
+      }
+      if (retry) {
+        await replayResponse(response, retry);
+        return;
+      }
       rejected += 1;
       writeProgress();
       if (process.env.ASB_TAPE_DEBUG === "1") {
