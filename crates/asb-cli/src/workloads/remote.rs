@@ -18,6 +18,7 @@ struct Session {
     measurement_active: bool,
     preparation_active: bool,
     cleanup_attempted: bool,
+    artifacts: PathBuf,
 }
 
 pub(crate) fn launch(
@@ -136,6 +137,7 @@ pub(crate) fn launch(
         measurement_active: false,
         preparation_active: false,
         cleanup_attempted: false,
+        artifacts,
     }))
 }
 
@@ -326,6 +328,9 @@ fn runtime_binary() -> Result<PathBuf, String> {
 }
 
 impl WorkloadSession for Session {
+    fn checkpoint_evidence(&self) -> Vec<PathBuf> {
+        vec![self.artifacts.clone()]
+    }
     fn finish(&mut self) -> Result<(), String> {
         self.cleanup_attempted = true;
         match self.controller.finish(Duration::from_secs(240)) {

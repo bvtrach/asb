@@ -1,4 +1,5 @@
 //! Live execution of one configured benchmark.
+mod completion;
 
 use super::{Error, io_error, read_config};
 use crate::agents;
@@ -751,11 +752,13 @@ fn run_mode(
             ),
         }
     };
-    if let Err(error) = instrument_operation(
+    let cleanup = instrument_operation(
         measurement_session.as_mut(),
         LifecyclePhase::WorkloadCleanup,
         || workload_session.finish(),
-    )? {
+    )?;
+    let workload_cleanup_confirmed = cleanup.is_ok();
+    if let Err(error) = cleanup {
         let message = format!("workload cleanup failed: {error}");
         match run_error.as_mut() {
             Some(previous) => {
@@ -923,6 +926,16 @@ fn run_mode(
         };
         session.finish(measured).map_err(Error::Run)?;
     }
+    // This private record preserves evaluator outcomes, including unresolved
+    // tasks. Its absence never changes a benchmark grade or blocks execution;
+    // a future continuation must also validate its input and evidence seals.
+    let _ = completion::persist(
+        config_path,
+        &config.log_file,
+        &result,
+        workload_cleanup_confirmed,
+        &workload_session.checkpoint_evidence(),
+    );
     if json {
         render_json(&result, output)?;
     } else {
@@ -1926,6 +1939,85 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("replay cassette"), "{message}");
         assert!(!message.contains("unsupported provider"), "{message}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn completion_records_preserve_unresolved_outcomes_cleanup_and_private_evidence() {
+        use super::completion;
+        use crate::workloads;
+        let root = std::env::temp_dir()
+            .join(workloads::TaskIdentity::local("completion-record-test", None).attempt_id);
+        std::fs::create_dir_all(&root).unwrap();
+        let config = root.join("benchmark.toml");
+        let mut result = result();
+        result.stdout = "private agent transcript must not enter checkpoint".into();
+        result.stderr = "private agent stderr must not enter checkpoint".into();
+        let evidence = vec![root.join("official-evaluator-evidence")];
+        for resolved in [true, false] {
+            result.workload_success = Some(resolved);
+            result.success_rate = Some(if resolved { 1.0 } else { 0.0 });
+            completion::persist(&config, "run.log", &result, resolved, &evidence).unwrap();
+        }
+        let directory = root.join(".asb-completions");
+        let files: Vec<_> = std::fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), 2, "outcomes must not overwrite one another");
+        let mut outcomes = Vec::new();
+        for file in files {
+            assert_eq!(file.extension().unwrap(), "json");
+            let bytes = std::fs::read(&file).unwrap();
+            let text = String::from_utf8(bytes.clone()).unwrap();
+            assert!(!text.contains("private agent"));
+            let record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(record["scope"], "task-outcome-not-yet-a-resume-receipt");
+            assert_eq!(
+                record["summary"]["task"]["attempt_id"],
+                result.task.attempt_id
+            );
+            assert_eq!(
+                record["workload_evidence"][0],
+                evidence[0].to_str().unwrap()
+            );
+            let resolved = record["summary"]["workload_success"].as_bool().unwrap();
+            assert_eq!(record["workload_cleanup_confirmed"], resolved);
+            outcomes.push(resolved);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    std::fs::metadata(file).unwrap().permissions().mode() & 0o777,
+                    0o600
+                );
+            }
+        }
+        outcomes.sort();
+        assert_eq!(outcomes, [false, true]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            let other = root.join("other");
+            std::fs::create_dir(&other).unwrap();
+            std::os::unix::fs::symlink(&other, root.join("redirect")).unwrap();
+            std::os::unix::fs::symlink(&other, other.join(".asb-completions")).unwrap();
+            assert!(
+                completion::persist(
+                    &root.join("redirect/benchmark.toml"),
+                    "run.log",
+                    &result,
+                    true,
+                    &[]
+                )
+                .is_err()
+            );
+            assert_eq!(std::fs::read_dir(&other).unwrap().count(), 1);
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

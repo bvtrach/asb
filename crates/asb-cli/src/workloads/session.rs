@@ -163,6 +163,11 @@ pub(crate) trait WorkloadSession {
         }
     }
     fn evaluate(&mut self, final_response: &str) -> Result<Evaluation, String>;
+    /// Adapter-owned evaluator artifacts that bind a historical task outcome.
+    /// This is not a request to inspect unrelated project or host directories.
+    fn checkpoint_evidence(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
     /// Confirm owned resource cleanup before reporting the run as completed.
     fn finish(&mut self) -> Result<(), String> {
         Ok(())

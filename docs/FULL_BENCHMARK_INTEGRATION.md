@@ -1155,3 +1155,49 @@ repair), producing `eb88d6654b8e0132beee192fa3e9d541245bda7b`. The combined
 tree passed strict Clippy, 390 unit tests, 87 offline CLI tests, all protocol/
 runtime/parallel/replay/graph tests and `make build`. The extra main regression
 ensures an unconsumed replay cannot report the full cassette's token totals.
+
+### Private input stability and cleanup-confirmed outcomes
+
+Sweep now records optional before/after input stability separately from task
+outcomes. The private key is generated once per output tree with mode 0600;
+fingerprints bind file contents, modes, missing inputs, symlink targets,
+project configuration, installed workload/tool trees, project Python, saved
+selection plan, actual running executable and inherited environment values.
+Only keyed opaque digests cross the helper boundary. Reading the executable
+through its kernel file handle works after its pathname is replaced/unlinked;
+process IDs and handle paths are not software identity. Resource limits and
+mutation checks reject changing, cyclic, special-file or excessive inputs.
+The helper opens ordinary files nonblocking without following a replacement
+symlink, so substitution with a FIFO cannot stall a sweep. Length-framed
+context prevents ambiguous concatenations from sharing a digest.
+
+After workload cleanup and measurement finalization, private completion
+records preserve every available evaluator outcome, including unresolved
+attempts. They retain actual task identity, cleanup confirmation and
+adapter-declared evaluator artifact roots, without duplicating stdout/stderr.
+Per-replica records use independent atomic filenames. A failed cleanup remains
+explicitly unconfirmed; optional publication failure never changes the grade.
+Provider-free unit and loopback-replay tests cover unresolved outcomes,
+distinct replicas, private modes, symlink refusal, input changes, unavailable
+seals, secret-free responses and executable-handle stability.
+
+These are explicitly labelled foundations, not resume receipts. No completed
+task is skipped or retried by this change. Content-bound evidence sealing,
+host runtime/proxy/cassette closure, actual continuation dispatch and recovery
+remain required before `--resume` can be implemented honestly. Scalable
+population reporting, abrupt-crash recovery, final review/merge and release
+also remain open. Qualification results for this checkpoint follow below.
+
+The final source passed strict all-target/all-feature Clippy, 395 unit tests
+(six opt-in tests ignored), 87 offline CLI tests, all twelve protocol suites
+(including ten fingerprint cases), seven guest-driver checks, replay/parallel/
+diagram regressions and `make build`. The actual mixed SWE-bench Lite/original
+Terminal-Bench 1.0 qualification passed in 77.3 seconds. It checked both real
+Pi executions against the synthetic provider, official grades, collectors,
+container removal and each task's private outcome record/evaluator evidence
+root after cleanup. Retained artifacts are under
+`target/benchmark-runtime/parallel-original-tasks-ht5bcxt0`; this remains a
+representative known-repair test, not a complete-population or AI-solving claim.
+The actual input seal covered approximately 3.47 GB and 232,293 nodes. This
+conservative whole-tool-tree approach needs more precise adapter-declared input
+closure before scalable resume is complete. Package/hosted CI checks follow.

@@ -107,12 +107,25 @@ class ParallelOriginalTaskQualification(unittest.TestCase):
                     for name in ["000-swe", "001-terminal"]:
                         directory = artifacts / "sweep-results" / name
                         self.assertFalse((directory / ".terminal-output.tmp").exists())
+                        completions = list((directory / ".asb-completions").glob("*.json"))
+                        self.assertEqual(len(completions), 1)
+                        completion = json.loads(completions[0].read_bytes())
+                        self.assertTrue(completion["workload_cleanup_confirmed"])
+                        self.assertTrue(completion["summary"]["workload_success"])
+                        self.assertEqual(completion["summary"]["workload_evaluation"], "upstream-harness")
+                        evidence = completion["workload_evidence"]
+                        self.assertEqual(len(evidence), 1)
+                        self.assertTrue(Path(evidence[0]).is_dir())
+                        self.assertTrue(Path(evidence[0]).is_relative_to(root / ".asb/attempts"))
+                        self.assertNotIn("stdout", completion["summary"])
+                        self.assertNotIn("stderr", completion["summary"])
                         measured = directory / "measurements"
                         target = json.loads((measured / "execution-target.json").read_bytes())
                         self.assertEqual(target["scope"], "verified-local-isolated-process-tree")
                         self.assertEqual(target["cgroup_membership"], "preserved")
                         targets.append(target)
                         events = [entry["event"]["kind"] for entry in json.loads((measured / "lifecycle.json").read_bytes())]
+                        self.assertEqual(completion["summary"]["task"], json.loads((measured / "run.json").read_bytes())["task"])
                         self.assertEqual([event for event in events if event.startswith("agent_")],
                             ["agent_spawn", "agent_execute_begin", "agent_started", "agent_execute_end", "agent_exited"])
                         for collector in ["agent-memory", "agent-workers"]:

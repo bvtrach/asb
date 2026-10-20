@@ -11,6 +11,11 @@ fn swebench_source_fallback_is_pinned_private_and_attempt_owned() {
 }
 
 #[test]
+fn benchmark_fingerprints_bind_content_without_exposing_secrets() {
+    python_protocol("benchmark_fingerprint.py");
+}
+
+#[test]
 fn docker_transport_is_scoped_and_cleans_its_own_processes() {
     python_protocol("benchmark_docker.py");
 }

@@ -8,6 +8,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+mod checkpoint;
 mod execution;
 mod lock;
 pub(crate) mod plan;
@@ -128,6 +129,10 @@ pub(crate) fn run_with_options(
         .as_ref()
         .map(|relative| backup.join(format!("{stem}-results")).join(relative))
         .or_else(|| cassette_root.map(Path::to_path_buf));
+    // This seal records input stability only; it does not authorize reuse of
+    // completed tasks or suppress execution. Continuation also needs sealed
+    // completion/evaluator evidence, which is a separate contract.
+    let checkpoint = checkpoint::Inputs::begin(parent, &results_root, &plan).ok();
     if !json && backup.is_dir() {
         writeln!(
             output,
@@ -224,6 +229,9 @@ pub(crate) fn run_with_options(
                 break;
             }
         }
+    }
+    if let Some(checkpoint) = checkpoint {
+        let _ = checkpoint.finish();
     }
     // Always regenerate the comparison artifacts after the execution loop,
     // including partial sweeps. The comparison report records missing or

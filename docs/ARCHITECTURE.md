@@ -168,8 +168,20 @@ Sweep planning caches this once per installed workload and saves a bounded
 not an actual `TaskIdentity`, measured baseline, or evaluator result. Compare
 uses that snapshot when preparation failed, validates source configuration
 semantics and actual task/attempt/grader identity, and never invents attempts
-for missing rows. Selection snapshots do not yet provide the content-bound
-runtime/project/cassette fingerprints required by a resume protocol.
+for missing rows. Selection snapshots do not yet provide the complete
+runtime/project/cassette fingerprints required by a resume protocol. A private
+`.checkpoint/inputs.json` records before/after content stability for the running
+ASB executable, saved plan, project configuration, installed tools/workloads,
+project Python and file-valued environment overrides. Environment values enter
+only a keyed digest, never the public response. Changed, excessive or
+unsupported inputs cannot claim stability. This optional seal is explicitly
+not a resume receipt: host runtime/proxy/cassette input closure remains required.
+After workload cleanup and measurement completion, the runner writes private
+`.asb-completions/` outcome records beside the run log, including unresolved
+outcomes, actual task identity, cleanup status and workload-owned evaluator
+evidence paths. These records omit agent stdout/stderr. They are not yet sealed
+for reuse and never suppress execution or change the grade. No `--resume`
+behavior is provided by these foundations alone.
 Sessions may execute through a workload-owned controller rather than the
 native process path. The generic execution context carries the selected
 configuration and negotiated connection, and the owning session returns

@@ -29,6 +29,21 @@ fn read_json(path: &Path) -> serde_json::Value {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
 
+fn completions(root: &Path, name: &str) -> Vec<serde_json::Value> {
+    std::fs::read_dir(
+        root.join("sweep-results")
+            .join(name)
+            .join(".asb-completions"),
+    )
+    .unwrap()
+    .map(|entry| {
+        let path = entry.unwrap().path();
+        assert_eq!(path.extension().unwrap(), "json");
+        read_json(&path)
+    })
+    .collect()
+}
+
 #[test]
 fn distinct_tasks_and_replicas_overlap_with_isolated_replay_outputs_and_failures() {
     let stamp = std::time::SystemTime::now()
@@ -135,6 +150,25 @@ const expected=['first-1','first-2','second'];
         assert!(row["workload"].as_str().is_some());
     }
     let comparison = root.join("results/sweep-comparison/comparison.json");
+    for (name, count) in [("000-first", 2), ("001-second", 1)] {
+        let records = completions(root, name);
+        assert_eq!(records.len(), count);
+        let mut attempts = std::collections::BTreeSet::new();
+        for record in records {
+            assert_eq!(record["summary"]["workload_success"], true);
+            assert_eq!(record["workload_cleanup_confirmed"], true);
+            attempts.insert(
+                record["summary"]["task"]["attempt_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            );
+        }
+        assert_eq!(attempts.len(), count);
+    }
+    let seal = read_json(&root.join("sweep-results/.checkpoint/inputs.json"));
+    assert_eq!(seal["scope"], "input-stability-only-not-a-resume-receipt");
+    assert_eq!(seal["status"], "stable");
     let report = read_json(&comparison);
     assert_eq!(report["benchmarks"].as_array().unwrap().len(), 3);
     assert_eq!(report["evaluation_coverage"]["evaluated_attempts"], 3);
@@ -264,6 +298,10 @@ const expected=['first-1','first-2','second'];
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(rows.len(), 3);
+    for record in completions(root, "000-first") {
+        assert_eq!(record["summary"]["workload_success"], false);
+        assert_eq!(record["workload_cleanup_confirmed"], true);
+    }
     let report = read_json(&comparison);
     assert_eq!(report["benchmarks"].as_array().unwrap().len(), 3);
     assert_eq!(report["evaluation_coverage"]["evaluated_attempts"], 3);
