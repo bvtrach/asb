@@ -99,6 +99,12 @@ pub(crate) fn run_with_diagnostics(
     let config: BenchmarkConfig = toml::from_str(&text)
         .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
     if let Some(measures) = config.measurements.as_ref().filter(|value| value.enabled) {
+        // Parallel sweep configurations can share project-local tool paths.
+        // Serialize dependency publication, not benchmark execution.
+        static TOOL_PREPARATION: Mutex<()> = Mutex::new(());
+        let _preparation = TOOL_PREPARATION
+            .lock()
+            .map_err(|_| Error::Run("shared tool preparation failed; retry the sweep".into()))?;
         let (root, project_config) = project::load(config_path)?;
         let tools_root = project::resolve(&root, &project_config.tools_dir);
         let mut messages = Vec::new();
@@ -1153,6 +1159,10 @@ fn resolve_log_path(config_path: &Path, configured_path: &str) -> PathBuf {
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
     let summary = serde_json::json!({
         "schema_version": result.schema_version,
+        "agent": result.agent,
+        "workload": result.workload,
+        "provider": result.provider,
+        "model": result.model,
         "task": result.task,
         "process_success": result.process_success,
         "workload_success": result.workload_success,
@@ -1975,6 +1985,11 @@ mod tests {
         assert_eq!(value["steps"], 2);
         assert_eq!(value["token_usage"]["total_tokens"], 7);
         assert_eq!(value["token_usage"]["cached_tokens"], 1);
+        let expected = result();
+        assert_eq!(value["agent"], expected.agent);
+        assert_eq!(value["workload"], expected.workload);
+        assert_eq!(value["provider"], expected.provider);
+        assert_eq!(value["model"], expected.model);
         assert!(value.get("stdout").is_none());
         assert_eq!(output.iter().filter(|byte| **byte == b'\n').count(), 1);
     }

@@ -389,7 +389,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
         "schema_version": 2,
         "success_rate_definition": "resolved task attempts / all selected task attempts, including failures; not process exit rate or pass@k; smoke checks excluded",
         "resolution_groups": resolution_groups,
-        "selection_plan": plan.as_ref().map(|plan| json!({"run_id":plan.run_id,"configuration_match":true,"execution_mode":plan.execution_mode,"respect_record_timings":plan.respect_record_timings})),
+        "selection_plan": plan.as_ref().map(|plan| json!({"run_id":plan.run_id,"configuration_match":true,"execution_mode":plan.execution_mode,"respect_record_timings":plan.respect_record_timings,"scheduling":plan.scheduling})),
         "evaluation_coverage":evaluation_coverage,
         "population_coverage":population_coverage,
         "sweep": sweep_path,
@@ -429,6 +429,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
         &benchmark_data,
         &graphs,
         plan.as_ref().map(|plan| plan.execution_mode.as_str()),
+        plan.as_ref().and_then(|plan| plan.scheduling),
     )?;
     writeln!(
         output,
@@ -624,6 +625,7 @@ fn write_html_report(
     benchmarks: &[BenchmarkData],
     graphs: &[String],
     selection_mode: Option<&str>,
+    scheduling: Option<crate::sweep::scheduler::Scheduling>,
 ) -> Result<(), Error> {
     let mut dimensions: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     dimensions.insert(
@@ -667,6 +669,9 @@ fn write_html_report(
         1,
     );
     html.push_str("<main class=\"shell\">");
+    if let Some(scheduling) = scheduling {
+        html.push_str(&format!("<p class=\"scheduling\">Sweep scheduling: up to {} distinct configurations; {} active attempt slots, including replicas. Concurrent tasks share host resources.</p>", scheduling.jobs, scheduling.max_active_attempts));
+    }
     html.push_str("<header class=\"hero\"><p class=\"eyebrow\">ASB BENCHMARK REPORT</p><h1>Sweep comparison</h1><p>Explore benchmark results and measurements from this sweep. Use the filters to focus the report without rerunning anything.</p></header>");
     let coverage = coverage::evaluation_summary(benchmarks);
     html.push_str(&format!("<section class=\"explain\"><strong>Evaluation coverage</strong><p>Execution mode: {}.</p><p>{}/{} eligible selected attempts evaluated; {} have no completed evaluation. {} attempts are unscored. {}</p><p>Partial results are not a complete-population benchmark score. See population_coverage in comparison.json for dataset selection, unique tasks and complete one-attempt-per-task scores.</p></section>",

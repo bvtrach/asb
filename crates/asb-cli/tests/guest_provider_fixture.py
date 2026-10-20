@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import sys
 
-root = Path(sys.argv[1])
+root = None
 calls = 0
 requests = 0
 
@@ -124,6 +124,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
-server = http.server.ThreadingHTTPServer((sys.argv[2] if len(sys.argv) > 2 else "127.0.0.1", 0), Handler)
-(root / "port").write_text(str(server.server_address[1]))
-server.serve_forever()
+def main():
+    global root
+    root = Path(sys.argv[1])
+    server = http.server.ThreadingHTTPServer((sys.argv[2] if len(sys.argv) > 2 else "127.0.0.1", 0), Handler)
+    (root / "port").write_text(str(server.server_address[1]))
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

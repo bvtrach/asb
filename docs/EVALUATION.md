@@ -142,9 +142,12 @@ Representative correct/incorrect fixture submissions have qualified these
 normal CLI paths without live LLM providers. This does not mean the full
 populations have been benchmarked. Representative endpoint forwarding,
 container measurement, real single-task sweep/replay and selection/coverage
-paths are qualified. Distinct-task scheduling, content-bound resume, scalable
-population presentation, SWE image source-build fallback and abrupt-crash
-recovery remain unfinished. See the exact requirements and evidence in
+paths are qualified. Bounded distinct-configuration scheduling (separate from
+replicas), mixed original-task overlap and SWE original source-image fallback
+are also qualified. Scheduling choices are recorded because simultaneous
+configurations share host resources; an active-attempt count budget is not a
+host memory reservation. Content-bound resume, scalable population presentation
+and abrupt-crash recovery remain unfinished. See the exact requirements and evidence in
 [the full integration ledger](FULL_BENCHMARK_INTEGRATION.md).
 No old smoke result is retroactively interpreted as an upstream grade.
 

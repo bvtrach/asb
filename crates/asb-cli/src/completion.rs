@@ -23,7 +23,16 @@ const RUN_OPTIONS: &[&str] = &[
     "--json",
     "--measurements",
 ];
-const SWEEP_OPTIONS: &[&str] = &["--record", "--replay", "--json"];
+const SWEEP_OPTIONS: &[&str] = &[
+    "--record",
+    "--replay",
+    "--json",
+    "--show-output",
+    "--respect-record-timings",
+    "--cassette-root",
+    "--jobs",
+    "--max-active-attempts",
+];
 const PROVIDER_SUBCOMMANDS: &[&str] = &["models"];
 const PROVIDER_MODELS_OPTIONS: &[&str] = &["--json", "--free"];
 const TOOL_SUBCOMMANDS: &[&str] = &["list", "install"];

@@ -192,7 +192,7 @@ valid task targets. This cooperative teardown is not abrupt-host-crash recovery.
 
 The CLI is the stable user boundary. A benchmark configuration names an agent,
 workload, provider, model, concurrency, workspace, and log file. `concurrency`
-defaults to `1`; values greater than one run isolated replicas of the same
+defaults to `1` and is bounded to `1..=64` before allocating replicas; values greater than one run isolated replicas of the same
 agent/model/workload in parallel, with separate workspaces, logs, measurements,
 and record cassettes. A replay may fan one cassette out to every replica, each
 with independent progress and agent configuration. Provider credentials are never stored
@@ -567,8 +567,28 @@ configuration/prompt's smaller bound. All manifest reference paths are checked
 before execution. Setup resolves each selected trial set once, checks the whole
 agent/model/task cross product before creating files, and rejects oversized
 selections instead of publishing a sweep it cannot consume. These format
-bounds accommodate complete original populations; they are not a distinct-task
-scheduler, resume protocol or proof of complete-population coverage accounting.
+bounds accommodate complete original populations independently of scheduling.
+`asb sweep SWEEP.toml --jobs N` runs up to N distinct configurations (`1..=32`,
+default 1). This is separate from each configuration's identical replicas.
+`--max-active-attempts N` bounds the sum of admitted replica counts (`1..=64`)
+and defaults to max(jobs, largest selected concurrency), preserving sequential
+replica choices. A configuration must fit the budget; invalid admission is
+rejected before preserving/moving existing results. A bounded FIFO worker pool
+holds replica-weighted slots through preparation, execution, grading and cleanup.
+The count budget is not a host RAM reservation; task environment CPU/memory/PID
+limits remain adapter-owned, and operators must choose jobs for host capacity.
+Selected scheduling is saved in the plan and disclosed in JSON/HTML reports
+because concurrent configurations share host resources.
+Parallel terminal output uses private, bounded per-configuration files and is
+drained as whole configuration blocks on completion. Output errors stop new
+admission and join admitted work; owned temporary duplicates are then removed.
+Sequential defaults retain immediate preparation warnings and streaming
+`--show-output`. Raw agent output conflicts with `--json` rather than corrupting
+JSONL. Shared tool dependency publication is serialized without serializing
+execution. Each JSONL summary includes agent/provider/model/workload names and
+its actual task/attempt identity, so completion-order output remains identifiable.
+These mechanisms are not a content-bound resume/crash-recovery
+protocol or a claim that a complete original population has been evaluated.
 Every new sweep starts fresh output workspaces. Previous results and reports
 are protected by a per-output operating-system file lock held from planning
 through final comparison. A competing writer fails before moving prior data;

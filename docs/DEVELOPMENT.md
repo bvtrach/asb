@@ -124,6 +124,13 @@ by `asb workload install`. It forces only its own prebuilt lookup/pull to fail,
 builds an original Dockerfile under the production CPU/memory/time limits,
 grades known submissions, and checks cleanup without deleting shared images.
 It requires current Docker Buildx/BuildKit with per-build `--resource` support.
+`benchmark_live_parallel.py` uses the normal `ASB_TEST_BENCHMARK_ASB` and
+`ASB_TEST_SWECATALOG_ROOT` opt-ins plus installed Pi, SWE-bench Lite and original
+Terminal-Bench 1.0. A loopback fixture barrier requires both real clients to
+reach it before either can receive its known repair. The test checks independent
+official grades, lifecycle journals, scoped collectors, comparison graphs and
+container cleanup. It never contacts a live LLM provider. Do not rebuild or
+package over the selected executable while a runtime qualification is using it.
 Ordinary CI
 uses synthetic provider-free protocol tests. See
 [evaluation semantics](EVALUATION.md). Perfetto

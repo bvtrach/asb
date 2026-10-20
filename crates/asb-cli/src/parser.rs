@@ -87,13 +87,17 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
                     "--respect-record-timings requires --replay; recording always stores response delays",
                 );
             }
-            sweep::run(
+            sweep::run_with_options(
                 &options.path,
-                options.json,
-                options.show_output,
-                mode,
-                options.respect_record_timings,
-                options.cassette_root.as_deref().map(std::path::Path::new),
+                sweep::Options {
+                    json: options.json,
+                    show_output: options.show_output,
+                    mode,
+                    respect_record_timings: options.respect_record_timings,
+                    cassette_root: options.cassette_root.as_deref().map(std::path::Path::new),
+                    jobs: usize::from(options.jobs),
+                    max_active_attempts: options.max_active_attempts.map(usize::from),
+                },
                 stdout,
             )
         }
@@ -243,7 +247,7 @@ struct RunArgs {
     cassette: Option<String>,
     #[arg(long)]
     json: bool,
-    #[arg(long = "show-output")]
+    #[arg(long = "show-output", conflicts_with = "json")]
     show_output: bool,
     #[arg(long)]
     measurements: Option<String>,
@@ -262,11 +266,21 @@ struct SweepArgs {
     respect_record_timings: bool,
     #[arg(long)]
     json: bool,
-    #[arg(long = "show-output")]
+    #[arg(
+        long = "show-output",
+        conflicts_with = "json",
+        help = "show agent output; parallel jobs buffer it by configuration"
+    )]
     show_output: bool,
     /// Separate cassette root for recording, or the record root when replaying.
     #[arg(long, value_name = "DIR")]
     cassette_root: Option<String>,
+    /// Maximum distinct configurations running at once (not identical replicas).
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u16).range(1..=32))]
+    jobs: u16,
+    /// Total simultaneous replicas across all jobs; defaults to max(jobs, largest concurrency).
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..=64))]
+    max_active_attempts: Option<u16>,
 }
 
 #[derive(Debug, Args)]

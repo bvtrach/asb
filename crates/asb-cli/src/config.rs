@@ -52,6 +52,12 @@ pub fn setup(options: SetupOptions, output: &mut dyn Write) -> Result<(), Error>
     if concurrency == 0 {
         return Err(Error::Input("concurrency must be at least 1".into()));
     }
+    if concurrency > crate::benchmark::MAX_CONCURRENCY {
+        return Err(Error::Input(format!(
+            "concurrency must not exceed {}; split larger selections into bounded sweeps",
+            crate::benchmark::MAX_CONCURRENCY
+        )));
+    }
     let config = BenchmarkConfig {
         agent,
         workload: required(workload)?,
@@ -131,6 +137,20 @@ mod tests {
         setup(options("pi", "cli2key", "gpt-6.1-sol"), &mut output).expect("setup succeeds");
         let text = String::from_utf8(output).expect("setup is UTF-8");
         assert!(text.contains("concurrency = 1"));
+    }
+
+    #[test]
+    fn setup_rejects_unbounded_concurrency_before_writing_configuration() {
+        let mut selection = options("pi", "cli2key", "fixture");
+        selection.concurrency = Some(usize::MAX);
+        let mut output = Vec::new();
+        assert!(
+            setup(selection, &mut output)
+                .unwrap_err()
+                .to_string()
+                .contains("must not exceed 64")
+        );
+        assert!(output.is_empty());
     }
 
     fn options(agent: &str, provider: &str, model: &str) -> SetupOptions {

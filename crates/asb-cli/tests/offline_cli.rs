@@ -660,6 +660,80 @@ fn sweep_rejects_invalid_manifests_and_unsafe_references() {
 }
 
 #[test]
+fn sweep_admission_errors_preserve_existing_outputs_and_reject_unbounded_replicas() {
+    let project = Project::new();
+    project.write("sweep.toml", "configs=['benchmark.toml']\n");
+    project.write(
+        "benchmark.toml",
+        "agent='pi'\nworkload='bug-fix'\nprovider='cli2key'\nmodel='fixture'\nconcurrency=2\n",
+    );
+    project.write("sweep-results/previous", "retain result");
+    project.write("results/sweep-comparison/report.html", "retain report");
+    for options in [
+        ["--jobs", "0"],
+        ["--jobs", "33"],
+        ["--max-active-attempts", "0"],
+        ["--max-active-attempts", "65"],
+        ["--max-active-attempts", "1"],
+    ] {
+        let result = project.command(&["sweep", "sweep.toml", options[0], options[1]]);
+        assert!(!result.status.success(), "{options:?}");
+        assert_eq!(
+            std::fs::read_to_string(project.0.join("sweep-results/previous")).unwrap(),
+            "retain result"
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.0.join("results/sweep-comparison/report.html"))
+                .unwrap(),
+            "retain report"
+        );
+        assert!(!project.0.join("sweep-history").exists());
+        assert!(!project.0.join("sweep-results/plan.json").exists());
+    }
+    project.write(
+        "benchmark.toml",
+        "agent='pi'\nworkload='bug-fix'\nprovider='cli2key'\nmodel='fixture'\nconcurrency=65\n",
+    );
+    for arguments in [
+        vec!["run", "benchmark.toml"],
+        vec!["sweep", "sweep.toml", "--jobs", "2"],
+    ] {
+        expect_failure(
+            &project.command(&arguments),
+            "concurrency must not exceed 64",
+        );
+    }
+    expect_failure(
+        &project.command(&[
+            "setup",
+            "--agent",
+            "pi",
+            "--provider",
+            "cli2key",
+            "--model",
+            "fixture",
+            "--workload",
+            "bug-fix",
+            "--concurrency",
+            "65",
+            "--output",
+            "invalid.toml",
+        ]),
+        "concurrency must not exceed 64",
+    );
+    assert!(!project.0.join("invalid.toml").exists());
+    let help = project.command(&["sweep", "--help"]);
+    expect_success(&help);
+    assert!(stdout(&help).contains("--jobs"));
+    assert!(stdout(&help).contains("--max-active-attempts"));
+    for command in ["run", "sweep"] {
+        let output = project.command(&[command, "benchmark.toml", "--json", "--show-output"]);
+        assert!(!output.status.success());
+        assert!(stderr(&output).contains("cannot be used with"));
+    }
+}
+
+#[test]
 fn sweep_rejects_nested_sweeps_before_execution_or_comparison() {
     let project = Project::new();
     project.init();

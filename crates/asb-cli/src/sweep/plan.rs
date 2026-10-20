@@ -20,6 +20,8 @@ pub(crate) struct SweepPlan {
     pub execution_mode: String,
     #[serde(default)]
     pub respect_record_timings: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheduling: Option<super::scheduler::Scheduling>,
     pub entries: Vec<PlannedBenchmark>,
 }
 
@@ -99,6 +101,7 @@ fn build_with_catalog(
         run_id: workloads::TaskIdentity::local("sweep", None).attempt_id,
         execution_mode: "live".into(),
         respect_record_timings: false,
+        scheduling: None,
         entries,
     })
 }
@@ -193,6 +196,15 @@ impl SweepPlan {
                     path.display()
                 )));
             }
+        }
+        if let Some(scheduling) = plan.scheduling {
+            scheduling.validate(
+                &plan
+                    .entries
+                    .iter()
+                    .map(|entry| entry.configuration.concurrency)
+                    .collect::<Vec<_>>(),
+            )?;
         }
         Ok(Some(plan))
     }
@@ -378,6 +390,21 @@ mod tests {
                 SweepPlan::load(&results, &project.0, &manifest).is_err(),
                 "{pointer}"
             );
+        }
+        for scheduling in [
+            json!({"jobs":0,"max_active_attempts":1}),
+            json!({"jobs":33,"max_active_attempts":1}),
+            json!({"jobs":2,"max_active_attempts":0}),
+            json!({"jobs":1,"max_active_attempts":65}),
+        ] {
+            let mut malformed = original.clone();
+            malformed["scheduling"] = scheduling;
+            std::fs::write(
+                results.join("plan.json"),
+                serde_json::to_vec(&malformed).unwrap(),
+            )
+            .unwrap();
+            assert!(SweepPlan::load(&results, &project.0, &manifest).is_err());
         }
     }
 

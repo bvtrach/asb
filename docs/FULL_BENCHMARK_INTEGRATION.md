@@ -1081,3 +1081,69 @@ SWE-bench Lite sweep using real Pi, a synthetic provider, official grading and
 namespace collectors passed in 62.4 seconds, confirming that the source-helper
 addition preserved the ordinary prebuilt-image client path. This uses a known
 repair and does not claim an AI solution or a full-population run.
+
+The source checkpoint `8c764a6d54f29bcc930f1b00cf654f76736d6832` passed
+clean package verification and the packaged complete suite. GitHub recognized
+its signature, and exact-head hosted CI `39464881901` succeeded, including
+packaged tests and install/smoke checks (optional local-host job skipped).
+
+### Bounded distinct-configuration scheduling
+
+`asb sweep --jobs N` now selects concurrent configurations, independently from
+each configuration's identical `concurrency` replicas. Jobs are bounded to
+1..32 and default to 1. `--max-active-attempts N` bounds the sum of admitted
+replicas (1..64), defaulting to max(jobs, largest selected concurrency). Each
+configuration must fit. FIFO permits cover preparation/execution/grading/
+cleanup, not just process launch, and worker count/event-channel capacity are
+bounded. Invalid admission is rejected before moving prior results. Standalone
+run/setup/configuration parsing also rejects replica counts above 64 before
+allocating worker vectors or writing an unusable configuration. The count
+budget is not a RAM reservation; environment resource limits remain owned by
+the adapters and jobs must be chosen for host capacity.
+
+Parallel output is kept in bounded private per-configuration temporary files,
+then drained as complete configuration blocks instead of interleaving bytes.
+Output failure stops admission and joins admitted workers; temporary duplicates
+are removed without deleting original agent logs. Worker failures/panics release
+slots and retain independent successful tasks and comparison denominators.
+Sequential defaults retain immediate warnings and `--show-output`; a fixture
+cannot finish until the parent observes its streamed line and acknowledges it.
+Raw `--show-output` conflicts with `--json` at parsing rather than contaminating
+JSONL. Compact JSON records now include agent/provider/model/workload names and
+task/attempt identity, so completion-order output remains identifiable. Shared
+collector dependency publication is serialized without serializing execution.
+
+Scheduling is persisted in selection snapshots, checked on comparison load,
+and disclosed in JSON/HTML because concurrent tasks share host resources.
+Legacy snapshots omit scheduling rather than inventing it. Shell completions
+and command help expose the new options. Provider-free tests cover overlapping
+execution and replica-weighted peaks, queue completion, failure/panic slot
+release, output failure/draining, private bounded non-overwriting spools,
+invalid snapshots/CLI options, preservation of prior outputs on invalid
+admission, and sequential streaming. A loopback-replay integration runs two
+distinct local tasks with three simultaneous clients (two replicas plus one
+independent task), validates JSONL and reports, then fails the first two
+clients while retaining the independent task's successful grade.
+
+An opt-in actual mixed-original-task test runs real Pi in SWE-bench Lite's
+`astropy__astropy-12907` and original Terminal-Bench 1.0's `hello-world`.
+A synthetic provider barrier requires both distinct clients to reach it before
+either can receive the deterministic known repair. It validates official
+grades, distinct scoped collector targets/cgroups, lifecycle ordering,
+collector graphs, coverage and removal of the owned task containers. The
+first run reached successful official grades but exposed a fixture assertion
+that expected workload names in the old compact summary. The corrected full
+qualification passed in 55.3 seconds. No live LLM provider is contacted, and
+this is not an AI-solving or complete-population result.
+
+Content-bound resume/cache identities, scalable population presentation and
+abrupt-crash recovery remain unfinished, along with final full-diff review,
+PR merge, exact-main CI and the requested minor release. Scheduling does not
+silently satisfy those separate requirements.
+
+The final scheduling source gates passed 390 unit tests, 86 offline CLI tests,
+eleven protocol suites, seven guest-driver checks, the parallel integration
+(including failure isolation and sequential streaming), existing replay/graph
+tests, strict all-target/all-feature Clippy and `make build`. After adding
+compact JSON identity fields, the actual mixed-original-task qualification
+passed again in 65.9 seconds with independent grades, scoped collectors,+graphs and cleanup. Package/main-sync/hosted CI checks follow separately.
