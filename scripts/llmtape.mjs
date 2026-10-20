@@ -331,8 +331,7 @@ function requestReplayCompatible(actual, expected) {
   try {
     const a = JSON.parse(actual.body || "null");
     const e = JSON.parse(expected.body || "null");
-    if (!a || !e || a.model !== e.model || !Array.isArray(a.messages)
-      || !Array.isArray(e.messages) || !a.messages[0] || !e.messages[0]) return false;
+    if (!a || !e || a.model !== e.model) return false;
     const comparable = (value) => {
       if (Array.isArray(value)) return value.map(comparable);
       if (value && typeof value === "object") {
@@ -342,7 +341,22 @@ function requestReplayCompatible(actual, expected) {
       }
       return value;
     };
-    return JSON.stringify(comparable(a.messages[0])) === JSON.stringify(comparable(e.messages[0]));
+    // Chat-completions clients expose the initial prompt in `messages`, while
+    // Responses clients (Codex, Cline, Pi, Qwen and WorkBuddy) use `input`.
+    // Compare only the first user item; tool-result turns and generated IDs
+    // may legitimately differ between record and replay, but a changed user
+    // prompt must remain a hard mismatch.
+    const firstUser = (value) => {
+      const items = Array.isArray(value?.messages) ? value.messages
+        : Array.isArray(value?.input) ? value.input : [];
+      return items.find((item) => item?.role === "user"
+        || (typeof item?.type === "string" && item.type === "message" && item.role === "user"))
+        || items[0];
+    };
+    const actualPrompt = firstUser(a);
+    const expectedPrompt = firstUser(e);
+    if (!actualPrompt || !expectedPrompt) return false;
+    return JSON.stringify(comparable(actualPrompt)) === JSON.stringify(comparable(expectedPrompt));
   } catch {
     return false;
   }

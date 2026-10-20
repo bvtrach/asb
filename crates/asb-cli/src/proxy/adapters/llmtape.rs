@@ -373,6 +373,10 @@ mod tests {
     }
 
     fn request(session: &Session, body: &str) -> String {
+        request_to(session, "/v1/chat/completions", body)
+    }
+
+    fn request_to(session: &Session, path: &str, body: &str) -> String {
         let address = session
             .url()
             .trim_start_matches("http://")
@@ -384,7 +388,7 @@ mod tests {
         socket
             .set_write_timeout(Some(std::time::Duration::from_secs(5)))
             .unwrap();
-        write!(socket, "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+        write!(socket, "POST {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
         let mut response = String::new();
         socket.read_to_string(&mut response).unwrap();
         response
@@ -443,6 +447,26 @@ mod tests {
         let response = request(&session, &"x".repeat(16 * 1024 * 1024 + 1));
         assert!(response.contains("413 Payload Too Large"), "{response}");
         assert!(response.contains("request body exceeds 16 MiB"));
+        assert!(session.stop().unwrap_err().to_string().contains("rejected"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replay_accepts_responses_input_with_omitted_tool_turns() {
+        let root = test_root();
+        let cassette = root.join("responses.jsonl");
+        let expected = r#"{"model":"m","input":[{"role":"user","content":"work"},{"type":"function_call_output","call_id":"old","output":"done"}]}"#;
+        let line = serde_json::json!({
+            "request": {"method":"POST", "url":"/v1/responses", "body": expected},
+            "response": {"status":200,"headers":{"content-type":"application/json"},"body":"{\"ok\":true}"}
+        });
+        std::fs::write(&cassette, format!("{line}\n")).unwrap();
+        let session = Session::start(Mode::Replay, &cassette, None, false, &root).unwrap();
+        let compatible =
+            r#"{"model":"m","input":[{"role":"user","content":"work"}],"temperature":0.2}"#;
+        assert!(request_to(&session, "/v1/responses", compatible).contains("200 OK"));
+        let changed = r#"{"model":"m","input":[{"role":"user","content":"different"}]}"#;
+        assert!(request_to(&session, "/v1/responses", changed).contains("409 Conflict"));
         assert!(session.stop().unwrap_err().to_string().contains("rejected"));
         std::fs::remove_dir_all(root).unwrap();
     }
