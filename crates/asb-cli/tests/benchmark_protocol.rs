@@ -6,6 +6,11 @@ fn swebench_catalog_materialization_is_bounded_private_and_reproducible() {
 }
 
 #[test]
+fn swebench_source_fallback_is_pinned_private_and_attempt_owned() {
+    python_protocol("swebench_sources.py");
+}
+
+#[test]
 fn docker_transport_is_scoped_and_cleans_its_own_processes() {
     python_protocol("benchmark_docker.py");
 }

@@ -1,6 +1,7 @@
 //! Shared official engine for the three original SWE-bench populations.
 mod catalog;
 mod runtime;
+mod sources;
 use super::WorkloadAdapter;
 use crate::workloads::{InstallationContext, Trial};
 use std::path::Path;

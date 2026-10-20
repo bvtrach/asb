@@ -21,6 +21,10 @@ class FlowLayoutTests(unittest.TestCase):
             self.assertNotIn("concentrate=true", diagram)
             self.assertIn("compound=false", diagram)
             self.assertIn("newrank=false", diagram)
+            self.assertNotIn("nslimit", diagram)
+            self.assertNotIn("constraint=false", diagram)
+            self.assertIn("forcelabels=true", diagram)
+            self.assertEqual(diagram.count("[xlabel="), len(relations))
             for source, target, _ in relations:
                 self.assertEqual(diagram.count(f"    {source} -> {target} ["), 1)
             if shutil.which("dot"):
@@ -30,6 +34,8 @@ class FlowLayoutTests(unittest.TestCase):
                 root = ET.fromstring(result.stdout)
                 groups = root.findall(".//{http://www.w3.org/2000/svg}g")
                 self.assertEqual(sum(group.get("class") == "edge" for group in groups), len(relations))
+                self.assertTrue(all(group.find("{http://www.w3.org/2000/svg}text") is not None
+                                    for group in groups if group.get("class") == "edge"))
 
     def test_real_project_layout_renders_with_bounded_runtime(self):
         if not shutil.which("dot"):
@@ -47,6 +53,8 @@ class FlowLayoutTests(unittest.TestCase):
             groups = root.findall(".//{http://www.w3.org/2000/svg}g")
             self.assertEqual(sum(group.get("class") == "edge" for group in groups), len(relations))
             self.assertEqual(sum(group.get("class") == "node" for group in groups), len(functions))
+            self.assertTrue(all(group.find("{http://www.w3.org/2000/svg}text") is not None
+                                for group in groups if group.get("class") == "edge"))
 
     def test_control_endpoints_annotate_real_functions_without_fake_calls(self):
         functions = [Function("A", "start", "first", "fixture.rs", 1, "{}", True),
@@ -56,6 +64,14 @@ class FlowLayoutTests(unittest.TestCase):
         self.assertIn('B [color="#dc2626", penwidth=2]', diagram)
         self.assertNotIn("entry ->", diagram)
         self.assertNotIn("-> exit", diagram)
+
+    def test_local_and_cross_module_calls_keep_visible_labels_and_rank_constraints(self):
+        functions = [Function("A", "start", "first", "fixture.rs", 1, "{}", True),
+                     Function("B", "local", "first", "fixture.rs", 2, "{}", True),
+                     Function("C", "remote", "second", "fixture.rs", 3, "{}", True)]
+        diagram = render(functions, {("A", "B", "local"), ("B", "C", "remote")}, "control")
+        self.assertIn('A -> B [xlabel="calls local()", style="dashed"]', diagram)
+        self.assertIn('B -> C [xlabel="calls remote()", style="dashed"]', diagram)
 
 
 if __name__ == "__main__":

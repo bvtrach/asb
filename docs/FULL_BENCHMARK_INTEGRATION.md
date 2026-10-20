@@ -1013,3 +1013,71 @@ Clippy and `make build` (Rustdoc, diagrams and completions). A final actual
 Terminal-Bench 1.0 sweep replay passed in 40.1 seconds after adding the lock,
 with the same official grading/coverage checks and zero live provider calls.
 Package verification and exact-head hosted CI remain separate gates.
+
+The selection checkpoint `788068d7b741b9dc10d91ad07fb0cfddc41802c5` passed
+clean package verification and the packaged complete test suite. GitHub
+recognized its signature, and exact-head hosted CI `39461383735` succeeded,
+including packaged tests and installation/smoke checks (local-host job skipped).
+
+### Original SWE-bench source-image fallback
+
+The shared SWE family installer now downloads the original task-source archive
+at `SWE-bench/swe-bench-tasks@3d07b464b7b311a0cbfb5ed5b2d8a3b96f84a33d`,
+SHA256 `ff31aa1f8d2bb78f16559524264a99b868b7218ca82b390dc750bbc59538aa20`.
+Bounded authenticated archive reads do not extract tar members into the host
+filesystem. Installation compares every Full/Lite/Verified task against its
+frozen dataset: repository/base/image identity, setup metadata, problem text,
+reference/test patches, evaluation script and both official test lists. The
+three actual workload-install commands passed for 2,294/300/500 instances and
+installed the shared archive project-locally. Invalid archives are preserved
+before replacement; symlink/directory targets are refused.
+
+Task preparation prefers a local image, then its published registry image.
+Registry/network pull failures can build the exact original Dockerfile using
+scoped Docker Buildx, with 2-CPU/8-GiB per-build limits and a 600-second deadline.
+At this source revision all original Dockerfiles are self-contained. The
+private build context therefore contains only the Dockerfile, never gold/test
+data, SDK metadata, agent configuration or other host files. No source recipe
+is rewritten. Build receipts retain source/Dockerfile/image identities, limits
+and failure classes. A unique ASB-labeled tag is removed with `noprune` after
+grading or a failed build; published images/shared caches are never pruned.
+
+Provider-free tests cover archive identity/path/type/size bounds, missing or
+mismatched original task data, context privacy, prebuilt/local/pull preference,
+fallback selection, timeout/cancellation/nonzero build outcomes, tag ownership,
+source-pin consistency and backup behavior. A full-suite run also exposed an
+OS-lock release race while other test threads forked. Explicit guard unlock
+now releases ownership even while an inherited/duplicated descriptor remains
+open; the regression retains that descriptor instead of hiding the race with
+a retry. Two additional unit-suite stress runs passed before the final gates.
+
+Actual original-source qualification forced only this fixture's prebuilt
+lookup/pull to fail; it did not remove any shared image. It built the unmodified
+original `sympy__sympy-20590` Dockerfile, accepted a known reference repair under
+all three official population graders, rejected an incorrect submission, and
+verified removal of the owned source tag and preservation of the published
+image. First qualification took 408.6 seconds; a final-code cached rerun from
+the installed source archive passed in 33.9 seconds. Neither run used an agent
+or an LLM provider, and neither is a complete-population/AI-solving claim.
+
+The larger Rust graph exposed Graphviz 2.43 rank failures/timeouts in the build
+gate. Function-flow edges now use visible external labels rather than adding
+synthetic label nodes to rank assignment. Every function, relation, call rank
+constraint and visible label is preserved and counted by the regression;
+there is no graph pruning, skipped gate or increased timeout. The complete
+data/control graph probes then rendered in approximately 1.2 seconds each.
+
+Distinct-task scheduling/resource admission, content-bound resume, scalable
+aggregate population graphs and abrupt-crash recovery remain open, as do final
+review, merge, exact-main CI and minor release. Final source-checkpoint package
+and hosted CI qualification are recorded separately from these local results.
+
+Final local source gates passed 381 unit tests, 85 offline CLI tests, all eleven
+Python protocol suites (including seven source-contract cases), seven guest
+driver checks and all remaining diagram/runtime/replay tests, strict Clippy,
+and `make build` with Rustdoc/diagrams/completions. The full diagram regression
+with node/edge/visible-label counts passed in 2.8 seconds. A final normal
+SWE-bench Lite sweep using real Pi, a synthetic provider, official grading and
+namespace collectors passed in 62.4 seconds, confirming that the source-helper
+addition preserved the ordinary prebuilt-image client path. This uses a known
+repair and does not claim an AI solution or a full-population run.

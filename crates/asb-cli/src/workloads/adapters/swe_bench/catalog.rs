@@ -13,6 +13,7 @@ use std::process::Command;
 
 const MATERIALIZER: &str = include_str!("../../../../assets/benchmarks/asb_swebench.py");
 const TASK_SESSION: &str = include_str!("../../../../assets/benchmarks/asb_swebench_task.py");
+const TASK_SOURCES: &str = include_str!("../../../../assets/benchmarks/asb_swebench_sources.py");
 const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Deserialize)]
@@ -232,6 +233,7 @@ pub(super) fn install(
         }
     }
     let catalog = read(adapter, context.workloads_root).map_err(Error::Input)?;
+    super::sources::install(adapter, context, output, progress)?;
     // The prompt is just a discoverable catalog label, not agent input. Actual
     // issue text must come from the selected, checksum-verified instance.
     fs::write(
@@ -259,6 +261,7 @@ pub(super) fn ensure_helpers(root: &Path) -> Result<(), Error> {
     for (name, source) in [
         ("asb_swebench.py", MATERIALIZER),
         ("asb_swebench_task.py", TASK_SESSION),
+        ("asb_swebench_sources.py", TASK_SOURCES),
     ] {
         publish_helper(&root.join(name), source)?;
     }

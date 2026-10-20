@@ -393,6 +393,19 @@ cleanup when a failure between preparation and execution bypasses both paths;
 abrupt process termination still requires a recovery mechanism.
 See the full benchmark delivery
 checklist before claiming complete upstream benchmark support.
+Their shared installer also downloads a checksum-pinned original
+`SWE-bench/swe-bench-tasks` archive into the project cache and evaluator tool
+directory. It validates every selected population's identity, original
+evaluation data and test lists against that archive. When an image is not local
+and its registry pull fails, preparation can build the exact original task
+Dockerfile through scoped Docker Buildx access. This revision's Dockerfiles
+are self-contained; the build context contains only the Dockerfile, never gold
+patches, test programs, task metadata or host directories. Builds require
+Buildx/BuildKit per-build `--resource` support, enforce 2 CPUs/8 GiB/600 seconds,
+record archive/Dockerfile/image identities and use a unique ASB-labeled image
+tag. Cleanup removes only that tag with `noprune`, not published images or
+shared caches. Source building does not change daemon settings or the selected
+default builder. The evaluation uses the exact resulting immutable image ID.
 The explicit `terminal-bench-1.0` and `terminal-bench-2.1` adapters likewise
 install their original complete task catalogs and own environment sessions.
 Version 1.0 delegates its Compose environment, tmux tests and parser to the

@@ -7,6 +7,7 @@ from asb_execution import ExecutionError, ManagedDockerWorkspace
 from asb_swebench import (CatalogError, MAX_PATCH_BYTES, agent_instruction,
                           atomic_write, encoded, evaluate_submission, read_task,
                           remove_evaluation_container, run_harness, sdk_identity)
+from asb_swebench_sources import build_image, remove_owned_image, resolve_image
 
 
 class SweBenchTask:
@@ -19,9 +20,9 @@ class SweBenchTask:
         self.catalog = None
         self.cancelled = None
         self.attempt = "asb-" + uuid.uuid4().hex
+        self.source_image_tag = None
 
     def __enter__(self):
-        import docker.errors
         from swebench.harness.utils import make_test_spec
         from swebench.image_builder.constants import CONTAINER_WORKDIR
         sdk = sdk_identity()
@@ -29,11 +30,13 @@ class SweBenchTask:
         spec = make_test_spec(self.row)
         self.artifacts.mkdir(mode=0o700, parents=True, exist_ok=False)
         try:
-            image = self.client.images.get(spec.image)
-        except docker.errors.ImageNotFound:
-            image = self.client.images.pull(spec.image)
-        self.workspace = ManagedDockerWorkspace(self.client, image, self.attempt, CONTAINER_WORKDIR)
-        try:
+            image, source = resolve_image(self.client, spec.image, lambda: build_image(
+                self.client, self.row, self.catalog["dataset"], self.artifacts, self.attempt,
+                cancelled=self.cancelled))
+            self.source_image_tag = source.get("tag")
+            if self.source_image_tag is not None:
+                atomic_write(self.artifacts / "source-image.json", encoded(source))
+            self.workspace = ManagedDockerWorkspace(self.client, image, self.attempt, CONTAINER_WORKDIR)
             self.workspace.__enter__()
             base = self.row["base_commit"]
             self.checked(["git", "cat-file", "-e", base + "^{commit}"])
@@ -52,6 +55,7 @@ class SweBenchTask:
                 "baseline": {"kind": "upstream-task-definition", "base_commit": observed},
                 "image": self.workspace.image_identity, "sdk": sdk,
                 "resources": self.workspace.limits,
+                "environment_source": source,
             }
             # No gold patch/test script is copied into the task environment.
             atomic_write(self.artifacts / "task.json", encoded(self.invocation))
@@ -88,13 +92,21 @@ class SweBenchTask:
         return submission
 
     def __exit__(self, *_exception):
-        if self.workspace is not None:
-            try:
-                self.workspace.close()
-            finally:
-                atomic_write(self.artifacts / "task-cleanup.json", encoded({
-                    "attempt_id": self.attempt, "status": self.workspace.cleanup_status,
+        try:
+            if self.workspace is not None:
+                try:
+                    self.workspace.close()
+                finally:
+                    atomic_write(self.artifacts / "task-cleanup.json", encoded({
+                        "attempt_id": self.attempt, "status": self.workspace.cleanup_status,
+                    }))
+        finally:
+            if self.source_image_tag is not None:
+                status = remove_owned_image(self.client, self.source_image_tag, self.attempt)
+                atomic_write(self.artifacts / "source-image-cleanup.json", encoded({
+                    "attempt_id": self.attempt, "tag": self.source_image_tag, "status": status,
                 }))
+                self.source_image_tag = None
 
     def evaluate(self, timeout=1800):
         submission = self.capture_submission()

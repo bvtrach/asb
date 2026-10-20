@@ -119,7 +119,7 @@ def render(functions: list[Function], relations: set[tuple[str, str, str]], kind
         # Compound/global cluster ranking fails init_rank in Graphviz 2.43
         # for the complete project graph. No edges use lhead/ltail, so compound
         # routing is neither needed nor useful here.
-        'newrank=false, nodesep=0.18, pad=0.25, rankdir=LR, ranksep=0.8, '
+        'newrank=false, nodesep=0.18, pad=0.25, rankdir=LR, ranksep=0.8, forcelabels=true, '
         # Edge concentration can corrupt clustered layouts in Graphviz 2.43
         # (contain_nodes/rebuild_vlists errors and a segmentation fault).
         # Keep each call edge explicit; this also preserves its hover label.
@@ -151,7 +151,12 @@ def render(functions: list[Function], relations: set[tuple[str, str, str]], kind
         callee = by_id[target]
         style = "solid" if kind == "dataflow" else "dashed"
         label = f"{caller.name}() -> {callee.name}()" if kind == "dataflow" else f"calls {callee.name}()"
-        lines.append(f'    {source} -> {target} [label="{label}", style="{style}"];')
+        # External labels do not create synthetic nodes in rank assignment.
+        # Ordinary edge labels made the complete clustered graph time out or
+        # fail init_rank on Graphviz 2.43 as a few adapter functions were added.
+        # Keep every relation/rank constraint and force all labels to remain
+        # visible; neither graph pruning nor a longer timeout is necessary.
+        lines.append(f'    {source} -> {target} [xlabel="{label}", style="{style}"];')
 
     if kind == "control":
         roots = sorted({function.ident for function in functions} - {target for _, target, _ in relations})

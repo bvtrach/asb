@@ -10,6 +10,16 @@ pub(super) struct OutputLock {
     _file: File,
 }
 
+impl Drop for OutputLock {
+    fn drop(&mut self) {
+        // Another thread can fork while this descriptor is open. CLOEXEC
+        // closes the inherited copy at exec, but explicit unlock also releases
+        // ownership during that intervening window instead of waiting for the
+        // last inherited descriptor to close.
+        let _ = self._file.unlock();
+    }
+}
+
 impl OutputLock {
     pub(super) fn acquire(parent: &Path, stem: &str) -> Result<Self, Error> {
         let path = parent.join(format!(".{stem}-asb-sweep.lock"));
@@ -119,6 +129,7 @@ mod tests {
         let path = root.join(".sweep-asb-sweep.lock");
         std::fs::write(&path, "existing contents must not be truncated").unwrap();
         let owner = OutputLock::acquire(&root, "sweep").unwrap();
+        let inherited_descriptor = owner._file.try_clone().unwrap();
         let conflict = OutputLock::acquire(&root, "sweep").err().unwrap();
         assert!(conflict.to_string().contains("another sweep owns"));
         let unrelated_stem = OutputLock::acquire(&root, "different").unwrap();
@@ -129,6 +140,7 @@ mod tests {
         );
         drop((owner, unrelated_stem, unrelated_parent));
         let successor = OutputLock::acquire(&root, "sweep").unwrap();
+        drop(inherited_descriptor);
         drop(successor);
         assert!(path.is_file(), "do not unlink and split future lock owners");
         std::fs::remove_dir_all(root).unwrap();

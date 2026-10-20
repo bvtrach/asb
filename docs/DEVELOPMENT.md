@@ -117,7 +117,14 @@ Terminal-Bench sessions; they use their official upstream evaluators instead
 of the legacy structural checker. Optional runtime qualification scripts
 `benchmark_live_swebench.py`, `benchmark_live_terminal_1.py`, and
 `benchmark_live_harbor.py` need explicit local dataset/SDK/Docker opt-in, use
-known fixture submissions and never contact a live LLM provider. Ordinary CI
+known fixture submissions and never contact a live LLM provider. The separate
+`benchmark_live_swebench_source.py` qualification also requires
+`ASB_TEST_SWE_SOURCE_ARCHIVE` pointing to the pinned source archive installed
+by `asb workload install`. It forces only its own prebuilt lookup/pull to fail,
+builds an original Dockerfile under the production CPU/memory/time limits,
+grades known submissions, and checks cleanup without deleting shared images.
+It requires current Docker Buildx/BuildKit with per-build `--resource` support.
+Ordinary CI
 uses synthetic provider-free protocol tests. See
 [evaluation semantics](EVALUATION.md). Perfetto
 post-processing scopes scheduler counts and series to the benchmark process
