@@ -20,15 +20,15 @@ impl CollectorAdapter for PerfettoCollector {
         true
     }
     fn prioritizes_artifact(&self, name: &str) -> bool {
-        name.starts_with("perfetto-metric-")
+        name.starts_with("perfetto-metric-") || name == "perfetto-state-timeline.svg"
     }
     fn display_artifact(&self, name: &str) -> Option<ArtifactDisplay> {
-        (name.starts_with("perfetto-metric-") && name.ends_with(".svg")).then_some(
-            ArtifactDisplay::Svg {
-                class: "perfetto-metric",
-                label: "Perfetto metric SVG",
-            },
-        )
+        ((name.starts_with("perfetto-metric-") || name == "perfetto-state-timeline.svg")
+            && name.ends_with(".svg"))
+        .then_some(ArtifactDisplay::Svg {
+            class: "perfetto-metric",
+            label: "Perfetto metric SVG",
+        })
     }
     fn preflight(&self, context: &mut PreflightContext<'_>) -> Result<(), String> {
         preflight(context)
@@ -156,7 +156,21 @@ fn finish(session: &mut measurements::Session) -> Result<(), String> {
         state.trace.as_deref(),
         state.tracepoint_count,
         &state.metrics,
-    )
+    )?;
+    if let (Some(trace), Some(tools), Some(pid)) = (
+        state.trace.as_deref(),
+        session.tool_dir.as_deref(),
+        state.pid,
+    ) {
+        write_state_timeline_svg(
+            &session.dir,
+            &tools.join("perfetto/bin/trace_processor_shell"),
+            trace,
+            pid,
+            session.trace_id(),
+        )?;
+    }
+    Ok(())
 }
 
 fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
@@ -581,6 +595,121 @@ pub(crate) fn write_perfetto_metric_svgs(
         .map_err(|error| format!("cannot write Perfetto metric SVG: {error}"))?;
     }
     Ok(())
+}
+
+#[derive(Debug)]
+struct StateSpan {
+    tid: u32,
+    ts: u64,
+    dur: u64,
+    state: String,
+    io_wait: bool,
+}
+
+/// Render exact scheduler intervals.  Each lane is a traced thread, so
+/// simultaneous states are shown as a stack rather than collapsed into a
+/// misleading single state for the entire process tree.
+fn write_state_timeline_svg(
+    dir: &Path,
+    processor: &Path,
+    trace: &Path,
+    pid: u32,
+    trace_id: &str,
+) -> Result<(), String> {
+    if !processor.is_file() || !trace.is_file() {
+        return Ok(());
+    }
+    let query = format!(
+        "{} SELECT th.tid, st.ts, st.dur, st.state, COALESCE(st.io_wait,0) FROM thread_state st JOIN thread th ON st.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND st.ts >= bounds.start_ts AND st.ts < bounds.end_ts AND st.dur > 0 ORDER BY th.tid, st.ts LIMIT 4096",
+        perfetto_scope_sql(pid, trace_id)
+    );
+    let output = Command::new(processor)
+        .args(["query"])
+        .arg(trace)
+        .arg(query)
+        .output()
+        .map_err(|e| format!("cannot extract Perfetto state timeline: {e}"))?;
+    if !output.status.success() {
+        return Ok(());
+    }
+    let mut spans = Vec::new();
+    for line in bounded(&output.stdout).lines() {
+        let fields: Vec<_> = line
+            .split(',')
+            .map(|s| s.trim().trim_matches('"'))
+            .collect();
+        if fields.len() != 5 {
+            continue;
+        }
+        let (Ok(tid), Ok(ts), Ok(dur)) = (fields[0].parse(), fields[1].parse(), fields[2].parse())
+        else {
+            continue;
+        };
+        spans.push(StateSpan {
+            tid,
+            ts,
+            dur,
+            state: fields[3].into(),
+            io_wait: fields[4] == "1" || fields[4].eq_ignore_ascii_case("true"),
+        });
+    }
+    if spans.is_empty() {
+        return Ok(());
+    }
+    let start = spans.iter().map(|s| s.ts).min().unwrap_or(0);
+    let end = spans
+        .iter()
+        .map(|s| s.ts.saturating_add(s.dur))
+        .max()
+        .unwrap_or(start + 1)
+        .max(start + 1);
+    let mut tids = spans.iter().map(|s| s.tid).collect::<Vec<_>>();
+    tids.sort_unstable();
+    tids.dedup();
+    tids.truncate(64);
+    let height = 105 + tids.len() * 24;
+    let mut svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"980\" height=\"{height}\" viewBox=\"0 0 980 {height}\"><title>Exact process-tree scheduler-state timeline</title><rect width=\"100%\" height=\"100%\" fill=\"#fff\"/><text x=\"18\" y=\"25\" font-family=\"sans-serif\" font-size=\"17\" font-weight=\"bold\">Exact scheduler-state timeline</text><text x=\"18\" y=\"45\" font-family=\"sans-serif\" font-size=\"11\" fill=\"#52606d\">Perfetto trace timestamps; one lane per process-tree thread.</text>"
+    );
+    for (index, (label, color)) in [
+        ("running", "#1976d2"),
+        ("runnable", "#c62828"),
+        ("I/O wait", "#ef6c00"),
+        ("uninterruptible", "#6a1b9a"),
+        ("sleep", "#78909c"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        let x = 310 + index * 125;
+        svg.push_str(&format!("<rect x=\"{x}\" y=\"35\" width=\"9\" height=\"9\" fill=\"{color}\"/><text x=\"{}\" y=\"44\" font-family=\"sans-serif\" font-size=\"10\">{label}</text>", x + 12));
+    }
+    for (row, tid) in tids.iter().enumerate() {
+        let y = 65 + row * 24;
+        svg.push_str(&format!("<text x=\"18\" y=\"{}\" font-family=\"monospace\" font-size=\"11\">tid {tid}</text><rect x=\"100\" y=\"{}\" width=\"850\" height=\"16\" fill=\"#edf1f4\"/>", y + 12, y));
+        for s in spans.iter().filter(|s| s.tid == *tid) {
+            let x = 100.0 + 850.0 * (s.ts.saturating_sub(start) as f64 / (end - start) as f64);
+            let w = (850.0 * s.dur as f64 / (end - start) as f64).max(1.0);
+            let (label, color) = state_style(&s.state, s.io_wait);
+            svg.push_str(&format!("<rect x=\"{x:.2}\" y=\"{y}\" width=\"{w:.2}\" height=\"16\" fill=\"{color}\"><title>{label}: {} ns</title></rect>", s.dur));
+        }
+    }
+    svg.push_str("</svg>\n");
+    fs::write(dir.join("perfetto-state-timeline.svg"), svg)
+        .map_err(|e| format!("cannot write Perfetto state timeline SVG: {e}"))
+}
+
+fn state_style(state: &str, io_wait: bool) -> (&'static str, &'static str) {
+    if io_wait {
+        return ("I/O wait", "#ef6c00");
+    }
+    match state {
+        "Running" | "R" => ("running", "#1976d2"),
+        "Runnable" | "R+" => ("runnable", "#c62828"),
+        "D" | "Uninterruptible Sleep" => ("uninterruptible sleep", "#6a1b9a"),
+        "S" | "I" | "Sleeping" => ("interruptible sleep", "#78909c"),
+        _ => ("other scheduler state", "#b0bec5"),
+    }
 }
 
 fn checked_trace_marker_path() -> Result<PathBuf, String> {
