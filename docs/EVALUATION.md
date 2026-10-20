@@ -165,6 +165,14 @@ and abrupt-crash recovery remain unfinished. See the exact requirements and evid
 [the full integration ledger](FULL_BENCHMARK_INTEGRATION.md).
 No old smoke result is retroactively interpreted as an upstream grade.
 
+Fresh-project installation of all five complete catalogs and three SDKs is
+qualified separately from task execution. A subsequent representative normal
+ASB sweep has also passed using that newly installed project and Pi. These
+checks use a synthetic provider for known repairs, reuse host prerequisites
+and existing Docker images, and are not a full-population agent benchmark or
+evidence about a completely cold Docker/OS installation. See the integration
+ledger for the exact retained artifacts and qualification scope.
+
 ### Reporting without optional measurements
 
 Task evaluation does not require runtime measurement collection. Comparison

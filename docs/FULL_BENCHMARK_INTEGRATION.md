@@ -1884,3 +1884,48 @@ native/proxy owner recovery, complete sweep-slot reconciliation, population-scal
 presentation, cold-cache qualification, final review/PR merge, exact-main CI
 and the minor release. Source-image ownership is no longer an untracked gap;
 image preservation alone is not complete interrupted-attempt recovery.
+
+### Fresh-project public-source installation and first execution
+
+The new opt-in `benchmark_live_cold_install.py` starts from an empty project,
+home and package/download cache set, initializes through the public CLI,
+declines optional host changes through EOF, and installs all five original
+workloads through `asb workload install`. Their owning adapters automatically
+install the three project-local official SDKs; no warm ASB tool installation
+is copied in. It checks complete distinct instance populations and pinned
+dataset identities, then installs Pi through `asb tool install` and verifies
+the actual npm executable. SDK/data/client downloads use public sources and
+require no LLM provider credential. The test is opt-in and skips in ordinary
+offline CI; logs, step timings and population receipts stay project-local.
+
+The complete fresh-project qualification passed in 151.3 seconds at
+`target/benchmark-runtime/cold-original-benchmarks-p0k5nfud`. Full/Lite/Verified
+installed 2,294/300/500 instances; original Terminal-Bench 1.0/2.1 installed
+80/89. Initial Full plus SDK install took 58.1 seconds, subsequent Lite and
+Verified 7.4 and 8.3 seconds, original Terminal-Bench 1 and 2 SDK/catalog installs
+44.8 and 23.8 seconds, and Pi 8.4 seconds. Its version check passed.
+Two preceding qualification-script mistakes were corrected (init intentionally
+creates an empty tool directory, and npm Pi lives under node_modules/.bin,
+not bin); these were fixture assumptions, not failed product installations.
+
+The normal mixed original SWE-bench Lite / Terminal-Bench 1.0 qualification
+then passed against that newly installed project in 101.2 seconds. Retained
+artifacts are under
+`target/benchmark-runtime/cold-original-benchmarks-p0k5nfud/parallel-original-tasks-lww_jb8f`.
+It exercised real newly installed Pi clients, the fresh SDKs/catalogs, a
+synthetic loopback provider with known repairs, official grades, independent
+collectors, SVG/HTML comparison, no-op public resource recovery, missing-receipt
+reconciliation and cached reuse with no extra provider requests. The underlying
+host prerequisites and Docker image/build caches were reused, not purged.
+This closes fresh-project SDK/catalog/client installation and representative
+first execution qualification; it is not a cold-OS/Docker installation,
+full-population run or claim that an AI solved those tasks.
+
+The owned-image implementation commit `441a344c` passed packaged tests and
+exact-head hosted Rust CI run `39513839617`, including installation/smoke checks.
+The separately compiled local packaged full test suite also passed. Fresh-project
+qualification is a new opt-in test/evidence increment; its own packaging and
+hosted gates follow. Remaining full delivery work is interrupted evaluator/
+submission handling, native/proxy owner recovery, complete sweep reconciliation,
+population-scale presentation, final full-diff review/PR merge, exact-main CI
+and the new minor release.

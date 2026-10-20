@@ -175,6 +175,22 @@ The ordinary mixed-sweep qualification additionally checks that each reference
 matches its replica's original start intent and completion seal. No test calls
 a live LLM provider.
 
+`benchmark_live_cold_install.py` checks public-source installation into a new
+project with empty tool, home and package/download caches. Set
+`ASB_TEST_BENCHMARK_ASB` to the compiled binary and
+`ASB_TEST_COLD_INSTALL_ROOT` to an existing project-local artifact parent. It
+initializes without approving host changes, installs all five full original
+catalogs with their SDK dependencies, installs Pi and checks its executable.
+Logs and bounded population/step receipts remain under the printed project.
+Without both opt-ins the test skips; ordinary CI never downloads these SDKs.
+Host prerequisites and Docker images are not removed, so this is cold-project
+installation qualification, not a completely cold host or benchmark score.
+After it passes, the printed project can be used as
+`ASB_TEST_SWECATALOG_ROOT` for `benchmark_live_parallel.py`; use that project's
+installed SWE-bench Python interpreter. This exercises the newly installed SDKs,
+catalogs and client with known repairs from a synthetic provider, without live
+LLM credentials.
+
 See
 [evaluation semantics](EVALUATION.md). Perfetto
 post-processing scopes scheduler counts and series to the benchmark process
