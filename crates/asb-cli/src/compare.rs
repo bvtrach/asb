@@ -348,7 +348,7 @@ fn artifact_links(sweep_parent: &Path, result_dir: &Path) -> Vec<String> {
     // workload workspace cannot crowd collector artifacts out of the
     // HTML report's artifact links.
     let measurement_dir = result_dir.join("measurements");
-    if let Ok(entries) = fs::read_dir(&measurement_dir) {
+    if let Ok(entries) = fs::read_dir(measurement_dir.as_path()) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_file()
@@ -363,7 +363,7 @@ fn artifact_links(sweep_parent: &Path, result_dir: &Path) -> Vec<String> {
     }
     // Do not inventory external workload workspaces; only measurement output
     // is comparison evidence and should appear in the report.
-    collect_artifacts(&measurement_dir, 0, &mut files);
+    collect_artifacts(measurement_dir.as_path(), 0, &mut files);
     files.sort();
     files.dedup();
     files
