@@ -10,7 +10,7 @@ pub(super) struct TerminalBenchAdapter {
     pub tool: &'static str,
     pub version: &'static str,
     pub expected_tasks: usize,
-    pub runtime: Option<&'static str>,
+    pub runtime: &'static str,
 }
 
 impl super::WorkloadAdapter for TerminalBenchAdapter {
@@ -52,7 +52,6 @@ impl super::WorkloadAdapter for TerminalBenchAdapter {
         &self,
         context: &crate::workloads::PreparationContext<'_>,
     ) -> Result<Box<dyn crate::workloads::WorkloadSession>, String> {
-        let helper = self.runtime.ok_or_else(|| format!("{} official environment/evaluator session is still being integrated; catalog installation is not a benchmark run", self.id))?;
         let installed = catalog::read(self, context.workload_directory)?;
         let task = context
             .trial
@@ -64,9 +63,15 @@ impl super::WorkloadAdapter for TerminalBenchAdapter {
             crate::project::load(context.workload_directory).map_err(|error| error.to_string())?;
         let tool = crate::project::resolve(&root, &config.tools_dir).join(self.tool);
         catalog::ensure_helpers(&tool).map_err(|error| error.to_string())?;
+        if !catalog::runtime_available(self, &tool).map_err(|error| error.to_string())? {
+            return Err(format!(
+                "installed evaluator runtime is incomplete; run `asb tool install {}` before starting the benchmark (details in .asb/install.log)",
+                self.tool
+            ));
+        }
         crate::workloads::remote::launch(
             self.tool,
-            helper,
+            self.runtime,
             None,
             self.id,
             installed.dataset,

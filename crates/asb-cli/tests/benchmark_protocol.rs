@@ -35,6 +35,11 @@ fn terminal_execution_isolates_inputs_credentials_and_cleanup() {
     python_protocol("terminal_execution.py");
 }
 
+#[test]
+fn harbor_execution_preserves_official_verification_and_scopes_resources() {
+    python_protocol("harbor_execution.py");
+}
+
 fn python_protocol(test: &str) {
     let output = std::process::Command::new("python3")
         .arg(

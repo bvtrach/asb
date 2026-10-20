@@ -311,6 +311,16 @@ an explicit static `ASB_GUEST_BINARY`; automatic portable-runtime installation,
 host-loopback endpoint forwarding, container collector targeting and
 full-population planning remain unfinished. See the full benchmark delivery
 checklist before claiming complete upstream benchmark support.
+The explicit `terminal-bench-1.0` and `terminal-bench-2.1` adapters likewise
+install their original complete task catalogs and own environment sessions.
+Version 1.0 delegates its Compose environment, tmux tests and parser to the
+original SDK; 2.1 delegates environment construction and verifier/reward parsing
+to Harbor. Neither SDK chooses an agent/provider/model. Both consume the same
+generic guest execution contract as SWE-bench, with attempt-scoped teardown
+and original environment-definition baseline evidence. A missing prebuilt
+Harbor image can fall back to its original task Dockerfile within the same
+preparation time budget. Temporary SDK overlays stay in the attempt directory;
+no global image/build pruning or host service changes are performed.
 Other aliases install pinned prompt metadata. These commands do not handle
 credentials.
 `asb init` prepares `.asb/python/venv` using an installed Python 3.12 or 3.13,

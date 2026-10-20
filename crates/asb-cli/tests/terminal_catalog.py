@@ -16,6 +16,18 @@ import asb_terminal_catalog as subject
 
 
 class CatalogTests(unittest.TestCase):
+    def test_runtime_probe_checks_sdk_and_transport_dependencies_without_a_daemon(self):
+        for workload,spec in subject.SPECS.items():
+            with patch.dict(sys.modules,{"docker":ModuleType("docker")}), patch.object(subject.importlib.metadata,"version",
+                    side_effect=lambda package: "7.1.0" if package == "docker" else spec["version"]):
+                self.assertEqual(subject.runtime_identity(workload)["docker_version"],"7.1.0")
+            with patch.object(subject.importlib.metadata,"version",return_value="wrong"):
+                with self.assertRaises(subject.CatalogError):
+                    subject.runtime_identity(workload)
+            with patch.object(subject.importlib.metadata,"version",side_effect=lambda package: "wrong" if package == "docker" else spec["version"]):
+                with self.assertRaisesRegex(subject.CatalogError,"Docker Python SDK"):
+                    subject.runtime_identity(workload)
+
     def fixture(self, root, workload):
         source = root / "repository"
         if workload == "terminal-bench-1.0":

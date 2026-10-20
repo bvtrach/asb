@@ -102,12 +102,19 @@ test uses the same tool path but only reads a synthetic trace; it does not
 start tracing or require tracing privileges.
 
 Each completed run records `process_success` separately from
-`workload_success`. External workload aliases install a pinned reference plus a
-small deterministic adapter trial and local structural checker, not upstream
+`workload_success`. Legacy external workload aliases install a pinned reference
+plus a small deterministic adapter trial and local structural checker, not upstream
 dataset instances. Even a passing adapter smoke check is unscored for benchmark
 task resolution (`success_rate = null`, `workload_success = null`); its separate
 `adapter_smoke_success` records only that exercise. Actual local task attempts
 are scored by their evaluator, never by process exit alone. See
+[the full benchmark integration ledger](FULL_BENCHMARK_INTEGRATION.md) for real SWE-bench and versioned
+Terminal-Bench sessions; they use their official upstream evaluators instead
+of the legacy structural checker. Optional runtime qualification scripts
+`benchmark_live_swebench.py`, `benchmark_live_terminal_1.py`, and
+`benchmark_live_harbor.py` need explicit local dataset/SDK/Docker opt-in, use
+known fixture submissions and never contact a live LLM provider. Ordinary CI
+uses synthetic provider-free protocol tests. See
 [evaluation semantics](EVALUATION.md). Perfetto
 post-processing scopes scheduler counts and series to the benchmark process
 tree and lifecycle interval; it never compares host-wide scheduler noise.

@@ -125,7 +125,29 @@ pub(super) fn ensure_helpers(root: &Path) -> Result<(), Error> {
     publish(
         &root.join("asb_terminal_bench_1.py"),
         include_str!("../../../../assets/benchmarks/asb_terminal_bench_1.py"),
+    )?;
+    publish(
+        &root.join("asb_harbor.py"),
+        include_str!("../../../../assets/benchmarks/asb_harbor.py"),
     )
+}
+
+pub(super) fn runtime_available(
+    adapter: &TerminalBenchAdapter,
+    root: &Path,
+) -> Result<bool, Error> {
+    Ok(Command::new(root.join("venv/bin/python"))
+        .arg(root.join("asb_terminal_catalog.py"))
+        .args(["runtime", "--workload", adapter.id, "--directory"])
+        .arg(root)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .logged_status()
+        .map_err(|error| {
+            Error::Io(format!(
+                "cannot inspect installed evaluator runtime: {error}"
+            ))
+        })?
+        .success())
 }
 
 pub(super) fn install(
@@ -150,6 +172,25 @@ pub(super) fn install(
     let tool = context.tools_root.join(adapter.tool);
     let helper = tool.join("asb_terminal_catalog.py");
     ensure_helpers(&tool)?;
+    if !runtime_available(adapter, &tool)? {
+        progress(10, "repairing official evaluator runtime dependencies");
+        install::tool_with_progress(
+            install::ToolInstallOptions {
+                name: adapter.tool.into(),
+                source: None,
+                dir: Some(context.tools_root.to_path_buf()),
+                dry_run: false,
+            },
+            output,
+            progress,
+        )?;
+        if !runtime_available(adapter, &tool)? {
+            return Err(Error::Input(format!(
+                "installed evaluator runtime is unusable; run `asb tool install {}` and inspect .asb/install.log",
+                adapter.tool
+            )));
+        }
+    }
     let directory = context.workloads_root.join(adapter.id);
     let run = |operation: &str, archive: Option<&Path>| -> Result<bool, Error> {
         let mut command = Command::new(tool.join("venv/bin/python"));

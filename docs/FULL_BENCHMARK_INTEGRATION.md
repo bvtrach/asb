@@ -439,3 +439,61 @@ A new provider-free Hermes guest fixture additionally proves artifact-reported
 steps and exact usage survive the guest driver (four calls, 42 fixture tokens).
 The post-integration full offline suite and strict Clippy passed; hosted PR
 checks restarted once the merge conflict was removed.
+
+### Terminal-Bench 2.1 Harbor runtime
+
+The 2.1 adapter now creates an owned Harbor `DockerEnvironment` and invokes
+the original `Verifier`; it never constructs a Harbor agent or model. The
+configured ASB client still executes through the common Rust guest adapter.
+Original resource settings, public task instructions and agent/verifier
+timeouts remain task-owned. Build contexts contain only the original public
+environment directory, not solutions or tests. The original verifier receives
+its tests only during grading, and stale reward files cannot substitute for a
+new grade. Missing, non-binary or malformed rewards remain evaluation errors.
+
+Compose labels, network/volume names, bind roots and published ports are
+attempt-scoped. Host namespace/device/privileged access and external-resource
+references are rejected instead of changing host policy. SDK overlays are
+created below the private project attempt directory rather than `/tmp`.
+Cancellation waits for the bounded in-flight Compose operation before teardown;
+cleanup avoids Harbor's shared-image deletion path, verifies no attempt
+containers remain, and records failures truthfully. General abrupt-crash
+recovery remains a separate incomplete requirement.
+
+An unavailable prebuilt image can fall back to the original task Dockerfile
+through Harbor's own build path, within the same preparation budget. This does
+not alter the dataset or silently replace its environment. The actual image
+identity and preparation source are retained with task evidence. The Harbor
+tool recipe now explicitly includes the Docker Python SDK needed by the shared
+ASB transport; reinstalling it was qualified in the real local project.
+
+Actual original `cancel-async-tasks` SDK qualification passed reference and
+incorrect changes (48.6 seconds total). Normal `asb run` also passed with real
+Pi against the isolated synthetic provider: deterministic correct change
+(39.9 seconds) and unrelated change (26.3 seconds). These tests check original
+Harbor rewards, exact client usage, guest-only elapsed time, task identity and
+scoped cleanup. Fault-injected missing prebuilt images then exercised the
+actual original source build and both original grades (52.1 seconds total).
+None of these fixtures uses a live LLM or establishes AI-solving ability or
+full-population execution.
+
+Provider-free tests additionally cover scoped Compose resources, prohibited
+host exposure, exact original-verifier invocation, private/stale reward
+handling, malformed rewards, preparation-budget sharing and cleanup outcomes.
+The previous pushed milestone's exact-head hosted CI passed. Both versioned
+Terminal-Bench adapters now require a runtime helper rather than carrying an
+optional unfinished-runtime registration. Common portable helper provisioning,
+host-loopback provider/tape connectivity, measured container targeting,
+complete-suite scheduling/resume/reporting and final delivery gates remain
+open for all five benchmark targets.
+
+The source-fallback qualification was repeated after moving SDK temporary
+overlays under the project: both original grades passed again (47.2 seconds).
+A separate offline regression proves synchronous signal cancellation drains
+the SDK operation before teardown. The runtime now
+probes exact SDK/transport dependencies before starting Docker. Workload
+installation repairs incomplete environments using its owning tool recipe;
+execution instead gives an explicit `asb tool install <tool>` repair command.
+Both Terminal-Bench tool recipes pin Docker SDK 7.1.0, matching the shared
+transport. Provider-free tests cover wrong SDK/dependency versions, cancellation
+draining, reward validation and failed cleanup in addition to scoped resources.

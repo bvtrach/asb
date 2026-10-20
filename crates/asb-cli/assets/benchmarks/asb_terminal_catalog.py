@@ -183,14 +183,27 @@ def install(workload, archive, destination):
         raise
 
 
+def runtime_identity(workload):
+    spec = SPECS[workload]
+    if importlib.metadata.version(spec["package"]) != spec["version"]:
+        raise CatalogError("installed evaluator SDK does not match the workload recipe")
+    if importlib.metadata.version("docker") != "7.1.0":
+        raise CatalogError("installed Docker Python SDK does not match the workload runtime recipe")
+    importlib.import_module("docker")
+    return {"status":"ready", "sdk":spec["package"], "version":spec["version"], "docker_version":"7.1.0"}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["install", "verify", "archive"])
+    parser.add_argument("operation", choices=["install", "verify", "archive", "runtime"])
     parser.add_argument("--workload", required=True, choices=list(SPECS))
     parser.add_argument("--directory", required=True, type=Path)
     parser.add_argument("--archive", type=Path)
     args = parser.parse_args()
     try:
+        if args.operation == "runtime":
+            print(json.dumps(runtime_identity(args.workload)))
+            return 0
         if args.operation == "archive":
             if args.archive is None:
                 raise CatalogError("archive validation needs a source archive")

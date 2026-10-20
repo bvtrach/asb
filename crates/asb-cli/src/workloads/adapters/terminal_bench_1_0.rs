@@ -8,5 +8,5 @@ pub(super) static ADAPTER: TerminalBenchAdapter = TerminalBenchAdapter {
     tool: "terminal-bench",
     version: "0.2.18",
     expected_tasks: 80,
-    runtime: Some("asb_terminal_bench_1.py"),
+    runtime: "asb_terminal_bench_1.py",
 };

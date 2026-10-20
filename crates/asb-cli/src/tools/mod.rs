@@ -228,8 +228,13 @@ mod tests {
                 "swebench @ git+https://github.com/SWE-bench/SWE-bench.git@02e7a74ffd0b707aab73d203fe87bdc7c76afc8e",
                 &["docker==7.1.0"][..],
             ),
-            ("terminal-bench", "tb", "terminal-bench==0.2.18", &[][..]),
-            ("harbor", "harbor", "harbor==0.24.0", &[][..]),
+            (
+                "terminal-bench",
+                "tb",
+                "terminal-bench==0.2.18",
+                &["docker==7.1.0"][..],
+            ),
+            ("harbor", "harbor", "harbor==0.24.0", &["docker==7.1.0"][..]),
         ] {
             let adapter = find(id).unwrap();
             assert!(adapter.kind() == ToolKind::Support);

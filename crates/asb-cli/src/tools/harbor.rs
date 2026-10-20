@@ -6,7 +6,7 @@ pub(super) static ADAPTER: StaticTool = StaticTool::new(
     "harbor",
     Recipe::Python {
         package: "harbor==0.24.0",
-        dependencies: &[],
+        dependencies: &["docker==7.1.0"],
         executable: "harbor",
     },
     ToolKind::Support,

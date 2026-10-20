@@ -8,5 +8,5 @@ pub(super) static ADAPTER: TerminalBenchAdapter = TerminalBenchAdapter {
     tool: "harbor",
     version: "0.24.0",
     expected_tasks: 89,
-    runtime: None,
+    runtime: "asb_harbor.py",
 };

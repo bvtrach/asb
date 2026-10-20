@@ -23,9 +23,9 @@ class NormalRunQualification(unittest.TestCase):
         from asb_guest import upload
         root = Path(os.environ["ASB_TEST_SWECATALOG_ROOT"]).absolute()
         suite = os.environ.get("ASB_TEST_BENCHMARK_SUITE", "swe-bench-lite")
-        self.assertIn(suite, ["swe-bench", "swe-bench-lite", "swe-bench-verified", "terminal-bench-1.0"])
-        terminal = suite == "terminal-bench-1.0"
-        instance = "hello-world" if terminal else "astropy__astropy-12907"
+        self.assertIn(suite, ["swe-bench", "swe-bench-lite", "swe-bench-verified", "terminal-bench-1.0", "terminal-bench-2.1"])
+        terminal = suite.startswith("terminal-bench-")
+        instance = ("hello-world" if suite.endswith("1.0") else "cancel-async-tasks") if terminal else "astropy__astropy-12907"
         resolved = os.environ.get("ASB_TEST_BENCHMARK_RESOLVED") == "1"
         binary = Path(os.environ["ASB_TEST_BENCHMARK_ASB"]).absolute()
         artifacts = Path(tempfile.mkdtemp(prefix="normal-cli-guest-", dir=root))
@@ -45,7 +45,18 @@ class NormalRunQualification(unittest.TestCase):
                         code = ("from pathlib import Path; p=Path('astropy/modeling/separable.py'); t=p.read_text(); "
                                 "old='cright[-right.shape[0]:, -right.shape[1]:] = 1'; "
                                 "assert t.count(old)==1; p.write_text(t.replace(old, 'cright[-right.shape[0]:, -right.shape[1]:] = right'))")
-                        command = "printf 'Hello, world!\\n' > hello.txt" if terminal else "python3 -c " + shlex.quote(code)
+                        if suite == "terminal-bench-1.0":
+                            command = "printf 'Hello, world!\\n' > hello.txt"
+                        elif suite == "terminal-bench-2.1":
+                            # Deliberately deterministic qualification code,
+                            # not an AI-generated solution or benchmark score.
+                            solution = ("import asyncio\nasync def run_tasks(tasks, max_concurrent):\n"
+                                "    semaphore = asyncio.Semaphore(max_concurrent)\n"
+                                "    async def run(task):\n        async with semaphore:\n            await task()\n"
+                                "    async with asyncio.TaskGroup() as group:\n        for task in tasks:\n            group.create_task(run(task))\n")
+                            command = "python3 -c " + shlex.quote("from pathlib import Path; Path('run.py').write_text(" + repr(solution) + ")")
+                        else:
+                            command = "python3 -c " + shlex.quote(code)
                         upload(provider.container, "/tmp", [("command.txt", command.encode(), 0o600)])
                     network.connect(provider.container)
                     client.networks.get("bridge").disconnect(provider.container)
@@ -91,7 +102,11 @@ class NormalRunQualification(unittest.TestCase):
                     self.assertLessEqual(abs(record["elapsed_ms"] - observation["elapsed_seconds"] * 1000), 1)
                     if terminal:
                         self.assertEqual(json.loads((matching[0] / "submission.json").read_text())["kind"], "in-place-environment")
-                        self.assertTrue(json.loads((matching[0] / "evaluation.json").read_text())["test_results"])
+                        grade = json.loads((matching[0] / "evaluation.json").read_text())
+                        if suite == "terminal-bench-1.0":
+                            self.assertTrue(grade["test_results"])
+                        else:
+                            self.assertEqual(grade["rewards"], {"reward":1 if resolved else 0})
                     else:
                         self.assertIn("cright" if resolved else "asb-real-agent.txt", (matching[0] / "candidate.patch").read_text())
                     self.assertEqual(json.loads((matching[0] / "task-cleanup.json").read_text())["status"], "removed")

@@ -11,7 +11,7 @@ the complete benchmark was solved. A run is one task attempt, never a whole
 suite. Concurrency creates repeated attempts, not additional unique issues.
 The development integration now gives the three original SWE-bench variants
 real task catalogs and official evaluation, and adds original Terminal-Bench
-1.0 task execution. These paths must not be confused with the legacy smoke
+1.0 and 2.1 task execution. These paths must not be confused with the legacy smoke
 records or with completed full-suite support; see the integration status below.
 
 Before schema version 2, these exercises could produce `success_rate = 1.0`.
@@ -102,16 +102,19 @@ The development SWE-bench adapters select real pinned dataset instances,
 prepare their base repositories in owned containers, capture candidate patches,
 and invoke the official SDK evaluator. Original Terminal-Bench 1.0 instead
 retains its in-place task environment and delegates test injection, execution
-and result parsing to its original SDK. These are adapter-owned sessions; the
-runner does not select a benchmark-specific grader. Missing/stale reports,
+and result parsing to its original SDK. Terminal-Bench 2.1 delegates environment
+construction and verifier execution/reward parsing to Harbor. Its binary
+reward is checked for a complete task outcome; stale pre-verifier reward files
+are removed and missing/invalid rewards remain evaluation errors.
+These are adapter-owned sessions; the runner does not select a benchmark-specific
+grader. Missing/stale reports,
 partial fixes, regressions and missing patches cannot earn resolution credit.
 An empty parsed Terminal-Bench test map cannot count as success.
 
 Representative correct/incorrect fixture submissions have qualified these
 normal CLI paths without live LLM providers. This does not mean the full
-populations have been benchmarked. Terminal-Bench 2.1 has a real installed
-catalog but its Harbor runtime remains unfinished; local endpoint forwarding,
-container measurement and complete-population planning/reporting are also
+populations have been benchmarked. Local endpoint forwarding,
+container measurement and complete-population planning/reporting remain
 unfinished. See the exact requirements and evidence in
 [the full integration ledger](FULL_BENCHMARK_INTEGRATION.md).
 No old smoke result is retroactively interpreted as an upstream grade.
