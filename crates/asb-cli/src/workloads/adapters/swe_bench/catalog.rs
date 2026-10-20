@@ -79,6 +79,11 @@ pub(super) fn read(adapter: &SweBenchAdapter, directory: &Path) -> Result<Catalo
         ));
     }
     let mut ids = BTreeSet::new();
+    let installed_root = path
+        .parent()
+        .expect("catalog parent")
+        .canonicalize()
+        .map_err(|_| failure("cannot resolve installed dataset directory"))?;
     for task in &catalog.tasks {
         let expected_metadata = format!("evaluation-data/{}/", adapter.revision);
         let relative = Path::new(&task.metadata);
@@ -102,6 +107,19 @@ pub(super) fn read(adapter: &SweBenchAdapter, directory: &Path) -> Result<Catalo
             || !task.metadata.ends_with(".json")
         {
             return Err(failure("invalid or duplicate task identity"));
+        }
+        let metadata_path = installed_root.join(&task.metadata);
+        let metadata = fs::symlink_metadata(&metadata_path)
+            .map_err(|_| failure("task evaluator metadata is missing"))?;
+        if !metadata.is_file()
+            || metadata.len() > 4 * 1024 * 1024
+            || !metadata_path
+                .canonicalize()
+                .is_ok_and(|path| path.starts_with(&installed_root))
+        {
+            return Err(failure(
+                "task evaluator metadata is not a bounded local file",
+            ));
         }
     }
     Ok(catalog)
@@ -128,13 +146,59 @@ pub(super) fn install(
     }
     let tool_root = context.tools_root.join("swebench");
     let helper = tool_root.join("asb_swebench.py");
-    fs::write(&helper, MATERIALIZER)
-        .map_err(|error| Error::Io(format!("cannot write official workload helper: {error}")))?;
-    fs::write(tool_root.join("asb_docker.py"), DOCKER_TRANSPORT)
-        .map_err(|error| Error::Io(format!("cannot write workload Docker transport: {error}")))?;
-    if read(adapter, context.workloads_root).is_err() {
+    publish_helper(&helper, MATERIALIZER)?;
+    publish_helper(&tool_root.join("asb_docker.py"), DOCKER_TRANSPORT)?;
+    let python = tool_root.join("venv/bin/python");
+    let status = Command::new(&python)
+        .arg(&helper)
+        .arg("identity")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .logged_status()
+        .map_err(|error| Error::Io(format!("cannot inspect installed evaluator SDK: {error}")))?;
+    if !status.success() {
+        return Err(Error::Input("installed SWE-bench evaluator SDK does not match its recipe or is unusable; run `asb tool install swebench`, then retry the workload installation (details in .asb/install.log)".into()));
+    }
+    let valid = read(adapter, context.workloads_root).is_ok()
+        && Command::new(&python)
+            .arg(&helper)
+            .arg("verify")
+            .arg("--catalog")
+            .arg(context.workloads_root.join(adapter.id).join("catalog.json"))
+            .env("PYTHONDONTWRITEBYTECODE", "1")
+            .logged_status()
+            .map_err(|error| {
+                Error::Io(format!(
+                    "cannot verify installed evaluator metadata: {error}"
+                ))
+            })?
+            .success();
+    if !valid {
+        let bundle = context.workloads_root.join(adapter.id);
+        if fs::symlink_metadata(&bundle).is_ok() {
+            if fs::symlink_metadata(&bundle)
+                .map_err(|error| Error::Io(error.to_string()))?
+                .file_type()
+                .is_symlink()
+            {
+                return Err(Error::Input("official dataset directory must not be a symlink; preserve it and choose a normal project directory".into()));
+            }
+            let backup = context.workloads_root.join(format!(
+                "{}.asb-backup-{}",
+                adapter.id,
+                crate::workloads::TaskIdentity::local(adapter.id, None).attempt_id
+            ));
+            fs::rename(&bundle, &backup).map_err(|error| {
+                Error::Io(format!("cannot preserve incomplete dataset: {error}"))
+            })?;
+            writeln!(
+                output,
+                "Preserved the incomplete or changed dataset at {} before reinstalling.",
+                backup.display()
+            )
+            .map_err(crate::io_error)?;
+        }
         progress(25, "downloading and validating official task population");
-        let mut command = Command::new(tool_root.join("venv/bin/python"));
+        let mut command = Command::new(&python);
         command
             .arg(&helper)
             .arg("catalog")
@@ -189,6 +253,27 @@ pub(super) fn install(
     )
     .map_err(crate::io_error)?;
     Ok(())
+}
+
+fn publish_helper(path: &Path, source: &str) -> Result<(), Error> {
+    let temporary = path.with_extension(format!(
+        "{}.tmp",
+        crate::workloads::TaskIdentity::local("helper", None).attempt_id
+    ));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|error| Error::Io(format!("cannot stage workload helper: {error}")))?;
+    file.write_all(source.as_bytes())
+        .and_then(|()| file.sync_all())
+        .and_then(|()| fs::rename(&temporary, path))
+        .map_err(|error| {
+            Error::Io(format!(
+                "cannot publish workload helper {}: {error}",
+                path.display()
+            ))
+        })
 }
 
 fn publish_selection(
@@ -314,6 +399,13 @@ mod tests {
             expected_tasks: 2,
         };
         fs::create_dir_all(root.join(adapter.id)).unwrap();
+        let metadata = root
+            .join(adapter.id)
+            .join("evaluation-data")
+            .join(adapter.revision)
+            .join(format!("{}.json", "c".repeat(64)));
+        fs::create_dir_all(metadata.parent().unwrap()).unwrap();
+        fs::write(metadata, "{}").unwrap();
         let task = |id| {
             json!({"id": id, "description": "Fix the fixture", "repo": "owner/repo",
             "base_commit": "b".repeat(40), "metadata": format!("evaluation-data/{}/{}.json", adapter.revision, "c".repeat(64)),

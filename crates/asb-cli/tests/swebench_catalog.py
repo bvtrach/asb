@@ -25,6 +25,7 @@ def row(task_id="owner__repo-1"):
         "problem_statement": "Repair the synthetic failing fixture.\nMore context.",
         "patch": "SYNTHETIC_GOLD_MUST_NOT_ENTER_PUBLIC_CATALOG",
         "test_patch": "SYNTHETIC_TEST_PATCH_MUST_NOT_ENTER_PUBLIC_CATALOG",
+        "image": "official/synthetic-task:latest",
     }
 
 
@@ -101,6 +102,7 @@ class CatalogTests(unittest.TestCase):
             directory = Path(temporary)
             catalog = self.build([row()], directory)
             selected, metadata = CATALOG.read_task(directory / "catalog.json", "owner__repo-1")
+            self.assertEqual(CATALOG.verify_catalog(directory / "catalog.json"), {"status": "verified", "task_count": 1})
             self.assertEqual(selected, catalog)
             instruction = CATALOG.agent_instruction(metadata)
             self.assertIn("Repair the synthetic failing fixture", instruction)
@@ -111,6 +113,8 @@ class CatalogTests(unittest.TestCase):
             (directory / catalog["tasks"][0]["metadata"]).write_text("{}")
             with self.assertRaisesRegex(CATALOG.CatalogError, "checksum changed"):
                 CATALOG.read_task(directory / "catalog.json", "owner__repo-1")
+            with self.assertRaisesRegex(CATALOG.CatalogError, "checksum changed"):
+                CATALOG.verify_catalog(directory / "catalog.json")
 
     def test_catalog_cannot_reference_external_metadata(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -161,6 +165,13 @@ class EvaluationTests(unittest.TestCase):
             (report_dir / "asb/owner__repo-1/report.json").write_text(json.dumps({
                 task_id: {"resolved": resolved, "patch_successfully_applied": applied},
             }))
+            (directory / "image-identity.json").write_text(json.dumps({
+                "declared_image": row()["image"], "image_id": "sha256:" + "f" * 64,
+                "repository_digests": ["official/synthetic-task@sha256:" + "f" * 64],
+            }))
+            (directory / "sdk-identity.json").write_text(json.dumps({
+                "revision": CATALOG.HARNESS_REVISION, "version": "synthetic",
+            }))
             return 0
         return execute
 
@@ -195,6 +206,17 @@ class EvaluationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             result = self.evaluate(temporary, timeout)
             self.assertEqual(result["outcome"], "evaluation_timeout")
+
+    def test_changed_sdk_or_wrong_image_cannot_satisfy_official_provenance(self):
+        for target in ["sdk-identity.json", "image-identity.json"]:
+            def changed(arguments, directory, log, timeout):
+                status = self.executor(True)(arguments, directory, log, timeout)
+                (directory / target).write_text("{}")
+                return status
+            with tempfile.TemporaryDirectory() as temporary:
+                result = self.evaluate(temporary, changed)
+                self.assertFalse(result["resolved"])
+                self.assertEqual(result["reason"], "invalid_official_report")
 
     def test_each_attempt_has_fresh_artifacts_and_cannot_reuse_cached_grades(self):
         with tempfile.TemporaryDirectory() as temporary:

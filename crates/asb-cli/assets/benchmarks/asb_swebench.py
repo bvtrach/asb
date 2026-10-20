@@ -157,6 +157,11 @@ def read_task(catalog_path, task_id):
     if len(selected) != 1:
         raise CatalogError("task must occur exactly once in the installed catalog")
     entry = selected[0]
+    return catalog, read_metadata(catalog_path, task_id, entry)
+
+
+def read_metadata(catalog_path, task_id, entry):
+    catalog_path = Path(catalog_path)
     relative = Path(entry["metadata"])
     root = catalog_path.parent.resolve()
     path = root / relative
@@ -168,7 +173,20 @@ def read_task(catalog_path, task_id):
     row = json.loads(payload)
     if (row["instance_id"], row["repo"], row["base_commit"]) != (task_id, entry["repo"], entry["base_commit"]):
         raise CatalogError("task metadata does not match its catalog identity")
-    return catalog, row
+    return row
+
+
+def verify_catalog(catalog_path):
+    catalog = json.loads(read_limited(catalog_path, MAX_CATALOG_BYTES))
+    tasks = catalog.get("tasks")
+    if not isinstance(tasks, list) or not tasks or len(tasks) > 10000:
+        raise CatalogError("installed catalog has no valid task population")
+    ids = [task["id"] for task in tasks]
+    if len(ids) != len(set(ids)):
+        raise CatalogError("installed catalog contains duplicate tasks")
+    for entry in tasks:
+        read_metadata(catalog_path, entry["id"], entry)
+    return {"status": "verified", "task_count": len(ids)}
 
 
 def agent_instruction(row):
@@ -267,8 +285,15 @@ def evaluate_submission(catalog_path, task_id, patch_path, artifacts, timeout, e
                     resolved = report[task_id]["resolved"]
                     if resolved and report[task_id].get("patch_successfully_applied") is not True:
                         raise CatalogError("official report claims resolution without an applied patch")
+                    image = json.loads(read_limited(artifacts / "image-identity.json", MAX_METADATA_BYTES))
+                    sdk = json.loads(read_limited(artifacts / "sdk-identity.json", MAX_METADATA_BYTES))
+                    if (image.get("declared_image") != row.get("image")
+                            or not re.fullmatch(r"sha256:[0-9a-f]{64}", image.get("image_id", ""))
+                            or sdk.get("revision") != HARNESS_REVISION):
+                        raise CatalogError("official evaluator image or SDK identity does not match the attempt")
                     result.update(resolved=resolved, outcome="resolved" if resolved else "unresolved",
                                   reason=None if resolved else "official_tests_not_resolved",
+                                  image=image, sdk=sdk,
                                   official_summary=str(summary_path.relative_to(artifacts)),
                                   official_report=str(instance_path.relative_to(artifacts)))
             except subprocess.TimeoutExpired:
@@ -322,6 +347,24 @@ def official_harness(arguments):
     signal.signal(signal.SIGTERM, interrupted)
     with DockerSession() as client:
         owned_name = f"sweb.eval.{arguments.instance_ids[0].lower()}.{arguments.run_id}"
+        original_create = run_evaluation.create_container
+        def create_container(test_spec, docker_client, run_id, logger):
+            container = original_create(test_spec, docker_client, run_id, logger)
+            try:
+                image = container.image
+                atomic_write(Path.cwd() / "image-identity.json", encoded({
+                    "declared_image": test_spec.image,
+                    "image_id": image.id,
+                    "repository_digests": image.attrs.get("RepoDigests", []),
+                    "architecture": image.attrs.get("Architecture"),
+                    "os": image.attrs.get("Os"),
+                }))
+                return container
+            except BaseException:
+                # Creation succeeded but provenance capture failed; do not
+                # leak that newly owned container or accept an unbound score.
+                container.remove(force=True)
+                raise
         def cleanup_container(_client, container, logger):
             if container is None:
                 return
@@ -334,6 +377,7 @@ def official_harness(arguments):
                 pass
         try:
             run_evaluation._docker_client = lambda: client
+            run_evaluation.create_container = create_container
             # This SDK revision shells out to an unprivileged Docker CLI for
             # cleanup. Route its equivalent operation through the same scoped
             # client as creation, avoiding permission failures and leftovers.
@@ -372,6 +416,9 @@ def main(argv=None):
     catalog.add_argument("--split", default="test")
     catalog.add_argument("--output", type=Path, required=True)
     catalog.add_argument("--cache", type=Path, required=True)
+    commands.add_parser("identity")
+    verify = commands.add_parser("verify")
+    verify.add_argument("--catalog", type=Path, required=True)
     evaluate = commands.add_parser("evaluate")
     evaluate.add_argument("--catalog", type=Path, required=True)
     evaluate.add_argument("--task", required=True)
@@ -391,6 +438,10 @@ def main(argv=None):
     try:
         if arguments.operation == "catalog":
             result = install_catalog(arguments)
+        elif arguments.operation == "identity":
+            result = {"status": "ready", "sdk": sdk_identity()}
+        elif arguments.operation == "verify":
+            result = verify_catalog(arguments.catalog)
         elif arguments.operation == "evaluate":
             result = evaluate_submission(arguments.catalog, arguments.task, arguments.patch,
                                          arguments.artifacts, arguments.timeout)

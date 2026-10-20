@@ -162,6 +162,37 @@ repaired, and all six attempt containers were confirmed absent afterward.
 No live LLM provider was used. This qualifies one actual evaluator instance
 per population, not a complete dataset run or ASB-selected-agent execution.
 
+The six cases were repeated after adding actual image/SDK provenance capture;
+all passed again in 208 seconds, with per-attempt cleanup checks. Reports now
+retain the actual image ID/repository digest and installed SDK version/source
+receipt, rather than treating a mutable `latest` image tag or installer recipe
+as sufficient evidence of which code ran.
+
+The real CLI installer also passed a repair qualification: install all 300
+Lite tasks, deliberately damage evaluator metadata, reinstall while preserving
+the changed dataset in a separate backup, verify the restored metadata, then
+reinstall with a user-selected subset and verify its bytes remain unchanged.
+This check took 8 seconds using the project cache. Cached datasets are verified
+locally before reuse, and helper scripts are published atomically so parallel
+workload installers never see a partially written controller.
+
+Optional qualification commands (public dataset/image downloads, no LLM calls):
+
+```sh
+BENCHMARK_PROJECT=/absolute/path/to/asb-project
+ASB_TEST_SWECATALOG_ROOT="$BENCHMARK_PROJECT" \
+  "$BENCHMARK_PROJECT/.asb-tools/swebench/venv/bin/python" \
+  crates/asb-cli/tests/benchmark_live_swebench.py
+ASB_TEST_SWECATALOG_ROOT="$BENCHMARK_PROJECT" \
+  ASB_TEST_BENCHMARK_ASB="$PWD/target/debug/asb" \
+  python3 crates/asb-cli/tests/benchmark_live_install.py
+```
+
+Install the three workload catalogs first. The runtime check needs Docker
+access and reserved free disk space; the installer check uses a new isolated
+workload directory. Both retain their diagnostic artifacts under the supplied
+project. Ordinary CI uses only synthetic catalog/evaluator/transport fixtures.
+
 ### Terminal-Bench dataset compatibility checks
 
 The pinned Terminal-Bench 1 dataset checkout's exact registry subset was
