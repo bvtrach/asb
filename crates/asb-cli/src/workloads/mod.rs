@@ -613,7 +613,12 @@ pub(crate) fn evaluate(
         || normalized.contains("'-'.join(value.lower().split())")
         || normalized.contains("\"-\".join(value.lower().split())")
         || normalized.contains("'-'.join(value.lower().replace('_', ' ').split())")
-        || normalized.contains("\"-\".join(value.lower().replace(\"_\", \" \").split())");
+        || normalized.contains("\"-\".join(value.lower().replace(\"_\", \" \").split())")
+        || normalized.contains("'-'.join(value.split()).lower()")
+        || normalized.contains("\"-\".join(value.split()).lower()")
+        || (normalized.contains("words = value.lower().split()")
+            && (normalized.contains("'-'.join(words)")
+                || normalized.contains("\"-\".join(words)")));
     let has_label = normalized.contains(&format!(
         "def suite_label() -> str:\n    return \"{}\"",
         expected_label
@@ -1140,6 +1145,13 @@ mod tests {
         )
         .unwrap();
         assert!(evaluate("agentbench", &workspace, "").unwrap());
+        for implementation in [
+            "def normalize(value: str) -> str:\n    return '-'.join(value.split()).lower()\n\ndef suite_label() -> str:\n    return \"agentbench\"\n",
+            "def normalize(value: str) -> str:\n    words = value.lower().split()\n    return \"-\".join(words)\n\ndef suite_label() -> str:\n    return \"agentbench\"\n",
+        ] {
+            fs::write(&task, implementation).unwrap();
+            assert!(evaluate("agentbench", &workspace, "").unwrap());
+        }
         let _ = fs::remove_dir_all(root);
     }
 
