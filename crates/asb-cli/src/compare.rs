@@ -96,7 +96,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 format!("measurements-concurrency-{replica}")
             });
             let run_path = measurement_dir.join("run.json");
-            let artifacts = artifact_links(parent, &result_dir);
+            let artifacts = artifact_links(parent, &measurement_dir);
             if !run_path.is_file() {
                 benchmark_data.push(BenchmarkData {
                 label,
@@ -341,13 +341,12 @@ fn benchmark_identity(path: &Path) -> Result<(String, String, String, String, us
     ))
 }
 
-fn artifact_links(sweep_parent: &Path, result_dir: &Path) -> Vec<String> {
+fn artifact_links(sweep_parent: &Path, measurement_dir: &Path) -> Vec<String> {
     let mut files = Vec::new();
     // Measurement artifacts are the primary evidence for a comparison. Add
     // them before the bounded recursive inventory so a large external
     // workload workspace cannot crowd collector artifacts out of the
     // HTML report's artifact links.
-    let measurement_dir = result_dir.join("measurements");
     if let Ok(entries) = fs::read_dir(&measurement_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -443,7 +442,7 @@ fn write_execution_timeline_svg(path: &Path, benchmarks: &[BenchmarkData]) -> Re
         "system CPU",
         "block I/O wait",
         "runnable wait",
-        "other wall time",
+        "unclassified elapsed wall time",
     ];
     let mut svg = format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"980\" height=\"{height}\" viewBox=\"0 0 980 {height}\"><title>Agent execution time composition</title><rect width=\"100%\" height=\"100%\" fill=\"#fff\"/><text x=\"24\" y=\"30\" font-family=\"sans-serif\" font-size=\"18\" font-weight=\"bold\">Agent execution time composition</text><text x=\"24\" y=\"51\" font-family=\"sans-serif\" font-size=\"12\" fill=\"#52606d\">Process-tree accounting; CPU categories may overlap wall time for concurrent children.</text>"
@@ -460,7 +459,7 @@ fn write_execution_timeline_svg(path: &Path, benchmarks: &[BenchmarkData]) -> Re
         for (i, value) in values.iter().enumerate() {
             if *value > 0.0 {
                 let width = 690.0 * value / total;
-                svg.push_str(&format!("<rect class=\"bar\" x=\"{x:.2}\" y=\"{y}\" width=\"{width:.2}\" height=\"22\" fill=\"{}\"><title>{}: {:.2} ms</title></rect>", colors[i], labels[i], value));
+                svg.push_str(&format!("<rect class=\"bar\" data-label=\"{}\" data-value=\"{value:.2} ms\" x=\"{x:.2}\" y=\"{y}\" width=\"{width:.2}\" height=\"22\" fill=\"{}\"><title>{}: {:.2} ms</title></rect>", escape(labels[i]), colors[i], labels[i], value));
                 x += width;
             }
         }
@@ -1345,6 +1344,11 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
+            root.join("sweep-results/000-one/measurements/perfetto-state-timeline.svg"),
+            "<svg><title>Exact scheduler state timeline</title></svg>",
+        )
+        .unwrap();
+        std::fs::write(
             root.join("sweep-results/000-one/measurements/bpftrace-sched-latency.json"),
             r#"{"metrics":{"bpftrace.sched-latency.wakeup_latency_events":7}}"#,
         )
@@ -1438,6 +1442,7 @@ mod tests {
         assert!(!report.contains("run.json"));
         assert!(report.contains("Perfetto metric SVG"));
         assert!(report.contains("perfetto-metric-scheduler_events.svg"));
+        assert!(report.contains("perfetto-state-timeline.svg"));
         assert!(report.contains("<div class=\"embedded-svg perfetto-metric\""));
         assert!(report.contains("bpftrace profile SVG"));
         assert!(report.contains("bpftrace-sched-latency.svg"));
