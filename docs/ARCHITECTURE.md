@@ -77,8 +77,11 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   it scopes scheduler analysis to that PID and its descendants. Each concurrent
   run has a distinct trace identity. The project-local trace processor
   extracts stable aggregates,
-  and ASB preserves the native `.perfetto-trace`, a bounded JSON record, and
-  one portable SVG per extracted metric for the comparison report;
+  and ASB preserves the native `.perfetto-trace`, a bounded JSON record, one
+  portable SVG per extracted metric, and an exact per-thread scheduler-state
+  timeline SVG. The timeline uses trace timestamps and retains simultaneous
+  child-thread states as separate lanes; it is distinct from the ordered
+  aggregate execution-composition graph in `asb compare`;
   the perf adapter records both call stacks and stable `perf stat` counters
   (task clock, context switches, migrations, faults, cycles, instructions) for
   the complete process tree with explicit child inheritance; pidstat uses
