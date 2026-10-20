@@ -762,11 +762,13 @@ fn run_mode(
     for path in adapter_artifacts.cleanup_paths {
         let _ = std::fs::remove_file(path);
     }
-    let steps = measurements::steps_from_sources(
-        &config.agent,
-        &bounded(&child.stdout),
-        &bounded(&child.stderr),
-    );
+    let steps = adapter_artifacts.steps.or_else(|| {
+        measurements::steps_from_sources(
+            &config.agent,
+            &bounded(&child.stdout),
+            &bounded(&child.stderr),
+        )
+    });
     let mut stderr = bounded(&child.stderr);
     if let Some(error) = run_error.as_deref() {
         stderr.push_str("\nASB run error: ");

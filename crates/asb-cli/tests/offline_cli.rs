@@ -1173,7 +1173,9 @@ fn cgroup_invalid_parent_falls_back_without_changing_the_directory() {
         &std::fs::read(project.0.join("measurements/cpu-accounting.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(accounting["status"], "unavailable");
+    assert_eq!(accounting["status"], "completed");
+    assert_eq!(accounting["source"], "proc-sampling");
+    assert!(accounting["metrics"]["cpu_user_ms"].is_number());
     assert!(
         accounting["reason"]
             .as_str()
