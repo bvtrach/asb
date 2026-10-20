@@ -81,6 +81,7 @@ fn collect(context: &CollectionContext<'_>) -> AgentArtifacts {
             context.interface == Some(crate::endpoint::Interface::AnthropicMessages)
                 && context.anthropic_input_includes_cache,
         )),
+        steps: None,
         cleanup_paths: Vec::new(),
     }
 }

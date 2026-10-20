@@ -56,6 +56,9 @@ fn process(
         result.metrics = parse_iostat_metrics(context.stdout);
     }
     result.series = parse_series(context.stdout);
+    if result.metrics.is_empty() && result.series.is_empty() {
+        result.status = "unavailable".into();
+    }
     Ok(result)
 }
 

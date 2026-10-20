@@ -58,6 +58,7 @@ impl CollectorAdapter for CpuAccounting {
         let state = session.state::<State>();
         let mut state = state.borrow_mut();
         let mut values = None;
+        let mut source = "proc-sampling";
         let mut cleanup = "not_created";
         if let Some(leaf) = state.leaf.take() {
             let populated = fs::read_to_string(leaf.path.join("cgroup.events"))
@@ -69,6 +70,7 @@ impl CollectorAdapter for CpuAccounting {
                 Ok(cpu) => {
                     session.record_cpu_accounting(cpu.0, cpu.1, "cgroup-v2");
                     values = Some(cpu);
+                    source = "cgroup-v2";
                 }
                 Err(error) => state.reason = Some(error),
             }
@@ -78,14 +80,19 @@ impl CollectorAdapter for CpuAccounting {
                 "retained_busy_or_inaccessible"
             };
         }
+        if values.is_none()
+            && let Some((user_ms, system_ms)) = session.sampled_cpu_accounting()
+        {
+            values = Some(((user_ms * 1_000.0) as u64, (system_ms * 1_000.0) as u64));
+        }
         measurements::write_json(
             &session.dir.join("cpu-accounting.json"),
             &serde_json::json!({
                 "schema_version": 1, "collector": "cpu-accounting",
                 "status": if values.is_some() { "completed" } else { "unavailable" },
-                "source": if values.is_some() { "cgroup-v2" } else { "proc-sampling" },
+                "source": source,
                 "reason": state.reason,
-                "remediation": if values.is_none() { Some("Run ASB inside a delegated cgroup-v2 scope or set ASB_CGROUP_PARENT to an existing writable delegated cgroup; proc sampling remains available.") } else { None },
+                "remediation": if source == "proc-sampling" { Some("Run ASB inside a delegated cgroup-v2 scope or set ASB_CGROUP_PARENT to an existing writable delegated cgroup; process-tree sampling was used as the fallback.") } else { None },
                 "cleanup": cleanup,
                 "metrics": values.map(|(user, system)| serde_json::json!({"cpu_user_ms": user as f64 / 1000.0, "cpu_system_ms": system as f64 / 1000.0})),
             }),

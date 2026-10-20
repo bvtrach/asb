@@ -158,6 +158,7 @@ The built-in recipes are:
 | `openjiuwen` | pinned Python package | `openjiuwen` |
 | `claude-code` | pinned npm package | `claude` |
 | `goose` | pinned upstream Linux binary | `goose` |
+| `hermes` | pinned Python package | `hermes` |
 | `cline` | pinned npm package | `cline` |
 | `continue` | pinned npm package | `cn` |
 | `cli2key` | pinned npm bridge package | `codex-bridge` |

@@ -567,6 +567,12 @@ impl Session {
         timing.cpu_accounting_source = Some(source.into());
     }
 
+    /// Return process-tree sampler totals when cgroup delegation is absent.
+    pub(crate) fn sampled_cpu_accounting(&self) -> Option<(f64, f64)> {
+        let timing = self.component_timings.get("agent.execute")?;
+        Some((timing.cpu_user_ms?, timing.cpu_system_ms?))
+    }
+
     pub(crate) fn trace_id(&self) -> &str {
         &self.trace_id
     }
@@ -588,7 +594,13 @@ impl Session {
         self.shared_artifacts.get(&kind).map(PathBuf::as_path)
     }
 
-    /// Attach perf to the selected child after it has been spawned.
+    pub(crate) fn agent_launch(&mut self, program: &str, args: &[String]) {
+        for collector in collectors::all() {
+            collector.agent_launch(self, program, args);
+        }
+    }
+
+    /// Attach collectors to the selected child after it has been spawned.
     pub fn attach_pid(&mut self, pid: u32) -> Result<(), String> {
         #[cfg(test)]
         if self.test_attach_failure {

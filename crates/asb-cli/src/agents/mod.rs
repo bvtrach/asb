@@ -84,6 +84,9 @@ pub(crate) struct CommandSpec {
 #[derive(Default)]
 pub(crate) struct AgentArtifacts {
     pub token_usage: Option<crate::measurements::TokenUsage>,
+    /// Agent-reported completed model/tool calls, when the adapter exposes a
+    /// bounded structured usage artifact.
+    pub steps: Option<u64>,
     /// Files that were consumed by this adapter and can be removed once their
     /// data has been incorporated into the generic run result.
     pub cleanup_paths: Vec<PathBuf>,

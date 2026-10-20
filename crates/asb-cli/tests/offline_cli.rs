@@ -984,6 +984,11 @@ const endpoint = config.providers.asb.baseUrl;
 if (!/^http:\/\/127\.0\.0\.1:\d+\/v1$/.test(endpoint) || config.providers.asb.api !== 'openai-responses' || process.env.ASB_AGENT_API_KEY !== 'asb-replay') {
   console.error('unexpected replay configuration'); process.exit(11);
 }
+if (process.argv.includes('--fixture-agent-worker')) {
+  const memory = Buffer.alloc(8 * 1024 * 1024, 1);
+  setTimeout(() => process.exit(memory[0] === 1 ? 0 : 1), 1600);
+  return;
+}
 const behavior = process.env.ASB_FIXTURE_BEHAVIOR || 'success';
 async function main() {
   if (behavior === 'skip') { console.log('fixture-no-request'); return; }
@@ -1004,6 +1009,19 @@ async function main() {
       const result=require('child_process').spawnSync(process.execPath,['-e','const end=performance.now()+60; while(performance.now()<end) {}']);
       if (result.status!==0) throw new Error('offline CPU child failed');
     }
+  }
+  if (behavior === 'agent-workers' || behavior === 'only-tools') {
+    const {spawn} = require('child_process');
+    const children = [];
+    if (behavior === 'agent-workers') {
+      for (let i=0;i<2;i++) children.push(spawn(process.execPath,[__filename,'--fixture-agent-worker']));
+    }
+    // These share the runtime with the agent, but are not agent workers.
+    for (let i=0;i<3;i++) children.push(spawn(process.execPath,['-e','const memory=Buffer.alloc(32*1024*1024,1);setTimeout(()=>process.exit(memory[0]===1?0:1),1600)']));
+    children.push(spawn('/bin/sh',['-c','sleep 1.6']));
+    await Promise.all(children.map(child=>new Promise((resolve,reject)=>{
+      child.on('error',reject); child.on('exit',code=>code===0?resolve():reject(new Error('fixture child failed')));
+    })));
   }
   console.log('fixture-agent-output');
   if (behavior === 'api-error-event') console.log(JSON.stringify({type:'agent_end',messages:[{role:'assistant',stopReason:'error',errorMessage:'400 fixture-secret'}]}));
@@ -1035,6 +1053,51 @@ fn replay(project: &Project, behavior: &str, additional: &[&str]) -> Output {
     ];
     args.extend_from_slice(additional);
     project.command_with_env(&args, &[("ASB_FIXTURE_BEHAVIOR", behavior)])
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn replay_agent_process_collectors_exclude_tools_and_isolate_concurrent_runs() {
+    for (behavior, expected) in [("agent-workers", 2), ("only-tools", 0)] {
+        let project = replay_project(2);
+        let result = project.command_with_env(
+            &[
+                "run",
+                "benchmark.toml",
+                "--replay",
+                "--cassette",
+                "tape.jsonl",
+                "--measurements",
+                "measurements",
+            ],
+            &[
+                ("ASB_FIXTURE_BEHAVIOR", behavior),
+                ("ASB_MEASURE_AGENT_MEMORY", "1"),
+                ("ASB_MEASURE_AGENT_WORKERS", "1"),
+                ("ASB_MEASURE_INTERVAL_MS", "100"),
+            ],
+        );
+        expect_success(&result);
+        for replica in 1..=2 {
+            let dir = project
+                .0
+                .join(format!("measurements-concurrency-{replica}"));
+            let workers: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(dir.join("agent-workers.json")).unwrap())
+                    .unwrap();
+            assert_eq!(workers["status"], "observed", "{workers}");
+            assert_eq!(
+                workers["metrics"]["spawned_worker_count"], expected,
+                "{workers}"
+            );
+            let memory: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(dir.join("agent-memory.json")).unwrap())
+                    .unwrap();
+            assert_eq!(memory["status"], "observed", "{memory}");
+            assert!(memory["metrics"]["peak_rss_mib"].as_f64().unwrap() > 0.0);
+            assert!(!memory.to_string().contains("--fixture-agent-worker"));
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1114,7 +1177,9 @@ fn cgroup_invalid_parent_falls_back_without_changing_the_directory() {
         &std::fs::read(project.0.join("measurements/cpu-accounting.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(accounting["status"], "unavailable");
+    assert_eq!(accounting["status"], "completed");
+    assert_eq!(accounting["source"], "proc-sampling");
+    assert!(accounting["metrics"]["cpu_user_ms"].is_number());
     assert!(
         accounting["reason"]
             .as_str()
@@ -1231,6 +1296,70 @@ fetch(target, {method:'POST',headers:{'content-type':'application/json'},body:JS
         .unwrap();
         assert_eq!(measurement["token_usage"]["total_tokens"], 105, "{agent}");
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn hermes_replay_routes_responses_and_collects_usage_ledger() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = replay_project(1);
+    project.write(
+        "benchmark.toml",
+        "agent='hermes'\nworkload='bug-fix'\nprovider='cli2key'\nmodel='test-model'\nworkspace='workspace'\nlog_file='run.log'\n",
+    );
+    let body = serde_json::json!({
+        "model": "test-model",
+        "input": "offline",
+        "tools": [{"type": "function"}]
+    })
+    .to_string();
+    let response = serde_json::json!({
+        "id": "resp_fixture",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "done"}]}]
+    })
+    .to_string();
+    let cassette = serde_json::json!({
+        "request": {"method": "POST", "url": "/v1/responses", "body": body},
+        "response": {"status": 200, "headers": {"content-type": "application/json"}, "body": response}
+    });
+    project.write("tape.jsonl", &format!("{cassette}\n"));
+    let executable = ".asb-tools/hermes/bin/hermes";
+    project.write(
+        executable,
+        r##"#!/usr/bin/env node
+const fs = require('fs');
+const usage = process.argv[process.argv.indexOf('--usage-file') + 1];
+const body = {model:'test-model',input:'offline',tools:[{type:'function'}]};
+fetch(process.env.OPENAI_BASE_URL.replace(/\/$/, '') + '/responses', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
+  .then(response => {
+    if (!response.ok) { process.exitCode = 1; return; }
+    fs.writeFileSync('src/parser.py', "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n");
+    fs.mkdirSync(require('path').dirname(usage), {recursive:true});
+    fs.writeFileSync(usage, JSON.stringify({input_tokens:12,output_tokens:4,cache_read_tokens:2,total_tokens:18}));
+    process.stdout.write('done\n');
+  }).catch(() => { process.exitCode = 1; });
+"##,
+    );
+    std::fs::set_permissions(
+        project.0.join(executable),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let result = replay(
+        &project,
+        "success",
+        &["--json", "--measurements", "measurements"],
+    );
+    expect_success(&result);
+    let json: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(json["token_usage"]["input_tokens"], 12);
+    assert_eq!(json["token_usage"]["output_tokens"], 4);
+    assert_eq!(json["token_usage"]["cached_tokens"], 2);
+    assert_eq!(json["token_usage"]["total_tokens"], 16);
+    let measurement: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(project.0.join("measurements/run.json")).unwrap())
+            .unwrap();
+    assert_eq!(measurement["token_usage"], json["token_usage"]);
 }
 
 #[cfg(unix)]

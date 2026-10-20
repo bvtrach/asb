@@ -784,11 +784,13 @@ fn run_mode(
     let steps = if let Some(metadata) = guest.as_ref() {
         metadata.steps
     } else {
-        measurements::steps_from_sources(
-            &config.agent,
-            &bounded(&child.stdout),
-            &bounded(&child.stderr),
-        )
+        adapter_artifacts.steps.or_else(|| {
+            measurements::steps_from_sources(
+                &config.agent,
+                &bounded(&child.stdout),
+                &bounded(&child.stderr),
+            )
+        })
     };
     let mut stderr = bounded(&child.stderr);
     if let Some(error) = run_error.as_deref() {
@@ -966,6 +968,13 @@ fn run_measured_agent(
     show_output: bool,
     output: &mut dyn Write,
 ) -> Result<Output, Error> {
+    if let Some(session) = session.as_deref_mut() {
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        session.agent_launch(program, &args);
+    }
     #[cfg(unix)]
     if session.is_some()
         && let Some(target_args) = target_args

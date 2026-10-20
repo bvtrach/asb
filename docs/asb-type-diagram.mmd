@@ -93,6 +93,7 @@ classDiagram
         +wall_ms: u128
         +cpu_user_ms: Option~f64~
         +cpu_system_ms: Option~f64~
+        +cpu_accounting_source: Option~String~
         +io_wait_ms: Option~f64~
         +scheduler_wait_ms: Option~f64~
         +network_wait_ms: Option~f64~
@@ -254,16 +255,18 @@ classDiagram
         +workload_success: Option~bool~
         +failure_kind: Option~&'a str~
         +failure_reason: Option~&'a str~
-        +success_rate: f64
+        +success_rate: Option~f64~
+        +adapter_smoke_success: Option~bool~
         +agent: &'a str
         +workload: &'a str
         +workload_evaluation: &'a str
+        +workload_baseline_passed: Option~bool~
         +provider: &'a str
         +model: &'a str
         +elapsed_ms: u128
         +exit_code: Option~i32~
         +token_usage: collectors_adapters_TokenUsage
-        +steps: u64
+        +steps: Option~u64~
         +started_unix_ms: u128
     }
     class C040["RunOptions"] {
@@ -275,6 +278,7 @@ classDiagram
         +respect_record_timings: bool
     }
     class C041["RunResult"] {
+        -schema_version: u32
         -status: &'a str
         -agent: &'a str
         -workload: &'a str
@@ -283,13 +287,15 @@ classDiagram
         -process_success: bool
         -workload_success: Option~bool~
         -workload_evaluation: &'static str
+        -workload_baseline_passed: Option~bool~
         -failure_kind: Option~&'static str~
         -failure_reason: Option~String~
-        -success_rate: f64
+        -success_rate: Option~f64~
+        -adapter_smoke_success: Option~bool~
         -elapsed_ms: u128
         -exit_code: Option~i32~
         -token_usage: collectors_adapters_TokenUsage
-        -steps: u64
+        -steps: Option~u64~
         -cassette: Option~String~
         -stdout: String
         -stderr: String
@@ -325,10 +331,13 @@ classDiagram
         +start_process_sampler(pid: u32) void
         +stop_process_sampler() void
         +write_component_measurements(elapsed_ms: u128) Result~(), String~
+        +record_cpu_accounting(user_usec: u64, system_usec: u64, source: &str) void
+        +sampled_cpu_accounting() Option~(f64, f64)~
         +trace_id() &str
         +state() Rc~RefCell<T>~
         +set_artifact(kind: SharedArtifact, path: PathBuf) void
         +artifact(kind: SharedArtifact) Option~&Path~
+        +agent_launch(program: &str, args: &[String]) void
         +attach_pid(pid: u32) Result~(), String~
         +finish(self, measurement: RunMeasurement~'a~) Result~(), String~
         +start_snapshot(name: &str, variable: &str, args: &[&str], enabled: bool, executable: &Path) Result~(), String~
@@ -444,9 +453,11 @@ classDiagram
         +collect(context: &CollectionContext~'_~) agents::AgentArtifacts
         +output_usage(stdout: &str, stderr: &str, input_includes_cache: bool) Option~crate::measurements::TokenUsage~
         +final_response(output: &str, workspace: &Path) Option~String~
+        +step_count(stdout: &str, stderr: &str) Option~u64~
     }
     class C061["agents::AgentArtifacts"] {
         +token_usage: Option~crate::measurements::TokenUsage~
+        +steps: Option~u64~
         +cleanup_paths: Vec~PathBuf~
     }
     class C062["agents::CollectionContext"] {
@@ -484,10 +495,12 @@ classDiagram
         -output_usage: Option~UsageHook~
         -final_response: Option~FinalResponseHook~
         -process: Option~ProcessHook~
+        -step_count: Option~StepCountHook~
         -replay_credential_vars: &'static [&'static str]
         +new(id: &'static str, executable: &'static str, recipe: Recipe, supported_endpoints: &'static [Support], command: CommandBuilder, prepare: PreparationHook) Self
         +with_collection(self, collect: CollectionHook) Self
         +with_output_usage(self, hook: UsageHook) Self
+        +with_step_count(self, hook: StepCountHook) Self
         +with_final_response(self, hook: FinalResponseHook) Self
         +with_process(self, hook: ProcessHook) Self
         +with_replay_credential_vars(self, vars: &'static [&'static str]) Self
@@ -534,20 +547,39 @@ classDiagram
         +stderr: &'a str
         +cassette: Option~&'a Path~
     }
-    class C075["collectors_adapters_BpftraceCollector"] {
+    class C075["collectors_adapters_AgentProcesses"] {
+        +id() &'static str
+        +environment_flag() Option~&'static str~
+        +requires_pid() bool
+        +configure(session: &mut Session, selected: &[String]) Result~(), String~
+        +agent_launch(session: &mut Session, program: &str, args: &[String]) void
+        +attach_pid(session: &mut Session, pid: u32) Result~(), String~
+        +lifecycle_event(session: &mut Session, event: LifecycleEvent) Result~(), String~
+        +finish(session: &mut Session) Result~(), String~
+        +graph_section(name: &str) Option~collectors_GraphSection~
     }
-    class C076["collectors_adapters_BpftraceProfile"] {
+    class C076["collectors_adapters_BpftraceCollector"] {
+    }
+    class C077["collectors_adapters_BpftraceProfile"] {
         -name: &'static str
         -description: &'static str
         -program: &'static str
+        -default_selection: bool
     }
-    class C077["collectors_adapters_BpftraceState"] {
+    class C078["collectors_adapters_BpftraceState"] {
         -enabled: bool
         -profiles: Vec~collectors_adapters_BpftraceProfile~
     }
-    class C078["«trait» collectors::CollectorAdapter"] {
+    class C079["«trait» collectors::CollectorAdapter"] {
         +id() &'static str
         +start(session: &mut Session) Result~(), String~
+        +id() &'static str
+        +environment_flag() Option~&'static str~
+        +tool_id() Option~&'static str~
+        +requires_pid() bool
+        +preflight() Result~(), String~
+        +attach_pid(session: &mut Session, pid: u32) Result~(), String~
+        +finish(session: &mut Session) Result~(), String~
         +id() &'static str
         +usage(context: &UsageContext~'_~) Option~collectors_adapters_TokenUsage~
         +usage_file(path: &Path) Option~collectors_adapters_TokenUsage~
@@ -617,43 +649,59 @@ classDiagram
         +display_artifact(name: &str) Option~ArtifactDisplay~
         +finish(session: Session) Result~(), String~
     }
-    class C079["collectors_adapters_CpuIdentity"] {
+    class C080["collectors_adapters_CpuAccounting"] {
+    }
+    class C081["collectors_adapters_CpuIdentity"] {
         -model: Option~String~
         -vendor: Option~String~
         -implementer: Option~String~
         -part: Option~String~
     }
-    class C080["collectors_adapters_CpuState"] {
+    class C082["collectors_adapters_CpuState"] {
         -enabled: bool
     }
-    class C081["collectors_adapters_FlamegraphCollector"] {
+    class C083["collectors_adapters_Drop"] {
+        +drop() void
+        +drop() void
     }
-    class C082["collectors_adapters_FlamegraphStatus"] {
+    class C084["collectors_adapters_FlamegraphCollector"] {
+    }
+    class C085["collectors_adapters_FlamegraphStatus"] {
         -schema_version: u32
         -status: &'a str
         -artifact: Option~&'a str~
         -reason: Option~&'a str~
     }
-    class C083["collectors_adapters_GovernorInfo"] {
+    class C086["collectors_adapters_GovernorInfo"] {
         -names: Vec~String~
         -min_khz: Option~u64~
         -max_khz: Option~u64~
     }
-    class C084["collectors_adapters_IoState"] {
+    class C087["collectors_adapters_Identity"] {
+        -executable: PathBuf
+        -interpreter: Option~PathBuf~
+        -runtime_arguments: Option~(String, String)~
+        +resolve(program: &str, args: &[String]) Option~Self~
+        +matches(proc: &Path) bool
+    }
+    class C088["collectors_adapters_IoState"] {
         -enabled: bool
     }
-    class C085["collectors_adapters_IostatCollector"] {
+    class C089["collectors_adapters_IostatCollector"] {
     }
-    class C086["collectors_adapters_MpstatCollector"] {
+    class C090["collectors_adapters_Leaf"] {
+        -path: PathBuf
     }
-    class C087["collectors_adapters_PerfCollector"] {
+    class C091["collectors_adapters_MpstatCollector"] {
     }
-    class C088["collectors_adapters_PerfState"] {
+    class C092["collectors_adapters_PerfCollector"] {
+    }
+    class C093["collectors_adapters_PerfState"] {
         -enabled: bool
     }
-    class C089["collectors_adapters_PerfettoCollector"] {
+    class C094["collectors_adapters_PerfettoCollector"] {
     }
-    class C090["collectors_adapters_PerfettoState"] {
+    class C095["collectors_adapters_PerfettoState"] {
         -enabled: bool
         -trace: Option~PathBuf~
         -pid: Option~u32~
@@ -664,15 +712,37 @@ classDiagram
         -tracepoint_count: u64
         -metrics: BTreeMap~String, f64~
     }
-    class C091["collectors_adapters_RuntimeCollector"] {
+    class C096["collectors_adapters_RuntimeCollector"] {
     }
-    class C092["collectors_adapters_StepsCollector"] {
+    class C097["collectors_adapters_Sampler"] {
+        -stop: Sender~()~
+        -thread: Option~JoinHandle<Totals>~
+        +finish(self) collectors_adapters_Totals
     }
-    class C093["collectors_adapters_SuccessRateCollector"] {
+    class C098["collectors_adapters_State"] {
+        -selected: bool
+        -memory: bool
+        -workers: bool
+        -identity: Option~collectors_adapters_Identity~
+        -sampler: Option~collectors_adapters_Sampler~
+        -totals: collectors_adapters_Totals
+        -leaf: Option~collectors_adapters_Leaf~
+        -reason: Option~String~
     }
-    class C094["collectors_adapters_SystemCollector"] {
+    class C099["collectors_adapters_StateSpan"] {
+        -tid: u32
+        -ts: u64
+        -dur: u64
+        -state: String
+        -io_wait: bool
     }
-    class C095["collectors_adapters_SystemInfo"] {
+    class C100["collectors_adapters_StepsCollector"] {
+    }
+    class C101["collectors_adapters_SuccessRateCollector"] {
+    }
+    class C102["collectors_adapters_SystemCollector"] {
+    }
+    class C103["collectors_adapters_SystemInfo"] {
         -schema_version: u32
         -collected_unix_ms: u128
         -os: &'static str
@@ -698,26 +768,33 @@ classDiagram
         -collector_versions: BTreeMap~String, String~
         -kernel_settings: BTreeMap~String, String~
     }
-    class C096["collectors_adapters_TokenUsage"] {
+    class C104["collectors_adapters_TokenUsage"] {
         +merge(self, other: Self) Self
         +add(self, other: Self) Self
         +merge_with_source(self, other: Self, source: &str) Self
         +with_derived_total(self) Self
         +any() bool
     }
-    class C097["collectors_adapters_TokenUsageCollector"] {
+    class C105["collectors_adapters_TokenUsageCollector"] {
     }
-    class C098["collectors_adapters_Topology"] {
+    class C106["collectors_adapters_Topology"] {
         -packages: BTreeSet~String~
         -cores: BTreeSet~(String, String)~
     }
-    class C099["measurements_Drop"] {
+    class C107["collectors_adapters_Totals"] {
+        -seen: BTreeSet~(u32, u64)~
+        -peak_rss_kib: u64
+        -samples: u64
+        -incomplete: bool
+        +sample(root: u32, identity: &Identity) void
+    }
+    class C108["measurements_Drop"] {
         +drop() void
     }
-    class C100["measurements_Fixture"] {
+    class C109["measurements_Fixture"] {
         +new(contents: &str) Self
     }
-    class C101["providers_ModelSpec"] {
+    class C110["providers_ModelSpec"] {
         +name: &'static str
         +credential: Option~&'static str~
         +endpoint: Option~&'static str~
@@ -726,7 +803,7 @@ classDiagram
         +url(self) Option~String~
         +url_for_model(self, selected: Option~&str~) Option~String~
     }
-    class C102["providers_ProviderSpec"] {
+    class C111["providers_ProviderSpec"] {
         +name: &'static str
         +credential: Option~&'static str~
         +endpoint: Option~&'static str~
@@ -734,7 +811,7 @@ classDiagram
         +tape_endpoint_envs: &'static [&'static str]
         +bridge_tool: Option~&'static str~
     }
-    class C103["providers::adapters::cli2key_Bridge"] {
+    class C112["providers::adapters::cli2key_Bridge"] {
         -api_key: String
         -base_url: String
         -process: Option~Child~
@@ -745,10 +822,10 @@ classDiagram
         +api_key() &str
         +base_url() &str
     }
-    class C104["providers::adapters::cli2key_Drop"] {
+    class C113["providers::adapters::cli2key_Drop"] {
         +drop() void
     }
-    class C105["proxy::Chain"] {
+    class C114["proxy::Chain"] {
         -hops: Vec~Box<dyn ProxySession>~
         -url: String
         +start(names: &[String], upstream: Option~&str~, configurations: &HashMap~String, Box<dyn Any>~) Result~Self, Error~
@@ -756,29 +833,29 @@ classDiagram
         +url() &str
         +stop(self) Result~(), Error~
     }
-    class C106["proxy::Drop"] {
+    class C115["proxy::Drop"] {
         +drop() void
     }
-    class C107["proxy::adapters::Drop"] {
+    class C116["proxy::adapters::Drop"] {
         +drop() void
         +drop() void
         +drop() void
     }
-    class C108["proxy::adapters::LlmtapeAdapter"] {
+    class C117["proxy::adapters::LlmtapeAdapter"] {
     }
-    class C109["«trait» proxy::ProxyAdapter"] {
+    class C118["«trait» proxy::ProxyAdapter"] {
         +name() &'static str
         +start(upstream: Option~&str~, settings: Option~&dyn Any~) Result~Box<dyn ProxySession>, Error~
     }
-    class C110["proxy::adapters::ProxyExecutable"] {
+    class C119["proxy::adapters::ProxyExecutable"] {
         +command() Command
     }
-    class C111["«trait» proxy::ProxySession"] {
+    class C120["«trait» proxy::ProxySession"] {
         +url() &str
         +finish() Result~(), Error~
         +abort() void
     }
-    class C112["proxy::adapters::RunningLlmtape"] {
+    class C121["proxy::adapters::RunningLlmtape"] {
         -child: Option~Child~
         -url: String
         -progress: Option~PathBuf~
@@ -786,19 +863,19 @@ classDiagram
         -mode: Mode
         -_scratch: proxy::adapters::Scratch
     }
-    class C113["proxy::adapters::Scratch"] {
+    class C122["proxy::adapters::Scratch"] {
         -path: PathBuf
         +create(parent: &Path) Result~Self, Error~
     }
-    class C114["proxy::adapters::Settings"] {
+    class C123["proxy::adapters::Settings"] {
         -mode: Mode
         -cassette: PathBuf
         -respect_record_timings: bool
         -workspace: PathBuf
     }
-    class C115["proxy::adapters::StartingChild"] {
+    class C124["proxy::adapters::StartingChild"] {
     }
-    class C116["tools::StaticTool"] {
+    class C125["tools::StaticTool"] {
         -id: &'static str
         -recipe: Recipe
         -kind: ToolKind
@@ -806,42 +883,51 @@ classDiagram
         +new(id: &'static str, recipe: Recipe, kind: ToolKind) Self
         +with_post_install(self, hook: PostInstallHook) Self
     }
-    class C117["«trait» tools::ToolAdapter"] {
+    class C126["«trait» tools::ToolAdapter"] {
         +id() &'static str
         +recipe() Recipe
         +kind() ToolKind
         +post_install(executable: &Path, progress: &mut dyn FnMut(u8, &str), output: tests_asb-cli_src_Write) Result~(), crate::Error~
     }
-    class C118["workloads_FileExpectation"] {
+    class C127["workloads_FileExpectation"] {
         -relative: &'static str
         -accepted: &'static [&'static str]
     }
-    class C119["workloads_Fixture"] {
+    class C128["workloads_Fixture"] {
         -name: &'static str
         -files: &'static [(&'static str, &'static str)]
     }
-    class C120["workloads_SourceExpectation"] {
+    class C129["workloads_ResolutionSummary"] {
+        +task_count: usize
+        +resolved_count: usize
+        +unresolved_count: usize
+        +unscored_count: usize
+        +success_rate: Option~f64~
+        +observe(kind: &str, resolved: bool) void
+    }
+    class C130["workloads_SourceExpectation"] {
         -files: &'static [FileExpectation]
     }
-    class C121["workloads_Trial"] {
+    class C131["workloads_Trial"] {
         +id: String
         +description: String
     }
-    class C122["workloads_TrialSet"] {
+    class C132["workloads_TrialSet"] {
         +workload: String
         +trials: Vec~workloads_Trial~
     }
-    class C123["workloads::adapters::PromptAdapter"] {
+    class C133["workloads::adapters::PromptAdapter"] {
     }
-    class C124["workloads::adapters::StaticExternalAdapter"] {
+    class C134["workloads::adapters::StaticExternalAdapter"] {
         -id: &'static str
         -trials: &'static [(&'static str, &'static str)]
         +new(id: &'static str, trials: &'static [(&'static str, &'static str)]) Self
     }
-    class C125["«trait» workloads::adapters::WorkloadAdapter"] {
+    class C135["«trait» workloads::adapters::WorkloadAdapter"] {
         +id() &'static str
         +trial_ids() Vec~workloads_Trial~
         +prepare_source(workloads: &Path, workspace: &Path) Result~usize, String~
+        +evaluation_kind() &'static str
         +id() &'static str
         +matches(name: &str) bool
         +trial_ids() Vec~workloads_Trial~
@@ -850,19 +936,19 @@ classDiagram
         +prepare_fixture(name: &str, workspace: &Path) Result~usize, String~
         +prepare_source(_workloads: &Path, _workspace: &Path) Result~usize, String~
     }
-    class C126["asb-cli_tests_Drop"] {
+    class C136["asb-cli_tests_Drop"] {
         +drop() void
         +drop() void
         +drop() void
     }
-    class C127["asb-cli_tests_MockProvider"] {
+    class C137["asb-cli_tests_MockProvider"] {
         -endpoint: String
         -requests: Arc~Mutex<Vec<String>>~
         -done: Arc~AtomicBool~
         -thread: Option~std::thread::JoinHandle<()>~
         +start() Self
     }
-    class C128["asb-cli_tests_Project"] {
+    class C138["asb-cli_tests_Project"] {
         +new() Self
         +command(args: &[&str]) Output
         +command_with_env(args: &[&str], extra: &[(&str, &str)]) Output
@@ -870,55 +956,60 @@ classDiagram
         +write(name: &str, contents: &str) void
         +init() void
     }
-    class C129["asb-cli_tests_WaitForFixtureExpiry"] {
+    class C139["asb-cli_tests_WaitForFixtureExpiry"] {
         -pid: u32
         -executable: PathBuf
     }
-    class C130["marker_tests_asb-cli_src_collectors_adapters_BadFile"] {
+    class C140["marker_tests_asb-cli_src_collectors_adapters_BadFile"] {
     }
-    class C131["marker_tests_asb-cli_src_collectors_adapters_Write"] {
+    class C141["marker_tests_asb-cli_src_collectors_adapters_Write"] {
         +write() Result~usize~
         +flush() Result~()~
     }
-    class C132["tests_asb-cli_src_Broken"] {
+    class C142["tests_asb-cli_src_Broken"] {
     }
-    class C133["tests_asb-cli_src_Capture"] {
+    class C143["tests_asb-cli_src_Capture"] {
         -bytes: Vec~u8~
         -flushed: bool
     }
-    class C134["tests_asb-cli_src_FailingWriter"] {
+    class C144["tests_asb-cli_src_FailingWriter"] {
         +write() Result~usize~
         +flush() Result~()~
     }
-    class C135["tests_asb-cli_src_Write"] {
+    class C145["tests_asb-cli_src_Write"] {
         +write(bytes: &[u8]) Result~usize~
         +flush() Result~()~
         +write() Result~usize~
         +flush() Result~()~
     }
-    class C136["tests_asb-cli_src_collectors_CollectorAdapter"] {
+    class C146["tests_asb-cli_src_collectors_CollectorAdapter"] {
         +id() &'static str
     }
-    class C137["tests_asb-cli_src_collectors_Minimal"] {
+    class C147["tests_asb-cli_src_collectors_Minimal"] {
     }
-    class C138["tests_asb-cli_src_proxy_FixtureAdapter"] {
+    class C148["tests_asb-cli_src_collectors_adapters_Drop"] {
+        +drop() void
+    }
+    class C149["tests_asb-cli_src_collectors_adapters_Guard"] {
+    }
+    class C150["tests_asb-cli_src_proxy_FixtureAdapter"] {
         -name: &'static str
         -fail: bool
         -fail_finish: bool
         -events: Arc~Mutex<Vec<String>>~
     }
-    class C139["tests_asb-cli_src_proxy_FixtureSession"] {
+    class C151["tests_asb-cli_src_proxy_FixtureSession"] {
         -name: &'static str
         -url: String
         -active: bool
         -fail_finish: bool
         -events: Arc~Mutex<Vec<String>>~
     }
-    class C140["tests_asb-cli_src_proxy_ProxyAdapter"] {
+    class C152["tests_asb-cli_src_proxy_ProxyAdapter"] {
         +name() &'static str
         +start(upstream: Option~&str~, settings: Option~&dyn Any~) Result~Box<dyn ProxySession>, Error~
     }
-    class C141["tests_asb-cli_src_proxy_ProxySession"] {
+    class C153["tests_asb-cli_src_proxy_ProxySession"] {
         +url() &str
         +finish() Result~(), Error~
         +abort() void
@@ -927,15 +1018,15 @@ classDiagram
     C001 --> C036
     C002 --> C023
     C003 --> C048
-    C008 --> C078
+    C008 --> C079
     C011 --> C012
     C031 --> C005
     C032 --> C033
     C032 ..> C033
     C034 ..> C033
     C036 --> C028
-    C039 --> C096
-    C041 --> C096
+    C039 --> C104
+    C041 --> C104
     C042 --> C008
     C042 --> C012
     C042 --> C021
@@ -946,27 +1037,33 @@ classDiagram
     C060 ..> C061
     C060 ..> C064
     C065 --> C013
-    C077 --> C076
-    C078 ..> C067
-    C078 ..> C071
-    C078 ..> C096
-    C112 --> C113
-    C122 --> C121
-    C125 ..> C121
+    C075 ..> C067
+    C078 --> C077
+    C079 ..> C067
+    C079 ..> C071
+    C079 ..> C104
+    C097 ..> C107
+    C098 --> C087
+    C098 --> C090
+    C098 --> C097
+    C098 --> C107
+    C121 --> C122
+    C132 --> C131
+    C135 ..> C131
     C066 ..|> C060
-    C075 ..|> C078
-    C081 ..|> C078
-    C085 ..|> C078
-    C086 ..|> C078
-    C087 ..|> C078
-    C089 ..|> C078
-    C091 ..|> C078
-    C092 ..|> C078
-    C093 ..|> C078
-    C094 ..|> C078
-    C097 ..|> C078
-    C108 ..|> C109
-    C112 ..|> C111
-    C116 ..|> C117
-    C123 ..|> C125
-    C124 ..|> C125
+    C076 ..|> C079
+    C084 ..|> C079
+    C089 ..|> C079
+    C091 ..|> C079
+    C092 ..|> C079
+    C094 ..|> C079
+    C096 ..|> C079
+    C100 ..|> C079
+    C101 ..|> C079
+    C102 ..|> C079
+    C105 ..|> C079
+    C117 ..|> C118
+    C121 ..|> C120
+    C125 ..|> C126
+    C133 ..|> C135
+    C134 ..|> C135
