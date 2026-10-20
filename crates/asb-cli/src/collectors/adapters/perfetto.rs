@@ -617,7 +617,10 @@ fn write_state_timeline_svg(
     trace_id: &str,
 ) -> Result<(), String> {
     if !processor.is_file() || !trace.is_file() {
-        return Ok(());
+        return write_timeline_notice(
+            dir,
+            "Timeline unavailable: native trace or trace processor is missing.",
+        );
     }
     let query = format!(
         "{} SELECT th.tid, st.ts, st.dur, st.state, COALESCE(st.io_wait,0) FROM thread_state st JOIN thread th ON st.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND st.ts >= bounds.start_ts AND st.ts < bounds.end_ts AND st.dur > 0 ORDER BY th.tid, st.ts LIMIT 4096",
@@ -630,7 +633,10 @@ fn write_state_timeline_svg(
         .output()
         .map_err(|e| format!("cannot extract Perfetto state timeline: {e}"))?;
     if !output.status.success() {
-        return Ok(());
+        return write_timeline_notice(
+            dir,
+            "Timeline unavailable: this trace processor cannot extract thread-state intervals.",
+        );
     }
     let mut spans = Vec::new();
     for line in bounded(&output.stdout).lines() {
@@ -654,7 +660,10 @@ fn write_state_timeline_svg(
         });
     }
     if spans.is_empty() {
-        return Ok(());
+        return write_timeline_notice(
+            dir,
+            "Timeline unavailable: the trace contains no process-tree scheduler intervals.",
+        );
     }
     let start = spans.iter().map(|s| s.ts).min().unwrap_or(0);
     let end = spans
@@ -697,6 +706,10 @@ fn write_state_timeline_svg(
     svg.push_str("</svg>\n");
     fs::write(dir.join("perfetto-state-timeline.svg"), svg)
         .map_err(|e| format!("cannot write Perfetto state timeline SVG: {e}"))
+}
+
+fn write_timeline_notice(dir: &Path, message: &str) -> Result<(), String> {
+    fs::write(dir.join("perfetto-state-timeline.svg"), format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"980\" height=\"100\" viewBox=\"0 0 980 100\"><title>Perfetto state timeline unavailable</title><rect width=\"100%\" height=\"100%\" fill=\"#fff4e5\"/><text x=\"20\" y=\"40\" font-family=\"sans-serif\" font-size=\"18\">Perfetto state timeline unavailable</text><text x=\"20\" y=\"70\" font-family=\"sans-serif\" font-size=\"13\">{}</text></svg>\n", escape_svg(message))).map_err(|e| format!("cannot write Perfetto state timeline notice: {e}"))
 }
 
 fn state_style(state: &str, io_wait: bool) -> (&'static str, &'static str) {
