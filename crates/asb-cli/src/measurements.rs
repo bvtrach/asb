@@ -41,6 +41,7 @@ pub struct ComponentTiming {
     pub wall_ms: u128,
     pub cpu_user_ms: Option<f64>,
     pub cpu_system_ms: Option<f64>,
+    pub cpu_accounting_source: Option<String>,
     pub io_wait_ms: Option<f64>,
     pub scheduler_wait_ms: Option<f64>,
     pub network_wait_ms: Option<f64>,
@@ -501,6 +502,7 @@ impl Session {
         if let Some(hz) = self.clock_ticks_per_second {
             timing.cpu_user_ms = Some(accounting.user_ticks as f64 * 1_000.0 / hz as f64);
             timing.cpu_system_ms = Some(accounting.system_ticks as f64 * 1_000.0 / hz as f64);
+            timing.cpu_accounting_source = Some("proc-sampling".into());
             timing.io_wait_ms = Some(accounting.io_delay_ticks as f64 * 1_000.0 / hz as f64);
         }
         timing.scheduler_wait_ms = Some(accounting.runqueue_ns as f64 / 1_000_000.0);
@@ -523,6 +525,16 @@ impl Session {
                 components,
             },
         )
+    }
+
+    pub(crate) fn record_cpu_accounting(&mut self, user_usec: u64, system_usec: u64, source: &str) {
+        let timing = self
+            .component_timings
+            .entry("agent.execute".into())
+            .or_default();
+        timing.cpu_user_ms = Some(user_usec as f64 / 1_000.0);
+        timing.cpu_system_ms = Some(system_usec as f64 / 1_000.0);
+        timing.cpu_accounting_source = Some(source.into());
     }
 
     pub(crate) fn trace_id(&self) -> &str {
@@ -608,13 +620,13 @@ impl Session {
             write_json(&self.dir.join(format!("{}.json", collector.name)), &result)?;
         }
         write_json(&self.dir.join("run.json"), &measurement)?;
-        self.write_component_measurements(measurement.elapsed_ms)?;
         if self.run_started {
             write_json(&self.dir.join("lifecycle.json"), &self.lifecycle)?;
         }
         for adapter in collectors::all() {
             adapter.finish(&mut self)?;
         }
+        self.write_component_measurements(measurement.elapsed_ms)?;
         update_summary(&self.dir, &measurement)?;
         self.run_finishing = true;
         Ok(())
@@ -1682,7 +1694,9 @@ mod tests {
                 "cpu-migrations",
                 "futex-wait",
                 "syscall-rate",
-                "lock-contention"
+                "lock-contention",
+                "socket-operations",
+                "io-wait"
             ]
         );
         let profiles = selected_bpftrace_profiles(&[
@@ -1695,7 +1709,7 @@ mod tests {
             selected_bpftrace_profiles(&["bpftrace".into()])
                 .expect("generic bpftrace selects built-ins")
                 .len(),
-            bpftrace_profile_names().count()
+            bpftrace_profile_names().count() - 2
         );
         assert!(
             profiles

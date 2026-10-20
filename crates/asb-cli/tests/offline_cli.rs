@@ -996,6 +996,12 @@ async function main() {
   if (behavior === 'mismatch-solution') fs.writeFileSync('src/parser.py', 'def parse_path(value): return []\n');
   if (behavior === 'invalid-utf8') fs.writeFileSync('src/parser.py', Buffer.from([255]));
   if (behavior === 'not-a-file') { fs.rmSync('src/parser.py'); fs.mkdirSync('src/parser.py'); }
+  if (behavior === 'cpu-children') {
+    for (let i=0;i<3;i++) {
+      const result=require('child_process').spawnSync(process.execPath,['-e','const end=performance.now()+60; while(performance.now()<end) {}']);
+      if (result.status!==0) throw new Error('offline CPU child failed');
+    }
+  }
   console.log('fixture-agent-output');
   if (behavior === 'fatal') console.error('Authentication required. Please use /login command to sign in to your account fixture-secret');
   if (behavior === 'exit' || (behavior === 'fail-second' && process.cwd().endsWith('concurrency-2')) ||
@@ -1022,6 +1028,150 @@ fn replay(project: &Project, behavior: &str, additional: &[&str]) -> Output {
     ];
     args.extend_from_slice(additional);
     project.command_with_env(&args, &[("ASB_FIXTURE_BEHAVIOR", behavior)])
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "run inside systemd-run --user --scope -p Delegate=yes; offline loopback replay only"]
+fn live_delegated_cgroup_replay_keeps_exited_child_cpu() {
+    let project = replay_project(2);
+    let result = replay(
+        &project,
+        "cpu-children",
+        &["--json", "--measurements", "measurements"],
+    );
+    expect_success(&result);
+    for replica in 1..=2 {
+        let directory = project
+            .0
+            .join(format!("measurements-concurrency-{replica}"));
+        let accounting: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(directory.join("cpu-accounting.json")).unwrap())
+                .unwrap();
+        assert_eq!(accounting["status"], "completed", "{accounting}");
+        assert_eq!(accounting["cleanup"], "removed", "{accounting}");
+        assert!(
+            accounting["metrics"]["cpu_user_ms"].as_f64().unwrap() > 100.0,
+            "exited CPU children must be retained: {accounting}"
+        );
+        let components: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(directory.join("components.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            components["components"]["agent.execute"]["cpu_accounting_source"],
+            "cgroup-v2"
+        );
+        assert_eq!(
+            components["components"]["agent.execute"]["cpu_user_ms"],
+            accounting["metrics"]["cpu_user_ms"]
+        );
+    }
+    let failed = replay(&project, "exit", &["--json", "--measurements", "failed"]);
+    assert!(!failed.status.success());
+    for replica in 1..=2 {
+        let accounting: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(
+                project
+                    .0
+                    .join(format!("failed-concurrency-{replica}/cpu-accounting.json")),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(accounting["status"], "completed", "{accounting}");
+        assert_eq!(accounting["cleanup"], "removed", "{accounting}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cgroup_invalid_parent_falls_back_without_changing_the_directory() {
+    let project = replay_project(1);
+    project.write("unrelated/keep.txt", "retained");
+    let parent = project.0.join("unrelated");
+    let output = project.command_with_env(
+        &[
+            "run",
+            "benchmark.toml",
+            "--replay",
+            "--cassette",
+            "tape.jsonl",
+            "--measurements",
+            "measurements",
+            "--json",
+        ],
+        &[("ASB_CGROUP_PARENT", parent.to_str().unwrap())],
+    );
+    expect_success(&output);
+    let accounting: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(project.0.join("measurements/cpu-accounting.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(accounting["status"], "unavailable");
+    assert!(
+        accounting["reason"]
+            .as_str()
+            .unwrap()
+            .contains("cgroup-v2 directory")
+    );
+    assert_eq!(
+        std::fs::read_to_string(parent.join("keep.txt")).unwrap(),
+        "retained"
+    );
+    assert_eq!(std::fs::read_dir(parent).unwrap().count(), 1);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires ASB_TEST_BPFTRACE, kernel syscall tracepoints and existing passwordless sudo; offline loopback replay only"]
+fn live_bpftrace_socket_profile_captures_replay_and_generates_graphs() {
+    let project = replay_project(1);
+    let executable = std::env::var_os("ASB_TEST_BPFTRACE")
+        .expect("set ASB_TEST_BPFTRACE to a bpftrace executable");
+    std::fs::create_dir_all(project.0.join(".asb-tools/bpftrace/bin")).unwrap();
+    std::os::unix::fs::symlink(
+        executable,
+        project.0.join(".asb-tools/bpftrace/bin/bpftrace"),
+    )
+    .unwrap();
+    let mut config = std::fs::read_to_string(project.0.join("benchmark.toml")).unwrap();
+    config.push_str("\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=['bpftrace:socket-operations']\n");
+    project.write("benchmark.toml", &config);
+    project.write("suite.toml", "configs=['benchmark.toml']\n");
+    project.write("suite-results/000-benchmark/workspace/src/parser.py", "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n");
+    project.write(
+        "tapes/000-benchmark/cassettes/benchmark-pi-bug-fix-test-model.jsonl",
+        &std::fs::read_to_string(project.0.join("tape.jsonl")).unwrap(),
+    );
+    let result = project.command(&[
+        "sweep",
+        "suite.toml",
+        "--replay",
+        "--cassette-root",
+        "tapes",
+    ]);
+    expect_success(&result);
+    let measurements = project.0.join("suite-results/000-benchmark/measurements");
+    let json: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(measurements.join("bpftrace-socket-operations.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        json["metrics"]["bpftrace.socket-operations.socket_calls"]
+            .as_f64()
+            .unwrap_or(0.0)
+            > 0.0,
+        "{json}"
+    );
+    let comparison = project.0.join("results/suite-comparison");
+    assert!(
+        comparison
+            .join("metric-bpftrace-socket-operations.bpftrace.socket-operations.socket_calls.svg")
+            .is_file()
+    );
+    let html = std::fs::read_to_string(comparison.join("report.html")).unwrap();
+    assert!(html.contains("bpftrace-socket-operations.svg"));
+    assert!(html.contains("overlaps scheduler states"));
 }
 
 #[cfg(unix)]

@@ -3,6 +3,7 @@
 use super::CollectorAdapter;
 
 pub(crate) mod bpftrace;
+mod cpu_accounting;
 pub(crate) mod flamegraph;
 pub(crate) mod iostat;
 pub(crate) mod mpstat;
@@ -16,6 +17,7 @@ mod system;
 pub(crate) mod token_usage;
 
 pub(super) static REGISTRY: &[&dyn CollectorAdapter] = &[
+    &cpu_accounting::ADAPTER,
     &system::ADAPTER,
     &runtime::ADAPTER,
     &mpstat::ADAPTER,

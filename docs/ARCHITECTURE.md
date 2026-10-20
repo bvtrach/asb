@@ -66,6 +66,18 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   scheduler run-queue wait for the agent execution component. Network wait is
   represented as `null` unless a collector can observe it directly; ASB never
   assigns residual wall time to a guessed category.
+  An automatic `cpu-accounting` adapter attaches the paused Linux process gate
+  to an exclusive cgroup-v2 leaf when writable delegation is available. All
+  children inherit the group, retaining their user/system CPU counters after
+  exit. Final cgroup counters replace the sampled CPU fields and set
+  `cpu_accounting_source` to `cgroup-v2`; without delegation the existing
+  process sampler remains available. `cpu-accounting.json` records the source,
+  failure reason, and cleanup status. ASB creates no controllers, changes no
+  limits, and removes only its own empty leaf; populated groups are retained
+  and reported. A supplied `ASB_CGROUP_PARENT` must resolve beneath
+  `/sys/fs/cgroup` to an existing cgroup-v2 directory. To obtain delegation on
+  systemd Linux, run `systemd-run --user --scope -p Delegate=yes -- asb run
+  CONFIG.toml` (or use `asb sweep SWEEP.toml`); `asb init` prints this advice.
   `asb compare` also writes an execution-composition SVG with user CPU, system
   CPU, block-I/O delay, runnable scheduler delay, and explicitly-labelled
   remaining wall time. CPU categories are process-tree totals and may overlap

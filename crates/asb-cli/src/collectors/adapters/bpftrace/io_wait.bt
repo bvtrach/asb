@@ -1,0 +1,13 @@
+// Kernel-accounted completed waits, emitted at wakeup. Ongoing waits at trace
+// shutdown are not included. Requires CONFIG_SCHEDSTATS and sched_schedstats.
+tracepoint:sched:sched_stat_iowait /@asb_tree[args->pid]/ {
+  @asb_io_wait_events = count();
+  @asb_io_wait_total_ns = sum(args->delay);
+  @asb_io_wait_max_ns = max(args->delay);
+}
+
+interval:s:1 {
+  print(@asb_io_wait_events);
+  print(@asb_io_wait_total_ns);
+  print(@asb_io_wait_max_ns);
+}
