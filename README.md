@@ -180,7 +180,11 @@ overlap scheduler states; they are diagnostic measures rather than exclusive
 parts of wall time. The I/O profile requires `CONFIG_SCHEDSTATS` and
 `kernel.sched_schedstats=1`. Its preflight gives the command
 `sudo sysctl -w kernel.sched_schedstats=1` when needed; ASB does not change
-that host setting. Plain `bpftrace` keeps the original default profiles;
+that host setting automatically. During `asb init`, if either setting is needed,
+ASB prints the exact `sudo sysctl -w ...` commands and requires an explicit
+`y` or `n` answer (Enter is not a default). After `y`, passwordless sudo is
+used when available; otherwise sudo may prompt for the user's password. Plain
+`bpftrace` keeps the original default profiles;
 `all` includes these optional profiles. Built-in probes acknowledge readiness
 before the paused agent begins execution.
 Each profile writes its own JSON result and SVG; `asb compare` embeds those

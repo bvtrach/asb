@@ -30,6 +30,20 @@ pub fn network_project(root: &Path) -> NetworkProjectGuard {
 const CONFIG_DIR: &str = ".asb";
 const CONFIG_FILE: &str = "project.toml";
 
+#[cfg(target_os = "linux")]
+const HOST_SETTINGS: &[(&str, &str, &str)] = &[
+    (
+        "kernel.perf_event_paranoid",
+        "-1",
+        "perf process-tree counters",
+    ),
+    (
+        "kernel.sched_schedstats",
+        "1",
+        "bpftrace io-wait scheduler statistics",
+    ),
+];
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ProjectConfig {
     pub tools_dir: String,
@@ -293,11 +307,11 @@ pub fn init(
     Ok(())
 }
 
-/// Apply host-wide collector prerequisites only when the user has already
-/// granted non-interactive sudo. Init is deliberately best-effort: it never
-/// prompts, edits sudoers, or makes a project unusable when a setting cannot
-/// be changed. The settings are safe, explicit sysctls used by perf and the
-/// optional scheduler-statistics BPF profile.
+/// Apply host-wide collector prerequisites after explicit user consent. Init
+/// never changes system-wide tracing settings silently: it prints the exact
+/// sysctl commands and requires an explicit `y` or `n` answer. If passwordless
+/// sudo is unavailable, an approved change may use interactive sudo so the
+/// user can enter the password at the normal sudo prompt.
 fn configure_host_capabilities(output: &mut dyn std::io::Write) -> Result<Option<String>, Error> {
     #[cfg(not(target_os = "linux"))]
     {
@@ -318,16 +332,76 @@ fn configure_host_capabilities(output: &mut dyn std::io::Write) -> Result<Option
             let proc_name = setting.strip_prefix("kernel.").unwrap_or(setting);
             fs::read_to_string(format!("/proc/sys/kernel/{proc_name}")).ok()
         };
-        let set = |assignment: &str| {
-            Command::new("sudo")
-                .args(["-n", "sysctl", "-w", assignment])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .is_ok_and(|status| status.success())
-        };
-        configure_host_capabilities_with(output, sudo_ready, current, set)?;
+
+        let pending = HOST_SETTINGS
+            .iter()
+            .filter(|(setting, wanted, _)| {
+                current(setting).is_none_or(|value| value.trim() != *wanted)
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        if pending.is_empty() {
+            configure_host_capabilities_with(output, sudo_ready, current, |_| true)?;
+        } else {
+            writeln!(
+                output,
+                "Host capability setup needs to change these system-wide kernel tracing settings:"
+            )
+            .map_err(super::io_error)?;
+            for (setting, wanted, purpose) in &pending {
+                writeln!(output, "  sudo sysctl -w {setting}={wanted}  ({purpose})")
+                    .map_err(super::io_error)?;
+            }
+            writeln!(
+                output,
+                "These changes affect the whole host. Enter y or n explicitly; pressing Enter is not accepted."
+            )
+            .map_err(super::io_error)?;
+            write!(output, "Apply these system-wide settings? y/N: ").map_err(super::io_error)?;
+            output.flush().map_err(super::io_error)?;
+            let mut answer = String::new();
+            std::io::stdin().read_line(&mut answer).map_err(|error| {
+                Error::Io(format!("cannot read host capability confirmation: {error}"))
+            })?;
+            match parse_host_settings_confirmation(&answer) {
+                Some(true) => {
+                    if sudo_ready {
+                        writeln!(
+                            output,
+                            "Applying the commands above with passwordless sudo."
+                        )
+                        .map_err(super::io_error)?;
+                    } else {
+                        writeln!(
+                            output,
+                            "Passwordless sudo is unavailable. Because you explicitly approved the commands above, sudo will now ask for your password."
+                        )
+                        .map_err(super::io_error)?;
+                    }
+                    for (setting, wanted, purpose) in pending {
+                        let assignment = format!("{setting}={wanted}");
+                        if run_sysctl(&assignment, sudo_ready) {
+                            writeln!(
+                                output,
+                                "Host capability setup: changed {assignment} ({purpose})."
+                            )
+                            .map_err(super::io_error)?;
+                        } else {
+                            writeln!(output, "Host capability setup: could not change {assignment}; continuing without changing that setting ({purpose}).")
+                                .map_err(super::io_error)?;
+                        }
+                    }
+                }
+                Some(false) => {
+                    writeln!(output, "Host capability setup: system-wide tracing settings unchanged by user request.")
+                        .map_err(super::io_error)?;
+                }
+                None => {
+                    writeln!(output, "Host capability setup: no valid y/n answer was provided; system-wide tracing settings were not changed.")
+                        .map_err(super::io_error)?;
+                }
+            }
+        }
         if sudo_ready {
             configure_cgroup_parent(output)
         } else {
@@ -343,19 +417,6 @@ fn configure_host_capabilities_with(
     current: impl Fn(&str) -> Option<String>,
     set: impl Fn(&str) -> bool,
 ) -> Result<(), Error> {
-    const SETTINGS: &[(&str, &str, &str)] = &[
-        (
-            "kernel.perf_event_paranoid",
-            "-1",
-            "perf process-tree counters",
-        ),
-        (
-            "kernel.sched_schedstats",
-            "1",
-            "bpftrace io-wait scheduler statistics",
-        ),
-    ];
-
     if !sudo_ready {
         writeln!(
             output,
@@ -365,7 +426,7 @@ fn configure_host_capabilities_with(
         return Ok(());
     }
 
-    for (setting, wanted, purpose) in SETTINGS {
+    for (setting, wanted, purpose) in HOST_SETTINGS {
         if current(setting).is_some_and(|value| value.trim() == *wanted) {
             writeln!(
                 output,
@@ -391,6 +452,30 @@ fn configure_host_capabilities_with(
         }
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn parse_host_settings_confirmation(answer: &str) -> Option<bool> {
+    match answer.trim() {
+        "y" | "Y" => Some(true),
+        "n" | "N" => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn run_sysctl(assignment: &str, passwordless: bool) -> bool {
+    let mut command = Command::new("sudo");
+    if passwordless {
+        command.arg("-n");
+    }
+    command
+        .args(["sysctl", "-w", assignment])
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 #[cfg(target_os = "linux")]
@@ -860,6 +945,15 @@ mod tests {
             assignments.into_inner(),
             vec!["kernel.sched_schedstats=1".to_owned()]
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn host_settings_confirmation_requires_explicit_answer() {
+        assert_eq!(parse_host_settings_confirmation("y\n"), Some(true));
+        assert_eq!(parse_host_settings_confirmation("N\n"), Some(false));
+        assert_eq!(parse_host_settings_confirmation("\n"), None);
+        assert_eq!(parse_host_settings_confirmation("yes\n"), None);
     }
 
     #[test]
