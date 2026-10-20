@@ -75,17 +75,17 @@ class ManagedDockerWorkspace:
             raise
 
     def execute(self, argv, environment=None, timeout=900, output_limit=256 * 1024, before_resume=None,
-                on_output=None, cancelled=None, gate="shell"):
+                on_output=None, cancelled=None, gate="shell", preparation_timeout=None):
         if self.container is None:
             raise ExecutionError("workspace is not running")
         if not self.active.acquire(blocking=False):
             raise ExecutionError("one command is already running in this task workspace")
         try:
-            return self._execute(argv, environment or {}, timeout, output_limit, before_resume, on_output, cancelled, gate)
+            return self._execute(argv, environment or {}, timeout, output_limit, before_resume, on_output, cancelled, gate, preparation_timeout)
         finally:
             self.active.release()
 
-    def _execute(self, argv, environment, timeout, output_limit, before_resume, on_output, cancelled, gate):
+    def _execute(self, argv, environment, timeout, output_limit, before_resume, on_output, cancelled, gate, preparation_timeout):
         if (not isinstance(argv, list) or not argv or len(argv) > 10000
                 or any(not isinstance(value, str) or "\x00" in value for value in argv)
                 or not isinstance(environment, dict)
@@ -96,6 +96,9 @@ class ManagedDockerWorkspace:
             raise ExecutionError("execution arguments and environment exceed 1 MiB")
         if not 0 < timeout <= 86400 or not 1 <= output_limit <= 16 * 1024**2:
             raise ExecutionError("invalid execution timeout or output limit")
+        preparation_timeout = min(timeout, 60) if preparation_timeout is None else preparation_timeout
+        if not 0 < preparation_timeout <= 300:
+            raise ExecutionError("invalid execution preparation timeout")
         if cancelled is not None and cancelled.is_set():
             raise ExecutionError("execution was cancelled before starting")
         if gate not in ["shell", "application"]:
@@ -105,15 +108,18 @@ class ManagedDockerWorkspace:
         reset_needed = threading.Event()
         watchdog_error = []
         started = time.monotonic()
+        execution_started = None
+        phase_deadline, phase_lock = [started + preparation_timeout], threading.Lock()
 
         def deadline():
             while not done.wait(min(0.05, timeout)):
-                if cancelled is not None and cancelled.is_set():
-                    interrupted.set()
-                    break
-                if time.monotonic() - started >= timeout:
-                    expired.set()
-                    break
+                with phase_lock:
+                    if cancelled is not None and cancelled.is_set():
+                        interrupted.set()
+                        break
+                    if time.monotonic() >= phase_deadline[0]:
+                        expired.set()
+                        break
             else:
                 return
             reset_needed.set()
@@ -169,6 +175,12 @@ class ManagedDockerWorkspace:
                       "pid_scope": "docker-daemon-host"}
             if before_resume is not None:
                 before_resume(target)
+            with phase_lock:
+                if (expired.is_set() or interrupted.is_set() or time.monotonic() >= phase_deadline[0]
+                        or (cancelled is not None and cancelled.is_set())):
+                    raise ExecutionError("container execution preparation was cancelled or exceeded its deadline")
+                execution_started = time.monotonic()
+                phase_deadline[0] = execution_started + timeout
             # Minimal official task images may have only the POSIX shell's
             # kill builtin, not a standalone /bin/kill executable.
             resumed = container.exec_run(["/bin/sh", "-c", 'kill -CONT "$1"', "asb-resume", str(namespace_pid)])
@@ -191,7 +203,8 @@ class ManagedDockerWorkspace:
                 raise ExecutionError("Docker returned no final execution status")
             result = {"exit_code": status, "stdout": bytes(stdout), "stderr": bytes(stderr),
                       "timed_out": expired.is_set(), "cancelled": interrupted.is_set(), "output_truncated": truncated,
-                      "elapsed_seconds": time.monotonic() - started, "target": target}
+                      "elapsed_seconds": time.monotonic() - execution_started,
+                      "preparation_seconds": execution_started - started, "target": target}
         except BaseException:
             # A failed collector callback, malformed gate or protocol failure
             # must not leave a paused/live agent behind. Preserve its filesystem

@@ -1,7 +1,11 @@
 // Futex wait pressure for all threads in the agent process tree.
-tracepoint:syscalls:sys_enter_futex /@asb_tree[pid]/ {
+tracepoint:syscalls:sys_enter_futex /@asb_tree[pid] || @asb_tree[tid]/ {
   @asb_futex_start[tid] = nsecs;
   @asb_futex_calls = count();
+}
+
+tracepoint:sched:sched_process_exit /@asb_futex_start[tid]/ {
+  delete(@asb_futex_start[tid]);
 }
 
 tracepoint:syscalls:sys_exit_futex /@asb_futex_start[tid]/ {

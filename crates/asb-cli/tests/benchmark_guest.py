@@ -201,7 +201,9 @@ class GuestBootstrapTests(unittest.TestCase):
                            "measure_target":measured,
                            "bootstrap":{"runtime_tools":["node"],"assets":[]},
                            "request":{"config":{"agent":"pi"},"connection":{"credential":"private-fixture"}}}
-                result = execute_agent(task, request, attached.append, lambda *_: None, None)
+                ended = []
+                result = execute_agent(task, request, attached.append, lambda *_: None, None,
+                                       on_ended=lambda result: ended.append(result["exit_code"]))
                 self.assertEqual([call[0][-1] for call in calls], ["node", "pi", "__asb-agent"])
                 self.assertNotIn("private-fixture", repr([call[0] for call in calls]))
                 private = calls[-1][1]["environment"]["ASB_GUEST_AGENT_REQUEST"]
@@ -209,6 +211,8 @@ class GuestBootstrapTests(unittest.TestCase):
                 self.assertEqual(json.loads(private)["timeout_seconds"], 1234)
                 self.assertEqual(calls[-1][1]["timeout"], 1234)
                 self.assertEqual(calls[-1][1]["gate"], "application")
+                self.assertEqual(calls[-1][1]["preparation_timeout"], 90)
+                self.assertEqual(ended, [124 if timed_out else 0])
                 self.assertEqual(len(probes), int(measured))
                 self.assertEqual(len(attached), 1)
                 if measured:

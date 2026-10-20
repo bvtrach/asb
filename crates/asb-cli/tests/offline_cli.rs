@@ -1010,6 +1010,16 @@ async function main() {
       if (result.status!==0) throw new Error('offline CPU child failed');
     }
   }
+  if (behavior === 'replica-barrier') {
+    const root = process.env.ASB_FIXTURE_BARRIER;
+    fs.mkdirSync(root, {recursive:true});
+    fs.writeFileSync(require('path').join(root, String(process.pid)), 'started');
+    const deadline = Date.now() + 5000;
+    while (fs.readdirSync(root).length < 2) {
+      if (Date.now() > deadline) throw new Error('configured replicas were not started concurrently');
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  }
   if (behavior === 'agent-workers' || behavior === 'only-tools') {
     const {spawn} = require('child_process');
     const children = [];
@@ -1053,6 +1063,28 @@ fn replay(project: &Project, behavior: &str, additional: &[&str]) -> Output {
     ];
     args.extend_from_slice(additional);
     project.command_with_env(&args, &[("ASB_FIXTURE_BEHAVIOR", behavior)])
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn configured_replicas_overlap_instead_of_spawning_on_join() {
+    let project = replay_project(2);
+    let barrier = project.0.join("replica-barrier");
+    let result = project.command_with_env(
+        &[
+            "run",
+            "benchmark.toml",
+            "--replay",
+            "--cassette",
+            "tape.jsonl",
+        ],
+        &[
+            ("ASB_FIXTURE_BEHAVIOR", "replica-barrier"),
+            ("ASB_FIXTURE_BARRIER", barrier.to_str().unwrap()),
+        ],
+    );
+    expect_success(&result);
+    assert_eq!(std::fs::read_dir(barrier).unwrap().count(), 2);
 }
 
 #[cfg(target_os = "linux")]

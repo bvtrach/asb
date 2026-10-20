@@ -16,6 +16,8 @@ struct Session {
     guest_workspace: String,
     agent_timeout: Duration,
     measurement_active: bool,
+    preparation_active: bool,
+    cleanup_attempted: bool,
 }
 
 pub(crate) fn launch(
@@ -74,41 +76,53 @@ pub(crate) fn launch(
     crate::project::apply_network_proxy(&mut command, project_root)
         .map_err(|error| error.to_string())?;
     let mut controller = Controller::spawn(&mut command)?;
-    let ready = controller.receive(Instant::now() + Duration::from_secs(900))?;
-    if ready["event"] != "ready" {
-        return Err("official task did not become ready".into());
-    }
-    let invocation = &ready["invocation"];
-    let identity: TaskIdentity = serde_json::from_value(invocation["identity"].clone())
-        .map_err(|_| "official task returned invalid identity")?;
-    if identity.workload != workload
-        || identity.task_id != task
-        || identity.dataset.as_ref() != Some(&dataset)
-    {
-        return Err("prepared task does not match the selected dataset instance".into());
-    }
-    let prompt = invocation["prompt"]
-        .as_str()
-        .filter(|text| !text.is_empty() && text.len() <= 64 * 1024)
-        .ok_or("official task returned invalid public instructions")?
-        .to_owned();
-    let guest_workspace = invocation["workspace"]
-        .as_str()
-        .filter(|path| path.starts_with('/') && !path.contains(".."))
-        .ok_or("official task returned invalid environment workspace")?
-        .to_owned();
-    let baseline: BaselineEvidence = serde_json::from_value(invocation["baseline"].clone())
-        .map_err(|_| "official baseline evidence is invalid")?;
-    if !baseline.supports("upstream-harness") {
-        return Err("official task definition does not establish baseline identity".into());
-    }
-    let agent_timeout = invocation
-        .get("agent_timeout_seconds")
-        .and_then(Value::as_f64)
-        .unwrap_or(900.0);
-    if !agent_timeout.is_finite() || !(0.001..=86400.0).contains(&agent_timeout) {
-        return Err("official task returned an invalid agent time budget".into());
-    }
+    let prepared = (|| -> Result<_, String> {
+        let ready = controller.receive(Instant::now() + Duration::from_secs(900))?;
+        if ready["event"] != "ready" {
+            return Err("official task did not become ready".into());
+        }
+        let invocation = &ready["invocation"];
+        let identity: TaskIdentity = serde_json::from_value(invocation["identity"].clone())
+            .map_err(|_| "official task returned invalid identity")?;
+        if identity.workload != workload
+            || identity.task_id != task
+            || identity.dataset.as_ref() != Some(&dataset)
+        {
+            return Err("prepared task does not match the selected dataset instance".into());
+        }
+        let prompt = invocation["prompt"]
+            .as_str()
+            .filter(|text| !text.is_empty() && text.len() <= 64 * 1024)
+            .ok_or("official task returned invalid public instructions")?
+            .to_owned();
+        let guest_workspace = invocation["workspace"]
+            .as_str()
+            .filter(|path| path.starts_with('/') && !path.contains(".."))
+            .ok_or("official task returned invalid environment workspace")?
+            .to_owned();
+        let baseline: BaselineEvidence = serde_json::from_value(invocation["baseline"].clone())
+            .map_err(|_| "official baseline evidence is invalid")?;
+        if !baseline.supports("upstream-harness") {
+            return Err("official task definition does not establish baseline identity".into());
+        }
+        let agent_timeout = invocation
+            .get("agent_timeout_seconds")
+            .and_then(Value::as_f64)
+            .unwrap_or(900.0);
+        if !agent_timeout.is_finite() || !(0.001..=86400.0).contains(&agent_timeout) {
+            return Err("official task returned an invalid agent time budget".into());
+        }
+        Ok((identity, prompt, guest_workspace, baseline, agent_timeout))
+    })();
+    let (identity, prompt, guest_workspace, baseline, agent_timeout) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            return Err(match controller.cancel(Duration::from_secs(240)) {
+                Ok(()) => error,
+                Err(cleanup) => format!("{error}; workload cancellation cleanup failed: {cleanup}"),
+            });
+        }
+    };
     Ok(Box::new(Session {
         controller,
         invocation: TaskInvocation {
@@ -120,10 +134,17 @@ pub(crate) fn launch(
         guest_workspace,
         agent_timeout: Duration::from_secs_f64(agent_timeout),
         measurement_active: false,
+        preparation_active: false,
+        cleanup_attempted: false,
     }))
 }
 
 impl Session {
+    fn cancel(&mut self) -> Result<(), String> {
+        self.cleanup_attempted = true;
+        self.controller.cancel(Duration::from_secs(240))
+    }
+
     fn run(
         &mut self,
         context: &mut ExecutionContext<'_>,
@@ -132,6 +153,12 @@ impl Session {
         let connection = context
             .connection
             .ok_or("isolated execution needs a negotiated API connection")?;
+        if let Some(session) = context.measurements.as_deref_mut() {
+            session.event(crate::collectors::LifecycleEvent::PhaseBegin(
+                crate::collectors::LifecyclePhase::AgentPreparation,
+            ))?;
+            self.preparation_active = true;
+        }
         let binary = std::env::var_os("ASB_GUEST_BINARY")
             .map(PathBuf::from)
             .or_else(|| std::env::current_exe().ok())
@@ -154,6 +181,11 @@ impl Session {
         project.workloads_dir = "workloads".into();
         project.workspace_dir = "workspace".into();
         let mut environment = serde_json::Map::new();
+        let namespace_collectors = context
+            .measurements
+            .as_deref_mut()
+            .map(|session| session.execution_namespace_collectors())
+            .unwrap_or_default();
         for name in [
             "http_proxy",
             "HTTP_PROXY",
@@ -166,6 +198,7 @@ impl Session {
             "no_proxy",
             "NO_PROXY",
             "NPM_CONFIG_OFFLINE",
+            "ASB_MEASURE_INTERVAL_MS",
         ] {
             if let Ok(value) = std::env::var(name) {
                 environment.insert(name.into(), Value::String(value));
@@ -176,7 +209,8 @@ impl Session {
             "project_configuration":toml::to_string(&project).map_err(|_| "cannot encode guest project configuration")?,
             "environment":environment, "network":std::env::var("ASB_BENCHMARK_NETWORK").ok(),
             "request":{"config":config,"connection":connection,"prompt":self.invocation.prompt,
-                "project_root":"/opt/asb-project","runtime_dir":"/opt/asb-private","run_dir":"/opt/asb-private/attempt","replay":context.replay}}))?;
+                "project_root":"/opt/asb-project","runtime_dir":"/opt/asb-private","run_dir":"/opt/asb-private/attempt","replay":context.replay,
+                "namespace_collectors":namespace_collectors}}))?;
         let deadline = Instant::now() + self.agent_timeout + Duration::from_secs(1820);
         loop {
             let event = self.controller.receive(deadline)?;
@@ -199,17 +233,21 @@ impl Session {
                                 "cgroup_membership":"preserved"
                             }),
                         )?;
+                        if let Err(error) =
+                            session.attach_isolated_pid(target.pid, target.start_time_ticks)
+                        {
+                            session.event(Event::AgentAttachFailed)?;
+                            return Err(error);
+                        }
+                        session.event(Event::PhaseEnd(
+                            crate::collectors::LifecyclePhase::AgentPreparation,
+                        ))?;
+                        self.preparation_active = false;
                         session.event(Event::MeasurementsReady)?;
                         session.event(Event::AgentSpawn)?;
                         session.event(Event::AgentExecuteBegin)?;
                         self.measurement_active = true;
                         session.event(Event::AgentStarted)?;
-                        if let Err(error) = session.attach_isolated_pid(target.pid) {
-                            session.event(Event::AgentExecuteEnd)?;
-                            session.event(Event::AgentAttachFailed)?;
-                            self.measurement_active = false;
-                            return Err(error);
-                        }
                     }
                     self.controller
                         .send(&json!({"op":"resume","exec_id":event["target"]["exec_id"]}))?;
@@ -222,15 +260,29 @@ impl Session {
                             .map_err(|_| "cannot write agent output")?;
                     }
                 }
-                Some("completed") => {
+                Some("execution_ended") => {
                     if let Some(session) = context.measurements.as_deref_mut() {
+                        if !self.measurement_active {
+                            return Err(
+                                "isolated execution ended without an active measured target".into(),
+                            );
+                        }
                         session.event(crate::collectors::LifecycleEvent::AgentExecuteEnd)?;
                         session.event(crate::collectors::LifecycleEvent::AgentExited)?;
                         self.measurement_active = false;
                     }
+                }
+                Some("completed") => {
+                    if self.measurement_active {
+                        return Err("isolated execution omitted its completion boundary".into());
+                    }
                     let result = &event["result"];
-                    let metadata = serde_json::from_value(result["metadata"].clone())
-                        .map_err(|_| "guest returned invalid agent result metadata")?;
+                    let metadata: crate::agents::driver::GuestResult =
+                        serde_json::from_value(result["metadata"].clone())
+                            .map_err(|_| "guest returned invalid agent result metadata")?;
+                    if let Some(session) = context.measurements.as_deref_mut() {
+                        session.import_execution_namespace_state(&metadata.namespace_collectors)?;
+                    }
                     let code = result["exit_code"].as_i64().unwrap_or(1).clamp(0, 255) as i32;
                     #[cfg(unix)]
                     let status = {
@@ -262,7 +314,14 @@ impl Session {
 
 impl WorkloadSession for Session {
     fn finish(&mut self) -> Result<(), String> {
-        self.controller.finish(Duration::from_secs(240))
+        self.cleanup_attempted = true;
+        match self.controller.finish(Duration::from_secs(240)) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(match self.cancel() {
+                Ok(()) => error,
+                Err(cleanup) => format!("{error}; workload cancellation cleanup failed: {cleanup}"),
+            }),
+        }
     }
     fn invocation(&self) -> &TaskInvocation {
         &self.invocation
@@ -281,13 +340,28 @@ impl WorkloadSession for Session {
         context: &mut ExecutionContext<'_>,
         output: &mut dyn std::io::Write,
     ) -> Option<Result<ExecutionResult, String>> {
-        let result = self.run(context, output);
+        let mut result = self.run(context, output);
+        if result.is_err() && self.preparation_active {
+            self.preparation_active = false;
+            if let Some(session) = context.measurements.as_deref_mut() {
+                let _ = session.event(crate::collectors::LifecycleEvent::PhaseFailed(
+                    crate::collectors::LifecyclePhase::AgentPreparation,
+                ));
+            }
+        }
         if result.is_err() && self.measurement_active {
             self.measurement_active = false;
             if let Some(session) = context.measurements.as_deref_mut() {
                 let _ = session.event(crate::collectors::LifecycleEvent::AgentExecuteEnd);
                 let _ = session.event(crate::collectors::LifecycleEvent::AgentWaitFailed);
             }
+        }
+        if let Err(error) = &mut result
+            && let Err(cleanup) = self.cancel()
+        {
+            error.push_str(&format!(
+                "; workload cancellation cleanup failed: {cleanup}"
+            ));
         }
         Some(result)
     }
@@ -310,6 +384,18 @@ impl WorkloadSession for Session {
             Some("resolved") => Ok(Evaluation::Passed),
             Some("unresolved" | "empty_submission") => Ok(Evaluation::Failed("official evaluator did not resolve the selected instance".into())),
             _ => Err("official evaluator did not return a completed task-specific grade; inspect task artifacts".into()),
+        }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        // Preparation can succeed before provider/proxy setup fails. Those
+        // callers never reach execute/finish; still give the owner its full
+        // bounded teardown budget instead of the controller's kill fallback.
+        // Explicit paths report failures; Drop cannot replace a caller error.
+        if !self.cleanup_attempted {
+            let _ = self.cancel();
         }
     }
 }

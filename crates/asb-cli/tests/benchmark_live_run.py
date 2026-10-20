@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import shlex
+import shutil
 import sys
 import tempfile
 import time
@@ -29,7 +30,11 @@ class NormalRunQualification(unittest.TestCase):
         instance = ("hello-world" if suite.endswith("1.0") else "cancel-async-tasks") if terminal else "astropy__astropy-12907"
         resolved = os.environ.get("ASB_TEST_BENCHMARK_RESOLVED") == "1"
         tape_mode = os.environ.get("ASB_TEST_BENCHMARK_TAPE_MODE")
-        measured = os.environ.get("ASB_TEST_BENCHMARK_MEASURED") == "1"
+        namespace_collectors = os.environ.get("ASB_TEST_NAMESPACE_COLLECTORS") == "1"
+        extra_collectors = [name for name in os.environ.get("ASB_TEST_BENCHMARK_COLLECTORS", "").split(",") if name]
+        collector_selection = (["agent-memory", "agent-workers"] if namespace_collectors else []) + extra_collectors
+        sweep = os.environ.get("ASB_TEST_BENCHMARK_SWEEP") == "1"
+        measured = os.environ.get("ASB_TEST_BENCHMARK_MEASURED") == "1" or bool(collector_selection)
         self.assertIn(tape_mode, [None, "record", "replay"])
         binary = Path(os.environ["ASB_TEST_BENCHMARK_ASB"]).absolute()
         artifacts = Path(tempfile.mkdtemp(prefix="normal-cli-guest-", dir=root))
@@ -121,19 +126,38 @@ class NormalRunQualification(unittest.TestCase):
                     configuration = artifacts / "benchmark.toml"
                     configuration.write_text(f"agent='pi'\nprovider='openrouter'\nmodel='fixture-model'\nworkload='{suite}'\ntrial='{instance}'\n"
                                              + f"workspace='{artifacts}/workspace'\nlog_file='{artifacts}/run.log'\n")
+                    if collector_selection:
+                        with configuration.open("a") as output:
+                            output.write("[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=" + json.dumps(collector_selection) + "\n")
                     environment = {"PATH": os.environ["PATH"], "HOME": str(artifacts),
                                    "OPENROUTER_API_KEY": "fixture-token", "OPENROUTER_BASE_URL": base,
                                    "OPENROUTER_MODELS_URL": base + "/models", "NO_PROXY": "*", "no_proxy": "*",
                                    "ASB_BENCHMARK_NETWORK": network_name, "NPM_CONFIG_OFFLINE": "true"}
+                    if namespace_collectors:
+                        environment["ASB_MEASURE_INTERVAL_MS"] = "50"
                     if os.environ.get("ASB_TEST_GUEST_BINARY"):
                         environment["ASB_GUEST_BINARY"] = os.environ["ASB_TEST_GUEST_BINARY"]
                     if cold:
                         environment.pop("NPM_CONFIG_OFFLINE")
                     command_line = [binary, "run", configuration, "--json"]
+                    measurement_root = artifacts / "measurements"
                     if measured:
-                        command_line += ["--measurements", str(artifacts / "measurements")]
+                        command_line += ["--measurements", str(measurement_root)]
                     if tape_mode:
                         command_line += ["--" + tape_mode, "--cassette", os.environ["ASB_TEST_BENCHMARK_CASSETTE"]]
+                    if sweep:
+                        self.assertTrue(namespace_collectors, "sweep qualification needs configured collectors")
+                        manifest = artifacts / "sweep.toml"
+                        manifest.write_text("configs=['benchmark.toml']\n")
+                        command_line = [binary, "sweep", manifest, "--json"]
+                        measurement_root = artifacts / "sweep-results/000-benchmark/measurements"
+                        if tape_mode:
+                            cassette_root = artifacts / "cassettes"
+                            cassette = cassette_root / f"000-benchmark/cassettes/benchmark-pi-{suite}-fixture-model.jsonl"
+                            cassette.parent.mkdir(parents=True)
+                            if tape_mode == "replay":
+                                shutil.copyfile(os.environ["ASB_TEST_BENCHMARK_CASSETTE"], cassette)
+                            command_line += ["--" + tape_mode, "--cassette-root", str(cassette_root)]
                     result = subprocess.run(command_line, cwd=root,
                                             env=environment, capture_output=True, timeout=240)
                     (artifacts / "asb.stdout").write_bytes(result.stdout)
@@ -147,22 +171,48 @@ class NormalRunQualification(unittest.TestCase):
                     self.assertIsNone(record["workload_baseline_passed"])
                     self.assertEqual(record["success_rate"], 1.0 if resolved else 0.0)
                     if measured:
-                        target = json.loads((artifacts / "measurements/execution-target.json").read_text())
+                        target = json.loads((measurement_root / "execution-target.json").read_text())
                         self.assertEqual(target["scope"], "verified-local-isolated-process-tree")
                         self.assertEqual(target["cgroup_membership"], "preserved")
                         self.assertNotEqual(target["host_pid"], process.pid if host_provider else os.getpid())
                         self.assertGreater(target["host_pid"], 1)
-                        lifecycle = json.loads((artifacts / "measurements/lifecycle.json").read_text())
+                        lifecycle = json.loads((measurement_root / "lifecycle.json").read_text())
                         events = [event["event"]["kind"] for event in lifecycle]
                         self.assertEqual([event for event in events if event.startswith("agent_")],
                             ["agent_spawn", "agent_execute_begin", "agent_started", "agent_execute_end", "agent_exited"])
-                        accounting = json.loads((artifacts / "measurements/cpu-accounting.json").read_text())
+                        boundaries = [(entry["event"]["kind"], entry["event"].get("phase")) for entry in lifecycle]
+                        self.assertLess(boundaries.index(("phase_end", "agent_preparation")),
+                                        boundaries.index(("agent_execute_begin", None)))
+                        self.assertLess(boundaries.index(("agent_execute_end", None)),
+                                        boundaries.index(("phase_begin", "workload_evaluation")))
+                        accounting = json.loads((measurement_root / "cpu-accounting.json").read_text())
                         self.assertEqual(accounting["cleanup"], "not_created")
                         self.assertIsNone(accounting["remediation"])
                         if accounting["metrics"] is not None and "cpu_user_ms" in accounting["metrics"]:
                             self.assertGreater(accounting["metrics"]["cpu_user_ms"] + accounting["metrics"]["cpu_system_ms"], 0)
                         self.assertIn("not agent-only CPU", accounting["container_scope"])
                         self.assertIn("container_cpu_user_ms", accounting["metrics"])
+                        if namespace_collectors:
+                            for name in ["agent-memory", "agent-workers"]:
+                                observation = json.loads((measurement_root / (name + ".json")).read_text())
+                                self.assertEqual(observation["status"], "observed", observation)
+                                self.assertEqual(observation["source"], "execution-namespace-linux-proc-sampling")
+                                self.assertGreater(observation["samples"], 0)
+                                if name == "agent-memory":
+                                    self.assertGreater(observation["metrics"]["peak_rss_mib"], 0)
+                                else:
+                                    self.assertEqual(observation["metrics"]["spawned_worker_count"], 0)
+                        if "perfetto" in extra_collectors:
+                            trace_data = json.loads((measurement_root / "perfetto.json").read_text())
+                            self.assertGreater(trace_data["metrics"]["perfetto.scheduler_events"], 0)
+                            self.assertIn("<svg", (measurement_root / "perfetto-state-timeline.svg").read_text())
+                    if sweep:
+                        comparison = artifacts / "results/sweep-comparison"
+                        html = (comparison / "report.html").read_text()
+                        for graph in ["metric-agent-memory.peak_rss_mib.svg", "metric-agent-workers.spawned_worker_count.svg",
+                                      "metric-cpu-accounting.container_cpu_user_ms.svg", "metric-cpu-accounting.container_cpu_system_ms.svg"]:
+                            self.assertIn("<svg", (comparison / graph).read_text())
+                            self.assertIn(graph, html)
                     if tape_mode == "replay":
                         if host_provider:
                             self.assertFalse((host_root / "calls.json").exists(), "replay contacted the provider")
@@ -192,6 +242,7 @@ class NormalRunQualification(unittest.TestCase):
                         self.assertEqual(receipt["kind"],os.environ["ASB_TEST_EXPECT_RUNTIME_KIND"])
                     observation = json.loads((matching[0] / "execution.json").read_text())
                     self.assertLessEqual(abs(record["elapsed_ms"] - observation["elapsed_seconds"] * 1000), 1)
+                    self.assertGreater(observation["preparation_seconds"], 0)
                     if terminal:
                         self.assertEqual(json.loads((matching[0] / "submission.json").read_text())["kind"], "in-place-environment")
                         grade = json.loads((matching[0] / "evaluation.json").read_text())

@@ -82,7 +82,8 @@ def serve(task, source, destination, idle_timeout=900):
                     if operation in ["execute", "agent"]:
                         if operation == "agent":
                             from asb_guest import execute_agent
-                            result = execute_agent(task, request, attach, output, peer_closed)
+                            result = execute_agent(task, request, attach, output, peer_closed,
+                                on_ended=lambda result: emit("execution_ended", elapsed_seconds=result["elapsed_seconds"], exit_code=result["exit_code"]))
                         else:
                             result = task.workspace.execute(
                                 request.get("argv"), request.get("environment"),

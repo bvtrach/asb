@@ -54,6 +54,12 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   aggregate state, never argv, prompts, or credentials. Lifecycle completion and
   session destruction stop and join the sampler. Compare renders all-agent SVG
   bars and dedicated HTML sections with units and sampling limitations;
+  isolated workloads run these two samplers in their own execution namespace
+  through optional collector-trait hooks, using the prepared command's PATH,
+  working directory and entry point. Only bounded aggregate observations cross
+  back to the host; argv, prompts and credentials do not. Proc samplers verify
+  PID/start-time identity and ancestry throughout their lifetime, stop at the
+  execution boundary and reject reused or reparented tasks;
   the mpstat/iostat result names use process-scoped `pidstat` sampling for the
   agent process and its child tasks, retaining bounded raw output and exposing
   averaged, unit-named CPU and I/O metrics under a machine-readable `metrics`
@@ -337,9 +343,22 @@ container cgroup before dispatching through the collector interface. They
 never move Docker processes into native ASB cgroups. CPU accounting reads
 existing container counters over the agent interval and labels those totals
 as whole-container CPU, separately from agent-tree samples. Zero sampled CPU
-without observed activity is unavailable, not an exact zero total. Wider
-collector qualification/entry-point matching and full-population planning
-remain unfinished.
+without observed activity is unavailable, not an exact zero total. Isolated
+memory/worker sampling, core CPU accounting and representative Perfetto
+capture are qualified; this is not qualification of every optional collector
+or full-population planning.
+Collector attachment and guest bootstrap belong to agent preparation, with a
+separate bounded deadline. The execution budget starts only at resume, and
+an explicit end event stops execution accounting before metadata transfer and
+official grading. Perfetto resolves the numeric PID to one process lifetime
+alive at the start marker; ambiguous PID generations leave metrics unavailable
+with a scope warning instead of silently mixing processes or inventing zeros.
+Failed preparation/execution cancels the controller through EOF and drains its
+bounded protocol until cleanup acknowledgement and child exit, retaining the
+original error and any cleanup failure. Normal completion still requires a
+successful explicit close. Session destruction also attempts bounded owner
+cleanup when a failure between preparation and execution bypasses both paths;
+abrupt process termination still requires a recovery mechanism.
 See the full benchmark delivery
 checklist before claiming complete upstream benchmark support.
 The explicit `terminal-bench-1.0` and `terminal-bench-2.1` adapters likewise

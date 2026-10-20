@@ -166,14 +166,14 @@ def prepare_agent(task, request, cancelled, resources=None, relays=None):
     return guest,environment
 
 
-def execute_agent(task, request, before_resume, on_output, cancelled):
+def execute_agent(task, request, before_resume, on_output, cancelled, on_ended=None):
     # The relay spans package installation AND agent execution and is closed
     # on success, cancellation and every preparation/execution exception.
     with ExitStack() as resources:
-        return _execute_agent(task, request, before_resume, on_output, cancelled, resources, [])
+        return _execute_agent(task, request, before_resume, on_output, cancelled, resources, [], on_ended)
 
 
-def _execute_agent(task, request, before_resume, on_output, cancelled, resources, relays):
+def _execute_agent(task, request, before_resume, on_output, cancelled, resources, relays, on_ended):
     guest,environment = prepare_agent(task,request,cancelled,resources,relays)
     container = task.workspace.container
     network = request.get("network")
@@ -205,11 +205,14 @@ def _execute_agent(task, request, before_resume, on_output, cancelled, resources
     result = task.workspace.execute(["/opt/asb-runtime/asb", "__asb-agent"], environment=environment,
                                     timeout=request.get("timeout", getattr(task, "agent_timeout", 900)), output_limit=256 * 1024,
                                     gate="application", before_resume=attach,
+                                    preparation_timeout=90,
                                     on_output=on_output, cancelled=ForwardingCancellation(cancelled, relays))
+    if on_ended is not None:
+        on_ended(result)
     for relay in relays:
         relay.check()
     observation = {key: result.get(key) for key in ["exit_code", "timed_out", "cancelled",
-                   "output_truncated", "elapsed_seconds", "target"]}
+                   "output_truncated", "elapsed_seconds", "preparation_seconds", "target"]}
     journal = task.artifacts / "execution.json"
     journal.write_text(json.dumps(observation))
     journal.chmod(0o600)

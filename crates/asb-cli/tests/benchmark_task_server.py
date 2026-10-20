@@ -88,6 +88,30 @@ class ProtocolTests(unittest.TestCase):
         self.assertNotIn("sensitive-input-not-for-output", json.dumps(events))
         self.assertEqual(events[1]["reason"], "unknown task protocol operation")
 
+    def test_disconnect_while_waiting_for_attachment_acknowledges_cleanup(self):
+        read_fd, write_fd = os.pipe()
+        source, task = os.fdopen(read_fd, "r"), Task()
+        open_writer = [write_fd]
+        class DisconnectAtGate(io.StringIO):
+            def write(self, text):
+                result = super().write(text)
+                if json.loads(text)["event"] == "paused":
+                    os.close(open_writer.pop())
+                return result
+        output = DisconnectAtGate()
+        try:
+            os.write(write_fd, b'{"op":"execute","argv":["selected-agent"]}\n')
+            status = serve(task, source, output, idle_timeout=2)
+        finally:
+            if open_writer:
+                os.close(open_writer.pop())
+            source.close()
+        events = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(status, 0)
+        self.assertEqual([event["event"] for event in events], ["ready", "paused", "error", "closed"])
+        self.assertEqual(events[-1]["cleanup"], "removed")
+        self.assertEqual(task.workspace.cleanup_status, "removed")
+
 
 if __name__ == "__main__":
     unittest.main()

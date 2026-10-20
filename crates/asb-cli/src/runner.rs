@@ -155,32 +155,32 @@ fn run_concurrent(
 
     let mut completed = Vec::with_capacity(jobs.len());
     std::thread::scope(|scope| {
-        let handles =
-            jobs.into_iter()
-                .enumerate()
-                .map(|(index, (replica, measurement, cassette))| {
-                    scope.spawn(move || {
-                        let mut buffer = Vec::new();
-                        let mode = cassette.as_ref().map(|(mode, _)| *mode);
-                        let cassette_path =
-                            cassette.as_ref().map(|(_, path)| path.to_string_lossy());
-                        let cassette_path = cassette_path.as_deref();
-                        let measurement_path = measurement.as_deref().and_then(Path::to_str);
-                        let result = run_mode(
-                            config_path,
-                            replica,
-                            RunOptions {
-                                measurement_dir: measurement_path,
-                                mode,
-                                cassette: cassette_path,
-                                ..options
-                            },
-                            &mut buffer,
-                            warnings,
-                        );
-                        (index, result, buffer)
-                    })
-                });
+        let handles: Vec<_> = jobs
+            .into_iter()
+            .enumerate()
+            .map(|(index, (replica, measurement, cassette))| {
+                scope.spawn(move || {
+                    let mut buffer = Vec::new();
+                    let mode = cassette.as_ref().map(|(mode, _)| *mode);
+                    let cassette_path = cassette.as_ref().map(|(_, path)| path.to_string_lossy());
+                    let cassette_path = cassette_path.as_deref();
+                    let measurement_path = measurement.as_deref().and_then(Path::to_str);
+                    let result = run_mode(
+                        config_path,
+                        replica,
+                        RunOptions {
+                            measurement_dir: measurement_path,
+                            mode,
+                            cassette: cassette_path,
+                            ..options
+                        },
+                        &mut buffer,
+                        warnings,
+                    );
+                    (index, result, buffer)
+                })
+            })
+            .collect();
         for handle in handles {
             completed.push(
                 handle
@@ -990,11 +990,7 @@ fn run_measured_agent(
     output: &mut dyn Write,
 ) -> Result<Output, Error> {
     if let Some(session) = session.as_deref_mut() {
-        let args = command
-            .get_args()
-            .map(|arg| arg.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        session.agent_launch(program, &args);
+        session.agent_launch_prepared(command);
     }
     #[cfg(unix)]
     if session.is_some()

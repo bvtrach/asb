@@ -772,3 +772,67 @@ Collector follow-up must also guard process identity for the full sampling
 lifetime (not only attachment), so a root PID reused after agent exit cannot
 be sampled while grading continues. This remains part of full isolated
 collector support, alongside entry-point matching and optional-tool qualification.
+
+### Namespace collector qualification and bounded error cleanup
+
+Process sampling now guards root and descendant PID/start-time generations
+and ancestry for the full interval, rejects zombies/reparented/reused tasks,
+and stops promptly at execution completion. Periodic pidstat arguments belong
+to their adapters rather than a collector-name branch in orchestration.
+BPF tree maps and pending per-thread samples are deleted on task exit.
+Perfetto SQL resolves exactly one root lifetime alive at the start marker;
+ambiguous generations produce an explicit scope warning and unavailable
+metrics, not mixed lifetime data or false zero-filled charts. Synthetic SQLite
+fixtures cover process generations, descendants, missing markers and ambiguous
+bounds; installed real trace-processor and live replay capture checks passed.
+
+The collector trait now provides optional execution-namespace observation
+hooks. Memory/worker collectors sample beside the selected guest client using
+the same prepared entry-point identity as native execution, respecting its
+PATH and cwd. Only versioned bounded scalar aggregates are imported; no argv,
+prompts, keys or transcripts cross this observation interface. Missing or
+invalid observations remain unavailable. The host never guesses guest paths
+through elevated `/proc` access. Real namespace sampling checks passed for
+SWE-bench Lite and both original Terminal-Bench versions, using Pi with an
+explicit synthetic provider and known repair fixture, not paid inference.
+
+Preparation/collector attachment has a separate deadline from agent execution.
+The execution budget starts on resume; the explicit `execution_ended` event
+stops accounting before metadata transfer, relay teardown and official grading.
+Actual Terminal-Bench 1.0 with namespace collectors and Perfetto passed in
+58.0 seconds after this timing repair. Lifecycle artifacts showed preparation
+ending before execution began and execution ending before grading. A normal
+single-configuration sweep replay then passed in 40.2 seconds with official
+grading, no provider/catalog requests, and separate memory, worker and
+container-CPU SVGs included in its HTML comparison report.
+
+Failure paths now explicitly cancel and drain in-flight output/error/result
+events until the owner acknowledges cleanup and exits, with a 240-second bound.
+Cancellation may exit nonzero, but cannot pass without removed/not-created
+resource evidence. Startup/execution preserve their original errors and append
+cleanup failures. A prepared session dropped during provider/proxy setup also
+attempts bounded owner cleanup. Tests cover teardown beyond three seconds,
+in-flight events, cancellation deadlines, failed/missing acknowledgements,
+startup with no created resource and disconnect while paused for attachment.
+Abrupt-controller-crash recovery is not claimed by these cooperative checks.
+
+Inspection also found that replica handles were consumed from a lazy spawn
+iterator, joining each replica before the next was started. All handles are
+now collected before joining. A provider-free two-replica barrier requires
+actual overlap, rather than inferring concurrency from isolated output paths.
+This fixes replica execution but does not replace distinct-task scheduling.
+
+Still required: full selected-population planning, task parallelism/resume and
+complete-denominator reporting; agent background-process quiescence before
+submission capture; SWE-bench source-image fallback; abrupt-crash recovery;
+final review/PR merge/exact-main CI and the minor release. Qualification above
+covers representative tasks, not complete-population benchmark scores.
+
+Local development gates for this follow-up passed: 359 unit tests, 83 offline
+CLI tests (including the overlap barrier), all ten Python protocol suites,
+diagram/guest/replay tests, strict all-target/all-feature Clippy and `make build`.
+One earlier run overlapped a Cargo binary replacement with executable-relaunch
+tests and failed with ENOENT; the focused check and complete serialized gates
+passed. Subsequent checks must not rebuild the same ASB executable while a
+qualification using it is active. Packaging and exact-head hosted CI still
+need their own evidence after the commit.

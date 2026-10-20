@@ -19,6 +19,20 @@ struct State {
     identity: Option<Identity>,
     sampler: Option<Sampler>,
     totals: Totals,
+    isolated: bool,
+    imported: Option<NamespaceSample>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct NamespaceSample {
+    schema_version: u32,
+    identity_available: bool,
+    distinct_processes: u64,
+    peak_rss_kib: u64,
+    samples: u64,
+    incomplete: bool,
+    sampling_interval_ms: u64,
 }
 
 #[derive(Clone)]
@@ -64,6 +78,59 @@ impl Drop for Sampler {
 }
 
 impl<const MEMORY: bool> CollectorAdapter for AgentProcesses<MEMORY> {
+    fn prefers_execution_namespace(&self) -> bool {
+        true
+    }
+
+    fn execution_namespace_requested(&self, session: &mut Session) -> bool {
+        let state = session.state::<State>();
+        let state = state.borrow();
+        if MEMORY { state.memory } else { state.workers }
+    }
+
+    fn export_execution_namespace_state(
+        &self,
+        session: &mut Session,
+    ) -> Result<serde_json::Value, String> {
+        let state = session.state::<State>();
+        let state = state.borrow();
+        serde_json::to_value(NamespaceSample {
+            schema_version: 1,
+            identity_available: state.identity.is_some(),
+            distinct_processes: state.totals.seen.len() as u64,
+            peak_rss_kib: state.totals.peak_rss_kib,
+            samples: state.totals.samples,
+            incomplete: state.totals.incomplete,
+            sampling_interval_ms: measurements::measurement_interval_ms(),
+        })
+        .map_err(|_| "cannot encode agent-process observations".into())
+    }
+
+    fn import_execution_namespace_state(
+        &self,
+        session: &mut Session,
+        value: &serde_json::Value,
+    ) -> Result<(), String> {
+        let sample: NamespaceSample = serde_json::from_value(value.clone())
+            .map_err(|_| "invalid execution-namespace agent-process observations")?;
+        if sample.schema_version != 1
+            || !(100..=60000).contains(&sample.sampling_interval_ms)
+            || sample.distinct_processes > 100000
+            || (sample.samples == 0 && sample.distinct_processes != 0)
+            || (!sample.identity_available && sample.distinct_processes != 0)
+        {
+            return Err("inconsistent execution-namespace agent-process observations".into());
+        }
+        session.state::<State>().borrow_mut().imported = Some(sample);
+        Ok(())
+    }
+
+    fn attach_isolated_pid(&self, session: &mut Session, _pid: u32) -> Result<(), String> {
+        // The execution namespace owns entry-point resolution and proc access.
+        // Do not guess container paths or escalate host /proc permissions.
+        session.state::<State>().borrow_mut().isolated = true;
+        Ok(())
+    }
     fn id(&self) -> &'static str {
         if MEMORY {
             "agent-memory"
@@ -104,12 +171,36 @@ impl<const MEMORY: bool> CollectorAdapter for AgentProcesses<MEMORY> {
         }
     }
 
+    fn agent_launch_prepared(&self, session: &mut Session, command: &std::process::Command) {
+        let state = session.state::<State>();
+        let mut state = state.borrow_mut();
+        if state.selected {
+            let inherited = std::env::var_os("PATH");
+            let explicit = command.get_envs().find(|(key, _)| *key == "PATH");
+            let path = explicit.map_or(inherited.as_deref(), |(_, value)| value);
+            let args = command
+                .get_args()
+                .map(|value| value.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            state.identity = Identity::resolve_in(
+                &command.get_program().to_string_lossy(),
+                &args,
+                path,
+                command.get_current_dir(),
+            );
+        }
+    }
+
     fn attach_pid(&self, session: &mut Session, pid: u32) -> Result<(), String> {
+        let root = session
+            .measurement_target()
+            .or_else(|| measurements::ProcessIdentity::read(pid));
         let state = session.state::<State>();
         let mut state = state.borrow_mut();
         if state.selected
             && state.sampler.is_none()
             && cfg!(target_os = "linux")
+            && let Some(root) = root
             && let Some(identity) = state.identity.clone()
         {
             let (stop, receiver) = mpsc::channel();
@@ -119,7 +210,10 @@ impl<const MEMORY: bool> CollectorAdapter for AgentProcesses<MEMORY> {
                 thread: Some(thread::spawn(move || {
                     let mut totals = Totals::default();
                     loop {
-                        totals.sample(pid, &identity);
+                        if !root.matches() {
+                            return totals;
+                        }
+                        totals.sample(root, &identity);
                         if receiver.recv_timeout(interval) != Err(mpsc::RecvTimeoutError::Timeout) {
                             return totals;
                         }
@@ -151,38 +245,57 @@ impl<const MEMORY: bool> CollectorAdapter for AgentProcesses<MEMORY> {
         if (MEMORY && !state.memory) || (!MEMORY && !state.workers) {
             return Ok(());
         }
-        let available = state.totals.samples > 0 && !state.totals.seen.is_empty();
+        let (seen, samples, peak_rss_kib, incomplete, identity_available) =
+            match state.imported.as_ref() {
+                Some(sample) => (
+                    sample.distinct_processes,
+                    sample.samples,
+                    sample.peak_rss_kib,
+                    sample.incomplete,
+                    sample.identity_available,
+                ),
+                None => (
+                    state.totals.seen.len() as u64,
+                    state.totals.samples,
+                    state.totals.peak_rss_kib,
+                    state.totals.incomplete,
+                    state.identity.is_some(),
+                ),
+            };
+        let available = samples > 0 && seen > 0;
         let reason = if !cfg!(target_os = "linux") {
             Some("Agent process sampling requires Linux /proc.")
-        } else if state.identity.is_none() {
+        } else if state.isolated && state.imported.is_none() {
+            Some("Isolated execution did not return the requested agent-process observations.")
+        } else if !identity_available {
             Some("Cannot resolve the selected agent executable.")
         } else if !available {
             Some(
                 "No matching agent process was observed; the run may be shorter than the sampling interval or use a different launcher entry point.",
             )
-        } else if state.totals.incomplete {
+        } else if incomplete {
             Some(
                 "Agent process accounting was incomplete (unreadable process data or observation limit); metrics are omitted.",
             )
         } else {
             None
         };
-        let metrics = if !available || state.totals.incomplete {
+        let metrics = if !available || incomplete {
             serde_json::json!({})
         } else if MEMORY {
-            serde_json::json!({ "peak_rss_mib": state.totals.peak_rss_kib as f64 / 1024.0 })
+            serde_json::json!({ "peak_rss_mib": peak_rss_kib as f64 / 1024.0 })
         } else {
-            serde_json::json!({ "spawned_worker_count": state.totals.seen.len().saturating_sub(1) })
+            serde_json::json!({ "spawned_worker_count": seen.saturating_sub(1) })
         };
         measurements::write_json(
             &session.dir.join(format!("{}.json", self.id())),
             &serde_json::json!({
                 "schema_version": 1, "collector": self.id(),
-                "status": if state.totals.incomplete { "incomplete" } else if available { "observed" } else { "unavailable" },
+                "status": if incomplete { "incomplete" } else if available { "observed" } else { "unavailable" },
                 "reason": reason,
-                "source": "linux-proc-sampling", "scope": "selected-agent-entry-point-only",
-                "sampling_interval_ms": measurements::measurement_interval_ms(),
-                "samples": state.totals.samples,
+                "source": if state.isolated { "execution-namespace-linux-proc-sampling" } else { "linux-proc-sampling" }, "scope": "selected-agent-entry-point-only",
+                "sampling_interval_ms": state.imported.as_ref().map_or_else(measurements::measurement_interval_ms, |sample| sample.sampling_interval_ms),
+                "samples": samples,
                 "limitations": "Sampled lower bound: short-lived processes can be missed. Workers are additional OS processes with the same executable or script entry point, not logical subagents within one process. Tools and the ASB gate are excluded. RSS includes shared pages per matching process, not unique physical memory. Different wrapper entry points are not inferred.",
                 "metrics": metrics
             }),
@@ -200,7 +313,16 @@ impl<const MEMORY: bool> CollectorAdapter for AgentProcesses<MEMORY> {
 
 impl Identity {
     fn resolve(program: &str, args: &[String]) -> Option<Self> {
-        let executable = resolve_executable(program)?;
+        Self::resolve_in(program, args, std::env::var_os("PATH").as_deref(), None)
+    }
+
+    fn resolve_in(
+        program: &str,
+        args: &[String],
+        path: Option<&std::ffi::OsStr>,
+        cwd: Option<&Path>,
+    ) -> Option<Self> {
+        let executable = resolve_executable_in(program, path, cwd)?;
         let name = executable.file_name()?.to_str()?;
         // A prepared adapter can invoke an interpreter rather than an agent
         // script directly. Never identify all Node/Python/shell tasks as agents.
@@ -231,7 +353,12 @@ impl Identity {
                 return None;
             }
             return Some(Self {
-                executable: fs::canonicalize(first).ok()?,
+                executable: fs::canonicalize(if Path::new(first).is_absolute() {
+                    PathBuf::from(first)
+                } else {
+                    cwd.unwrap_or(Path::new(".")).join(first)
+                })
+                .ok()?,
                 interpreter: Some(executable),
                 runtime_arguments: None,
             });
@@ -246,7 +373,7 @@ impl Identity {
             } else {
                 first
             };
-            Some(resolve_executable(command)?)
+            Some(resolve_executable_in(command, path, cwd)?)
         } else {
             None
         };
@@ -305,10 +432,19 @@ impl Identity {
 }
 
 impl Totals {
-    fn sample(&mut self, root: u32, identity: &Identity) {
+    fn sample(&mut self, root: measurements::ProcessIdentity, identity: &Identity) {
+        if !root.matches() {
+            return;
+        }
         let mut rss = 0u64;
-        let mut matched = false;
-        for pid in measurements::process_tree_pids(root) {
+        let mut observed = BTreeSet::new();
+        for pid in measurements::process_tree_pids(root.pid) {
+            let Some(generation) = measurements::ProcessIdentity::read(pid) else {
+                continue;
+            };
+            if !generation.in_tree(root) {
+                continue;
+            }
             let proc = PathBuf::from(format!("/proc/{pid}"));
             if !identity.matches(&proc) {
                 continue;
@@ -322,28 +458,48 @@ impl Totals {
                 // condition.
                 continue;
             };
+            if generation.start_time_ticks != start
+                || !generation.in_tree(root)
+                || !identity.matches(&proc)
+            {
+                continue;
+            }
             // Bound memory usage even for pathological long runs.
-            if self.seen.len() >= 100_000 && !self.seen.contains(&(pid, start)) {
+            if self.seen.len() + observed.len() >= 100_000 && !self.seen.contains(&(pid, start)) {
                 self.incomplete = true;
                 continue;
             }
-            self.seen.insert((pid, start));
+            observed.insert((pid, start));
             rss = rss.saturating_add(resident);
-            matched = true;
         }
-        if matched {
+        if !observed.is_empty() && root.matches() {
+            self.seen.extend(observed);
             self.samples += 1;
             self.peak_rss_kib = self.peak_rss_kib.max(rss);
         }
     }
 }
 
-fn resolve_executable(program: &str) -> Option<PathBuf> {
+fn resolve_executable_in(
+    program: &str,
+    path: Option<&std::ffi::OsStr>,
+    cwd: Option<&Path>,
+) -> Option<PathBuf> {
     let path = if program.contains('/') {
-        PathBuf::from(program)
+        if Path::new(program).is_absolute() {
+            PathBuf::from(program)
+        } else {
+            cwd.unwrap_or(Path::new(".")).join(program)
+        }
     } else {
-        std::env::split_paths(&std::env::var_os("PATH")?)
-            .map(|dir| dir.join(program))
+        std::env::split_paths(path?)
+            .map(|dir| {
+                if dir.is_absolute() {
+                    dir.join(program)
+                } else {
+                    cwd.unwrap_or(Path::new(".")).join(dir).join(program)
+                }
+            })
             .find(|path| path.is_file())?
     };
     fs::canonicalize(path).ok()
@@ -379,6 +535,136 @@ fn process_memory(proc: &Path) -> Option<(u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_launch_uses_child_path_and_working_directory_for_entry_point_resolution() {
+        let root = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("prepared-entry", None).attempt_id);
+        fs::create_dir_all(root.join("runtime")).unwrap();
+        fs::create_dir_all(root.join("workspace")).unwrap();
+        fs::write(root.join("runtime/node"), "fixture runtime").unwrap();
+        fs::write(root.join("workspace/client.js"), "#!/usr/bin/env node\n").unwrap();
+        let path = root.join("runtime");
+        let script = Identity::resolve_in(
+            "client.js",
+            &[],
+            Some(path.as_os_str()),
+            Some(&root.join("workspace")),
+        );
+        assert!(
+            script.is_none(),
+            "bare executable names must be resolved through PATH, not cwd"
+        );
+        let script = Identity::resolve_in(
+            "./client.js",
+            &[],
+            Some(path.as_os_str()),
+            Some(&root.join("workspace")),
+        )
+        .unwrap();
+        assert_eq!(
+            script.interpreter.unwrap(),
+            fs::canonicalize(path.join("node")).unwrap()
+        );
+        let direct = Identity::resolve_in(
+            "node",
+            &["client.js".into(), "private-prompt".into()],
+            Some(path.as_os_str()),
+            Some(&root.join("workspace")),
+        )
+        .unwrap();
+        assert_eq!(
+            direct.executable,
+            fs::canonicalize(root.join("workspace/client.js")).unwrap()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn namespace_capture_exports_only_bounded_aggregates_and_imports_through_owner() {
+        let root = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("namespace-capture", None).attempt_id);
+        let selected = vec!["agent-workers".into()];
+        let mut capture =
+            Session::start_in_execution_namespace(&root.join("guest"), &selected).unwrap();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .arg("private-prompt-fixture")
+            .env("PRIVATE_KEY", "private-key-fixture");
+        capture.agent_launch_prepared(&command);
+        capture.attach_pid(std::process::id()).unwrap();
+        let exported = capture.export_execution_namespace_state().unwrap();
+        assert_eq!(exported.len(), 1);
+        assert!(exported.contains_key("agent-workers"));
+        let serialized = serde_json::to_string(&exported).unwrap();
+        assert!(!serialized.contains("private-prompt"));
+        assert!(!serialized.contains("private-key"));
+        assert!(!serialized.contains("executable"));
+        assert!(serialized.len() < 1024);
+        let mut host = Session::start_with_collectors(&root.join("host"), &selected, None).unwrap();
+        let adapter = AgentProcesses::<false>;
+        adapter
+            .attach_isolated_pid(&mut host, std::process::id())
+            .unwrap();
+        host.import_execution_namespace_state(&exported).unwrap();
+        adapter.finish(&mut host).unwrap();
+        let result: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("host/agent-workers.json")).unwrap())
+                .unwrap();
+        assert_eq!(result["source"], "execution-namespace-linux-proc-sampling");
+        assert_eq!(result["status"], "observed");
+        assert_eq!(
+            result["sampling_interval_ms"],
+            exported["agent-workers"]["sampling_interval_ms"]
+        );
+        assert!(
+            !root.join("guest/system.json").exists(),
+            "guest capture must not run host collectors"
+        );
+        assert!(!root.join("guest/cpu-accounting.json").exists());
+        drop(host);
+        drop(capture);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn namespace_capture_rejects_host_only_collectors_duplicates_and_malformed_counts() {
+        let root = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("namespace-invalid", None).attempt_id);
+        assert!(Session::start_in_execution_namespace(&root, &["perf".into()]).is_err());
+        assert!(
+            Session::start_in_execution_namespace(
+                &root,
+                &["agent-workers".into(), "agent-workers".into()]
+            )
+            .is_err()
+        );
+        let mut host =
+            Session::start_with_collectors(&root, &["agent-workers".into()], None).unwrap();
+        let adapter = AgentProcesses::<false>;
+        let valid = serde_json::json!({"schema_version":1,"identity_available":true,"sampling_interval_ms":1000,
+            "distinct_processes":1,"peak_rss_kib":1024,"samples":2,"incomplete":false});
+        for (key, value) in [
+            ("schema_version", serde_json::json!(2)),
+            ("identity_available", serde_json::json!(false)),
+            ("distinct_processes", serde_json::json!(100001)),
+            ("samples", serde_json::json!(0)),
+            ("sampling_interval_ms", serde_json::json!(0)),
+            ("sampling_interval_ms", serde_json::json!(90000)),
+            ("private_prompt", serde_json::json!("must-not-import")),
+        ] {
+            let mut changed = valid.clone();
+            changed[key] = value;
+            assert!(
+                adapter
+                    .import_execution_namespace_state(&mut host, &changed)
+                    .is_err()
+            );
+        }
+        drop(host);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn native_identity_does_not_match_an_unrelated_process() {

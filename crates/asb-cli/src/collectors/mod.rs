@@ -176,6 +176,38 @@ pub(crate) trait CollectorAdapter: Sync {
     ) -> Result<(), String> {
         Ok(())
     }
+    /// Some collectors must resolve entry points inside the execution
+    /// namespace, where its executables/interpreters are actually installed.
+    fn prefers_execution_namespace(&self) -> bool {
+        false
+    }
+    fn execution_namespace_requested(&self, _session: &mut crate::measurements::Session) -> bool {
+        false
+    }
+    fn export_execution_namespace_state(
+        &self,
+        _session: &mut crate::measurements::Session,
+    ) -> Result<serde_json::Value, String> {
+        Err("collector does not export execution-namespace observations".into())
+    }
+    fn import_execution_namespace_state(
+        &self,
+        _session: &mut crate::measurements::Session,
+        _value: &serde_json::Value,
+    ) -> Result<(), String> {
+        Err("collector does not import execution-namespace observations".into())
+    }
+    fn agent_launch_prepared(
+        &self,
+        session: &mut crate::measurements::Session,
+        command: &std::process::Command,
+    ) {
+        let args = command
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        self.agent_launch(session, &command.get_program().to_string_lossy(), &args);
+    }
     fn preflight(&self, _context: &mut PreflightContext<'_>) -> Result<(), String> {
         Ok(())
     }

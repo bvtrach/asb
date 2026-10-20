@@ -166,19 +166,7 @@ impl Controller {
     }
 
     pub(crate) fn receive(&mut self, deadline: Instant) -> Result<Value, String> {
-        let event = self
-            .events
-            .as_ref()
-            .ok_or("workload controller is closed")?
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|error| match error {
-                mpsc::RecvTimeoutError::Timeout => {
-                    "workload controller exceeded its response deadline".to_owned()
-                }
-                mpsc::RecvTimeoutError::Disconnected => {
-                    "workload controller exited before completing its operation".to_owned()
-                }
-            })??;
+        let event = self.receive_raw(deadline)?;
         if event.get("event").and_then(Value::as_str) == Some("error") {
             // ExecutionError reasons are fixed local diagnostics from our
             // engine, not arbitrary SDK HTTP bodies or request dumps.
@@ -192,6 +180,46 @@ impl Controller {
             return Err("workload controller could not complete the operation; inspect the private task artifacts".into());
         }
         Ok(event)
+    }
+
+    fn receive_raw(&mut self, deadline: Instant) -> Result<Value, String> {
+        let event = self
+            .events
+            .as_ref()
+            .ok_or("workload controller is closed")?
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .map_err(|error| match error {
+                mpsc::RecvTimeoutError::Timeout => {
+                    "workload controller exceeded its response deadline".to_owned()
+                }
+                mpsc::RecvTimeoutError::Disconnected => {
+                    "workload controller exited before completing its operation".to_owned()
+                }
+            })??;
+        Ok(event)
+    }
+
+    /// EOF interrupts active work; continue draining its bounded event stream
+    /// until the owner confirms teardown. Cancellation's nonzero child exit
+    /// is expected, but it never substitutes for resource-removal evidence.
+    pub(crate) fn cancel(&mut self, timeout: Duration) -> Result<(), String> {
+        let deadline = Instant::now() + timeout;
+        self.input.take();
+        loop {
+            if Instant::now() >= deadline {
+                return Err("workload cancellation exceeded its cleanup deadline".into());
+            }
+            let event = self.receive_raw(deadline)?;
+            if event["event"] == "closed" {
+                if !matches!(event["cleanup"].as_str(), Some("removed" | "not_created")) {
+                    return Err("cancelled workload resource cleanup did not confirm removal; inspect private task cleanup artifacts".into());
+                }
+                return self.wait_for_exit(deadline, false);
+            }
+            // A command already in flight can produce output, an error or a
+            // final result before the input reader observes EOF. No payload
+            // from those discarded events is echoed to human diagnostics.
+        }
     }
 
     pub(crate) fn request(
@@ -218,13 +246,17 @@ impl Controller {
             return Err("workload resource cleanup did not confirm removal; inspect private task cleanup artifacts".into());
         }
         self.input.take();
+        self.wait_for_exit(deadline, true)
+    }
+
+    fn wait_for_exit(&mut self, deadline: Instant, require_success: bool) -> Result<(), String> {
         loop {
             if let Some(status) = self
                 .child
                 .try_wait()
                 .map_err(|_| "cannot check completed workload controller")?
             {
-                return if status.success() {
+                return if status.success() || !require_success {
                     Ok(())
                 } else {
                     Err("workload controller failed after resource cleanup".into())
@@ -309,6 +341,68 @@ mod tests {
                 .unwrap();
             assert!(controller.finish(Duration::from_secs(3)).is_err());
         }
+    }
+
+    #[test]
+    fn cancellation_drains_inflight_events_and_waits_for_owned_cleanup() {
+        let mut command = Command::new("python3");
+        command.args(["-u", "-c", "import json,sys,time\nprint(json.dumps(dict(event='ready')),flush=True)\nassert sys.stdin.read()==''\nfor event in ['output','execution_ended','completed','error']:\n print(json.dumps(dict(event=event,private='never print this')),flush=True)\ntime.sleep(3.2)\nprint(json.dumps(dict(event='closed',cleanup='removed')),flush=True)\nsys.exit(1)\n"]);
+        let mut controller = Controller::spawn(&mut command).unwrap();
+        controller
+            .receive(Instant::now() + Duration::from_secs(3))
+            .unwrap();
+        controller.cancel(Duration::from_secs(8)).unwrap();
+        assert!(!controller.child.try_wait().unwrap().unwrap().success());
+    }
+
+    #[test]
+    fn cancelled_startup_without_a_created_resource_can_be_confirmed() {
+        let mut command = Command::new("python3");
+        command.args(["-u", "-c", "import json,sys\nprint(json.dumps(dict(event='error')),flush=True)\nassert sys.stdin.read()==''\nprint(json.dumps(dict(event='closed',cleanup='not_created')),flush=True)\nsys.exit(1)\n"]);
+        let mut controller = Controller::spawn(&mut command).unwrap();
+        assert!(
+            controller
+                .receive(Instant::now() + Duration::from_secs(3))
+                .is_err()
+        );
+        controller.cancel(Duration::from_secs(3)).unwrap();
+    }
+
+    #[test]
+    fn cancellation_never_confuses_child_exit_with_resource_removal() {
+        for cleanup in [
+            None,
+            Some("pending"),
+            Some("ownership_mismatch"),
+            Some("error"),
+        ] {
+            let ack = cleanup.map_or(String::new(), |cleanup| {
+                format!("print(json.dumps(dict(event='closed',cleanup='{cleanup}')),flush=True)\n")
+            });
+            let script = format!(
+                "import json,sys\nprint(json.dumps(dict(event='ready')),flush=True)\nassert sys.stdin.read()==''\n{ack}"
+            );
+            let mut command = Command::new("python3");
+            command.args(["-u", "-c", &script]);
+            let mut controller = Controller::spawn(&mut command).unwrap();
+            controller
+                .receive(Instant::now() + Duration::from_secs(3))
+                .unwrap();
+            assert!(controller.cancel(Duration::from_secs(3)).is_err());
+        }
+    }
+
+    #[test]
+    fn cancellation_drains_until_deadline_not_an_unbounded_event_stream() {
+        let mut command = Command::new("python3");
+        command.args(["-u", "-c", "import json,sys,time\nprint(json.dumps(dict(event='ready')),flush=True)\nassert sys.stdin.read()==''\nfor i in range(30):\n print(json.dumps(dict(event='output')),flush=True)\n time.sleep(.01)\n"]);
+        let mut controller = Controller::spawn(&mut command).unwrap();
+        controller
+            .receive(Instant::now() + Duration::from_secs(3))
+            .unwrap();
+        let started = Instant::now();
+        assert!(controller.cancel(Duration::from_millis(50)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

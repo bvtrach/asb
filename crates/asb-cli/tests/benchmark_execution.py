@@ -3,6 +3,7 @@ import importlib.util
 from pathlib import Path
 import sys
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 
@@ -93,6 +94,32 @@ class API:
 
 
 class ExecutionTests(unittest.TestCase):
+    def test_collector_attachment_has_its_own_budget_and_is_not_agent_elapsed_time(self):
+        workspace, container, _, _ = self.workspace()
+        with workspace:
+            result = workspace.execute(["agent"], timeout=.02, preparation_timeout=.3,
+                                       before_resume=lambda _: time.sleep(.06))
+            self.assertGreaterEqual(result["preparation_seconds"], .06)
+            self.assertLess(result["elapsed_seconds"], .05)
+            self.assertFalse(result["timed_out"])
+            self.assertNotIn("kill", container.events)
+
+    def test_expired_or_cancelled_preparation_never_resumes_the_owned_gate(self):
+        for cancel in (False, True):
+            workspace, container, _, _ = self.workspace()
+            cancelled = threading.Event()
+            with workspace:
+                def attach(_):
+                    if cancel:
+                        cancelled.set()
+                    else:
+                        time.sleep(.05)
+                with self.assertRaises(RUNTIME.ExecutionError):
+                    workspace.execute(["agent"], timeout=1, preparation_timeout=.02,
+                                      before_resume=attach, cancelled=cancelled)
+                self.assertFalse(container.resumed)
+                self.assertIn("kill", container.events)
+
     def workspace(self):
         container = Container()
         api = API(container)

@@ -24,6 +24,8 @@ pub(crate) struct GuestRequest {
     pub replay: bool,
     #[serde(default = "default_timeout")]
     pub timeout_seconds: f64,
+    #[serde(default)]
+    pub namespace_collectors: Vec<String>,
 }
 
 fn default_timeout() -> f64 {
@@ -38,6 +40,8 @@ pub(crate) struct GuestResult {
     pub token_usage: crate::measurements::TokenUsage,
     pub steps: Option<u64>,
     pub execution_failure: Option<String>,
+    #[serde(default)]
+    pub namespace_collectors: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// Remove enclosing host/guest orchestration state from a benchmark client.
@@ -160,6 +164,18 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
     let mut command = prepare(&request)?;
     fs::create_dir_all(&request.run_dir)
         .map_err(|error| Error::Io(format!("cannot create private guest artifacts: {error}")))?;
+    let mut capture = if request.namespace_collectors.is_empty() {
+        None
+    } else {
+        let mut session = crate::measurements::Session::start_in_execution_namespace(
+            &request.run_dir.join("collector-capture"),
+            &request.namespace_collectors,
+        )
+        .map_err(Error::Run)?;
+        session.agent_launch_prepared(&command);
+        session.attach_pid(std::process::id()).map_err(Error::Run)?;
+        Some(session)
+    };
     // Preparation and command construction are complete before the outer
     // collector attaches. Credentials remain only in process memory/env.
     println!("__ASB_GATE__:{}", std::process::id());
@@ -177,6 +193,12 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
         &mut std::io::stderr(),
         std::time::Duration::from_secs_f64(request.timeout_seconds),
     )?;
+    let namespace_collectors = capture
+        .as_mut()
+        .map(|session| session.export_execution_namespace_state())
+        .transpose()
+        .map_err(Error::Run)?
+        .unwrap_or_default();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let adapter = super::find(&request.config.agent).expect("validated agent");
@@ -209,6 +231,7 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
             .steps
             .or_else(|| adapter.step_count(&stdout, &stderr)),
         execution_failure: adapter.execution_failure(&stdout, &stderr),
+        namespace_collectors,
     };
     let destination = request.run_dir.join("agent-result.json");
     let temporary = request

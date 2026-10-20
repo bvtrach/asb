@@ -78,6 +78,91 @@ struct ProcessSample {
     runqueue_ns: u64,
 }
 
+/// A PID is reusable; samplers bind it to one kernel process generation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProcessIdentity {
+    pub pid: u32,
+    pub start_time_ticks: u64,
+}
+
+impl ProcessIdentity {
+    pub(crate) fn read(pid: u32) -> Option<Self> {
+        Self::read_at(Path::new("/proc"), pid)
+    }
+
+    fn read_at(proc: &Path, pid: u32) -> Option<Self> {
+        Self::record_at(proc, pid).map(|(identity, _)| identity)
+    }
+
+    fn record_at(proc: &Path, pid: u32) -> Option<(Self, u32)> {
+        let mut stat = String::new();
+        File::open(proc.join(pid.to_string()).join("stat"))
+            .ok()?
+            .take(65537)
+            .read_to_string(&mut stat)
+            .ok()?;
+        if stat.len() > 65536 || stat.split_whitespace().next()?.parse::<u32>().ok()? != pid {
+            return None;
+        }
+        let fields = stat
+            .rsplit_once(')')?
+            .1
+            .split_whitespace()
+            .collect::<Vec<_>>();
+        if matches!(*fields.first()?, "Z" | "X" | "x") {
+            return None;
+        }
+        let start_time_ticks = fields.get(19)?.parse().ok()?;
+        let parent = fields.get(1)?.parse().ok()?;
+        (start_time_ticks > 0).then_some((
+            Self {
+                pid,
+                start_time_ticks,
+            },
+            parent,
+        ))
+    }
+
+    pub(crate) fn matches(self) -> bool {
+        self.matches_at(Path::new("/proc"))
+    }
+
+    fn matches_at(self, proc: &Path) -> bool {
+        Self::read_at(proc, self.pid) == Some(self)
+    }
+
+    pub(crate) fn in_tree(self, root: Self) -> bool {
+        self.in_tree_at(root, Path::new("/proc"))
+    }
+
+    fn in_tree_at(self, root: Self, proc: &Path) -> bool {
+        if !root.matches_at(proc) {
+            return false;
+        }
+        let mut current = self;
+        let mut seen = BTreeSet::new();
+        for _ in 0..512 {
+            if !seen.insert(current.pid) {
+                return false;
+            }
+            let Some((observed, parent)) = Self::record_at(proc, current.pid) else {
+                return false;
+            };
+            if observed != current {
+                return false;
+            }
+            if current == root {
+                return self.matches_at(proc) && root.matches_at(proc);
+            }
+            let Some(identity) = Self::read_at(proc, parent) else {
+                return false;
+            };
+            current = identity;
+        }
+        false
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 struct ProcessAccounting {
     first: ProcessSample,
@@ -114,16 +199,16 @@ impl ProcessAccounting {
 }
 
 struct ProcessSampler {
-    stop: Arc<AtomicBool>,
+    stop: std::sync::mpsc::Sender<()>,
     accounting: Arc<Mutex<ProcessAccounting>>,
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
-/// A pidstat-compatible process-tree sampler.  pidstat's long-running
-/// `-p <root>` mode only follows the named process, not helpers forked after
-/// it starts.  Re-running a bounded sample with the complete live descendant
-/// set keeps CPU and I/O measurements scoped to the benchmark while including
-/// bridge and tool processes created later.
+pub(crate) type TreeSnapshotArguments = Box<dyn Fn(&[u32]) -> Vec<String> + Send>;
+
+/// Periodic bounded observations over stable process-tree identities. The
+/// owning collector supplies its command arguments; this worker knows no tool
+/// names or command-line flags.
 struct ProcessTreeSnapshot {
     stop: Arc<AtomicBool>,
     handle: Option<std::thread::JoinHandle<()>>,
@@ -131,9 +216,9 @@ struct ProcessTreeSnapshot {
 
 impl ProcessTreeSnapshot {
     fn start(
-        root: u32,
+        root: ProcessIdentity,
         executable: PathBuf,
-        args: Vec<String>,
+        arguments: TreeSnapshotArguments,
         stdout_path: PathBuf,
         stderr_path: PathBuf,
     ) -> Option<Self> {
@@ -143,25 +228,30 @@ impl ProcessTreeSnapshot {
             .name("asb-process-tree-snapshot".into())
             .spawn(move || {
                 while !thread_stop.load(Ordering::Relaxed) {
-                    let pids = process_tree_pids(root)
+                    if !root.matches() {
+                        break;
+                    }
+                    let members = process_tree_pids(root.pid)
                         .into_iter()
-                        .map(|pid| pid.to_string())
-                        .collect::<Vec<_>>()
-                        .join(",");
+                        .filter_map(ProcessIdentity::read)
+                        .filter(|member| member.in_tree(root))
+                        .collect::<Vec<_>>();
+                    if !root.matches() {
+                        break;
+                    }
+                    let pids = members.iter().map(|member| member.pid).collect::<Vec<_>>();
                     if pids.is_empty() {
                         break;
                     }
-                    let mut sample_args = args.clone();
-                    if let Some(index) = sample_args.iter().position(|arg| arg == "-p")
-                        && let Some(value) = sample_args.get_mut(index + 1)
-                    {
-                        *value = pids;
-                    }
-                    // One bounded sample avoids leaving an untracked pidstat
-                    // process behind when the agent exits.
-                    sample_args.push("1".into());
-                    match Command::new(&executable).args(&sample_args).output() {
+                    // The owning adapter requests one bounded observation.
+                    match Command::new(&executable).args(arguments(&pids)).output() {
                         Ok(output) => {
+                            // A bounded pidstat interval is only attributable
+                            // if all listed process generations survived it.
+                            if !root.matches() || members.iter().any(|member| !member.in_tree(root))
+                            {
+                                continue;
+                            }
                             if let Ok(mut file) = OpenOptions::new()
                                 .create(true)
                                 .append(true)
@@ -187,7 +277,7 @@ impl ProcessTreeSnapshot {
                             {
                                 use std::io::Write;
                                 let _ =
-                                    writeln!(file, "process-tree pidstat sample failed: {error}");
+                                    writeln!(file, "process-tree sampler command failed: {error}");
                             }
                         }
                     }
@@ -214,28 +304,32 @@ impl ProcessTreeSnapshot {
 }
 
 impl ProcessSampler {
-    fn start(pid: u32, interval_ms: u64) -> Option<Self> {
-        let initial = read_process_tree_sample(pid)?;
-        let stop = Arc::new(AtomicBool::new(false));
+    fn start(root: ProcessIdentity, interval_ms: u64) -> Option<Self> {
+        let initial = read_process_tree_sample(root)?;
+        let (stop, receiver) = std::sync::mpsc::channel();
         let accounting = Arc::new(Mutex::new(ProcessAccounting {
             first: initial,
             latest: initial,
             initialized: true,
         }));
-        let thread_stop = Arc::clone(&stop);
         let thread_accounting = Arc::clone(&accounting);
         let handle = std::thread::Builder::new()
             .name("asb-process-timing".into())
             .spawn(move || {
-                while !thread_stop.load(Ordering::Relaxed) {
-                    if let Some(sample) = read_process_tree_sample(pid)
-                        && let Ok(mut state) = thread_accounting.lock()
-                    {
+                loop {
+                    let Some(sample) = read_process_tree_sample(root) else {
+                        break;
+                    };
+                    if let Ok(mut state) = thread_accounting.lock() {
                         state.update(sample);
                     }
-                    std::thread::sleep(Duration::from_millis(interval_ms));
+                    if receiver.recv_timeout(Duration::from_millis(interval_ms))
+                        != Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                    {
+                        break;
+                    }
                 }
-                if let Some(sample) = read_process_tree_sample(pid)
+                if let Some(sample) = read_process_tree_sample(root)
                     && let Ok(mut state) = thread_accounting.lock()
                 {
                     state.update(sample);
@@ -250,7 +344,7 @@ impl ProcessSampler {
     }
 
     fn stop(mut self) -> Option<ProcessSample> {
-        self.stop.store(true, Ordering::Relaxed);
+        let _ = self.stop.send(());
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
@@ -351,6 +445,8 @@ impl Drop for Collector {
 
 /// A measurement session owns all optional collector processes for one run.
 pub struct Session {
+    adapters: Vec<&'static dyn collectors::CollectorAdapter>,
+    namespace_only: bool,
     pub(crate) dir: PathBuf,
     pub(crate) tool_dir: Option<PathBuf>,
     pub(crate) cgroup_parent: Option<PathBuf>,
@@ -370,6 +466,7 @@ pub struct Session {
     component_starts: BTreeMap<String, Instant>,
     component_timings: BTreeMap<String, ComponentTiming>,
     process_sampler: Option<ProcessSampler>,
+    process_identity: Option<ProcessIdentity>,
     process_tree_snapshots: Vec<ProcessTreeSnapshot>,
     clock_ticks_per_second: Option<u64>,
 }
@@ -422,6 +519,47 @@ impl Session {
         tool_dir: Option<&Path>,
         cgroup_parent: Option<&Path>,
     ) -> Result<Self, String> {
+        Self::start_with_adapters(
+            dir,
+            selected,
+            tool_dir,
+            cgroup_parent,
+            collectors::all().to_vec(),
+            false,
+        )
+    }
+
+    pub(crate) fn start_in_execution_namespace(
+        dir: &Path,
+        selected: &[String],
+    ) -> Result<Self, String> {
+        if selected.is_empty() || selected.len() > 32 {
+            return Err("invalid execution-namespace collector selection".into());
+        }
+        let mut adapters = Vec::new();
+        for name in selected {
+            let adapter = collectors::find(name)
+                .filter(|adapter| adapter.prefers_execution_namespace())
+                .ok_or("collector cannot run in the execution namespace")?;
+            if adapters
+                .iter()
+                .any(|existing: &&dyn collectors::CollectorAdapter| existing.id() == adapter.id())
+            {
+                return Err("duplicate execution-namespace collector selection".into());
+            }
+            adapters.push(adapter);
+        }
+        Self::start_with_adapters(dir, selected, None, None, adapters, true)
+    }
+
+    fn start_with_adapters(
+        dir: &Path,
+        selected: &[String],
+        tool_dir: Option<&Path>,
+        cgroup_parent: Option<&Path>,
+        adapters: Vec<&'static dyn collectors::CollectorAdapter>,
+        namespace_only: bool,
+    ) -> Result<Self, String> {
         let selected = collectors::expand_dependencies(selected);
         let selected = selected.as_slice();
         fs::create_dir_all(dir).map_err(|e| {
@@ -434,9 +572,11 @@ impl Session {
         check_measurement_directory(dir)?;
         // Privilege and tracefs checks must complete before any agent process
         // is prepared. This prevents a partially measured benchmark run.
-        let sudo_collectors = preflight_collectors(dir, selected, tool_dir)?;
+        let sudo_collectors = preflight_collectors(dir, selected, tool_dir, &adapters)?;
         let started_unix_ms = unix_ms();
         let mut session = Self {
+            adapters,
+            namespace_only,
             dir: dir.to_path_buf(),
             tool_dir: tool_dir.map(Path::to_path_buf),
             cgroup_parent: cgroup_parent.map(Path::to_path_buf),
@@ -460,13 +600,14 @@ impl Session {
             component_starts: BTreeMap::new(),
             component_timings: BTreeMap::new(),
             process_sampler: None,
+            process_identity: None,
             process_tree_snapshots: Vec::new(),
             clock_ticks_per_second: clock_ticks_per_second(),
         };
-        for collector in collectors::all() {
+        for collector in session.adapters.clone() {
             collector.configure(&mut session, selected)?;
         }
-        for collector in collectors::all() {
+        for collector in session.adapters.clone() {
             collector.start(&mut session)?;
         }
         Ok(session)
@@ -477,10 +618,17 @@ impl Session {
         if self.lifecycle.len() >= 256 {
             return Err("too many benchmark lifecycle events".into());
         }
-        for collector in collectors::all() {
+        for collector in self.adapters.clone() {
             collector.lifecycle_event(self, event)?;
         }
         self.record_component_event(event);
+        if matches!(
+            event,
+            collectors::LifecycleEvent::AgentExecuteEnd | collectors::LifecycleEvent::RunFailed
+        ) {
+            self.stop_process_tree_snapshots();
+            self.stop_process_sampler();
+        }
         self.lifecycle.push(LifecycleRecord {
             sequence: self.lifecycle.len(),
             elapsed_us: self.lifecycle_started.elapsed().as_micros(),
@@ -525,10 +673,16 @@ impl Session {
     }
 
     fn start_process_sampler(&mut self, pid: u32) {
+        if self.namespace_only {
+            return;
+        }
         if self.process_sampler.is_some() {
             return;
         }
-        self.process_sampler = ProcessSampler::start(pid, measurement_interval_ms());
+        self.process_sampler = self
+            .process_identity
+            .or_else(|| ProcessIdentity::read(pid))
+            .and_then(|root| ProcessSampler::start(root, measurement_interval_ms()));
     }
 
     fn stop_process_sampler(&mut self) {
@@ -625,19 +779,67 @@ impl Session {
         self.shared_artifacts.get(&kind).map(PathBuf::as_path)
     }
 
-    pub(crate) fn agent_launch(&mut self, program: &str, args: &[String]) {
-        for collector in collectors::all() {
-            collector.agent_launch(self, program, args);
+    pub(crate) fn agent_launch_prepared(&mut self, command: &Command) {
+        for collector in self.adapters.clone() {
+            collector.agent_launch_prepared(self, command);
         }
+    }
+
+    pub(crate) fn execution_namespace_collectors(&mut self) -> Vec<String> {
+        self.adapters
+            .clone()
+            .into_iter()
+            .filter(|adapter| {
+                adapter.prefers_execution_namespace() && adapter.execution_namespace_requested(self)
+            })
+            .map(|adapter| adapter.id().into())
+            .collect()
+    }
+
+    pub(crate) fn export_execution_namespace_state(
+        &mut self,
+    ) -> Result<BTreeMap<String, serde_json::Value>, String> {
+        self.event(collectors::LifecycleEvent::AgentExecuteEnd)?;
+        let mut result = BTreeMap::new();
+        for adapter in self.adapters.clone() {
+            if adapter.prefers_execution_namespace() && adapter.execution_namespace_requested(self)
+            {
+                result.insert(
+                    adapter.id().into(),
+                    adapter.export_execution_namespace_state(self)?,
+                );
+            }
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn import_execution_namespace_state(
+        &mut self,
+        values: &BTreeMap<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        for adapter in self.adapters.clone() {
+            if adapter.prefers_execution_namespace()
+                && adapter.execution_namespace_requested(self)
+                && let Some(value) = values.get(adapter.id())
+            {
+                adapter.import_execution_namespace_state(self, value)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn measurement_target(&self) -> Option<ProcessIdentity> {
+        self.process_identity
     }
 
     /// Attach collectors to the selected child after it has been spawned.
     pub fn attach_pid(&mut self, pid: u32) -> Result<(), String> {
+        self.process_identity = ProcessIdentity::read(pid);
         #[cfg(test)]
         if self.test_attach_failure {
             return Err("injected collector attachment failure".into());
         }
-        for collector in collectors::all() {
+        for collector in self.adapters.clone() {
             if collector.requires_pid() {
                 collector.attach_pid(self, pid)?;
             }
@@ -647,9 +849,24 @@ impl Session {
     }
 
     /// Attach only after the owning execution adapter proves host identity.
-    pub(crate) fn attach_isolated_pid(&mut self, pid: u32) -> Result<(), String> {
-        for collector in collectors::all() {
+    pub(crate) fn attach_isolated_pid(
+        &mut self,
+        pid: u32,
+        start_time_ticks: u64,
+    ) -> Result<(), String> {
+        let root = ProcessIdentity {
+            pid,
+            start_time_ticks,
+        };
+        if !root.matches() {
+            return Err("isolated process identity changed before collector attachment".into());
+        }
+        self.process_identity = Some(root);
+        for collector in self.adapters.clone() {
             if collector.requires_pid() {
+                if !root.matches() {
+                    return Err("isolated process exited during collector attachment".into());
+                }
                 collector.attach_isolated_pid(self, pid)?;
             }
         }
@@ -707,7 +924,7 @@ impl Session {
         if self.run_started {
             write_json(&self.dir.join("lifecycle.json"), &self.lifecycle)?;
         }
-        for adapter in collectors::all() {
+        for adapter in self.adapters.clone() {
             adapter.finish(&mut self)?;
         }
         self.write_component_measurements(measurement.elapsed_ms)?;
@@ -716,32 +933,27 @@ impl Session {
         Ok(())
     }
 
-    pub(crate) fn start_snapshot(
+    pub(crate) fn start_tree_snapshot(
         &mut self,
         name: &str,
-        variable: &str,
-        args: &[&str],
         enabled: bool,
         executable: &Path,
+        pid: u32,
+        arguments: TreeSnapshotArguments,
     ) -> Result<(), String> {
         if !enabled {
             return Ok(());
         }
         let stdout_path = self.dir.join(format!("{name}.stdout"));
         let stderr_path = self.dir.join(format!("{name}.stderr"));
-        if matches!(name, "mpstat" | "iostat")
-            && let Some(pid) = args
-                .iter()
-                .position(|arg| *arg == "-p")
-                .and_then(|index| args.get(index + 1))
-                .and_then(|value| value.parse::<u32>().ok())
         {
             let executable = executable.to_path_buf();
-            let sampler_args = args.iter().map(|arg| (*arg).to_owned()).collect();
             let sampler = ProcessTreeSnapshot::start(
-                pid,
+                self.process_identity
+                    .or_else(|| ProcessIdentity::read(pid))
+                    .ok_or("process-tree sampler target has exited")?,
                 executable,
-                sampler_args,
+                arguments,
                 stdout_path.clone(),
                 stderr_path.clone(),
             )
@@ -763,43 +975,8 @@ impl Session {
                 stdout_path,
                 stderr_path,
             });
-            return Ok(());
+            Ok(())
         }
-        let child = match Command::new(executable)
-            .args(args)
-            .stdout(Stdio::from(
-                File::create(&stdout_path)
-                    .map_err(|e| format!("cannot create {name} output: {e}"))?,
-            ))
-            .stderr(Stdio::from(File::create(&stderr_path).map_err(|e| {
-                format!("cannot create {name} error output: {e}")
-            })?))
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(error) if !env_true(variable) => {
-                write_unavailable(
-                    &self.dir.join(format!("{name}.json")),
-                    name,
-                    error.to_string(),
-                )?;
-                return Ok(());
-            }
-            Err(error) => {
-                return Err(format!(
-                    "cannot start {name}; install it or disable {variable}=1: {error}"
-                ));
-            }
-        };
-        self.collectors.push(Collector {
-            name: name.into(),
-            adapter: collectors::find(name).expect("registered collector"),
-            child,
-            started: Instant::now(),
-            stdout_path,
-            stderr_path,
-        });
-        Ok(())
     }
 
     pub(crate) fn command(&self, name: &str) -> Command {
@@ -1166,6 +1343,7 @@ fn preflight_collectors(
     measurement_dir: &Path,
     selected: &[String],
     tool_dir: Option<&Path>,
+    adapters: &[&'static dyn collectors::CollectorAdapter],
 ) -> Result<BTreeSet<String>, String> {
     let mut sudo_collectors = BTreeSet::new();
     let mut context = collectors::PreflightContext {
@@ -1174,7 +1352,7 @@ fn preflight_collectors(
         tool_dir,
         sudo_collectors: &mut sudo_collectors,
     };
-    for collector in collectors::all() {
+    for collector in adapters {
         collector.preflight(&mut context)?;
     }
     Ok(sudo_collectors)
@@ -1288,20 +1466,32 @@ fn descendant_pids(root: u32, children: &BTreeMap<u32, Vec<u32>>) -> Vec<u32> {
     tree
 }
 
-fn read_process_tree_sample(root: u32) -> Option<ProcessSample> {
+fn read_process_tree_sample(root: ProcessIdentity) -> Option<ProcessSample> {
+    if !root.matches() {
+        return None;
+    }
     let mut total = ProcessSample::default();
     let mut observed = false;
-    for pid in process_tree_pids(root) {
+    for pid in process_tree_pids(root.pid) {
+        let Some(identity) = ProcessIdentity::read(pid) else {
+            continue;
+        };
+        if !identity.in_tree(root) {
+            continue;
+        }
         let Some(sample) = read_process_sample(pid) else {
             continue;
         };
+        if !identity.in_tree(root) {
+            continue;
+        }
         total.user_ticks = total.user_ticks.saturating_add(sample.user_ticks);
         total.system_ticks = total.system_ticks.saturating_add(sample.system_ticks);
         total.io_delay_ticks = total.io_delay_ticks.saturating_add(sample.io_delay_ticks);
         total.runqueue_ns = total.runqueue_ns.saturating_add(sample.runqueue_ns);
         observed = true;
     }
-    observed.then_some(total)
+    (observed && root.matches()).then_some(total)
 }
 
 fn parse_process_parent(stat: &str) -> Option<u32> {
@@ -1346,6 +1536,103 @@ fn clock_ticks_per_second() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn process_fixture(proc: &Path, pid: u32, parent: u32, start: u64, state: &str) {
+        fs::create_dir_all(proc.join(pid.to_string())).unwrap();
+        let mut fields = vec!["0".to_owned(); 40];
+        fields[0] = state.into();
+        fields[1] = parent.to_string();
+        fields[19] = start.to_string();
+        fs::write(
+            proc.join(pid.to_string()).join("stat"),
+            format!("{pid} (agent (nested) name) {}", fields.join(" ")),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn process_generation_and_ancestry_reject_reuse_exit_reparenting_and_cycles() {
+        let proc = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("proc-identities", None).attempt_id);
+        process_fixture(&proc, 1, 0, 1, "S");
+        process_fixture(&proc, 10, 1, 100, "T");
+        process_fixture(&proc, 20, 10, 200, "S");
+        let root = ProcessIdentity::read_at(&proc, 10).unwrap();
+        let child = ProcessIdentity::read_at(&proc, 20).unwrap();
+        assert!(child.in_tree_at(root, &proc));
+        assert!(root.in_tree_at(root, &proc));
+        // A recycled PID is not the original process, even if its new parent
+        // has the same PID. Moving a live task outside the tree also excludes it.
+        process_fixture(&proc, 20, 10, 201, "S");
+        assert!(!child.matches_at(&proc));
+        assert!(!child.in_tree_at(root, &proc));
+        process_fixture(&proc, 20, 1, 200, "S");
+        assert!(child.matches_at(&proc));
+        assert!(!child.in_tree_at(root, &proc));
+        for state in ["Z", "X", "x"] {
+            process_fixture(&proc, 20, 10, 200, state);
+            assert!(!child.matches_at(&proc));
+        }
+        process_fixture(&proc, 20, 21, 200, "S");
+        process_fixture(&proc, 21, 20, 210, "S");
+        assert!(!child.in_tree_at(root, &proc));
+        process_fixture(&proc, 20, 10, 200, "S");
+        process_fixture(&proc, 10, 1, 101, "T");
+        assert!(!child.in_tree_at(root, &proc));
+        fs::remove_file(proc.join("10/stat")).unwrap();
+        assert!(!root.matches_at(&proc));
+        process_fixture(&proc, 20, 10, 0, "S");
+        assert!(ProcessIdentity::read_at(&proc, 20).is_none());
+        fs::write(proc.join("20/stat"), "partial").unwrap();
+        assert!(ProcessIdentity::read_at(&proc, 20).is_none());
+        fs::remove_dir_all(proc).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn stale_sampler_or_isolated_target_never_attaches_to_a_reused_pid() {
+        let current = ProcessIdentity::read(std::process::id()).unwrap();
+        let stale = ProcessIdentity {
+            start_time_ticks: current.start_time_ticks + 1,
+            ..current
+        };
+        assert!(ProcessSampler::start(stale, 1000).is_none());
+        let dir = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("stale-target", None).attempt_id);
+        let mut session = Session::start_with_collectors(&dir, &[], None).unwrap();
+        assert!(
+            session
+                .attach_isolated_pid(stale.pid, stale.start_time_ticks)
+                .is_err()
+        );
+        assert!(session.process_identity.is_none());
+        assert!(session.process_sampler.is_none());
+        assert!(session.collectors.is_empty());
+        drop(session);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn agent_end_stops_timing_sampler_without_waiting_for_the_next_interval() {
+        let dir = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("sampler-end", None).attempt_id);
+        let mut session = Session::start_with_collectors(&dir, &[], None).unwrap();
+        let root = ProcessIdentity::read(std::process::id()).unwrap();
+        session.process_sampler = ProcessSampler::start(root, 10000);
+        assert!(session.process_sampler.is_some());
+        session
+            .event(collectors::LifecycleEvent::AgentExecuteBegin)
+            .unwrap();
+        let start = Instant::now();
+        session
+            .event(collectors::LifecycleEvent::AgentExecuteEnd)
+            .unwrap();
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(session.process_sampler.is_none());
+        drop(session);
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn unobserved_sampled_cpu_is_unknown_but_exact_zero_cgroup_totals_are_preserved() {
