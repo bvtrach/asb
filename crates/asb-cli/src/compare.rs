@@ -406,42 +406,55 @@ fn write_execution_timeline_svg(path: &Path, benchmarks: &[BenchmarkData]) -> Re
         else {
             continue;
         };
-        let number = |name| {
-            component
-                .get(name)
-                .and_then(Value::as_f64)
-                .filter(|v| *v >= 0.0)
+        let state = |name| {
+            benchmark
+                .metrics
+                .get(&format!("perfetto-state-summary.{name}"))
+                .copied()
+                .unwrap_or(0.0)
         };
-        let user = number("cpu_user_ms").unwrap_or(0.0);
-        let system = number("cpu_system_ms").unwrap_or(0.0);
-        let io_wait = number("io_wait_ms").unwrap_or(0.0);
-        let runnable_wait = number("scheduler_wait_ms").unwrap_or(0.0);
+        let running = state("running_ms");
+        let runnable = state("runnable_ms");
+        let sleeping = state("interruptible_sleep_ms");
+        let blocked = state("uninterruptible_sleep_ms");
+        let io_wait = state("io_wait_ms");
+        let other_state = state("other_scheduler_state_ms");
         let wall = component
             .get("wall_ms")
             .and_then(Value::as_f64)
             .unwrap_or(0.0);
-        if user + system + io_wait + runnable_wait <= 0.0 && wall <= 0.0 {
+        if running + runnable + sleeping + blocked + io_wait + other_state <= 0.0 && wall <= 0.0 {
             continue;
         }
-        // The residual is deliberately not called sleep: concurrent children
-        // can make CPU accounting exceed wall time, and not every sleep state
-        // is observable through portable proc accounting.
-        let other = (wall - user - system - io_wait - runnable_wait).max(0.0);
+        let other =
+            (wall - running - runnable - sleeping - blocked - io_wait - other_state).max(0.0);
         rows.push((
             benchmark.label.as_str(),
-            [user, system, io_wait, runnable_wait, other],
+            [
+                running,
+                runnable,
+                sleeping,
+                blocked,
+                io_wait,
+                other_state,
+                other,
+            ],
         ));
     }
     if rows.is_empty() {
         return Ok(false);
     }
     let height = 100 + rows.len() * 44;
-    let colors = ["#1976d2", "#7b1fa2", "#ef6c00", "#c62828", "#90a4ae"];
+    let colors = [
+        "#1976d2", "#c62828", "#78909c", "#6a1b9a", "#ef6c00", "#b0bec5", "#eceff1",
+    ];
     let labels = [
-        "user CPU",
-        "system CPU",
-        "block I/O wait",
-        "runnable wait",
+        "running",
+        "runnable",
+        "interruptible sleep",
+        "uninterruptible sleep",
+        "I/O wait",
+        "other scheduler state",
         "unclassified elapsed wall time",
     ];
     let mut svg = format!(
@@ -1385,7 +1398,7 @@ mod tests {
         assert!(timeline.is_file());
         let timeline_svg = std::fs::read_to_string(timeline).unwrap();
         assert!(timeline_svg.contains("Agent execution time composition"));
-        assert!(timeline_svg.contains("block I/O wait"));
+        assert!(timeline_svg.contains("I/O wait"));
         assert!(
             root.join("results/sweep-comparison/metric-host.logical_cpus.svg")
                 .is_file()

@@ -665,6 +665,25 @@ fn write_state_timeline_svg(
             "Timeline unavailable: the trace contains no process-tree scheduler intervals.",
         );
     }
+    let mut summary = BTreeMap::<String, f64>::new();
+    for span in &spans {
+        let (name, _) = state_style(&span.state, span.io_wait);
+        let key = match name {
+            "running" => "running_ms",
+            "runnable" => "runnable_ms",
+            "I/O wait" => "io_wait_ms",
+            "uninterruptible sleep" => "uninterruptible_sleep_ms",
+            "interruptible sleep" => "interruptible_sleep_ms",
+            _ => "other_scheduler_state_ms",
+        };
+        *summary.entry(key.to_owned()).or_default() += span.dur as f64 / 1_000_000.0;
+    }
+    measurements::write_json(
+        &dir.join("perfetto-state-summary.json"),
+        &serde_json::json!({
+            "schema_version": 1, "collector": "perfetto-state-summary", "metrics": summary
+        }),
+    )?;
     let start = spans.iter().map(|s| s.ts).min().unwrap_or(0);
     let end = spans
         .iter()
