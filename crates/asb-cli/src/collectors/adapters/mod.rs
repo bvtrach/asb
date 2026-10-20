@@ -2,6 +2,9 @@
 
 use super::CollectorAdapter;
 
+mod agent_memory;
+mod agent_processes;
+mod agent_workers;
 pub(crate) mod bpftrace;
 mod cpu_accounting;
 pub(crate) mod flamegraph;
@@ -17,6 +20,8 @@ mod system;
 pub(crate) mod token_usage;
 
 pub(super) static REGISTRY: &[&dyn CollectorAdapter] = &[
+    &agent_memory::ADAPTER,
+    &agent_workers::ADAPTER,
     &cpu_accounting::ADAPTER,
     &system::ADAPTER,
     &runtime::ADAPTER,

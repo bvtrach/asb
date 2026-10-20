@@ -148,6 +148,14 @@ pub(crate) trait CollectorAdapter: Sync {
     fn requires_pid(&self) -> bool {
         false
     }
+    /// Describe the selected agent, never its prompt or environment.
+    fn agent_launch(
+        &self,
+        _session: &mut crate::measurements::Session,
+        _program: &str,
+        _args: &[String],
+    ) {
+    }
     fn usage(&self, _context: &UsageContext<'_>) -> Option<crate::measurements::TokenUsage> {
         None
     }
@@ -291,6 +299,13 @@ mod tests {
     #[test]
     fn registry_preserves_metadata_and_shutdown_policy_for_every_adapter() {
         let expected = [
+            ("agent-memory", Some("ASB_MEASURE_AGENT_MEMORY"), None, true),
+            (
+                "agent-workers",
+                Some("ASB_MEASURE_AGENT_WORKERS"),
+                None,
+                true,
+            ),
             ("cpu-accounting", None, None, true),
             ("system", None, None, false),
             ("runtime", None, None, false),

@@ -984,6 +984,11 @@ const endpoint = config.providers.asb.baseUrl;
 if (!/^http:\/\/127\.0\.0\.1:\d+\/v1$/.test(endpoint) || config.providers.asb.api !== 'openai-responses' || process.env.ASB_AGENT_API_KEY !== 'asb-replay') {
   console.error('unexpected replay configuration'); process.exit(11);
 }
+if (process.argv.includes('--fixture-agent-worker')) {
+  const memory = Buffer.alloc(8 * 1024 * 1024, 1);
+  setTimeout(() => process.exit(memory[0] === 1 ? 0 : 1), 1600);
+  return;
+}
 const behavior = process.env.ASB_FIXTURE_BEHAVIOR || 'success';
 async function main() {
   if (behavior === 'skip') { console.log('fixture-no-request'); return; }
@@ -1004,6 +1009,19 @@ async function main() {
       const result=require('child_process').spawnSync(process.execPath,['-e','const end=performance.now()+60; while(performance.now()<end) {}']);
       if (result.status!==0) throw new Error('offline CPU child failed');
     }
+  }
+  if (behavior === 'agent-workers' || behavior === 'only-tools') {
+    const {spawn} = require('child_process');
+    const children = [];
+    if (behavior === 'agent-workers') {
+      for (let i=0;i<2;i++) children.push(spawn(process.execPath,[__filename,'--fixture-agent-worker']));
+    }
+    // These share the runtime with the agent, but are not agent workers.
+    for (let i=0;i<3;i++) children.push(spawn(process.execPath,['-e','const memory=Buffer.alloc(32*1024*1024,1);setTimeout(()=>process.exit(memory[0]===1?0:1),1600)']));
+    children.push(spawn('/bin/sh',['-c','sleep 1.6']));
+    await Promise.all(children.map(child=>new Promise((resolve,reject)=>{
+      child.on('error',reject); child.on('exit',code=>code===0?resolve():reject(new Error('fixture child failed')));
+    })));
   }
   console.log('fixture-agent-output');
   if (behavior === 'fatal') console.error('Authentication required. Please use /login command to sign in to your account fixture-secret');
@@ -1031,6 +1049,51 @@ fn replay(project: &Project, behavior: &str, additional: &[&str]) -> Output {
     ];
     args.extend_from_slice(additional);
     project.command_with_env(&args, &[("ASB_FIXTURE_BEHAVIOR", behavior)])
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn replay_agent_process_collectors_exclude_tools_and_isolate_concurrent_runs() {
+    for (behavior, expected) in [("agent-workers", 2), ("only-tools", 0)] {
+        let project = replay_project(2);
+        let result = project.command_with_env(
+            &[
+                "run",
+                "benchmark.toml",
+                "--replay",
+                "--cassette",
+                "tape.jsonl",
+                "--measurements",
+                "measurements",
+            ],
+            &[
+                ("ASB_FIXTURE_BEHAVIOR", behavior),
+                ("ASB_MEASURE_AGENT_MEMORY", "1"),
+                ("ASB_MEASURE_AGENT_WORKERS", "1"),
+                ("ASB_MEASURE_INTERVAL_MS", "100"),
+            ],
+        );
+        expect_success(&result);
+        for replica in 1..=2 {
+            let dir = project
+                .0
+                .join(format!("measurements-concurrency-{replica}"));
+            let workers: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(dir.join("agent-workers.json")).unwrap())
+                    .unwrap();
+            assert_eq!(workers["status"], "observed", "{workers}");
+            assert_eq!(
+                workers["metrics"]["spawned_worker_count"], expected,
+                "{workers}"
+            );
+            let memory: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(dir.join("agent-memory.json")).unwrap())
+                    .unwrap();
+            assert_eq!(memory["status"], "observed", "{memory}");
+            assert!(memory["metrics"]["peak_rss_mib"].as_f64().unwrap() > 0.0);
+            assert!(!memory.to_string().contains("--fixture-agent-worker"));
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]

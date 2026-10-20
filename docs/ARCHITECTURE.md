@@ -42,6 +42,18 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   their metadata, lifecycle hooks, processing, and presentation. Mutable state
   belongs to each measurement session, so concurrent runs share only the
   stateless adapters;
+  `agent-memory` and `agent-workers` share one per-session Linux proc sampler.
+  The runner supplies the prepared executable and arguments. Native executables
+  match by canonical executable path; scripts additionally match their interpreter
+  and entry point, rather than counting every process using Node or Python.
+  Direct interpreter launches require the exact script, module, or inline-code
+  entry point; unsupported launch forms remain unavailable instead of counting
+  every interpreter task. Launch arguments are not written to artifacts.
+  Only matching descendants contribute to aggregate RSS or distinct PID/start-time
+  worker totals; arbitrary tools and the ASB gate do not. Samples retain bounded
+  aggregate state, never argv, prompts, or credentials. Lifecycle completion and
+  session destruction stop and join the sampler. Compare renders all-agent SVG
+  bars and dedicated HTML sections with units and sampling limitations;
   the mpstat/iostat result names use process-scoped `pidstat` sampling for the
   agent process and its child tasks, retaining bounded raw output and exposing
   averaged, unit-named CPU and I/O metrics under a machine-readable `metrics`
