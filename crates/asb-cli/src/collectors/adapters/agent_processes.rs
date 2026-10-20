@@ -314,10 +314,12 @@ impl Totals {
                 continue;
             }
             let Some((start, resident)) = process_memory(&proc) else {
-                // A task exiting between identity and RSS reads is normal.
-                if proc.exists() {
-                    self.incomplete = true;
-                }
+                // A task can exit (or become a short-lived zombie) between
+                // identity and RSS reads.  That race is normal for sampled
+                // process accounting; treat it as a missed lower-bound sample
+                // rather than making an otherwise valid run incomplete.  The
+                // explicit observation cap below remains the hard incomplete
+                // condition.
                 continue;
             };
             // Bound memory usage even for pathological long runs.
