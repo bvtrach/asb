@@ -300,8 +300,10 @@ function requestPrefixMatches(actual, expected) {
   try {
     const a = JSON.parse(actual.body || "null");
     const e = JSON.parse(expected.body || "null");
-    if (!a || !e || !Array.isArray(a.messages) || !Array.isArray(e.messages)
-      || a.messages.length > e.messages.length) return false;
+    if (!a || !e) return false;
+    const field = Array.isArray(a.messages) && Array.isArray(e.messages) ? "messages"
+      : Array.isArray(a.input) && Array.isArray(e.input) ? "input" : null;
+    if (!field || a[field].length > e[field].length) return false;
     const comparable = (value) => {
       if (Array.isArray(value)) return value.map(comparable);
       if (value && typeof value === "object") {
@@ -313,11 +315,11 @@ function requestPrefixMatches(actual, expected) {
     };
     const withoutMessages = (value) => {
       const copy = comparable(value);
-      delete copy.messages;
+      delete copy[field];
       return copy;
     };
     if (JSON.stringify(withoutMessages(a)) !== JSON.stringify(withoutMessages(e))) return false;
-    return a.messages.every((message, index) => JSON.stringify(comparable(message)) === JSON.stringify(comparable(e.messages[index])));
+    return a[field].every((message, index) => JSON.stringify(comparable(message)) === JSON.stringify(comparable(e[field][index])));
   } catch {
     return false;
   }
