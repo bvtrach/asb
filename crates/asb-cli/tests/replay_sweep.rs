@@ -47,7 +47,7 @@ if (conf.providers.asb.api !== 'openai-responses') process.exit(4);
 if (!/^http:\/\/127\.0\.0\.1:\d+\/v1$/.test(url || '')) process.exit(3);
 const body = {model: 'test-model', input: 'example prompt', tools: [{type: 'function'}]};
 fetch(url + '/responses', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(body)})
-  .then(async r => { if (!r.ok) throw new Error(await r.text()); console.log('{"status":"ok"}'); })
+  .then(async r => { if (!r.ok) throw new Error(await r.text()); fs.writeFileSync('src/parser.py', "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n"); console.log('{"status":"ok"}'); })
   .catch(e => { console.error(e); process.exitCode = 1; });
 "##).unwrap();
     std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -64,7 +64,7 @@ fetch(url + '/responses', {method:'POST', headers:{'content-type':'application/j
         std::fs::create_dir_all(&workspace).unwrap();
         std::fs::write(
             workspace.join("parser.py"),
-            "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+            "def parse_path(value: str) -> list[str]:\n    return value.split('/')\n",
         )
         .unwrap();
     }

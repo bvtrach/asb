@@ -48,6 +48,10 @@ pub(crate) trait AgentAdapter: Sync {
     fn final_response(&self, output: &str, _workspace: &Path) -> Option<String> {
         structured_final_response(output)
     }
+    /// A complete run's authoritative counter, not a count of JSON/text matches.
+    fn step_count(&self, _stdout: &str, _stderr: &str) -> Option<u64> {
+        None
+    }
 }
 
 pub(crate) struct PreparationContext<'a> {
@@ -133,6 +137,7 @@ type CollectionHook = for<'a> fn(&CollectionContext<'a>) -> AgentArtifacts;
 type UsageHook = fn(&str, &str, bool) -> crate::measurements::TokenUsage;
 type FinalResponseHook = fn(&str, &Path) -> Option<String>;
 type ProcessHook = fn(&str) -> Result<Command, Error>;
+type StepCountHook = fn(&str, &str) -> Option<u64>;
 
 /// Trait-object implementation whose behavior is supplied by individual files.
 pub(super) struct StaticAdapter {
@@ -146,6 +151,7 @@ pub(super) struct StaticAdapter {
     output_usage: Option<UsageHook>,
     final_response: Option<FinalResponseHook>,
     process: Option<ProcessHook>,
+    step_count: Option<StepCountHook>,
     replay_credential_vars: &'static [&'static str],
 }
 impl StaticAdapter {
@@ -168,6 +174,7 @@ impl StaticAdapter {
             output_usage: None,
             final_response: None,
             process: None,
+            step_count: None,
             replay_credential_vars: &[],
         }
     }
@@ -179,6 +186,11 @@ impl StaticAdapter {
 
     pub(super) const fn with_output_usage(mut self, hook: UsageHook) -> Self {
         self.output_usage = Some(hook);
+        self
+    }
+
+    pub(super) const fn with_step_count(mut self, hook: StepCountHook) -> Self {
+        self.step_count = Some(hook);
         self
     }
 
@@ -245,6 +257,9 @@ impl AgentAdapter for StaticAdapter {
             || structured_final_response(output),
             |hook| hook(output, workspace),
         )
+    }
+    fn step_count(&self, stdout: &str, stderr: &str) -> Option<u64> {
+        self.step_count.and_then(|hook| hook(stdout, stderr))
     }
 }
 pub(crate) fn prepare(agent: &str, context: &mut PreparationContext<'_>) -> Result<(), Error> {

@@ -260,16 +260,18 @@ pub struct RunMeasurement<'a> {
     pub workload_success: Option<bool>,
     pub failure_kind: Option<&'a str>,
     pub failure_reason: Option<&'a str>,
-    pub success_rate: f64,
+    pub success_rate: Option<f64>,
+    pub adapter_smoke_success: Option<bool>,
     pub agent: &'a str,
     pub workload: &'a str,
     pub workload_evaluation: &'a str,
+    pub workload_baseline_passed: Option<bool>,
     pub provider: &'a str,
     pub model: &'a str,
     pub elapsed_ms: u128,
     pub exit_code: Option<i32>,
     pub token_usage: TokenUsage,
-    pub steps: u64,
+    pub steps: Option<u64>,
     pub started_unix_ms: u128,
 }
 
@@ -813,12 +815,11 @@ pub fn token_usage_from_path(path: &Path) -> TokenUsage {
 #[cfg(test)]
 #[path = "measurements/token_usage_mock_tests.rs"]
 mod token_usage_mock_tests;
-/// Count bounded agent actions and turns.
-pub fn steps_from_sources(agent: &str, stdout: &str, stderr: &str) -> u64 {
+/// Read an adapter-verified complete-run counter; absent evidence is unknown.
+pub fn steps_from_sources(agent: &str, stdout: &str, stderr: &str) -> Option<u64> {
     collectors::all()
         .iter()
         .find_map(|adapter| adapter.steps(agent, stdout, stderr))
-        .unwrap_or_default()
 }
 
 fn update_summary(dir: &Path, run: &RunMeasurement<'_>) -> Result<(), String> {
@@ -841,11 +842,26 @@ fn update_summary(dir: &Path, run: &RunMeasurement<'_>) -> Result<(), String> {
     if runs.len() > MAX_RUNS {
         runs.drain(..runs.len() - MAX_RUNS);
     }
-    let success_count = runs
-        .iter()
-        .filter(|v| v.get("success").and_then(serde_json::Value::as_bool) == Some(true))
-        .count();
-    let summary = serde_json::json!({"schema_version": 1, "runs": runs, "success_count": success_count, "failure_count": runs.len() - success_count, "success_rate": success_count as f64 / runs.len().max(1) as f64});
+    let mut resolution = crate::workloads::ResolutionSummary::default();
+    for run in &runs {
+        let kind = run
+            .get("workload_evaluation")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        let kind = crate::workloads::scored_kind(
+            kind,
+            run.get("workload_baseline_passed")
+                .and_then(serde_json::Value::as_bool),
+        );
+        resolution.observe(
+            kind,
+            run.get("workload_success")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+                && run.get("success").and_then(serde_json::Value::as_bool) == Some(true),
+        );
+    }
+    let summary = serde_json::json!({"schema_version": 2, "runs": runs, "success_count": resolution.resolved_count, "failure_count": resolution.unresolved_count, "task_count": resolution.task_count, "unscored_count": resolution.unscored_count, "success_rate": resolution.success_rate, "success_rate_definition": "resolved task attempts / all selected task attempts; smoke exercises excluded; not pass@k"});
     write_json(&path, &summary)
 }
 
@@ -1349,16 +1365,18 @@ mod tests {
             workload_success: Some(true),
             failure_kind: None,
             failure_reason: None,
-            success_rate: 1.0,
+            success_rate: Some(1.0),
+            adapter_smoke_success: None,
             agent: "a",
             workload: "w",
             workload_evaluation: "bundled-fixture",
+            workload_baseline_passed: Some(false),
             provider: "p",
             model: "m",
             elapsed_ms: 2,
             exit_code: Some(0),
             token_usage: TokenUsage::default(),
-            steps: 1,
+            steps: Some(1),
             started_unix_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -1584,12 +1602,11 @@ mod tests {
     }
 
     #[test]
-    fn counts_structured_agent_steps_and_falls_back_to_one() {
-        let output = r#"{"type":"tool_call","step":1}
-{"type":"tool_call","step":2}"#;
-        assert_eq!(steps_from_sources("codex", output, ""), 2);
-        assert_eq!(steps_from_sources("codex", "completed", ""), 1);
-        assert_eq!(steps_from_sources("codex", "", ""), 0);
+    fn counts_observed_completions_without_inventing_a_fallback() {
+        let output = r#"{"type":"run_result","iterations":2}"#;
+        assert_eq!(steps_from_sources("cline", output, ""), Some(2));
+        assert_eq!(steps_from_sources("codex", "completed", ""), None);
+        assert_eq!(steps_from_sources("codex", "", ""), None);
     }
 
     #[test]

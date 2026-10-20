@@ -140,6 +140,10 @@ enumerates local prompt files and installable external aliases. The
 `swe-bench` and `terminal-bench` aliases fetch pinned upstream source archives
 into the configured workload directory and copy them into
 `external-workload/` for runs. Other aliases fetch pinned prompt metadata.
+External aliases currently execute only small ASB adapter smoke fixtures, not
+the upstream suite's actual tasks or official evaluator. A passing smoke
+exercise has no benchmark success rate. See [evaluation semantics](EVALUATION.md)
+before interpreting agent comparisons.
 
 The built-in recipes are:
 

@@ -103,7 +103,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 directory: result_dir.clone(),
                 agent: agent.clone(),
                 workload: workload.clone(),
-                workload_evaluation: "unknown".into(),
+                workload_evaluation: crate::workloads::evaluation_kind(&workload, Path::new("")).into(),
                 provider: provider.clone(),
                 model: model.clone(),
                 metrics: BTreeMap::new(),
@@ -120,6 +120,15 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             }
             let run_value = read_json(&run_path)?;
             let run_status = match run_value.get("status").and_then(Value::as_str) {
+                Some(status)
+                    if run_value.get("workload_evaluation").and_then(Value::as_str)
+                        == Some("adapter-smoke") =>
+                {
+                    Some(format!(
+                        "{status}: adapter smoke only; upstream task resolution not measured"
+                    ))
+                }
+                Some("unscored") => Some("unscored: initial task was already passing or its baseline could not be verified".into()),
                 Some(status) if run_value.get("success") == Some(&Value::Bool(false)) => Some(
                     if let Some(reason) = run_value.get("failure_reason").and_then(Value::as_str) {
                         format!("benchmark run failed: {reason}")
@@ -141,8 +150,32 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 .and_then(Value::as_str)
                 .unwrap_or("unknown")
                 .to_owned();
+            let workload_evaluation = crate::workloads::scored_kind(
+                &workload_evaluation,
+                run_value
+                    .get("workload_baseline_passed")
+                    .and_then(Value::as_bool),
+            )
+            .to_owned();
             let mut metrics = BTreeMap::new();
             flatten_numbers("", &run_value, &mut metrics);
+            // Correct old presentations without rewriting their raw evidence.
+            if !crate::workloads::resolution_eligible(&workload_evaluation) {
+                metrics.remove("success_rate");
+            } else {
+                let resolved = ["success", "process_success", "workload_success"]
+                    .iter()
+                    .all(|key| run_value.get(*key).and_then(Value::as_bool) == Some(true));
+                metrics.insert("success_rate".into(), if resolved { 1.0 } else { 0.0 });
+            }
+            if run_value
+                .get("schema_version")
+                .and_then(Value::as_u64)
+                .unwrap_or(1)
+                < 2
+            {
+                metrics.remove("steps");
+            }
             let mut series = BTreeMap::new();
             let mut host_metadata = None;
             let mut components = None;
@@ -262,8 +295,29 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
     )? {
         graphs.push("execution-timeline.svg".into());
     }
+    let mut resolution_groups: BTreeMap<String, crate::workloads::ResolutionSummary> =
+        BTreeMap::new();
+    for benchmark in &benchmark_data {
+        let key = serde_json::to_string(&(
+            &benchmark.agent,
+            &benchmark.provider,
+            &benchmark.model,
+            &benchmark.workload,
+            &benchmark.workload_evaluation,
+        ))
+        .map_err(|error| Error::Run(error.to_string()))?;
+        resolution_groups.entry(key).or_default().observe(
+            &benchmark.workload_evaluation,
+            benchmark
+                .metrics
+                .get("success_rate")
+                .is_some_and(|value| *value == 1.0),
+        );
+    }
     let summary = json!({
-        "schema_version": 1,
+        "schema_version": 2,
+        "success_rate_definition": "resolved task attempts / all selected task attempts, including failures; not process exit rate or pass@k; smoke checks excluded",
+        "resolution_groups": resolution_groups,
         "sweep": sweep_path,
         "results_directory": sweep_results,
         "comparison_directory": comparison_dir,
@@ -548,10 +602,10 @@ fn write_html_report(
             .metrics
             .get("elapsed_ms")
             .map_or_else(|| "—".into(), |value| format!("{value:.0} ms"));
-        let success = benchmark
-            .metrics
-            .get("success_rate")
-            .map_or_else(|| "—".into(), |value| format!("{:.1}%", value * 100.0));
+        let success = benchmark.metrics.get("success_rate").map_or_else(
+            || "Not measured".into(),
+            |value| format!("{:.1}% ({}/1)", value * 100.0, usize::from(*value == 1.0)),
+        );
         let tokens = benchmark
             .metrics
             .get("token_usage.total_tokens")
@@ -567,8 +621,13 @@ fn write_html_report(
             format!("<details><summary>All metrics</summary><dl>{items}</dl></details>")
         };
         let evaluation_details = format!(
-            "<p class=\"evaluation\">Workload evaluation: <code>{}</code></p>",
-            escape(&benchmark.workload_evaluation)
+            "<p class=\"evaluation\">Workload evaluation: <code>{}</code>. {}</p>",
+            escape(&benchmark.workload_evaluation),
+            if crate::workloads::resolution_eligible(&benchmark.workload_evaluation) {
+                "Task-resolution rate; failures remain in the denominator. Local fixture scores are not upstream suite scores."
+            } else {
+                "No upstream task resolution was measured. Adapter smoke exercises and unknown graders cannot earn benchmark success credit."
+            }
         );
         let host_details = benchmark.host_metadata.as_ref().map_or_else(
             String::new,
@@ -1300,6 +1359,7 @@ fn safe_name_str(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::run;
+    use serde_json::{Value, json};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -1613,6 +1673,85 @@ mod tests {
             std::fs::read_to_string(root.join("results/sweep-comparison/comparison.json")).unwrap();
         assert!(summary.contains("missing measurements"));
         assert!(summary.contains("measurement collection may be disabled"));
+        let parsed: Value = serde_json::from_str(&summary).unwrap();
+        let group = parsed["resolution_groups"]
+            .as_object()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap();
+        assert_eq!(group["task_count"], 1);
+        assert_eq!(group["unresolved_count"], 1);
+        assert_eq!(group["success_rate"], 0.0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_smoke_and_unknown_scores_cannot_become_task_resolution() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-compare-scope-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("sweep.toml"),
+            "configs=['smoke.toml','unknown.toml','task.toml']\n",
+        )
+        .unwrap();
+        for (index, name, workload, evaluation) in [
+            (0, "smoke", "swe-bench", "adapter-smoke"),
+            (1, "unknown", "custom", "unknown"),
+            (2, "task", "bug-fix", "bundled-fixture"),
+        ] {
+            std::fs::write(
+                root.join(format!("{name}.toml")),
+                format!("agent='cline'\nworkload='{workload}'\nprovider='local'\nmodel='m'\n"),
+            )
+            .unwrap();
+            let dir = root.join(format!("sweep-results/{index:03}-{name}/measurements"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("run.json"), json!({"schema_version":1,"status":"completed","success":true,"process_success":true,"workload_success":true,"workload_baseline_passed":false,"workload_evaluation":evaluation,"success_rate":1.0,"steps":1,"token_usage":{"total_tokens":8917}}).to_string()).unwrap();
+        }
+        run(root.join("sweep.toml").to_str().unwrap(), &mut Vec::new()).unwrap();
+        let comparison: Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("results/sweep-comparison/comparison.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        for index in [0, 1] {
+            assert!(
+                comparison["benchmarks"][index]["metrics"]
+                    .get("success_rate")
+                    .is_none()
+            );
+            assert!(
+                comparison["benchmarks"][index]["metrics"]
+                    .get("steps")
+                    .is_none()
+            );
+            assert_eq!(
+                comparison["benchmarks"][index]["metrics"]["token_usage.total_tokens"],
+                8917.0
+            );
+        }
+        assert_eq!(comparison["benchmarks"][2]["metrics"]["success_rate"], 1.0);
+        let groups = comparison["resolution_groups"].as_object().unwrap();
+        assert_eq!(
+            groups
+                .values()
+                .filter(|value| value["success_rate"].is_null())
+                .count(),
+            2
+        );
+        let html =
+            std::fs::read_to_string(root.join("results/sweep-comparison/report.html")).unwrap();
+        assert!(html.contains("Not measured"));
+        assert!(html.contains("100.0% (1/1)"));
+        assert!(html.contains("No upstream task resolution was measured"));
         let _ = std::fs::remove_dir_all(root);
     }
 }

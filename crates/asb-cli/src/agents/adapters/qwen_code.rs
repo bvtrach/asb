@@ -12,7 +12,32 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     prepare_adapter,
 )
 .with_output_usage(output_usage)
+.with_step_count(step_count)
 .with_final_response(final_response);
+
+fn step_count(stdout: &str, _stderr: &str) -> Option<u64> {
+    fn result(value: &serde_json::Value) -> Option<&serde_json::Value> {
+        match value {
+            serde_json::Value::Array(events) => events.iter().rev().find_map(result),
+            serde_json::Value::Object(event)
+                if event.get("type").and_then(|v| v.as_str()) == Some("result") =>
+            {
+                Some(value)
+            }
+            _ => None,
+        }
+    }
+    let document = serde_json::from_str::<serde_json::Value>(stdout)
+        .ok()
+        .or_else(|| {
+            stdout
+                .lines()
+                .rev()
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                .find(|value| result(value).is_some())
+        })?;
+    result(&document)?.get("num_turns")?.as_u64()
+}
 
 fn output_usage(
     stdout: &str,
