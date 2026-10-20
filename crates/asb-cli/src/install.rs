@@ -962,6 +962,24 @@ pub(crate) fn verify_sha256(
     expected_hash: &str,
     label: &str,
 ) -> Result<(), Error> {
+    verify_sha256_inner(destination, expected_hash, label, true)
+}
+
+/// Inspect cached inputs without destroying evidence needed for repair.
+pub(crate) fn verify_sha256_preserving(
+    destination: &Path,
+    expected_hash: &str,
+    label: &str,
+) -> Result<(), Error> {
+    verify_sha256_inner(destination, expected_hash, label, false)
+}
+
+fn verify_sha256_inner(
+    destination: &Path,
+    expected_hash: &str,
+    label: &str,
+    remove_invalid: bool,
+) -> Result<(), Error> {
     let digest = command_output(
         &PathBuf::from("sha256sum"),
         &[destination.to_string_lossy().as_ref()],
@@ -969,7 +987,9 @@ pub(crate) fn verify_sha256(
     )?;
     let actual_hash = digest.split_whitespace().next().unwrap_or_default();
     if actual_hash != expected_hash {
-        let _ = fs::remove_file(destination);
+        if remove_invalid {
+            let _ = fs::remove_file(destination);
+        }
         return Err(Error::Io(format!(
             "{label} checksum mismatch: expected {expected_hash}, got {actual_hash}"
         )));
