@@ -1742,6 +1742,12 @@ mod tests {
         }
         assert!(config.contains("linux.process_stats"));
         assert!(config.contains("compact_sched"));
+        let with_stats =
+            super::collectors::adapters::perfetto::perfetto_config_with_schedstats(None, true);
+        assert!(with_stats.contains("sched/sched_stat_iowait"));
+        let without_stats =
+            super::collectors::adapters::perfetto::perfetto_config_with_schedstats(None, false);
+        assert!(!without_stats.contains("sched/sched_stat_iowait"));
     }
 
     #[test]
