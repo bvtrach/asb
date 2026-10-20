@@ -40,3 +40,21 @@ adapter!(
         }
     }
 );
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn gemini_catalog_url_does_not_repeat_api_version() {
+        let spec = crate::providers::ModelSpec {
+            name: "gemini",
+            credential: None,
+            endpoint: None,
+            default_url: Some("https://example.invalid/v1beta"),
+            kind: crate::providers::ModelKind::ModelsPageTokenApiKey,
+        };
+        assert_eq!(
+            spec.url().as_deref(),
+            Some("https://example.invalid/v1beta/models")
+        );
+    }
+}
