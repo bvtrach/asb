@@ -534,6 +534,7 @@ mod tests {
         )
         .unwrap();
         let session = Session::start(Mode::Replay, &cassette, None, false, &root).unwrap();
+        assert!(request_to(&session, "/v1/messages", probe).contains("200 OK"));
         assert!(request_to(&session, "/v1/messages", workload).contains("200 OK"));
         session.stop().unwrap();
         std::fs::remove_dir_all(root).unwrap();

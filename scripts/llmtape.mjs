@@ -461,6 +461,19 @@ async function handle(request, response) {
   };
 
   if (mode === "replay") {
+    // Capability probes may be issued by the client even when the replayed
+    // run would otherwise omit them.  If the cassette has the corresponding
+    // known probe at the cursor, consume it and return its recorded response
+    // instead of comparing the probe with the first workload request.
+    if (isReplayProbe(recordedRequest)
+      && interactions[cursor]?.request
+      && isReplayProbe(interactions[cursor].request)) {
+      const probe = interactions[cursor];
+      cursor += 1;
+      writeProgress();
+      await replayResponse(response, probe);
+      return;
+    }
     // A provider bridge may record a health/model probe that the agent omits
     // on replay. Consume only these known, credential-free probes when the
     // next request carries an LLM body; arbitrary mismatches stay fail-closed.
