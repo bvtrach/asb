@@ -758,3 +758,17 @@ and resume, background-agent quiescence before submission capture,
 failure-path cleanup/recovery and abrupt-controller-crash recovery,
 SWE-bench source-image fallback,
 final review, PR merge, exact-main CI and minor release `0.2.0`.
+
+Refreshed the branch against main `706db088a4e2acf97fa50ca197ae2f34a2b43e22`.
+The Pi adapter merge keeps both its terminal API-failure detection and the
+upstream native step counter. Post-merge gates passed: 348 unit tests, 82
+offline CLI tests, all protocol/diagram/guest/replay checks, strict Clippy,
+full build, clean-checkout package verification/integrity and the packaged
+crate's complete suite. Normal measured Terminal-Bench 1.0 tape replay also
+passed again (41.3 seconds) with zero provider contacts and confirmed cleanup.
+These are local exact-branch results; hosted CI must still validate this head.
+
+Collector follow-up must also guard process identity for the full sampling
+lifetime (not only attachment), so a root PID reused after agent exit cannot
+be sampled while grading continues. This remains part of full isolated
+collector support, alongside entry-point matching and optional-tool qualification.
