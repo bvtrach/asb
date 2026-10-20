@@ -124,6 +124,7 @@ mod adapter_layout_tests {
                 &[
                     "mod.rs",
                     "session.rs",
+                    "selection.rs", // Generic pre-execution catalog/identity contract.
                     "controller.rs",
                     "remote.rs",
                     "relay.rs",

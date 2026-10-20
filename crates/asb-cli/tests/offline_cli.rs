@@ -660,14 +660,52 @@ fn sweep_rejects_invalid_manifests_and_unsafe_references() {
 }
 
 #[test]
-fn sweep_rejects_nested_sweeps_and_reports_comparison_failure() {
+fn sweep_rejects_nested_sweeps_before_execution_or_comparison() {
     let project = Project::new();
     project.init();
     project.write("outer.toml", "configs = ['inner.toml']\n");
     project.write("inner.toml", "configs = ['irrelevant.toml']\n");
     let result = project.command(&["sweep", "outer.toml"]);
     expect_failure(&result, "nested sweep");
-    assert!(stderr(&result).contains("comparison failed"));
+    assert!(!project.0.join("outer-results").exists());
+    assert!(!project.0.join("results/outer-comparison").exists());
+}
+
+#[test]
+fn competing_sweep_leaves_existing_results_and_reports_untouched() {
+    let project = Project::new();
+    project.write("sweep.toml", "configs=['benchmark.toml']\n");
+    // A valid referenced path, deliberately malformed configuration: output
+    // exclusion must happen before planning, archival or any runtime work.
+    project.write("benchmark.toml", "not a valid benchmark");
+    project.write("sweep-results/previous", "retain result");
+    project.write("results/sweep-comparison/report.html", "retain report");
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(project.0.join(".sweep-asb-sweep.lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+    expect_failure(
+        &project.command(&["sweep", "sweep.toml"]),
+        "another sweep owns",
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.0.join("sweep-results/previous")).unwrap(),
+        "retain result"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.0.join("results/sweep-comparison/report.html")).unwrap(),
+        "retain report"
+    );
+    assert!(!project.0.join("sweep-history").exists());
+    assert!(!project.0.join("sweep-results/plan.json").exists());
+    drop(lock);
+    let next = project.command(&["sweep", "sweep.toml"]);
+    assert!(!next.status.success());
+    assert!(!stderr(&next).contains("another sweep owns"));
 }
 
 #[test]

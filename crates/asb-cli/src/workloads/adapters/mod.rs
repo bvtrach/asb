@@ -49,6 +49,12 @@ pub(super) trait WorkloadAdapter: Sync {
     fn installed_trials(&self, _directory: &Path) -> Result<Vec<Trial>, String> {
         Ok(self.trial_ids())
     }
+    fn planning_catalog(
+        &self,
+        _directory: &Path,
+    ) -> Result<Option<super::PlanningCatalog>, String> {
+        Ok(None)
+    }
     /// Smoke fixtures are not instances from the named upstream benchmark.
     fn evaluation_kind(&self, _name: &str) -> &'static str {
         "adapter-smoke"

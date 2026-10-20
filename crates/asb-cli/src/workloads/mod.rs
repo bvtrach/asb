@@ -9,14 +9,37 @@ mod adapters;
 mod controller;
 pub(crate) mod relay;
 mod remote;
+mod selection;
 mod session;
 pub(crate) mod target;
 pub(crate) fn registered_sources() -> impl Iterator<Item = (&'static str, &'static str)> {
     adapters::sources()
 }
+pub(crate) use selection::{PlanningCatalog, TaskSelection};
 pub(crate) use session::BaselineEvidence;
 pub use session::TaskIdentity;
 pub(crate) use session::{ExecutionContext, PreparationContext, WorkloadSession};
+
+pub(crate) fn planning_catalog(
+    name: &str,
+    directory: &Path,
+) -> Result<Option<PlanningCatalog>, String> {
+    adapters::find(name).map_or(Ok(None), |adapter| adapter.planning_catalog(directory))
+}
+
+pub(crate) fn describe_selection(
+    config: &crate::benchmark::BenchmarkConfig,
+    directory: &Path,
+    catalog: Option<&PlanningCatalog>,
+) -> Result<TaskSelection, String> {
+    selection::describe(
+        &config.workload,
+        config.trial.as_deref(),
+        config.trial_set.as_deref(),
+        directory,
+        catalog,
+    )
+}
 
 pub(crate) struct InstallationContext<'a> {
     pub project_root: &'a Path,

@@ -98,6 +98,33 @@ unrecognized, and agent-controlled tests are never executed as trusted grading.
 
 ## Upstream integration status
 
+### Selection snapshots and population coverage
+
+A sweep saves requested task/dataset selections in `plan.json` before any
+environment or provider starts. Public catalog metadata is read once per
+installed workload, with no prompts, credentials or hidden evaluator rows in
+the plan. No execution attempt or measured baseline is inferred from selection.
+Configuration changes, mismatched task/dataset/grader records and duplicate
+actual attempt IDs cannot be silently combined into a new score.
+
+`comparison.json` separates `evaluation_coverage` from `resolution_groups`.
+Known upstream selections stay in the selected denominator even if their
+environment never prepared or grading failed. `population_coverage` adds
+unique selected/evaluated/resolved task counts and the installed population
+size, separately from repeated attempt counts. Its
+`selected_resolution_lower_bound` is resolved attempts divided by selected
+attempts; it is not presented as a complete-population score when evaluations
+are missing. `full_population_resolution_rate` exists only when the entire
+pinned population was selected, every requested attempt received a compatible
+evaluation, and exactly one attempt was selected per unique task. Repeated
+attempts are not silently converted into pass@1 or pass@k.
+
+HTML reports show evaluation coverage and execution mode. Replay grading can
+be valid task evidence, but a replay run is not a live-provider timing result.
+Legacy reports without a pre-run selection snapshot cannot establish complete
+dataset coverage. Fresh sweep attempts preserve old results/reports rather
+than mixing old workspace edits or measurement files into a new population.
+
 The development SWE-bench adapters select real pinned dataset instances,
 prepare their base repositories in owned containers, capture candidate patches,
 and invoke the official SDK evaluator. Original Terminal-Bench 1.0 instead
@@ -113,9 +140,11 @@ An empty parsed Terminal-Bench test map cannot count as success.
 
 Representative correct/incorrect fixture submissions have qualified these
 normal CLI paths without live LLM providers. This does not mean the full
-populations have been benchmarked. Local endpoint forwarding,
-container measurement and complete-population planning/reporting remain
-unfinished. See the exact requirements and evidence in
+populations have been benchmarked. Representative endpoint forwarding,
+container measurement, real single-task sweep/replay and selection/coverage
+paths are qualified. Distinct-task scheduling, content-bound resume, scalable
+population presentation, SWE image source-build fallback and abrupt-crash
+recovery remain unfinished. See the exact requirements and evidence in
 [the full integration ledger](FULL_BENCHMARK_INTEGRATION.md).
 No old smoke result is retroactively interpreted as an upstream grade.
 

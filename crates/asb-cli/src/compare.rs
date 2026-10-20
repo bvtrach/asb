@@ -3,12 +3,13 @@
 use crate::{Error, read_config};
 use serde::Serialize;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
+mod coverage;
 const PLOT_TOP: f64 = 70.0;
 const PLOT_BOTTOM: f64 = 390.0;
 const PLOT_RIGHT: f64 = 880.0;
@@ -21,6 +22,8 @@ struct BenchmarkData {
     agent: String,
     workload: String,
     task: Option<crate::workloads::TaskIdentity>,
+    selection: Option<crate::workloads::TaskSelection>,
+    evaluation_completed: bool,
     workload_evaluation: String,
     provider: String,
     model: String,
@@ -48,6 +51,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
         .and_then(|value| value.to_str())
         .unwrap_or("sweep");
     let sweep_results = parent.join(format!("{stem}-results"));
+    let plan = crate::sweep::plan::SweepPlan::load(&sweep_results, parent, &sweep)?;
     let comparison_dir = parent.join("results").join(format!("{stem}-comparison"));
     fs::create_dir_all(&comparison_dir).map_err(|error| {
         Error::Run(format!(
@@ -57,10 +61,14 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
     })?;
 
     let mut benchmark_data = Vec::new();
+    let mut actual_attempts = BTreeSet::new();
     for (index, reference) in sweep.configs.iter().enumerate() {
         let config = checked_reference(parent, reference, path)?;
         let result_dir = sweep_results.join(format!("{index:03}-{}", safe_name(&config)));
         let (agent, workload, provider, model, concurrency) = benchmark_identity(&config)?;
+        let selection = plan
+            .as_ref()
+            .map(|plan| plan.entries[index].selection.clone());
         for replica in 1..=concurrency {
             let label = if concurrency == 1 {
                 format!("{index:03}-{}", safe_name(&config))
@@ -81,7 +89,9 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 agent: agent.clone(),
                 workload: workload.clone(),
                 task: None,
-                workload_evaluation: crate::workloads::evaluation_kind(&workload, Path::new("")).into(),
+                selection: selection.clone(),
+                evaluation_completed: false,
+                workload_evaluation: selection.as_ref().map_or_else(|| crate::workloads::evaluation_kind(&workload, Path::new("")).into(), |selection| selection.evaluation_kind.clone()),
                 provider: provider.clone(),
                 model: model.clone(),
                 metrics: BTreeMap::new(),
@@ -97,8 +107,24 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 continue;
             }
             let run_value = read_json(&run_path)?;
+            if plan.is_some() {
+                for (field, expected) in [
+                    ("agent", &agent),
+                    ("workload", &workload),
+                    ("provider", &provider),
+                    ("model", &model),
+                ] {
+                    if run_value.get(field).and_then(Value::as_str) != Some(expected.as_str()) {
+                        return Err(Error::Input(format!(
+                            "measurement {} does not match planned `{field}`; inspect the attempt instead of mixing results from another configuration",
+                            run_path.display()
+                        )));
+                    }
+                }
+            }
             let task = run_value
                 .get("task")
+                .filter(|value| !value.is_null())
                 .map(|value| {
                     serde_json::from_value::<crate::workloads::TaskIdentity>(value.clone())
                 })
@@ -109,6 +135,28 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                         run_path.display()
                     ))
                 })?;
+            if let (Some(selection), Some(task)) = (&selection, &task)
+                && !selection.matches(task)
+            {
+                return Err(Error::Input(format!(
+                    "measurement {} does not match the planned dataset instance",
+                    run_path.display()
+                )));
+            }
+            if plan.is_some()
+                && let Some(task) = &task
+                && (task.attempt_id.is_empty()
+                    || task.attempt_id.len() > 256
+                    || !actual_attempts.insert(task.attempt_id.clone()))
+            {
+                return Err(Error::Input(format!(
+                    "measurement {} has a missing, oversized or duplicate actual attempt identity; an attempt cannot be counted twice",
+                    run_path.display()
+                )));
+            }
+            let identity_bound = selection
+                .as_ref()
+                .is_none_or(|selection| task.as_ref().is_some_and(|task| selection.matches(task)));
             let run_status = match run_value.get("status").and_then(Value::as_str) {
                 Some(status)
                     if run_value.get("workload_evaluation").and_then(Value::as_str)
@@ -145,14 +193,31 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 &crate::workloads::BaselineEvidence::from_record(&run_value),
             )
             .to_owned();
+            if let Some(selection) = selection
+                .as_ref()
+                .filter(|selection| selection.dataset.is_some())
+                && crate::workloads::resolution_eligible(&workload_evaluation)
+                && workload_evaluation != selection.evaluation_kind
+            {
+                return Err(Error::Input(format!(
+                    "measurement {} does not match the planned evaluator; a different task grader cannot earn this benchmark's score",
+                    run_path.display()
+                )));
+            }
             let mut metrics = BTreeMap::new();
+            let evaluation_completed = identity_bound
+                && crate::workloads::resolution_eligible(&workload_evaluation)
+                && run_value
+                    .get("workload_success")
+                    .and_then(Value::as_bool)
+                    .is_some();
             flatten_numbers("", &run_value, &mut metrics);
             // Correct old presentations without rewriting their raw evidence.
             if !crate::workloads::resolution_eligible(&workload_evaluation) {
                 metrics.remove("success_rate");
             } else {
-                let resolved =
-                    run_value.get("workload_success").and_then(Value::as_bool) == Some(true);
+                let resolved = evaluation_completed
+                    && run_value.get("workload_success").and_then(Value::as_bool) == Some(true);
                 metrics.insert("success_rate".into(), if resolved { 1.0 } else { 0.0 });
             }
             if run_value
@@ -237,6 +302,8 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 agent: agent.clone(),
                 workload: workload.clone(),
                 task,
+                selection: selection.clone(),
+                evaluation_completed,
                 workload_evaluation,
                 provider: provider.clone(),
                 model: model.clone(),
@@ -295,25 +362,36 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             &benchmark.provider,
             &benchmark.model,
             &benchmark.workload,
-            &benchmark.workload_evaluation,
+            coverage::group_kind(benchmark),
             benchmark
                 .task
                 .as_ref()
-                .and_then(|task| task.dataset.as_ref()),
+                .and_then(|task| task.dataset.as_ref())
+                .or_else(|| {
+                    benchmark
+                        .selection
+                        .as_ref()
+                        .and_then(|selection| selection.dataset.as_ref())
+                }),
         ))
         .map_err(|error| Error::Run(error.to_string()))?;
         resolution_groups.entry(key).or_default().observe(
-            &benchmark.workload_evaluation,
+            coverage::group_kind(benchmark),
             benchmark
                 .metrics
                 .get("success_rate")
                 .is_some_and(|value| *value == 1.0),
         );
     }
+    let evaluation_coverage = coverage::evaluation_summary(&benchmark_data);
+    let population_coverage = coverage::populations(&benchmark_data)?;
     let summary = json!({
         "schema_version": 2,
         "success_rate_definition": "resolved task attempts / all selected task attempts, including failures; not process exit rate or pass@k; smoke checks excluded",
         "resolution_groups": resolution_groups,
+        "selection_plan": plan.as_ref().map(|plan| json!({"run_id":plan.run_id,"configuration_match":true,"execution_mode":plan.execution_mode,"respect_record_timings":plan.respect_record_timings})),
+        "evaluation_coverage":evaluation_coverage,
+        "population_coverage":population_coverage,
         "sweep": sweep_path,
         "results_directory": sweep_results,
         "comparison_directory": comparison_dir,
@@ -324,6 +402,8 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             "agent": benchmark.agent,
             "workload": benchmark.workload,
             "task": benchmark.task,
+            "selection": benchmark.selection,
+            "evaluation_completed": benchmark.evaluation_completed,
             "workload_evaluation": benchmark.workload_evaluation,
             "provider": benchmark.provider,
             "model": benchmark.model,
@@ -344,7 +424,12 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
     serde_json::to_writer_pretty(&mut file, &summary)
         .map_err(|error| Error::Run(format!("cannot write {}: {error}", summary_path.display())))?;
     writeln!(file).map_err(|error| Error::Run(error.to_string()))?;
-    write_html_report(&comparison_dir, &benchmark_data, &graphs)?;
+    write_html_report(
+        &comparison_dir,
+        &benchmark_data,
+        &graphs,
+        plan.as_ref().map(|plan| plan.execution_mode.as_str()),
+    )?;
     writeln!(
         output,
         "Compared {} benchmarks; wrote {} graphs, report.html, and {}",
@@ -538,6 +623,7 @@ fn write_html_report(
     comparison_dir: &Path,
     benchmarks: &[BenchmarkData],
     graphs: &[String],
+    selection_mode: Option<&str>,
 ) -> Result<(), Error> {
     let mut dimensions: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     dimensions.insert(
@@ -582,7 +668,13 @@ fn write_html_report(
     );
     html.push_str("<main class=\"shell\">");
     html.push_str("<header class=\"hero\"><p class=\"eyebrow\">ASB BENCHMARK REPORT</p><h1>Sweep comparison</h1><p>Explore benchmark results and measurements from this sweep. Use the filters to focus the report without rerunning anything.</p></header>");
-    html.push_str("<section class=\"explain\"><strong>How to read this report</strong><p>Each row is one agent/provider/model/workload combination. Runtime, success rate, token usage, host metadata, component timings, and structured collector measurements are summarized in the table and charts. Network wait remains null unless directly observed. The complete machine-readable evidence inventory is available in comparison.json.</p></section>");
+    let coverage = coverage::evaluation_summary(benchmarks);
+    html.push_str(&format!("<section class=\"explain\"><strong>Evaluation coverage</strong><p>Execution mode: {}.</p><p>{}/{} eligible selected attempts evaluated; {} have no completed evaluation. {} attempts are unscored. {}</p><p>Partial results are not a complete-population benchmark score. See population_coverage in comparison.json for dataset selection, unique tasks and complete one-attempt-per-task scores.</p></section>",
+        escape(selection_mode.unwrap_or("unknown")),
+        coverage.evaluated_attempts, coverage.eligible_selected_attempts, coverage.unevaluated_attempts, coverage.unscored_attempts,
+        if selection_mode.is_some() {"Pre-run task selection is preserved and matches the configurations."} else {"No pre-run selection snapshot exists; dataset completeness cannot be established from these legacy records."}));
+    html.push_str(&coverage::html_table(benchmarks)?);
+    html.push_str("<section class=\"explain\"><strong>How to read this report</strong><p>Each row is one selected task attempt for an agent/provider/model/workload combination. Runtime, success rate, token usage, host metadata, component timings, and structured collector measurements are summarized in the table and charts. Network wait remains null unless directly observed. The complete machine-readable evidence inventory is available in comparison.json.</p></section>");
     html.push_str("<section class=\"filters\"><div class=\"section-title\"><h2>Filter results</h2><div><button type=\"button\" data-action=\"all\">Select all</button><button type=\"button\" data-action=\"none\">Clear all</button></div></div><div class=\"filter-grid\">");
     for (group, values) in &dimensions {
         html.push_str(&format!("<fieldset><legend>{}</legend>", title_case(group)));

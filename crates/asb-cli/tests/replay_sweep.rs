@@ -140,5 +140,41 @@ fetch(url + '/responses', {method:'POST', headers:{'content-type':'application/j
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
     );
+    let restored = default_dir.join(cassette.file_name().unwrap());
+    assert!(
+        restored.is_file(),
+        "default recording must survive fresh replay output attempts"
+    );
+    use std::os::unix::fs::MetadataExt;
+    let recording_inode = std::fs::metadata(&restored).unwrap().ino();
+    for extra in [vec![], vec!["--cassette-root", "sweep-results"], vec![]] {
+        let mut args = vec!["sweep", "sweep.toml", "--replay"];
+        args.extend(extra);
+        let replay = asb(&root, &args);
+        assert!(
+            replay.status.success(),
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&replay.stdout),
+            String::from_utf8_lossy(&replay.stderr)
+        );
+        assert_eq!(
+            std::fs::metadata(&restored).unwrap().ino(),
+            recording_inode,
+            "replays should reuse, not duplicate recording payloads"
+        );
+        let current: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join("results/sweep-comparison/comparison.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(current["selection_plan"]["execution_mode"], "replay");
+        assert_eq!(current["evaluation_coverage"]["evaluated_attempts"], 8);
+        assert!(
+            current["benchmarks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|row| row["metrics"]["success_rate"] == 1.0)
+        );
+    }
     std::fs::remove_dir_all(root).unwrap();
 }

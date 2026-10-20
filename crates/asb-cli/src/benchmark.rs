@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Small, extensible benchmark configuration written by `asb setup`.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct BenchmarkConfig {
     pub agent: String,
     pub workload: String,
@@ -30,7 +30,7 @@ pub struct BenchmarkConfig {
 }
 
 /// Measurement modules selected by generated setup files.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct MeasurementConfig {
     pub enabled: bool,
     pub directory: String,

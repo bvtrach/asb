@@ -946,3 +946,70 @@ replay integration tests, with strict all-target/all-feature Clippy. Missing
 later references are now rejected before creating any sweep result directory,
 not after earlier entries have already executed. Final package and exact-head
 hosted CI qualification remain separate from these local checks.
+
+The manifest checkpoint `35321c6625613b4999d008fd2edd5f3489131648` passed
+full development build, clean package verification and the packaged crate's
+complete suite. GitHub recognized its signature, and exact-head hosted CI
+`39453938913` completed successfully (optional local-host job skipped).
+
+### Pre-execution selections, fresh attempts and coverage
+
+`WorkloadAdapter` now exposes an optional read-only planning catalog. The three
+SWE registrations and both original Terminal-Bench registrations provide
+their installed public task IDs, pinned dataset identity and expected evaluator
+scope through that interface. The generic sweep planner reads each catalog
+once per workload, validates selected instances/trial sets and snapshots the
+normalized configuration and `TaskSelection` before any agent/provider starts.
+This selection has no invented attempt ID or baseline. Aggregate configuration
+text is bounded at 32 MiB and the published private snapshot at 64 MiB.
+
+Every normal sweep attempt preserves prior results and comparison artifacts in
+a run-scoped history directory instead of reusing dirty workspaces or stale
+measurements. The archive preserves the original relative result/report layout,
+without rewriting historical evidence. Default replay inputs are hard-linked
+from preserved recordings; repeated default replays and explicitly selected
+roots inside the old results remain usable without copying payload bytes.
+The eight-replica offline integration covers repeated fresh replays and checks
+stable recording inode identity, successful new task baselines and mode labels.
+
+Compare loads the saved selection without requiring an installed/live SDK or
+provider. It checks current configuration semantics and actual task/dataset,
+grader and unique attempt identities. Missing preparation/evaluation stays in
+the requested denominator, but creates neither an actual attempt nor a grade.
+JSON/HTML expose evaluation coverage; per-population summaries distinguish
+unique tasks, attempts, coverage and resolution lower bounds. A complete
+population rate is emitted only for a full pinned population with all selected
+evaluations and exactly one attempt per task, not for subsets or repetitions.
+Live/record/replay mode and replay timing choice are also preserved; legacy
+mode/selection evidence is unknown rather than guessed.
+
+Provider-free tests cover cached catalog discovery, both original Terminal
+registrations, source changes/malformed snapshots, failed preparation inventory,
+partial/complete populations, duplicate attempts and incompatible graders,
+replicas, history/symlink safety, archived report links and replay continuity.
+These changes do not yet implement a content-bound resume cache, distinct-task
+parallel scheduler, scalable population graph aggregation, SWE source-image
+fallback or abrupt-crash recovery. Final PR merge/main CI/release remain open.
+
+Sweep writers now hold a per-output OS lock from planning through comparison,
+before moving prior results. The lock file stays outside archived output and
+is never removed/recreated. Tests cover same-output exclusion, independent
+outputs, non-truncation, invalid paths, abrupt writer exit, and actual CLI
+rejection without changing prior results/reports. Kernel lock release is not
+claimed as recovery of containers orphaned by abrupt supervisor termination.
+
+Representative actual sweep qualifications passed using the real Pi client
+and known deterministic repairs, without a live LLM provider: Terminal-Bench
+1.0 replay completed in 39.8 seconds with zero provider/catalog calls, and
+SWE-bench Lite standard execution with a synthetic provider in 58.8 seconds.
+Both used official grading and namespace samplers, retained selected/population
+coverage (1/80 and 1/300), and left the full-population score unavailable. The
+HTML now also presents population/evaluation coverage directly in a table.
+
+The final selection/lock qualification passed 378 unit tests, 85 offline CLI
+tests, all ten protocol suites, seven guest-driver checks and the remaining
+diagram/runtime/replay integration tests, with strict all-target/all-feature
+Clippy and `make build` (Rustdoc, diagrams and completions). A final actual
+Terminal-Bench 1.0 sweep replay passed in 40.1 seconds after adding the lock,
+with the same official grading/coverage checks and zero live provider calls.
+Package verification and exact-head hosted CI remain separate gates.

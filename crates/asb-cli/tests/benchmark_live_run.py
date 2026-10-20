@@ -208,6 +208,13 @@ class NormalRunQualification(unittest.TestCase):
                             self.assertIn("<svg", (measurement_root / "perfetto-state-timeline.svg").read_text())
                     if sweep:
                         comparison = artifacts / "results/sweep-comparison"
+                        coverage = json.loads((comparison / "comparison.json").read_text())
+                        self.assertEqual(coverage["evaluation_coverage"]["eligible_selected_attempts"], 1)
+                        self.assertEqual(coverage["evaluation_coverage"]["evaluated_attempts"], 1)
+                        population = next(iter(coverage["population_coverage"].values()))
+                        self.assertEqual(population["selected_tasks"], 1)
+                        self.assertEqual(population["population_size"], len(json.loads((root / "workloads" / suite / "catalog.json").read_text())["tasks"]))
+                        self.assertIsNone(population["full_population_resolution_rate"])
                         html = (comparison / "report.html").read_text()
                         for graph in ["metric-agent-memory.peak_rss_mib.svg", "metric-agent-workers.spawned_worker_count.svg",
                                       "metric-cpu-accounting.container_cpu_user_ms.svg", "metric-cpu-accounting.container_cpu_system_ms.svg"]:

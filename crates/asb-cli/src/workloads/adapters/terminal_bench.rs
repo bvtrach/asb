@@ -23,6 +23,17 @@ impl super::WorkloadAdapter for TerminalBenchAdapter {
     fn trial_ids(&self) -> Vec<crate::workloads::Trial> {
         Vec::new()
     }
+    fn planning_catalog(
+        &self,
+        directory: &std::path::Path,
+    ) -> Result<Option<crate::workloads::PlanningCatalog>, String> {
+        let catalog = catalog::read(self, directory)?;
+        Ok(Some(crate::workloads::PlanningCatalog {
+            dataset: catalog.dataset,
+            task_ids: catalog.tasks.into_iter().map(|task| task.id).collect(),
+            evaluation_kind: "upstream-harness",
+        }))
+    }
     fn installed_available(&self, directory: &std::path::Path) -> Option<bool> {
         Some(catalog::read(self, directory).is_ok())
     }
@@ -99,3 +110,47 @@ pub(super) static ADAPTER: StaticExternalAdapter = StaticExternalAdapter::new(
         ),
     ],
 );
+
+#[cfg(test)]
+mod tests {
+    use super::super::WorkloadAdapter;
+    use serde_json::json;
+
+    #[test]
+    fn both_original_terminal_adapters_describe_public_selection_before_execution() {
+        for adapter in [
+            &super::super::terminal_bench_1_0::ADAPTER,
+            &super::super::terminal_bench_2_1::ADAPTER,
+        ] {
+            let root = std::env::temp_dir()
+                .join(crate::workloads::TaskIdentity::local("terminal-planning", None).attempt_id);
+            let installed = root.join(adapter.id);
+            let tasks = (0..adapter.expected_tasks).map(|index| {
+                let id = format!("fixture-{index}");
+                std::fs::create_dir_all(installed.join(format!("source/tasks/{id}"))).unwrap();
+                json!({"id":id,"description":"selection fixture","instruction":"not exported to the plan","definition":format!("source/tasks/fixture-{index}")})
+            }).collect::<Vec<_>>();
+            std::fs::write(installed.join("source-manifest.json"), "{}").unwrap();
+            std::fs::write(installed.join("catalog.json"), serde_json::to_vec(&json!({
+                "schema_version":1,"workload":adapter.id,
+                "dataset":{"source":adapter.source,"revision":adapter.revision,"split":adapter.split},
+                "sdk":{"package":adapter.tool,"version":adapter.version},
+                "source_sha256":"a".repeat(64),"archive_sha256":"b".repeat(64),"tasks":tasks,
+            })).unwrap()).unwrap();
+            let planning = adapter.planning_catalog(&root).unwrap().unwrap();
+            assert_eq!(planning.task_ids.len(), adapter.expected_tasks);
+            assert_eq!(planning.dataset.source, adapter.source);
+            assert_eq!(planning.dataset.revision, adapter.revision);
+            assert_eq!(planning.evaluation_kind, "upstream-harness");
+            let config: crate::benchmark::BenchmarkConfig = toml::from_str(&format!("agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='{}'\ntrial='fixture-0'\n", adapter.id)).unwrap();
+            let selected =
+                crate::workloads::describe_selection(&config, &root, Some(&planning)).unwrap();
+            assert!(
+                !serde_json::to_string(&selected)
+                    .unwrap()
+                    .contains("not exported")
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+}

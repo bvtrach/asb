@@ -53,6 +53,18 @@ impl WorkloadAdapter for SweBenchAdapter {
         Vec::new()
     }
 
+    fn planning_catalog(
+        &self,
+        directory: &Path,
+    ) -> Result<Option<crate::workloads::PlanningCatalog>, String> {
+        let catalog = catalog::read(self, directory)?;
+        Ok(Some(crate::workloads::PlanningCatalog {
+            dataset: catalog.dataset,
+            task_ids: catalog.tasks.into_iter().map(|task| task.id).collect(),
+            evaluation_kind: "upstream-harness",
+        }))
+    }
+
     fn prepare_task(
         &self,
         context: &crate::workloads::PreparationContext<'_>,

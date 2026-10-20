@@ -161,6 +161,15 @@ identities include source, revision and split. Generic contracts live in
 [full benchmark integration](FULL_BENCHMARK_INTEGRATION.md) extends this
 boundary with actual upstream catalogs, submissions, environments and
 evaluators; a session by itself is not proof of full benchmark support.
+An adapter can also expose a read-only `PlanningCatalog`: dataset identity,
+available task IDs and evaluator scope, without preparing an environment.
+Sweep planning caches this once per installed workload and saves a bounded
+`plan.json` before running anything. A `TaskSelection` is requested intent,
+not an actual `TaskIdentity`, measured baseline, or evaluator result. Compare
+uses that snapshot when preparation failed, validates source configuration
+semantics and actual task/attempt/grader identity, and never invents attempts
+for missing rows. Selection snapshots do not yet provide the content-bound
+runtime/project/cassette fingerprints required by a resume protocol.
 Sessions may execute through a workload-owned controller rather than the
 native process path. The generic execution context carries the selected
 configuration and negotiated connection, and the owning session returns
@@ -547,6 +556,20 @@ agent/model/task cross product before creating files, and rejects oversized
 selections instead of publishing a sweep it cannot consume. These format
 bounds accommodate complete original populations; they are not a distinct-task
 scheduler, resume protocol or proof of complete-population coverage accounting.
+Every new sweep starts fresh output workspaces. Previous results and reports
+are protected by a per-output operating-system file lock held from planning
+through final comparison. A competing writer fails before moving prior data;
+unrelated manifests remain independent. The persistent lock file is never
+unlinked, and process exit releases its lock without a stale-lease repair.
+This exclusion is not container recovery after abrupt host/process failure.
+Previous results and reports
+are moved under `<stem>-history/<run-id>/`, retaining the original result/report
+layout so relative artifact links remain usable. Default replay recordings
+are hard-linked into the new attempt without copying payloads; explicitly
+selected input roots inside old results are rebased to their preserved path.
+New default record attempts do not write those links. Live/record/replay mode
+and replay timing choice are saved in the selection snapshot and surfaced by
+comparison; old records without this information remain mode-unknown.
 
 `asb compare SWEEP.toml` reads the isolated `<sweep>-results/` directories
 created by `asb sweep`. It writes bounded `comparison.json` data, an offline

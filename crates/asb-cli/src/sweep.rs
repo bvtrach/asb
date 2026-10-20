@@ -2,12 +2,15 @@
 
 use crate::benchmark::BenchmarkConfig;
 use crate::runner;
-use crate::{Error, compare, read_config};
+use crate::{Error, compare};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+
+mod lock;
+pub(crate) mod plan;
 
 const MAX_SWEEP_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const MAX_CONFIGS: usize = 65536;
@@ -36,39 +39,48 @@ pub fn run(
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
         .unwrap_or("sweep");
-    let results_root = parent.join(format!("{stem}-results"));
-    std::fs::create_dir_all(&results_root).map_err(|error| {
-        Error::Run(format!(
-            "cannot create sweep results directory {}: {error}",
-            results_root.display()
-        ))
-    })?;
+    // Keep ownership through comparison, including moving older output trees.
+    let _output_lock = lock::OutputLock::acquire(parent, stem)?;
+    let mut plan = plan::build(parent, &sweep)?;
+    plan.execution_mode = match mode {
+        None => "live",
+        Some(crate::tape::Mode::Record) => "record",
+        Some(crate::tape::Mode::Replay) => "replay",
+    }
+    .into();
+    plan.respect_record_timings = respect_record_timings;
+    let old_results = parent.join(format!("{stem}-results")).canonicalize().ok();
+    let relocated_input = if mode == Some(crate::tape::Mode::Replay) {
+        cassette_root
+            .and_then(|root| root.canonicalize().ok())
+            .and_then(|root| {
+                old_results
+                    .as_ref()
+                    .and_then(|old| root.strip_prefix(old).ok().map(Path::to_path_buf))
+            })
+    } else {
+        None
+    };
+    let results_root = plan::fresh_results(parent, stem, &plan)?;
+    let backup = parent.join(format!("{stem}-history")).join(&plan.run_id);
+    let replay_inputs = relocated_input
+        .as_ref()
+        .map(|relative| backup.join(format!("{stem}-results")).join(relative))
+        .or_else(|| cassette_root.map(Path::to_path_buf));
+    if !json && backup.is_dir() {
+        writeln!(
+            output,
+            "Previous sweep results were preserved under {}.",
+            backup.display()
+        )
+        .map_err(|error| Error::Io(error.to_string()))?;
+    }
 
     let mut failures: Vec<(String, Vec<String>)> = Vec::new();
     let warnings = Mutex::new(BTreeSet::new());
     for (index, reference) in sweep.configs.iter().enumerate() {
         let config_path = checked_reference(parent, reference, path)?;
-        let config_text = read_config(&config_path)?;
-        let config_value: toml::Value = toml::from_str(&config_text).map_err(|error| {
-            Error::Input(format!(
-                "cannot parse benchmark {}: {error}",
-                config_path.display()
-            ))
-        })?;
-        if config_value.get("configs").is_some() {
-            add_failure(
-                &mut failures,
-                config_path.display().to_string(),
-                "is a nested sweep; sweep entries must be normal benchmark TOMLs".into(),
-            );
-            continue;
-        }
-        let config: BenchmarkConfig = config_value.try_into().map_err(|error| {
-            Error::Input(format!(
-                "invalid benchmark {}: {error}",
-                config_path.display()
-            ))
-        })?;
+        let config = plan.entries[index].configuration.clone();
         let result_dir = results_root.join(format!("{index:03}-{}", safe_name(&config_path)));
         std::fs::create_dir_all(&result_dir).map_err(|error| {
             Error::Run(format!(
@@ -76,6 +88,18 @@ pub fn run(
                 result_dir.display()
             ))
         })?;
+        if mode == Some(crate::tape::Mode::Replay)
+            && (cassette_root.is_none()
+                || relocated_input
+                    .as_ref()
+                    .is_some_and(|path| path.as_os_str().is_empty()))
+        {
+            let previous = backup
+                .join(format!("{stem}-results"))
+                .join(format!("{index:03}-{}", safe_name(&config_path)))
+                .join("cassettes");
+            reuse_replay_inputs(&previous, &result_dir.join("cassettes"), &config)?;
+        }
         // Resolve the result directory before rendering paths into the
         // isolated config. Otherwise a relative result directory is resolved
         // a second time by the runner, nesting logs/workspaces under the
@@ -93,15 +117,10 @@ pub fn run(
         std::fs::write(&isolated_path, serialized).map_err(|error| {
             Error::Run(format!("cannot write {}: {error}", isolated_path.display()))
         })?;
-        let cassette = cassette_root.map(|root| {
+        let cassette = replay_inputs.as_ref().map(|root| {
             root.join(format!("{index:03}-{}", safe_name(&config_path)))
                 .join("cassettes")
-                .join(format!(
-                    "benchmark-{}-{}-{}.jsonl",
-                    safe_component(&config.agent),
-                    safe_component(&config.workload),
-                    safe_component(&config.model)
-                ))
+                .join(cassette_filename(&config))
         });
         if !json {
             write_progress(output, index, sweep.configs.len(), &config_path, &config)?;
@@ -158,6 +177,63 @@ pub fn run(
         }
         Err(Error::Run(details))
     }
+}
+
+fn cassette_filename(config: &BenchmarkConfig) -> String {
+    format!(
+        "benchmark-{}-{}-{}.jsonl",
+        safe_component(&config.agent),
+        safe_component(&config.workload),
+        safe_component(&config.model)
+    )
+}
+
+/// Retain default replay inputs across fresh output attempts without copying
+/// recording payloads or moving them out of history. Replay never writes these
+/// files; a subsequent record gets a fresh results directory, not these links.
+fn reuse_replay_inputs(
+    source: &Path,
+    destination: &Path,
+    config: &BenchmarkConfig,
+) -> Result<(), Error> {
+    let entries = match std::fs::read_dir(source) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(Error::Io(format!(
+                "cannot inspect preserved replay inputs {}: {error}",
+                source.display()
+            )));
+        }
+    };
+    let filename = cassette_filename(config);
+    let prefix = format!("{}-concurrency-", filename.trim_end_matches(".jsonl"));
+    for (index, entry) in entries.enumerate() {
+        if index >= MAX_CONFIGS {
+            return Err(Error::Input("preserved replay input directory exceeds its entry bound; use an explicit --cassette-root".into()));
+        }
+        let entry = entry.map_err(|error| Error::Io(error.to_string()))?;
+        let name = entry.file_name();
+        let Some(text) = name.to_str() else {
+            continue;
+        };
+        let replica = text
+            .strip_prefix(&prefix)
+            .and_then(|value| value.strip_suffix(".jsonl"))
+            .and_then(|value| value.parse::<usize>().ok());
+        if text != filename
+            && !replica.is_some_and(|index| index > 0 && index <= config.concurrency)
+        {
+            continue;
+        }
+        let original = entry
+            .path()
+            .canonicalize()
+            .map_err(|error| Error::Io(error.to_string()))?;
+        std::fs::create_dir_all(destination).map_err(|error| Error::Io(error.to_string()))?;
+        std::fs::hard_link(&original, destination.join(name)).map_err(|error| Error::Io(format!("cannot reuse preserved replay input {}: {error}; use an explicit --cassette-root to replay directly from its preserved location", original.display())))?;
+    }
+    Ok(())
 }
 
 fn write_progress(
