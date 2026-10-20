@@ -52,6 +52,8 @@ struct RunResult<'a> {
     workload_success: Option<bool>,
     workload_evaluation: &'static str,
     workload_baseline_passed: Option<bool>,
+    workload_baseline: workloads::BaselineEvidence,
+    workload_failure: Option<workloads::EvaluationFailure>,
     failure_kind: Option<&'static str>,
     failure_reason: Option<String>,
     success_rate: Option<f64>,
@@ -439,12 +441,14 @@ fn run_mode(
     )?;
     let prompt = workload_session.invocation().prompt.clone();
     let workspace = workload_session.invocation().workspace.clone();
-    let workload_baseline_passed = workload_session.baseline_passed();
+    let workload_baseline = workload_session.baseline_evidence();
+    let workload_baseline_passed = workload_baseline.measured_passed();
     if !json && workload_baseline_passed == Some(true) {
         emit_warning(warnings, output, "The workload already passes before the agent starts. Files are preserved, but this run cannot earn task-resolution credit. Use a fresh workspace for a new benchmark attempt.".into())?;
     }
     if !json
-        && workload_baseline_passed.is_none()
+        && !workload_baseline.supports(workload_session.evaluation_kind())
+        && workload_baseline_passed != Some(true)
         && workloads::resolution_eligible(workload_session.evaluation_kind())
     {
         emit_warning(warnings, output, "The initial workload baseline could not be verified. This run cannot earn task-resolution credit. Inspect the workload fixture and use a fresh workspace.".into())?;
@@ -658,7 +662,9 @@ fn run_mode(
         )
     };
     let process_success = agent_failure.is_none();
-    let (workload_success, grading_failure) = if process_success && run_error.is_none() {
+    // A usable submission can survive a failed client or proxy teardown.
+    // Evaluator errors and process failures are recorded independently.
+    let (workload_success, grading_failure) = {
         match instrument_operation(
             measurement_session.as_mut(),
             LifecyclePhase::WorkloadEvaluation,
@@ -689,10 +695,15 @@ fn run_mode(
                 )),
             ),
         }
-    } else {
-        (None, None)
     };
     let success = run_error.is_none() && process_success && workload_success == Some(true);
+    let workload_failure =
+        grading_failure
+            .as_ref()
+            .map(|(kind, reason)| workloads::EvaluationFailure {
+                kind,
+                reason: reason.clone(),
+            });
     let failure = if let Some(error) = run_error.as_ref() {
         Some(("run_error", error.clone()))
     } else if let Some(error) = agent_failure {
@@ -748,7 +759,7 @@ fn run_mode(
         success,
     });
     let configured_kind = workload_session.evaluation_kind();
-    let evaluation_kind = workloads::scored_kind(configured_kind, workload_baseline_passed);
+    let evaluation_kind = workloads::scored_kind(configured_kind, &workload_baseline);
     let resolution_eligible = workloads::resolution_eligible(evaluation_kind);
     let result = RunResult {
         schema_version: 2,
@@ -770,9 +781,15 @@ fn run_mode(
         workload_success: resolution_eligible.then_some(workload_success).flatten(),
         workload_evaluation: evaluation_kind,
         workload_baseline_passed,
+        workload_baseline,
+        workload_failure,
         failure_kind: failure.as_ref().map(|(kind, _)| *kind),
         failure_reason: failure.as_ref().map(|(_, reason)| reason.clone()),
-        success_rate: resolution_eligible.then_some(run_metrics.success_rate),
+        success_rate: resolution_eligible.then_some(if workload_success == Some(true) {
+            1.0
+        } else {
+            0.0
+        }),
         adapter_smoke_success: (evaluation_kind == "adapter-smoke").then_some(success),
         elapsed_ms: run_metrics.elapsed_ms,
         exit_code: child.status.code(),
@@ -806,6 +823,8 @@ fn run_mode(
             failure_reason: result.failure_reason.as_deref(),
             workload_evaluation: result.workload_evaluation,
             workload_baseline_passed: result.workload_baseline_passed,
+            workload_baseline: Some(&result.workload_baseline),
+            workload_failure: result.workload_failure.as_ref(),
             adapter_smoke_success: result.adapter_smoke_success,
             success_rate: result.success_rate,
             agent: result.agent,
@@ -1064,6 +1083,8 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
         "workload_success": result.workload_success,
         "workload_evaluation": result.workload_evaluation,
         "workload_baseline_passed": result.workload_baseline_passed,
+        "workload_baseline": result.workload_baseline,
+        "workload_failure": result.workload_failure,
         "adapter_smoke_success": result.adapter_smoke_success,
         "failure_kind": result.failure_kind,
         "failure_reason": result.failure_reason,
@@ -1656,6 +1677,8 @@ mod tests {
                 task: None,
                 workload_evaluation: "fixture",
                 workload_baseline_passed: Some(false),
+                workload_baseline: None,
+                workload_failure: None,
                 provider: "fixture",
                 model: "fixture",
                 elapsed_ms: 200,
@@ -1801,6 +1824,10 @@ mod tests {
             workload_success: Some(true),
             workload_evaluation: "bundled-fixture",
             workload_baseline_passed: Some(false),
+            workload_baseline: crate::workloads::BaselineEvidence::Measured {
+                passed: Some(false),
+            },
+            workload_failure: None,
             failure_kind: None,
             failure_reason: None,
             success_rate: Some(1.0),

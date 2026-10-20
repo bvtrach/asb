@@ -166,9 +166,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 .to_owned();
             let workload_evaluation = crate::workloads::scored_kind(
                 &workload_evaluation,
-                run_value
-                    .get("workload_baseline_passed")
-                    .and_then(Value::as_bool),
+                &crate::workloads::BaselineEvidence::from_record(&run_value),
             )
             .to_owned();
             let mut metrics = BTreeMap::new();
@@ -177,9 +175,8 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             if !crate::workloads::resolution_eligible(&workload_evaluation) {
                 metrics.remove("success_rate");
             } else {
-                let resolved = ["success", "process_success", "workload_success"]
-                    .iter()
-                    .all(|key| run_value.get(*key).and_then(Value::as_bool) == Some(true));
+                let resolved =
+                    run_value.get("workload_success").and_then(Value::as_bool) == Some(true);
                 metrics.insert("success_rate".into(), if resolved { 1.0 } else { 0.0 });
             }
             if run_value
@@ -1704,6 +1701,82 @@ mod tests {
         assert_eq!(group["unresolved_count"], 1);
         assert_eq!(group["success_rate"], 0.0);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn official_resolution_uses_typed_baseline_and_evaluator_not_client_exit() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-official-resolution-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("sweep.toml"),
+            "configs=['resolved.toml','unresolved.toml','missing.toml','invalid.toml']\n",
+        )
+        .unwrap();
+        for (index, name, resolved) in [
+            (0, "resolved", json!(true)),
+            (1, "unresolved", json!(false)),
+            (2, "missing", Value::Null),
+            (3, "invalid", json!(true)),
+        ] {
+            std::fs::write(
+                root.join(format!("{name}.toml")),
+                "agent='pi'\nworkload='swe-bench-lite'\nprovider='local'\nmodel='m'\n",
+            )
+            .unwrap();
+            let baseline = if name == "invalid" {
+                json!({"kind":"upstream-task-definition","base_commit":"HEAD"})
+            } else {
+                json!({"kind":"upstream-task-definition","base_commit":"a".repeat(40)})
+            };
+            let directory = root.join(format!("sweep-results/{index:03}-{name}/measurements"));
+            std::fs::create_dir_all(&directory).unwrap();
+            std::fs::write(
+                directory.join("run.json"),
+                json!({"schema_version":2,"status":"failed",
+                "success":false,"process_success":false,"workload_success":resolved,
+                "workload_evaluation":"upstream-harness","workload_baseline":baseline,
+                "workload_baseline_passed":false})
+                .to_string(),
+            )
+            .unwrap();
+        }
+        run(root.join("sweep.toml").to_str().unwrap(), &mut Vec::new()).unwrap();
+        let comparison: Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join("results/sweep-comparison/comparison.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(comparison["benchmarks"][0]["metrics"]["success_rate"], 1.0);
+        assert_eq!(comparison["benchmarks"][1]["metrics"]["success_rate"], 0.0);
+        assert_eq!(comparison["benchmarks"][2]["metrics"]["success_rate"], 0.0);
+        assert!(
+            comparison["benchmarks"][3]["metrics"]
+                .get("success_rate")
+                .is_none()
+        );
+        let groups = comparison["resolution_groups"].as_object().unwrap();
+        assert_eq!(
+            groups
+                .values()
+                .map(|group| group["task_count"].as_u64().unwrap())
+                .sum::<u64>(),
+            3
+        );
+        assert_eq!(
+            groups
+                .values()
+                .map(|group| group["resolved_count"].as_u64().unwrap())
+                .sum::<u64>(),
+            1
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

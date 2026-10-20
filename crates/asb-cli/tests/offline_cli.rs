@@ -1007,8 +1007,11 @@ async function main() {
   }
   console.log('fixture-agent-output');
   if (behavior === 'fatal') console.error('Authentication required. Please use /login command to sign in to your account fixture-secret');
-  if (behavior === 'exit' || (behavior === 'fail-second' && process.cwd().endsWith('concurrency-2')) ||
-      (behavior === 'fail-sweep-second' && process.cwd().includes('/001-bad/'))) process.exitCode = 7;
+  const unresolvedFailure = behavior === 'exit-unresolved' ||
+      (behavior === 'fail-second' && process.cwd().endsWith('concurrency-2')) ||
+      (behavior === 'fail-sweep-second' && process.cwd().includes('/001-bad/'));
+  if (unresolvedFailure) fs.writeFileSync('src/parser.py', "def parse_path(value: str) -> list[str]:\n    return value.split('/')\n");
+  if (behavior === 'exit' || unresolvedFailure) process.exitCode = 7;
 }
 main().catch(e => { console.error(e); process.exitCode = 9; });
 "##);
@@ -1728,7 +1731,11 @@ fn replay_reports_agent_exit_and_zero_exit_fatal_output() {
             serde_json::from_slice(&std::fs::read(project.0.join("run.log")).unwrap()).unwrap();
         assert_eq!(log["status"], "failed");
         assert_eq!(log["failure_kind"], "agent_failure");
-        assert_eq!(log["workload_success"], serde_json::Value::Null);
+        // Both fixtures leave the correct patch before failing as processes.
+        // Task resolution must survive the independent operational failure.
+        assert_eq!(log["process_success"], false);
+        assert_eq!(log["workload_success"], true);
+        assert_eq!(log["success_rate"], 1.0);
         assert_tape_scratch_cleaned(&project);
     }
 }
@@ -1856,7 +1863,11 @@ fn resolution_summary_counts_failed_attempts_without_survivorship_bias() {
         "workspace/src/parser.py",
         "def parse_path(value: str) -> list[str]:\n    return value.split('/')\n",
     );
-    let failed = replay(&project, "exit", &["--measurements", "measurements"]);
+    let failed = replay(
+        &project,
+        "exit-unresolved",
+        &["--measurements", "measurements"],
+    );
     assert!(!failed.status.success());
     let summary: serde_json::Value = serde_json::from_slice(
         &std::fs::read(project.0.join("measurements/summary.json")).unwrap(),
@@ -1866,6 +1877,57 @@ fn resolution_summary_counts_failed_attempts_without_survivorship_bias() {
     assert_eq!(summary["success_count"], 1);
     assert_eq!(summary["failure_count"], 1);
     assert_eq!(summary["success_rate"], 0.5);
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_client_can_resolve_task_without_hiding_its_process_failure() {
+    let project = replay_project(1);
+    let result = replay(
+        &project,
+        "exit",
+        &["--json", "--measurements", "measurements"],
+    );
+    expect_failure(&result, "agent exited unsuccessfully");
+    let json: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(json["process_success"], false);
+    assert_eq!(json["workload_success"], true);
+    assert_eq!(json["success_rate"], 1.0);
+    assert_eq!(
+        json["workload_baseline"],
+        serde_json::json!({"kind":"measured","passed":false})
+    );
+    let summary: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(project.0.join("measurements/summary.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(summary["success_count"], 1);
+    assert_eq!(summary["runs"][0]["status"], "failed");
+    assert_eq!(summary["runs"][0]["process_success"], false);
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_client_and_failed_grading_retain_both_diagnostics() {
+    let project = replay_project(1);
+    let result = replay(
+        &project,
+        "exit-unresolved",
+        &["--json", "--measurements", "measurements"],
+    );
+    expect_failure(&result, "agent exited unsuccessfully");
+    let json: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(json["process_success"], false);
+    assert_eq!(json["workload_success"], false);
+    assert_eq!(json["failure_kind"], "agent_failure");
+    assert_eq!(json["workload_failure"]["kind"], "workload_check_failed");
+    assert!(
+        json["workload_failure"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("src/parser.py")
+    );
+    assert_eq!(json["success_rate"], 0.0);
 }
 
 #[cfg(unix)]

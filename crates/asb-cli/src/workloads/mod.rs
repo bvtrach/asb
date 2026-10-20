@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 mod adapters;
 mod session;
+pub(crate) use session::BaselineEvidence;
 pub use session::TaskIdentity;
 pub(crate) use session::{PreparationContext, WorkloadSession};
 
@@ -432,8 +433,8 @@ pub(crate) fn resolution_eligible(kind: &str) -> bool {
     )
 }
 
-pub(crate) fn scored_kind(kind: &str, baseline_passed: Option<bool>) -> &str {
-    if resolution_eligible(kind) && baseline_passed != Some(false) {
+pub(crate) fn scored_kind<'a>(kind: &'a str, baseline: &session::BaselineEvidence) -> &'a str {
+    if resolution_eligible(kind) && !baseline.supports(kind) {
         "invalid-baseline"
     } else {
         kind
@@ -555,6 +556,13 @@ fn canonical_source(source: &str) -> String {
 pub(crate) enum Evaluation {
     Passed,
     Failed(String),
+}
+
+/// Evaluator diagnostics remain visible even when execution failed as well.
+#[derive(Debug, Serialize)]
+pub(crate) struct EvaluationFailure {
+    pub kind: &'static str,
+    pub reason: String,
 }
 
 fn source_satisfies(path: &Path, expectation: &SourceExpectation) -> Result<Evaluation, String> {

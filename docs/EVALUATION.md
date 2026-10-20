@@ -41,8 +41,11 @@ ASB's task-attempt resolution fraction is:
 resolved eligible task attempts / all selected eligible task attempts
 ```
 
-Only an evaluator-confirmed complete pass earns numerator credit. Agent
-failures, grading failures, and absent evaluation do not earn credit; known
+Only an evaluator-confirmed complete pass earns numerator credit. A failed
+agent process does not discard a usable submission: ASB still evaluates the
+resulting task state. Process or proxy failures remain operational failures,
+but a separately confirmed task resolution still earns task credit. Grading
+failures and absent evaluation do not earn credit; known
 eligible attempts remain in the comparison denominator even when measurements
 are missing. Summary files cover recorded attempts; comparison groups cover
 the selected sweep configurations and replicas. Counts are grouped by agent,
@@ -60,11 +63,24 @@ for an independent attempt. This matters for reruns: preparation intentionally
 preserves previous edits, and historical logs can include agents finding an
 already-fixed task. Old files without baseline evidence cannot establish that
 a fix was made during that execution.
+New records explicitly identify baseline provenance in `workload_baseline`:
+`measured` retains a measured pass/fail/unknown result, while
+`upstream-task-definition` identifies an official clean base commit without
+claiming ASB observed failing tests. The latter is eligible only for an
+`upstream-harness` evaluator, not local fixtures. Unknown/malformed evidence
+cannot earn credit. Legacy records without this field retain their existing
+`workload_baseline_passed` interpretation; malformed explicit evidence cannot
+fall back to a legacy flag. The official session must validate dataset and
+repository identity before publishing this evidence.
 `process_success` is independently reported. `workload_success` is the actual
 task evaluator result where available. `adapter_smoke_success` is separate;
 a passing smoke has status `smoke-passed`, measured `success = false`, and
 no task-resolution rate. Its command can exit zero to indicate that the smoke
 operation itself completed, not that an upstream benchmark was resolved.
+If process execution and evaluation both fail, `failure_kind`/`failure_reason`
+retain the operational failure and `workload_failure` independently retains
+the evaluator diagnostic. Measurements and comparison use the evaluator's
+outcome for task-resolution rates rather than requiring a successful process.
 
 Bundled fixtures use bounded evaluator-owned accepted source expectations;
 repository navigation checks the final answer's required references. These

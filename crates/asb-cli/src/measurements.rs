@@ -291,6 +291,9 @@ pub struct RunMeasurement<'a> {
     pub task: Option<&'a crate::workloads::TaskIdentity>,
     pub workload_evaluation: &'a str,
     pub workload_baseline_passed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workload_baseline: Option<&'a crate::workloads::BaselineEvidence>,
+    pub workload_failure: Option<&'a crate::workloads::EvaluationFailure>,
     pub provider: &'a str,
     pub model: &'a str,
     pub elapsed_ms: u128,
@@ -875,15 +878,13 @@ fn update_summary(dir: &Path, run: &RunMeasurement<'_>) -> Result<(), String> {
             .unwrap_or("unknown");
         let kind = crate::workloads::scored_kind(
             kind,
-            run.get("workload_baseline_passed")
-                .and_then(serde_json::Value::as_bool),
+            &crate::workloads::BaselineEvidence::from_record(run),
         );
         resolution.observe(
             kind,
             run.get("workload_success")
                 .and_then(serde_json::Value::as_bool)
-                == Some(true)
-                && run.get("success").and_then(serde_json::Value::as_bool) == Some(true),
+                == Some(true),
         );
     }
     let summary = serde_json::json!({"schema_version": 2, "runs": runs, "success_count": resolution.resolved_count, "failure_count": resolution.unresolved_count, "task_count": resolution.task_count, "unscored_count": resolution.unscored_count, "success_rate": resolution.success_rate, "success_rate_definition": "resolved task attempts / all selected task attempts; smoke exercises excluded; not pass@k"});
@@ -1397,6 +1398,8 @@ mod tests {
             task: None,
             workload_evaluation: "bundled-fixture",
             workload_baseline_passed: Some(false),
+            workload_baseline: None,
+            workload_failure: None,
             provider: "p",
             model: "m",
             elapsed_ms: 2,

@@ -295,3 +295,30 @@ The complete native test suite and strict Clippy also passed after this change.
 This remains a qualification path: normal run/sweep controller integration,
 automatic portable-helper provisioning, local endpoint forwarding, container
 collector targeting and both Terminal-Bench runtime engines are still open.
+
+### Evaluation provenance and process-independent task credit
+
+Run, measurement and comparison now share typed baseline evidence. Measured
+fixture results remain distinct from official clean task-definition evidence;
+the latter is accepted only for an upstream harness, with a concrete commit.
+Malformed explicit evidence cannot fall back to an old boolean. Legacy
+records without the new field retain their measured-baseline semantics.
+
+The normal runner evaluates task state even after client/proxy failure. A
+resolved submission can earn task credit while the command still reports its
+operational failure. If both fail, separate workload diagnostics survive in
+the result. Provider-free regressions cover these combinations, measurement
+aggregation and comparison denominators, including missing official grades.
+This removes fixture-only scoring assumptions; it does not yet wire an
+official workload environment into normal run/sweep execution.
+
+Offline runtime-cache tests additionally found that the existing checksum
+helper removed a damaged archive before the new installer could preserve it.
+A non-destructive verification path now retains that evidence and tests cover
+replacement, offline cache reuse and previous-install backups.
+
+The full development build exposed a Graphviz 2.43 clustered-layout crash.
+Function diagrams now disable edge concentration and mark real entry/terminal
+functions instead of introducing synthetic cross-cluster entry/exit calls.
+Regression checks render both actual project graphs within a bounded timeout
+and verify that every function and real call edge survives into SVG.

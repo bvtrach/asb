@@ -63,10 +63,61 @@ pub(crate) struct TaskInvocation {
     pub workspace: PathBuf,
 }
 
+/// Baseline provenance is not a boolean: an official clean task definition
+/// does not claim that ASB ran its initial failing tests.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub(crate) enum BaselineEvidence {
+    Measured { passed: Option<bool> },
+    UpstreamTaskDefinition { base_commit: String },
+    Unavailable,
+}
+
+impl BaselineEvidence {
+    pub(crate) fn measured_passed(&self) -> Option<bool> {
+        match self {
+            Self::Measured { passed } => *passed,
+            _ => None,
+        }
+    }
+
+    pub(crate) fn supports(&self, evaluation_kind: &str) -> bool {
+        match self {
+            Self::Measured {
+                passed: Some(false),
+            } => true,
+            Self::UpstreamTaskDefinition { base_commit } => {
+                evaluation_kind == "upstream-harness"
+                    && base_commit.len() == 40
+                    && base_commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+            }
+            _ => false,
+        }
+    }
+
+    /// Legacy records retain their original measured-baseline semantics.
+    /// An explicitly malformed new field must never fall back to a legacy flag.
+    pub(crate) fn from_record(record: &serde_json::Value) -> Self {
+        match record.get("workload_baseline") {
+            Some(value) => serde_json::from_value(value.clone()).unwrap_or(Self::Unavailable),
+            None => Self::Measured {
+                passed: record
+                    .get("workload_baseline_passed")
+                    .and_then(serde_json::Value::as_bool),
+            },
+        }
+    }
+}
+
 pub(crate) trait WorkloadSession {
     fn invocation(&self) -> &TaskInvocation;
     fn evaluation_kind(&self) -> &'static str;
     fn baseline_passed(&self) -> Option<bool>;
+    fn baseline_evidence(&self) -> BaselineEvidence {
+        BaselineEvidence::Measured {
+            passed: self.baseline_passed(),
+        }
+    }
     fn evaluate(&mut self, final_response: &str) -> Result<Evaluation, String>;
 }
 
@@ -124,6 +175,46 @@ impl WorkloadSession for FileSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn official_definition_is_not_a_measured_failing_baseline() {
+        let baseline = BaselineEvidence::UpstreamTaskDefinition {
+            base_commit: "0123456789abcdef0123456789abcdef01234567".into(),
+        };
+        assert_eq!(baseline.measured_passed(), None);
+        assert!(baseline.supports("upstream-harness"));
+        assert!(!baseline.supports("bundled-fixture"));
+        assert_eq!(
+            super::super::scored_kind("upstream-harness", &baseline),
+            "upstream-harness"
+        );
+        assert_eq!(
+            super::super::scored_kind("bundled-fixture", &baseline),
+            "invalid-baseline"
+        );
+        let record = serde_json::json!({"workload_baseline": baseline});
+        assert_eq!(BaselineEvidence::from_record(&record), baseline);
+    }
+
+    #[test]
+    fn baseline_provenance_rejects_malformed_and_explicitly_missing_evidence() {
+        for value in [
+            serde_json::json!(null),
+            serde_json::json!({"kind":"unavailable"}),
+            serde_json::json!({"kind":"upstream-task-definition","base_commit":"HEAD"}),
+            serde_json::json!({"kind":"upstream-task-definition","base_commit":"g".repeat(40)}),
+            serde_json::json!({"kind":"upstream-task-definition","base_commit":"a".repeat(40),"unexpected":true}),
+            serde_json::json!({"kind":"measured","passed":true}),
+        ] {
+            let record =
+                serde_json::json!({"workload_baseline":value,"workload_baseline_passed":false});
+            let evidence = BaselineEvidence::from_record(&record);
+            assert!(!evidence.supports("upstream-harness"));
+        }
+        let legacy = serde_json::json!({"workload_baseline_passed":false});
+        assert!(BaselineEvidence::from_record(&legacy).supports("bundled-fixture"));
+        assert!(!BaselineEvidence::from_record(&serde_json::json!({})).supports("bundled-fixture"));
+    }
 
     #[test]
     fn repeated_tasks_have_distinct_attempts_without_changing_task_identity() {
