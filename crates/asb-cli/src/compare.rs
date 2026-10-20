@@ -281,12 +281,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
     let mut graphs = Vec::new();
     let agent_labels: BTreeMap<_, _> = benchmark_data
         .iter()
-        .map(|benchmark| {
-            (
-                benchmark.label.clone(),
-                format!("{} ({})", benchmark.agent, benchmark.label),
-            )
-        })
+        .map(|benchmark| (benchmark.label.clone(), benchmark.agent.clone()))
         .collect();
     for (name, values) in &metric_values {
         let filename = format!("metric-{}.svg", safe_name_str(name));
@@ -1004,9 +999,10 @@ fn write_bar_svg(
         let y = bottom - bar_height;
         let width = (bar_width - 8.0).max(2.0);
         svg.push_str(&format!(
-            "<rect class=\"bar\" data-label=\"{}\" data-value=\"{value}\" x=\"{x:.1}\" y=\"{y:.1}\" width=\"{width:.1}\" height=\"{bar_height:.1}\" fill=\"#4472c4\"><title>{}: {value}</title></rect>",
+            "<rect class=\"bar\" data-label=\"{}\" data-value=\"{value}\" x=\"{x:.1}\" y=\"{y:.1}\" width=\"{width:.1}\" height=\"{bar_height:.1}\" fill=\"#4472c4\"><title>{} [{}]: {value}</title></rect>",
             escape(label),
             escape(display),
+            escape(label),
         ));
         let value_label = format_tick(*value);
         let (label_y, placement, color) = if bar_height >= 24.0 {
@@ -1435,8 +1431,9 @@ mod tests {
         ] {
             let svg = std::fs::read_to_string(dir.join(file)).unwrap();
             assert_eq!(svg.matches("class=\"bar\"").count(), 2, "{svg}");
-            assert!(svg.contains("codex (000-one)"));
-            assert!(svg.contains("pi (001-two)"));
+            assert!(svg.contains("codex [000-one]"));
+            assert!(svg.contains("pi [001-two]"));
+            assert!(svg.contains(">codex</text>"));
             assert!(svg.contains("data-label=\"000-one\""));
             assert!(svg.contains(&format!("unit: {unit}")));
             assert!(!svg.contains("opencode"));
