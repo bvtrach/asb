@@ -458,16 +458,64 @@ mod tests {
         let expected = r#"{"model":"m","input":[{"role":"user","content":"work"},{"type":"function_call_output","call_id":"old","output":"done"}]}"#;
         let line = serde_json::json!({
             "request": {"method":"POST", "url":"/v1/responses", "body": expected},
-            "response": {"status":200,"headers":{"content-type":"application/json"},"body":"{\"ok\":true}"}
+            "response": {"status":200,"headers":{"content-type":"application/json"},"body":"{\"call_<asb-call>\":\"call_<asb-call>\",\"ok\":true}"}
         });
         std::fs::write(&cassette, format!("{line}\n")).unwrap();
         let session = Session::start(Mode::Replay, &cassette, None, false, &root).unwrap();
         let compatible =
             r#"{"model":"m","input":[{"role":"user","content":"work"}],"temperature":0.2}"#;
-        assert!(request_to(&session, "/v1/responses", compatible).contains("200 OK"));
+        let response = request_to(&session, "/v1/responses", compatible);
+        assert!(response.contains("200 OK"));
+        assert!(
+            response.contains("\"call_id\":\"call_asb-replay-"),
+            "{response}"
+        );
         let changed = r#"{"model":"m","input":[{"role":"user","content":"different"}]}"#;
         assert!(request_to(&session, "/v1/responses", changed).contains("409 Conflict"));
         assert!(session.stop().unwrap_err().to_string().contains("rejected"));
+
+        // Provider bridges may add harmless query parameters while preserving
+        // the same API endpoint. Replay matches the path, not those transport
+        // parameters, while still enforcing method, model, and prompt.
+        let session = Session::start(Mode::Replay, &cassette, None, false, &root).unwrap();
+        assert!(
+            request_to(&session, "/v1/responses?api-version=2025-01-01", compatible)
+                .contains("200 OK")
+        );
+        session.stop().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn replay_skips_openjiuwen_vision_capability_probe() {
+        let root = test_root();
+        let cassette = root.join("probe.jsonl");
+        let embedding = r#"{"model":"text-embedding-3-small","input":["memory"]}"#;
+        let probe = r#"{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"What color is this image? Reply with one word."}]}]}"#;
+        let workload = r#"{"model":"m","messages":[{"role":"user","content":"work"}]}"#;
+        let interaction = |body: &str| {
+            serde_json::json!({
+                "request": {"method":"POST", "url":"/v1/messages", "body":body},
+                "response": {"status":200,"headers":{"content-type":"application/json"},"body":"{\"ok\":true}"}
+            })
+        };
+        let embedding_interaction = serde_json::json!({
+            "request": {"method":"POST", "url":"/v1/embeddings", "body":embedding},
+            "response": {"status":200,"headers":{"content-type":"application/json"},"body":"{\"ok\":true}"}
+        });
+        std::fs::write(
+            &cassette,
+            format!(
+                "{}\n{}\n{}\n",
+                embedding_interaction,
+                interaction(probe),
+                interaction(workload)
+            ),
+        )
+        .unwrap();
+        let session = Session::start(Mode::Replay, &cassette, None, false, &root).unwrap();
+        assert!(request_to(&session, "/v1/messages", workload).contains("200 OK"));
+        session.stop().unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 
