@@ -15,6 +15,7 @@ fn mock_fixture_matrix_covers_every_registered_agent() {
         "codex",
         "continue",
         "goose",
+        "hermes",
         "mini-swe",
         "opencode",
         "openhands",

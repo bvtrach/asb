@@ -402,14 +402,14 @@ matching key.
 
 The bundled cli2key bridge executes workloads through `codex`, `opencode`,
 `qwen-code`, `mini-swe`, `openhands`, `openjiuwen`, `workbuddy`, `claude-code`,
-`goose`, `cline`, and `continue` when the selected CLI supports the
+`goose`, `hermes`, `cline`, and `continue` when the selected CLI supports the
 configured compatible endpoint.
 WorkBuddy uses project-local CodeBuddy model settings configured for the
 bridge's Responses API.
 Built-in tool recipes install pinned releases into the project (and do not
 modify global tools): `codex`, `pi`, `opencode`, `workbuddy`,
 `qwen-code`, `cli2key`, `claude-code`, `cline`, and `continue` use pinned npm
-packages; `mini-swe`, `openhands`, and `openjiuwen` use an isolated Python
+packages; `mini-swe`, `openhands`, `openjiuwen`, and `hermes` use an isolated Python
 virtual environment. `goose` uses a SHA-256-pinned upstream binary. Any
 other agent can be installed from a local executable or URL with `--source`.
 
