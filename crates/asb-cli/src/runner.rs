@@ -666,6 +666,10 @@ fn run_mode(
         .take()
         .and_then(|session| session.stop().err())
         .map(|error| error.to_string());
+    // A failed replay can have served only part of the recording. Its full
+    // cassette is not evidence of this attempt's token usage. Keep native
+    // usage available, but trust cassette totals only after proxy validation.
+    let cassette_usage_verified = tape_mode != Some(tape::Mode::Replay) || run_error.is_none();
     if let Some((tape::Mode::Record, cassette)) = tape_cassette.as_ref() {
         match std::fs::metadata(cassette) {
             Ok(metadata) if metadata.len() > 0 => {}
@@ -798,6 +802,7 @@ fn run_mode(
         &String::from_utf8_lossy(&child.stderr),
         tape_cassette
             .as_ref()
+            .filter(|_| cassette_usage_verified)
             .map(|(_, cassette)| cassette.as_path()),
     );
     let token_usage = measurements::with_artifact_usage(token_usage, adapter_artifacts.token_usage);

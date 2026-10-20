@@ -301,7 +301,11 @@ client's partial streaming metadata. Cline uses its final aggregate, Pi and
 OpenCode sum their completed per-turn or per-step records, and mini-SWE sums
 the provider responses in its trajectory. A complete recording takes
 precedence over agent output, because it also includes auxiliary provider
-calls that an agent may omit from its own summary. Without recording, token
+calls that an agent may omit from its own summary. Replay uses whole-cassette
+totals only after successful proxy completion validation. Partial or rejected
+replay falls back to actual agent-reported usage, or unknown when unavailable;
+unconsumed recording responses are never charged to the replay attempt.
+Without recording, token
 counts are limited to the usage reported by the agent; for example, Goose and
 OpenCode can omit a separate title-generation call, and some agents do not
 report usage at all. Missing values are not estimated. Cassette accounting combines usage

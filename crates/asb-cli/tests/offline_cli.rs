@@ -1607,6 +1607,95 @@ fetch(endpoint + '/responses', {method:'POST',headers:{'content-type':'applicati
 
 #[cfg(unix)]
 #[test]
+fn incomplete_replay_does_not_report_unconsumed_recording_tokens() {
+    for (behavior, native_usage) in [
+        ("skip", false),
+        ("success", false),
+        ("mismatch", false),
+        ("success", true),
+        ("extra", true),
+    ] {
+        let project = replay_project(1);
+        let complete = behavior == "extra";
+        if native_usage {
+            let agent = ".asb-tools/pi/bin/pi";
+            let script = std::fs::read_to_string(project.0.join(agent)).unwrap();
+            project.write(
+                agent,
+                &script.replace(
+                    "console.log('fixture-agent-output');",
+                    "console.log(JSON.stringify({type:'turn_end',usage:{input:5,output:1,cacheRead:2}}));",
+                ),
+            );
+        }
+        let body = serde_json::json!({
+            "model":"test-model", "input":"offline", "tools":[{"type":"function"}]
+        })
+        .to_string();
+        let interactions = [(10, 2), (30, 4)]
+            .into_iter()
+            .map(|(input, output)| {
+                let response = serde_json::json!({"usage":{
+                    "input_tokens":input,"output_tokens":output
+                }})
+                .to_string();
+                serde_json::json!({
+                    "request":{"method":"POST","url":"/v1/responses","body":body},
+                    "response":{"status":200,"headers":{"content-type":"application/json"},"body":response}
+                })
+                .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        project.write("tape.jsonl", &format!("{interactions}\n"));
+        let result = replay(
+            &project,
+            behavior,
+            &["--json", "--measurements", "measurements"],
+        );
+        assert_eq!(result.status.success(), complete, "{}", stderr(&result));
+        let log: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(project.0.join("run.log")).unwrap()).unwrap();
+        let measurement: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(project.0.join("measurements/run.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(log["token_usage"], measurement["token_usage"]);
+        if complete {
+            assert_eq!(log["token_usage"]["input_tokens"], 40);
+            assert_eq!(log["token_usage"]["output_tokens"], 6);
+            assert_eq!(log["token_usage"]["total_tokens"], 46);
+            assert_eq!(log["token_usage"]["source"], "cassette");
+        } else {
+            assert!(stderr(&result).contains(if behavior == "mismatch" {
+                "replay rejected"
+            } else {
+                "refusing partial replay"
+            }));
+            if native_usage {
+                assert_eq!(log["token_usage"]["input_tokens"], 7);
+                assert_eq!(log["token_usage"]["output_tokens"], 1);
+                assert_eq!(log["token_usage"]["cached_tokens"], 2);
+                assert_eq!(log["token_usage"]["total_tokens"], 8);
+                assert_eq!(log["token_usage"]["source"], "agent-output");
+                continue;
+            }
+            // This fake agent emits no native usage. Unknown is honest;
+            // counting the recording's unconsumed calls is not.
+            for field in [
+                "input_tokens",
+                "output_tokens",
+                "cached_tokens",
+                "total_tokens",
+            ] {
+                assert!(log["token_usage"][field].is_null(), "{behavior}: {log}");
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn continue_mock_replay_uses_cassette_usage_in_every_output() {
     use std::os::unix::fs::PermissionsExt;
     let project = replay_project(1);
