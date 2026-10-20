@@ -3,19 +3,19 @@
 use crate::benchmark::BenchmarkConfig;
 use crate::runner;
 use crate::{Error, compare, read_config};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-const MAX_SWEEP_BYTES: u64 = 64 * 1024;
-const MAX_CONFIGS: usize = 256;
+const MAX_SWEEP_BYTES: u64 = 16 * 1024 * 1024;
+pub(crate) const MAX_CONFIGS: usize = 65536;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct SweepFile {
-    configs: Vec<String>,
+pub(crate) struct SweepFile {
+    pub configs: Vec<String>,
 }
 
 /// Validate and execute every benchmark referenced by a sweep manifest.
@@ -29,33 +29,7 @@ pub fn run(
     output: &mut dyn Write,
 ) -> Result<(), Error> {
     let sweep_path = Path::new(path);
-    let text = read_sweep(sweep_path)?;
-    let value: toml::Value = toml::from_str(&text)
-        .map_err(|error| Error::Input(format!("cannot parse sweep {path}: {error}")))?;
-    let table = value.as_table().ok_or_else(|| {
-        Error::Input(format!(
-            "{path} is not a sweep TOML; expected `configs = [...]`"
-        ))
-    })?;
-    if !table.contains_key("configs") {
-        return Err(Error::Input(format!(
-            "{path} is not a sweep TOML; expected `configs = [...]` (a normal benchmark TOML was supplied)"
-        )));
-    }
-    let sweep: SweepFile = value
-        .try_into()
-        .map_err(|error| Error::Input(format!("invalid sweep {path}: {error}")))?;
-    if sweep.configs.is_empty() {
-        return Err(Error::Input(format!(
-            "sweep {path} contains no benchmark configurations"
-        )));
-    }
-    if sweep.configs.len() > MAX_CONFIGS {
-        return Err(Error::Input(format!(
-            "sweep {path} contains {} configurations; the maximum is {MAX_CONFIGS}",
-            sweep.configs.len()
-        )));
-    }
+    let sweep = read_manifest(sweep_path)?;
     let parent = sweep_path.parent().unwrap_or_else(|| Path::new("."));
     let stem = sweep_path
         .file_stem()
@@ -230,15 +204,51 @@ fn add_failure(failures: &mut Vec<(String, Vec<String>)>, config: String, messag
     }
 }
 
-fn read_sweep(path: &Path) -> Result<String, Error> {
-    let metadata = std::fs::metadata(path)
+/// Shared bounded format for setup, execution and offline comparison. A full
+/// dataset/agent matrix must not silently hit a prompt-sized file limit.
+pub(crate) fn read_manifest(path: &Path) -> Result<SweepFile, Error> {
+    let file = std::fs::File::open(path)
         .map_err(|error| Error::Input(format!("cannot read sweep {}: {error}", path.display())))?;
-    if metadata.len() > MAX_SWEEP_BYTES {
-        return Err(Error::Input(
-            "sweep configuration is larger than 64 KiB".into(),
-        ));
+    let mut text = String::new();
+    file.take(MAX_SWEEP_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(|error| Error::Input(format!("cannot read sweep {}: {error}", path.display())))?;
+    if text.len() as u64 > MAX_SWEEP_BYTES {
+        return Err(Error::Input(format!(
+            "sweep {} exceeds 16 MiB",
+            path.display()
+        )));
     }
-    read_config(path)
+    let label = path.display().to_string();
+    let value: toml::Value = toml::from_str(&text)
+        .map_err(|error| Error::Input(format!("cannot parse sweep {label}: {error}")))?;
+    if !value
+        .as_table()
+        .is_some_and(|table| table.contains_key("configs"))
+    {
+        return Err(Error::Input(format!(
+            "{label} is not a sweep TOML; expected `configs = [...]` (a normal benchmark TOML was supplied)"
+        )));
+    }
+    let sweep: SweepFile = value
+        .try_into()
+        .map_err(|error| Error::Input(format!("invalid sweep {label}: {error}")))?;
+    if sweep.configs.is_empty() {
+        return Err(Error::Input(format!(
+            "sweep {label} contains no benchmark configurations"
+        )));
+    }
+    if sweep.configs.len() > MAX_CONFIGS {
+        return Err(Error::Input(format!(
+            "sweep {label} contains {} configurations; the maximum is {MAX_CONFIGS}",
+            sweep.configs.len()
+        )));
+    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    for reference in &sweep.configs {
+        checked_reference(parent, reference, &label)?;
+    }
+    Ok(sweep)
 }
 
 fn checked_reference(parent: &Path, reference: &str, sweep: &str) -> Result<PathBuf, Error> {
@@ -324,6 +334,72 @@ mod tests {
         let path = directory.join(name);
         std::fs::write(&path, contents).expect("file");
         path
+    }
+
+    #[test]
+    fn manifest_supports_complete_original_populations_and_multi_agent_matrices() {
+        for count in [300, 500, 2294, (2294 + 300 + 500 + 80 + 89) * 8] {
+            let reference = "original-instance-selection-agent-provider-model-configuration.toml";
+            let configs = vec![reference.to_owned(); count];
+            let text = toml::to_string(&super::SweepFile { configs }).unwrap();
+            if count >= 2294 {
+                assert!(text.len() > 64 * 1024);
+            }
+            let path = temp_file("population.toml", &text);
+            std::fs::write(path.parent().unwrap().join(reference), "fixture").unwrap();
+            assert_eq!(super::read_manifest(&path).unwrap().configs.len(), count);
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn oversized_manifest_bytes_and_entry_counts_are_rejected_before_execution() {
+        let path = temp_file(
+            "large.toml",
+            &"x".repeat(super::MAX_SWEEP_BYTES as usize + 1),
+        );
+        assert!(
+            super::read_manifest(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("16 MiB")
+        );
+        let configs = vec!["benchmark.toml".to_owned(); super::MAX_CONFIGS + 1];
+        std::fs::write(
+            &path,
+            toml::to_string(&super::SweepFile { configs }).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            super::read_manifest(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("maximum is 65536")
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn missing_later_references_do_not_begin_a_partial_sweep() {
+        let path = temp_file("sweep.toml", "configs=['present.toml','missing.toml']\n");
+        std::fs::write(
+            path.parent().unwrap().join("present.toml"),
+            "agent='not-installed'\nworkload='bug-fix'\nprovider='local'\nmodel='fixture'\n",
+        )
+        .unwrap();
+        let error = run(
+            path.to_str().unwrap(),
+            false,
+            false,
+            None,
+            false,
+            None,
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("missing benchmark"));
+        assert!(!path.parent().unwrap().join("sweep-results").exists());
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]

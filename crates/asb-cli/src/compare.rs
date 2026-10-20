@@ -1,7 +1,7 @@
 //! Offline comparison and SVG chart generation for completed sweeps.
 
 use crate::{Error, read_config};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs;
@@ -13,12 +13,6 @@ const PLOT_TOP: f64 = 70.0;
 const PLOT_BOTTOM: f64 = 390.0;
 const PLOT_RIGHT: f64 = 880.0;
 const Y_TICKS: usize = 5;
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SweepFile {
-    configs: Vec<String>,
-}
 
 #[derive(Debug)]
 struct BenchmarkData {
@@ -47,25 +41,7 @@ struct TimeSeries {
 /// Compare all completed benchmark measurements referenced by a sweep.
 pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
     let sweep_path = Path::new(path);
-    let text = read_config(sweep_path)?;
-    let value: toml::Value = toml::from_str(&text)
-        .map_err(|error| Error::Input(format!("cannot parse sweep {path}: {error}")))?;
-    if !value
-        .as_table()
-        .is_some_and(|table| table.contains_key("configs"))
-    {
-        return Err(Error::Input(format!(
-            "{path} is not a sweep TOML; expected configs = [...]"
-        )));
-    }
-    let sweep: SweepFile = value
-        .try_into()
-        .map_err(|error| Error::Input(format!("invalid sweep {path}: {error}")))?;
-    if sweep.configs.is_empty() {
-        return Err(Error::Input(format!(
-            "sweep {path} contains no benchmark configurations"
-        )));
-    }
+    let sweep = crate::sweep::read_manifest(sweep_path)?;
     let parent = sweep_path.parent().unwrap_or_else(|| Path::new("."));
     let stem = sweep_path
         .file_stem()

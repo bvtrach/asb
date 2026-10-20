@@ -539,6 +539,15 @@ the selected model and interface.
 Goose's adapter sets its `OPENAI_HOST` or `ANTHROPIC_HOST` to the tape endpoint
 for both recording and replay; replay uses a placeholder credential.
 
+Setup, sweep execution and comparison share the same manifest type and bounded
+reader: up to 65,536 configurations in 16 MiB, independently of each individual
+configuration/prompt's smaller bound. All manifest reference paths are checked
+before execution. Setup resolves each selected trial set once, checks the whole
+agent/model/task cross product before creating files, and rejects oversized
+selections instead of publishing a sweep it cannot consume. These format
+bounds accommodate complete original populations; they are not a distinct-task
+scheduler, resume protocol or proof of complete-population coverage accounting.
+
 `asb compare SWEEP.toml` reads the isolated `<sweep>-results/` directories
 created by `asb sweep`. It writes bounded `comparison.json` data, an offline
 `report.html`, and SVG charts to `results/<sweep>-comparison/`; no provider or

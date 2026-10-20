@@ -912,3 +912,37 @@ A separate Codex record fixture failed once without a cassette; diagnostic
 coverage now retains its fixture run log. Its cause was not reproduced and is
 not claimed repaired. The complete offline CLI suite then passed a focused
 rerun and three additional concurrent stress runs (84 tests each).
+
+The quiescence checkpoint `a4b73f53f8e53f7c281b853ae89d5d9143f2b3ea`
+passed package verification and the packaged crate's full tests. GitHub
+recognized its signature as valid, and exact-head hosted CI `39452622263`
+completed successfully, including package/install smoke checks. The optional
+local-host job was skipped. This is branch evidence, not main/release evidence.
+
+### Full-population manifest foundation
+
+Setup, sweep and compare now share a manifest type/reader. The old 256-entry
+and 64 KiB limits could not represent even Lite's 300 tasks, let alone Full's
+2,294. The shared bounds are now 65,536 configurations and 16 MiB; individual
+configuration and prompt bounds remain unchanged. The reader bounds actual
+reads, validates every reference path before execution, and rejects unknown
+manifest fields and excessive entry counts. Setup resolves trial selections
+once and checks its complete cross product before creating any output files.
+
+Provider-free fixtures cover Full/Lite/Verified population sizes and all five
+populations across eight agents. A complete setup-to-compare fixture writes
+2,294 distinct task configurations, checks each selection and an over-64-KiB
+manifest, then verifies that an empty-result comparison retains every selected
+row. It also rejects an oversized setup without publishing partial config
+files. That fixture completed in 0.45 seconds locally. Its instance IDs are
+synthetic: this proves manifest/setup/report-census capacity, not official task
+grading or complete original-suite execution. Distinct-task scheduling,
+content-bound resume, planned dataset identities, coverage denominators and
+scalable aggregate report presentation remain necessary.
+
+The final manifest/source checks passed 365 unit tests, 84 offline CLI tests,
+all ten protocol suites, seven guest-driver checks and the remaining graph/
+replay integration tests, with strict all-target/all-feature Clippy. Missing
+later references are now rejected before creating any sweep result directory,
+not after earlier entries have already executed. Final package and exact-head
+hosted CI qualification remain separate from these local checks.

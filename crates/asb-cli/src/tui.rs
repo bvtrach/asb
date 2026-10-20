@@ -1,6 +1,7 @@
 //! Interactive, modular setup wizard built with Ratatui.
 
 use crate::benchmark::{BenchmarkConfig, MeasurementConfig};
+use crate::sweep::SweepFile;
 use crate::{Error, agents, install, measurements, models, project, providers, workloads};
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
@@ -14,7 +15,6 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
-use serde::Serialize;
 use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::fs;
@@ -1658,11 +1658,6 @@ fn default_model(provider: &str) -> &'static str {
     providers::default_model(provider)
 }
 
-#[derive(Serialize)]
-struct SweepFile {
-    configs: Vec<String>,
-}
-
 fn generate_configs(app: &App) -> Result<Generated, Error> {
     let agents = app.panes[0]
         .selected_choices()
@@ -1678,8 +1673,8 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
         .collect::<Vec<_>>();
     let workloads = app.panes[3]
         .selected_choices()
-        .map(|choice| choice.label.clone())
-        .collect::<Vec<_>>();
+        .map(|choice| selected_trials(app, &choice.label))
+        .collect::<Result<Vec<_>, _>>()?;
     let measures = crate::collectors::expand_dependencies(
         &app.panes[4]
             .selected_choices()
@@ -1691,6 +1686,21 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
         .next()
         .and_then(|choice| choice.label.parse::<usize>().ok())
         .unwrap_or(1);
+    let valid_models = models
+        .iter()
+        .filter(|(provider, _)| providers.contains(provider))
+        .count();
+    let total_trials: usize = workloads.iter().map(|(_, _, trials)| trials.len()).sum();
+    let planned = agents
+        .len()
+        .checked_mul(valid_models)
+        .and_then(|count| count.checked_mul(total_trials));
+    if planned.is_none_or(|count| count > crate::sweep::MAX_CONFIGS) {
+        return Err(Error::Input(format!(
+            "setup selection exceeds the {}-configuration sweep limit; select a smaller task or agent/model subset",
+            crate::sweep::MAX_CONFIGS
+        )));
+    }
     let initial_stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| Error::Io(format!("cannot create setup name: {error}")))?
@@ -1709,8 +1719,7 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
                 if model_provider != provider {
                     continue;
                 }
-                for workload_choice in &workloads {
-                    let (workload, trial_set, trials) = selected_trials(app, workload_choice)?;
+                for (workload, trial_set, trials) in &workloads {
                     for trial in trials {
                         let name = format!("asb-test-{stamp}-{index:03}.toml");
                         let path = app.root.join(&name);
@@ -1721,7 +1730,7 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
                             model: model.clone(),
                             concurrency,
                             trial_set: trial_set.clone(),
-                            trial,
+                            trial: trial.clone(),
                             workspace: app.project.workspace_dir.clone(),
                             log_file: format!("{}.log", name.trim_end_matches(".toml")),
                             measurements: Some(MeasurementConfig {
@@ -2472,6 +2481,82 @@ mod tests {
         let sweep = std::fs::read_to_string(&generated.sweep).expect("sweep written");
         assert!(sweep.contains("asb-test-"));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn full_population_setup_and_compare_keep_every_selected_task() {
+        let root = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("population-setup", None).attempt_id);
+        std::fs::create_dir_all(root.join("workloads")).unwrap();
+        let selected = crate::workloads::TrialSet {
+            workload: "swe-bench".into(),
+            trials: (0..2294)
+                .map(|index| crate::workloads::Trial {
+                    id: format!("fixture-instance-{index}"),
+                    description: "synthetic selection fixture".into(),
+                })
+                .collect(),
+        };
+        std::fs::write(
+            root.join("workloads/swe-bench.workload.toml"),
+            toml::to_string(&selected).unwrap(),
+        )
+        .unwrap();
+        let mut app = App::new(root.clone(), ProjectConfig::default());
+        app.panes[0] = Pane::new(vec![choice("pi")]);
+        app.panes[1] = Pane::new(vec![choice("openrouter")]);
+        app.panes[2] = Pane::new(vec![Choice {
+            label: "fixture-model".into(),
+            provider: Some("openrouter".into()),
+            model: Some("fixture-model".into()),
+            availability: Availability::Unknown,
+        }]);
+        app.panes[3] = Pane::new(vec![choice("swe-bench [trial set]")]);
+        for pane in &mut app.panes[..4] {
+            pane.selected[0] = true;
+        }
+        let generated = generate_configs(&app).unwrap();
+        assert_eq!(generated.tests, 2294);
+        assert!(std::fs::metadata(&generated.sweep).unwrap().len() > 64 * 1024);
+        let manifest = crate::sweep::read_manifest(&generated.sweep).unwrap();
+        for (index, reference) in manifest.configs.iter().enumerate() {
+            let config: crate::benchmark::BenchmarkConfig =
+                toml::from_str(&std::fs::read_to_string(root.join(reference)).unwrap()).unwrap();
+            assert_eq!(config.trial, Some(format!("fixture-instance-{index}")));
+        }
+        // No clients/providers/evaluators run: an empty result census must
+        // retain all selected tasks rather than truncate the report population.
+        crate::compare::run(generated.sweep.to_str().unwrap(), &mut Vec::new()).unwrap();
+        let stem = generated.sweep.file_stem().unwrap().to_str().unwrap();
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join(format!("results/{stem}-comparison/comparison.json")))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["benchmarks"].as_array().unwrap().len(), 2294);
+        assert!(
+            report["benchmarks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| entry["status"]
+                    .as_str()
+                    .unwrap()
+                    .contains("missing measurements"))
+        );
+        // Reject an oversized cross product before creating another config.
+        app.panes[0] = Pane::new((0..32).map(|_| choice("pi")).collect());
+        app.panes[0].selected.fill(true);
+        let before = std::fs::read_dir(&root).unwrap().count();
+        assert!(
+            generate_configs(&app)
+                .err()
+                .expect("oversized setup must be rejected")
+                .to_string()
+                .contains("65536-configuration")
+        );
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), before);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
