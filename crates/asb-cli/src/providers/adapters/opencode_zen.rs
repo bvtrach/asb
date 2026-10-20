@@ -109,3 +109,24 @@ adapter!(
         id.ends_with("-free")
     }
 );
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn opencode_replay_uses_recorded_interface_for_new_or_changed_models() {
+        use crate::endpoint::Interface;
+        for interface in [
+            Interface::OpenAiResponses,
+            Interface::OpenAiChat,
+            Interface::AnthropicMessages,
+        ] {
+            let offers = crate::providers::replay_endpoints(
+                "opencode-zen",
+                "new-model-not-in-snapshot",
+                Some(interface),
+            );
+            assert_eq!(offers.len(), 1);
+            assert_eq!(offers[0].interface, interface);
+        }
+    }
+}

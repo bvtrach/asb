@@ -85,3 +85,43 @@ pub(in crate::providers) fn catalog_offer(
         },
     })
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn opencode_catalog_reads_explicit_model_tool_support() {
+        let catalog = br#"{"opencode":{"models":{"yes":{"tool_call":true},"no":{"tool_call":false},"unknown":{}}}}"#;
+        assert_eq!(super::catalog_tool_support(catalog, "yes"), Some(true));
+        assert_eq!(super::catalog_tool_support(catalog, "no"), Some(false));
+        assert_eq!(super::catalog_tool_support(catalog, "unknown"), None);
+    }
+
+    #[test]
+    fn opencode_model_catalog_selects_current_interface_and_address() {
+        use crate::endpoint::{Address, Authentication, Interface};
+        let catalog = br#"{"opencode":{"api":"https://opencode.ai/inference/openai/v1","npm":"@ai-sdk/openai-compatible","models":{"new-gpt":{"provider":{"npm":"@ai-sdk/openai","api":"https://opencode.ai/inference/openai/v2"}},"new-claude":{"provider":{"npm":"@ai-sdk/anthropic","api":"https://opencode.ai/inference/anthropic/v1"}},"new-chat":{},"bad":{"provider":{"npm":"@ai-sdk/openai","api":"https://opencode.ai.evil.test/v1"}}}}}"#;
+        let gpt = super::catalog_offer(catalog, "new-gpt").unwrap();
+        assert_eq!(gpt.interface, Interface::OpenAiResponses);
+        assert_eq!(gpt.authentication, Authentication::Bearer);
+        assert_eq!(
+            gpt.address,
+            Address::Discovered {
+                environment: Some("OPENCODE_ZEN_BASE_URL"),
+                default: "https://opencode.ai/inference/openai/v2".into()
+            }
+        );
+        assert_eq!(
+            super::catalog_offer(catalog, "new-claude")
+                .unwrap()
+                .interface,
+            Interface::AnthropicMessages
+        );
+        assert_eq!(
+            super::catalog_offer(catalog, "new-chat").unwrap().interface,
+            Interface::OpenAiChat
+        );
+        assert!(super::catalog_offer(catalog, "bad").is_none());
+        assert!(super::catalog_offer(catalog, "not-listed").is_none());
+        assert!(super::catalog_offer(b"invalid", "new-gpt").is_none());
+    }
+}

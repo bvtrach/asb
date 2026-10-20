@@ -395,16 +395,6 @@ mod tests {
         assert_eq!(metrics.success_rate, 0.5);
     }
     #[test]
-    fn flamegraph_automatically_resolves_perf_once() {
-        let selected = vec!["flamegraph".to_owned()];
-        assert_eq!(expand_dependencies(&selected), ["flamegraph", "perf"]);
-        assert_eq!(dependency_tools(&selected), ["perf"]);
-        let both = vec!["perf".to_owned(), "flamegraph".to_owned()];
-        assert_eq!(expand_dependencies(&both), both);
-        assert_eq!(dependency_tools(&both), ["perf"]);
-        assert!(dependency_tools(&["perf".into()]).is_empty());
-    }
-    #[test]
     fn registry_has_unique_names_and_declares_tool_backed_collectors() {
         let ids = names().collect::<std::collections::BTreeSet<_>>();
         assert_eq!(ids.len(), all().len());

@@ -97,7 +97,7 @@ digraph ASB_Rust_UML {
         "asb-cli_src_Default" [label="{Default||+default() Self\l}", shape=record];
         "asb-cli_src_Drop" [label="{Drop||+drop() void\l}", shape=record];
         "asb-cli_src_From" [label="{From||+from(value: SetupArgs) Self\l+from(value: ModelArgs) Self\l+from(value: ToolInstallArgs) Self\l+from(value: WorkloadInstallArgs) Self\l+from(value: WorkloadListArgs) Self\l}", shape=record];
-        "asb-cli_src_InitArgs" [label="{InitArgs|-root: Option\<PathBuf\>\l-reset: bool\l}", shape=record];
+        "asb-cli_src_InitArgs" [label="{InitArgs|-root: Option\<PathBuf\>\l-reset: bool\l-yes: bool\l}", shape=record];
         "asb-cli_src_LifecycleRecord" [label="{LifecycleRecord|-sequence: usize\l-elapsed_us: u128\l-event: LifecycleEvent\l}", shape=record];
         "asb-cli_src_ModelArgs" [label="{ModelArgs|-provider: Option\<String\>\l-json: bool\l-free: bool\l}", shape=record];
         "asb-cli_src_ModelListOptions" [label="{ModelListOptions|+provider: Option\<String\>\l+json: bool\l+free_only: bool\l}", shape=record];

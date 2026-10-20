@@ -271,4 +271,18 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(tools);
     }
+
+    #[test]
+    fn flamegraph_automatically_resolves_perf_once() {
+        let selected = vec!["flamegraph".to_owned()];
+        assert_eq!(
+            crate::collectors::expand_dependencies(&selected),
+            ["flamegraph", "perf"]
+        );
+        assert_eq!(crate::collectors::dependency_tools(&selected), ["perf"]);
+        let both = vec!["perf".to_owned(), "flamegraph".to_owned()];
+        assert_eq!(crate::collectors::expand_dependencies(&both), both);
+        assert_eq!(crate::collectors::dependency_tools(&both), ["perf"]);
+        assert!(crate::collectors::dependency_tools(&["perf".into()]).is_empty());
+    }
 }
