@@ -30,6 +30,10 @@ mod terminal_bench;
 
 pub(super) trait WorkloadAdapter: Sync {
     fn id(&self) -> &'static str;
+    /// Smoke fixtures are not instances from the named upstream benchmark.
+    fn evaluation_kind(&self) -> &'static str {
+        "adapter-smoke"
+    }
     fn matches(&self, name: &str) -> bool {
         self.id() == name
     }
@@ -80,6 +84,9 @@ impl WorkloadAdapter for StaticExternalAdapter {
 
 pub(super) struct PromptAdapter;
 impl WorkloadAdapter for PromptAdapter {
+    fn evaluation_kind(&self) -> &'static str {
+        "bundled-fixture"
+    }
     fn id(&self) -> &'static str {
         "prompt"
     }

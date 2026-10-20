@@ -357,6 +357,15 @@ the current project's workload directory. `swe-bench` and `terminal-bench`
 install complete local source bundles and materialize them into the run
 workspace; the other aliases install their pinned upstream prompt metadata.
 
+**These external aliases currently run ASB adapter smoke exercises, not real
+tasks from the named upstream suites.** In particular, `swe-bench` asks the
+agent to fix a tiny string-normalization fixture. Downloading the upstream
+harness source does not install a dataset, check out an issue's repository,
+apply its test patch, or execute its official evaluator. These exercises have
+`adapter_smoke_success`, but `workload_success` and `success_rate` are `null`;
+they must not be used to claim a SWE-bench score. See
+[evaluation semantics and limitations](docs/EVALUATION.md).
+
 Before a run, ASB executes a modular preparation stage. For `cli2key`, it
 starts the project-local bridge when `CLI2KEY_BASE_URL` is not supplied, reads
 the bridge API key, and configures the selected agent with the bridge endpoint,

@@ -387,10 +387,48 @@ pub(crate) fn evaluation_kind(name: &str, _workspace: &Path) -> &'static str {
     if source_expectation(name).is_some() {
         return "bundled-fixture";
     }
-    if adapters::find(name).is_some() {
-        "adapter-smoke"
+    adapters::find(name).map_or("ungraded", |adapter| adapter.evaluation_kind())
+}
+
+/// Only an actual task evaluator can contribute to task-resolution rate.
+/// A successful installation/protocol smoke exercise is never upstream credit.
+pub(crate) fn resolution_eligible(kind: &str) -> bool {
+    matches!(
+        kind,
+        "bundled-fixture" | "response-review" | "upstream-harness"
+    )
+}
+
+pub(crate) fn scored_kind(kind: &str, baseline_passed: Option<bool>) -> &str {
+    if resolution_eligible(kind) && baseline_passed != Some(false) {
+        "invalid-baseline"
     } else {
-        "ungraded"
+        kind
+    }
+}
+
+/// One attempt per selected task. Failures and absent grading stay in the
+/// denominator; smoke checks and unknown provenance cannot earn task credit.
+#[derive(Debug, Default, Serialize)]
+pub(crate) struct ResolutionSummary {
+    pub task_count: usize,
+    pub resolved_count: usize,
+    pub unresolved_count: usize,
+    pub unscored_count: usize,
+    pub success_rate: Option<f64>,
+}
+
+impl ResolutionSummary {
+    pub fn observe(&mut self, kind: &str, resolved: bool) {
+        if resolution_eligible(kind) {
+            self.task_count += 1;
+            self.resolved_count += usize::from(resolved);
+        } else {
+            self.unscored_count += 1;
+        }
+        self.unresolved_count = self.task_count - self.resolved_count;
+        self.success_rate =
+            (self.task_count > 0).then(|| self.resolved_count as f64 / self.task_count as f64);
     }
 }
 
@@ -602,41 +640,31 @@ pub(crate) fn evaluate(
         )
     })?;
     let expected_label = adapter_trial_label(name);
-    // Accept equivalent implementations, not only one formatter spelling.
-    // The function and label are still required in the evaluator-owned file,
-    // so dead markers or unrelated edits cannot satisfy the trial.
     let normalized = canonical_source(&source);
-    let has_normalize = normalized.contains("def normalize(value: str) -> str:");
-    let has_lowercase = normalized.contains(".lower()");
-    let has_hyphenation = normalized.contains("replace(' ', '-')")
-        || normalized.contains("replace(\" \", \"-\")")
-        || normalized.contains("'-'.join(value.lower().split())")
-        || normalized.contains("\"-\".join(value.lower().split())")
-        || normalized.contains("'-'.join(value.lower().replace('_', ' ').split())")
-        || normalized.contains("\"-\".join(value.lower().replace(\"_\", \" \").split())")
-        || normalized.contains("'-'.join(value.split()).lower()")
-        || normalized.contains("\"-\".join(value.split()).lower()")
-        || (normalized.contains("words = value.lower().split()")
-            && (normalized.contains("'-'.join(words)")
-                || normalized.contains("\"-\".join(words)")));
-    let has_label = normalized.contains(&format!(
-        "def suite_label() -> str:\n    return \"{}\"",
-        expected_label
-    ));
-    Ok(
-        if has_normalize
-            && has_lowercase
-            && has_hyphenation
-            && has_label
-            && !normalized.contains("if False")
-        {
-            Evaluation::Passed
-        } else {
-            Evaluation::Failed(format!(
-                "adapter-smoke output `{relative}` does not match the accepted trial implementation; check normalize and suite_label (equivalent solutions may not be recognized)"
-            ))
-        },
-    )
+    // A substring search accepted dead code, early returns and string literals
+    // containing a supposed solution. This is deliberately a bounded structural
+    // smoke check, never official task evaluation or execution of agent code.
+    let accepted = [
+        "    return value.strip().lower().replace(' ', '-')",
+        "    return value.strip().lower().replace(\" \", \"-\")",
+        "    return '-'.join(value.lower().split())",
+        "    return \"-\".join(value.lower().split())",
+        "    return '-'.join(value.lower().replace('_', ' ').split())",
+        "    return \"-\".join(value.lower().replace(\"_\", \" \").split())",
+        "    return '-'.join(value.split()).lower()",
+        "    return \"-\".join(value.split()).lower()",
+        "    words = value.lower().split()\n    return '-'.join(words)",
+        "    words = value.lower().split()\n    return \"-\".join(words)",
+    ].iter().any(|body| ['\'', '"'].iter().any(|quote| {
+        normalized == canonical_source(&format!("def normalize(value: str) -> str:\n{body}\n\ndef suite_label() -> str:\n    return {quote}{expected_label}{quote}\n"))
+    }));
+    Ok(if accepted {
+        Evaluation::Passed
+    } else {
+        Evaluation::Failed(format!(
+            "adapter-smoke output `{relative}` does not match the accepted trial implementation; check normalize and suite_label (equivalent solutions may not be recognized)"
+        ))
+    })
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<usize, String> {
@@ -1127,6 +1155,14 @@ mod tests {
         prepare_external("agentbench", &workloads, &workspace).unwrap();
         let task = workspace.join("external-workload/asb-trial/src/task.py");
         assert!(!evaluate("agentbench", &workspace, "").unwrap());
+        for source in [
+            "def normalize(value: str) -> str:\n    return value\n    return value.strip().lower().replace(' ', '-')\n\ndef suite_label() -> str:\n    return \"agentbench\"\n",
+            "def normalize(value: str) -> str:\n    example = \"value.lower().replace(' ', '-')\"\n    return value\n\ndef suite_label() -> str:\n    return \"agentbench\"\n",
+            "def normalize(value: str) -> str:\n    return value.strip().lower().replace(' ', '-')\n\ndef suite_label() -> str:\n    return \"agentbench\"\n\ndef normalize(value: str) -> str:\n    return value\n",
+        ] {
+            fs::write(&task, source).unwrap();
+            assert!(!evaluate("agentbench", &workspace, "").unwrap());
+        }
         fs::write(
             &task,
             "def normalize(value: str) -> str:\n    return value.strip().lower().replace(' ', '-')\n\ndef suite_label() -> str:\n    return \"agentbench\"\n",
@@ -1371,5 +1407,26 @@ mod tests {
             .is_err()
         );
         let _ = fs::remove_dir_all(directory);
+    }
+}
+#[test]
+fn task_resolution_counts_failures_and_excludes_smoke_and_unknown() {
+    let mut summary = ResolutionSummary::default();
+    summary.observe("adapter-smoke", true);
+    summary.observe("unknown", true);
+    assert_eq!(summary.success_rate, None);
+    summary.observe("bundled-fixture", true);
+    summary.observe("bundled-fixture", false);
+    summary.observe("bundled-fixture", false); // agent/grader failure
+    assert_eq!(summary.task_count, 3);
+    assert_eq!(summary.resolved_count, 1);
+    assert_eq!(summary.unresolved_count, 2);
+    assert_eq!(summary.unscored_count, 2);
+    assert_eq!(summary.success_rate, Some(1.0 / 3.0));
+    for name in adapters::names() {
+        assert!(
+            !resolution_eligible(evaluation_kind(name, std::path::Path::new(""))),
+            "{name} is only an adapter smoke fixture"
+        );
     }
 }

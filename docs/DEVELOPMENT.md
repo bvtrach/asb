@@ -103,8 +103,12 @@ start tracing or require tracing privileges.
 
 Each completed run records `process_success` separately from
 `workload_success`. External workload aliases install a pinned reference plus a
-small deterministic adapter trial and local grader, so a zero exit status is
-not reported as a successful benchmark unless the grader passes. Perfetto
+small deterministic adapter trial and local structural checker, not upstream
+dataset instances. Even a passing adapter smoke check is unscored for benchmark
+task resolution (`success_rate = null`, `workload_success = null`); its separate
+`adapter_smoke_success` records only that exercise. Actual local task attempts
+are scored by their evaluator, never by process exit alone. See
+[evaluation semantics](EVALUATION.md). Perfetto
 post-processing scopes scheduler counts and series to the benchmark process
 tree and lifecycle interval; it never compares host-wide scheduler noise.
 On Linux, measured commands run through a process gate that is also a child

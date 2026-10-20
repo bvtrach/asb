@@ -12,7 +12,17 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     prepare_adapter,
 )
 .with_replay_credential_vars(&["CLINE_API_KEY"])
-.with_output_usage(output_usage);
+.with_output_usage(output_usage)
+.with_step_count(step_count);
+
+fn step_count(stdout: &str, _stderr: &str) -> Option<u64> {
+    stdout
+        .lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|event| event.get("type").and_then(|v| v.as_str()) == Some("run_result"))
+        .and_then(|event| event.get("iterations").and_then(|v| v.as_u64()))
+}
 
 fn output_usage(stdout: &str, stderr: &str, _: bool) -> crate::measurements::TokenUsage {
     for event in stdout

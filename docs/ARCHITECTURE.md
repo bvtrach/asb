@@ -252,6 +252,13 @@ The same flag is accepted by `asb sweep` and is forwarded to each underlying
 An agent is not considered successful solely because its process exits with
 status zero: known authentication, unsupported-endpoint, and provider-error
 messages are treated as failures so sweeps cannot report a false success.
+Task evaluation is independent of process success. External aliases currently
+execute adapter smoke exercises and cannot contribute to task-resolution
+rates. Schema-2 comparison suppresses their historical success percentages;
+see [evaluation semantics](EVALUATION.md). Step accounting delegates to the
+owning agent adapter's final counter and reports unknown instead of guessing
+from text or streaming JSON keys. No runner or collector branches on agent
+identity to interpret that counter.
 
 `asb tool install` installs a pinned package recipe into the configured tools
 directory for supported agents and support tools, or downloads/copies an

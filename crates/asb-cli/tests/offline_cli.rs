@@ -959,12 +959,12 @@ fn replay_project(concurrency: usize) -> Project {
     project.init();
     project.write(
         "workspace/src/parser.py",
-        "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+        "def parse_path(value: str) -> list[str]:\n    return value.split('/')\n",
     );
     for index in 1..=concurrency {
         project.write(
             &format!("workspace-concurrency-{index}/src/parser.py"),
-            "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+            "def parse_path(value: str) -> list[str]:\n    return value.split('/')\n",
         );
     }
     project.write("benchmark.toml", &format!(
@@ -992,6 +992,9 @@ async function main() {
   let response = await send();
   if (behavior === 'extra') response = await send();
   if (!response.ok) { console.error('fixture-rejected', response.status); process.exitCode = 8; return; }
+  if (behavior === 'noop') { console.log('No task edits were made.'); return; }
+  fs.mkdirSync('src', {recursive:true});
+  fs.writeFileSync('src/parser.py', "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n");
   if (behavior === 'delete') { fs.rmSync('src/parser.py'); console.log('fixture-deleted'); return; }
   if (behavior === 'mismatch-solution') fs.writeFileSync('src/parser.py', 'def parse_path(value): return []\n');
   if (behavior === 'invalid-utf8') fs.writeFileSync('src/parser.py', Buffer.from([255]));
@@ -1198,6 +1201,7 @@ const endpoint = isQwen ? process.env.OPENAI_BASE_URL : process.argv[process.arg
 const target = endpoint.replace(/\/$/, '') + (isQwen ? '/chat/completions' : '/messages');
 fetch(target, {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({model:'test-model',messages:[],tools:[{type:'function'}],temperature:0})}).then(async response => {
   if (!response.ok) { process.exitCode = 1; return; }
+  require('fs').writeFileSync('src/parser.py', "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n");
   if (isQwen) console.log(JSON.stringify([{type:'message',usage:{input_tokens:0,output_tokens:0}},{type:'result',result:'done',usage:{input_tokens:100,output_tokens:5,total_tokens:105}}]));
   else { console.log(JSON.stringify({type:'llm_output',payload:{content:'done'}})); console.log(JSON.stringify({type:'llm_usage',payload:{usage_metadata:{input_tokens:40,output_tokens:3}}})); console.log(JSON.stringify({type:'llm_usage',payload:{usage_metadata:{input_tokens:60,output_tokens:2}}})); }
 }).catch(() => { process.exitCode = 1; });
@@ -1238,6 +1242,7 @@ const body = {model:'test-model',input:'offline',tools:[{type:'function'}]};
 fetch(endpoint + '/responses', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
   .then(response => {
     if (!response.ok) { process.exitCode = 1; return; }
+    fs.writeFileSync('src/parser.py', "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n");
     for (const type of ['message_update', 'message_end', 'turn_end', 'agent_end'])
       console.log(JSON.stringify({type, usage:{input:10,output:3,cacheRead:0,totalTokens:13}}));
   }).catch(() => { process.exitCode = 1; });
@@ -1283,7 +1288,7 @@ fn continue_mock_replay_uses_cassette_usage_in_every_output() {
     project.write(executable, r##"#!/usr/bin/env node
 const body = {model:'test-model',messages:[],tools:[{type:'function'}]};
 fetch(process.env.CONTINUE_API_BASE.replace(/\/$/, '') + '/chat/completions', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
-  .then(response => { if (!response.ok) { process.exitCode = 1; return; } console.log(JSON.stringify({response:'done',status:'success'})); })
+  .then(response => { if (!response.ok) { process.exitCode = 1; return; } require('fs').writeFileSync('src/parser.py', "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n"); console.log(JSON.stringify({response:'done',status:'success'})); })
   .catch(() => { process.exitCode = 1; });
 "##);
     std::fs::set_permissions(
@@ -1336,6 +1341,7 @@ const endpoint = isContinue ? process.env.CONTINUE_API_BASE : process.env.LLM_BA
 const body = {model:'test-model',messages:[],tools:[{type:'function'}]};
 fetch(endpoint.replace(/\/$/, '') + (isContinue ? '/chat/completions' : '/v1/chat/completions'), {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(response => {
   if (!response.ok) { process.exitCode = 1; return; }
+  fs.writeFileSync('src/parser.py', "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n");
   if (isContinue) {
     const dir = path.join(process.env.CONTINUE_GLOBAL_DIR, 'sessions'); fs.mkdirSync(dir, {recursive:true});
     fs.writeFileSync(path.join(dir,'session.json'), JSON.stringify({history:[{message:{role:'assistant',usage:{prompt_tokens:n,completion_tokens:3,prompt_tokens_details:{cache_read_tokens:4}}}}]}));
@@ -1742,6 +1748,120 @@ fn zero_exit_without_workload_change_is_not_success() {
             .contains("src/parser.py")
     );
     assert_eq!(log["success_rate"], 0.0);
+}
+
+#[cfg(unix)]
+#[test]
+fn no_op_zero_exit_cannot_resolve_a_failing_task() {
+    let project = replay_project(1);
+    let result = replay(&project, "noop", &["--json"]);
+    assert!(!result.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(json["process_success"], true);
+    assert_eq!(json["workload_baseline_passed"], false);
+    assert_eq!(json["workload_success"], false);
+    assert_eq!(json["success_rate"], 0.0);
+}
+
+#[cfg(unix)]
+#[test]
+fn pre_solved_workspace_is_preserved_but_never_earns_resolution_credit() {
+    let project = replay_project(1);
+    expect_success(&replay(&project, "success", &[]));
+    let before = std::fs::read(project.0.join("workspace/src/parser.py")).unwrap();
+    let result = replay(
+        &project,
+        "noop",
+        &["--json", "--measurements", "measurements"],
+    );
+    expect_success(&result); // operation completed, not a resolved benchmark
+    let json: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(json["workload_baseline_passed"], true);
+    assert_eq!(json["workload_evaluation"], "invalid-baseline");
+    assert!(json["workload_success"].is_null());
+    assert!(json["success_rate"].is_null());
+    assert_eq!(
+        std::fs::read(project.0.join("workspace/src/parser.py")).unwrap(),
+        before
+    );
+    let summary: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(project.0.join("measurements/summary.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(summary["task_count"], 0);
+    assert_eq!(summary["unscored_count"], 1);
+    let human = replay(&project, "noop", &[]);
+    assert!(stdout(&human).contains("already passes before the agent starts"));
+    assert!(stdout(&human).contains("Use a fresh workspace"));
+}
+
+#[cfg(unix)]
+#[test]
+fn external_smoke_cannot_report_upstream_task_success_or_invent_steps() {
+    for passed in [false, true] {
+        let project = replay_project(1);
+        project.write("workloads/swe-bench.txt", "Local adapter smoke only.\n");
+        project.write("benchmark.toml", "agent='pi'\nworkload='swe-bench'\nprovider='cli2key'\nmodel='test-model'\nworkspace='workspace'\nlog_file='run.log'\n");
+        project.write("workspace/external-workload/asb-trial/src/task.py", if passed {
+            "def normalize(value: str) -> str:\n    return value.strip().lower().replace(' ', '-')\n\ndef suite_label() -> str:\n    return \"swe_bench\"\n"
+        } else {
+            "def normalize(value: str) -> str:\n    return value\n\ndef suite_label() -> str:\n    return \"swe_bench\"\n"
+        });
+        let result = replay(
+            &project,
+            "success",
+            &["--json", "--measurements", "measurements"],
+        );
+        assert_eq!(result.status.success(), passed, "{}", stderr(&result));
+        let json: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(json["process_success"], true);
+        assert_eq!(json["workload_evaluation"], "adapter-smoke");
+        assert_eq!(json["adapter_smoke_success"], passed);
+        assert!(json["workload_success"].is_null());
+        assert!(json["success_rate"].is_null());
+        assert!(json["steps"].is_null());
+        let measured: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(project.0.join("measurements/run.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(measured["success"], false);
+        assert_eq!(measured["adapter_smoke_success"], passed);
+        let summary: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(project.0.join("measurements/summary.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(summary["task_count"], 0);
+        assert_eq!(summary["unscored_count"], 1);
+        assert!(summary["success_rate"].is_null());
+        let human = replay(&project, "success", &[]);
+        assert!(stdout(&human).contains("not an upstream benchmark task"));
+        assert!(stdout(&human).contains("steps=unknown"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn resolution_summary_counts_failed_attempts_without_survivorship_bias() {
+    let project = replay_project(1);
+    expect_success(&replay(
+        &project,
+        "success",
+        &["--measurements", "measurements"],
+    ));
+    project.write(
+        "workspace/src/parser.py",
+        "def parse_path(value: str) -> list[str]:\n    return value.split('/')\n",
+    );
+    let failed = replay(&project, "exit", &["--measurements", "measurements"]);
+    assert!(!failed.status.success());
+    let summary: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(project.0.join("measurements/summary.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(summary["task_count"], 2);
+    assert_eq!(summary["success_count"], 1);
+    assert_eq!(summary["failure_count"], 1);
+    assert_eq!(summary["success_rate"], 0.5);
 }
 
 #[cfg(unix)]
@@ -2474,7 +2594,7 @@ fn partial_replay_sweep_preserves_both_results_and_writes_report() {
     for id in ["000-good", "001-bad"] {
         project.write(
             &format!("suite-results/{id}/workspace/src/parser.py"),
-            "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n",
+            "def parse_path(value: str) -> list[str]:\n    return value.split('/')\n",
         );
     }
     let tape = std::fs::read_to_string(project.0.join("tape.jsonl")).unwrap();
@@ -2563,7 +2683,7 @@ fs.writeFileSync('credential-observation', process.env.OPENAI_API_KEY === 'asb-r
 const body={model:'test-model',input:'offline',tools:[{type:'function'}]};
 if (!/^http:\/\/127\.0\.0\.1:\d+\/v1$/.test(process.env.ASB_PROVIDER_BASE_URL || '')) process.exit(12);
 fetch(process.env.ASB_PROVIDER_BASE_URL + '/responses', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
-  .then(r => { if (!r.ok) process.exitCode=1; })
+  .then(r => { if (!r.ok) process.exitCode=1; else fs.writeFileSync('src/parser.py', "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n"); })
   .catch(() => { process.exitCode=1; });
 "##);
     std::fs::set_permissions(

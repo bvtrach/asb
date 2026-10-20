@@ -41,6 +41,7 @@ fn emit_warning(
 
 #[derive(Serialize)]
 struct RunResult<'a> {
+    schema_version: u32,
     status: &'a str,
     agent: &'a str,
     workload: &'a str,
@@ -49,13 +50,15 @@ struct RunResult<'a> {
     process_success: bool,
     workload_success: Option<bool>,
     workload_evaluation: &'static str,
+    workload_baseline_passed: Option<bool>,
     failure_kind: Option<&'static str>,
     failure_reason: Option<String>,
-    success_rate: f64,
+    success_rate: Option<f64>,
+    adapter_smoke_success: Option<bool>,
     elapsed_ms: u128,
     exit_code: Option<i32>,
     token_usage: measurements::TokenUsage,
-    steps: u64,
+    steps: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cassette: Option<String>,
     stdout: String,
@@ -413,7 +416,7 @@ fn run_mode(
     let workload_directory = std::env::var_os("ASB_WORKLOAD_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir));
-    let prompt = instrument_phase(
+    let (prompt, workload_baseline_passed) = instrument_phase(
         measurement_session.as_mut(),
         LifecyclePhase::WorkloadPreparation,
         || {
@@ -433,9 +436,24 @@ fn run_mode(
             workloads::prepare_fixture(&config.workload, &workspace).map_err(Error::Run)?;
             workloads::prepare_external(&config.workload, &workload_directory, &workspace)
                 .map_err(Error::Run)?;
-            Ok(prompt)
+            let baseline = workloads::evaluate(&config.workload, &workspace, "")
+                .ok()
+                .map(|evaluation| evaluation == workloads::Evaluation::Passed);
+            Ok((prompt, baseline))
         },
     )?;
+    if !json && workload_baseline_passed == Some(true) {
+        emit_warning(warnings, output, "The workload already passes before the agent starts. Files are preserved, but this run cannot earn task-resolution credit. Use a fresh workspace for a new benchmark attempt.".into())?;
+    }
+    if !json
+        && workload_baseline_passed.is_none()
+        && workloads::resolution_eligible(workloads::evaluation_kind(&config.workload, &workspace))
+    {
+        emit_warning(warnings, output, "The initial workload baseline could not be verified. This run cannot earn task-resolution credit. Inspect the workload fixture and use a fresh workspace.".into())?;
+    }
+    if !json && workloads::evaluation_kind(&config.workload, &workspace) == "adapter-smoke" {
+        emit_warning(warnings, output, "Selected external workload runs only an adapter smoke exercise, not an upstream benchmark task. Benchmark task success will be unavailable; an official dataset and evaluator are not integrated yet.".into())?;
+    }
     let mut tape_session = instrument_phase(
         measurement_session.as_mut(),
         LifecyclePhase::ProxyPreparation,
@@ -766,18 +784,32 @@ fn run_mode(
         elapsed_ms,
         success,
     });
+    let configured_kind = workloads::evaluation_kind(&config.workload, &workspace);
+    let evaluation_kind = workloads::scored_kind(configured_kind, workload_baseline_passed);
+    let resolution_eligible = workloads::resolution_eligible(evaluation_kind);
     let result = RunResult {
-        status: if success { "completed" } else { "failed" },
+        schema_version: 2,
+        status: if success && evaluation_kind == "invalid-baseline" {
+            "unscored"
+        } else if success && !resolution_eligible {
+            "smoke-passed"
+        } else if success {
+            "completed"
+        } else {
+            "failed"
+        },
         agent: &config.agent,
         workload: &config.workload,
         provider: &config.provider,
         model: &config.model,
         process_success,
-        workload_success,
-        workload_evaluation: workloads::evaluation_kind(&config.workload, &workspace),
+        workload_success: resolution_eligible.then_some(workload_success).flatten(),
+        workload_evaluation: evaluation_kind,
+        workload_baseline_passed,
         failure_kind: failure.as_ref().map(|(kind, _)| *kind),
         failure_reason: failure.as_ref().map(|(_, reason)| reason.clone()),
-        success_rate: run_metrics.success_rate,
+        success_rate: resolution_eligible.then_some(run_metrics.success_rate),
+        adapter_smoke_success: (evaluation_kind == "adapter-smoke").then_some(success),
         elapsed_ms: run_metrics.elapsed_ms,
         exit_code: child.status.code(),
         token_usage,
@@ -800,15 +832,17 @@ fn run_mode(
             .event(LifecycleEvent::RunFinishing)
             .map_err(Error::Run)?;
         let measured = measurements::RunMeasurement {
-            schema_version: 1,
+            schema_version: 2,
             run_id: format!("{}-{}", result.workload, result.elapsed_ms),
             status: result.status,
-            success,
+            success: result.success_rate == Some(1.0),
             process_success: result.process_success,
             workload_success: result.workload_success,
             failure_kind: result.failure_kind,
             failure_reason: result.failure_reason.as_deref(),
             workload_evaluation: result.workload_evaluation,
+            workload_baseline_passed: result.workload_baseline_passed,
+            adapter_smoke_success: result.adapter_smoke_success,
             success_rate: result.success_rate,
             agent: result.agent,
             workload: result.workload,
@@ -1059,9 +1093,12 @@ fn resolve_log_path(config_path: &Path, configured_path: &str) -> PathBuf {
 
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
     let summary = serde_json::json!({
+        "schema_version": result.schema_version,
         "process_success": result.process_success,
         "workload_success": result.workload_success,
         "workload_evaluation": result.workload_evaluation,
+        "workload_baseline_passed": result.workload_baseline_passed,
+        "adapter_smoke_success": result.adapter_smoke_success,
         "failure_kind": result.failure_kind,
         "failure_reason": result.failure_reason,
         "success_rate": result.success_rate,
@@ -1079,16 +1116,18 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
 fn render_human(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
     writeln!(
         output,
-        "success_rate={:.3} elapsed_ms={} steps={} input_tokens={} output_tokens={} cached_tokens={} total_tokens={}",
-        result.success_rate,
+        "success_rate={} elapsed_ms={} steps={} input_tokens={} output_tokens={} cached_tokens={} total_tokens={} evaluation={}",
+        result.success_rate.map_or_else(|| "unavailable".into(), |value| format!("{value:.3}")),
         result.elapsed_ms,
-        result.steps,
+        format_token(result.steps),
         format_token(result.token_usage.input_tokens),
         format_token(result.token_usage.output_tokens),
         format_token(result.token_usage.cached_tokens),
         format_token(result.token_usage.total_tokens),
+        result.workload_evaluation,
     )
-    .map_err(io_error)
+    .map_err(io_error)?;
+    Ok(())
 }
 
 fn format_token(value: Option<u64>) -> String {
@@ -1617,16 +1656,18 @@ mod tests {
                 workload_success: Some(true),
                 failure_kind: None,
                 failure_reason: None,
-                success_rate: 1.0,
+                success_rate: Some(1.0),
+                adapter_smoke_success: None,
                 agent: "fixture",
                 workload: "fixture",
                 workload_evaluation: "fixture",
+                workload_baseline_passed: Some(false),
                 provider: "fixture",
                 model: "fixture",
                 elapsed_ms: 200,
                 exit_code: Some(0),
                 token_usage: crate::measurements::TokenUsage::default(),
-                steps: 1,
+                steps: Some(1),
                 started_unix_ms: 0,
             })
             .expect("finish collector");
@@ -1755,6 +1796,7 @@ mod tests {
 
     fn result<'a>() -> RunResult<'a> {
         RunResult {
+            schema_version: 2,
             status: "completed",
             agent: "codex",
             workload: "bug-fix",
@@ -1763,9 +1805,11 @@ mod tests {
             process_success: true,
             workload_success: Some(true),
             workload_evaluation: "bundled-fixture",
+            workload_baseline_passed: Some(false),
             failure_kind: None,
             failure_reason: None,
-            success_rate: 1.0,
+            success_rate: Some(1.0),
+            adapter_smoke_success: None,
             elapsed_ms: 12,
             exit_code: Some(0),
             token_usage: TokenUsage {
@@ -1775,7 +1819,7 @@ mod tests {
                 total_tokens: Some(7),
                 source: Some("test".into()),
             },
-            steps: 2,
+            steps: Some(2),
             cassette: None,
             stdout: "done".into(),
             stderr: String::new(),
