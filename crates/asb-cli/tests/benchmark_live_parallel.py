@@ -100,6 +100,20 @@ class ParallelOriginalTaskQualification(unittest.TestCase):
                     self.assertEqual(len(records), 2)
                     self.assertGreaterEqual(len(arrivals), 4, "both real clients need a tool call and completion")
                     original_calls = len(arrivals)
+                    # A harmless recovery inspection of already-removed task
+                    # resources must not invalidate their completed receipts.
+                    for index, name in enumerate(["000-swe", "001-terminal"]):
+                        allocation = json.loads((artifacts / "sweep-results/.checkpoint/allocated" / f"{index:06}/001.json").read_bytes())
+                        reference = allocation["reference"]
+                        references = list((artifacts / "sweep-results" / name).rglob(reference["preparation_id"] + ".json"))
+                        self.assertEqual(len(references),1)
+                        recovery = subprocess.run([binary,"workload","recover",references[0],"--json"],
+                            cwd=root,env=environment,capture_output=True,timeout=60)
+                        self.assertEqual(recovery.returncode,0,recovery.stderr.decode())
+                        report = json.loads(recovery.stdout)
+                        self.assertTrue(report["resources"])
+                        self.assertTrue(all(resource["status"] == "absent" for resource in report["resources"]))
+                        self.assertFalse((Path(reference["artifacts"]) / "resource-quiescence.json").exists())
                     resumed = subprocess.run([binary,"sweep",manifest,"--jobs","2","--max-active-attempts","2","--resume","--json"],
                         cwd=root, env=environment, capture_output=True, timeout=120)
                     (artifacts / "resume.stdout").write_bytes(resumed.stdout)
@@ -139,6 +153,18 @@ class ParallelOriginalTaskQualification(unittest.TestCase):
                         intent = json.loads((artifacts / "sweep-results/.checkpoint/started" / f"{index:06}/001.json").read_bytes())
                         self.assertEqual(intent["scope"], "replica-execution-intent")
                         self.assertEqual(intent["replica"], {"index":1,"total":1})
+                        allocation_path = artifacts / "sweep-results/.checkpoint/allocated" / f"{index:06}/001.json"
+                        allocation = json.loads(allocation_path.read_bytes())
+                        self.assertEqual(allocation["scope"], "allocated-workload-attempt")
+                        self.assertEqual(allocation["replica"], intent["replica"])
+                        self.assertEqual(allocation["intent_id"], intent["intent_id"])
+                        self.assertEqual(allocation["input_digest"], intent["input_digest"])
+                        self.assertEqual(allocation["reference"]["task_id"], completion["summary"]["task"]["task_id"])
+                        self.assertIn("workload-allocation", [item["name"] for item in replica["roots"]])
+                        reference = allocation["reference"]
+                        references = list(directory.rglob(reference["preparation_id"] + ".json"))
+                        self.assertEqual(len(references), 1)
+                        self.assertEqual(json.loads(references[0].read_bytes()), reference)
                         cohort = completion["summary"]["execution_cohort"]
                         self.assertEqual(cohort["selected_replicas"], 1)
                         self.assertEqual(cohort["admitted_slots"], [1])

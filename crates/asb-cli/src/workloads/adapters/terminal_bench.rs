@@ -14,6 +14,12 @@ pub(super) struct TerminalBenchAdapter {
 }
 
 impl super::WorkloadAdapter for TerminalBenchAdapter {
+    fn recover(
+        &self,
+        context: &crate::workloads::recovery::RecoveryContext<'_>,
+    ) -> Result<serde_json::Value, crate::Error> {
+        crate::workloads::remote::recover(self.tool, context)
+    }
     fn id(&self) -> &'static str {
         self.id
     }

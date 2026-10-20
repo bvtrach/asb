@@ -122,6 +122,16 @@ class ResourceTests(unittest.TestCase):
             quiesce(self.client, self.root)
         self.assertFalse(self.client.containers.lookups)
 
+    def test_absent_resources_are_a_read_only_observation_not_new_evidence(self):
+        journal = self.journal()
+        journal.declare("containers", ATTEMPT)
+        journal.close()
+        previous = (self.root / "resources.json").read_bytes()
+        result = quiesce(self.client, self.root)
+        self.assertEqual(result["resources"][0]["status"], "absent")
+        self.assertEqual((self.root / "resources.json").read_bytes(), previous)
+        self.assertFalse((self.root / "resource-quiescence.json").exists())
+
     def test_unknown_duplicate_and_excessive_declarations_are_rejected(self):
         journal = self.journal()
         for kind, name in [("images", ATTEMPT), ("containers", "unrelated"),

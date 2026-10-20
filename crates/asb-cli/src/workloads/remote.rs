@@ -73,6 +73,76 @@ pub(crate) fn require_sdk(root: &std::path::Path, workload: &str) -> Result<(), 
     Ok(())
 }
 
+pub(crate) fn recover(
+    tool_id: &str,
+    context: &super::recovery::RecoveryContext<'_>,
+) -> Result<Value, crate::Error> {
+    context.reference.validate_location(context.project_root)?;
+    let tools = crate::project::resolve(context.project_root, &context.project_config.tools_dir);
+    let tool = tools.join(tool_id);
+    require_sdk(&tool, &context.reference.workload)?;
+    if !tool.join("asb_resources.py").is_file() {
+        return Err(crate::Error::Input("the installed workload recovery helper is missing; reinstall the workload before recovery".into()));
+    }
+    let mut command = Command::new(tool.join("venv/bin/python"));
+    command
+        .arg(tool.join("asb_resources.py"))
+        .arg("--quiesce")
+        .arg(&context.reference.artifacts)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .stderr(std::process::Stdio::null());
+    crate::project::apply_network_proxy(&mut command, context.project_root)?;
+    let mut controller = Controller::spawn(&mut command).map_err(crate::Error::Run)?;
+    let deadline = Instant::now() + Duration::from_secs(180);
+    let report = controller.receive(deadline).map_err(crate::Error::Run)?;
+    if report["ok"] == false {
+        let reason = if report["error_class"] == "RecoveryError" {
+            report["reason"]
+                .as_str()
+                .filter(|reason| reason.len() <= 512 && !reason.contains(['\n', '\r']))
+        } else {
+            None
+        };
+        return Err(crate::Error::Run(format!(
+            "workload recovery failed: {}",
+            reason.unwrap_or(
+                "Docker resource inspection or access failed; run `docker info` and inspect the retained attempt journal"
+            )
+        )));
+    }
+    controller
+        .complete_response(deadline)
+        .map_err(crate::Error::Run)?;
+    let attempt = report["attempt"].as_str().filter(|attempt| {
+        attempt.len() == 36
+            && attempt.starts_with("asb-")
+            && attempt[4..].bytes().all(|byte| byte.is_ascii_hexdigit())
+    });
+    if report["schema_version"] != 1
+        || attempt.is_none()
+        || report["scope"] != "observed-resource-quiescence-not-a-retry-receipt"
+        || report["resources"].as_array().is_none_or(|resources| {
+            resources.len() > 64
+                || resources.iter().any(|resource| {
+                    !matches!(
+                        resource["status"].as_str(),
+                        Some("absent" | "preserved" | "stopped-preserved")
+                    ) || !matches!(
+                        resource["kind"].as_str(),
+                        Some("containers" | "networks" | "volumes")
+                    ) || resource["name"].as_str().is_none_or(|name| {
+                        name.len() > 255 || attempt.is_none_or(|attempt| !name.contains(attempt))
+                    })
+                })
+        })
+    {
+        return Err(crate::Error::Run(
+            "workload recovery returned an invalid bounded report".into(),
+        ));
+    }
+    Ok(report)
+}
+
 pub(crate) fn launch(
     tool_id: &str,
     helper: &str,
@@ -96,7 +166,24 @@ pub(crate) fn launch(
     let tool = context.tool_root(tool_id);
     let attempts = project_root.join(".asb/attempts");
     std::fs::create_dir_all(&attempts).map_err(|error| error.to_string())?;
-    let artifacts = attempts.join(TaskIdentity::local(workload, Some(task)).attempt_id);
+    let preparation_id = TaskIdentity::local(workload, Some(task)).attempt_id;
+    let artifacts =
+        std::path::absolute(attempts.join(&preparation_id)).map_err(|error| error.to_string())?;
+    let reference = super::recovery::AttemptReference {
+        schema_version: 1,
+        preparation_id,
+        workload: workload.into(),
+        task_id: task.into(),
+        dataset: dataset.clone(),
+        artifacts: artifacts.clone(),
+    };
+    reference
+        .validate_location(project_root)
+        .map_err(|error| error.to_string())?;
+    super::recovery::remember(context.workspace, &reference).map_err(|error| error.to_string())?;
+    if let Some(observer) = context.on_allocation {
+        observer(&reference)?;
+    }
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]

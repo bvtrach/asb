@@ -490,6 +490,13 @@ fn run_mode(
     let workload_directory = std::env::var_os("ASB_WORKLOAD_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir));
+    let allocation = |reference: &workloads::recovery::AttemptReference| {
+        options.on_completion.map_or(Ok(()), |observer| {
+            observer
+                .allocated(options.replica, reference)
+                .map_err(|error| error.to_string())
+        })
+    };
     let mut workload_session = instrument_phase(
         measurement_session.as_mut(),
         LifecyclePhase::WorkloadPreparation,
@@ -509,6 +516,7 @@ fn run_mode(
                 ))
             })?;
             workloads::prepare_task(&workloads::PreparationContext {
+                on_allocation: Some(&allocation),
                 workload: &config.workload,
                 trial: config.trial.as_deref(),
                 trial_set: config.trial_set.as_deref(),

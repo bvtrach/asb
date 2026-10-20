@@ -1647,3 +1647,64 @@ of Full/Lite/Verified, with scoped cleanup. Their artifacts are retained at
 not LLM task solving. Final source gates passed 425 unit tests, 87 offline CLI
 tests, all fourteen protocol suites, guest/diagram/parallel/replay/resume
 regressions, strict Clippy and `make build`. Packaging and hosted gates follow.
+
+### Sweep allocation binding and adapter-dispatched recovery
+
+Official workload preparation now saves a private immutable reference before
+controller launch: intended task/dataset, preparation identity and exact
+project-local artifact directory. The workspace may be external; recovery
+resolves the artifact-owning project rather than accidentally selecting the
+workspace's project and SDK. A generic observer binds the reference to the
+replica's existing start intent, configuration and original input digest under
+`.checkpoint/allocated/`. Publication failure stops before a task controller
+starts. Completion receipts seal that allocation as well as existing result
+and evaluator evidence. Local/legacy sessions without allocations retain their
+previous behavior.
+
+The public `asb workload recover REFERENCE [--json]` command dispatches through
+the workload trait; each original adapter chooses its own project-local SDK.
+It validates bounded private reference files and project-local real artifact
+paths, then consumes one bounded successful helper response. It does not select
+an agent/provider, create a new attempt, grade a partial submission or authorize
+a sweep retry. A no-op all-absent resource inspection leaves sealed evaluator
+evidence unchanged. Help and both shell-completion catalogs include recovery.
+
+New provider-free tests cover immutable/private references, traversal/symlink
+rejection, publication failure before launch, exact selection/slot/input/intent
+binding, changed metadata refusal and all five adapters' own SDK resolution,
+including references stored inside a different project. The journal suite now
+also proves that absent-resource observations do not create new evidence files.
+
+An actual ASB CLI qualification passed in 3.8 seconds using a cached original
+SWE-bench Lite environment and replay-only transport. It pinned and killed the
+exact allocated controller child, invoked the public recovery command, read a
+preserved partial file from the stopped container and verified that no new
+attempt, submission or grade appeared. Artifacts are retained at
+`target/benchmark-runtime/asb-controller-recovery-qmyuitf1`. This proves actual
+controller-to-artifact discovery and CLI quiescence, not recovered grading or
+complete interrupted-sweep reconciliation. Source/package/hosted and standard
+mixed-sweep qualification gates are recorded after their completion.
+
+The standard mixed original-task run first passed allocation-bound completion
+and resume checks in 78.4 seconds. Final source verification passed 430 unit
+tests, 87 offline CLI tests, all fourteen protocol suites, guest/diagram/
+parallel/replay/resume regressions, strict Clippy and `make build`. Recovery
+also consumes the owning project's proxy configuration, like ordinary launch.
+The final actual controller-interruption/CLI check passed in 4.1 seconds at
+`target/benchmark-runtime/asb-controller-recovery-606q8j29`.
+
+An expanded mixed-task qualification then passed in 84.8 seconds at
+`target/benchmark-runtime/parallel-original-tasks-p5j19rne`. Before resume it
+invokes public CLI recovery against both already-cleaned-up attempts, observes
+only absent resources, verifies that no new evaluator-evidence file is created,
+then proves the original sealed attempts still resume with no extra provider
+requests. It additionally checks the exact allocation/start-intent/receipt
+and saved workspace-reference agreement. These remain warm-cache,
+representative known-repair tests with a synthetic provider, not AI solving
+or full-population evaluation. Package and hosted gates follow.
+
+Remaining delivery work still includes interrupted outcome/evaluator handling,
+native/proxy/source-image ownership recovery, full sweep-slot reconciliation,
+population-scale presentation, cold-cache qualification, final review/PR merge,
+exact-main CI and the new minor release. Allocation or quiescence records must
+not be reinterpreted as grading evidence or permission to repeat failed tasks.

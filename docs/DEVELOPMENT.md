@@ -143,6 +143,16 @@ after the preservation assertions. This check does not authorize a new
 benchmark attempt, assign a task grade or prove absence of in-flight daemon
 creation operations. Ordinary CI covers the same ownership/locking contracts
 with standard-library fixtures and requires no Docker access.
+`benchmark_live_recovery.py` exercises the public CLI rather than constructing
+only a resource journal. With `ASB_TEST_BENCHMARK_ASB` and
+`ASB_TEST_SWECATALOG_ROOT`, it starts a cached original SWE-bench Lite attempt
+through ASB with replay-only provider transport, locates its durable reference,
+pins the exact controller child with a pidfd, kills it, and calls
+`asb workload recover REFERENCE --json`. It verifies stopped/preserved partial
+files and the absence of a fabricated submission, grade or replacement attempt.
+The ordinary mixed-sweep qualification additionally checks that each reference
+matches its replica's original start intent and completion seal. No test calls
+a live LLM provider.
 
 See
 [evaluation semantics](EVALUATION.md). Perfetto

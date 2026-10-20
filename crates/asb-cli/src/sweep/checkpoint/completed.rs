@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 const LIMIT: u64 = 1024 * 1024;
 const SCOPE: &str = "outcome-evidence-only-not-complete-input-closure";
+mod allocations;
 pub(super) mod replicas;
 
 #[derive(Deserialize)]

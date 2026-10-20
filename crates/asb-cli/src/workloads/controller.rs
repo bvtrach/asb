@@ -268,6 +268,11 @@ impl Controller {
         self.wait_for_exit(deadline, true)
     }
 
+    pub(crate) fn complete_response(&mut self, deadline: Instant) -> Result<(), String> {
+        self.input.take();
+        self.wait_for_exit(deadline, true)
+    }
+
     fn wait_for_exit(&mut self, deadline: Instant, require_success: bool) -> Result<(), String> {
         loop {
             if let Some(status) = self

@@ -21,6 +21,12 @@ pub(super) static ADAPTER: SweBenchAdapter = SweBenchAdapter {
 };
 
 impl WorkloadAdapter for SweBenchAdapter {
+    fn recover(
+        &self,
+        context: &crate::workloads::recovery::RecoveryContext<'_>,
+    ) -> Result<serde_json::Value, crate::Error> {
+        crate::workloads::remote::recover("swebench", context)
+    }
     fn id(&self) -> &'static str {
         self.id
     }

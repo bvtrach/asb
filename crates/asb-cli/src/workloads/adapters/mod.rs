@@ -32,6 +32,15 @@ mod terminal_bench_2_1;
 
 pub(super) trait WorkloadAdapter: Sync {
     fn id(&self) -> &'static str;
+    fn recover(
+        &self,
+        _context: &super::recovery::RecoveryContext<'_>,
+    ) -> Result<serde_json::Value, crate::Error> {
+        Err(crate::Error::Input(
+            "this workload adapter does not support recovery; preserved results were not changed"
+                .into(),
+        ))
+    }
     /// Publish/download owned execution dependencies before creating attempts
     /// or taking an optional input snapshot. Local workloads do nothing.
     fn preflight(&self, _context: &super::PreflightContext<'_>) -> Result<(), crate::Error> {

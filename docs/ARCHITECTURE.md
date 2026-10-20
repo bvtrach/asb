@@ -493,6 +493,22 @@ This is observed resource quiescence, not a resume or grading receipt: a
 daemon-side pending creation can finish after its controller dies. Source-build
 images, interrupted evaluator recovery, native/proxy processes, recovered
 submission grading and sweep-slot reconciliation still require integration.
+Before launching an official workload controller, ASB publishes a private,
+immutable attempt reference under the host workspace's `.asb-attempts/`. It
+contains only the intended task/dataset and project-local artifact location,
+not an actual attempt outcome or measured baseline. In a sweep, the generic
+allocation observer binds that reference to the existing replica start intent,
+selected input digest and configuration. A failed binding stops before the
+controller is spawned. Completed replica receipts additionally seal that
+allocation record; legacy/native outcomes without an allocation remain valid.
+`asb workload recover REFERENCE [--json]` uses `WorkloadAdapter::recover` to
+select the owning SDK's resource helper. Reference locations are bounded and
+validated against the artifact-owning project, not the workspace directory
+(which can be external or inside another project). Helpers provide a bounded
+one-shot response and must exit successfully. Human output describes preserved
+work; JSON contains only the recovery report. A no-op inspection of already
+absent resources does not add files to sealed evaluator evidence. Recovery
+still cannot assign a grade or admit an interrupted slot for retry.
 See the full benchmark delivery
 checklist before claiming complete upstream benchmark support.
 Their shared installer also downloads a checksum-pinned original

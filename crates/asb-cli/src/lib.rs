@@ -126,6 +126,7 @@ mod adapter_layout_tests {
                     "mod.rs",
                     "session.rs",
                     "selection.rs", // Generic pre-execution catalog/identity contract.
+                    "recovery.rs",  // Generic attempt references and adapter dispatch.
                     "controller.rs",
                     "remote.rs",
                     "relay.rs",
@@ -215,6 +216,7 @@ mod tests {
             vec!["workload", "list", "--help"],
             vec!["workload", "install", "--help"],
             vec!["workload", "tui", "--help"],
+            vec!["workload", "recover", "--help"],
         ] {
             let install_help = words == ["tool", "install", "--help"];
             let args = words.into_iter().map(OsString::from).collect::<Vec<_>>();

@@ -66,6 +66,13 @@ impl Observer<'_> {
 }
 
 impl CompletionObserver for Observer<'_> {
+    fn allocated(
+        &self,
+        replica: Identity,
+        reference: &crate::workloads::recovery::AttemptReference,
+    ) -> Result<(), Error> {
+        super::allocations::record(self, replica, reference)
+    }
     fn starting(
         &self,
         replica: Identity,
@@ -106,6 +113,7 @@ impl CompletionObserver for Observer<'_> {
             replica,
             &outcome,
             &start_path(self.inputs, self.index, replica.index),
+            &super::allocations::path(self.inputs, self.index, replica.index),
         )?;
         let fingerprint = self.inputs.snapshotter.fingerprint(
             &roots,
@@ -296,6 +304,7 @@ impl Inputs {
             replica,
             &receipt.outcome,
             &start_path(self, index, replica.index),
+            &super::allocations::path(self, index, replica.index),
         )?;
         if receipt.schema_version != 1
             || receipt.scope != REPLICA_SCOPE
@@ -332,7 +341,7 @@ fn path(inputs: &Inputs, index: usize, replica: usize) -> PathBuf {
         .join(format!("{replica:03}.json"))
 }
 
-fn start_path(inputs: &Inputs, index: usize, replica: usize) -> PathBuf {
+pub(super) fn start_path(inputs: &Inputs, index: usize, replica: usize) -> PathBuf {
     inputs
         .directory
         .join("started")
@@ -359,6 +368,7 @@ fn state(
     replica: Identity,
     record: &Path,
     intent_path: &Path,
+    allocation_path: &Path,
 ) -> Result<(Vec<Root>, Value), Error> {
     let directory = std::path::absolute(directory).map_err(io_error)?;
     if !replica.valid()
@@ -378,6 +388,12 @@ fn state(
         ));
     }
     let mut roots = vec![Root::path("replica-outcome", record.to_path_buf())];
+    if super::allocations::validate(allocation_path, intent_path, &directory, entry, replica)? {
+        roots.push(Root::path(
+            "workload-allocation",
+            allocation_path.to_path_buf(),
+        ));
+    }
     if !outcome.summary["execution_cohort"].is_null() {
         let intent: Value = read_private(intent_path)?;
         if intent["scope"] != "replica-execution-intent"

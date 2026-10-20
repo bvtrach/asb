@@ -50,6 +50,7 @@ impl TaskIdentity {
 }
 
 pub(crate) struct PreparationContext<'a> {
+    pub on_allocation: Option<&'a super::recovery::AllocationObserver<'a>>,
     pub workload: &'a str,
     pub trial: Option<&'a str>,
     pub trial_set: Option<&'a str>,
@@ -241,6 +242,7 @@ mod tests {
             ..Default::default()
         };
         let context = super::PreparationContext {
+            on_allocation: None,
             workload: "fixture",
             trial: None,
             trial_set: None,
@@ -356,6 +358,7 @@ mod tests {
         std::fs::create_dir_all(&workloads).unwrap();
         super::super::populate(&workloads).unwrap();
         let mut session = super::super::prepare_task(&PreparationContext {
+            on_allocation: None,
             workload: "bug-fix",
             trial: None,
             trial_set: None,
@@ -379,6 +382,7 @@ mod tests {
         // Baseline evidence belongs to this attempt, not the mutated workspace.
         assert_eq!(session.baseline_passed(), Some(false));
         let later = super::super::prepare_task(&PreparationContext {
+            on_allocation: None,
             workload: "bug-fix",
             trial: None,
             trial_set: None,

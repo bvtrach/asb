@@ -186,7 +186,10 @@ def quiesce(client, path):
             outcomes.append({**declaration, "status": status})
         result = {"schema_version":1, "attempt":record["attempt"],
                   "scope":"observed-resource-quiescence-not-a-retry-receipt", "resources":outcomes}
-        publish(directory, "resource-quiescence.json", result)
+        # A no-op inspection of a normally cleaned-up attempt must not change
+        # its sealed evaluator evidence merely by adding a new report file.
+        if any(resource is not None for _, resource in owned):
+            publish(directory, "resource-quiescence.json", result)
         return result
     finally:
         if lock is not None:
