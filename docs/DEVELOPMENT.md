@@ -107,3 +107,8 @@ small deterministic adapter trial and local grader, so a zero exit status is
 not reported as a successful benchmark unless the grader passes. Perfetto
 post-processing scopes scheduler counts and series to the benchmark process
 tree and lifecycle interval; it never compares host-wide scheduler noise.
+On Linux, measured commands run through a process gate that is also a child
+subreaper. This retains helpers that daemonize or outlive an intermediate
+wrapper under the benchmark root, so perf inheritance, bpftrace fork tracking,
+pidstat sampling, and process-accounted timing include the complete relevant
+tree without collecting unrelated host processes.
