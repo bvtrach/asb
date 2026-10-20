@@ -35,6 +35,10 @@ pub struct ProjectConfig {
     pub tools_dir: String,
     pub workloads_dir: String,
     pub workspace_dir: String,
+    /// Optional project-owned delegated cgroup parent for process accounting.
+    /// This is populated by `asb init` only when the host permits safe setup.
+    #[serde(default)]
+    pub cgroup_parent: Option<String>,
     #[serde(default)]
     pub proxy: NetworkProxy,
 }
@@ -199,6 +203,7 @@ impl Default for ProjectConfig {
             tools_dir: ".asb-tools".into(),
             workloads_dir: "workloads".into(),
             workspace_dir: "asb-workspace".into(),
+            cgroup_parent: None,
             proxy: NetworkProxy::default(),
         }
     }
@@ -233,8 +238,10 @@ pub fn init(
     fs::create_dir_all(path.parent().expect("config parent"))
         .map_err(|error| Error::Io(format!("cannot create project configuration: {error}")))?;
     let (proxy, omitted_credentials) = NetworkProxy::detect(&|name| std::env::var(name).ok());
+    let cgroup_parent = configure_host_capabilities(output)?;
     let config = ProjectConfig {
         proxy,
+        cgroup_parent,
         ..ProjectConfig::default()
     };
     fs::create_dir_all(resolve(&root, &config.tools_dir))
@@ -281,7 +288,6 @@ pub fn init(
     if omitted_credentials {
         writeln!(output, "Proxy settings containing credentials or query data were not saved. Keep the corresponding proxy environment variables set when running ASB.").map_err(super::io_error)?;
     }
-    configure_host_capabilities(output)?;
     #[cfg(target_os = "linux")]
     writeln!(output, "For complete CPU accounting across short-lived child processes, use writable cgroup-v2 delegation. On systemd Linux, run:\n  systemd-run --user --scope -p Delegate=yes -- asb run CONFIG.toml\nFor a sweep, replace `asb run CONFIG.toml` with `asb sweep SWEEP.toml`. Other delegated setups can set ASB_CGROUP_PARENT to a writable cgroup-v2 directory. Without delegation, ASB uses sampled process accounting.").map_err(super::io_error)?;
     Ok(())
@@ -292,11 +298,11 @@ pub fn init(
 /// prompts, edits sudoers, or makes a project unusable when a setting cannot
 /// be changed. The settings are safe, explicit sysctls used by perf and the
 /// optional scheduler-statistics BPF profile.
-fn configure_host_capabilities(output: &mut dyn std::io::Write) -> Result<(), Error> {
+fn configure_host_capabilities(output: &mut dyn std::io::Write) -> Result<Option<String>, Error> {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = output;
-        return Ok(());
+        return Ok(None);
     }
 
     #[cfg(target_os = "linux")]
@@ -321,7 +327,12 @@ fn configure_host_capabilities(output: &mut dyn std::io::Write) -> Result<(), Er
                 .status()
                 .is_ok_and(|status| status.success())
         };
-        configure_host_capabilities_with(output, sudo_ready, current, set)
+        configure_host_capabilities_with(output, sudo_ready, current, set)?;
+        if sudo_ready {
+            configure_cgroup_parent(output)
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -380,6 +391,126 @@ fn configure_host_capabilities_with(
         }
     }
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn configure_cgroup_parent(output: &mut dyn std::io::Write) -> Result<Option<String>, Error> {
+    use std::os::unix::fs::MetadataExt;
+
+    let relative = fs::read_to_string("/proc/self/cgroup")
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("0::"))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| PathBuf::from(value.trim_start_matches('/')))
+        });
+    let Some(relative) = relative else {
+        writeln!(output, "Host capability setup: unified cgroup-v2 membership was not found; no delegated project cgroup was created.")
+            .map_err(super::io_error)?;
+        return Ok(None);
+    };
+    let Some(session_name) = relative.file_name().and_then(|name| name.to_str()) else {
+        writeln!(output, "Host capability setup: the current cgroup layout is not systemd-delegatable; no delegated project cgroup was created.")
+            .map_err(super::io_error)?;
+        return Ok(None);
+    };
+    if !session_name.ends_with(".scope") {
+        writeln!(output, "Host capability setup: the current cgroup is not a systemd session scope; no delegated project cgroup was created.")
+            .map_err(super::io_error)?;
+        return Ok(None);
+    }
+    let parent_relative = relative.parent().map(Path::to_path_buf).unwrap_or_default();
+    if parent_relative.as_os_str().is_empty()
+        || parent_relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        writeln!(output, "Host capability setup: the current cgroup path is unsafe to delegate; no project cgroup was created.")
+            .map_err(super::io_error)?;
+        return Ok(None);
+    }
+    let parent = Path::new("/sys/fs/cgroup").join(parent_relative);
+    let project_parent = parent.join("asb.slice");
+    let uid = fs::metadata("/proc/self")
+        .map(|metadata| metadata.uid())
+        .map_err(|error| {
+            Error::Io(format!(
+                "cannot determine current user id for cgroup setup: {error}"
+            ))
+        })?;
+    let gid = fs::metadata("/proc/self")
+        .map(|metadata| metadata.gid())
+        .map_err(|error| {
+            Error::Io(format!(
+                "cannot determine current group id for cgroup setup: {error}"
+            ))
+        })?;
+    let owner = format!("{uid}:{gid}");
+    let path = project_parent.to_string_lossy().into_owned();
+    let created = run_sudo_status(&["mkdir", "-p", &path])
+        && run_sudo_status(&["chown", &owner, &path])
+        && run_sudo_status(&["chmod", "0750", &path]);
+    if !created {
+        writeln!(output, "Host capability setup: passwordless sudo could not create or delegate {path}; sampled process accounting remains available.")
+            .map_err(super::io_error)?;
+        return Ok(None);
+    }
+    let controller_file = parent.join("cgroup.subtree_control");
+    if controller_file.is_file()
+        && !read_trimmed_path(&controller_file)
+            .is_some_and(|value| value.split_whitespace().any(|item| item == "cpu"))
+    {
+        let controller_path = controller_file.to_string_lossy().into_owned();
+        if !run_sudo_write(&controller_path, b"+cpu\n") {
+            writeln!(output, "Host capability setup: created {path}, but could not enable the CPU controller; sampled process accounting remains available.")
+                .map_err(super::io_error)?;
+            return Ok(None);
+        }
+    }
+    writeln!(output, "Host capability setup: created writable delegated cgroup parent {path} for process-tree CPU accounting.")
+        .map_err(super::io_error)?;
+    Ok(Some(path))
+}
+
+#[cfg(target_os = "linux")]
+fn read_trimmed_path(path: &Path) -> Option<String> {
+    fs::read_to_string(path)
+        .ok()
+        .map(|value| value.trim().to_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn run_sudo_status(args: &[&str]) -> bool {
+    Command::new("sudo")
+        .args(["-n"])
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+#[cfg(target_os = "linux")]
+fn run_sudo_write(path: &str, contents: &[u8]) -> bool {
+    use std::io::Write;
+    let Ok(mut child) = Command::new("sudo")
+        .args(["-n", "tee", path])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let wrote = child
+        .stdin
+        .take()
+        .and_then(|mut stdin| stdin.write_all(contents).ok())
+        .is_some();
+    wrote && child.wait().is_ok_and(|status| status.success())
 }
 
 fn reset_project(root: &Path, config_path: &Path) -> Result<(), Error> {
@@ -655,6 +786,7 @@ mod tests {
         let old = "tools_dir = '.asb-tools'\nworkloads_dir = 'workloads'\nworkspace_dir = 'asb-workspace'\n";
         let config: ProjectConfig = toml::from_str(old).unwrap();
         assert_eq!(config.proxy, NetworkProxy::default());
+        assert_eq!(config.cgroup_parent, None);
     }
 
     #[test]

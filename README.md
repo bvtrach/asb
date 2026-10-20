@@ -257,6 +257,12 @@ ASB creates an exclusive accounting leaf for each replica and removes it when
 empty. `cpu-accounting.json` records whether cgroup totals or sampled process
 accounting were used and any cleanup limitation. `ASB_CGROUP_PARENT` can name
 an existing writable delegated cgroup-v2 directory for other launchers.
+On Linux, `asb init` also attempts (using only `sudo -n`) to create a
+user-owned `asb.slice` under the current systemd user slice, enable the CPU
+controller, and save that parent in `.asb/project.toml`; measured runs use it
+automatically. If the host is not using a compatible systemd cgroup layout, or
+the setup fails, init reports the reason and ASB continues with sampled
+process accounting. It never changes resource limits or edits sudoers.
 When the `perfetto` collector is selected (or `ASB_MEASURE_PERFETTO=1` is set),
 ASB validates the exact ftrace configuration before the agent starts, then
 starts Tracebox after the agent PID is known, filters scheduler events to that

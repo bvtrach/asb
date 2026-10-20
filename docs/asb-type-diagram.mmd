@@ -231,6 +231,7 @@ classDiagram
         +tools_dir: String
         +workloads_dir: String
         +workspace_dir: String
+        +cgroup_parent: Option~String~
         +proxy: NetworkProxy
     }
     class C037["ProviderArgs"] {
@@ -306,6 +307,7 @@ classDiagram
         +stop(self) Result~(), Error~
         -dir: PathBuf
         -tool_dir: Option~PathBuf~
+        -cgroup_parent: Option~PathBuf~
         -started_unix_ms: u128
         -collectors: Vec~Collector~
         -states: BTreeMap~TypeId, Box<dyn Any>~
@@ -325,6 +327,7 @@ classDiagram
         -clock_ticks_per_second: Option~u64~
         +started_unix_ms() u128
         +start_with_collectors(dir: &Path, selected: &[String], tool_dir: Option~&Path~) Result~Self, String~
+        +start_with_collectors_and_parent(dir: &Path, selected: &[String], tool_dir: Option~&Path~, cgroup_parent: Option~&Path~) Result~Self, String~
         +event(event: LifecycleEvent) Result~(), String~
         +record_component_event(event: LifecycleEvent) void
         +finish_component(name: &str, now: Instant) void
@@ -333,6 +336,7 @@ classDiagram
         +write_component_measurements(elapsed_ms: u128) Result~(), String~
         +record_cpu_accounting(user_usec: u64, system_usec: u64, source: &str) void
         +sampled_cpu_accounting() Option~(f64, f64)~
+        +cgroup_parent() Option~&Path~
         +trace_id() &str
         +state() Rc~RefCell<T>~
         +set_artifact(kind: SharedArtifact, path: PathBuf) void
