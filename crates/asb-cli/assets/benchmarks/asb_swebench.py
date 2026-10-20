@@ -431,6 +431,17 @@ def verify_retained(retained):
             "retained official evaluator image or SDK differs")
 
 
+def attempt_report(reporter):
+    """Keep official grading/reporting, omit its optional host-wide inventory.
+
+    Listing every daemon image races unrelated build-tag cleanup. Owned
+    resource cleanup/provenance is recorded separately by this adapter.
+    """
+    def report(predictions,full_dataset,run_id,client=None):
+        return reporter(predictions,full_dataset,run_id,client=None)
+    return report
+
+
 def official_harness(arguments):
     """Run the pinned SDK with scoped Docker transport and no root Python."""
     from asb_docker import DockerSession
@@ -522,6 +533,7 @@ def official_harness(arguments):
             # cleanup. Route its equivalent operation through the same scoped
             # client as creation, avoiding permission failures and leftovers.
             run_evaluation.cleanup_container = cleanup_container
+            run_evaluation.make_run_report = attempt_report(run_evaluation.make_run_report)
             run_evaluation.main(
                 dataset_name=str(arguments.dataset_name), split=arguments.split,
                 instance_ids=arguments.instance_ids, predictions_path=str(arguments.predictions_path),

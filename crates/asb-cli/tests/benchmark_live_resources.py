@@ -40,7 +40,10 @@ with DockerSession() as client:
     with ManagedDockerWorkspace(client,image,sys.argv[3],'/tmp',journal=journal) as workspace:
         result=workspace.container.exec_run(['/bin/sh','-c','printf partial-work > /tmp/asb-partial.txt'])
         assert result.exit_code==0
-        print(json.dumps({'id':workspace.container.id}),flush=True)
+        tag='asb-recovery:'+sys.argv[3]
+        labels=journal.declare('images',tag)
+        image=workspace.container.commit(repository='asb-recovery',tag=sys.argv[3],conf={'Labels':labels})
+        print(json.dumps({'id':workspace.container.id,'image_id':image.id}),flush=True)
         time.sleep(120)
 """
         with DockerSession() as client:
@@ -50,20 +53,25 @@ with DockerSession() as client:
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                     env={**os.environ,"PYTHONDONTWRITEBYTECODE":"1"})
                 owned = None
+                tag = "asb-recovery:" + attempt
                 try:
                     with selectors.DefaultSelector() as selector:
                         selector.register(process.stdout, selectors.EVENT_READ)
                         self.assertTrue(selector.select(timeout=40), "owned container readiness timed out")
                     line = process.stdout.readline()
                     self.assertTrue(line, "controller exited before readiness")
-                    owned = client.containers.get(json.loads(line)["id"])
+                    ready = json.loads(line)
+                    owned = client.containers.get(ready["id"])
                     self.assertEqual(owned.name, attempt)
                     process.kill()
                     process.wait(timeout=5)
                     self.assertEqual(process.returncode, -signal.SIGKILL)
                     result = quiesce(client, artifacts)
                     self.assertEqual(result["resources"], [{"kind":"containers","name":attempt,
-                                                            "status":"stopped-preserved"}])
+                                                            "status":"stopped-preserved"},
+                        {"kind":"images","name":tag,"status":"preserved","image_id":ready["image_id"]}])
+                    self.assertEqual(client.images.get(tag).id,ready["image_id"])
+                    self.assertEqual(client.images.get(row["image"]).id,image.id,"shared original task image changed")
                     owned.reload()
                     self.assertFalse(owned.attrs["State"]["Running"])
                     sibling.container.reload()
@@ -90,6 +98,18 @@ with DockerSession() as client:
                         if owned.name != attempt or labels.get("asb.attempt") != attempt:
                             raise AssertionError("fixture refused cleanup of a different owner")
                         owned.remove(force=True)
+                    try:
+                        committed = client.images.get(tag)
+                    except Exception as error:
+                        if getattr(error,"status_code",None) != 404:
+                            raise
+                    else:
+                        journal = json.loads((artifacts / "resources.json").read_bytes())
+                        labels = committed.attrs.get("Config",{}).get("Labels",{}) or {}
+                        if (tag not in committed.tags or labels.get("asb.attempt") != attempt
+                                or labels.get("asb.recovery") != journal["token"]):
+                            raise AssertionError("fixture refused image cleanup of a different owner")
+                        client.images.remove(tag,noprune=True)
 
 
 if __name__ == "__main__":

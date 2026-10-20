@@ -11,7 +11,7 @@ import unittest
 sys.dont_write_bytecode = True
 SOURCE = Path(__file__).parents[1] / "assets/benchmarks"
 sys.path.insert(0, str(SOURCE))
-from asb_resources import RecoveryError, ResourceJournal, quiesce
+from asb_resources import RecoveryError, ResourceJournal, build_image_tag, quiesce
 
 ATTEMPT = "asb-" + "a" * 32
 
@@ -22,12 +22,22 @@ class Missing(Exception):
 
 class Collection:
     def __init__(self):
-        self.values, self.lookups = {}, []
+        self.values, self.lookups, self.removed = {}, [], []
     def get(self, name):
         self.lookups.append(name)
         if name not in self.values:
             raise Missing()
         return self.values[name]
+    def remove(self,name,*,noprune):
+        assert noprune is True
+        self.removed.append(name)
+        del self.values[name]
+
+
+class Image:
+    def __init__(self,name,labels):
+        self.id = "sha256:" + "b" * 64
+        self.attrs = {"Config":{"Labels":dict(labels)},"RepoTags":[name]}
 
 
 class Container:
@@ -45,7 +55,7 @@ class Container:
 
 def client():
     return SimpleNamespace(info=lambda: {"ID":"fixture-daemon"},
-                           containers=Collection(), networks=Collection(), volumes=Collection())
+                           containers=Collection(), networks=Collection(), volumes=Collection(),images=Collection())
 
 
 class ResourceTests(unittest.TestCase):
@@ -135,7 +145,9 @@ class ResourceTests(unittest.TestCase):
     def test_unknown_duplicate_and_excessive_declarations_are_rejected(self):
         journal = self.journal()
         for kind, name in [("images", ATTEMPT), ("containers", "unrelated"),
-                           ("containers", ATTEMPT + "/../host")]:
+                           ("containers", ATTEMPT + "/../host"),("prune",ATTEMPT),
+                           ("images","../outside:" + ATTEMPT),("images","repo//other:" + ATTEMPT),
+                           ("images","repo:other"),("images","repo:" + ATTEMPT + "/../other")]:
             with self.assertRaises(RecoveryError):
                 journal.declare(kind, name)
         journal.declare("containers", ATTEMPT)
@@ -171,6 +183,88 @@ class ResourceTests(unittest.TestCase):
         self.assertEqual(config["volumes"]["data"]["labels"], journal.labels)
         with self.assertRaises(RecoveryError):
             journal.compose({"volumes":{"external":{"external":True}}})
+
+    def test_compose_build_outputs_are_declared_and_labeled_before_creation(self):
+        journal = self.journal()
+        config = {"services":{
+            "main":{"container_name":ATTEMPT,"image":"shared:original","build":{"context":"public","tags":["shared:other"]}},
+            "secondary":{"container_name":ATTEMPT + "-secondary","build":"secondary-context"},
+            "prebuilt":{"container_name":ATTEMPT + "-prebuilt","image":"upstream:prebuilt"}}}
+        journal.compose(config)
+        previous = (self.root / "resources.json").read_bytes()
+        journal.compose(config)
+        self.assertEqual((self.root / "resources.json").read_bytes(),previous)
+        for name in ["main","secondary"]:
+            service = config["services"][name]
+            image = build_image_tag(ATTEMPT,name)
+            self.assertEqual(service["image"],image)
+            self.assertEqual(service["build"]["tags"],[image])
+            self.assertEqual(service["build"]["labels"],journal.labels)
+            self.assertIn({"kind":"images","name":image},json.loads(previous)["resources"])
+        self.assertEqual(config["services"]["prebuilt"]["image"],"upstream:prebuilt")
+        self.assertFalse(self.client.images.lookups)
+
+    def test_recovery_preserves_exact_owned_image_identity_and_shared_aliases(self):
+        journal = self.journal()
+        tag = build_image_tag(ATTEMPT,"main")
+        image = Image(tag,journal.declare("images",tag))
+        image.attrs["RepoTags"].append("user:shared")
+        self.client.images.values = {tag:image,"user:shared":image}
+        journal.close()
+        result = quiesce(self.client,self.root)
+        self.assertEqual(result["resources"],[{"kind":"images","name":tag,"status":"preserved","image_id":image.id}])
+        self.assertEqual(self.client.images.lookups,[tag])
+        self.assertFalse(self.client.images.removed)
+        self.assertEqual(self.client.images.values["user:shared"].id,image.id)
+
+    def test_normal_image_cleanup_only_untags_declared_outputs_and_preserves_caches(self):
+        journal = self.journal()
+        tag = build_image_tag(ATTEMPT,"main")
+        image = Image(tag,journal.declare("images",tag))
+        image.attrs["RepoTags"].append("user:shared")
+        self.client.images.values = {tag:image,"user:shared":image}
+        result = journal.cleanup_images(self.client)
+        self.assertEqual(result,[{"kind":"images","name":tag,"status":"removed","image_id":image.id}])
+        self.assertEqual(self.client.images.removed,[tag])
+        self.assertEqual(self.client.images.values,{"user:shared":image})
+        self.assertEqual(journal.cleanup_images(self.client),[{"kind":"images","name":tag,"status":"absent"}])
+        journal.close()
+        with self.assertRaises(RecoveryError):
+            journal.cleanup_images(self.client)
+
+    def test_wrong_image_owner_or_tag_prevents_every_mutation(self):
+        journal = self.journal()
+        container = Container(ATTEMPT,journal.declare("containers",ATTEMPT))
+        self.client.containers.values[ATTEMPT] = container
+        tags = [build_image_tag(ATTEMPT,name) for name in ["main","other"]]
+        for tag in tags:
+            self.client.images.values[tag] = Image(tag,journal.declare("images",tag))
+        image = self.client.images.values[tags[1]]
+        labels = dict(image.attrs["Config"]["Labels"])
+        for key,value in [("asb.recovery","another"),("asb.owner","another"),("asb.attempt","another")]:
+            image.attrs["Config"]["Labels"] = dict(labels,**{key:value})
+            with self.assertRaises(RecoveryError):
+                journal.cleanup_images(self.client)
+            self.assertFalse(self.client.images.removed)
+        journal.close()
+        with self.assertRaises(RecoveryError):
+            quiesce(self.client,self.root)
+        self.assertEqual(container.stops,0)
+        image.attrs["Config"]["Labels"] = labels
+        for tags_value, identity in [([],image.id),([tags[1]],"wrong-id")]:
+            image.attrs["RepoTags"],image.id = tags_value,identity
+            with self.assertRaises(RecoveryError):
+                quiesce(self.client,self.root)
+            self.assertEqual(container.stops,0)
+
+    def test_absent_build_outputs_do_not_create_recovery_evidence_or_authorize_retry(self):
+        journal = self.journal()
+        journal.declare("images",build_image_tag(ATTEMPT,"main"))
+        journal.close()
+        result = quiesce(self.client,self.root)
+        self.assertEqual(result["resources"][0]["status"],"absent")
+        self.assertIn("not-a-retry-receipt",result["scope"])
+        self.assertFalse((self.root / "resource-quiescence.json").exists())
 
     def test_world_readable_journals_and_nonregular_files_are_refused(self):
         journal = self.journal()

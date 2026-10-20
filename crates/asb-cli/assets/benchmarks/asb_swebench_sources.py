@@ -99,7 +99,7 @@ def verify(path, catalog_path=None):
             "archive_sha256": SOURCE_SHA256, "task_count": len(catalog["tasks"])}
 
 
-def remove_owned_image(client, tag, attempt):
+def remove_owned_image(client, tag, attempt, expected_labels=None):
     """Remove only this attempt's tag, never an upstream image or shared cache."""
     if tag != "asb-swebench:" + attempt or not re.fullmatch(r"asb-[0-9a-f]{32}", attempt):
         raise CatalogError("refused source-image cleanup without an ASB attempt identity")
@@ -110,7 +110,8 @@ def remove_owned_image(client, tag, attempt):
             return "absent"
         raise
     labels = image.attrs.get("Config", {}).get("Labels", {}) or {}
-    if labels.get("asb.owner") != "asb" or labels.get("asb.attempt") != attempt:
+    expected_labels = expected_labels or {"asb.owner":"asb","asb.attempt":attempt}
+    if any(labels.get(key) != value for key,value in expected_labels.items()):
         raise CatalogError("refused source-image cleanup of a different owner")
     client.images.remove(tag, noprune=True)
     return "removed"
@@ -118,7 +119,7 @@ def remove_owned_image(client, tag, attempt):
 
 def build_image(client, row, dataset, artifacts, attempt, cancelled=None,
                 archive=None, command=None, executor=run_harness, yaml_loader=None,
-                expected_sha256=SOURCE_SHA256):
+                expected_sha256=SOURCE_SHA256, journal=None):
     if not re.fullmatch(r"asb-[0-9a-f]{32}", attempt):
         raise CatalogError("source builds require a fresh ASB attempt identity")
     archive = archive or Path(__file__).parent / SOURCE_ARCHIVE
@@ -132,6 +133,7 @@ def build_image(client, row, dataset, artifacts, attempt, cancelled=None,
         from asb_docker import docker_command
         command = docker_command()
     tag = "asb-swebench:" + attempt
+    labels = journal.declare("images",tag) if journal is not None else {"asb.owner":"asb","asb.attempt":attempt}
     receipt = {"source": "https://github.com/SWE-bench/swe-bench-tasks",
                "revision": SOURCE_REVISION, "archive_sha256": expected_sha256,
                "dockerfile_sha256": hashlib.sha256(dockerfile).hexdigest(),
@@ -141,14 +143,23 @@ def build_image(client, row, dataset, artifacts, attempt, cancelled=None,
     atomic_write(path, encoded(receipt))
     arguments = command + ["buildx", "build", "--builder", "default", "--load",
         "--resource", "memory=8g", "--resource", "cpu-quota=200000", "--resource", "cpu-period=100000",
-        "--tag", tag, "--label", "asb.owner=asb", "--label", "asb.attempt=" + attempt,
+        "--tag", tag]
+    for key,value in labels.items():
+        arguments += ["--label",key + "=" + value]
+    arguments += [
         "--file", str(context / "Dockerfile"), "--progress=plain", str(context)]
     try:
         with (artifacts / "source-build.log").open("xb") as log:
             code = executor(arguments, artifacts, log, 600, cancelled=cancelled)
         if code:
             raise CatalogError(f"official source image build failed (exit {code}); inspect source-build.log")
-        image = client.images.get(tag)
+        if journal is not None:
+            from asb_resources import owned_resource
+            image = owned_resource(client,{"kind":"images","name":tag},labels)
+            if image is None:
+                raise CatalogError("completed source build did not publish its owned image")
+        else:
+            image = client.images.get(tag)
         receipt.update(status="built", image_id=image.id)
         atomic_write(path, encoded(receipt))
         return image, receipt
@@ -157,7 +168,7 @@ def build_image(client, row, dataset, artifacts, attempt, cancelled=None,
                        failure_kind="timeout" if isinstance(error, subprocess.TimeoutExpired)
                        else "cancelled" if isinstance(error, InterruptedError) else "build_failed")
         try:
-            receipt["cleanup"] = remove_owned_image(client, tag, attempt)
+            receipt["cleanup"] = remove_owned_image(client, tag, attempt,expected_labels=labels)
         except Exception as error:
             receipt["cleanup"] = "error:" + type(error).__name__
         atomic_write(path, encoded(receipt))

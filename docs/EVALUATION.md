@@ -138,6 +138,20 @@ grader. Missing/stale reports,
 partial fixes, regressions and missing patches cannot earn resolution credit.
 An empty parsed Terminal-Bench test map cannot count as success.
 
+Original source builds publish per-attempt image ownership before building.
+Normal cleanup removes only the recorded owned tags, not upstream images or
+shared build caches. Recovery instead retains build images and reports their
+immutable identity alongside stopped task containers; preservation is not a
+grade or retry authorization. Retained-outcome reconciliation requires matching
+image-cleanup evidence for those build outputs.
+
+SWE-bench still uses the official grader and final report formatter. ASB omits
+the formatter's optional daemon-wide image/container inventory: unrelated image
+removal can race that inventory after grading and prevent summary publication.
+Task outcomes, test classifications and denominators are unchanged. Per-attempt
+ASB journals retain actual ownership/cleanup evidence without scanning unrelated
+daemon resources.
+
 Representative correct/incorrect fixture submissions have qualified these
 normal CLI paths without live LLM providers. This does not mean the full
 populations have been benchmarked. Representative endpoint forwarding,

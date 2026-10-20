@@ -7,7 +7,7 @@ from asb_execution import ExecutionError, ManagedDockerWorkspace
 from asb_swebench import (CatalogError, MAX_PATCH_BYTES, agent_instruction,
                           atomic_write, encoded, evaluate_submission, read_task,
                           remove_evaluation_container, run_harness, sdk_identity)
-from asb_swebench_sources import build_image, remove_owned_image, resolve_image
+from asb_swebench_sources import build_image, resolve_image
 from asb_resources import ResourceJournal
 
 
@@ -35,7 +35,7 @@ class SweBenchTask:
             self.journal = ResourceJournal(self.client, self.artifacts, self.attempt)
             image, source = resolve_image(self.client, spec.image, lambda: build_image(
                 self.client, self.row, self.catalog["dataset"], self.artifacts, self.attempt,
-                cancelled=self.cancelled))
+                cancelled=self.cancelled,journal=self.journal))
             self.source_image_tag = source.get("tag")
             if self.source_image_tag is not None:
                 atomic_write(self.artifacts / "source-image.json", encoded(source))
@@ -106,8 +106,12 @@ class SweBenchTask:
                     }))
         finally:
             try:
+                if self.journal is not None:
+                    images = self.journal.cleanup_images(self.client)
+                else:
+                    images = []
                 if self.source_image_tag is not None:
-                    status = remove_owned_image(self.client, self.source_image_tag, self.attempt)
+                    status = next(item["status"] for item in images if item["name"] == self.source_image_tag)
                     atomic_write(self.artifacts / "source-image-cleanup.json", encoded({
                         "attempt_id": self.attempt, "tag": self.source_image_tag, "status": status,
                     }))

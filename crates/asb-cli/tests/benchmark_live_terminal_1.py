@@ -25,6 +25,10 @@ class OriginalTerminalQualification(unittest.TestCase):
                     self.assertEqual(resources["attempt"], task.attempt)
                     self.assertIn({"kind":"containers","name":task.attempt}, resources["resources"])
                     self.assertEqual(task.workspace.container.attrs["Config"]["Labels"]["asb.recovery"], resources["token"])
+                    images = [entry["name"] for entry in resources["resources"] if entry["kind"] == "images"]
+                    self.assertTrue(images,"the original task must build into attempt-owned tags")
+                    for name in images:
+                        self.assertEqual(client.images.get(name).attrs["Config"]["Labels"]["asb.recovery"],resources["token"])
                     result = task.workspace.execute(["/bin/sh", "-c", "printf 'Hello, world!\\n' > hello.txt" if resolved else "true"])
                     self.assertEqual(result["exit_code"], 0)
                     before = task.workspace.container.exec_run(["test", "!", "-e", "/tests/test_outputs.py"])
@@ -36,6 +40,11 @@ class OriginalTerminalQualification(unittest.TestCase):
                     attempt = task.attempt
                 self.assertEqual(client.containers.list(all=True, filters={"label":"asb.attempt=" + attempt}), [])
                 self.assertEqual(json.loads((artifacts / "task-cleanup.json").read_text())["status"], "removed")
+                import docker.errors
+                for name in images:
+                    with self.assertRaises(docker.errors.ImageNotFound):client.images.get(name)
+                cleanup = json.loads((artifacts / "image-cleanup.json").read_bytes())
+                self.assertTrue(all(entry["status"] in ["removed","absent"] for entry in cleanup["resources"]))
 
 
 if __name__ == "__main__":

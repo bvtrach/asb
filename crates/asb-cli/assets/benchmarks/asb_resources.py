@@ -5,6 +5,7 @@ No host-wide enumeration, pruning, PID signalling or volume deletion occurs.
 """
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,37 @@ import uuid
 
 class RecoveryError(RuntimeError):
     pass
+
+
+def resource_name(kind, name, attempt):
+    pattern = (r"[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}"
+               if kind == "images" else r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}")
+    return (kind in ["containers", "networks", "volumes", "images"] and isinstance(name, str)
+            and len(name) <= 255 and re.fullmatch(pattern, name) is not None and attempt in name)
+
+
+def build_image_tag(attempt, service):
+    return "asb-workload:" + attempt + "-" + hashlib.sha256(service.encode()).hexdigest()[:16]
+
+
+def owned_resource(client, declaration, labels):
+    kind, name = declaration["kind"], declaration["name"]
+    try:
+        resource = getattr(client, kind).get(name)
+    except Exception as error:
+        if getattr(error, "status_code", None) != 404:
+            raise RecoveryError("could not inspect a declared Docker resource") from None
+        return None
+    actual = (resource.attrs.get("Config", {}).get("Labels") if kind in ["containers", "images"]
+              else resource.attrs.get("Labels")) or {}
+    if kind == "images":
+        name_matches = (name in (resource.attrs.get("RepoTags") or [])
+                        and isinstance(resource.id,str) and re.fullmatch(r"sha256:[0-9a-f]{64}",resource.id))
+    else:
+        name_matches = resource.name.lstrip("/") == name
+    if not name_matches or any(actual.get(key) != value for key, value in labels.items()):
+        raise RecoveryError("declared resource name now identifies a different owner")
+    return resource
 
 
 def private_file(directory, name, flags):
@@ -96,9 +128,7 @@ class ResourceJournal:
 
     def declare(self, kind, name):
         value = {"kind": kind, "name": name}
-        if (kind not in ["containers", "networks", "volumes"] or not isinstance(name, str)
-                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}", name)
-                or self.record["attempt"] not in name):
+        if not resource_name(kind,name,self.record["attempt"]):
             raise RecoveryError("resource declaration is outside this attempt")
         if value not in self.record["resources"]:
             if len(self.record["resources"]) >= 64:
@@ -108,14 +138,46 @@ class ResourceJournal:
         return self.labels
 
     def compose(self, configuration):
-        for service in configuration.get("services", {}).values():
+        for name, service in configuration.get("services", {}).items():
             service.setdefault("labels", {}).update(self.declare("containers", service["container_name"]))
+            build = service.get("build")
+            if build:
+                if isinstance(build,str):
+                    build = service["build"] = {"context":build}
+                if not isinstance(build,dict):
+                    raise RecoveryError("task image build is not a Compose build definition")
+                image = build_image_tag(self.record["attempt"],name)
+                service["image"] = image
+                # Avoid publishing upstream/shared tags from an owned build.
+                build["tags"] = [image]
+                build.setdefault("labels",{}).update(self.declare("images",image))
         for kind in ["networks", "volumes"]:
             for resource in configuration.get(kind, {}).values():
                 if resource.get("external"):
                     raise RecoveryError("cannot journal an external task resource")
                 resource.setdefault("labels", {}).update(self.declare(kind, resource["name"]))
         return configuration
+
+    def cleanup_images(self, client):
+        if self.lock is None:
+            raise RecoveryError("image cleanup requires its active resource owner")
+        if daemon_identity(client) != self.record["daemon"]:
+            raise RecoveryError("image cleanup selected a different Docker daemon")
+        declared = [item for item in self.record["resources"] if item["kind"] == "images"]
+        # Inspect the complete set before removing any tag. No force/prune or
+        # image-ID deletion: user/upstream tags and build caches stay untouched.
+        owned = [(item,owned_resource(client,item,self.labels)) for item in declared]
+        results = []
+        for item,image in owned:
+            result = dict(item,status="absent")
+            if image is not None:
+                client.images.remove(item["name"],noprune=True)
+                result.update(status="removed",image_id=image.id)
+            results.append(result)
+        if results:
+            publish(self.directory,"image-cleanup.json",{"schema_version":1,"attempt":self.record["attempt"],
+                "scope":"owned-build-tags-only","resources":results})
+        return results
 
     def close(self):
         if self.lock is not None:
@@ -127,7 +189,7 @@ class ResourceJournal:
 
 
 def quiesce(client, path):
-    """Stop only declared containers; retain their files and all volumes.
+    """Stop declared containers; retain their files, volumes and build images.
 
     An absent resource is an observation, not proof that a daemon-side pending
     create cannot finish later. This result alone never authorizes rescheduling.
@@ -155,22 +217,10 @@ def quiesce(client, path):
             if not isinstance(declaration, dict) or set(declaration) != {"kind", "name"}:
                 raise RecoveryError("invalid resource journal declaration")
             kind, name = declaration["kind"], declaration["name"]
-            if (kind not in ["containers", "networks", "volumes"] or not isinstance(name, str)
-                    or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}", name)
-                    or record["attempt"] not in name or (kind, name) in seen):
+            if not resource_name(kind,name,record["attempt"]) or (kind,name) in seen:
                 raise RecoveryError("invalid or duplicate attempt resource")
             seen.add((kind, name))
-            try:
-                resource = getattr(client, kind).get(name)
-            except Exception as error:
-                if getattr(error, "status_code", None) != 404:
-                    raise RecoveryError("could not inspect a declared Docker resource") from None
-                resource = None
-            if resource is not None:
-                actual = (resource.attrs.get("Config", {}).get("Labels") if kind == "containers"
-                          else resource.attrs.get("Labels")) or {}
-                if resource.name.lstrip("/") != name or any(actual.get(key) != value for key, value in labels.items()):
-                    raise RecoveryError("declared resource name now identifies a different owner")
+            resource = owned_resource(client,declaration,labels)
             owned.append((declaration, resource))
         outcomes = []
         for declaration, resource in owned:
@@ -183,7 +233,10 @@ def quiesce(client, path):
                     if resource.attrs.get("State", {}).get("Running") is not False:
                         raise RecoveryError("owned container did not confirm its stopped state")
                     status = "stopped-preserved"
-            outcomes.append({**declaration, "status": status})
+            outcome = {**declaration,"status":status}
+            if declaration["kind"] == "images" and resource is not None:
+                outcome["image_id"] = resource.id
+            outcomes.append(outcome)
         result = {"schema_version":1, "attempt":record["attempt"],
                   "scope":"observed-resource-quiescence-not-a-retry-receipt", "resources":outcomes}
         # A no-op inspection of a normally cleaned-up attempt must not change

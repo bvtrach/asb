@@ -66,6 +66,9 @@ class OriginalSourceQualification(unittest.TestCase):
                     source = task.invocation["environment_source"]
                     self.assertEqual(source["status"], "built")
                     self.assertEqual(source["revision"], sources.SOURCE_REVISION)
+                    resources = json.loads((artifacts / "task/resources.json").read_bytes())
+                    self.assertIn({"kind":"images","name":source["tag"]},resources["resources"])
+                    self.assertEqual(client.images.get(source["tag"]).attrs["Config"]["Labels"]["asb.recovery"],resources["token"])
                     self.assertEqual(calls, ["get", "pull"])
                     self.assertEqual([p.name for p in (artifacts / "task/source-build").iterdir()], ["Dockerfile"])
                     tag = source["tag"]
@@ -87,12 +90,21 @@ class OriginalSourceQualification(unittest.TestCase):
                     result = benchmark.evaluate_submission(catalog, instance, incorrect, artifacts / "incorrect",
                         timeout=300, image_identity=image)
                     self.assertEqual(result["outcome"], "unresolved", result)
+                    summaries = list(artifacts.rglob("results.json"))
+                    self.assertEqual(len(summaries),4)
+                    for summary in summaries:
+                        data = json.loads(summary.read_bytes())
+                        self.assertEqual(data["completed_instances"],1)
+                        self.assertNotIn("unremoved_images",data,"official reporting must not inventory unrelated daemon images")
+                        self.assertNotIn("unstopped_containers",data)
             with self.assertRaises(docker.errors.ImageNotFound):
                 client.images.get(tag)
             if original is not None:
                 self.assertEqual(client.images.get(row["image"]).id, original)
             cleanup = json.loads((artifacts / "task/source-image-cleanup.json").read_bytes())
             self.assertEqual(cleanup["status"], "removed")
+            images = json.loads((artifacts / "task/image-cleanup.json").read_bytes())["resources"]
+            self.assertEqual(images,[{"kind":"images","name":tag,"status":"removed","image_id":image["image_id"]}])
 
 
 if __name__ == "__main__":

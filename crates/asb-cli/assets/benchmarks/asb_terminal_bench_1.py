@@ -281,6 +281,8 @@ class TerminalBenchTask:
                 remaining = self.client.containers.list(all=True, filters={"label":"com.docker.compose.project=" + self.attempt})
                 if remaining:
                     raise ExecutionError("official task containers could not be completely removed")
+                if self.journal is not None:
+                    self.journal.cleanup_images(self.client)
                 status = "removed"
                 if self.workspace:
                     self.workspace.container = None

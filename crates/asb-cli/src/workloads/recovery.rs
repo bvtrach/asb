@@ -196,7 +196,7 @@ pub(crate) fn run(path: &Path, json: bool, output: &mut dyn Write) -> Result<(),
                 .filter(|resource| resource["status"] == "stopped-preserved")
                 .count()
         });
-        writeln!(output, "Stopped {stopped} owned task containers; partial files and volumes were preserved. Recovery did not retry or grade the task; sweep resume still requires outcome reconciliation.").map_err(io_error)
+        writeln!(output, "Stopped {stopped} owned task containers; partial files, volumes and build images were preserved. Recovery did not retry or grade the task; sweep resume still requires outcome reconciliation.").map_err(io_error)
     }
 }
 
@@ -352,7 +352,7 @@ mod tests {
             if !directory.join("venv/bin/python").exists() {
                 symlink(&python, directory.join("venv/bin/python")).unwrap();
             }
-            std::fs::write(directory.join("asb_resources.py"), "import json,sys\nassert sys.argv[1]=='--quiesce'\na='asb-'+'a'*32\nprint(json.dumps({'schema_version':1,'attempt':a,'scope':'observed-resource-quiescence-not-a-retry-receipt','resources':[{'kind':'containers','name':a,'status':'stopped-preserved'}]}))\n").unwrap();
+            std::fs::write(directory.join("asb_resources.py"), "import json,sys\nassert sys.argv[1]=='--quiesce'\na='asb-'+'a'*32\nprint(json.dumps({'schema_version':1,'attempt':a,'scope':'observed-resource-quiescence-not-a-retry-receipt','resources':[{'kind':'containers','name':a,'status':'stopped-preserved'},{'kind':'images','name':'asb-workload:'+a,'status':'preserved','image_id':'sha256:'+'b'*64}]}))\n").unwrap();
             let mut reference = fixture.reference.clone();
             reference.workload = workload.into();
             let elsewhere = remember(&external.root.join(workload), &reference).unwrap();
@@ -362,6 +362,11 @@ mod tests {
             run(&path, true, &mut json).unwrap();
             let record: serde_json::Value = serde_json::from_slice(&json).unwrap();
             assert_eq!(record["resources"][0]["status"], "stopped-preserved");
+            assert_eq!(record["resources"][1]["kind"], "images");
+            assert_eq!(
+                record["resources"][1]["image_id"],
+                format!("sha256:{}", "b".repeat(64))
+            );
             let mut human = Vec::new();
             run(&path, false, &mut human).unwrap();
             assert!(
@@ -369,6 +374,20 @@ mod tests {
                     .unwrap()
                     .contains("did not retry or grade")
             );
+            let helper = std::fs::read_to_string(directory.join("asb_resources.py")).unwrap();
+            for invalid in ["None", "'sha256:invalid'"] {
+                std::fs::write(
+                    directory.join("asb_resources.py"),
+                    helper.replace("'sha256:'+'b'*64", invalid),
+                )
+                .unwrap();
+                assert!(
+                    run(&path, true, &mut Vec::new())
+                        .unwrap_err()
+                        .to_string()
+                        .contains("invalid bounded report")
+                );
+            }
             std::fs::write(directory.join("asb_resources.py"), "import json\nprint(json.dumps({'schema_version':1,'scope':'fake','resources':[]}))\n").unwrap();
             assert!(run(&path, true, &mut Vec::new()).is_err());
         }

@@ -501,8 +501,17 @@ volumes are preserved. Live-controller refusal, wrong-daemon/owner rejection
 and actual SIGKILL recovery are covered by provider-free tests.
 This is observed resource quiescence, not a resume or grading receipt: a
 daemon-side pending creation can finish after its controller dies. Source-build
-images, interrupted evaluator recovery, native/proxy processes, recovered
-submission grading and sweep-slot reconciliation still require integration.
+images are now journaled too: SWE-bench declares its source-build tag before
+invocation, while the generic Compose bridge replaces SDK shared build-output
+names with per-attempt tags and records their recovery labels before building.
+Prebuilt/upstream images are not claimed. Normal teardown removes only those
+owned tags with `noprune` and without force; it does not remove shared aliases,
+parent images or build caches. Recovery preserves these images and reports
+their immutable IDs, keeping them available for later inspection/evaluation.
+Read-only outcome reconciliation requires matching image-cleanup records when
+the journal declares build outputs. Interrupted evaluator recovery, native/proxy
+processes, recovered submission grading and sweep-slot reconciliation still
+require integration.
 Before launching an official workload controller, ASB publishes a private,
 immutable attempt reference under the host workspace's `.asb-attempts/`. It
 contains only the intended task/dataset and project-local artifact location,

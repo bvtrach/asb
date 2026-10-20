@@ -146,22 +146,34 @@ class SourceContracts(unittest.TestCase):
             with self.assertRaisesRegex(sources.CatalogError, "additional build context"):
                 sources.validate_task(row, dict(files, Dockerfile=instruction), DATASET, json.loads)
 
-    def build_fixture(self, root, code=0, error=None):
+    def build_fixture(self, root, code=0, error=None, journaled=False):
         row, files = fixture()
         path, digest = archive(root, files)
         artifacts = root / "attempt"
-        artifacts.mkdir()
+        artifacts.mkdir(mode=0o700)
         removed, calls = [], []
         image = SimpleNamespace(id="sha256:" + "d" * 64, attrs={"Config": {"Labels": {
             "asb.owner": "asb", "asb.attempt": ATTEMPT}}})
-        client = SimpleNamespace(images=SimpleNamespace(get=lambda _name: image,
+        client = SimpleNamespace(info=lambda:{"ID":"fixture-daemon"},images=SimpleNamespace(get=lambda _name: image,
             remove=lambda name, **options: removed.append((name, options))))
+        journal = None
+        if journaled:
+            from asb_resources import ResourceJournal
+            journal = ResourceJournal(client,artifacts,ATTEMPT)
+            self.addCleanup(journal.close)
+            image.attrs["Config"]["Labels"].update(journal.labels)
+            image.attrs["RepoTags"] = ["asb-swebench:" + ATTEMPT]
+        client.journal = journal
         cancelled = object()
         def execute(arguments, directory, log, timeout, **options):
             calls.append(arguments)
             self.assertEqual(directory, artifacts)
             self.assertEqual(timeout, 600)
             self.assertIs(options["cancelled"], cancelled)
+            if journaled:
+                declared = json.loads((artifacts / "resources.json").read_bytes())["resources"]
+                self.assertIn({"kind":"images","name":"asb-swebench:" + ATTEMPT},declared)
+                self.assertIn("asb.recovery=" + journal.record["token"],arguments)
             context = artifacts / "source-build"
             self.assertEqual([p.name for p in context.iterdir()], ["Dockerfile"])
             self.assertEqual((context / "Dockerfile").read_bytes(), files["Dockerfile"])
@@ -171,7 +183,7 @@ class SourceContracts(unittest.TestCase):
             return code
         invoke = lambda: sources.build_image(client, row, DATASET, artifacts, ATTEMPT,
             cancelled=cancelled, archive=path, command=["scoped-docker"], executor=execute,
-            yaml_loader=json.loads, expected_sha256=digest)
+            yaml_loader=json.loads, expected_sha256=digest,journal=journal)
         return invoke, artifacts, client, removed, calls
 
     def test_build_context_contains_only_original_dockerfile_and_records_provenance(self):
@@ -214,6 +226,30 @@ class SourceContracts(unittest.TestCase):
             with self.assertRaisesRegex(sources.CatalogError, "different owner"):
                 sources.remove_owned_image(client, "asb-swebench:" + ATTEMPT, ATTEMPT)
             self.assertEqual(removed, [])
+
+    def test_journaled_source_output_is_declared_before_build_and_bound_to_its_owner(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            invoke,artifacts,client,removed,calls = self.build_fixture(Path(temporary),journaled=True)
+            image,receipt = invoke()
+            self.assertEqual(receipt["image_id"],image.id)
+            self.assertIn("asb.recovery=" + client.journal.record["token"],calls[0])
+            results = client.journal.cleanup_images(client)
+            self.assertEqual(results[0]["status"],"removed")
+            self.assertEqual(results[0]["image_id"],image.id)
+            self.assertEqual(removed,[(receipt["tag"],{"noprune":True})])
+            self.assertEqual(json.loads((artifacts / "image-cleanup.json").read_bytes())["attempt"],ATTEMPT)
+
+    def test_replaced_source_tag_is_not_used_or_removed_even_if_attempt_label_matches(self):
+        from asb_resources import RecoveryError
+        with tempfile.TemporaryDirectory() as temporary:
+            invoke,artifacts,client,removed,_ = self.build_fixture(Path(temporary),journaled=True)
+            client.images.get("unused").attrs["Config"]["Labels"]["asb.recovery"] = "other"
+            with self.assertRaisesRegex(RecoveryError,"different owner"):
+                invoke()
+            self.assertEqual(removed,[])
+            receipt = json.loads((artifacts / "source-image.json").read_bytes())
+            self.assertEqual(receipt["status"],"failed")
+            self.assertEqual(receipt["cleanup"],"error:CatalogError")
 
 
 if __name__ == "__main__":

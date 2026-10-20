@@ -38,6 +38,11 @@ class HarborQualification(unittest.TestCase):
                     self.assertEqual(resources["attempt"], task.attempt)
                     self.assertIn({"kind":"containers","name":task.attempt}, resources["resources"])
                     self.assertEqual(task.workspace.container.attrs["Config"]["Labels"]["asb.recovery"], resources["token"])
+                    images = [entry["name"] for entry in resources["resources"] if entry["kind"] == "images"]
+                    if force_fallback:
+                        self.assertTrue(images,"source fallback must declare its image before building")
+                    for name in images:
+                        self.assertEqual(client.images.get(name).attrs["Config"]["Labels"]["asb.recovery"],resources["token"])
                     self.assertEqual(task.workspace.container.exec_run(["test", "!", "-e", "/tests/test.sh"]).exit_code, 0)
                     for path in [task.environment._mounts_compose_path, task.environment._resources_compose_path,
                                  task.environment._env_compose_path]:
@@ -57,6 +62,9 @@ class HarborQualification(unittest.TestCase):
                     attempt = task.attempt
                 self.assertEqual(client.containers.list(all=True,filters={"label":"asb.attempt="+attempt}), [])
                 self.assertEqual(json.loads((artifacts / "task-cleanup.json").read_text())["status"], "removed")
+                import docker.errors
+                for name in images:
+                    with self.assertRaises(docker.errors.ImageNotFound):client.images.get(name)
 
 
 if __name__ == "__main__":

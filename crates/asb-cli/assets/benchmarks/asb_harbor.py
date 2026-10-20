@@ -21,7 +21,7 @@ import uuid
 
 from asb_docker import DockerSession, docker_command
 from asb_execution import ExecutionError, ManagedDockerWorkspace
-from asb_resources import ResourceJournal
+from asb_resources import ResourceJournal, build_image_tag
 from asb_terminal_catalog import verify, tree_manifest
 from asb_terminal_bench_1 import quiet_sdk, restore_task_networks, write_json
 
@@ -87,6 +87,12 @@ def environment_class(command, attempt, artifacts, journal=None):
     from harbor.environments.docker.runtime import ContainerRuntime
 
     class OwnedHarborEnvironment(DockerEnvironment):
+        @property
+        def _main_image_name(self):
+            # Keep the SDK's OS validation/cache identity aligned with the
+            # attempt-owned main build tag published by the Compose adapter.
+            return build_image_tag(attempt,"main")
+
         @classmethod
         def runtime(cls):
             return ContainerRuntime(engine=tuple(command), compose=tuple(command + ["compose"]))
@@ -300,6 +306,8 @@ class HarborTask:
                     ["down", "--timeout", "2", "--volumes", "--remove-orphans"]), 120)
                 if self.client.containers.list(all=True, filters={"label":"com.docker.compose.project=" + self.attempt}):
                     raise ExecutionError("official Harbor containers could not be completely removed")
+                if self.journal is not None:
+                    self.journal.cleanup_images(self.client)
                 status = "removed"
                 if self.workspace:
                     self.workspace.container = None

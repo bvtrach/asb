@@ -1810,3 +1810,77 @@ The broader delivery requirements remain open: interrupted outcome/evaluator
 handling, native/proxy/source-image ownership recovery, full sweep reconciliation,
 population-scale presentation, cold-cache qualification, final review/PR merge,
 exact-main CI and the new minor release.
+
+### Owned source-build images and attempt-scoped official reports
+
+Image ownership is now part of the durable resource journal. SWE-bench records
+its unique source tag before invoking Buildx and passes the journal's ownership
+labels into the build. Terminal-Bench 1 and Harbor use the shared Compose
+bridge to replace local build outputs with per-attempt service tags, remove
+extra upstream/shared output aliases and declare/label them before building.
+Harbor's SDK OS validation resolves the same owned tag. Prebuilt images are
+not claimed or changed. Normal cleanup checks all owned image identities before
+untagging anything, uses `noprune` without force and records exact IDs/statuses.
+Upstream/shared aliases, parent images and build caches remain untouched.
+
+Crash recovery preserves declared images and reports their immutable IDs
+alongside stopped/preserved task containers. Wrong daemon/labels/tag ownership
+fail before resource mutation. This remains an observed quiescence report,
+not permission to retry or a recovered evaluator grade. All five adapter
+recovery routes accept bounded image identities, and retained-outcome
+reconciliation checks image-cleanup evidence for declared build outputs.
+
+Parallel runtime qualification exposed an additional real evaluator race:
+the official SWE-bench instance report correctly graded an incorrect patch as
+unresolved, then final report generation failed with ImageNotFound while
+inventorying unrelated daemon images being removed by another task. The
+owning adapter now invokes the unchanged official report formatter with its
+optional Docker inventory disabled. Official grades, classifications and
+denominators remain unchanged; owned cleanup is separately recorded. A pure
+regression verifies that no unrelated daemon API is touched by reporting.
+
+Actual correct/incorrect original Terminal-Bench 1.0 grading, owned build
+labels and tag removal passed in 35.8 seconds (artifacts
+`target/benchmark-runtime/original-terminal-qualification-mult3q57` and
+`target/benchmark-runtime/original-terminal-qualification-603uv7iq`). Forced
+original Harbor source fallback passed both grades and owned-image cleanup in
+42.9 seconds (`target/benchmark-runtime/harbor-qualification-xp_0nn25` and
+`target/benchmark-runtime/harbor-qualification-ssk5f0jw`). Original SWE source
+building and known-good grades for Full/Lite/Verified plus an incorrect Lite
+grade passed after the report repair in 36.0 seconds; the final expanded
+qualification passed in 32.0 seconds at
+`target/benchmark-runtime/original-swe-source-1_ufl73y`. It verifies all four
+official summaries omit host inventories and preserves shared original images.
+
+A real owner-SIGKILL test passed in 10.0 seconds at
+`target/benchmark-runtime/resource-recovery-mbn1pw2i`: recovery stopped only the
+recorded container, retained its partial file and owned committed image with
+the same immutable ID, and left the live sibling/shared base image unchanged.
+This qualifies durable image ownership after publication, not stopping an
+in-flight BuildKit operation. Fixture cleanup removes only its own resources.
+
+Provider-free regressions cover declaration-before-build, distinct service
+outputs, absent late outputs, shared-alias preservation, all-owner validation
+before deletion/stop, changed owner/tag/daemon refusal, immutable image IDs,
+read-only grade reconciliation and all five SDK recovery routes. Final source
+verification passed 440 unit tests, 87 offline CLI tests, all fifteen protocol
+suites and guest/diagram/parallel/partial/replay/unmeasured regressions, strict
+Clippy and `make build`. Normal CLI mixed-sweep/public-recovery and package/
+hosted qualifications are recorded after completion.
+
+The normal real-Pi/synthetic-provider mixed original SWE-bench Lite and
+Terminal-Bench 1.0 sweep passed in 106.3 seconds at
+`target/benchmark-runtime/parallel-original-tasks-pke4t82q`, including collectors,
+official grades, SVG/HTML, current image-cleanup consistency, no-op public
+recovery inspections and explicit receipt reconciliation/reuse without new
+provider requests. The public controller-SIGKILL/recovery CLI qualification
+also passed in 3.5 seconds at
+`target/benchmark-runtime/asb-controller-recovery-onk9fa74`. These are
+warm-cache representative integration checks, not AI-solving or complete
+population execution. Package and exact-head hosted gates follow.
+
+Remaining full delivery work includes interrupted evaluator/submission handling,
+native/proxy owner recovery, complete sweep-slot reconciliation, population-scale
+presentation, cold-cache qualification, final review/PR merge, exact-main CI
+and the minor release. Source-image ownership is no longer an untracked gap;
+image preservation alone is not complete interrupted-attempt recovery.

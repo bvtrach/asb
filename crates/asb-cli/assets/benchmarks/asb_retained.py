@@ -51,6 +51,22 @@ class RetainedOutcome:
         resources = self.object("resources.json")
         require(resources.get("attempt") == self.identity["attempt_id"],
                 "retained resource journal belongs to a different attempt")
+        declarations = resources.get("resources",[])
+        require(isinstance(declarations,list) and len(declarations) <= 64
+                and all(isinstance(entry,dict) for entry in declarations),"retained resource declarations are malformed")
+        images = [entry.get("name") for entry in declarations if entry.get("kind") == "images"]
+        require(all(isinstance(name,str) and self.identity["attempt_id"] in name for name in images)
+                and len(set(images)) == len(images),"retained build image declarations are malformed")
+        if images:
+            cleanup = self.object("image-cleanup.json")
+            outcomes = cleanup.get("resources")
+            require(cleanup.get("schema_version") == 1 and cleanup.get("attempt") == self.identity["attempt_id"]
+                    and cleanup.get("scope") == "owned-build-tags-only" and isinstance(outcomes,list)
+                    and len(outcomes) == len(images)
+                    and sorted(entry.get("name","") for entry in outcomes) == sorted(images)
+                    and all(entry.get("kind") == "images" and entry.get("status") in ["removed","absent"]
+                            and (entry.get("status") == "absent" or re.fullmatch(r"sha256:[0-9a-f]{64}",str(entry.get("image_id",""))))
+                            for entry in outcomes), "retained build image cleanup is not confirmed")
 
     def child(self, relative):
         path = PurePosixPath(relative)

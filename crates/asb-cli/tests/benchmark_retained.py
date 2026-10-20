@@ -153,5 +153,28 @@ class RetainedTests(unittest.TestCase):
             self.assertNotEqual(invoke(request).returncode,0)
         self.assertNotEqual(invoke(b"{"+b" "*(1024*1024)+b"\n").returncode,0)
 
+    def test_owned_build_images_require_their_own_cleanup_evidence(self):
+        for workload in ["swe-bench","swe-bench-lite","swe-bench-verified","terminal-bench-1.0","terminal-bench-2.1"]:
+            fixture = Fixture(workload,True)
+            try:
+                attempt = fixture.request["summary"]["task"]["attempt_id"]
+                tag = "asb-workload:" + attempt
+                fixture.write("resources.json",{"attempt":attempt,"resources":[{"kind":"images","name":tag}]})
+                with self.assertRaises(FileNotFoundError):fixture.verify()
+                cleanup = {"schema_version":1,"attempt":attempt,"scope":"owned-build-tags-only",
+                    "resources":[{"kind":"images","name":tag,"status":"removed","image_id":"sha256:"+"c"*64}]}
+                fixture.write("image-cleanup.json",cleanup)
+                fixture.verify()
+                for value in ["preserved","unknown"]:
+                    cleanup["resources"][0]["status"] = value
+                    fixture.write("image-cleanup.json",cleanup)
+                    with self.assertRaises(retained.RetainedError):fixture.verify()
+                cleanup["resources"][0]["status"] = "removed"
+                cleanup["resources"][0]["name"] = "another-tag"
+                fixture.write("image-cleanup.json",cleanup)
+                with self.assertRaises(retained.RetainedError):fixture.verify()
+            finally:
+                fixture.temporary.cleanup()
+
 
 if __name__ == "__main__":unittest.main()

@@ -124,6 +124,11 @@ by `asb workload install`. It forces only its own prebuilt lookup/pull to fail,
 builds an original Dockerfile under the production CPU/memory/time limits,
 grades known submissions, and checks cleanup without deleting shared images.
 It requires current Docker Buildx/BuildKit with per-build `--resource` support.
+It additionally verifies declared source-image ownership, per-attempt tag
+cleanup, original-image preservation and official summaries without host-wide
+Docker inventories. The original Terminal-Bench qualifications check owned
+Compose build labels and removal; set `ASB_TEST_HARBOR_FORCE_FALLBACK=1` to
+exercise original 2.1 source fallback instead of using its prebuilt image.
 `benchmark_live_parallel.py` uses the normal `ASB_TEST_BENCHMARK_ASB` and
 `ASB_TEST_SWECATALOG_ROOT` opt-ins plus installed Pi, SWE-bench Lite and original
 Terminal-Bench 1.0. A loopback fixture barrier requires both real clients to
@@ -148,8 +153,11 @@ Ordinary CI
 uses synthetic provider-free protocol tests.
 `benchmark_live_resources.py` additionally checks actual abrupt controller
 SIGKILL with an installed SWE-bench task image: the durable ownership journal
-quiesces only its recorded container, retains a partial output file and leaves
-a simultaneously running unrelated fixture container untouched. Run it with
+quiesces only its recorded container, retains a partial output file and an
+attempt-owned committed image, and leaves a simultaneously running unrelated
+fixture container and shared original image untouched. The image commit checks
+the daemon ownership/recovery contract, not interrupted BuildKit internals.
+Run it with
 the evaluator virtual environment and explicit `ASB_TEST_SWECATALOG_ROOT`.
 Artifacts are retained under that project; fixture containers are removed only
 after the preservation assertions. This check does not authorize a new

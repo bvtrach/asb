@@ -173,10 +173,17 @@ pub(crate) fn recover(
                         Some("absent" | "preserved" | "stopped-preserved")
                     ) || !matches!(
                         resource["kind"].as_str(),
-                        Some("containers" | "networks" | "volumes")
+                        Some("containers" | "networks" | "volumes" | "images")
                     ) || resource["name"].as_str().is_none_or(|name| {
                         name.len() > 255 || attempt.is_none_or(|attempt| !name.contains(attempt))
-                    })
+                    }) || (resource["kind"] == "images"
+                        && resource["status"] != "absent"
+                        && resource["image_id"].as_str().is_none_or(|identity| {
+                            identity.strip_prefix("sha256:").is_none_or(|hash| {
+                                hash.len() != 64
+                                    || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                            })
+                        }))
                 })
         })
     {

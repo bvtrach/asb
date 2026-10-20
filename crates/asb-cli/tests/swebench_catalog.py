@@ -32,6 +32,22 @@ def row(task_id="owner__repo-1"):
 
 
 class CatalogTests(unittest.TestCase):
+    def test_official_report_keeps_grading_arguments_but_never_inventories_the_host(self):
+        class UnrelatedDaemon:
+            def __getattr__(self,name):
+                raise AssertionError("report tried to inspect unrelated daemon resources")
+        for grade in [True,False,None]:
+            calls = []
+            predictions = {"fixture":{"resolved":grade}}
+            dataset = [{"instance_id":"fixture"}]
+            sentinel = object()
+            def reporter(predictions,full_dataset,run_id,client):
+                calls.append((predictions,full_dataset,run_id,client))
+                return sentinel
+            scoped = CATALOG.attempt_report(reporter)
+            self.assertIs(scoped(predictions,dataset,"asb-fixture",UnrelatedDaemon()),sentinel)
+            self.assertEqual(calls,[(predictions,dataset,"asb-fixture",None)])
+
     def test_installed_sdk_identity_comes_from_the_actual_package_receipt(self):
         for revision in [None, "wrong-source", CATALOG.HARNESS_REVISION]:
             receipt = json.dumps({"vcs_info": {"commit_id": revision}})
