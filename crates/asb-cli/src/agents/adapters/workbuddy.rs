@@ -12,7 +12,13 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     prepare_adapter,
 )
 .with_replay_credential_vars(&["CODEBUDDY_API_KEY", "CODEBUDDY_AUTH_TOKEN"])
-.with_output_usage(output_usage);
+.with_output_usage(output_usage)
+.with_step_count(step_count);
+
+fn step_count(stdout: &str, _stderr: &str) -> Option<u64> {
+    // Use CodeBuddy's own active-agent history counter from its final result.
+    super::super::final_result_counter(stdout, "num_turns")
+}
 
 fn output_usage(stdout: &str, stderr: &str, _: bool) -> crate::measurements::TokenUsage {
     fn result(value: &serde_json::Value) -> Option<crate::measurements::TokenUsage> {
@@ -91,6 +97,27 @@ fn configure(directory: &std::path::Path, model: &str, base_url: &str) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::AgentAdapter;
+
+    #[test]
+    fn adapter_reports_final_native_turns_without_counting_snapshots() {
+        assert_eq!(
+            ADAPTER.step_count(
+                r#"[{"type":"result","num_turns":3},{"type":"result","num_turns":3}]"#,
+                ""
+            ),
+            Some(3)
+        );
+        assert_eq!(
+            ADAPTER.step_count(r#"{"type":"result","subtype":"error","num_turns":2}"#, ""),
+            Some(2)
+        );
+        assert_eq!(
+            ADAPTER.step_count(r#"{"type":"result","num_turns":-1}"#, ""),
+            None
+        );
+        assert_eq!(ADAPTER.step_count(r#"{"num_turns":3}"#, ""), None);
+    }
 
     #[test]
     fn provider_configuration_is_owned_by_the_workbuddy_adapter() {
