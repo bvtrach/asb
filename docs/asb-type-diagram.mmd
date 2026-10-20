@@ -334,7 +334,7 @@ classDiagram
         +finish_component(name: &str, now: Instant) void
         +start_process_sampler(pid: u32) void
         +stop_process_sampler() void
-        +write_component_measurements(elapsed_ms: u128) Result~(), String~
+        +write_component_measurements() Result~(), String~
         +record_cpu_accounting(user_usec: u64, system_usec: u64, source: &str) void
         +sampled_cpu_accounting() Option~(f64, f64)~
         +cgroup_parent() Option~&Path~

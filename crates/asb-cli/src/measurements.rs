@@ -523,12 +523,27 @@ impl Session {
         timing.scheduler_wait_ms = Some(accounting.runqueue_ns as f64 / 1_000_000.0);
     }
 
-    fn write_component_measurements(&self, elapsed_ms: u128) -> Result<(), String> {
+    fn write_component_measurements(&self) -> Result<(), String> {
+        // RunMeasurement.elapsed_ms is execution-only (guest-observed for
+        // isolated workloads). The total must cover preparation, execution,
+        // grading and cleanup on the same clock as the component events.
+        // Freeze at RunFinishing so collector/report post-processing does not
+        // inflate the measured lifecycle. Sessions without that event retain
+        // an honest elapsed-session fallback.
+        let total_wall_ms = self
+            .lifecycle
+            .iter()
+            .rev()
+            .find(|record| record.event == collectors::LifecycleEvent::RunFinishing)
+            .map_or_else(
+                || self.lifecycle_started.elapsed().as_millis(),
+                |record| record.elapsed_us / 1_000,
+            );
         let mut components = self.component_timings.clone();
         components.insert(
             "run.total".into(),
             ComponentTiming {
-                wall_ms: elapsed_ms,
+                wall_ms: total_wall_ms,
                 ..ComponentTiming::default()
             },
         );
@@ -657,7 +672,7 @@ impl Session {
         for adapter in collectors::all() {
             adapter.finish(&mut self)?;
         }
-        self.write_component_measurements(measurement.elapsed_ms)?;
+        self.write_component_measurements()?;
         update_summary(&self.dir, &measurement)?;
         self.run_finishing = true;
         Ok(())
@@ -1372,9 +1387,31 @@ mod tests {
     }
 
     #[test]
+    fn component_total_without_finishing_event_uses_session_clock() {
+        let dir = std::env::temp_dir().join(format!("asb-component-total-{}", unix_ms()));
+        let mut session = Session::start_with_collectors(&dir, &[], None).unwrap();
+        session.lifecycle_started = Instant::now() - Duration::from_secs(3);
+        session.write_component_measurements().unwrap();
+        let components: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("components.json")).unwrap())
+                .unwrap();
+        assert!(
+            components["components"]["run.total"]["wall_ms"]
+                .as_u64()
+                .unwrap()
+                >= 3_000
+        );
+        drop(session);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn writes_machine_readable_run_and_summary() {
         let dir = std::env::temp_dir().join(format!("asb-measure-{}", unix_ms()));
         let mut session = Session::start_with_collectors(&dir, &[], None).expect("session");
+        session
+            .event(collectors::LifecycleEvent::RunStarted)
+            .unwrap();
         session
             .event(collectors::LifecycleEvent::PhaseBegin(
                 collectors::LifecyclePhase::WorkloadPreparation,
@@ -1411,15 +1448,25 @@ mod tests {
                 .unwrap()
                 .as_millis(),
         };
+        session
+            .event(collectors::LifecycleEvent::RunFinishing)
+            .unwrap();
+        // Deliberately distinct deterministic lifecycle and execution clocks:
+        // exporting components must not replace total time with the 2ms run
+        // metric or include any later collector/report finalization delay.
+        session.lifecycle.last_mut().unwrap().elapsed_us = 7_500_000;
         session.finish(run).expect("finish");
         let parsed: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(dir.join("summary.json")).unwrap()).unwrap();
         assert_eq!(parsed["success_rate"], 1.0);
+        let recorded: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("run.json")).unwrap()).unwrap();
+        assert_eq!(recorded["elapsed_ms"], 2);
         let components: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(dir.join("components.json")).unwrap())
                 .unwrap();
         assert!(components["components"]["workload.prepare"]["wall_ms"].is_number());
-        assert!(components["components"]["run.total"]["wall_ms"].is_number());
+        assert_eq!(components["components"]["run.total"]["wall_ms"], 7_500);
         let _ = fs::remove_dir_all(dir);
     }
 
