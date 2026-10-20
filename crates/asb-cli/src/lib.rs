@@ -115,7 +115,7 @@ mod adapter_layout_tests {
                 "workloads",
                 super::workloads::external_adapter_names().collect(),
                 // Task/session contracts are category-wide, not adapters.
-                &["mod.rs", "session.rs", "controller.rs"],
+                &["mod.rs", "session.rs", "controller.rs", "remote.rs"],
             ),
             ("proxy", super::proxy::names().collect(), &["mod.rs"]),
             (
@@ -153,7 +153,7 @@ mod adapter_layout_tests {
                 }
             }
             for id in ids {
-                let stem = id.replace('-', "_");
+                let stem = id.replace(['-', '.'], "_");
                 assert!(
                     adapters.join(format!("{stem}.rs")).is_file()
                         || adapters.join(format!("{stem}_agent.rs")).is_file(),

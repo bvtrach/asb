@@ -20,6 +20,24 @@ MAX_ARGUMENT_BYTES = 1024 * 1024
 
 
 class ManagedDockerWorkspace:
+    @classmethod
+    def attach(cls, client, container, attempt, workdir):
+        """Use an official harness-created container with verified ASB ownership.
+
+        Its owning workload session remains responsible for Compose/sidecar
+        teardown; generic command execution never enumerates host resources.
+        """
+        labels = container.attrs.get("Config", {}).get("Labels", {}) or {}
+        if labels.get("asb.owner") != "asb" or labels.get("asb.attempt") != attempt:
+            raise ExecutionError("cannot attach to a task environment outside this attempt")
+        workspace = cls(client, container.image, attempt, workdir)
+        host = container.attrs.get("HostConfig", {})
+        workspace.limits = {"memory_bytes": host.get("Memory") or None,
+                            "cpus": (host.get("NanoCpus") or 0) / 10**9 or None,
+                            "pids": host.get("PidsLimit") if (host.get("PidsLimit") or 0) > 0 else None}
+        workspace.container, workspace.cleanup_status = container, "pending"
+        return workspace
+
     def __init__(self, client, image, attempt, workdir, memory_bytes=4 * 1024**3,
                  cpus=2, pids=512):
         if not re.fullmatch(r"asb-[0-9a-f]{32}", attempt):
@@ -151,7 +169,9 @@ class ManagedDockerWorkspace:
                       "pid_scope": "docker-daemon-host"}
             if before_resume is not None:
                 before_resume(target)
-            resumed = container.exec_run(["/bin/kill", "-CONT", str(namespace_pid)])
+            # Minimal official task images may have only the POSIX shell's
+            # kill builtin, not a standalone /bin/kill executable.
+            resumed = container.exec_run(["/bin/sh", "-c", 'kill -CONT "$1"', "asb-resume", str(namespace_pid)])
             if resumed.exit_code != 0:
                 raise ExecutionError("container execution gate could not be resumed")
             stdout, stderr = bytearray(), bytearray()

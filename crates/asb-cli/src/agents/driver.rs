@@ -22,6 +22,12 @@ pub(crate) struct GuestRequest {
     pub run_dir: PathBuf,
     #[serde(default)]
     pub replay: bool,
+    #[serde(default = "default_timeout")]
+    pub timeout_seconds: f64,
+}
+
+fn default_timeout() -> f64 {
+    900.0
 }
 
 #[derive(Deserialize, Serialize)]
@@ -62,6 +68,12 @@ fn absolute(path: &Path) -> bool {
 }
 
 fn prepare(request: &GuestRequest) -> Result<Command, Error> {
+    if !request.timeout_seconds.is_finite() || !(0.001..=86400.0).contains(&request.timeout_seconds)
+    {
+        return Err(Error::Input(
+            "guest agent time budget must be between 0.001 and 86400 seconds".into(),
+        ));
+    }
     if request.config.concurrency != 1 || request.prompt.len() > 64 * 1024 {
         return Err(Error::Input(
             "guest execution requires one bounded task invocation".into(),
@@ -163,6 +175,7 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
         &mut command,
         &mut std::io::stdout(),
         &mut std::io::stderr(),
+        std::time::Duration::from_secs_f64(request.timeout_seconds),
     )?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);

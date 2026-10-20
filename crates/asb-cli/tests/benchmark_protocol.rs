@@ -25,6 +25,16 @@ fn guest_bootstrap_reuses_adapters_without_exposing_host_state() {
     python_protocol("benchmark_guest.py");
 }
 
+#[test]
+fn terminal_catalogs_preserve_original_populations_and_private_verifiers() {
+    python_protocol("terminal_catalog.py");
+}
+
+#[test]
+fn terminal_execution_isolates_inputs_credentials_and_cleanup() {
+    python_protocol("terminal_execution.py");
+}
+
 fn python_protocol(test: &str) {
     let output = std::process::Command::new("python3")
         .arg(

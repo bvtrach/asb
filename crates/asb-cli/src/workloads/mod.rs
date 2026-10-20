@@ -7,7 +7,11 @@ use std::path::{Path, PathBuf};
 
 mod adapters;
 mod controller;
+mod remote;
 mod session;
+pub(crate) fn registered_sources() -> impl Iterator<Item = (&'static str, &'static str)> {
+    adapters::sources()
+}
 pub(crate) use session::BaselineEvidence;
 pub use session::TaskIdentity;
 pub(crate) use session::{ExecutionContext, PreparationContext, WorkloadSession};

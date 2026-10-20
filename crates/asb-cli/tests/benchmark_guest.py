@@ -85,7 +85,7 @@ class GuestBootstrapTests(unittest.TestCase):
                     return b""
 
                 task = SimpleNamespace(workspace=SimpleNamespace(container=container, execute=execute),
-                                       artifacts=root, checked=checked)
+                                       artifacts=root, checked=checked, agent_timeout=1234)
                 request = {"binary":str(binary), "project_root":str(root), "tools_root":str(root / "tools"),
                            "request":{"config":{"agent":"pi"},"connection":{"credential":"private-fixture"}}}
                 result = execute_agent(task, request, lambda _: None, lambda *_: None, None)
@@ -93,6 +93,8 @@ class GuestBootstrapTests(unittest.TestCase):
                 self.assertNotIn("private-fixture", repr([call[0] for call in calls]))
                 private = calls[-1][1]["environment"]["ASB_GUEST_AGENT_REQUEST"]
                 self.assertEqual(json.loads(private)["connection"]["credential"], "private-fixture")
+                self.assertEqual(json.loads(private)["timeout_seconds"], 1234)
+                self.assertEqual(calls[-1][1]["timeout"], 1234)
                 self.assertEqual(calls[-1][1]["gate"], "application")
                 self.assertIsNone(result["metadata"]["token_usage"].get("total_tokens"))
                 self.assertEqual(result["metadata"]["exit_code"], 124 if timed_out else 0)

@@ -68,13 +68,15 @@ impl Drop for Project {
 #[test]
 fn guest_uses_registered_adapter_prepares_before_gate_and_preserves_output_usage_and_failure() {
     let project = Project::new();
+    let mut request = project.request();
+    request["timeout_seconds"] = serde_json::json!(3600);
     let mut process = Process(
         Command::new(env!("CARGO_BIN_EXE_asb"))
             .arg("__asb-agent")
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", &project.0)
-            .env("ASB_GUEST_AGENT_REQUEST", project.request().to_string())
+            .env("ASB_GUEST_AGENT_REQUEST", request.to_string())
             .env("CODEX_REMOTE_PAYLOAD", "must-not-leak")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -129,6 +131,27 @@ fn guest_uses_registered_adapter_prepares_before_gate_and_preserves_output_usage
     assert_eq!(result["token_usage"]["total_tokens"], 22);
     assert_eq!(result["final_response"], "fixture completed");
     assert!(!String::from_utf8_lossy(&bytes).contains("fixture-token"));
+}
+
+#[test]
+fn invalid_task_budgets_fail_before_preparing_or_starting_a_client() {
+    let project = Project::new();
+    for invalid in [-1.0, 0.0, 86401.0] {
+        let mut request = project.request();
+        request["timeout_seconds"] = serde_json::json!(invalid);
+        let output = Command::new(env!("CARGO_BIN_EXE_asb"))
+            .arg("__asb-agent")
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("ASB_GUEST_AGENT_REQUEST", request.to_string())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("time budget"));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("fixture-token"));
+        assert!(!project.0.join("workspace/performed.txt").exists());
+    }
 }
 
 #[test]

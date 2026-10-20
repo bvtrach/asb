@@ -59,7 +59,7 @@ class RealGuestQualification(unittest.TestCase):
                 # Stage only public download caches, then run the real Rust
                 # installers inside this image rather than copying a host venv.
                 task.checked(["mkdir", "-p", "/opt/asb-project/.asb-tools/node/cache", "/opt/asb-project/.asb-cache"])
-                node_archive = next((root / ".asb-tools/node/cache").glob("*.tar.xz"))
+                node_archive = next((root / ".asb-tools/node/cache").glob("*.tar.gz"))
                 upload(container, "/opt/asb-project/.asb-tools/node/cache", [(node_archive.name, node_archive.read_bytes(), 0o600)])
                 archive = io.BytesIO()
                 with tarfile.open(fileobj=archive, mode="w") as tar:

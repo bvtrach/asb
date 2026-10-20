@@ -85,8 +85,16 @@ pub(crate) struct ExecutionResult {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub(crate) enum BaselineEvidence {
-    Measured { passed: Option<bool> },
-    UpstreamTaskDefinition { base_commit: String },
+    Measured {
+        passed: Option<bool>,
+    },
+    UpstreamTaskDefinition {
+        base_commit: String,
+    },
+    UpstreamEnvironmentDefinition {
+        source_revision: String,
+        definition_sha256: String,
+    },
     Unavailable,
 }
 
@@ -99,6 +107,9 @@ impl BaselineEvidence {
     }
 
     pub(crate) fn supports(&self, evaluation_kind: &str) -> bool {
+        let hash = |value: &str, length| {
+            value.len() == length && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        };
         match self {
             Self::Measured {
                 passed: Some(false),
@@ -107,6 +118,14 @@ impl BaselineEvidence {
                 evaluation_kind == "upstream-harness"
                     && base_commit.len() == 40
                     && base_commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+            }
+            Self::UpstreamEnvironmentDefinition {
+                source_revision,
+                definition_sha256,
+            } => {
+                evaluation_kind == "upstream-harness"
+                    && hash(source_revision, 40)
+                    && hash(definition_sha256, 64)
             }
             _ => false,
         }
@@ -238,6 +257,26 @@ mod tests {
         let legacy = serde_json::json!({"workload_baseline_passed":false});
         assert!(BaselineEvidence::from_record(&legacy).supports("bundled-fixture"));
         assert!(!BaselineEvidence::from_record(&serde_json::json!({})).supports("bundled-fixture"));
+    }
+
+    #[test]
+    fn environment_definition_does_not_invent_a_repository_or_measured_test_baseline() {
+        let baseline = BaselineEvidence::UpstreamEnvironmentDefinition {
+            source_revision: "a".repeat(40),
+            definition_sha256: "b".repeat(64),
+        };
+        assert!(baseline.supports("upstream-harness"));
+        assert!(!baseline.supports("bundled-fixture"));
+        assert_eq!(baseline.measured_passed(), None);
+        assert_eq!(
+            BaselineEvidence::from_record(&serde_json::json!({"workload_baseline":baseline})),
+            baseline
+        );
+        let bad = BaselineEvidence::UpstreamEnvironmentDefinition {
+            source_revision: "HEAD".into(),
+            definition_sha256: "b".repeat(64),
+        };
+        assert!(!bad.supports("upstream-harness"));
     }
 
     #[test]

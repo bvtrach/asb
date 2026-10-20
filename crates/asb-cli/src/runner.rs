@@ -1318,19 +1318,20 @@ fn wait_with_output(
     show_output: bool,
     output: &mut dyn Write,
 ) -> std::io::Result<Output> {
-    wait_with_output_streams(child, show_output, output, None)
+    wait_with_output_streams(child, show_output, output, None, MAX_AGENT_RUNTIME)
 }
 
 pub(crate) fn run_guest_process(
     command: &mut Command,
     stdout: &mut dyn Write,
     stderr: &mut dyn Write,
+    runtime: Duration,
 ) -> Result<Output, Error> {
     let child = command
         .spawn()
         .map(OwnedChild)
         .map_err(|error| Error::Run(format!("cannot start guest agent: {error}")))?;
-    wait_with_output_streams(child, true, stdout, Some(stderr))
+    wait_with_output_streams(child, true, stdout, Some(stderr), runtime)
         .map_err(|error| Error::Run(format!("cannot wait for guest agent: {error}")))
 }
 
@@ -1339,6 +1340,7 @@ fn wait_with_output_streams(
     show_output: bool,
     output: &mut dyn Write,
     mut error_output: Option<&mut dyn Write>,
+    runtime: Duration,
 ) -> std::io::Result<Output> {
     let stdout = child
         .stdout
@@ -1357,7 +1359,7 @@ fn wait_with_output_streams(
     let mut stderr_capture = Vec::new();
     let mut finished_streams = 0;
     let mut status = None;
-    let deadline = Instant::now() + MAX_AGENT_RUNTIME;
+    let deadline = Instant::now() + runtime;
     let mut timed_out = false;
     while (finished_streams < 2 || status.is_none()) && !timed_out {
         match receiver.recv_timeout(Duration::from_millis(50)) {
@@ -1398,7 +1400,7 @@ fn wait_with_output_streams(
         stderr_capture.extend_from_slice(
             format!(
                 "agent execution exceeded {} seconds\n",
-                MAX_AGENT_RUNTIME.as_secs()
+                runtime.as_secs_f64()
             )
             .as_bytes(),
         );

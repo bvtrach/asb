@@ -79,6 +79,7 @@ pub(crate) enum Recipe {
     Goose,
 }
 
+#[derive(Clone, Copy)]
 struct ExternalWorkload {
     name: &'static str,
     source: &'static str,
@@ -161,15 +162,24 @@ const EXTERNAL_WORKLOADS: &[ExternalWorkload] = &[
     },
 ];
 
-fn external_workload(name: &str) -> Option<&'static ExternalWorkload> {
+fn external_workload(name: &str) -> Option<ExternalWorkload> {
     EXTERNAL_WORKLOADS
         .iter()
         .find(|workload| workload.name == name)
+        .copied()
+        .or_else(|| {
+            workloads::registered_sources()
+                .find(|(id, _)| *id == name)
+                .map(|(name, source)| ExternalWorkload { name, source })
+        })
 }
 
 /// Return the pinned external workloads that the TUIs can offer for install.
 pub fn external_workload_names() -> impl Iterator<Item = &'static str> {
-    EXTERNAL_WORKLOADS.iter().map(|workload| workload.name)
+    EXTERNAL_WORKLOADS
+        .iter()
+        .map(|workload| workload.name)
+        .chain(workloads::registered_sources().map(|(id, _)| id))
 }
 
 /// Check whether an external workload has its runnable local bundle and
@@ -754,8 +764,8 @@ pub fn workload_list(
         }
     }
     writeln!(output, "Installable external workloads:").map_err(super::io_error)?;
-    for workload in EXTERNAL_WORKLOADS {
-        writeln!(output, "  {}", workload.name).map_err(super::io_error)?;
+    for workload in external_workload_names() {
+        writeln!(output, "  {workload}").map_err(super::io_error)?;
     }
     Ok(())
 }
@@ -1103,10 +1113,7 @@ fn workload_source(
         && valid_name(requested)
         && !Path::new(requested).is_file()
     {
-        let aliases = EXTERNAL_WORKLOADS
-            .iter()
-            .map(|workload| workload.name)
-            .collect::<Vec<_>>();
+        let aliases = external_workload_names().collect::<Vec<_>>();
         if let Some(candidate) = suggestions::closest(requested, &aliases) {
             return Err(Error::Input(format!(
                 "workload source `{requested}` was not found; did you mean external workload `{candidate}`?"
@@ -1442,10 +1449,7 @@ mod tests {
         assert!(bundle_spec("swe-bench").is_none());
         assert!(bundle_spec("terminal-bench").is_some());
         assert!(external_workload("methodology-only").is_none());
-        let installed = EXTERNAL_WORKLOADS
-            .iter()
-            .map(|workload| workload.name)
-            .collect::<std::collections::BTreeSet<_>>();
+        let installed = external_workload_names().collect::<std::collections::BTreeSet<_>>();
         let adapters =
             workloads::external_adapter_names().collect::<std::collections::BTreeSet<_>>();
         assert_eq!(

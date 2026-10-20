@@ -23,7 +23,9 @@ class NormalRunQualification(unittest.TestCase):
         from asb_guest import upload
         root = Path(os.environ["ASB_TEST_SWECATALOG_ROOT"]).absolute()
         suite = os.environ.get("ASB_TEST_BENCHMARK_SUITE", "swe-bench-lite")
-        self.assertIn(suite, ["swe-bench", "swe-bench-lite", "swe-bench-verified"])
+        self.assertIn(suite, ["swe-bench", "swe-bench-lite", "swe-bench-verified", "terminal-bench-1.0"])
+        terminal = suite == "terminal-bench-1.0"
+        instance = "hello-world" if terminal else "astropy__astropy-12907"
         resolved = os.environ.get("ASB_TEST_BENCHMARK_RESOLVED") == "1"
         binary = Path(os.environ["ASB_TEST_BENCHMARK_ASB"]).absolute()
         artifacts = Path(tempfile.mkdtemp(prefix="normal-cli-guest-", dir=root))
@@ -43,7 +45,8 @@ class NormalRunQualification(unittest.TestCase):
                         code = ("from pathlib import Path; p=Path('astropy/modeling/separable.py'); t=p.read_text(); "
                                 "old='cright[-right.shape[0]:, -right.shape[1]:] = 1'; "
                                 "assert t.count(old)==1; p.write_text(t.replace(old, 'cright[-right.shape[0]:, -right.shape[1]:] = right'))")
-                        upload(provider.container, "/tmp", [("command.txt", ("python3 -c " + shlex.quote(code)).encode(), 0o600)])
+                        command = "printf 'Hello, world!\\n' > hello.txt" if terminal else "python3 -c " + shlex.quote(code)
+                        upload(provider.container, "/tmp", [("command.txt", command.encode(), 0o600)])
                     network.connect(provider.container)
                     client.networks.get("bridge").disconnect(provider.container)
                     provider.container.exec_run(["python3", "/tmp/provider.py", "/tmp", "0.0.0.0"], detach=True)
@@ -57,7 +60,7 @@ class NormalRunQualification(unittest.TestCase):
                     address = provider.container.attrs["NetworkSettings"]["Networks"][network_name]["IPAddress"]
                     base = f"http://{address}:{int(port.output.strip())}/v1"
                     configuration = artifacts / "benchmark.toml"
-                    configuration.write_text(f"agent='pi'\nprovider='openrouter'\nmodel='fixture-model'\nworkload='{suite}'\ntrial='astropy__astropy-12907'\n"
+                    configuration.write_text(f"agent='pi'\nprovider='openrouter'\nmodel='fixture-model'\nworkload='{suite}'\ntrial='{instance}'\n"
                                              + f"workspace='{artifacts}/workspace'\nlog_file='{artifacts}/run.log'\n")
                     environment = {"PATH": os.environ["PATH"], "HOME": str(artifacts),
                                    "OPENROUTER_API_KEY": "fixture-token", "OPENROUTER_BASE_URL": base,
@@ -73,20 +76,24 @@ class NormalRunQualification(unittest.TestCase):
                     self.assertEqual(record["process_success"], True, record)
                     self.assertEqual(record["workload_success"], resolved, record)
                     self.assertEqual(record["workload_evaluation"], "upstream-harness")
-                    self.assertEqual(record["workload_baseline"]["kind"], "upstream-task-definition")
+                    self.assertEqual(record["workload_baseline"]["kind"], "upstream-environment-definition" if terminal else "upstream-task-definition")
                     self.assertIsNone(record["workload_baseline_passed"])
                     self.assertEqual(record["success_rate"], 1.0 if resolved else 0.0)
                     calls = json.loads(provider.container.exec_run(["cat", "/tmp/calls.json"]).output)["calls"]
                     self.assertGreaterEqual(calls, 2)
                     self.assertEqual(record["token_usage"]["total_tokens"], calls * 22)
                     identity = record["task"]
-                    self.assertEqual(identity["task_id"], "astropy__astropy-12907")
+                    self.assertEqual(identity["task_id"], instance)
                     matching = [path.parent for path in (root / ".asb/attempts").glob("*/task.json")
                                 if json.loads(path.read_text())["identity"] == identity]
                     self.assertEqual(len(matching), 1)
                     observation = json.loads((matching[0] / "execution.json").read_text())
                     self.assertLessEqual(abs(record["elapsed_ms"] - observation["elapsed_seconds"] * 1000), 1)
-                    self.assertIn("cright" if resolved else "asb-real-agent.txt", (matching[0] / "candidate.patch").read_text())
+                    if terminal:
+                        self.assertEqual(json.loads((matching[0] / "submission.json").read_text())["kind"], "in-place-environment")
+                        self.assertTrue(json.loads((matching[0] / "evaluation.json").read_text())["test_results"])
+                    else:
+                        self.assertIn("cright" if resolved else "asb-real-agent.txt", (matching[0] / "candidate.patch").read_text())
                     self.assertEqual(json.loads((matching[0] / "task-cleanup.json").read_text())["status"], "removed")
             finally:
                 network.remove()

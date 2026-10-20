@@ -7,6 +7,49 @@ use std::time::{Duration, Instant};
 
 const MAX_MESSAGE: u64 = 1024 * 1024;
 
+pub(crate) fn publish_asset(path: &std::path::Path, source: &str) -> Result<(), crate::Error> {
+    let temporary =
+        path.with_extension(crate::workloads::TaskIdentity::local("helper", None).attempt_id);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&temporary)
+        .map_err(|error| crate::Error::Io(error.to_string()))?;
+    file.write_all(source.as_bytes())
+        .and_then(|()| file.sync_all())
+        .and_then(|()| std::fs::rename(&temporary, path))
+        .map_err(|error| crate::Error::Io(error.to_string()))
+}
+
+pub(crate) fn publish_support(root: &std::path::Path) -> Result<(), crate::Error> {
+    for (name, source) in [
+        (
+            "asb_docker.py",
+            include_str!("../../assets/benchmarks/asb_docker.py"),
+        ),
+        (
+            "asb_execution.py",
+            include_str!("../../assets/benchmarks/asb_execution.py"),
+        ),
+        (
+            "asb_task_server.py",
+            include_str!("../../assets/benchmarks/asb_task_server.py"),
+        ),
+        (
+            "asb_guest.py",
+            include_str!("../../assets/benchmarks/asb_guest.py"),
+        ),
+    ] {
+        publish_asset(&root.join(name), source)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn decode_base64(value: &Value) -> Result<Vec<u8>, String> {
     let bytes = value
         .as_str()

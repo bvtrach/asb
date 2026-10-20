@@ -51,7 +51,7 @@ class Container:
     def start(self):
         self.events.append("start")
     def exec_run(self, argv):
-        if argv[1] == "-CONT":
+        if "asb-resume" in argv:
             self.events.append("resume")
             self.resumed = True
         else:

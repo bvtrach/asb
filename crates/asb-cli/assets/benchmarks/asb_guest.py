@@ -45,7 +45,7 @@ def portable_binary(path):
 def stage_public_cache(container, project, tools):
     node = tools / "node/cache"
     if node.is_dir():
-        for archive in node.glob("*.tar.xz"):
+        for archive in sorted(node.glob("*.tar.*"), key=lambda path: path.stat().st_mtime, reverse=True)[:4]:
             if archive.is_file() and not archive.is_symlink() and archive.stat().st_size < 128 * 1024**2:
                 upload(container, "/opt/asb-project/.asb-tools/node/cache", [(archive.name, archive.read_bytes(), 0o600)])
     cache = project / ".asb-cache/npm/_cacache"
@@ -101,6 +101,13 @@ def execute_agent(task, request, before_resume, on_output, cancelled):
             path.write_bytes(result[stream])
             path.chmod(0o600)
         if result["exit_code"] != 0 or result["timed_out"] or result["cancelled"]:
+            # The nested CLI puts command diagnostics in its project log.
+            # Export a bounded tail before the owned environment is removed.
+            detail = container.exec_run(["tail", "-c", "262144", "/opt/asb-project/.asb/install.log"])
+            if detail.exit_code == 0:
+                path = task.artifacts / f"install-{selected}.log"
+                path.write_bytes(detail.output)
+                path.chmod(0o600)
             raise ExecutionError("selected agent runtime installation failed; inspect private install artifacts")
     network = request.get("network")
     if network:
@@ -111,10 +118,11 @@ def execute_agent(task, request, before_resume, on_output, cancelled):
             if previous != network:
                 container.client.networks.get(previous).disconnect(container)
     guest = dict(guest)
+    guest["timeout_seconds"] = request.get("timeout", getattr(task, "agent_timeout", 900))
     guest.update(project_root="/opt/asb-project", runtime_dir="/opt/asb-private", run_dir="/opt/asb-private/attempt")
     environment = dict(environment, ASB_GUEST_AGENT_REQUEST=json.dumps(guest))
     result = task.workspace.execute(["/opt/asb-runtime/asb", "__asb-agent"], environment=environment,
-                                    timeout=request.get("timeout", 900), output_limit=256 * 1024,
+                                    timeout=request.get("timeout", getattr(task, "agent_timeout", 900)), output_limit=256 * 1024,
                                     gate="application", before_resume=before_resume,
                                     on_output=on_output, cancelled=cancelled)
     observation = {key: result.get(key) for key in ["exit_code", "timed_out", "cancelled",

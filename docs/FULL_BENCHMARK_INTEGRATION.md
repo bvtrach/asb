@@ -378,3 +378,55 @@ ASB_TEST_SWECATALOG_ROOT="$BENCHMARK_PROJECT" \
   "$BENCHMARK_PROJECT/.asb-tools/swebench/venv/bin/python" \
   crates/asb-cli/tests/benchmark_live_run.py
 ```
+
+### Original Terminal-Bench catalogs and first runtime
+
+Both original Terminal-Bench catalogs now install through their owning
+adapters: `terminal-bench-1.0` exposes the original 80-task
+`terminal-bench-core@0.1.1` population, and `terminal-bench-2.1` exposes all 89
+tasks at its pinned revision. Their separate official SDKs validate definitions.
+Normalized source-tree hashes pin the original material; public catalogs omit
+reference solutions and private verifiers. Damaged archives/datasets and
+incompatible selections are preserved before replacement; valid user-selected
+subsets remain unchanged. Complete catalogs do not imply complete execution.
+
+Original Terminal-Bench 1.0 now uses its SDK environment, test injection,
+tmux test execution and result parser while ASB's existing selected agent
+adapter owns client execution. Its session shares the generic controller with
+SWE-bench, not a new benchmark-name branch in the runner. Compose resources
+are attempt-scoped and labelled; teardown never invokes global image/build
+pruning. Task build inputs omit reference solutions and benchmark verifier
+files, while retaining application-owned tests. Only SDK task interpolation
+variables enter the private Compose env-file; provider credentials do not.
+Baseline evidence identifies the original environment definition, not a
+fictitious repository or measured initial test result. The original declared
+agent timeout reaches both the guest process and controller.
+
+Actual normal CLI qualification of `hello-world` passed with a deterministic
+correct change (27.5 seconds) and an unrelated change (26.2 seconds), using
+real Pi against an internal synthetic provider and the original official
+grader. Neither case used a live LLM or establishes AI-solving ability.
+The tests check reported token usage, actual guest execution timing, official
+per-test results, and removal of owned containers. Qualification found and
+repaired two minimal-image assumptions: Node now uses official gzip archives
+instead of requiring xz, and the stopped execution gate resumes using the
+shell's kill builtin rather than assuming `/bin/kill` exists. The verifier
+restores exactly the task's original networks after an agent-network override;
+leaving the internal fixture network attached prevented a verifier dependency
+download and was correctly rejected rather than scored as an agent failure.
+
+Offline tests cover both catalogs, private/public separation, safe extraction,
+exact ownership/resource evidence, build-input filtering, private Compose
+variables, original verifier network restoration and truthful cleanup errors.
+Terminal-Bench 2.1's Harbor environment/evaluation session remains unfinished;
+its adapter explicitly refuses execution rather than substituting a smoke
+trial. The common connectivity, collector, full-population scheduling/reporting,
+helper provisioning, image fallback and final merge/release gates remain open.
+
+The shared-controller SWE-bench Lite positive regression also passed after
+these changes (44.3 seconds). Both real Terminal-Bench installers passed
+source-corruption repair and subset-preservation checks (10.2 seconds total).
+The ordinary offline suite passed: 319 unit tests, 80 CLI tests, seven Python
+protocol suites, three guest-driver tests and the remaining layout/graph/
+replay checks. Strict Clippy and `make build` passed. None of these results
+closes the remaining delivery checklist or qualifies the full task populations.

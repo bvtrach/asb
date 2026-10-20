@@ -38,12 +38,12 @@ fn host_usable() -> bool {
 fn install(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
     let (url, hash) = match std::env::consts::ARCH {
         "x86_64" => (
-            "https://nodejs.org/dist/v22.20.0/node-v22.20.0-linux-x64.tar.xz",
-            "00bbd05e306ea68b6e13e17360d0e2f680b493ef95f2fea1c4296ff7437530bc",
+            "https://nodejs.org/dist/v22.20.0/node-v22.20.0-linux-x64.tar.gz",
+            "eeaccb0378b79406f2208e8b37a62479c70595e20be6b659125eb77dd1ab2a29",
         ),
         "aarch64" => (
-            "https://nodejs.org/dist/v22.20.0/node-v22.20.0-linux-arm64.tar.xz",
-            "06907b9c088ce62305bc1530e5c1ae1510245114645768f7750c349c5b6fe667",
+            "https://nodejs.org/dist/v22.20.0/node-v22.20.0-linux-arm64.tar.gz",
+            "4181609e03dcb9880e7e5bf956061ecc0503c77a480c6631d868cb1f65a2c7dd",
         ),
         _ => {
             return Err(Error::Input(
