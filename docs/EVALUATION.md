@@ -151,6 +151,25 @@ and abrupt-crash recovery remain unfinished. See the exact requirements and evid
 [the full integration ledger](FULL_BENCHMARK_INTEGRATION.md).
 No old smoke result is retroactively interpreted as an upstream grade.
 
+### Reporting without optional measurements
+
+Task evaluation does not require runtime measurement collection. Comparison
+loads the actual per-replica `.asb-completions` summaries when `run.json` is
+absent, preserves task/dataset/attempt identity, grades, process/evaluator
+failures, token/step counters and observed execution time, and marks the row
+`result_source: "task-outcome"`. Missing outcomes remain missing; temporary
+unpublished records earn no credit. No host counters, collector samples or
+component timings are invented. If both measurement and outcome records exist,
+their common result fields must agree before they can be reported together.
+
+An independently confirmed grade remains visible even if the agent exited
+unsuccessfully or owned-resource cleanup was not confirmed; those operational
+failures are disclosed separately. This is reporting of local recorded results,
+not verification of resume eligibility or historical attestation. Unknown
+grading scope, unsupported baseline evidence and adapter-smoke outcomes remain
+unscored. Legacy multi-replica outcomes require explicit slots or a unique match
+to the original measured attempt; filenames/order never decide their slots.
+
 ## Dispatch context and resumed measurements
 
 New run summaries, logs and measurement records include `replica_index` and

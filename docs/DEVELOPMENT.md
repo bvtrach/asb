@@ -137,6 +137,13 @@ contradictory retained grade and checks that explicit reconciliation publishes
 no receipts, then restores the original report and reconciles both outcomes
 without further provider requests. `benchmark_retained.py` supplies the
 provider-free retained-artifact protocol tests for all five adapters.
+Repeat the mixed original-task qualification with
+`ASB_TEST_BENCHMARK_MEASUREMENTS=disabled` to omit collection for SWE-bench and
+explicitly disable it for Terminal-Bench. It must still report official grades,
+coverage, reconciliation provenance and success-rate graphs, without creating
+measurement directories. The ordinary provider-free `unmeasured_sweep` CLI
+test separately checks default/disabled collection, nonzero agent exits with
+valid grades, unresolved tasks, comparison regeneration and cached resume.
 Ordinary CI
 uses synthetic provider-free protocol tests.
 `benchmark_live_resources.py` additionally checks actual abrupt controller

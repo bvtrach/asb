@@ -749,7 +749,13 @@ comparison; old records without this information remain mode-unknown.
 `asb compare SWEEP.toml` reads the isolated `<sweep>-results/` directories
 created by `asb sweep`. It writes bounded `comparison.json` data, an offline
 `report.html`, and SVG charts to `results/<sweep>-comparison/`; no provider or
-agent is contacted. The report links every result artifact and explains the
+agent is contacted. The generic outcome reader additionally loads recorded
+per-replica task summaries when optional measurement collection is disabled or
+its run record is absent. It validates actual identity and slot mapping, rejects
+conflicts with existing measurement records and discloses its result source.
+Grades do not disappear merely because collection was disabled, and missing
+collector/host/time-series data is never fabricated. Outcome reporting does not
+prove resume eligibility or historical integrity. The report links every result artifact and explains the
 measurement fields. Its dependency-free JavaScript can enable or disable
 benchmarks, agents, providers, models, and workloads without rerunning the
 sweep. Each chart

@@ -30,8 +30,11 @@ class ParallelOriginalTaskQualification(unittest.TestCase):
         import guest_provider_fixture as provider
         root = Path(os.environ["ASB_TEST_SWECATALOG_ROOT"]).absolute()
         binary = Path(os.environ["ASB_TEST_BENCHMARK_ASB"]).absolute()
+        collection_mode = os.environ.get("ASB_TEST_BENCHMARK_MEASUREMENTS", "enabled")
+        self.assertIn(collection_mode,["enabled","disabled"])
+        collect = collection_mode == "enabled"
         artifacts = Path(tempfile.mkdtemp(prefix="parallel-original-tasks-", dir=root))
-        print(f"Retained mixed original-task qualification: {artifacts}", flush=True)
+        print(f"Retained mixed original-task qualification ({collection_mode} measurements): {artifacts}", flush=True)
         provider.root = artifacts
         fix = ("from pathlib import Path; p=Path('astropy/modeling/separable.py'); t=p.read_text(); "
                "old='cright[-right.shape[0]:, -right.shape[1]:] = 1'; "
@@ -76,9 +79,10 @@ class ParallelOriginalTaskQualification(unittest.TestCase):
                 try:
                     for name, suite, instance in [("swe", "swe-bench-lite", "astropy__astropy-12907"),
                                                   ("terminal", "terminal-bench-1.0", "hello-world")]:
+                        settings = "[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=['agent-memory','agent-workers']\n" if collect else (
+                            "" if name == "swe" else "[measurements]\nenabled=false\ndirectory='measurements'\ncollectors=[]\n")
                         (artifacts / (name + ".toml")).write_text(
-                            f"agent='pi'\nprovider='openrouter'\nmodel='fixture-model'\nworkload='{suite}'\ntrial='{instance}'\n"
-                            "[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=['agent-memory','agent-workers']\n")
+                            f"agent='pi'\nprovider='openrouter'\nmodel='fixture-model'\nworkload='{suite}'\ntrial='{instance}'\n" + settings)
                     manifest = artifacts / "sweep.toml"
                     manifest.write_text("configs=['swe.toml','terminal.toml']\n")
                     environment = {"PATH":os.environ["PATH"], "HOME":str(artifacts),
@@ -221,6 +225,15 @@ class ParallelOriginalTaskQualification(unittest.TestCase):
                         self.assertNotIn("stdout", completion["summary"])
                         self.assertNotIn("stderr", completion["summary"])
                         measured = directory / "measurements"
+                        if not collect:
+                            self.assertFalse(measured.exists(),"unmeasured task grading must not depend on collector files")
+                            import docker.errors
+                            journal = json.loads((Path(evidence[0]) / "resources.json").read_bytes())
+                            for resource in journal["resources"]:
+                                if resource["kind"] == "containers":
+                                    with self.assertRaises(docker.errors.NotFound):
+                                        client.containers.get(resource["name"])
+                            continue
                         target = json.loads((measured / "execution-target.json").read_bytes())
                         self.assertEqual(target["scope"], "verified-local-isolated-process-tree")
                         self.assertEqual(target["cgroup_membership"], "preserved")
@@ -239,19 +252,27 @@ class ParallelOriginalTaskQualification(unittest.TestCase):
                         import docker.errors
                         with self.assertRaises(docker.errors.NotFound):
                             client.containers.get(identifier.group())
-                    self.assertNotEqual(targets[0]["host_pid"], targets[1]["host_pid"])
-                    self.assertNotEqual(targets[0]["cgroup"], targets[1]["cgroup"])
+                    if collect:
+                        self.assertNotEqual(targets[0]["host_pid"], targets[1]["host_pid"])
+                        self.assertNotEqual(targets[0]["cgroup"], targets[1]["cgroup"])
                     comparison = artifacts / "results/sweep-comparison"
                     report = json.loads((comparison / "comparison.json").read_bytes())
                     self.assertEqual({record["workload"] for record in report["benchmarks"]}, {"swe-bench-lite", "terminal-bench-1.0"})
                     self.assertEqual(report["evaluation_coverage"]["evaluated_attempts"], 2)
+                    self.assertTrue(all(row["result_source"] == ("measurements" if collect else "task-outcome") for row in report["benchmarks"]))
+                    self.assertTrue(all(row["metrics"]["success_rate"] == 1.0 for row in report["benchmarks"]))
                     self.assertEqual(report["selection_plan"]["scheduling"], {"jobs":2,"max_active_attempts":2})
                     self.assertEqual(len(report["population_coverage"]), 2)
                     for population in report["population_coverage"].values():
                         self.assertEqual(population["selected_tasks"], 1)
                         self.assertIsNone(population["full_population_resolution_rate"])
                     html = (comparison / "report.html").read_text()
-                    for graph in ["metric-agent-memory.peak_rss_mib.svg", "metric-agent-workers.spawned_worker_count.svg"]:
+                    graphs = ["metric-success_rate.svg"]
+                    if collect:
+                        graphs.extend(["metric-agent-memory.peak_rss_mib.svg", "metric-agent-workers.spawned_worker_count.svg"])
+                    else:
+                        self.assertIn("optional measurements unavailable",html)
+                    for graph in graphs:
                         self.assertIn("<svg", (comparison / graph).read_text())
                         self.assertIn(graph, html)
                     (artifacts / "overlap.json").write_text(json.dumps({"barrier_participants":2,"arrivals":arrivals}))

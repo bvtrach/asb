@@ -1754,3 +1754,59 @@ measurement records are absent; reporting must consume the private outcome
 summary independently of optional collection. Existing unfinished-evaluation,
 native/proxy/source-image recovery, full reconciliation, population-scale,
 cold-cache, merge/main-CI and minor-release requirements remain unchanged.
+
+### Task outcomes independent of optional measurement collection
+
+Comparison now reads actual `.asb-completions` summaries when optional runtime
+measurement records are absent. The generic reader binds bounded records to
+their explicit replica slots, actual task/dataset/attempt and selected agent/
+provider/model. It preserves reported grades, process/evaluator diagnostics,
+execution time, steps and usage without inventing collector/host/series data.
+Rows disclose `result_source` as `task-outcome`, `measurements` or `missing`.
+If both records exist, every shared result field must agree. Duplicate slots
+or attempts, changed task/dataset, malformed cohort, nonregular/oversized files
+and contradictory measurements are rejected rather than mixed into a score.
+
+Cleanup failure does not erase a separately confirmed grade, but remains
+explicitly disclosed; reporting is not a resume permission or historical
+attestation. Unknown grading scope, invalid baseline and old smoke exercises
+remain unscored. A stopped writer's unpublished temporary record earns no
+credit and does not erase completed sibling grades. Single-slot legacy
+outcomes and uniquely measured old replica attempts remain readable; ambiguous
+mapping never falls back to filesystem order. Even historical manifests with
+no saved plan must declare bounded, valid replica counts.
+
+Provider-free comparison tests cover all five original workload IDs, full and
+partial population denominators, repeated/absent/ungraded attempts, false grades,
+nonzero agent exits, cleanup failures, historical mapping and read-only conflict
+rejection. The new replay-only CLI qualification exercises both default and
+explicitly disabled measurement collection, separate process/task outcomes,
+comparison regeneration, SVG/HTML and completed resume with no new clients.
+Final source verification passed 440 unit tests, 87 offline CLI tests, all
+fifteen protocol suites and guest/diagram/parallel/replay/resume/unmeasured
+regressions, strict Clippy and `make build`.
+
+The mixed original SWE-bench Lite/Terminal-Bench 1.0 qualification with real Pi,
+known repairs from a synthetic provider and collection disabled passed in
+93.2 seconds at `target/benchmark-runtime/parallel-original-tasks-n27nxgpa`.
+It includes ordinary-resume refusal of missing receipts, contradictory-report
+refusal, explicit receipt reconciliation without extra provider requests,
+official grade/coverage and SVG/HTML checks, and scoped container-removal
+verification. This is representative warm-cache integration, not AI-solving,
+complete-population execution or interrupted-evaluator recovery. Measured-path,
+package and hosted gates follow after completion.
+
+The corresponding measured mixed-task qualification passed in 109.9 seconds
+at `target/benchmark-runtime/parallel-original-tasks-dgn0hvd5`, including
+collector samples, lifecycle/target scoping, agreement between measurement and
+outcome records, official grades, reconciliation, coverage, graphs and cleanup.
+Final compatibility review additionally covered the earliest schema-1 records,
+which predate proxy-cleanup evidence: their grades remain reportable, while
+missing cleanup evidence stays unconfirmed, never retroactively attested.
+The final full source suite, strict Clippy and build all passed after this
+legacy adjustment. Packaging and exact-head hosted verification follow.
+
+The broader delivery requirements remain open: interrupted outcome/evaluator
+handling, native/proxy/source-image ownership recovery, full sweep reconciliation,
+population-scale presentation, cold-cache qualification, final review/PR merge,
+exact-main CI and the new minor release.

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
 mod coverage;
+mod outcomes;
 mod reconciliation;
 const PLOT_TOP: f64 = 70.0;
 const PLOT_BOTTOM: f64 = 390.0;
@@ -18,6 +19,7 @@ const Y_TICKS: usize = 5;
 
 #[derive(Debug)]
 struct BenchmarkData {
+    result_source: &'static str,
     reconciled: bool,
     replica_index: Option<usize>,
     execution_cohort: Option<crate::measurements::ExecutionCohort>,
@@ -73,6 +75,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
         let selection = plan
             .as_ref()
             .map(|plan| plan.entries[index].selection.clone());
+        let outcomes = outcomes::load(&result_dir, concurrency)?;
         for replica in 1..=concurrency {
             let label = if concurrency == 1 {
                 format!("{index:03}-{}", safe_name(&config))
@@ -84,37 +87,54 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             } else {
                 format!("measurements-concurrency-{replica}")
             });
-            let run_path = measurement_dir.join("run.json");
+            let mut run_path = measurement_dir.join("run.json");
             let artifacts = artifact_links(parent, &measurement_dir);
-            if !run_path.is_file() {
+            let measured = run_path.is_file();
+            let outcome = outcomes.get(&replica);
+            if !measured && outcome.is_none() {
+                let workload_evaluation = selection.as_ref().map_or_else(
+                    || crate::workloads::evaluation_kind(&workload, Path::new("")).into(),
+                    |selection| selection.evaluation_kind.clone(),
+                );
                 benchmark_data.push(BenchmarkData {
-                reconciled: false,
-                replica_index: None,
-                execution_cohort: None,
-                label,
-                directory: result_dir.clone(),
-                agent: agent.clone(),
-                workload: workload.clone(),
-                task: None,
-                selection: selection.clone(),
-                evaluation_completed: false,
-                workload_evaluation: selection.as_ref().map_or_else(|| crate::workloads::evaluation_kind(&workload, Path::new("")).into(), |selection| selection.evaluation_kind.clone()),
-                provider: provider.clone(),
-                model: model.clone(),
-                metrics: BTreeMap::new(),
-                series: BTreeMap::new(),
+                    result_source: "missing",
+                    reconciled: false,
+                    replica_index: None,
+                    execution_cohort: None,
+                    label,
+                    directory: result_dir.clone(),
+                    agent: agent.clone(),
+                    workload: workload.clone(),
+                    task: None,
+                    selection: selection.clone(),
+                    evaluation_completed: false,
+                    workload_evaluation,
+                    provider: provider.clone(),
+                    model: model.clone(),
+                    metrics: BTreeMap::new(),
+                    series: BTreeMap::new(),
                     host_metadata: None,
                     components: None,
-                status: Some(format!(
-                    "missing measurements: expected {} (measurement collection may be disabled, or the run stopped before writing results)",
-                    run_path.display()
-                )),
-                artifacts,
-            });
+                    status: Some(format!(
+                        "missing measurements: expected {} (measurement collection may be disabled, or the run stopped before writing results)",
+                        run_path.display()
+                    )),
+                    artifacts,
+                });
                 continue;
             }
-            let run_value = read_json(&run_path)?;
-            if plan.is_some() {
+            let run_value = if measured {
+                let measured = read_json(&run_path)?;
+                if let Some(outcome) = outcome {
+                    outcome.check_measurement(&measured)?;
+                }
+                measured
+            } else {
+                let outcome = outcome.expect("a recorded outcome is required without measurements");
+                run_path = outcome.path.clone();
+                outcome.summary.clone()
+            };
+            if plan.is_some() || outcome.is_some() {
                 for (field, expected) in [
                     ("agent", &agent),
                     ("workload", &workload),
@@ -123,7 +143,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 ] {
                     if run_value.get(field).and_then(Value::as_str) != Some(expected.as_str()) {
                         return Err(Error::Input(format!(
-                            "measurement {} does not match planned `{field}`; inspect the attempt instead of mixing results from another configuration",
+                            "result {} does not match selected `{field}`; inspect the attempt instead of mixing results from another configuration",
                             run_path.display()
                         )));
                     }
@@ -185,21 +205,25 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                     run_path.display()
                 )));
             }
-            if plan.is_some()
+            if (plan.is_some() || outcome.is_some())
                 && let Some(task) = &task
                 && (task.attempt_id.is_empty()
                     || task.attempt_id.len() > 256
+                    || task.workload != workload
                     || !actual_attempts.insert(task.attempt_id.clone()))
             {
                 return Err(Error::Input(format!(
-                    "measurement {} has a missing, oversized or duplicate actual attempt identity; an attempt cannot be counted twice",
+                    "result {} has a mismatched, missing, oversized or duplicate actual attempt identity; an attempt cannot be counted twice",
                     run_path.display()
                 )));
             }
             let identity_bound = selection
                 .as_ref()
                 .is_none_or(|selection| task.as_ref().is_some_and(|task| selection.matches(task)));
-            let run_status = match run_value.get("status").and_then(Value::as_str) {
+            let run_status = if !measured {
+                outcome.map(outcomes::Recorded::status)
+            } else {
+                match run_value.get("status").and_then(Value::as_str) {
                 Some(status)
                     if run_value.get("workload_evaluation").and_then(Value::as_str)
                         == Some("adapter-smoke") =>
@@ -208,7 +232,9 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                         "{status}: adapter smoke only; upstream task resolution not measured"
                     ))
                 }
-                Some("unscored") => Some("unscored: initial task was already passing or its baseline could not be verified".into()),
+                Some("unscored") => Some(
+                    "unscored: initial task was already passing or its baseline could not be verified".into()
+                ),
                 Some(status) if run_value.get("success") == Some(&Value::Bool(false)) => Some(
                     if let Some(reason) = run_value.get("failure_reason").and_then(Value::as_str) {
                         format!("benchmark run failed: {reason}")
@@ -224,6 +250,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 ),
                 Some(status) => Some(status.to_owned()),
                 None => Some("unknown".into()),
+            }
             };
             let workload_evaluation = run_value
                 .get("workload_evaluation")
@@ -273,9 +300,15 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             let mut series = BTreeMap::new();
             let mut host_metadata = None;
             let mut components = None;
-            for entry in
-                fs::read_dir(&measurement_dir).map_err(|error| Error::Input(error.to_string()))?
-            {
+            let collector_files = if measured {
+                Some(
+                    fs::read_dir(&measurement_dir)
+                        .map_err(|error| Error::Input(error.to_string()))?,
+                )
+            } else {
+                None
+            };
+            for entry in collector_files.into_iter().flatten() {
                 let file = entry
                     .map_err(|error| Error::Input(error.to_string()))?
                     .path();
@@ -339,6 +372,11 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 }
             }
             benchmark_data.push(BenchmarkData {
+                result_source: if measured {
+                    "measurements"
+                } else {
+                    "task-outcome"
+                },
                 reconciled: reconciliation::recorded(
                     &sweep_results,
                     &result_dir,
@@ -468,6 +506,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             "replica_index": benchmark.replica_index,
             "execution_cohort": benchmark.execution_cohort,
             "reconciled": benchmark.reconciled,
+            "result_source": benchmark.result_source,
             "selection": benchmark.selection,
             "evaluation_completed": benchmark.evaluation_completed,
             "workload_evaluation": benchmark.workload_evaluation,
@@ -530,17 +569,26 @@ fn benchmark_identity(path: &Path) -> Result<(String, String, String, String, us
                 ))
             })
     };
+    let concurrency = match table.get("concurrency") {
+        None => 1,
+        Some(value) => value
+            .as_integer()
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| (1..=crate::benchmark::MAX_CONCURRENCY).contains(n))
+            .ok_or_else(|| {
+                Error::Input(format!(
+                    "benchmark {} concurrency must be an integer from 1 through {}",
+                    path.display(),
+                    crate::benchmark::MAX_CONCURRENCY
+                ))
+            })?,
+    };
     Ok((
         field("agent")?,
         field("workload")?,
         field("provider")?,
         field("model")?,
-        table
-            .get("concurrency")
-            .and_then(toml::Value::as_integer)
-            .and_then(|n| usize::try_from(n).ok())
-            .filter(|n| *n > 0)
-            .unwrap_or(1),
+        concurrency,
     ))
 }
 
