@@ -36,9 +36,8 @@ pub(crate) fn launch(
             context.workload_directory,
         )?;
     }
-    let (project_root, project_config) =
-        crate::project::load(context.workload_directory).map_err(|error| error.to_string())?;
-    let tool = crate::project::resolve(&project_root, &project_config.tools_dir).join(tool_id);
+    let project_root = context.project_root;
+    let tool = context.tool_root(tool_id);
     let attempts = project_root.join(".asb/attempts");
     std::fs::create_dir_all(&attempts).map_err(|error| error.to_string())?;
     let artifacts = attempts.join(TaskIdentity::local(workload, Some(task)).attempt_id);
@@ -71,7 +70,7 @@ pub(crate) fn launch(
         .arg("--artifacts")
         .arg(&artifacts)
         .env("PYTHONDONTWRITEBYTECODE", "1");
-    crate::project::apply_network_proxy(&mut command, &project_root)
+    crate::project::apply_network_proxy(&mut command, project_root)
         .map_err(|error| error.to_string())?;
     let mut controller = Controller::spawn(&mut command)?;
     let ready = controller.receive(Instant::now() + Duration::from_secs(900))?;
@@ -152,6 +151,16 @@ impl Session {
             .map(PathBuf::from)
             .or_else(|| std::env::current_exe().ok())
             .ok_or("cannot find portable ASB runtime")?;
+        let tools_root =
+            crate::project::resolve(context.project_root, &context.project_config.tools_dir);
+        let bootstrap = crate::install::guest_bootstrap(
+            &context.config.agent,
+            context.project_root,
+            &tools_root,
+        )
+        .map_err(|error| {
+            format!("cannot prepare selected agent installation artifacts: {error}")
+        })?;
         let mut config = context.config.clone();
         config.workspace = self.guest_workspace.clone();
         config.concurrency = 1;
@@ -176,7 +185,7 @@ impl Session {
             }
         }
         self.controller.send(&json!({"op":"agent", "binary":binary, "project_root":context.project_root,
-            "tools_root":crate::project::resolve(context.project_root, &context.project_config.tools_dir),
+            "tools_root":tools_root, "bootstrap":bootstrap,
             "project_configuration":toml::to_string(&project).map_err(|_| "cannot encode guest project configuration")?,
             "environment":environment, "network":std::env::var("ASB_BENCHMARK_NETWORK").ok(),
             "request":{"config":config,"connection":connection,"prompt":self.invocation.prompt,

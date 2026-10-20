@@ -435,6 +435,8 @@ fn run_mode(
                 trial_set: config.trial_set.as_deref(),
                 workload_directory: &workload_directory,
                 workspace: &workspace,
+                project_root: &project_root,
+                project_config: &project_config,
             })
             .map_err(Error::Run)
         },

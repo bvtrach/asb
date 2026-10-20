@@ -325,6 +325,14 @@ and original environment-definition baseline evidence. A missing prebuilt
 Harbor image can fall back to its original task Dockerfile within the same
 preparation time budget. Temporary SDK overlays stay in the attempt directory;
 no global image/build pruning or host service changes are performed.
+Selected-client bootstrap comes from the installer recipe and owning tool
+adapter's declared distribution assets. The host prefetches verified archives
+only; it does not replace runtimes used by other clients or bridges. The guest
+installs its declared runtimes and selected client with the same Rust recipes,
+without relying on curl in the task image. Preparation carries its project
+root/configuration explicitly, so external catalog locations do not redirect
+SDK or attempt storage. Transfer receipts and temporary files remain scoped
+to the project attempt; public npm caches are copied only for npm recipes.
 Other aliases install pinned prompt metadata. These commands do not handle
 credentials.
 `asb init` prepares `.asb/python/venv` using an installed Python 3.12 or 3.13,

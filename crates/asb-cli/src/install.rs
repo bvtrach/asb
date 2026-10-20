@@ -79,6 +79,74 @@ pub(crate) enum Recipe {
     Goose,
 }
 
+impl Recipe {
+    fn guest_runtimes(self) -> &'static [&'static str] {
+        match self {
+            Self::Npm { .. } => &["node"],
+            Self::Python { .. } => &["uv"],
+            Self::Goose | Self::Host { .. } | Self::Custom { .. } => &[],
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct GuestBootstrap {
+    runtime_tools: Vec<&'static str>,
+    assets: Vec<tools::GuestAsset>,
+    public_package_cache: bool,
+}
+
+/// Prefetch primary-source artifacts on the host, not via a task image's curl.
+/// The owning recipes still perform extraction/package installation in guest.
+pub(crate) fn guest_bootstrap(
+    id: &str,
+    project_root: &Path,
+    tools_root: &Path,
+) -> Result<GuestBootstrap, Error> {
+    let adapter = agents::find(id)
+        .ok_or_else(|| Error::Input("selected agent has no installation adapter".into()))?;
+    let recipe = adapter.recipe();
+    fs::create_dir_all(tools_root).map_err(|error| Error::Io(error.to_string()))?;
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(tools_root.join(".asb-guest-bootstrap.lock"))
+        .map_err(|error| Error::Io(format!("cannot reserve guest bootstrap: {error}")))?;
+    lock.lock()
+        .map_err(|error| Error::Io(format!("cannot lock project bootstrap cache: {error}")))?;
+    let _network = project::network_project(project_root);
+    let mut progress = |_percent: u8, _stage: &str| {};
+    let mut plan = GuestBootstrap {
+        runtime_tools: recipe.guest_runtimes().to_vec(),
+        assets: Vec::new(),
+        public_package_cache: matches!(recipe, Recipe::Npm { .. }),
+    };
+    for id in &plan.runtime_tools {
+        let tool = tools::find(id)
+            .ok_or_else(|| Error::Input("guest runtime is not registered".into()))?;
+        let root = tools_root.join(id);
+        // Prefetch archives without replacing any host runtime executables.
+        for mut asset in tool.guest_assets(&root)? {
+            if let Some((url, checksum)) = asset.distribution {
+                tools::runtime::cached_archive(&asset.source, url, checksum, &mut progress)?;
+            }
+            asset.target = Path::new(id).join(asset.target);
+            plan.assets.push(asset);
+        }
+    }
+    if matches!(recipe, Recipe::Goose) {
+        let archive = goose_archive(&tools_root.join(id), &mut progress)?;
+        plan.assets.push(tools::GuestAsset {
+            source: archive,
+            target: Path::new(id).join("cache/goose.tar.gz"),
+            distribution: None,
+        });
+    }
+    Ok(plan)
+}
+
 #[derive(Clone, Copy)]
 struct ExternalWorkload {
     name: &'static str,
@@ -914,7 +982,7 @@ pub(crate) fn ensure_runtime_dependency(
     Ok(())
 }
 
-fn install_goose(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
+fn goose_archive(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
     let (url, checksum) = match std::env::consts::ARCH {
         "x86_64" => (GOOSE_X86_64_URL, GOOSE_X86_64_SHA256),
         "aarch64" => (GOOSE_AARCH64_URL, GOOSE_AARCH64_SHA256),
@@ -924,14 +992,15 @@ fn install_goose(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<Path
             )));
         }
     };
-    let archive = root.join("goose.tar.gz");
-    let extract = root.join("extract");
-    fs::create_dir_all(&extract)
+    let archive = root.join("cache/goose.tar.gz");
+    tools::runtime::cached_archive(&archive, url, checksum, progress)
+}
+
+fn install_goose(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
+    let archive = goose_archive(root, progress)?;
+    let extract = root.join(format!("extract-{}", tools::runtime::unique_id()));
+    fs::create_dir(&extract)
         .map_err(|error| Error::Io(format!("cannot create Goose extraction directory: {error}")))?;
-    progress(20, "downloading pinned Goose binary");
-    install_source(url, &archive, "Goose binary")?;
-    progress(45, "verifying Goose checksum");
-    verify_sha256(&archive, checksum, "Goose binary")?;
     progress(60, "extracting Goose binary");
     let status = Command::new("tar")
         .args(["--extract", "--gzip", "--file"])
@@ -961,7 +1030,6 @@ fn install_goose(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<Path
         ))
     })?;
     make_executable(&destination)?;
-    let _ = fs::remove_file(archive);
     let _ = fs::remove_dir_all(extract);
     progress(100, "ready");
     Ok(destination)
@@ -1165,22 +1233,54 @@ fn missing_dependency(tool: &str, operation: &str, error: std::io::Error) -> Err
 }
 
 pub(crate) fn install_source(source: &str, destination: &Path, kind: &str) -> Result<(), Error> {
+    install_source_with_limit(source, destination, kind, None)
+}
+
+pub(crate) fn install_runtime_source(source: &str, destination: &Path) -> Result<(), Error> {
+    install_source_with_limit(
+        source,
+        destination,
+        "runtime archive",
+        Some(256 * 1024 * 1024),
+    )
+}
+
+fn install_source_with_limit(
+    source: &str,
+    destination: &Path,
+    kind: &str,
+    limit: Option<u64>,
+) -> Result<(), Error> {
     if source.starts_with("https://") || source.starts_with("http://") {
-        let status = Command::new("curl")
-            .args([
-                "--fail",
-                "--location",
-                "--silent",
-                "--show-error",
-                "--output",
-            ])
-            .arg(destination)
+        let mut command = Command::new("curl");
+        command.args([
+            "--fail",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--output",
+        ]);
+        command.arg(destination);
+        if let Some(limit) = limit {
+            command.args(["--max-time", "300", "--max-filesize", &limit.to_string()]);
+        }
+        let status = command
             .arg(source)
             .logged_status()
             .map_err(|error| missing_dependency("curl", kind, error))?;
         if !status.success() {
             return Err(Error::Io(format!(
                 "could not download {kind} from {source}"
+            )));
+        }
+        if let Some(limit) = limit
+            && fs::metadata(destination)
+                .map_err(|error| Error::Io(error.to_string()))?
+                .len()
+                > limit
+        {
+            return Err(Error::Input(format!(
+                "{kind} exceeds the installation size limit"
             )));
         }
         return Ok(());
@@ -1191,6 +1291,11 @@ pub(crate) fn install_source(source: &str, destination: &Path, kind: &str) -> Re
     if !metadata.is_file() {
         return Err(Error::Input(format!(
             "{kind} source is not a file: {source}"
+        )));
+    }
+    if limit.is_some_and(|limit| metadata.len() > limit) {
+        return Err(Error::Input(format!(
+            "{kind} exceeds the installation size limit"
         )));
     }
     fs::copy(source_path, destination).map_err(|error| {
@@ -1223,6 +1328,54 @@ pub(crate) fn make_executable(path: &Path) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guest_runtime_requirements_come_from_every_registered_agent_recipe() {
+        for id in agents::names() {
+            let recipe = agents::find(id).unwrap().recipe();
+            let expected: &[&str] = match recipe {
+                Recipe::Npm { .. } => &["node"],
+                Recipe::Python { .. } => &["uv"],
+                Recipe::Goose => &[],
+                _ => panic!("registered agent {id} needs an explicit guest bootstrap recipe"),
+            };
+            assert_eq!(recipe.guest_runtimes(), expected);
+            for runtime in expected {
+                let tool = tools::find(runtime).unwrap();
+                let assets = tool
+                    .guest_assets(Path::new("/fixture/tools/runtime"))
+                    .unwrap();
+                assert!(!assets.is_empty());
+                for asset in assets {
+                    assert!(asset.source.starts_with("/fixture/tools/runtime"));
+                    assert!(!asset.target.is_absolute());
+                    assert!(asset.target.starts_with("cache"));
+                    let (url, hash) = asset
+                        .distribution
+                        .expect("runtime archive has no primary source");
+                    assert!(url.starts_with("https://"));
+                    assert_eq!(hash.len(), 64);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bounded_runtime_copy_rejects_oversized_input_without_touching_existing_output() {
+        let root =
+            std::env::temp_dir().join(format!("asb-copy-bound-{}", tools::runtime::unique_id()));
+        fs::create_dir(&root).unwrap();
+        let source = root.join("source");
+        let destination = root.join("destination");
+        fs::write(&source, b"four").unwrap();
+        fs::write(&destination, b"preserved").unwrap();
+        assert!(
+            install_source_with_limit(source.to_str().unwrap(), &destination, "fixture", Some(3))
+                .is_err()
+        );
+        assert_eq!(fs::read(&destination).unwrap(), b"preserved");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn npm_install_manifest_pins_published_aws_sdk_artifacts() {

@@ -537,3 +537,59 @@ Remaining common gaps still include reliable language/package bootstrap in
 minimal task images when host public caches are absent, local provider/tape
 forwarding, collector targeting, full-population scheduling/resume/reporting,
 abrupt-crash recovery, SWE-bench image-build fallback and final delivery gates.
+
+### Recipe-owned bootstrap for minimal task images
+
+The installer now builds a typed guest bootstrap plan from the selected agent's
+existing recipe. npm clients require the registered Node distribution, Python
+clients require the registered uv distribution, and the standalone recipe
+supplies its pinned archive. Tool adapters own archive URLs, hashes and cache
+layouts; the workload controller receives only declared runtimes and assets.
+There are no new agent/provider/benchmark-name branches in the runner.
+
+Prefetch downloads and verifies archives without replacing a host runtime or
+requiring a task-image curl. Per-project/per-file locks serialize publication;
+downloads are staged, checksum-verified and atomically published. Damaged and
+failed downloads are retained. Runtime transfers have size/time limits. The
+standalone installer now retains/reuses its verified archive and extracts into
+a fresh private stage rather than overwriting a previous extraction tree.
+
+The guest validates asset paths, regular files/project-cache boundaries, duplicate
+targets and bounded reads before copying. Each attempt retains a private
+`bootstrap.json` manifest without host paths. Large temporary transfer files
+stay under the project attempt directory. Only npm recipes copy the separately
+validated public npm cache; Python/standalone installation no longer transfers
+an irrelevant npm cache. Credentials and host virtual environments are never
+staged. Original recipes still perform actual installation inside the task.
+
+Actual cold-cache normal `asb run` qualification passed original Terminal-Bench
+1.0 with real Pi and official grading (50.2 seconds). The project Node/npm
+caches were preserved before the run, so it needed actual primary-source
+downloads rather than prepopulated archives or npm packages. The cache-only
+prefetch variant passed again (55.3 seconds), explicitly checking that it did
+not create/replace a host Node runtime. Prior npm cache data was restored;
+prior Node directories remain preserved in qualification-project backups.
+
+Actual uv + mini-SWE installation in the original SWE-bench environment passed
+(46.7 seconds), and the standalone archive install/version check passed
+(10.9 seconds). Both were then qualified with an installation-only PATH that
+excludes curl and all host Python interpreters (48.8 seconds total). These are
+installation/CLI usability checks, not live-provider execution or AI task
+resolution. The ordinary suite uses only fake files/programs and local protocol
+fixtures; registered-agent recipe coverage, asset escapes/symlinks/duplicates,
+transfer bounds and stale-cache preservation are independently checked.
+
+Preparation now carries the selected project root/configuration explicitly.
+SWE-bench and both Terminal-Bench adapters resolve SDK tools and attempt
+storage from that context, not by guessing a project from the catalog folder.
+A regression covers catalogs outside the project with a custom tools directory.
+The previous pushed runtime-staging milestone's exact-head hosted CI passed.
+Local endpoint/tape forwarding, measured container targets, full-population
+scheduling/resume/reporting, abrupt-crash recovery, SWE-bench source-image
+fallback and final PR/merge/main-CI/minor-release gates remain open.
+
+The no-curl Python/standalone checks were repeated with the final preparation
+split (46.3 seconds), including an explicit check that uv provisioned Python
+3.12 rather than relying on an interpreter from the original task image. This
+qualifies installation only; no provider was contacted. The complete ordinary
+suite, strict Clippy and full development build passed for the bootstrap work.

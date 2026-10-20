@@ -12,7 +12,7 @@ import unittest
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).parents[1] / "assets/benchmarks"))
 from asb_execution import ExecutionError
-from asb_guest import execute_agent, stage_public_cache
+from asb_guest import execute_agent, stage_public_cache, stage_bootstrap
 from asb_runtime import elf as inspect_elf
 
 
@@ -42,6 +42,51 @@ class Container:
 
 
 class GuestBootstrapTests(unittest.TestCase):
+    def test_declared_assets_and_runtime_order_do_not_depend_on_agent_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tools = root/"tools"
+            source = tools/"example/cache/package.tar.gz"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"public pinned distribution fixture")
+            container = Container()
+            calls = []
+            task = SimpleNamespace(workspace=SimpleNamespace(container=container),artifacts=root,
+                                   checked=lambda argv:calls.append(argv))
+            plan = {"runtime_tools":["example-runtime"],"assets":[{"source":str(source),"target":"example/cache/package.tar.gz"}]}
+            self.assertEqual(stage_bootstrap(task,plan,tools),["example-runtime"])
+            self.assertEqual(container.files,[("/opt/asb-project/.asb-tools","example/cache/package.tar.gz",source.read_bytes())])
+            receipt = json.loads((root/"bootstrap.json").read_text())
+            self.assertNotIn(str(root),json.dumps(receipt))
+            self.assertEqual(receipt["assets"][0]["bytes"],len(source.read_bytes()))
+
+    def test_bootstrap_rejects_escape_symlinks_duplicate_targets_and_invalid_dependencies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tools = root/"tools"
+            tools.mkdir()
+            source = tools/"package"
+            source.write_bytes(b"fixture")
+            link = tools/"link"
+            link.symlink_to(source)
+            external = root/"private"
+            external.write_bytes(b"must-not-be-staged")
+            assets = [{"source":str(source),"target":"../escape"},{"source":str(source),"target":"/escape"},
+                      {"source":str(external),"target":"package"},{"source":str(link),"target":"package"}]
+            for asset in assets:
+                container = Container()
+                task = SimpleNamespace(workspace=SimpleNamespace(container=container),artifacts=root,checked=lambda _:None)
+                with self.subTest(asset=asset),self.assertRaises(ExecutionError):
+                    stage_bootstrap(task,{"runtime_tools":[],"assets":[asset]},tools)
+                self.assertEqual(container.files,[])
+            valid = {"source":str(source),"target":"package"}
+            for plan in [{"runtime_tools":[],"assets":[valid,valid]},
+                         {"runtime_tools":["runtime","runtime"],"assets":[]},
+                         {"runtime_tools":["../bad"],"assets":[]},
+                         {"runtime_tools":[],"assets":[],"public_package_cache":"not-a-boolean"}, {}]:
+                with self.assertRaises(ExecutionError):
+                    stage_bootstrap(task,plan,tools)
+
     def test_runtime_parser_accepts_static_elf_and_rejects_malformed_files(self):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "asb"
@@ -59,10 +104,10 @@ class GuestBootstrapTests(unittest.TestCase):
             cache.mkdir(parents=True)
             (cache / "entry").write_text('hash\t' + json.dumps({"metadata":{"reqHeaders":{"Authorization":"private-fixture"}}}))
             container = Container()
-            stage_public_cache(container, root, root / "tools")
+            stage_public_cache(container, root)
             self.assertEqual(container.files, [])
             (cache / "entry").write_text('hash\t' + json.dumps({"metadata":{"reqHeaders":{}}}))
-            stage_public_cache(container, root, root / "tools")
+            stage_public_cache(container, root)
             self.assertTrue(any(name == "npm/_cacache/index-v5/entry" for _, name, _ in container.files))
 
     def test_bootstrap_uses_exact_selected_tool_and_private_request_not_argv(self):
@@ -91,6 +136,7 @@ class GuestBootstrapTests(unittest.TestCase):
                 task = SimpleNamespace(workspace=SimpleNamespace(container=container, execute=execute),
                                        artifacts=root, checked=checked, agent_timeout=1234)
                 request = {"binary":str(binary), "project_root":str(root), "tools_root":str(root / "tools"),
+                           "bootstrap":{"runtime_tools":["node"],"assets":[]},
                            "request":{"config":{"agent":"pi"},"connection":{"credential":"private-fixture"}}}
                 result = execute_agent(task, request, lambda _: None, lambda *_: None, None)
                 self.assertEqual([call[0][-1] for call in calls], ["node", "pi", "__asb-agent"])

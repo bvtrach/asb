@@ -1,11 +1,13 @@
 //! Shared publication of pinned, project-local language runtime archives.
 use crate::Error;
-use crate::install::{LoggedStatus, install_source, verify_sha256_preserving as verify_sha256};
+use crate::install::{
+    LoggedStatus, install_runtime_source, verify_sha256_preserving as verify_sha256,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn unique_id() -> String {
+pub(crate) fn unique_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -20,6 +22,57 @@ fn unique_id() -> String {
     )
 }
 
+pub(super) fn guest_archive(
+    root: &Path,
+    url: &'static str,
+    checksum: &'static str,
+) -> Vec<super::GuestAsset> {
+    let name = url.rsplit('/').next().expect("runtime archive name");
+    vec![super::GuestAsset {
+        source: root.join("cache").join(name),
+        target: Path::new("cache").join(name),
+        distribution: Some((url, checksum)),
+    }]
+}
+
+pub(crate) fn cached_archive(
+    destination: &Path,
+    url: &str,
+    checksum: &str,
+    progress: &mut dyn FnMut(u8, &str),
+) -> Result<PathBuf, Error> {
+    let cache = destination.parent().expect("archive parent");
+    fs::create_dir_all(cache).map_err(|error| Error::Io(error.to_string()))?;
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(destination.with_extension("download-lock"))
+        .map_err(|error| Error::Io(error.to_string()))?;
+    lock.lock()
+        .map_err(|error| Error::Io(format!("cannot lock runtime download: {error}")))?;
+    if !destination.is_symlink()
+        && destination.is_file()
+        && verify_sha256(destination, checksum, "runtime archive").is_ok()
+    {
+        return Ok(destination.to_path_buf());
+    }
+    if fs::symlink_metadata(destination).is_ok() {
+        fs::rename(
+            destination,
+            destination.with_extension(format!("backup-{}", unique_id())),
+        )
+        .map_err(|error| Error::Io(format!("cannot preserve damaged runtime archive: {error}")))?;
+    }
+    progress(15, "downloading pinned runtime");
+    let temporary = destination.with_extension(format!("part-{}", unique_id()));
+    install_runtime_source(url, &temporary)?;
+    verify_sha256(&temporary, checksum, "runtime archive")?;
+    fs::rename(&temporary, destination).map_err(|error| Error::Io(error.to_string()))?;
+    Ok(destination.to_path_buf())
+}
+
 pub(super) fn archive(
     root: &Path,
     url: &str,
@@ -32,24 +85,8 @@ pub(super) fn archive(
             "project-local bootstrap runtimes currently support Linux".into(),
         ));
     }
-    let cache = root.join("cache");
-    fs::create_dir_all(&cache).map_err(|error| Error::Io(error.to_string()))?;
     let filename = url.rsplit('/').next().expect("runtime archive name");
-    let download = cache.join(filename);
-    if !download.is_file() || verify_sha256(&download, checksum, "runtime archive").is_err() {
-        if download.exists() {
-            fs::rename(
-                &download,
-                download.with_extension(format!("backup-{}", unique_id())),
-            )
-            .map_err(|error| {
-                Error::Io(format!("cannot preserve damaged runtime archive: {error}"))
-            })?;
-        }
-        progress(15, "downloading pinned runtime");
-        install_source(url, &download, "language runtime")?;
-    }
-    verify_sha256(&download, checksum, "runtime archive")?;
+    let download = cached_archive(&root.join("cache").join(filename), url, checksum, progress)?;
     let runtime = root.join("runtime");
     let receipt = root.join("ASB-RUNTIME");
     if fs::read_to_string(&receipt).ok().as_deref() != Some(checksum)

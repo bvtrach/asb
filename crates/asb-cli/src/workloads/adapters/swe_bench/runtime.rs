@@ -13,9 +13,7 @@ pub(super) fn prepare(
     if !installed.tasks.iter().any(|item| item.id == task) {
         return Err("selected instance is absent from the installed dataset".into());
     }
-    let (root, config) =
-        crate::project::load(context.workload_directory).map_err(|error| error.to_string())?;
-    let tool = crate::project::resolve(&root, &config.tools_dir).join("swebench");
+    let tool = context.tool_root("swebench");
     catalog::ensure_helpers(&tool).map_err(|error| error.to_string())?;
     crate::workloads::remote::launch(
         "swebench",

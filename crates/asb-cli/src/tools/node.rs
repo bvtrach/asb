@@ -14,7 +14,8 @@ pub(super) static ADAPTER: StaticTool = StaticTool::new(
     ToolKind::Support,
 )
 .with_runtime_path()
-.with_host_probe(host_usable);
+.with_host_probe(host_usable)
+.with_guest_assets(guest_assets);
 
 fn host_usable() -> bool {
     std::process::Command::new("node")
@@ -35,8 +36,8 @@ fn host_usable() -> bool {
         })
 }
 
-fn install(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
-    let (url, hash) = match std::env::consts::ARCH {
+fn distribution() -> Result<(&'static str, &'static str), Error> {
+    Ok(match std::env::consts::ARCH {
         "x86_64" => (
             "https://nodejs.org/dist/v22.20.0/node-v22.20.0-linux-x64.tar.gz",
             "eeaccb0378b79406f2208e8b37a62479c70595e20be6b659125eb77dd1ab2a29",
@@ -50,7 +51,16 @@ fn install(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, E
                 "Node.js runtime requires Linux x86_64 or aarch64".into(),
             ));
         }
-    };
+    })
+}
+
+fn guest_assets(root: &Path) -> Result<Vec<super::GuestAsset>, Error> {
+    let (url, checksum) = distribution()?;
+    Ok(super::runtime::guest_archive(root, url, checksum))
+}
+
+fn install(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
+    let (url, hash) = distribution()?;
     super::runtime::archive(
         root,
         url,

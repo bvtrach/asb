@@ -59,9 +59,7 @@ impl super::WorkloadAdapter for TerminalBenchAdapter {
         if !installed.tasks.iter().any(|item| item.id == task) {
             return Err("selected instance is absent from the installed dataset".into());
         }
-        let (root, config) =
-            crate::project::load(context.workload_directory).map_err(|error| error.to_string())?;
-        let tool = crate::project::resolve(&root, &config.tools_dir).join(self.tool);
+        let tool = context.tool_root(self.tool);
         catalog::ensure_helpers(&tool).map_err(|error| error.to_string())?;
         if !catalog::runtime_available(self, &tool).map_err(|error| error.to_string())? {
             return Err(format!(

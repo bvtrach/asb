@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 import uuid
+import fcntl
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).parents[1] / "assets/benchmarks"))
@@ -31,6 +32,26 @@ class NormalRunQualification(unittest.TestCase):
         artifacts = Path(tempfile.mkdtemp(prefix="normal-cli-guest-", dir=root))
         print(f"Retained normal-run qualification: {artifacts}", flush=True)
         print(f"Population: {suite}; deterministic known-good repair: {resolved} (not an AI solution)", flush=True)
+        cold = os.environ.get("ASB_TEST_COLD_BOOTSTRAP") == "1"
+        if cold:
+            # Opt-in qualification owns this dedicated project. Preserve its
+            # public caches before exercising actual primary-source downloads.
+            with (root/".asb-tools/.asb-guest-bootstrap.lock").open("a") as lock:
+                fcntl.flock(lock,fcntl.LOCK_EX)
+                for cache in [root/".asb-tools/node",root/".asb-cache/npm"]:
+                    if cache.exists():
+                        self.assertFalse(cache.is_symlink())
+                        backup = cache.with_name(cache.name+".before-cold-"+uuid.uuid4().hex)
+                        cache.rename(backup)
+                        print(f"Preserved public cache: {backup}",flush=True)
+                        if cache.name == "npm":
+                            def restore_package_cache(cache=cache,backup=backup):
+                                with (root/".asb-tools/.asb-guest-bootstrap.lock").open("a") as lock:
+                                    fcntl.flock(lock,fcntl.LOCK_EX)
+                                    if not cache.exists():
+                                        backup.rename(cache)
+                                        print(f"Restored prior public package cache: {cache}",flush=True)
+                            self.addCleanup(restore_package_cache)
         network_name = "asb-fixture-" + uuid.uuid4().hex
         with DockerSession() as client:
             network = client.networks.create(network_name, internal=True, labels={"asb.owner": "asb"})
@@ -79,6 +100,8 @@ class NormalRunQualification(unittest.TestCase):
                                    "ASB_BENCHMARK_NETWORK": network_name, "NPM_CONFIG_OFFLINE": "true"}
                     if os.environ.get("ASB_TEST_GUEST_BINARY"):
                         environment["ASB_GUEST_BINARY"] = os.environ["ASB_TEST_GUEST_BINARY"]
+                    if cold:
+                        environment.pop("NPM_CONFIG_OFFLINE")
                     result = subprocess.run([binary, "run", configuration, "--json"], cwd=root,
                                             env=environment, capture_output=True, timeout=240)
                     (artifacts / "asb.stdout").write_bytes(result.stdout)
@@ -100,6 +123,12 @@ class NormalRunQualification(unittest.TestCase):
                                 if json.loads(path.read_text())["identity"] == identity]
                     self.assertEqual(len(matching), 1)
                     receipt = json.loads((matching[0]/"runtime.json").read_text())
+                    bootstrap = json.loads((matching[0]/"bootstrap.json").read_text())
+                    self.assertEqual(bootstrap["runtime_tools"],["node"])
+                    self.assertEqual(len(bootstrap["assets"]),1)
+                    if cold:
+                        self.assertFalse((root/".asb-tools/node/runtime").exists(),
+                                         "guest prefetch unexpectedly replaced or installed a host runtime")
                     if os.environ.get("ASB_TEST_EXPECT_RUNTIME_KIND"):
                         self.assertEqual(receipt["kind"],os.environ["ASB_TEST_EXPECT_RUNTIME_KIND"])
                     observation = json.loads((matching[0] / "execution.json").read_text())

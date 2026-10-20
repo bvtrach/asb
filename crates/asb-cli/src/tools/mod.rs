@@ -13,7 +13,7 @@ mod mpstat;
 mod node;
 mod perf;
 mod perfetto;
-mod runtime;
+pub(crate) mod runtime;
 mod swebench;
 mod terminal_bench;
 mod uv;
@@ -28,6 +28,9 @@ pub(crate) trait ToolAdapter: Sync {
     fn id(&self) -> &'static str;
     fn recipe(&self) -> Recipe;
     fn kind(&self) -> ToolKind;
+    fn guest_assets(&self, _root: &Path) -> Result<Vec<GuestAsset>, crate::Error> {
+        Ok(Vec::new())
+    }
     fn runtime_path(&self, _root: &Path) -> Option<std::path::PathBuf> {
         None
     }
@@ -59,6 +62,15 @@ pub(crate) trait ToolAdapter: Sync {
 type PostInstallHook =
     fn(&Path, &mut dyn FnMut(u8, &str), &mut dyn std::io::Write) -> Result<(), crate::Error>;
 
+#[derive(serde::Serialize)]
+pub(crate) struct GuestAsset {
+    pub source: std::path::PathBuf,
+    pub target: std::path::PathBuf,
+    #[serde(skip)]
+    pub distribution: Option<(&'static str, &'static str)>,
+}
+type GuestAssetsHook = fn(&Path) -> Result<Vec<GuestAsset>, crate::Error>;
+
 pub(crate) struct StaticTool {
     id: &'static str,
     recipe: Recipe,
@@ -66,6 +78,7 @@ pub(crate) struct StaticTool {
     post_install: Option<PostInstallHook>,
     runtime_path: bool,
     host_probe: Option<fn() -> bool>,
+    guest_assets: Option<GuestAssetsHook>,
 }
 impl StaticTool {
     pub(crate) const fn new(id: &'static str, recipe: Recipe, kind: ToolKind) -> Self {
@@ -76,6 +89,7 @@ impl StaticTool {
             post_install: None,
             runtime_path: false,
             host_probe: None,
+            guest_assets: None,
         }
     }
     pub(crate) const fn with_post_install(mut self, hook: PostInstallHook) -> Self {
@@ -90,8 +104,16 @@ impl StaticTool {
         self.host_probe = Some(probe);
         self
     }
+    pub(crate) const fn with_guest_assets(mut self, hook: GuestAssetsHook) -> Self {
+        self.guest_assets = Some(hook);
+        self
+    }
 }
 impl ToolAdapter for StaticTool {
+    fn guest_assets(&self, root: &Path) -> Result<Vec<GuestAsset>, crate::Error> {
+        self.guest_assets
+            .map_or_else(|| Ok(Vec::new()), |hook| hook(root))
+    }
     fn id(&self) -> &'static str {
         self.id
     }

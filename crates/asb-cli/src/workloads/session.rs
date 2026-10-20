@@ -55,6 +55,14 @@ pub(crate) struct PreparationContext<'a> {
     pub trial_set: Option<&'a str>,
     pub workload_directory: &'a Path,
     pub workspace: &'a Path,
+    pub project_root: &'a Path,
+    pub project_config: &'a crate::project::ProjectConfig,
+}
+
+impl PreparationContext<'_> {
+    pub(crate) fn tool_root(&self, id: &str) -> PathBuf {
+        crate::project::resolve(self.project_root, &self.project_config.tools_dir).join(id)
+    }
 }
 
 pub(crate) struct TaskInvocation {
@@ -217,6 +225,26 @@ impl WorkloadSession for FileSession {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn external_catalog_location_cannot_select_another_projects_tools() {
+        let config = crate::project::ProjectConfig {
+            tools_dir: "local-tools".into(),
+            ..Default::default()
+        };
+        let context = super::PreparationContext {
+            workload: "fixture",
+            trial: None,
+            trial_set: None,
+            workload_directory: std::path::Path::new("/shared/catalogs/outside-the-project"),
+            workspace: std::path::Path::new("/fixture/project/workspace"),
+            project_root: std::path::Path::new("/fixture/project"),
+            project_config: &config,
+        };
+        assert_eq!(
+            context.tool_root("fixture-sdk"),
+            std::path::Path::new("/fixture/project/local-tools/fixture-sdk")
+        );
+    }
     use super::*;
 
     #[test]
@@ -324,6 +352,8 @@ mod tests {
             trial_set: None,
             workload_directory: &workloads,
             workspace: &workspace,
+            project_root: &root,
+            project_config: &crate::project::ProjectConfig::default(),
         })
         .unwrap();
         assert_eq!(session.invocation().workspace, workspace);
@@ -345,6 +375,8 @@ mod tests {
             trial_set: None,
             workload_directory: &workloads,
             workspace: &workspace,
+            project_root: &root,
+            project_config: &crate::project::ProjectConfig::default(),
         })
         .unwrap();
         assert_eq!(later.baseline_passed(), Some(true));
