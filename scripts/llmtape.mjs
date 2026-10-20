@@ -186,7 +186,10 @@ function normalizeCassetteBody(body) {
     // Codex includes a diagnostic token count in shell-tool output. It is
     // derived from the rendered transcript and can change during replay; it
     // is not provider request semantics.
-    .replace(/Original token count: \d+/g, "Original token count: <asb-token-count>");
+    .replace(/Original token count: \d+/g, "Original token count: <asb-token-count>")
+    .replace(/original token count: \d+/g, "original token count: <asb-token-count>")
+    .replace(/Total output lines: \d+/g, "Total output lines: <asb-line-count>")
+    .replace(/codex-arg[A-Za-z0-9_-]+/g, "codex-arg<asb-random>");
   try {
     const sort = (value) => {
       if (typeof value === "string") {
