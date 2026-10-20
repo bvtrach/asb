@@ -138,6 +138,21 @@ impl LifecyclePhase {
 /// `Session`. Defaults leave unsupported capabilities absent or do no work.
 pub(crate) trait CollectorAdapter: Sync {
     fn id(&self) -> &'static str;
+    fn runtime_inputs(
+        &self,
+        context: &crate::runtime_inputs::Context<'_>,
+    ) -> Result<Vec<crate::runtime_inputs::Dependency>, crate::Error> {
+        self.tool_id().map_or_else(
+            || Ok(Vec::new()),
+            |id| {
+                crate::tools::find(id)
+                    .ok_or_else(|| {
+                        crate::Error::Input("collector tool has no input declaration".into())
+                    })?
+                    .runtime_inputs(context)
+            },
+        )
+    }
     fn environment_flag(&self) -> Option<&'static str> {
         None
     }

@@ -91,6 +91,11 @@ class ParallelOriginalTaskQualification(unittest.TestCase):
                     (artifacts / "asb.stdout").write_bytes(result.stdout)
                     (artifacts / "asb.stderr").write_bytes(result.stderr)
                     self.assertEqual(result.returncode, 0, result.stderr.decode())
+                    inputs = json.loads((artifacts / "sweep-results/.checkpoint/inputs.json").read_bytes())
+                    self.assertEqual(inputs["status"], "stable", inputs["status"])
+                    self.assertEqual(inputs["initial"], inputs["final"])
+                    self.assertTrue(any(root["name"].startswith("runtime-source-") and
+                        "libc.so" in root["path"] for root in inputs["roots"]))
                     records = [json.loads(line) for line in result.stdout.splitlines()]
                     self.assertEqual(len(records), 2)
                     self.assertGreaterEqual(len(arrivals), 4, "both real clients need a tool call and completion")

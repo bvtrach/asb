@@ -24,6 +24,20 @@ impl WorkloadAdapter for SweBenchAdapter {
     fn id(&self) -> &'static str {
         self.id
     }
+    fn preflight(
+        &self,
+        context: &crate::workloads::PreflightContext<'_>,
+    ) -> Result<(), crate::Error> {
+        crate::workloads::remote::require_sdk(&context.tool_root("swebench"), self.id)?;
+        catalog::ensure_helpers(&context.tool_root("swebench"))?;
+        crate::workloads::remote::prefetch(context)
+    }
+    fn runtime_inputs(
+        &self,
+        context: &crate::runtime_inputs::Context<'_>,
+    ) -> Result<Vec<crate::runtime_inputs::Dependency>, crate::Error> {
+        crate::workloads::remote::runtime_inputs("swebench", context)
+    }
 
     fn install(
         &self,

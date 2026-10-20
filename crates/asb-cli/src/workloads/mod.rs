@@ -6,11 +6,33 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 mod adapters;
+
+pub(crate) struct PreflightContext<'a> {
+    pub project_root: &'a Path,
+    pub project_config: &'a crate::project::ProjectConfig,
+    pub agent: &'a str,
+}
+
+impl PreflightContext<'_> {
+    pub(crate) fn tool_root(&self, id: &str) -> PathBuf {
+        crate::project::resolve(self.project_root, &self.project_config.tools_dir).join(id)
+    }
+}
+
+pub(crate) fn preflight(name: &str, context: &PreflightContext<'_>) -> Result<(), crate::Error> {
+    adapters::find(name).map_or(Ok(()), |adapter| adapter.preflight(context))
+}
 mod controller;
 pub(crate) mod relay;
 mod remote;
 mod selection;
 mod session;
+pub(crate) fn runtime_inputs(
+    name: &str,
+    context: &crate::runtime_inputs::Context<'_>,
+) -> Result<Vec<crate::runtime_inputs::Dependency>, crate::Error> {
+    adapters::find(name).map_or_else(|| Ok(Vec::new()), |adapter| adapter.runtime_inputs(context))
+}
 pub(crate) mod target;
 pub(crate) fn registered_sources() -> impl Iterator<Item = (&'static str, &'static str)> {
     adapters::sources()
@@ -1086,6 +1108,69 @@ mod tests {
     };
     use std::fs;
     use std::path::PathBuf;
+
+    #[test]
+    fn dependency_preflight_is_adapter_owned_and_runtime_discovery_is_read_only() {
+        let root = std::env::temp_dir()
+            .join(super::TaskIdentity::local("dependency-preflight", None).attempt_id);
+        fs::create_dir_all(&root).unwrap();
+        let project = crate::project::ProjectConfig::default();
+        let context = super::PreflightContext {
+            project_root: &root,
+            project_config: &project,
+            agent: "missing-fixture-agent",
+        };
+        // Local tasks neither install remote tools nor require an agent for
+        // dependency preparation. No environment/network mutation is needed.
+        super::preflight("bug-fix", &context).unwrap();
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        for (workload, sdk, helper) in [
+            ("swe-bench", "swebench", "asb_swebench.py"),
+            ("swe-bench-lite", "swebench", "asb_swebench.py"),
+            ("swe-bench-verified", "swebench", "asb_swebench.py"),
+            (
+                "terminal-bench-1.0",
+                "terminal-bench",
+                "asb_terminal_bench_1.py",
+            ),
+            ("terminal-bench-2.1", "harbor", "asb_harbor.py"),
+        ] {
+            let tool = context.tool_root(sdk);
+            if !tool.join("venv/bin/python").exists() {
+                let error = super::preflight(workload, &context).unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("asb workload install {workload}"))
+                );
+            }
+            fs::create_dir_all(tool.join("venv/bin")).unwrap();
+            fs::write(tool.join("venv/bin/python"), "fixture metadata only").unwrap();
+            let helper = tool.join(helper);
+            let inputs = super::runtime_inputs(
+                workload,
+                &crate::runtime_inputs::Context {
+                    root: &root,
+                    project: &project,
+                },
+            )
+            .unwrap();
+            assert!(!inputs.is_empty());
+            // Metadata declarations do not publish helpers or download assets.
+            let before = helper.exists();
+            let error = super::preflight(workload, &context).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("selected agent has no installation adapter")
+            );
+            assert!(helper.is_file());
+            if sdk != "swebench" || workload == "swe-bench" {
+                assert!(!before);
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn evaluate(name: &str, workspace: &std::path::Path, output: &str) -> Result<bool, String> {
         super::evaluate(name, workspace, output).map(|value| value == super::Evaluation::Passed)

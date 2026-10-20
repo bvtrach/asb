@@ -111,6 +111,27 @@ pub(crate) fn run_with_options(
     let scheduling =
         scheduler::Scheduling::new(options.jobs, options.max_active_attempts, &weights)?;
     plan.scheduling = Some(scheduling);
+    // Warm selected workload dependencies before moving old output or taking
+    // input snapshots. This is execution preflight, never optional metadata
+    // discovery. Deduplicate over the full population, not once per task.
+    let mut prepared = BTreeSet::new();
+    for entry in &plan.entries {
+        let (root, project) = crate::project::load(&parent.join(&entry.reference))?;
+        if prepared.insert((
+            root.clone(),
+            entry.configuration.workload.clone(),
+            entry.configuration.agent.clone(),
+        )) {
+            crate::workloads::preflight(
+                &entry.configuration.workload,
+                &crate::workloads::PreflightContext {
+                    project_root: &root,
+                    project_config: &project,
+                    agent: &entry.configuration.agent,
+                },
+            )?;
+        }
+    }
     let old_results = parent.join(format!("{stem}-results")).canonicalize().ok();
     let relocated_input = if mode == Some(crate::tape::Mode::Replay) {
         cassette_root

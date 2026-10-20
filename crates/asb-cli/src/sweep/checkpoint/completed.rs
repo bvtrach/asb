@@ -360,6 +360,7 @@ mod tests {
                 roots,
                 context,
                 initial,
+                runtime: None,
             };
             let configuration = toml::from_str("agent='fixture-agent'\nprovider='fixture-provider'\nmodel='fixture-model'\nworkload='fixture-suite'\ntrial='case-1'\nconcurrency=2\n").unwrap();
             let selection = TaskSelection {

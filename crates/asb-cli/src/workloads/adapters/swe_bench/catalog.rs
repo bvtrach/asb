@@ -269,24 +269,7 @@ pub(super) fn ensure_helpers(root: &Path) -> Result<(), Error> {
 }
 
 fn publish_helper(path: &Path, source: &str) -> Result<(), Error> {
-    let temporary = path.with_extension(format!(
-        "{}.tmp",
-        crate::workloads::TaskIdentity::local("helper", None).attempt_id
-    ));
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)
-        .map_err(|error| Error::Io(format!("cannot stage workload helper: {error}")))?;
-    file.write_all(source.as_bytes())
-        .and_then(|()| file.sync_all())
-        .and_then(|()| fs::rename(&temporary, path))
-        .map_err(|error| {
-            Error::Io(format!(
-                "cannot publish workload helper {}: {error}",
-                path.display()
-            ))
-        })
+    crate::workloads::controller::publish_asset(path, source)
 }
 
 fn publish_selection(

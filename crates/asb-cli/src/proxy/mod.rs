@@ -16,6 +16,13 @@ pub(crate) trait ProxyAdapter: Sync {
             "selected proxy does not declare its execution inputs".into(),
         ))
     }
+    fn runtime_inputs(&self) -> Result<Vec<crate::runtime_inputs::Dependency>, Error> {
+        Ok(self
+            .input_files()?
+            .into_iter()
+            .map(crate::runtime_inputs::Dependency::program)
+            .collect())
+    }
     fn start(
         &self,
         upstream: Option<&str>,
@@ -38,6 +45,21 @@ pub(crate) fn input_files(default_name: &str) -> Result<Vec<std::path::PathBuf>,
     paths.sort();
     paths.dedup();
     Ok(paths)
+}
+
+pub(crate) fn runtime_inputs(
+    default_name: &str,
+) -> Result<Vec<crate::runtime_inputs::Dependency>, Error> {
+    let mut inputs = Vec::new();
+    for name in configured_chain(default_name)? {
+        let adapter = adapters::REGISTRY
+            .iter()
+            .copied()
+            .find(|adapter| adapter.name().eq_ignore_ascii_case(&name))
+            .ok_or_else(|| Error::Input("selected proxy has no runtime declaration".into()))?;
+        inputs.extend(adapter.runtime_inputs()?);
+    }
+    Ok(inputs)
 }
 
 /// An owned hop. Both shutdown methods must be safe to call more than once.

@@ -32,6 +32,17 @@ mod terminal_bench_2_1;
 
 pub(super) trait WorkloadAdapter: Sync {
     fn id(&self) -> &'static str;
+    /// Publish/download owned execution dependencies before creating attempts
+    /// or taking an optional input snapshot. Local workloads do nothing.
+    fn preflight(&self, _context: &super::PreflightContext<'_>) -> Result<(), crate::Error> {
+        Ok(())
+    }
+    fn runtime_inputs(
+        &self,
+        _context: &crate::runtime_inputs::Context<'_>,
+    ) -> Result<Vec<crate::runtime_inputs::Dependency>, crate::Error> {
+        Ok(Vec::new())
+    }
     fn source(&self) -> Option<&'static str> {
         None
     }

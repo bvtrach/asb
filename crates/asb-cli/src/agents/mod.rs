@@ -21,6 +21,22 @@ pub(crate) trait AgentAdapter: Sync {
     fn executable(&self) -> &'static str;
     /// Project-local installation recipe for this exact adapter executable.
     fn recipe(&self) -> Recipe;
+    fn runtime_inputs(
+        &self,
+        context: &crate::runtime_inputs::Context<'_>,
+    ) -> Result<Vec<crate::runtime_inputs::Dependency>, Error> {
+        let executable = resolve(self.id(), context.root, &context.project.tools_dir)
+            .ok_or_else(|| Error::Input("selected agent runtime is not installed".into()))?;
+        let mut command = self.process(&executable)?;
+        project::apply_python_path(&mut command, context.root, Path::new(&executable))?;
+        crate::tools::apply_runtime_path(&mut command, context.root, &context.project.tools_dir)?;
+        let mut inputs = self.recipe().runtime_inputs(&context.tool_root(self.id()));
+        inputs.push(crate::runtime_inputs::Dependency::command(&command));
+        if let Some(path) = std::env::var_os("ASB_TOOL_DIR") {
+            inputs.push(crate::runtime_inputs::Dependency::file(PathBuf::from(path)));
+        }
+        Ok(inputs)
+    }
     /// Supported wire interfaces, in preference order.
     fn supported_endpoints(&self) -> &'static [Support];
     fn command(&self, context: &CommandContext<'_>) -> CommandSpec;

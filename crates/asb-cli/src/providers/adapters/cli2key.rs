@@ -21,6 +21,31 @@ adapter!(
     DataUnpaginated,
     "gpt-6.1-sol",
     cli2key_offers,
+    fn runtime_inputs(
+        &self,
+        context: &crate::runtime_inputs::Context<'_>,
+    ) -> Result<Vec<crate::runtime_inputs::Dependency>, crate::Error> {
+        let mut inputs = crate::providers::credential_inputs(&self.spec());
+        inputs.push(crate::runtime_inputs::Dependency::program("curl"));
+        if std::env::var_os("CLI2KEY_BASE_URL").is_some() {
+            return Ok(inputs);
+        }
+        let bridge = crate::tools::find(self.spec().bridge_tool.expect("bridge adapter tool"))
+            .ok_or_else(|| crate::Error::Input("bridge tool has no runtime declaration".into()))?;
+        inputs.extend(bridge.runtime_inputs(context)?);
+        inputs.push(crate::runtime_inputs::Dependency::program("node"));
+        let home = std::env::var_os("CODEX_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".codex"))
+            });
+        if let Some(home) = home {
+            inputs.push(crate::runtime_inputs::Dependency::file(
+                home.join("auth.json"),
+            ));
+        }
+        Ok(inputs)
+    },
     fn anthropic_input_includes_cache(&self) -> bool {
         true
     },

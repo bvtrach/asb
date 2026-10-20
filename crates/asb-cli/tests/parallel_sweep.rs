@@ -200,6 +200,15 @@ const expected=['first-1','first-2','second'];
             .iter()
             .any(|input| input["name"] == "proxy-execution-file-0")
     );
+    assert!(roots.iter().any(|input| {
+        input["name"]
+            .as_str()
+            .unwrap()
+            .starts_with("runtime-source-")
+            && Path::new(input["path"].as_str().unwrap())
+                .file_name()
+                .is_some_and(|name| name == "libc.so.6")
+    }));
     for index in 0..2 {
         let completion = read_json(&root.join(format!(
             "sweep-results/.checkpoint/completed/{index:06}.json"

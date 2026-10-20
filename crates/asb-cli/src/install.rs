@@ -80,6 +80,15 @@ pub(crate) enum Recipe {
 }
 
 impl Recipe {
+    pub(crate) fn runtime_inputs(self, root: &Path) -> Vec<crate::runtime_inputs::Dependency> {
+        match self {
+            Self::Python { .. } => vec![crate::runtime_inputs::Dependency::Python {
+                path: root.join("venv/bin/python"),
+                site: true,
+            }],
+            _ => Vec::new(),
+        }
+    }
     fn guest_runtimes(self) -> &'static [&'static str] {
         match self {
             Self::Npm { .. } => &["node"],

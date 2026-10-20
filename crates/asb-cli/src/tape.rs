@@ -14,6 +14,9 @@ pub enum Mode {
 pub(crate) fn input_files() -> Result<Vec<std::path::PathBuf>, Error> {
     proxy::input_files(proxy::adapters::llmtape::NAME)
 }
+pub(crate) fn runtime_inputs() -> Result<Vec<crate::runtime_inputs::Dependency>, Error> {
+    proxy::runtime_inputs(proxy::adapters::llmtape::NAME)
+}
 
 /// A running record/replay chain.
 pub struct Session(proxy::Chain);

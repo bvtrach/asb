@@ -1330,3 +1330,56 @@ outcomes and original evaluator evidence/cleanup. Retained artifacts are under
 `target/benchmark-runtime/normal-cli-guest-5kq6s168` (record) and
 `target/benchmark-runtime/normal-cli-guest-8si_lzkd` (replay). These remain
 representative known-repair checks, not full-population or AI-solving claims.
+
+### Adapter-owned runtime inputs and execution dependency preflight
+
+Runtime declarations now live behind the agent, provider, workload, tool,
+collector and proxy interfaces. Generic sweep code requests those declarations
+without component-name dispatch. Native programs bind their matching loader
+and shared libraries; Python declarations bind the selected stdlib/venv and
+native extension dependency roots. Discovery parses PyInit exports rather than
+loading modules or treating every bundled wheel DSO as an independent program.
+It preserves logical PATH lookup, symlinks and missing configuration paths,
+and checks that the invoking ASB's mapped native libraries still identify the
+same files. A second discovery before the final snapshot detects changed
+resolution. Bounded discovery runs in its own process group; cancellation
+stops only that group. Private errors do not echo paths, environment values or
+interpreter output. This remains declared-input stability, not whole-host
+immutability or automatic coverage of arbitrary application dlopen/data files.
+Failure to obtain this optional seal never blocks a fresh execution.
+
+The original workload adapters also implement a separate execution preflight.
+It publishes the compiled SDK helpers and prefetches selected guest runtime
+archives through the existing owning installer recipes before any environment
+starts. Sweeps deduplicate project/workload/agent combinations and perform
+this before moving prior output and taking input snapshots. Runtime metadata
+discovery itself remains read-only and never downloads. Missing evaluator
+installations identify the exact `asb workload install <name>` repair command.
+Identical helper publication retains private regular files without changing
+their inode; changed files and destination symlinks are atomically replaced,
+leaving symlink targets untouched.
+
+New provider-free regressions cover actual native loader/RPATH resolution
+without executing the application, shared-library content changes, earlier
+PATH candidates, bounded native-symbol parsing, error privacy, owned-process
+group cancellation, idempotent private helper publication, and preflight
+dispatch/read-only metadata for all five original suite registrations. Local
+strict Clippy and the full source suite passed with 413 unit tests, 87 offline
+CLI tests, thirteen protocol suites and the existing guest/replay regressions.
+The mixed real-Pi/SWE-bench Lite/Terminal-Bench 1.0 synthetic-provider
+qualification passed in 75.2 seconds before the final preflight addition,
+including unchanged runtime input identity, separate official grades,
+collector targets and complete container cleanup. Qualification of the final
+preflight tree and packaged/hosted gates follows.
+
+The final preflight tree passed the strengthened mixed original-task
+qualification in 65.8 seconds, retaining artifacts under
+`target/benchmark-runtime/parallel-original-tasks-jf44lljv`. It explicitly
+requires identical before/after input fingerprints and discovered native
+library roots in addition to the official-grade, overlap, graph and cleanup
+checks. This uses warm installed runtime caches; it is not a cold-download
+qualification or an evaluation of the full populations.
+
+Actual resume dispatch, interrupted replica handling, scalable population
+presentation, abrupt-crash recovery, final review/merge, exact-main CI and the
+minor release remain open; these changes do not close those delivery gates.

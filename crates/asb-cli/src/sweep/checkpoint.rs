@@ -212,6 +212,7 @@ pub(super) struct Inputs {
     roots: Vec<Root>,
     context: Value,
     initial: Fingerprint,
+    runtime: Option<Vec<crate::runtime_inputs::Dependency>>,
 }
 
 impl Inputs {
@@ -282,6 +283,15 @@ impl Inputs {
                 path,
             ));
         }
+        let mut runtime = crate::runtime_inputs::for_plan(parent, plan, mode)?;
+        runtime.push(crate::runtime_inputs::Dependency::Python {
+            path: python.clone(),
+            site: false,
+        });
+        let runtime_paths = crate::runtime_inputs::discover(&python, &runtime)?;
+        for (index, path) in runtime_paths.into_iter().enumerate() {
+            roots.push(Root::path(format!("runtime-source-{index}"), path));
+        }
         let snapshotter = Snapshotter::open(&directory, python)?;
         let context = json!({"protocol":"asb-input-seal-v1","scope":"declared-project-inputs-and-process-environment"});
         let initial = snapshotter.fingerprint(&roots, &context, true, &[])?;
@@ -291,12 +301,28 @@ impl Inputs {
             roots,
             context,
             initial,
+            runtime: Some(runtime),
         };
         state.publish("pending", None)?;
         Ok(state)
     }
 
-    pub(super) fn finish(self) -> Result<(), Error> {
+    pub(super) fn finish(mut self) -> Result<(), Error> {
+        if let Some(runtime) = &self.runtime {
+            let paths = match crate::runtime_inputs::discover(&self.snapshotter.python, runtime) {
+                Ok(paths) => paths,
+                Err(error) => {
+                    let _ = self.publish("unavailable", None);
+                    return Err(error);
+                }
+            };
+            self.roots
+                .retain(|root| !root.name.starts_with("runtime-source-"));
+            for (index, path) in paths.into_iter().enumerate() {
+                self.roots
+                    .push(Root::path(format!("runtime-source-{index}"), path));
+            }
+        }
         match self
             .snapshotter
             .fingerprint(&self.roots, &self.context, true, &[])
@@ -458,6 +484,7 @@ mod tests {
                 roots,
                 context,
                 initial,
+                runtime: None,
             };
             inputs.publish("pending", None).unwrap();
             if action == "change" {

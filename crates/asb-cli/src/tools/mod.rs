@@ -27,6 +27,29 @@ pub(crate) enum ToolKind {
 pub(crate) trait ToolAdapter: Sync {
     fn id(&self) -> &'static str;
     fn recipe(&self) -> Recipe;
+    fn helper_executables(&self) -> &'static [&'static str] {
+        &[]
+    }
+    fn runtime_inputs(
+        &self,
+        context: &crate::runtime_inputs::Context<'_>,
+    ) -> Result<Vec<crate::runtime_inputs::Dependency>, crate::Error> {
+        let executable =
+            resolve(self.id(), context.root, &context.project.tools_dir).ok_or_else(|| {
+                crate::Error::Input("selected support-tool runtime is not installed".into())
+            })?;
+        let mut command = std::process::Command::new(&executable);
+        project::apply_python_path(&mut command, context.root, Path::new(&executable))?;
+        apply_runtime_path(&mut command, context.root, &context.project.tools_dir)?;
+        let mut inputs = self.recipe().runtime_inputs(&context.tool_root(self.id()));
+        inputs.push(crate::runtime_inputs::Dependency::command(&command));
+        for executable in self.helper_executables() {
+            inputs.push(crate::runtime_inputs::Dependency::program(
+                context.tool_root(self.id()).join("bin").join(executable),
+            ));
+        }
+        Ok(inputs)
+    }
     fn kind(&self) -> ToolKind;
     fn guest_assets(&self, _root: &Path) -> Result<Vec<GuestAsset>, crate::Error> {
         Ok(Vec::new())
@@ -79,6 +102,7 @@ pub(crate) struct StaticTool {
     runtime_path: bool,
     host_probe: Option<fn() -> bool>,
     guest_assets: Option<GuestAssetsHook>,
+    helper_executables: &'static [&'static str],
 }
 impl StaticTool {
     pub(crate) const fn new(id: &'static str, recipe: Recipe, kind: ToolKind) -> Self {
@@ -90,6 +114,7 @@ impl StaticTool {
             runtime_path: false,
             host_probe: None,
             guest_assets: None,
+            helper_executables: &[],
         }
     }
     pub(crate) const fn with_post_install(mut self, hook: PostInstallHook) -> Self {
@@ -98,6 +123,10 @@ impl StaticTool {
     }
     pub(crate) const fn with_runtime_path(mut self) -> Self {
         self.runtime_path = true;
+        self
+    }
+    pub(crate) const fn with_helper_executables(mut self, names: &'static [&'static str]) -> Self {
+        self.helper_executables = names;
         self
     }
     pub(crate) const fn with_host_probe(mut self, probe: fn() -> bool) -> Self {
@@ -110,6 +139,9 @@ impl StaticTool {
     }
 }
 impl ToolAdapter for StaticTool {
+    fn helper_executables(&self) -> &'static [&'static str] {
+        self.helper_executables
+    }
     fn guest_assets(&self, root: &Path) -> Result<Vec<GuestAsset>, crate::Error> {
         self.guest_assets
             .map_or_else(|| Ok(Vec::new()), |hook| hook(root))

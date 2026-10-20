@@ -175,14 +175,23 @@ ASB executable, saved plan, project configuration, installed tools/workloads,
 project Python and file-valued environment overrides. Environment values enter
 only a keyed digest, never the public response. Changed, excessive or
 unsupported inputs cannot claim stability. This optional seal is explicitly
-not a resume receipt: complete host runtime/interpreter/library closure remains
-required. Record/replay dispatch asks the selected proxy adapters for their
+not a resume receipt. Adapter-owned runtime declarations now include selected
+programs with their prepared PATH, Python standard/selected virtual-environment
+libraries, native extension dependencies, and the invoking ASB's mapped native
+libraries. Bounded local discovery inspects native loader dependencies and
+script interpreters without running agent/provider entry points. Logical
+commands are re-resolved at the end, so a new earlier PATH candidate or changed
+native dependency cannot claim stability. Unsupported/excessive discovery
+leaves this optional seal unavailable, never blocks a fresh execution, and
+does not claim whole-host immutability or arbitrary application dlopen closure.
+Record/replay dispatch asks the selected proxy adapters for their
 execution files without starting them or materializing scratch scripts. The
 default adapter binds its selected host Node executable or explicit proxy
 override, preserving symlinks and PATH precedence. Replay additionally binds
 the actual source cassette directories, including rebased/preserved history
-paths. Record cassettes are outputs, not replay inputs. Shared-library and
-interpreter dependencies are not yet implied by an execution-file declaration.
+paths. Record cassettes are outputs, not replay inputs. Interpreter and native
+loader dependencies are added by shared runtime discovery, not inferred merely
+from an executable's pathname.
 After workload cleanup and measurement completion, the runner writes private
 `.asb-completions/` outcome records beside the run log, including unresolved
 outcomes, actual task identity, cleanup status and workload-owned evaluator
@@ -461,6 +470,13 @@ without relying on curl in the task image. Preparation carries its project
 root/configuration explicitly, so external catalog locations do not redirect
 SDK or attempt storage. Transfer receipts and temporary files remain scoped
 to the project attempt; public npm caches are copied only for npm recipes.
+An adapter-owned execution preflight publishes the compiled SDK helpers and
+prefetches selected guest runtime archives before any task environment starts.
+Sweeps deduplicate this over selected project/workload/agent combinations and
+perform it before preserving old outputs or taking input snapshots. Read-only
+runtime metadata discovery does not download or publish anything. Repeated
+identical helper publication preserves the existing private regular file;
+changed helpers replace it atomically without following destination symlinks.
 Other aliases install pinned prompt metadata. These commands do not handle
 credentials.
 `asb init` prepares `.asb/python/venv` using an installed Python 3.12 or 3.13,

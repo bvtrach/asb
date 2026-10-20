@@ -9,6 +9,49 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+pub(crate) fn prefetch(context: &super::PreflightContext<'_>) -> Result<(), crate::Error> {
+    let tools = crate::project::resolve(context.project_root, &context.project_config.tools_dir);
+    crate::install::guest_bootstrap(context.agent, context.project_root, &tools)?;
+    Ok(())
+}
+
+pub(crate) fn runtime_inputs(
+    tool: &str,
+    context: &crate::runtime_inputs::Context<'_>,
+) -> Result<Vec<crate::runtime_inputs::Dependency>, crate::Error> {
+    use crate::runtime_inputs::Dependency;
+    use std::path::Path;
+    // This controller owns the Python SDK and Docker CLI transport, not
+    // benchmark dispatch or the selected agent/provider implementation.
+    let mut inputs = vec![
+        Dependency::Python {
+            path: context.tool_root(tool).join("venv/bin/python"),
+            site: true,
+        },
+        Dependency::program("docker"),
+    ];
+    if crate::tools::host_executable(Path::new("sudo")).is_some() {
+        inputs.push(Dependency::program("sudo"));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        for path in [
+            ".docker/config.json",
+            ".docker/contexts",
+            ".docker/cli-plugins",
+        ] {
+            inputs.push(Dependency::file(Path::new(&home).join(path)));
+        }
+    }
+    for path in [
+        "/usr/libexec/docker/cli-plugins",
+        "/usr/local/lib/docker/cli-plugins",
+        "/usr/lib/docker/cli-plugins",
+    ] {
+        inputs.push(Dependency::file(path));
+    }
+    Ok(inputs)
+}
+
 struct Session {
     controller: Controller,
     invocation: TaskInvocation,
@@ -19,6 +62,15 @@ struct Session {
     preparation_active: bool,
     cleanup_attempted: bool,
     artifacts: PathBuf,
+}
+
+pub(crate) fn require_sdk(root: &std::path::Path, workload: &str) -> Result<(), crate::Error> {
+    if !root.join("venv/bin/python").is_file() {
+        return Err(crate::Error::Input(format!(
+            "the official evaluator for `{workload}` is not installed; run `asb workload install {workload}` before starting the benchmark"
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn launch(

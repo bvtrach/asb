@@ -4,6 +4,7 @@ mod adapters;
 mod preparation;
 pub(crate) use preparation::apply_with_tape;
 
+use crate::Error;
 use crate::endpoint::Interface;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -203,6 +204,29 @@ pub fn credential(name: &str) -> Option<String> {
     }
     let home = std::env::var_os("HOME")?;
     read_key_file(Path::new(&home).join(format!(".api_key_{}", spec.name)))
+}
+
+fn credential_inputs(spec: &ProviderSpec) -> Vec<crate::runtime_inputs::Dependency> {
+    let Some(variable) = spec.credential else {
+        return Vec::new();
+    };
+    if std::env::var_os(variable).is_some_and(|value| !value.to_string_lossy().trim().is_empty()) {
+        return Vec::new();
+    }
+    std::env::var_os("HOME")
+        .map(|home| {
+            vec![crate::runtime_inputs::Dependency::file(
+                Path::new(&home).join(format!(".api_key_{}", spec.name)),
+            )]
+        })
+        .unwrap_or_default()
+}
+
+pub(crate) fn runtime_inputs(
+    name: &str,
+    context: &crate::runtime_inputs::Context<'_>,
+) -> Result<Vec<crate::runtime_inputs::Dependency>, Error> {
+    adapters::find(name).map_or_else(|| Ok(Vec::new()), |adapter| adapter.runtime_inputs(context))
 }
 
 /// Interfaces offered by the provider for this model, in provider preference

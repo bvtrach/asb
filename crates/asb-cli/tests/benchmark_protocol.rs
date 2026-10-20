@@ -16,6 +16,11 @@ fn benchmark_fingerprints_bind_content_without_exposing_secrets() {
 }
 
 #[test]
+fn declared_runtime_dependencies_are_bounded_and_do_not_start_apps() {
+    python_protocol("benchmark_runtime_inputs.py");
+}
+
+#[test]
 fn docker_transport_is_scoped_and_cleans_its_own_processes() {
     python_protocol("benchmark_docker.py");
 }

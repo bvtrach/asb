@@ -31,7 +31,7 @@ pub(super) static ADAPTER: StaticTool = StaticTool::new(
         install: install_perfetto,
     },
     ToolKind::Collector,
-);
+).with_helper_executables(&["trace_processor_shell"]);
 
 /// Download a pinned official Perfetto Tracebox binary into the benchmark
 /// project. Tracebox is the Linux Perfetto collector used by the optional

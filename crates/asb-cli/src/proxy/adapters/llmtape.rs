@@ -60,6 +60,13 @@ impl ProxyAdapter for LlmtapeAdapter {
     fn input_files(&self) -> Result<Vec<PathBuf>, Error> {
         execution_input_files(configured_override().as_deref())
     }
+    fn runtime_inputs(&self) -> Result<Vec<crate::runtime_inputs::Dependency>, Error> {
+        // Retain the logical command, not just its initial PATH resolution,
+        // so a new earlier PATH candidate is detectable at final discovery.
+        Ok(vec![crate::runtime_inputs::Dependency::program(
+            configured_override().unwrap_or_else(|| "node".into()),
+        )])
+    }
 
     fn start(
         &self,

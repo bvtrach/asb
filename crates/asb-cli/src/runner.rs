@@ -435,6 +435,14 @@ fn run_mode(
         measurement_session.as_mut(),
         LifecyclePhase::WorkloadPreparation,
         || {
+            workloads::preflight(
+                &config.workload,
+                &workloads::PreflightContext {
+                    project_root: &project_root,
+                    project_config: &project_config,
+                    agent: &config.agent,
+                },
+            )?;
             std::fs::create_dir_all(&workspace).map_err(|error| {
                 Error::Run(format!(
                     "cannot create workspace {}: {error}",

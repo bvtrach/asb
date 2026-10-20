@@ -58,6 +58,8 @@ def elf(path):
 
 def library_paths(text):
     """Parse loader --list output without executing shell commands or ldd."""
+    if text.strip() == "statically linked":
+        return {}
     result = {}
     for line in text.splitlines():
         line = line.strip()
@@ -82,10 +84,10 @@ def library_paths(text):
     return result
 
 
-def resolve_dependencies(interpreter,path):
+def resolve_dependencies(interpreter,path,environment=None):
     try:
         observed = subprocess.run([interpreter,"--list",str(Path(path).absolute())],
-            env={"PATH":os.defpath,"LC_ALL":"C"},stdin=subprocess.DEVNULL,
+            env={"PATH":os.defpath,"LC_ALL":"C"} if environment is None else environment,stdin=subprocess.DEVNULL,
             capture_output=True,text=True,timeout=15)
     except (OSError,subprocess.TimeoutExpired) as error:
         raise ExecutionError("cannot inspect the running ASB executable's dynamic libraries") from error

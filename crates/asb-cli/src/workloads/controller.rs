@@ -8,6 +8,21 @@ use std::time::{Duration, Instant};
 const MAX_MESSAGE: u64 = 1024 * 1024;
 
 pub(crate) fn publish_asset(path: &std::path::Path, source: &str) -> Result<(), crate::Error> {
+    if std::fs::symlink_metadata(path).is_ok_and(|metadata| {
+        if !metadata.is_file() || metadata.len() != source.len() as u64 {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if metadata.permissions().mode() & 0o077 != 0 {
+                return false;
+            }
+        }
+        std::fs::read(path).is_ok_and(|bytes| bytes == source.as_bytes())
+    }) {
+        return Ok(());
+    }
     let temporary =
         path.with_extension(crate::workloads::TaskIdentity::local("helper", None).attempt_id);
     let mut options = std::fs::OpenOptions::new();
@@ -307,6 +322,29 @@ impl Drop for Controller {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn helper_publication_is_private_idempotent_and_does_not_follow_destination_symlinks() {
+        use std::os::unix::fs::MetadataExt;
+        let root = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("helper-publication", None).attempt_id);
+        std::fs::create_dir(&root).unwrap();
+        let file = root.join("helper.py");
+        super::publish_asset(&file, "first").unwrap();
+        let before = std::fs::metadata(&file).unwrap().ino();
+        super::publish_asset(&file, "first").unwrap();
+        assert_eq!(std::fs::metadata(&file).unwrap().ino(), before);
+        super::publish_asset(&file, "second").unwrap();
+        assert_ne!(std::fs::metadata(&file).unwrap().ino(), before);
+        let other = root.join("other");
+        std::fs::write(&other, "untouched").unwrap();
+        std::fs::remove_file(&file).unwrap();
+        std::os::unix::fs::symlink(&other, &file).unwrap();
+        super::publish_asset(&file, "second").unwrap();
+        assert_eq!(std::fs::read_to_string(other).unwrap(), "untouched");
+        assert!(!file.is_symlink());
+        std::fs::remove_dir_all(root).unwrap();
+    }
     use super::*;
     use serde_json::json;
 
