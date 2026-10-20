@@ -20,6 +20,12 @@ pub(crate) fn executable() -> io::Result<std::path::PathBuf> {
         }
         return Ok(path);
     }
+    // The pre-exec child still runs this exact ASB image. Its kernel handle
+    // remains valid if a simultaneous installation replaces the original
+    // pathname; current_exe() can otherwise return an unusable '(deleted)' path.
+    #[cfg(target_os = "linux")]
+    return Ok(std::path::PathBuf::from("/proc/self/exe"));
+    #[cfg(not(target_os = "linux"))]
     std::env::current_exe()
 }
 

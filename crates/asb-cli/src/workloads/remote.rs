@@ -159,10 +159,7 @@ impl Session {
             ))?;
             self.preparation_active = true;
         }
-        let binary = std::env::var_os("ASB_GUEST_BINARY")
-            .map(PathBuf::from)
-            .or_else(|| std::env::current_exe().ok())
-            .ok_or("cannot find portable ASB runtime")?;
+        let binary = runtime_binary()?;
         let tools_root =
             crate::project::resolve(context.project_root, &context.project_config.tools_dir);
         let bootstrap = crate::install::guest_bootstrap(
@@ -310,6 +307,19 @@ impl Session {
             }
         }
     }
+}
+
+fn runtime_binary() -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("ASB_GUEST_BINARY") {
+        return Ok(PathBuf::from(path));
+    }
+    // Pin the actual running executable, even if an update atomically replaces
+    // its pathname while the SDK prepares the task. Numeric PID is essential:
+    // /proc/self/exe would refer to the Python controller when it reads it.
+    #[cfg(target_os = "linux")]
+    return Ok(PathBuf::from(format!("/proc/{}/exe", std::process::id())));
+    #[cfg(not(target_os = "linux"))]
+    std::env::current_exe().map_err(|_| "cannot find portable ASB runtime".into())
 }
 
 impl WorkloadSession for Session {

@@ -1067,6 +1067,36 @@ fn replay(project: &Project, behavior: &str, additional: &[&str]) -> Output {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn running_binary_replacement_does_not_break_measured_replay_gate() {
+    let project = replay_project(1);
+    let executable = project.0.join("running-asb");
+    std::fs::copy(env!("CARGO_BIN_EXE_asb"), &executable).unwrap();
+    let child = Command::new(&executable)
+        .current_dir(&project.0)
+        .args([
+            "run",
+            "benchmark.toml",
+            "--replay",
+            "--cassette",
+            "tape.jsonl",
+            "--measurements",
+            "measurements",
+        ])
+        .env_clear()
+        .env("HOME", &project.0)
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Remove only the test-created copy, after exec has loaded it. The kernel
+    // keeps its running inode alive while the old pathname no longer exists.
+    std::fs::remove_file(executable).unwrap();
+    expect_success(&child.wait_with_output().unwrap());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn configured_replicas_overlap_instead_of_spawning_on_join() {
     let project = replay_project(2);
     let barrier = project.0.join("replica-barrier");

@@ -337,7 +337,10 @@ stages its running executable: a static ELF directly, or a dynamic ELF with
 its matching loader and libraries for the same-architecture Linux task image.
 The scoped launcher does not replace guest system libraries or export a
 library search path to benchmark clients. `ASB_GUEST_BINARY` is an optional
-development override, not a required build/install step. Host-loopback endpoint
+development override, not a required build/install step. Runtime staging and
+recursive gates retain the invoking executable's kernel identity
+on Linux, so replacement of its installed pathname cannot switch the running
+attempt to a different binary or invalidate a recursive process gate. Host-loopback endpoint
 forwarding uses a private, bounded raw TCP relay over the owned Docker exec
 stream: only task-loopback listeners are opened, and host destinations remain
 on the host. Endpoint and HTTP/HTTPS/SOCKS proxy ports are rewritten before

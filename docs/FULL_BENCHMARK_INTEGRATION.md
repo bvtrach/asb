@@ -836,3 +836,22 @@ tests and failed with ENOENT; the focused check and complete serialized gates
 passed. Subsequent checks must not rebuild the same ASB executable while a
 qualification using it is active. Packaging and exact-head hosted CI still
 need their own evidence after the commit.
+
+The follow-up was merged with main `d8de114` (lifecycle-total timing repair).
+That exact branch passed 360 unit tests, 83 offline CLI tests, the protocol and
+other integration suites, Clippy, full build, package verification and the
+packaged crate's full test suite. Real Docker cancellation qualification also
+passed disconnect, SIGTERM and disconnect-during-official-grading cases in
+16.5 seconds, verifying absence of the owned task/grader containers.
+
+An overlapping package build then reproduced a genuine executable-identity
+edge case: `current_exe()` returned the deleted pathname of the invoking ASB,
+so guest staging failed after preparation. The failed attempt's cleanup receipt
+confirmed resource removal. Linux guest staging now uses the numeric host
+process's `/proc/<pid>/exe`, and recursive native gates use `/proc/self/exe`,
+retaining the actual running inode across pathname replacement. An offline
+regression removes its own ASB executable copy after startup and requires
+measured replay to complete. Explicit guest/runtime launcher overrides retain
+their existing behavior. Serialized real namespace/Perfetto execution on the
+main-refreshed branch passed again in 51.2 seconds; the additional kernel-path
+repair still needs its own final local/hosted qualification.

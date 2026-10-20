@@ -1,10 +1,12 @@
 """Offline runtime-bundle contracts; no Docker daemon or provider required."""
 import os
 import json
+import hashlib
 from pathlib import Path
 import subprocess
 import select
 import signal
+import shutil
 import sys
 import tempfile
 import time
@@ -17,6 +19,36 @@ from asb_execution import ExecutionError
 
 
 class RuntimeTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "linux" and os.environ.get("ASB_TEST_HOST_ASB"),
+                         "needs the just-built Linux ASB executable")
+    def test_kernel_reference_bundles_the_running_binary_after_path_replacement(self):
+        original = Path(os.environ["ASB_TEST_HOST_ASB"]).absolute()
+        digest = hashlib.sha256(original.read_bytes()).hexdigest()
+        with tempfile.TemporaryDirectory() as directory:
+            executable = Path(directory) / "asb"
+            shutil.copy2(original, executable)
+            process = subprocess.Popen([executable, "__asb-gate", "/bin/true"],
+                                       env={"PATH": os.defpath}, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                deadline = time.monotonic() + 5
+                while not any(line.startswith("State:") and "T" in line
+                              for line in Path(f"/proc/{process.pid}/status").read_text().splitlines()):
+                    self.assertLess(time.monotonic(), deadline, "gate never stopped")
+                    self.assertIsNone(process.poll())
+                    time.sleep(.005)
+                executable.unlink()  # Only the test-created executable copy.
+                files, receipt = subject.bundle(f"/proc/{process.pid}/exe")
+                image = next(content for name, content, _ in files if name in ["asb", "bin/asb"] and content.startswith(b"\x7fELF"))
+                self.assertEqual(hashlib.sha256(image).hexdigest(), digest)
+                self.assertNotIn(str(directory), str(receipt))
+                os.kill(process.pid, signal.SIGCONT)
+                _, stderr = process.communicate(timeout=5)
+                self.assertEqual(process.returncode, 0, stderr.decode())
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=5)
+
     def test_loader_dependency_parser_is_complete_and_rejects_unresolved_or_ambiguous_libraries(self):
         text = "linux-vdso.so.1 (0x123)\nlibc.so.6 => /lib/libc.so.6 (0x456)\n/lib64/ld-linux.so.2 (0x789)\n"
         self.assertEqual(subject.library_paths(text),{"libc.so.6":"/lib/libc.so.6","ld-linux.so.2":"/lib64/ld-linux.so.2"})
