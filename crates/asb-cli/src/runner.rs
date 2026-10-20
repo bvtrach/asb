@@ -933,6 +933,13 @@ fn run_measured_agent(
     show_output: bool,
     output: &mut dyn Write,
 ) -> Result<Output, Error> {
+    if let Some(session) = session.as_deref_mut() {
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        session.agent_launch(program, &args);
+    }
     #[cfg(unix)]
     if session.is_some()
         && let Some(target_args) = target_args

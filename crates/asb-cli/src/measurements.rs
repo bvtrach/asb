@@ -560,7 +560,13 @@ impl Session {
         self.shared_artifacts.get(&kind).map(PathBuf::as_path)
     }
 
-    /// Attach perf to the selected child after it has been spawned.
+    pub(crate) fn agent_launch(&mut self, program: &str, args: &[String]) {
+        for collector in collectors::all() {
+            collector.agent_launch(self, program, args);
+        }
+    }
+
+    /// Attach collectors to the selected child after it has been spawned.
     pub fn attach_pid(&mut self, pid: u32) -> Result<(), String> {
         #[cfg(test)]
         if self.test_attach_failure {

@@ -137,6 +137,32 @@ include available failure reasons. Bundled fixture graders use fixed accepted
 solutions, so a rejection does not necessarily prove an alternative solution is
 incorrect; external suite adapter-smoke checks are not full upstream grades.
 
+### Agent memory and worker processes
+
+Select `agent-memory` and `agent-workers` in the setup wizard's measurement
+pane, or add them to `measurements.collectors`. Linux needs no extra tool or
+privilege for these collectors. For an existing configuration, enable them with
+`ASB_MEASURE_AGENT_MEMORY=1 ASB_MEASURE_AGENT_WORKERS=1 asb run CONFIG --measurements DIR`.
+Then `asb compare SWEEP.toml` writes one all-agent bar-chart SVG per metric and
+embeds those charts in `report.html`.
+
+Memory is the sampled peak aggregate resident memory (RSS, MiB) of processes
+running the selected agent executable or script entry point. It is **not**
+system memory or the entire subprocess tree: tool calls, shells, compilers,
+tests, and the ASB process gate are excluded. Shared pages count towards each
+matching process's RSS, so this is not unique physical memory.
+The integer worker count is the number of additional matching OS processes
+observed over that benchmark execution, excluding the primary agent. It is
+not a count of tool invocations, threads, or logical subagents within one
+process. PID/start-time pairs distinguish successive processes.
+
+These are sampled observations (default 1000 ms; set
+`ASB_MEASURE_INTERVAL_MS=100` for finer sampling), not exact peaks or complete
+spawn-event accounting. Short-lived workers may be missed. Different launcher
+entry points are not inferred. No matching process or unsupported platforms
+produce an explicit `unavailable` artifact with no metric, never a fabricated
+zero. Each concurrent replica has independent accounting.
+
 Measurement collectors are opt-in environment switches so normal and CI runs
 remain deterministic: `ASB_MEASURE_MPSTAT=1`, `ASB_MEASURE_IOSTAT=1`, and
 `ASB_MEASURE_PERF=1` start the corresponding local tools. BPFTrace programs

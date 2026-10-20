@@ -279,9 +279,13 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
         }
     }
     let mut graphs = Vec::new();
+    let agent_labels: BTreeMap<_, _> = benchmark_data
+        .iter()
+        .map(|benchmark| (benchmark.label.clone(), benchmark.agent.clone()))
+        .collect();
     for (name, values) in &metric_values {
         let filename = format!("metric-{}.svg", safe_name_str(name));
-        write_bar_svg(&comparison_dir.join(&filename), name, values)?;
+        write_bar_svg(&comparison_dir.join(&filename), name, values, &agent_labels)?;
         graphs.push(filename);
     }
     for (name, values) in &series_values {
@@ -970,7 +974,12 @@ fn series_values(value: &Value) -> Vec<f64> {
         .collect()
 }
 
-fn write_bar_svg(path: &Path, title: &str, values: &[(String, f64)]) -> Result<(), Error> {
+fn write_bar_svg(
+    path: &Path,
+    title: &str,
+    values: &[(String, f64)],
+    labels: &BTreeMap<String, String>,
+) -> Result<(), Error> {
     let max = values
         .iter()
         .map(|(_, value)| *value)
@@ -984,13 +993,15 @@ fn write_bar_svg(path: &Path, title: &str, values: &[(String, f64)]) -> Result<(
     let mut svg = svg_header(width, height, title);
     append_y_axis(&mut svg, left, PLOT_TOP, bottom, PLOT_RIGHT, max, title);
     for (index, (label, value)) in values.iter().enumerate() {
+        let display = labels.get(label).unwrap_or(label);
         let x = left + index as f64 * bar_width + 4.0;
         let bar_height = value.max(0.0) / max * (bottom - PLOT_TOP);
         let y = bottom - bar_height;
         let width = (bar_width - 8.0).max(2.0);
         svg.push_str(&format!(
-            "<rect class=\"bar\" data-label=\"{}\" data-value=\"{value}\" x=\"{x:.1}\" y=\"{y:.1}\" width=\"{width:.1}\" height=\"{bar_height:.1}\" fill=\"#4472c4\"><title>{}: {value}</title></rect>",
+            "<rect class=\"bar\" data-label=\"{}\" data-value=\"{value}\" x=\"{x:.1}\" y=\"{y:.1}\" width=\"{width:.1}\" height=\"{bar_height:.1}\" fill=\"#4472c4\"><title>{} [{}]: {value}</title></rect>",
             escape(label),
+            escape(display),
             escape(label),
         ));
         let value_label = format_tick(*value);
@@ -1007,7 +1018,7 @@ fn write_bar_svg(path: &Path, title: &str, values: &[(String, f64)]) -> Result<(
             "<text x=\"{:.1}\" y=\"{label_y:.1}\" text-anchor=\"middle\" class=\"bar-value\" data-placement=\"{placement}\" font-size=\"11\" font-weight=\"600\" fill=\"{color}\">{value_label}</text>",
             x + width / 2.0
         ));
-        svg.push_str(&format!("<text x=\"{:.1}\" y=\"410\" transform=\"rotate(35 {:.1} 410)\" font-size=\"11\">{}</text>", x, x, escape(label)));
+        svg.push_str(&format!("<text x=\"{:.1}\" y=\"410\" transform=\"rotate(35 {:.1} 410)\" font-size=\"11\">{}</text>", x, x, escape(display)));
     }
     svg.push_str("</svg>\n");
     fs::write(path, svg)
@@ -1302,6 +1313,8 @@ fn metric_unit(title: &str) -> &'static str {
         "/s"
     } else if name.ends_with("_kib") {
         "KiB"
+    } else if name.ends_with("_mib") {
+        "MiB"
     } else if name.ends_with("_depth") {
         "depth"
     } else if name.contains("elapsed_s") || name.ends_with("_seconds") {
@@ -1361,6 +1374,78 @@ mod tests {
     use super::run;
     use serde_json::{Value, json};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn agent_process_graphs_include_all_agents_but_not_unavailable_measurements() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-agent-compare-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("sweep.toml"),
+            "configs=['one.toml','two.toml','missing.toml']\n",
+        )
+        .unwrap();
+        for (index, (name, agent, memory, workers)) in [
+            ("one", "codex", 10.0, 0),
+            ("two", "pi", 25.5, 2),
+            ("missing", "opencode", 0.0, 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            std::fs::write(
+                root.join(format!("{name}.toml")),
+                format!("agent='{agent}'\nworkload='bug-fix'\nprovider='local'\nmodel='m'\n"),
+            )
+            .unwrap();
+            let dir = root.join(format!("sweep-results/{index:03}-{name}/measurements"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("run.json"),
+                r#"{"status":"completed","elapsed_ms":12}"#,
+            )
+            .unwrap();
+            for (collector, metric, value) in [
+                ("agent-memory", "peak_rss_mib", json!(memory)),
+                ("agent-workers", "spawned_worker_count", json!(workers)),
+            ] {
+                let data = if name == "missing" {
+                    json!({"status":"unavailable","metrics":{}})
+                } else {
+                    json!({"status":"observed","metrics":{metric:value}})
+                };
+                std::fs::write(dir.join(format!("{collector}.json")), data.to_string()).unwrap();
+            }
+        }
+        run(root.join("sweep.toml").to_str().unwrap(), &mut Vec::new()).unwrap();
+        let dir = root.join("results/sweep-comparison");
+        for (file, unit) in [
+            ("metric-agent-memory.peak_rss_mib.svg", "MiB"),
+            ("metric-agent-workers.spawned_worker_count.svg", "count"),
+        ] {
+            let svg = std::fs::read_to_string(dir.join(file)).unwrap();
+            assert_eq!(svg.matches("class=\"bar\"").count(), 2, "{svg}");
+            assert!(svg.contains("codex [000-one]"));
+            assert!(svg.contains("pi [001-two]"));
+            assert!(svg.contains(">codex</text>"));
+            assert!(svg.contains("data-label=\"000-one\""));
+            assert!(svg.contains(&format!("unit: {unit}")));
+            assert!(!svg.contains("opencode"));
+        }
+        let html = std::fs::read_to_string(dir.join("report.html")).unwrap();
+        assert!(html.contains("<h2>Agent memory</h2>"));
+        assert!(html.contains("<h2>Agent workers</h2>"));
+        assert!(html.contains("Sampled peak aggregate RSS"));
+        assert!(html.contains("metric-agent-workers.spawned_worker_count.svg"));
+        assert!(html.contains("data-value=\"25.5\""));
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn compares_measurements_and_writes_svg() {
@@ -1642,6 +1727,7 @@ mod tests {
             &root.join("values.svg"),
             "elapsed_ms",
             &[("tall".into(), 100.0), ("short".into(), 1.0)],
+            &Default::default(),
         )
         .unwrap();
         let svg = std::fs::read_to_string(root.join("values.svg")).unwrap();
