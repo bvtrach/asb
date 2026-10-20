@@ -13,7 +13,13 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     prepare_adapter,
 )
 .with_replay_credential_vars(&["ANTHROPIC_AUTH_TOKEN"])
-.with_output_usage(output_usage);
+.with_output_usage(output_usage)
+.with_step_count(step_count);
+
+fn step_count(stdout: &str, _stderr: &str) -> Option<u64> {
+    // Claude's final num_turns counts model round trips inside this CLI run.
+    super::super::final_result_counter(stdout, "num_turns")
+}
 
 fn output_usage(
     stdout: &str,
@@ -107,6 +113,26 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::AgentAdapter;
+
+    #[test]
+    fn adapter_reports_final_native_turns_including_error_results() {
+        assert_eq!(
+            ADAPTER.step_count(
+                r#"{"type":"result","subtype":"error_max_turns","num_turns":3}"#,
+                ""
+            ),
+            Some(3)
+        );
+        assert_eq!(
+            ADAPTER.step_count(r#"{"type":"assistant","num_turns":3}"#, ""),
+            None
+        );
+        assert_eq!(
+            ADAPTER.step_count(r#"[{"type":"result","num_turns":3},{"type":"result"}]"#, ""),
+            None
+        );
+    }
     #[test]
     fn uses_negotiated_authentication_without_conflicting_credentials() {
         let root = std::env::temp_dir().join(format!("asb-claude-auth-{}", std::process::id()));

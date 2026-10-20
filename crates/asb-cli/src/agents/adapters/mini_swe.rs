@@ -81,9 +81,20 @@ fn collect(context: &CollectionContext<'_>) -> AgentArtifacts {
     }
     AgentArtifacts {
         token_usage: Some(trajectory_usage(&trajectory)),
-        steps: None,
+        steps: trajectory_steps(&trajectory),
         cleanup_paths: vec![trajectory],
     }
+}
+
+fn trajectory_steps(path: &Path) -> Option<u64> {
+    let value = super::super::read_usage_document(path)?;
+    // mini-SWE 2.4.6 increments this counter in query() and uses it for its
+    // configured step limit. It includes failed model-call attempts, unlike
+    // the number of successful response/usage records in the trajectory.
+    if value.get("trajectory_format")?.as_str()? != "mini-swe-agent-1.1" {
+        return None;
+    }
+    value.pointer("/info/model_stats/api_calls")?.as_u64()
 }
 
 fn trajectory_usage(path: &Path) -> crate::measurements::TokenUsage {
@@ -130,6 +141,49 @@ fn trajectory_usage(path: &Path) -> crate::measurements::TokenUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collection_uses_the_native_step_limit_counter() {
+        let workspace =
+            std::env::temp_dir().join(format!("asb-mini-swe-steps-{}", std::process::id()));
+        std::fs::create_dir_all(&workspace).unwrap();
+        let trajectory = workspace.join(".asb-mini-swe.traj.json");
+        for (document, expected) in [
+            (
+                r#"{"trajectory_format":"mini-swe-agent-1.1","info":{"model_stats":{"api_calls":4}},"messages":[{"role":"assistant"}]}"#,
+                Some(4),
+            ),
+            (
+                r#"{"trajectory_format":"mini-swe-agent-1.1","info":{"model_stats":{"api_calls":0}}}"#,
+                Some(0),
+            ),
+            (
+                r#"{"trajectory_format":"mini-swe-agent-1.1","info":{"model_stats":{"api_calls":-1}}}"#,
+                None,
+            ),
+            (
+                r#"{"trajectory_format":"mini-swe-agent-1.1","info":{"model_stats":{"api_calls":"4"}}}"#,
+                None,
+            ),
+            (
+                r#"{"trajectory_format":"unknown","info":{"model_stats":{"api_calls":4}}}"#,
+                None,
+            ),
+            (r#"{"api_calls":4,"messages":[{"role":"assistant"}]}"#, None),
+            ("invalid", None),
+        ] {
+            std::fs::write(&trajectory, document).unwrap();
+            let artifacts = collect(&CollectionContext {
+                workspace: &workspace,
+                run_dir: &workspace,
+                interface: None,
+                anthropic_input_includes_cache: false,
+            });
+            assert_eq!(artifacts.steps, expected, "{document}");
+            assert_eq!(artifacts.cleanup_paths, vec![trajectory.clone()]);
+        }
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
 
     #[test]
     fn collection_owns_the_mini_swe_trajectory_artifact() {
