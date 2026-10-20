@@ -31,6 +31,11 @@ fn runtime_bundle_executes_the_same_asb_without_a_guest_compiler() {
 }
 
 #[test]
+fn guest_relay_is_bounded_binary_transparent_and_closes_owned_sockets() {
+    python_protocol("benchmark_relay.py");
+}
+
+#[test]
 fn terminal_catalogs_preserve_original_populations_and_private_verifiers() {
     python_protocol("terminal_catalog.py");
 }

@@ -593,3 +593,37 @@ split (46.3 seconds), including an explicit check that uv provisioned Python
 3.12 rather than relying on an interpreter from the original task image. This
 qualifies installation only; no provider was contacted. The complete ordinary
 suite, strict Clippy and full development build passed for the bootstrap work.
+
+### Current-main integration and guest relay transport
+
+Merged main `2e531c87f5958b30d0b3ca5c70837b4a01d1d673` into the development
+branch. Adapter-specific tests remain in their owning modules. The complete
+function diagrams exposed a Graphviz 2.43 `init_rank` failure with compound
+global ranking; ordinary cluster-local ranking fixes it without omitting
+functions, call edges, module boxes or hover labels. Regression tests render
+both complete diagrams and count every real node and edge. Strict Clippy and
+the full development build passed after this integration repair.
+
+The same staged ASB executable now exposes a private guest TCP relay entry.
+It binds only ephemeral IPv4 loopback listeners inside its execution namespace
+and multiplexes raw bytes over its owned exec standard I/O. Targets remain
+opaque numeric IDs: the guest never chooses or receives host destinations.
+There are at most 64 listeners, 128 active channels and 64 KiB per frame.
+Malformed/oversized frames are rejected, half-closes preserve the reverse
+stream, closed channels cannot be reopened by late data, and transport EOF
+shuts down owned sockets/listeners and joins their readers. Provider-free
+real-executable tests cover binary traffic, concurrent independent targets,
+1 MiB streaming, half-close responses, all 128 channels and overflow,
+malformed frames, target-count bounds and disconnect cleanup.
+
+This is the guest transport component, not completed local endpoint support.
+Host-side TCP forwarding, URL/environment/project-proxy rewrites and ownership
+across installation/execution must still be wired and qualified before removing
+the existing host-loopback execution rejection. No host listener, host-network
+mode, firewall change or global service is introduced by this component.
+
+The post-main-integration ordinary suite passed: 336 unit tests, 82 offline CLI
+tests, ten benchmark protocol suites and the guest/runtime, diagram and replay
+integration checks. The expanded relay capacity/streaming checks also passed
+separately after that run. Strict Clippy, `make build` and package verification
+passed. These are local development gates, not hosted CI or release evidence.

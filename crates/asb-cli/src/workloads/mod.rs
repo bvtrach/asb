@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 
 mod adapters;
 mod controller;
+pub(crate) mod relay;
 mod remote;
 mod session;
 pub(crate) fn registered_sources() -> impl Iterator<Item = (&'static str, &'static str)> {

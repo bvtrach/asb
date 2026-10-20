@@ -113,9 +113,13 @@ def render(functions: list[Function], relations: set[tuple[str, str, str]], kind
         groups[function.module].append(function)
     lines = [
         f"digraph ASB_{kind.title()}_Flow {{",
-        '    graph [bgcolor="white", compound=true, fontname="Helvetica", '
+        '    graph [bgcolor="white", compound=false, fontname="Helvetica", '
         f'fontsize=18, label="ASB {kind} flow (Rust functions)", labelloc=t, '
-        'newrank=true, nodesep=0.18, pad=0.25, rankdir=LR, ranksep=0.8, '
+        # Ordinary cluster-local ranking preserves every call and module box.
+        # Compound/global cluster ranking fails init_rank in Graphviz 2.43
+        # for the complete project graph. No edges use lhead/ltail, so compound
+        # routing is neither needed nor useful here.
+        'newrank=false, nodesep=0.18, pad=0.25, rankdir=LR, ranksep=0.8, '
         # Edge concentration can corrupt clustered layouts in Graphviz 2.43
         # (contain_nodes/rebuild_vlists errors and a segmentation fault).
         # Keep each call edge explicit; this also preserves its hover label.

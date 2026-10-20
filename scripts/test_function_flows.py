@@ -19,6 +19,8 @@ class FlowLayoutTests(unittest.TestCase):
             diagram = render(functions, relations, kind)
             self.assertIn("concentrate=false", diagram)
             self.assertNotIn("concentrate=true", diagram)
+            self.assertIn("compound=false", diagram)
+            self.assertIn("newrank=false", diagram)
             for source, target, _ in relations:
                 self.assertEqual(diagram.count(f"    {source} -> {target} ["), 1)
             if shutil.which("dot"):

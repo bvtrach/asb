@@ -31,6 +31,9 @@ use std::process::ExitCode;
 /// Run the process CLI.
 #[must_use]
 pub fn entry(args: Vec<OsString>) -> ExitCode {
+    if args.first().is_some_and(|arg| arg == "__asb-relay") {
+        return workloads::relay::entry(&args[1..]);
+    }
     if args.first().is_some_and(|arg| arg == "__asb-agent") {
         return agents::driver::entry();
     }
@@ -115,7 +118,13 @@ mod adapter_layout_tests {
                 "workloads",
                 super::workloads::external_adapter_names().collect(),
                 // Task/session contracts are category-wide, not adapters.
-                &["mod.rs", "session.rs", "controller.rs", "remote.rs"],
+                &[
+                    "mod.rs",
+                    "session.rs",
+                    "controller.rs",
+                    "remote.rs",
+                    "relay.rs",
+                ],
             ),
             ("proxy", super::proxy::names().collect(), &["mod.rs"]),
             (
