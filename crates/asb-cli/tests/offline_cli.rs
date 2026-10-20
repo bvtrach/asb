@@ -1804,12 +1804,12 @@ fn pre_solved_workspace_is_preserved_but_never_earns_resolution_credit() {
 fn external_smoke_cannot_report_upstream_task_success_or_invent_steps() {
     for passed in [false, true] {
         let project = replay_project(1);
-        project.write("workloads/swe-bench.txt", "Local adapter smoke only.\n");
-        project.write("benchmark.toml", "agent='pi'\nworkload='swe-bench'\nprovider='cli2key'\nmodel='test-model'\nworkspace='workspace'\nlog_file='run.log'\n");
+        project.write("workloads/agentbench.txt", "Local adapter smoke only.\n");
+        project.write("benchmark.toml", "agent='pi'\nworkload='agentbench'\nprovider='cli2key'\nmodel='test-model'\nworkspace='workspace'\nlog_file='run.log'\n");
         project.write("workspace/external-workload/asb-trial/src/task.py", if passed {
-            "def normalize(value: str) -> str:\n    return value.strip().lower().replace(' ', '-')\n\ndef suite_label() -> str:\n    return \"swe_bench\"\n"
+            "def normalize(value: str) -> str:\n    return value.strip().lower().replace(' ', '-')\n\ndef suite_label() -> str:\n    return \"agentbench\"\n"
         } else {
-            "def normalize(value: str) -> str:\n    return value\n\ndef suite_label() -> str:\n    return \"swe_bench\"\n"
+            "def normalize(value: str) -> str:\n    return value\n\ndef suite_label() -> str:\n    return \"agentbench\"\n"
         });
         let result = replay(
             &project,

@@ -10,6 +10,27 @@ mod session;
 pub use session::TaskIdentity;
 pub(crate) use session::{PreparationContext, WorkloadSession};
 
+pub(crate) struct InstallationContext<'a> {
+    pub project_root: &'a Path,
+    pub tools_root: &'a Path,
+    pub workloads_root: &'a Path,
+}
+
+pub(crate) fn install_registered(
+    name: &str,
+    context: &InstallationContext<'_>,
+    output: &mut dyn std::io::Write,
+    progress: &mut dyn FnMut(u8, &str),
+) -> Result<bool, crate::Error> {
+    adapters::find(name).map_or(Ok(false), |adapter| {
+        adapter.install(context, output, progress)
+    })
+}
+
+pub(crate) fn installed_available(name: &str, directory: &Path) -> Option<bool> {
+    adapters::find(name).and_then(|adapter| adapter.installed_available(directory))
+}
+
 pub(crate) fn prepare_task(
     context: &PreparationContext<'_>,
 ) -> Result<Box<dyn WorkloadSession>, String> {
@@ -934,6 +955,14 @@ pub(crate) fn external_adapter_names() -> impl Iterator<Item = &'static str> {
     adapters::names()
 }
 
+/// Installed dataset tasks replace synthetic defaults; malformed data is an error.
+pub fn installed_trials(name: &str, directory: &Path) -> Result<Vec<Trial>, String> {
+    adapters::find(name).map_or_else(
+        || Ok(trial_ids(name)),
+        |adapter| adapter.installed_trials(directory),
+    )
+}
+
 pub fn write_default_trial_set(name: &str, directory: &Path) -> Result<(), std::io::Error> {
     let path = directory.join(format!("{name}.workload.toml"));
     if path.exists() {
@@ -941,7 +970,7 @@ pub fn write_default_trial_set(name: &str, directory: &Path) -> Result<(), std::
     }
     let config = TrialSet {
         workload: name.into(),
-        trials: trial_ids(name),
+        trials: installed_trials(name, directory).map_err(std::io::Error::other)?,
     };
     let text = toml::to_string_pretty(&config).map_err(std::io::Error::other)?;
     fs::write(path, text)
@@ -1109,14 +1138,14 @@ mod tests {
     fn installed_external_source_is_copied_without_overwriting_workspace_edits() {
         let root = std::env::temp_dir().join(format!("asb-external-copy-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
-        let source = root.join("workloads/swe-bench/source");
+        let source = root.join("workloads/terminal-bench/source");
         let workspace = root.join("workspace");
         fs::create_dir_all(&source).unwrap();
         fs::write(source.join("README.md"), "upstream").unwrap();
         fs::create_dir_all(workspace.join("external-workload")).unwrap();
         fs::write(workspace.join("external-workload/README.md"), "edited").unwrap();
         assert_eq!(
-            prepare_external("swe-bench", &root.join("workloads"), &workspace).unwrap(),
+            prepare_external("terminal-bench", &root.join("workloads"), &workspace).unwrap(),
             0
         );
         assert_eq!(

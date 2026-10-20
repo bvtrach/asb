@@ -100,8 +100,74 @@ Implemented (not a claim of complete upstream benchmark support):
 - Unit tests cover identity round trips, per-attempt state and installed
   recipe metadata. Existing run/sweep/replay regressions remain required.
 
-Still to implement: real catalogs/install hooks, submission/evaluation
+Still to implement beyond the foundation: complete submission/evaluation
 contracts, all five upstream workload sessions, container execution and
 collector targeting, complete-suite scheduling/reporting, runtime evaluator
 qualification, PR/merge/main CI and release. Keep the checklist above open
 until those full requirements have direct evidence.
+
+### SWE-bench catalog materializer
+
+The family helper now resolves a public Hugging Face dataset to a concrete
+revision, validates each task with the pinned official SDK, and stores a
+stable public catalog separately from private evaluator-only rows. Payload
+hashes, task/base-commit identity and bounded file reads detect accidental
+changes or stale selection. Agent instructions use an explicit public-field
+allowlist, never gold patches or hidden test patches. Publication is atomic;
+failed or incompatible input cannot replace a previous complete catalog.
+
+Actual official test splits materialized successfully during qualification:
+
+- Full: 2,294 tasks, revision `c6fe717fd7a4c3ac1daa4055a4fd082c6a1d28a2`.
+- Lite: 300 tasks, revision `b0dde1093fe417d83b7184254edf8199c1f0dff5`.
+- Verified: 500 tasks, revision `78f471bf655a3137b2e8a75af1501690ec009ec3`.
+
+These are catalog/SDK-schema checks, not agent-solving or container-evaluation
+results. Adapter-owned Rust workload-install and TUI task-discovery hooks are
+now connected. Actual `asb workload install` recognized all three complete
+populations, and a fresh Lite installation through that command produced the
+300 real instance selections. Legacy incompatible selections are backed up;
+valid user-selected subsets remain unchanged. SWE-bench no longer falls back
+to synthetic smoke trials; its real execution session is still unfinished.
+Provider-free tests cover empty/duplicate/malformed tasks, immutable metadata,
+private/public separation, source checksums, path/symlink escape, prompt bounds
+and preservation of the previous catalog on failure.
+
+### Official evaluation protocol and scoped Docker transport
+
+The SWE-bench helper captures a frozen prediction and dataset row, uses a
+fresh evaluation directory/run identity, and calls the installed upstream SDK.
+Its result protocol verifies the selected task in both the official summary
+and instance report, retaining patch hash and evaluator/dataset identities.
+Provider-free fixtures cover resolved/unresolved results, wrong-task/missing
+reports, empty submissions, timeouts and rejection of cached attempt reuse.
+These fixtures do not by themselves qualify actual grading.
+
+The SDK transport uses a private socketpair to the existing Docker CLI's
+`system dial-stdio`, with scoped `sudo -n` only when necessary. Controllers
+and dataset code remain unprivileged; no listener, host permission change,
+group change, global Docker configuration or image prune is used. A live SDK
+version-and-ping check succeeded against Docker 29.7.2/API 1.55 on this host.
+Offline transport tests verify binary duplex I/O, failed startup, closure and
+that unrelated processes survive cleanup. Abrupt-controller-crash recovery
+remains an open requirement.
+
+Actual Docker evaluator qualification also passed: the shared real instance
+`astropy__astropy-12907` was evaluated against each of Full, Lite and Verified,
+using its reference patch and a deliberately incorrect patch. All three
+reference patches resolved and all three incorrect patches were unresolved.
+The six checks took 265 seconds in total. The SDK cleanup path needed to use
+the scoped SDK transport instead of its unprivileged CLI subprocess; that was
+repaired, and all six attempt containers were confirmed absent afterward.
+No live LLM provider was used. This qualifies one actual evaluator instance
+per population, not a complete dataset run or ASB-selected-agent execution.
+
+### Terminal-Bench dataset compatibility checks
+
+The pinned Terminal-Bench 1 dataset checkout's exact registry subset was
+validated with the installed original SDK: all 80 `terminal-bench-core@0.1.1`
+task definitions load. For Terminal-Bench 2.1, the pinned public checkout
+`7131e4375048a0e408a8fb404b5f499d726b695b` has 89 actual task directories;
+all 89 load with Harbor 0.24.0, including its verifier/input-path validation.
+An additional template `task.toml` outside the task directory is not a 90th
+benchmark instance. These are schema checks, not runtime execution evidence.

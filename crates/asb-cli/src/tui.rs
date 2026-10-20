@@ -617,15 +617,19 @@ fn workload_loop(
                     if app.selected_workload.as_deref() != Some(&current) {
                         app.selected_workload = Some(current.clone());
                         app.trials = Pane::new(
-                            workloads::trial_ids(&current)
-                                .into_iter()
-                                .map(|trial| Choice {
-                                    label: trial.id,
-                                    provider: None,
-                                    model: None,
-                                    availability: Availability::Available,
-                                })
-                                .collect(),
+                            workloads::installed_trials(
+                                &current,
+                                &project::resolve(&app.root, &app.project.workloads_dir),
+                            )
+                            .map_err(Error::Input)?
+                            .into_iter()
+                            .map(|trial| Choice {
+                                label: trial.id,
+                                provider: None,
+                                model: None,
+                                availability: Availability::Available,
+                            })
+                            .collect(),
                         );
                         app.level = 1;
                         app.message = "Select enabled trials; Enter saves this workload. Search filters trials.".into();
@@ -948,7 +952,7 @@ fn write_trial_sets(app: &WorkloadApp) -> Result<usize, Error> {
     }
     let mut written = 0;
     for (workload, ids) in grouped {
-        let catalog = workloads::trial_ids(&workload);
+        let catalog = workloads::installed_trials(&workload, &directory).map_err(Error::Input)?;
         let trials = catalog
             .into_iter()
             .filter(|trial| ids.contains(&trial.id))

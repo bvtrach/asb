@@ -30,6 +30,20 @@ mod terminal_bench;
 
 pub(super) trait WorkloadAdapter: Sync {
     fn id(&self) -> &'static str;
+    fn install(
+        &self,
+        _context: &super::InstallationContext<'_>,
+        _output: &mut dyn std::io::Write,
+        _progress: &mut dyn FnMut(u8, &str),
+    ) -> Result<bool, crate::Error> {
+        Ok(false)
+    }
+    fn installed_available(&self, _directory: &Path) -> Option<bool> {
+        None
+    }
+    fn installed_trials(&self, _directory: &Path) -> Result<Vec<Trial>, String> {
+        Ok(self.trial_ids())
+    }
     /// Smoke fixtures are not instances from the named upstream benchmark.
     fn evaluation_kind(&self, _name: &str) -> &'static str {
         "adapter-smoke"
@@ -205,6 +219,22 @@ pub(super) fn names() -> impl Iterator<Item = &'static str> {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn original_swebench_populations_require_installed_tasks_not_smoke_defaults() {
+        let root = std::env::temp_dir()
+            .join(super::super::TaskIdentity::local("missing-catalog", None).attempt_id);
+        fs::create_dir_all(&root).unwrap();
+        for name in ["swe-bench", "swe-bench-lite", "swe-bench-verified"] {
+            let adapter = find(name).unwrap();
+            assert!(adapter.trial_ids().is_empty());
+            assert_eq!(adapter.installed_available(&root), Some(false));
+            let error = adapter.installed_trials(&root).unwrap_err();
+            assert!(error.contains(&format!("asb workload install {name}")));
+            assert!(adapter.prepare_source(&root, &root).is_err());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn prompt_family_routes_prompt_population_fixture_setup_and_trials() {

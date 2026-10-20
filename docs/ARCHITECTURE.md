@@ -278,9 +278,14 @@ tape proxy automatically and has no tool-catalog entry. npm recipes are
 project-local; Python recipes use a
 project-local virtual environment. `asb workload install` downloads a prompt
 URL, resolves a pinned external workload alias, or copies a local prompt into
-the configured workloads directory. The `swe-bench` and `terminal-bench`
-aliases download pinned upstream source archives into local bundle directories;
+the configured workloads directory. The legacy `terminal-bench`
+alias downloads a pinned upstream source archive into a local bundle directory;
 the runner copies those sources into `external-workload/` in the workspace.
+The three original SWE-bench family adapters now own a pinned official task
+catalog installer, SDK dependency and installed-task discovery. They do not
+fall back to synthetic trial IDs. Per-instance execution and grading through
+the new session boundary are still being integrated; see the full benchmark
+delivery checklist before claiming upstream benchmark support.
 Other aliases install pinned prompt metadata. These commands do not handle
 credentials.
 `asb init` prepares `.asb/python/venv` using an installed Python 3.12 or 3.13,

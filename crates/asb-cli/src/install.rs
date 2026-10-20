@@ -175,6 +175,9 @@ pub fn external_workload_names() -> impl Iterator<Item = &'static str> {
 /// Check whether an external workload has its runnable local bundle and
 /// prompt. This is side-effect free and safe to call while rendering a TUI.
 pub fn workload_available(name: &str, directory: &Path) -> bool {
+    if let Some(available) = workloads::installed_available(name, directory) {
+        return available;
+    }
     if bundle_spec(name).is_some() {
         directory.join(name).join("ASB-BUNDLE").is_file()
             && directory.join(name).join("source").is_dir()
@@ -195,11 +198,6 @@ pub fn workload_available(name: &str, directory: &Path) -> bool {
 
 fn bundle_spec(name: &str) -> Option<BundleSpec> {
     match name {
-        "swe-bench" => Some(BundleSpec {
-            archive: "https://github.com/SWE-bench/SWE-bench/archive/02e7a74ffd0b707aab73d203fe87bdc7c76afc8e.tar.gz",
-            marker: "swe-bench/SWE-bench@02e7a74ffd0b707aab73d203fe87bdc7c76afc8e",
-            prompt: "Use the installed upstream SWE-bench checkout in `external-workload`. Inspect its README and package metadata, select a concrete SWE-bench task or dataset-backed command available in this checkout, make the requested change, and run the narrowest applicable tests. Keep all changes inside this local checkout and do not download additional data during the run.\n",
-        }),
         "terminal-bench" => Some(BundleSpec {
             archive: "https://github.com/harbor-framework/terminal-bench/archive/452bf305c6daa62fc59061d22133a7cbc7c1572e.tar.gz",
             marker: "terminal-bench/terminal-bench@452bf305c6daa62fc59061d22133a7cbc7c1572e",
@@ -525,6 +523,23 @@ pub fn workload_with_progress(
     progress(2, "preparing");
     fs::create_dir_all(&directory)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", directory.display())))?;
+    // A custom prompt with a coincidentally matching destination name is not
+    // an upstream dataset installation.
+    if external_workload(&requested).is_some() && name == requested {
+        let tools_root = project::resolve(&project_root, &project_config.tools_dir);
+        if workloads::install_registered(
+            &name,
+            &workloads::InstallationContext {
+                project_root: &project_root,
+                tools_root: &tools_root,
+                workloads_root: &directory,
+            },
+            output,
+            progress,
+        )? {
+            return Ok(());
+        }
+    }
     if let Some(bundle) = bundle_spec(&name) {
         install_bundle(&name, bundle, &directory, output, progress)?;
         return Ok(());
@@ -1375,7 +1390,7 @@ mod tests {
             external_workload("swe-bench").map(|item| item.name),
             Some("swe-bench")
         );
-        assert!(bundle_spec("swe-bench").is_some());
+        assert!(bundle_spec("swe-bench").is_none());
         assert!(bundle_spec("terminal-bench").is_some());
         assert!(external_workload("methodology-only").is_none());
         let installed = EXTERNAL_WORKLOADS
@@ -1395,15 +1410,21 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("asb-external-bundle-{}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
-        let bundle_dir = directory.join("swe-bench");
+        let bundle_dir = directory.join("terminal-bench");
         fs::create_dir_all(bundle_dir.join("source")).unwrap();
         fs::write(bundle_dir.join("source/README.md"), "local source").unwrap();
-        let spec = bundle_spec("swe-bench").unwrap();
+        let spec = bundle_spec("terminal-bench").unwrap();
         fs::write(bundle_dir.join("ASB-BUNDLE"), spec.marker).unwrap();
         let mut output = Vec::new();
         let mut progress = |_percent: u8, _stage: &str| {};
-        install_bundle("swe-bench", spec, &directory, &mut output, &mut progress)
-            .expect("existing bundle is reused");
+        install_bundle(
+            "terminal-bench",
+            spec,
+            &directory,
+            &mut output,
+            &mut progress,
+        )
+        .expect("existing bundle is reused");
         assert!(
             String::from_utf8(output)
                 .unwrap()
