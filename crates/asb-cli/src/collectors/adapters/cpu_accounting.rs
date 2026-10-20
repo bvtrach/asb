@@ -47,7 +47,7 @@ impl CollectorAdapter for CpuAccounting {
     fn attach_pid(&self, session: &mut Session, pid: u32) -> Result<(), String> {
         let state = session.state::<State>();
         let mut state = state.borrow_mut();
-        match attach(pid) {
+        match attach(pid, session.cgroup_parent()) {
             Ok(leaf) => state.leaf = Some(leaf),
             Err(reason) => state.reason = Some(reason),
         }
@@ -136,12 +136,14 @@ fn parse_cpu_stat(text: &str) -> Option<(u64, u64)> {
     Some((user?, system?))
 }
 
-fn attach(pid: u32) -> Result<Leaf, String> {
+fn attach(pid: u32, configured_parent: Option<&Path>) -> Result<Leaf, String> {
     if !cfg!(target_os = "linux") {
         return Err("cgroup-v2 accounting requires Linux".into());
     }
     let root = Path::new("/sys/fs/cgroup");
-    let parent = if let Some(parent) = std::env::var_os("ASB_CGROUP_PARENT") {
+    let parent = if let Some(parent) = configured_parent {
+        parent.to_path_buf()
+    } else if let Some(parent) = std::env::var_os("ASB_CGROUP_PARENT") {
         PathBuf::from(parent)
     } else {
         let membership = fs::read_to_string("/proc/self/cgroup").map_err(|e| e.to_string())?;
@@ -260,7 +262,7 @@ mod tests {
             }
         }
         let mut child = Guard(Command::new("sh").args(["-c", "kill -STOP $$; for i in 1 2 3; do python3 -c 'import time; end=time.process_time()+0.05; exec(\"while time.process_time() < end: pass\")' || exit 1; done"]).spawn().unwrap());
-        let leaf = attach(child.0.id())
+        let leaf = attach(child.0.id(), None)
             .expect("run this test under systemd-run --user --scope -p Delegate=yes");
         let path = leaf.path.clone();
         assert_eq!(read_cpu_stat(&path.join("cpu.stat")).unwrap(), (0, 0));

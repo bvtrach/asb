@@ -94,6 +94,12 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   and `kernel.sched_schedstats=1` when `sudo -n true` succeeds. It reports each
   setting as already enabled, changed, or unchanged; it never prompts, edits
   sudoers, or blocks initialization when passwordless sudo is unavailable.
+  On a systemd cgroup-v2 host, the same best-effort init path creates a
+  user-owned `asb.slice` beneath the current user slice, enables the CPU
+  controller, and records its parent in `.asb/project.toml`; measured runs use
+  that parent automatically. A non-systemd layout or failed setup is reported
+  and falls back to process sampling. Init never changes resource limits or
+  edits sudoers.
   `asb compare` also writes an execution-composition SVG with user CPU, system
   CPU, block-I/O delay, runnable scheduler delay, and explicitly-labelled
   remaining wall time. CPU categories are process-tree totals and may overlap
