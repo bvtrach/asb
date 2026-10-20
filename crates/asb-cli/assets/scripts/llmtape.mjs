@@ -82,7 +82,11 @@ async function replayResponse(response, interaction) {
   // before replay so agents never execute commands in the record directory.
   const workspace = process.env.ASB_TAPE_WORKSPACE;
   const body = workspace
-    ? normalizeCassetteBody(interaction.response.body || "").replaceAll("<asb-workspace>", workspace)
+    ? normalizeSseWorkspaceFragments(
+        normalizeCassetteBody(interaction.response.body || ""),
+        "<asb-workspace>",
+        workspace,
+      ).replaceAll("<asb-workspace>", workspace)
     : interaction.response.body || "";
   const contentType = Object.entries(interaction.response.headers || {})
     .find(([name]) => name.toLowerCase() === "content-type")?.[1] || "";
@@ -170,7 +174,8 @@ function normalizeCassetteBody(body) {
   if (!body) return body;
   if (typeof body !== "string") body = JSON.stringify(body);
   const workspace = process.env.ASB_TAPE_WORKSPACE;
-  const normalized = (workspace ? body.replaceAll(workspace, "<asb-workspace>") : body)
+  const normalized = normalizeSseWorkspaceFragments(body, workspace)
+    .replaceAll(workspace || "\u0000", "<asb-workspace>")
     // Sweep isolation may serialize either an absolute or a relative result
     // path. Normalize the whole path so the result-root prefix cannot leak
     // into replay keys (for example replay-sweep-results/.../workspace-*).
@@ -194,6 +199,8 @@ function normalizeCassetteBody(body) {
     .replace(/original token count: \d+/g, "original token count: <asb-token-count>")
     .replace(/Total output lines: \d+/g, "Total output lines: <asb-line-count>")
     .replace(/codex-arg[A-Za-z0-9_-]+/g, "codex-arg<asb-random>")
+    .replace(/\bcall_[A-Za-z0-9_-]+/g, "call_<asb-call>")
+    .replace(/\bmsg_resp_[A-Za-z0-9_-]+/g, "msg_resp_<asb-response>")
     .replace(/Chunk ID: [0-9a-f]+/gi, "Chunk ID: <asb-chunk>");
   try {
     const sort = (value, key = "", path = []) => {
@@ -235,6 +242,59 @@ function normalizeCassetteBody(body) {
   } catch {
     return normalized;
   }
+}
+
+// Tool-call arguments in Anthropic SSE responses are split across many
+// `input_json_delta` events. A workspace path can therefore be divided across
+// event boundaries and cannot be normalized by a regex over the raw SSE text.
+// Reassemble each contiguous content block, normalize it, and emit the result
+// in the first fragment while retaining the event boundaries for the client.
+function normalizeSseWorkspaceFragments(body, workspace, replacement = "<asb-workspace>") {
+  if (!body.includes("partial_json")) return body;
+  const lines = body.split(/(?<=\n)/);
+  const groups = [];
+  const active = new Map();
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(/^(data:\s+)(\{.*\})(\r?\n)?$/);
+    if (!match) continue;
+    let event;
+    try { event = JSON.parse(match[2]); } catch { continue; }
+    const partial = event?.delta?.partial_json;
+    const block = event?.index;
+    if (typeof partial === "string" && Number.isInteger(block)) {
+      const group = active.get(block) || { indices: [], parts: [] };
+      group.indices.push(index);
+      group.parts.push(partial);
+      active.set(block, group);
+    }
+    if (event?.type === "content_block_stop" && Number.isInteger(block)) {
+      const group = active.get(block);
+      if (group) { groups.push(group); active.delete(block); }
+    }
+  }
+  for (const group of groups) {
+    const value = normalizeWorkspaceText(group.parts.join(""), workspace, replacement);
+    let cursor = 0;
+    for (let offset = 0; offset < group.indices.length; offset += 1) {
+      const lineIndex = group.indices[offset];
+      const match = lines[lineIndex].match(/^(data:\s+)(\{.*\})(\r?\n)?$/);
+      if (!match) continue;
+      let event;
+      try { event = JSON.parse(match[2]); } catch { continue; }
+      const length = group.parts[offset].length;
+      const end = offset === group.indices.length - 1 ? value.length : Math.min(value.length, cursor + length);
+      event.delta.partial_json = value.slice(cursor, end);
+      cursor = end;
+      lines[lineIndex] = `${match[1]}${JSON.stringify(event)}${match[3] || ""}`;
+    }
+  }
+  return lines.join("");
+}
+
+function normalizeWorkspaceText(value, workspace, replacement = "<asb-workspace>") {
+  return (workspace ? value.replaceAll(workspace, replacement) : value)
+    .replace(/\/?(?:[A-Za-z0-9_.-]+\/)+workspace-concurrency-\d+(?:\.asb-agent-runtime)?/g, replacement)
+    .replace(/\/?(?:[A-Za-z0-9_.-]+\/)+workspace(?=\/|["\\])/g, replacement);
 }
 
 function requestKey(request) {
