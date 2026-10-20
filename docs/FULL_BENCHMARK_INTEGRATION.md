@@ -1201,3 +1201,16 @@ representative known-repair test, not a complete-population or AI-solving claim.
 The actual input seal covered approximately 3.47 GB and 232,293 nodes. This
 conservative whole-tool-tree approach needs more precise adapter-declared input
 closure before scalable resume is complete. Package/hosted CI checks follow.
+
+A follow-up review repaired explicit file override identity: retain the
+declared symlink rather than canonicalizing away retargeting. The Python
+reader likewise preserves parent components after symlinks instead of using
+lexical `abspath`, which can read a different file than the kernel would.
+Two additional regressions verify both cases without providers or credentials.
+The parallel loopback replay fixture additionally retargets an explicit
+file-valued environment override during execution, verifies a `changed` seal
+while its original target remains untouched, and still preserves the independent
+successful task and both unresolved replicas. All source/build gates passed
+again after the repair. Checkpoint commit `b4860e3032cafaa0c702ae4b7eb4298a6e5e3c71`
+passed clean packaging, the full packaged suite and hosted CI `39474879476`
+(optional local-host job skipped); GitHub verified its signature.

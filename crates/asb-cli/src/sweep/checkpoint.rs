@@ -254,7 +254,10 @@ impl Inputs {
         for (_, value) in std::env::vars_os() {
             let path = PathBuf::from(value);
             if path.is_file() {
-                environment_files.insert(path.canonicalize().map_err(crate::io_error)?);
+                // Keep the declared symlink in the input graph. Canonicalizing
+                // it here would miss retargeting to different content while
+                // the previous target stayed unchanged.
+                environment_files.insert(std::path::absolute(path).map_err(crate::io_error)?);
             }
         }
         for (index, path) in environment_files.into_iter().enumerate() {

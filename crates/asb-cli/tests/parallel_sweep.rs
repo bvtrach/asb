@@ -18,6 +18,7 @@ fn asb(root: &Path, arguments: &[&str]) -> Output {
         .current_dir(root)
         .env_clear()
         .env("HOME", root)
+        .env("ASB_TEST_INPUT", root.join("explicit-input"))
         .env("PATH", std::env::var_os("PATH").unwrap_or_default());
     if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
         command.env("LLVM_PROFILE_FILE", profile);
@@ -79,6 +80,10 @@ const expected=['first-1','first-2','second'];
     await new Promise(resolve=>setTimeout(resolve,10));
   }
   if(first && fs.existsSync(home+'/fail-first')) process.exit(7);
+  if(!first && fs.existsSync(home+'/retarget-input')) {
+    fs.unlinkSync(process.env.ASB_TEST_INPUT);
+    fs.symlinkSync(home+'/replacement-input', process.env.ASB_TEST_INPUT);
+  }
   const conf=JSON.parse(fs.readFileSync(process.env.PI_CODING_AGENT_DIR+'/models.json'));
   const url=conf.providers.asb.baseUrl;
   if(!/^http:\/\/127\.0\.0\.1:\d+\/v1$/.test(url)) throw new Error('not loopback');
@@ -290,6 +295,14 @@ const expected=['first-1','first-2','second'];
         std::fs::remove_file(root.join(format!("started-{name}"))).unwrap();
     }
     std::fs::write(root.join("fail-first"), "fixture failure").unwrap();
+    std::fs::write(root.join("original-input"), "original declared input").unwrap();
+    std::fs::write(root.join("replacement-input"), "changed declared input").unwrap();
+    std::os::unix::fs::symlink(root.join("original-input"), root.join("explicit-input")).unwrap();
+    std::fs::write(
+        root.join("retarget-input"),
+        "retarget only the declared symlink",
+    )
+    .unwrap();
     let failed = asb(root, &arguments);
     assert!(!failed.status.success());
     let rows: Vec<serde_json::Value> = String::from_utf8(failed.stdout)
@@ -298,6 +311,12 @@ const expected=['first-1','first-2','second'];
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(rows.len(), 3);
+    let seal = read_json(&root.join("sweep-results/.checkpoint/inputs.json"));
+    assert_eq!(seal["status"], "changed", "{seal}");
+    assert_eq!(
+        std::fs::read_to_string(root.join("original-input")).unwrap(),
+        "original declared input"
+    );
     for record in completions(root, "000-first") {
         assert_eq!(record["summary"]["workload_success"], false);
         assert_eq!(record["workload_cleanup_confirmed"], true);

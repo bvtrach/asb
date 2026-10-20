@@ -17,6 +17,13 @@ class FingerprintError(ValueError):
     pass
 
 
+def absolute_path(path):
+    # Preserve '..': the kernel resolves it after any preceding symlink.
+    # abspath/normpath can therefore name a different actual input file.
+    path = Path(path)
+    return path if path.is_absolute() else Path.cwd() / path
+
+
 class Snapshot:
     def __init__(self, key, timeout=120, max_bytes=MAX_BYTES, max_nodes=MAX_NODES):
         if len(key) != 32:
@@ -50,7 +57,7 @@ class Snapshot:
         self.tick()
         if depth > 128:
             raise FingerprintError("input path depth exceeded")
-        path = Path(os.path.abspath(path))
+        path = absolute_path(path)
         info = self.observe(path)
         if info is None:
             return hashlib.sha256(b"missing").digest()
@@ -144,7 +151,7 @@ class Snapshot:
             if type(bind_location) is not bool or type(direct_file) is not bool:
                 raise FingerprintError("invalid input root semantics")
             if bind_location:
-                digest.update(os.fsencode(os.path.abspath(entry["path"])) + b"\0")
+                digest.update(os.fsencode(absolute_path(entry["path"])) + b"\0")
             digest.update(self.file_contents(entry["path"]) if direct_file else self.path(entry["path"], exclude=exclude))
         for path, before in self.observed.items():
             try:

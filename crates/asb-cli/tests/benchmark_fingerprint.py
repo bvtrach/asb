@@ -18,6 +18,39 @@ KEY = bytes(range(32))
 
 
 class FingerprintTests(unittest.TestCase):
+    def test_parent_components_follow_actual_symlink_resolution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "actual/subdirectory").mkdir(parents=True)
+            (root / "link").symlink_to(root / "actual/subdirectory", target_is_directory=True)
+            actual, lexical = root / "actual/input", root / "input"
+            actual.write_text("actual input")
+            lexical.write_text("not the actual input")
+            def seal():
+                return fingerprint.Snapshot(KEY).seal([{
+                    "name":"override", "path":str(root / "link/../input"),
+                }], None)["digest"]
+            before = seal()
+            lexical.write_text("irrelevant change")
+            self.assertEqual(before, seal())
+            actual.write_text("relevant change")
+            self.assertNotEqual(before, seal())
+
+    def test_explicit_file_roots_detect_symlink_retargeting(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first, second, link = root / "first", root / "second", root / "override"
+            first.write_text("original input")
+            second.write_text("replacement input")
+            link.symlink_to(first)
+            def seal():
+                return fingerprint.Snapshot(KEY).seal([{"name":"override", "path":str(link)}], None)["digest"]
+            before = seal()
+            link.unlink()
+            link.symlink_to(second)
+            self.assertNotEqual(before, seal())
+            self.assertEqual(first.read_text(), "original input")
+
     def test_context_and_root_boundaries_cannot_alias(self):
         with tempfile.TemporaryDirectory() as temporary:
             file = Path(temporary) / "input"
