@@ -8,11 +8,11 @@ import io
 import json
 from pathlib import Path
 import re
-import struct
 import tarfile
 import tempfile
 
 from asb_execution import ExecutionError
+from asb_runtime import bundle
 
 
 def upload(container, destination, files):
@@ -25,21 +25,6 @@ def upload(container, destination, files):
         archive.seek(0)
         if not container.put_archive(destination, archive):
             raise ExecutionError("could not stage the task's private runtime")
-
-
-def portable_binary(path):
-    path = Path(path)
-    if not path.is_file() or path.stat().st_size > 256 * 1024**2:
-        raise ExecutionError("portable ASB guest executable is missing or exceeds 256 MiB")
-    data = path.read_bytes()
-    if data[:6] != b"\x7fELF\x02\x01" or len(data) < 64:
-        raise ExecutionError("ASB guest executable must be a static Linux ELF64 binary")
-    offset, size, count = struct.unpack_from("<Q", data, 32)[0], *struct.unpack_from("<HH", data, 54)
-    if size < 56 or offset + size * count > len(data):
-        raise ExecutionError("ASB guest executable has invalid ELF program headers")
-    if any(struct.unpack_from("<I", data, offset + size * index)[0] == 3 for index in range(count)):
-        raise ExecutionError("ASB guest executable needs a host dynamic loader; use the static guest build")
-    return data
 
 
 def stage_public_cache(container, project, tools):
@@ -82,11 +67,14 @@ def execute_agent(task, request, before_resume, on_output, cancelled):
     tools = Path(request["tools_root"]).absolute()
     if not (project / ".asb/project.toml").is_file():
         raise ExecutionError("host benchmark project is not initialized")
-    binary = portable_binary(request["binary"])
     container = task.workspace.container
-    task.checked(["mkdir", "-p", "/opt/asb-runtime", "/opt/asb-project/.asb",
+    files,receipt = bundle(request["binary"],getattr(task.workspace,"image_identity",{}).get("architecture"))
+    runtime_receipt = task.artifacts / "runtime.json"
+    runtime_receipt.write_text(json.dumps(receipt,sort_keys=True)+"\n")
+    runtime_receipt.chmod(0o600)
+    task.checked(["mkdir", "-p", "/opt/asb-runtime/bin", "/opt/asb-runtime/lib", "/opt/asb-project/.asb",
                   "/opt/asb-project/.asb-tools/node/cache", "/opt/asb-project/.asb-cache"])
-    upload(container, "/opt/asb-runtime", [("asb", binary, 0o755)])
+    upload(container, "/opt/asb-runtime", files)
     configuration = request.get("project_configuration", "tools_dir='.asb-tools'\nworkloads_dir='workloads'\nworkspace_dir='workspace'\n")
     if not isinstance(configuration, str) or len(configuration.encode()) > 64 * 1024:
         raise ExecutionError("guest project configuration exceeds its limit")

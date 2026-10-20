@@ -12,14 +12,18 @@ import unittest
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).parents[1] / "assets/benchmarks"))
 from asb_execution import ExecutionError
-from asb_guest import execute_agent, portable_binary, stage_public_cache
+from asb_guest import execute_agent, stage_public_cache
+from asb_runtime import elf as inspect_elf
 
 
 def elf(interpreter=False):
     data = bytearray(120)
-    data[:6] = b"\x7fELF\x02\x01"
+    data[:7] = b"\x7fELF\x02\x01\x01"
+    struct.pack_into("<H",data,16,2)
+    struct.pack_into("<H",data,18,62)
+    struct.pack_into("<I",data,20,1)
     struct.pack_into("<Q", data, 32, 64)
-    struct.pack_into("<HH", data, 54, 56, 1)
+    struct.pack_into("<HHH", data, 52, 64, 56, 1)
     struct.pack_into("<I", data, 64, 3 if interpreter else 1)
     return data
 
@@ -38,15 +42,15 @@ class Container:
 
 
 class GuestBootstrapTests(unittest.TestCase):
-    def test_portable_runtime_accepts_static_elf_but_rejects_dynamic_and_malformed_files(self):
+    def test_runtime_parser_accepts_static_elf_and_rejects_malformed_files(self):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "asb"
             binary.write_bytes(elf())
-            self.assertEqual(portable_binary(binary), elf())
+            self.assertEqual(inspect_elf(binary),(elf(),62,None))
             for invalid in [elf(True), b"#!/bin/sh\n", elf()[:100]]:
                 binary.write_bytes(invalid)
                 with self.assertRaises(ExecutionError):
-                    portable_binary(binary)
+                    inspect_elf(binary)
 
     def test_registry_cache_with_credentials_is_never_staged(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -44,6 +44,10 @@ pub(crate) fn publish_support(root: &std::path::Path) -> Result<(), crate::Error
             "asb_guest.py",
             include_str!("../../assets/benchmarks/asb_guest.py"),
         ),
+        (
+            "asb_runtime.py",
+            include_str!("../../assets/benchmarks/asb_runtime.py"),
+        ),
     ] {
         publish_asset(&root.join(name), source)?;
     }

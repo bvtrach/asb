@@ -84,6 +84,10 @@ source files.
 
 ## Implementation ledger
 
+Entries below are chronological implementation/qualification snapshots.
+Later entries supersede earlier development limitations; the delivery checklist
+above remains the full scope required before merge and release.
+
 ### Session and installation foundation
 
 Implemented (not a claim of complete upstream benchmark support):
@@ -497,3 +501,39 @@ execution instead gives an explicit `asb tool install <tool>` repair command.
 Both Terminal-Bench tool recipes pin Docker SDK 7.1.0, matching the shared
 transport. Provider-free tests cover wrong SDK/dependency versions, cancellation
 draining, reward validation and failed cleanup in addition to scoped resources.
+
+### Automatic same-version ASB runtime staging
+
+The normal session now uses the running ASB binary without requiring a separate
+static build or `ASB_GUEST_BINARY`. Static ELF64 executables are staged directly;
+dynamic executables bring their own matching ELF loader and resolved libraries.
+The loader is invoked with its private library path, not `LD_LIBRARY_PATH`, so
+selected agents and task programs continue to use their original environment.
+No guest system library is replaced, host directory mounted, compiler run or
+toolchain downloaded. The original executable bytes and library identities are
+recorded in a bounded private `runtime.json` receipt. Unsupported/mismatching
+architectures, malformed ELF headers, missing/conflicting libraries and size
+limit violations are rejected before client execution. The process gate uses
+the runtime's launcher for recursive ASB execution rather than confusing the
+dynamic loader's `/proc/self/exe` with the ASB program.
+
+Without a guest override, normal `asb run` passed deterministic positive cases
+against the synthetic provider with actual Pi and official evaluators:
+SWE-bench Lite (46.4 seconds), original Terminal-Bench 1.0 (27.9 seconds), and
+Terminal-Bench 2.1 (37.4 seconds). Each records `bundled-loader` evidence and
+checks exact usage, observed guest timing and scoped cleanup. These are
+representative runtime qualification fixtures, not full population scores or
+AI-solving claims. Ordinary offline tests execute a bundle of the just-built
+ASB program and verify CLI/guest entry behavior without Docker, credentials or
+network. A real static musl build also passed the same standalone tests.
+
+The original Terminal-Bench qualification initially found an older installed
+Docker SDK (7.2.0 rather than the pinned 7.1.0). The pre-start probe rejected it
+with a concrete repair command, and `asb workload install terminal-bench-1.0`
+automatically repaired the SDK dependency and retained all 80 tasks. This also
+qualifies the real installer repair path, not just fake SDK metadata checks.
+
+Remaining common gaps still include reliable language/package bootstrap in
+minimal task images when host public caches are absent, local provider/tape
+forwarding, collector targeting, full-population scheduling/resume/reporting,
+abrupt-crash recovery, SWE-bench image-build fallback and final delivery gates.

@@ -14,7 +14,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).parents[1] / "assets/benchmarks"))
 
 
-@unittest.skipUnless(os.environ.get("ASB_TEST_BENCHMARK_ASB") and os.environ.get("ASB_TEST_GUEST_BINARY"),
+@unittest.skipUnless(os.environ.get("ASB_TEST_BENCHMARK_ASB"),
                      "requires explicit ASB builds and cached official dataset/tools/image")
 class NormalRunQualification(unittest.TestCase):
     def test_selected_client_runs_and_is_officially_graded_through_normal_cli(self):
@@ -76,8 +76,9 @@ class NormalRunQualification(unittest.TestCase):
                     environment = {"PATH": os.environ["PATH"], "HOME": str(artifacts),
                                    "OPENROUTER_API_KEY": "fixture-token", "OPENROUTER_BASE_URL": base,
                                    "OPENROUTER_MODELS_URL": base + "/models", "NO_PROXY": "*", "no_proxy": "*",
-                                   "ASB_GUEST_BINARY": os.environ["ASB_TEST_GUEST_BINARY"],
                                    "ASB_BENCHMARK_NETWORK": network_name, "NPM_CONFIG_OFFLINE": "true"}
+                    if os.environ.get("ASB_TEST_GUEST_BINARY"):
+                        environment["ASB_GUEST_BINARY"] = os.environ["ASB_TEST_GUEST_BINARY"]
                     result = subprocess.run([binary, "run", configuration, "--json"], cwd=root,
                                             env=environment, capture_output=True, timeout=240)
                     (artifacts / "asb.stdout").write_bytes(result.stdout)
@@ -98,6 +99,9 @@ class NormalRunQualification(unittest.TestCase):
                     matching = [path.parent for path in (root / ".asb/attempts").glob("*/task.json")
                                 if json.loads(path.read_text())["identity"] == identity]
                     self.assertEqual(len(matching), 1)
+                    receipt = json.loads((matching[0]/"runtime.json").read_text())
+                    if os.environ.get("ASB_TEST_EXPECT_RUNTIME_KIND"):
+                        self.assertEqual(receipt["kind"],os.environ["ASB_TEST_EXPECT_RUNTIME_KIND"])
                     observation = json.loads((matching[0] / "execution.json").read_text())
                     self.assertLessEqual(abs(record["elapsed_ms"] - observation["elapsed_seconds"] * 1000), 1)
                     if terminal:

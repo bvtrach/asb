@@ -1,0 +1,88 @@
+"""Offline runtime-bundle contracts; no Docker daemon or provider required."""
+import os
+import json
+from pathlib import Path
+import subprocess
+import select
+import signal
+import sys
+import tempfile
+import time
+import unittest
+
+sys.dont_write_bytecode = True
+sys.path.insert(0,str(Path(__file__).parents[1]/"assets/benchmarks"))
+import asb_runtime as subject
+from asb_execution import ExecutionError
+
+
+class RuntimeTests(unittest.TestCase):
+    def test_loader_dependency_parser_is_complete_and_rejects_unresolved_or_ambiguous_libraries(self):
+        text = "linux-vdso.so.1 (0x123)\nlibc.so.6 => /lib/libc.so.6 (0x456)\n/lib64/ld-linux.so.2 (0x789)\n"
+        self.assertEqual(subject.library_paths(text),{"libc.so.6":"/lib/libc.so.6","ld-linux.so.2":"/lib64/ld-linux.so.2"})
+        for invalid in ["libc.so.6 => not found", "./bad => /lib/x (0x123)",text+"libc.so.6 => /other/libc.so.6 (0x124)"]:
+            with self.subTest(invalid=invalid),self.assertRaises(ExecutionError):
+                subject.library_paths(invalid)
+
+    @unittest.skipUnless(os.environ.get("ASB_TEST_HOST_ASB"),"needs the just-built ASB executable")
+    def test_real_asb_bundle_executes_without_injecting_library_paths_into_children(self):
+        path = Path(os.environ["ASB_TEST_HOST_ASB"]).absolute()
+        files,receipt = subject.bundle(path)
+        self.assertIn(receipt["kind"],["static","bundled-loader"])
+        self.assertNotIn(str(path),str(receipt))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name,content,mode in files:
+                target = root/name
+                target.parent.mkdir(parents=True,exist_ok=True)
+                # Fixed deployment root is changed only in this local test
+                # launcher; the ELF and libraries remain byte-for-byte equal.
+                if name == "asb" and receipt["kind"] == "bundled-loader":
+                    self.assertNotIn(b"LD_LIBRARY_PATH",content)
+                    content = content.replace(subject.ROOT.encode(),str(root).encode())
+                target.write_bytes(content)
+                target.chmod(mode)
+            result = subprocess.run([root/"asb","--version"],env={"PATH":os.defpath},capture_output=True,text=True,timeout=10)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertTrue(result.stdout.startswith("asb "),result.stdout)
+            result = subprocess.run([root/"asb","__asb-agent"],env={"PATH":os.defpath,"ASB_GUEST_AGENT_REQUEST":"invalid"},
+                                    capture_output=True,text=True,timeout=10)
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn("invalid guest execution request",result.stderr)
+            project = root/"project"
+            for name in [".asb",".asb-tools/pi/bin","workspace"]:
+                (project/name).mkdir(parents=True)
+            (project/".asb/project.toml").write_text("tools_dir='.asb-tools'\nworkloads_dir='workloads'\nworkspace_dir='workspace'\n")
+            client = project/".asb-tools/pi/bin/pi"
+            client.write_text("#!/bin/sh\ntest -z \"$LD_LIBRARY_PATH\" || exit 90\n"
+                "printf '%s\\n' '{\"type\":\"turn_end\",\"usage\":{\"input\":2,\"output\":3}}'\n"
+                "printf '%s\\n' '{\"type\":\"result\",\"result\":\"offline fixture\"}'\n")
+            client.chmod(0o755)
+            request = {"config":{"agent":"pi","provider":"openrouter","model":"fixture","workload":"fixture",
+                "workspace":str(project/"workspace")}, "connection":{"interface":"open_ai_chat","authentication":"bearer",
+                "base_url":"http://127.0.0.1:1/v1","credential":"fixture"}, "prompt":"offline fixture",
+                "project_root":str(project),"runtime_dir":str(project/"private"),"run_dir":str(project/"private/attempt")}
+            process = subprocess.Popen([root/"asb","__asb-agent"],env={"PATH":os.defpath,"HOME":str(project),
+                "ASB_GUEST_AGENT_REQUEST":json.dumps(request)},stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            try:
+                self.assertTrue(select.select([process.stdout],[],[],5)[0],"guest did not become ready")
+                self.assertEqual(process.stdout.readline().strip(),f"__ASB_GATE__:{process.pid}".encode())
+                deadline = time.monotonic()+5
+                while not any(line.startswith("State:") and "T" in line for line in Path(f"/proc/{process.pid}/status").read_text().splitlines()):
+                    self.assertLess(time.monotonic(),deadline)
+                    time.sleep(0.005)
+                os.kill(process.pid,signal.SIGCONT)
+                _,stderr = process.communicate(timeout=5)
+                self.assertEqual(process.returncode,0,stderr.decode())
+                metadata = json.loads((project/"private/attempt/agent-result.json").read_text())
+                self.assertEqual(metadata["token_usage"]["total_tokens"],5)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=5)
+        with self.assertRaisesRegex(ExecutionError,"architecture"):
+            subject.bundle(path,"a-deliberately-incompatible-image")
+
+
+if __name__ == "__main__":
+    unittest.main()

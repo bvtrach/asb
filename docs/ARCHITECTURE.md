@@ -306,9 +306,13 @@ The three original SWE-bench family adapters now own a pinned official task
 catalog installer, SDK dependency and installed-task discovery. They do not
 fall back to synthetic trial IDs. The development run path connects those
 sessions to actual instance execution and official grading, reusing the
-selected Rust agent adapter inside the task environment. It currently needs
-an explicit static `ASB_GUEST_BINARY`; automatic portable-runtime installation,
-host-loopback endpoint forwarding, container collector targeting and
+selected Rust agent adapter inside the task environment. ASB automatically
+stages its running executable: a static ELF directly, or a dynamic ELF with
+its matching loader and libraries for the same-architecture Linux task image.
+The scoped launcher does not replace guest system libraries or export a
+library search path to benchmark clients. `ASB_GUEST_BINARY` is an optional
+development override, not a required build/install step. Host-loopback endpoint
+forwarding, container collector targeting and
 full-population planning remain unfinished. See the full benchmark delivery
 checklist before claiming complete upstream benchmark support.
 The explicit `terminal-bench-1.0` and `terminal-bench-2.1` adapters likewise

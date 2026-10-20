@@ -980,7 +980,7 @@ fn run_measured_agent(
         && let Some(target_args) = target_args
         && gate_target_available(program)
     {
-        let executable = std::env::current_exe()
+        let executable = crate::process_gate::executable()
             .map_err(|error| Error::Run(format!("cannot resolve ASB process gate: {error}")))?;
         crate::process_gate::install(command, &executable, program, target_args);
     }

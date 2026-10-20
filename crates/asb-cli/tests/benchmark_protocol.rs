@@ -26,6 +26,11 @@ fn guest_bootstrap_reuses_adapters_without_exposing_host_state() {
 }
 
 #[test]
+fn runtime_bundle_executes_the_same_asb_without_a_guest_compiler() {
+    python_protocol("benchmark_runtime.py");
+}
+
+#[test]
 fn terminal_catalogs_preserve_original_populations_and_private_verifiers() {
     python_protocol("terminal_catalog.py");
 }
@@ -50,6 +55,7 @@ fn python_protocol(test: &str) {
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("ASB_TEST_HOST_ASB", env!("CARGO_BIN_EXE_asb"))
         .output()
         .expect("run standard-library-only catalog tests");
     assert!(

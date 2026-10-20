@@ -8,6 +8,21 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::process::Command;
 
+/// A loader-bundled runtime uses its launcher for recursive ASB execution.
+pub(crate) fn executable() -> io::Result<std::path::PathBuf> {
+    if let Some(path) = std::env::var_os("ASB_RUNTIME_EXECUTABLE") {
+        let path = std::path::PathBuf::from(path);
+        if !path.is_absolute() || !path.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid ASB runtime launcher",
+            ));
+        }
+        return Ok(path);
+    }
+    std::env::current_exe()
+}
+
 #[cfg(unix)]
 pub(crate) fn install(
     command: &mut Command,
