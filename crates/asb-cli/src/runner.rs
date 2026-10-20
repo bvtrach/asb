@@ -595,6 +595,9 @@ fn run_mode(
             tape_mode.expect("tape URL implies tape mode"),
         );
     }
+    if tape_mode == Some(tape::Mode::Replay) {
+        apply_replay_network_guard(&mut command);
+    }
     project::apply_python_path(&mut command, &project_root, Path::new(&program))?;
     // The process gate must execute the fully prepared command, not the
     // adapter's original executable. Some adapters (for example OpenJiuwen)
@@ -825,6 +828,33 @@ fn run_mode(
         render_human(&result, output)?;
     }
     failure.map_or(Ok(()), |(_, reason)| Err(Error::Run(reason)))
+}
+
+/// Prevent replayed agents from contacting any live provider, updater, or
+/// telemetry endpoint while preserving access to the local tape proxy.
+///
+/// Replay is intentionally fail-closed at the child boundary.  A refused
+/// loopback proxy is preferable to an inherited corporate proxy or a direct
+/// outbound connection; `NO_PROXY` keeps the ASB-owned loopback endpoint
+/// reachable.  Node/Bun clients require the explicit opt-in to honor these
+/// standard proxy variables.
+fn apply_replay_network_guard(command: &mut Command) {
+    const DENY_PROXY: &str = "http://127.0.0.1:9";
+    const LOOPBACK: &str = "127.0.0.1,localhost,::1";
+    for variable in [
+        "http_proxy",
+        "HTTP_PROXY",
+        "https_proxy",
+        "HTTPS_PROXY",
+        "all_proxy",
+        "ALL_PROXY",
+    ] {
+        command.env(variable, DENY_PROXY);
+    }
+    command
+        .env("no_proxy", LOOPBACK)
+        .env("NO_PROXY", LOOPBACK)
+        .env("NODE_USE_ENV_PROXY", "1");
 }
 
 fn instrument_operation<T, E>(
@@ -2086,5 +2116,35 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("did you mean `opencode`?"));
+    }
+
+    #[test]
+    fn replay_network_guard_allows_only_loopback_proxy_targets() {
+        let mut command = std::process::Command::new("agent");
+        super::apply_replay_network_guard(&mut command);
+        let values = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value.map(|value| {
+                    (
+                        key.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        for variable in [
+            "http_proxy",
+            "HTTP_PROXY",
+            "https_proxy",
+            "HTTPS_PROXY",
+            "all_proxy",
+            "ALL_PROXY",
+        ] {
+            assert_eq!(values[variable], "http://127.0.0.1:9");
+        }
+        assert_eq!(values["NO_PROXY"], "127.0.0.1,localhost,::1");
+        assert_eq!(values["no_proxy"], "127.0.0.1,localhost,::1");
+        assert_eq!(values["NODE_USE_ENV_PROXY"], "1");
     }
 }
