@@ -35,7 +35,7 @@ pub(super) struct Execution<'a> {
     pub options: Options<'a>,
     pub warnings: &'a Mutex<BTreeSet<String>>,
     pub checkpoint: Option<&'a super::checkpoint::Inputs>,
-    pub reused: &'a std::collections::BTreeMap<usize, Vec<serde_json::Value>>,
+    pub reused: &'a super::resume::State,
 }
 
 impl Execution<'_> {
@@ -57,6 +57,13 @@ impl Execution<'_> {
 
     pub(super) fn run(&self, index: usize) -> Result<(), Error> {
         std::fs::create_dir_all(self.directory(index)).map_err(crate::io_error)?;
+        if self.options.resume {
+            spool::preserve(
+                &self.output_path(index),
+                self.plan.entries[index].configuration.concurrency,
+                &self.results.join(".checkpoint/interrupted-terminal"),
+            )?;
+        }
         let mut output = spool::Output::create(
             &self.output_path(index),
             self.plan.entries[index].configuration.concurrency,
@@ -74,7 +81,7 @@ impl Execution<'_> {
 
     /// Sequential defaults retain immediate warnings and --show-output.
     pub(super) fn run_to(&self, index: usize, output: &mut dyn Write) -> Result<(), Error> {
-        if let Some(summaries) = self.reused.get(&index) {
+        if let Some(summaries) = self.reused.groups.get(&index) {
             return super::resume::render_reused(summaries, self.options.json, output);
         }
         let entry = &self.plan.entries[index];
@@ -93,7 +100,12 @@ impl Execution<'_> {
                 .join(self.results.file_name().expect("results name"))
                 .join(result_name(index, &config_path))
                 .join("cassettes");
-            reuse_replay_inputs(&previous, &result_dir.join("cassettes"), config)?;
+            reuse_replay_inputs(
+                &previous,
+                &result_dir.join("cassettes"),
+                config,
+                self.options.resume,
+            )?;
         }
         let resolved = result_dir.canonicalize().map_err(|error| {
             Error::Run(format!(
@@ -105,9 +117,13 @@ impl Execution<'_> {
         let isolated_path = resolved.join("benchmark.toml");
         let serialized = toml::to_string_pretty(&isolated)
             .map_err(|error| Error::Run(format!("cannot render sweep benchmark: {error}")))?;
-        std::fs::write(&isolated_path, serialized).map_err(|error| {
-            Error::Run(format!("cannot write {}: {error}", isolated_path.display()))
-        })?;
+        if !self.options.resume || !isolated_path.exists() {
+            std::fs::write(&isolated_path, serialized).map_err(|error| {
+                Error::Run(format!("cannot write {}: {error}", isolated_path.display()))
+            })?;
+        } else if crate::read_config(&isolated_path)? != serialized {
+            return Err(Error::Input("isolated sweep configuration changed; preserve the existing attempts before starting a fresh sweep".into()));
+        }
         let cassette = self.replay_inputs.map(|root| {
             root.join(result_name(index, &config_path))
                 .join("cassettes")
@@ -122,6 +138,11 @@ impl Execution<'_> {
                 entry,
                 publication: Mutex::new(()),
             });
+        if !self.reused.slots.contains_key(&index)
+            && let Some(observer) = observer.as_ref()
+        {
+            observer.reserve()?;
+        }
         let result = runner::run_with_diagnostics(
             isolated_path.to_string_lossy().as_ref(),
             runner::RunOptions {
@@ -134,6 +155,7 @@ impl Execution<'_> {
                 on_completion: observer
                     .as_ref()
                     .map(|observer| observer as &dyn runner::replica::CompletionObserver),
+                reused: self.reused.slots.get(&index),
                 ..Default::default()
             },
             output,

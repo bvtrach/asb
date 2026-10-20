@@ -1486,3 +1486,70 @@ Package and hosted gates follow.
 Actual continuation of unfinished replica slots and owned-resource crash
 recovery, population-scale presentation, cold-cache qualification, final
 review/merge, exact-main CI and the minor release remain open.
+
+### Partial-group dispatch with positive never-started reservations
+
+Continuation now distinguishes complete groups, individually graded slots and
+positively reserved slots that have never started. The owner publishes all
+slot reservations before beginning a configuration. A starting hook first
+publishes execution intent, then consumes and synchronizes the matching
+reservation before measurement/provider/workload startup. A missing start file
+alone never proves a slot was unused: deleting a consumed start record leaves
+no positive reservation and cannot admit another attempt. Reservation identity
+includes the selected slot/population, original input digest and configuration.
+
+Before any resumed work is scheduled, every existing graded slot must retain
+its validated receipt and matching outcome. Every pending slot must retain its
+original reservation, have no start intent or graded-but-unsealed outcome, and
+have no workspace/log/runtime/measurement output. Already-started unsealed
+slots remain rejected pending owned-resource recovery; this increment does not
+claim to clean up crashed containers or native processes. A start-intent I/O
+failure stops the attempt before execution. Completion-evidence failure still
+never changes a computed grade, and missing optional input fingerprints never
+block a fresh non-resume sweep.
+
+The generic runner skips cached slots while preserving their original indices,
+false grades and failed-client status, and executes only admitted remaining
+slots. It does not silently renumber a resumed slot or repeat a graded failure.
+Identical isolated configuration files are not rewritten. Existing default
+replay recordings must remain the original preserved hard links. Interrupted
+parallel presentation spools are privately archived rather than overwritten;
+they are not grading evidence. Actual admitted slots are still conservatively
+charged against the original selected replica budget.
+
+New unit tests cover reservation consumption, missing/changed/deleted intent
+state, existing output rejection, failure before provider/workload/measurement
+startup and preserved bounded terminal spools. The new provider-free
+`partial_sweep` fault-injection test uses real loopback tape transport and three
+fake-agent replicas. One client exits zero without fixing its task. After
+restoring a controlled pre-start state for slot 2, continuation preserves the
+two original graded slots (including the false grade), launches only slot 2,
+retains old evidence, preserves original replica numbering, and reports three
+attempts rather than four. It also refuses the same slot while its previous
+start intent remains. This is controlled state-machine fault injection after
+fixture processes stopped, not live crashed-container recovery.
+
+The source suite passed strict Clippy, 423 unit tests, 87 offline CLI tests,
+thirteen protocol suites, guest/replay/partial-sweep regressions and `make
+build`. A diagram timeout was traced to a test-only `State::is_empty` helper:
+the heuristic call extractor incorrectly treated ordinary collection calls as
+calls to that helper. Renaming the helper removed the false global hub; all
+nodes/relations and existing rendering timeouts remain unchanged, and the
+four diagram regressions passed in 3.2 seconds.
+
+The actual mixed real-Pi/original SWE-bench Lite/Terminal-Bench 1.0
+synthetic-provider qualification passed in 84.2 seconds. It additionally checks
+matching private start intents and consumed reservations, alongside official
+grades, original attempt identity, group resume without extra completion
+requests, scoped collectors/graphs and cleanup. Artifacts remain at
+`target/benchmark-runtime/parallel-original-tasks-erb0w9rm`. This is warm-cache
+representative known-repair qualification, not full-population AI solving.
+Package and hosted gates follow.
+
+Remaining work includes owned-resource recovery for already-started unfinished
+slots, explicit execution-cohort/admitted-slot disclosure in partial-sweep
+comparison reports (fresh remaining slots do not recreate the old concurrent
+load), population-scale presentation, cold-cache qualification, final review/
+merge, exact-main CI and the minor release. The original selected concurrency
+must not be presented as proof that restored and newly executed measurements
+were collected simultaneously.

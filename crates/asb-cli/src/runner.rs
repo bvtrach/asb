@@ -1,6 +1,7 @@
 //! Live execution of one configured benchmark.
 mod completion;
 pub(crate) mod replica;
+pub(crate) mod reuse;
 
 use super::{Error, io_error, read_config};
 use crate::agents;
@@ -81,6 +82,7 @@ pub(crate) struct RunOptions<'a> {
     pub respect_record_timings: bool,
     pub replica: replica::Identity,
     pub on_completion: Option<&'a dyn replica::CompletionObserver>,
+    pub reused: Option<&'a std::collections::BTreeMap<usize, serde_json::Value>>,
 }
 
 /// Execute one configured benchmark, optionally through a local llmtape proxy.
@@ -104,6 +106,21 @@ pub(crate) fn run_with_diagnostics(
         .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
     if !options.replica.valid() {
         return Err(Error::Input("invalid benchmark replica identity".into()));
+    }
+    if let Some(reused) = options.reused {
+        if reused
+            .keys()
+            .any(|index| !(1..=config.concurrency).contains(index))
+        {
+            return Err(Error::Input(
+                "reused replica slots are outside the selected population".into(),
+            ));
+        }
+        if config.concurrency == 1
+            && let Some(summary) = reused.get(&1)
+        {
+            return reuse::render_reused(std::slice::from_ref(summary), options.json, output);
+        }
     }
     if let Some(measures) = config.measurements.as_ref().filter(|value| value.enabled) {
         // Parallel sweep configurations can share project-local tool paths.
@@ -146,7 +163,15 @@ fn run_concurrent(
 ) -> Result<(), Error> {
     let tape_request = options.mode.map(|mode| (mode, options.cassette));
     let mut jobs = Vec::with_capacity(config.concurrency);
+    let mut completed = Vec::with_capacity(config.concurrency);
     for index in 1..=config.concurrency {
+        if let Some(summary) = options.reused.and_then(|reused| reused.get(&index)) {
+            let mut buffer = Vec::new();
+            let result =
+                reuse::render_reused(std::slice::from_ref(summary), options.json, &mut buffer);
+            completed.push((index - 1, result, buffer));
+            continue;
+        }
         let replica = replica::configuration(
             config,
             replica::Identity {
@@ -163,15 +188,13 @@ fn run_concurrent(
         let measurement = options
             .measurement_dir
             .map(|path| PathBuf::from(parallel_path(path, index)));
-        jobs.push((replica, measurement, cassette));
+        jobs.push((index - 1, replica, measurement, cassette));
     }
 
-    let mut completed = Vec::with_capacity(jobs.len());
     std::thread::scope(|scope| {
         let handles: Vec<_> = jobs
             .into_iter()
-            .enumerate()
-            .map(|(index, (replica, measurement, cassette))| {
+            .map(|(index, replica, measurement, cassette)| {
                 scope.spawn(move || {
                     let mut buffer = Vec::new();
                     let mode = cassette.as_ref().map(|(mode, _)| *mode);
@@ -309,6 +332,9 @@ fn run_mode(
         respect_record_timings,
         ..
     } = options;
+    if let Some(observer) = options.on_completion {
+        observer.starting(options.replica)?;
+    }
     let tape_request = mode.map(|mode| (mode, cassette));
     let tape_cassette = tape_request.map(|(mode, requested)| {
         (
@@ -1623,6 +1649,55 @@ mod tests {
     };
     use crate::benchmark::BenchmarkConfig;
     use crate::measurements::TokenUsage;
+
+    #[test]
+    fn intent_publication_failure_stops_before_provider_workload_or_measurement_startup() {
+        struct FailedIntent;
+        impl super::replica::CompletionObserver for FailedIntent {
+            fn starting(&self, _: super::replica::Identity) -> Result<(), crate::Error> {
+                Err(crate::Error::Io("fixture intent publication failed".into()))
+            }
+            fn completed(
+                &self,
+                _: super::replica::Identity,
+                _: &std::path::Path,
+            ) -> Result<(), crate::Error> {
+                panic!("no attempt should have started")
+            }
+        }
+        let root = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("failed-intent", None).attempt_id);
+        std::fs::create_dir_all(&root).unwrap();
+        let config = root.join("benchmark.toml");
+        std::fs::write(
+            &config,
+            "agent='fixture'\nworkload='bug-fix'\nprovider='fixture'\nmodel='fixture'\n",
+        )
+        .unwrap();
+        let mut output = Vec::new();
+        let error = super::run_with_diagnostics(
+            config.to_str().unwrap(),
+            super::RunOptions {
+                on_completion: Some(&FailedIntent),
+                ..Default::default()
+            },
+            &mut output,
+            &std::sync::Mutex::new(Default::default()),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("fixture intent publication failed")
+        );
+        assert!(output.is_empty());
+        assert_eq!(
+            std::fs::read_dir(&root).unwrap().count(),
+            1,
+            "no workspace, measurements or project state may be created"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn replica_failures_group_only_exact_matches() {

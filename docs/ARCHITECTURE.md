@@ -233,12 +233,27 @@ owner is usable only when the current declared inputs still match exactly.
 If a stopped owner missed the final group receipt but every selected replica
 has independently sealed evidence, continuation verifies those slots and the
 complete outcome population without creating new attempts or republishing a
-group receipt during validation. A genuinely unsealed/partially completed
-replica group is still rejected intact;
-per-replica continuation and owned-container crash recovery remain separate
-unfinished work. Missing keys are never regenerated for continuation, and
+group receipt during validation. Partial groups retain each validated grade and
+can dispatch only slots with a positive, matching never-started reservation
+and no attempt outputs. The owner publishes all reservations before launching
+that configuration. Starting a replica publishes intent, consumes its reservation
+and synchronizes the reservation directory before measurement/provider/workload
+startup. A missing start file alone never proves a slot was unused. Missing,
+changed or already-consumed reservations and unsealed graded outcomes reject
+continuation before scheduling. Already-started unsealed slots still require
+owned-resource recovery, which remains unfinished. A completion-evidence failure
+never changes an already computed grade; an intent-write failure stops the
+attempt before execution. Unavailable input fingerprints still do not block
+fresh non-resume execution. Missing keys are never regenerated for continuation, and
 invalid continuation never replaces historical input seals/results. JSONL
 summaries carry `reused: true`; human output explicitly identifies reuse.
+The generic runner preserves original replica indices while skipping cached
+slots, including false grades and failed clients, and does not start those
+slots' providers/proxies/environments again. Identical isolated configuration
+files are not rewritten during continuation. Existing default replay cassettes
+must still identify their original preserved hard links. Interrupted parallel
+terminal spools are privately archived after validation, never overwritten or
+treated as grading evidence.
 Sessions may execute through a workload-owned controller rather than the
 native process path. The generic execution context carries the selected
 configuration and negotiated connection, and the owning session returns

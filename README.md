@@ -28,9 +28,10 @@ these human-readable progress lines.
 evidence-checked replica groups, including unresolved results. Use the same
 execution mode, cassette-root and scheduling options as the original command.
 Changed declared inputs or grading evidence reject continuation without
-replacing prior results. Configurations that never started can run normally;
-an interrupted/partially completed replica group currently requires recovery
-and is not automatically retried. Without `--resume`, prior results are
+replacing prior results. Configurations that never started can run normally.
+Within a partial group, completed replicas are reused and positively reserved,
+never-started replicas can run. Already-started unsealed replicas still require
+owned-resource recovery and are not automatically retried. Without `--resume`, prior results are
 preserved in sweep history and execution starts fresh.
 If every replica finished and has an individual evidence receipt, resume can
 recover a missing final group receipt without launching those replicas again.

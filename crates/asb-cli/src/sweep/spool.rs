@@ -97,6 +97,45 @@ pub(super) fn discard(path: &Path) -> Result<(), Error> {
     }
 }
 
+/// Preserve interrupted presentation bytes after continuation validation.
+/// These files are not grading evidence and must never overwrite a new spool.
+pub(super) fn preserve(path: &Path, replicas: usize, history: &Path) -> Result<(), Error> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(crate::io_error(error)),
+    };
+    if !(1..=benchmark::MAX_CONCURRENCY).contains(&replicas)
+        || !metadata.is_file()
+        || metadata.len() > limit(replicas)
+    {
+        return Err(Error::Input("interrupted terminal output is not a bounded regular file; preserve it before resuming this sweep".into()));
+    }
+    if std::fs::symlink_metadata(history).is_ok_and(|metadata| !metadata.is_dir()) {
+        return Err(Error::Input(
+            "interrupted-output history must be a real directory".into(),
+        ));
+    }
+    let mut directory = std::fs::DirBuilder::new();
+    directory.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        directory.mode(0o700);
+    }
+    directory.create(history).map_err(crate::io_error)?;
+    let target = history.join(format!(
+        "{}.output",
+        crate::workloads::TaskIdentity::local("interrupted-terminal", None).attempt_id
+    ));
+    std::fs::hard_link(path, &target).map_err(crate::io_error)?;
+    std::fs::File::open(history)
+        .and_then(|file| file.sync_all())
+        .map_err(crate::io_error)?;
+    std::fs::remove_file(path).map_err(crate::io_error)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +151,43 @@ mod tests {
     impl Drop for Directory {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn interrupted_output_is_preserved_without_overwriting_new_output_or_following_symlinks() {
+        let root = Directory::new();
+        let source = root.0.join("output");
+        let history = root.0.join("history");
+        let mut spool = Output::create(&source, 1).unwrap();
+        spool.write_all(b"previous presentation bytes").unwrap();
+        spool.flush().unwrap();
+        drop(spool);
+        preserve(&source, 1, &history).unwrap();
+        assert!(!source.exists());
+        let files: Vec<_> = std::fs::read_dir(&history)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            std::fs::read(&files[0]).unwrap(),
+            b"previous presentation bytes"
+        );
+        Output::create(&source, 1).unwrap();
+        assert_eq!(
+            std::fs::read(&files[0]).unwrap(),
+            b"previous presentation bytes"
+        );
+        #[cfg(unix)]
+        {
+            std::fs::remove_file(&source).unwrap();
+            std::os::unix::fs::symlink(&files[0], &source).unwrap();
+            assert!(preserve(&source, 1, &history).is_err());
+            assert_eq!(
+                std::fs::read(&files[0]).unwrap(),
+                b"previous presentation bytes"
+            );
         }
     }
 

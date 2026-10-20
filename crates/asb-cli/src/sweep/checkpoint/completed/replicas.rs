@@ -26,7 +26,67 @@ struct Receipt {
     fingerprint: Fingerprint,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Reservation {
+    schema_version: u32,
+    scope: String,
+    configuration: usize,
+    replica: Identity,
+    input_digest: String,
+    entry: Value,
+    reservation_id: String,
+}
+
+impl Observer<'_> {
+    /// Reserve every slot before any execution begins. Continuation never
+    /// fabricates a missing reservation for an existing partial group.
+    pub(in crate::sweep) fn reserve(&self) -> Result<(), Error> {
+        for index in 1..=self.entry.configuration.concurrency {
+            let replica = Identity {
+                index,
+                total: self.entry.configuration.concurrency,
+            };
+            publish(
+                &pending_path(self.inputs, self.index, index),
+                &Reservation {
+                    schema_version: 1,
+                    scope: "reserved-replica-slot".into(),
+                    configuration: self.index,
+                    replica,
+                    input_digest: self.inputs.initial.digest.clone(),
+                    entry: serde_json::to_value(self.entry)
+                        .map_err(|_| invalid("cannot encode slot reservation"))?,
+                    reservation_id: TaskIdentity::local("replica-reservation", None).attempt_id,
+                },
+            )?;
+        }
+        Ok(())
+    }
+}
+
 impl CompletionObserver for Observer<'_> {
+    fn starting(&self, replica: Identity) -> Result<(), Error> {
+        if !replica.valid() || replica.total != self.entry.configuration.concurrency {
+            return Err(invalid("execution intent does not match its selected slot"));
+        }
+        let reservation = self.inputs.reservation(self.index, replica, self.entry)?;
+        publish(
+            &start_path(self.inputs, self.index, replica.index),
+            &json!({
+                "schema_version":1,"scope":"replica-execution-intent",
+                "configuration":self.index,"replica":replica,"input_digest":self.inputs.initial.digest,
+                "entry":self.entry,"owner_pid":std::process::id(),
+                "intent_id":TaskIdentity::local("replica-start",None).attempt_id,
+                "reservation_id":reservation.reservation_id,
+            }),
+        )?;
+        let pending = pending_path(self.inputs, self.index, replica.index);
+        std::fs::remove_file(&pending).map_err(io_error)?;
+        std::fs::File::open(pending.parent().expect("reservation parent"))
+            .and_then(|file| file.sync_all())
+            .map_err(io_error)
+    }
     fn completed(&self, replica: Identity, record: &Path) -> Result<(), Error> {
         // Do not launch a hasher per simultaneously exiting sibling. The
         // execution itself has already ended; only evidence publication waits.
@@ -59,6 +119,147 @@ impl CompletionObserver for Observer<'_> {
 }
 
 impl Inputs {
+    fn reservation(
+        &self,
+        index: usize,
+        replica: Identity,
+        entry: &PlannedBenchmark,
+    ) -> Result<Reservation, Error> {
+        let value: Reservation = read_private(&pending_path(self, index, replica.index))?;
+        if value.schema_version != 1
+            || value.scope != "reserved-replica-slot"
+            || value.configuration != index
+            || value.replica != replica
+            || !replica.valid()
+            || replica.total != entry.configuration.concurrency
+            || value.input_digest != self.initial.digest
+            || value.entry
+                != serde_json::to_value(entry)
+                    .map_err(|_| invalid("cannot encode selected slot"))?
+            || value.reservation_id.is_empty()
+            || value.reservation_id.len() > 128
+        {
+            return Err(invalid(
+                "pending replica reservation does not match the selected slot",
+            ));
+        }
+        Ok(value)
+    }
+
+    pub(in crate::sweep) fn partial_replicas(
+        &self,
+        index: usize,
+        directory: &Path,
+        entry: &PlannedBenchmark,
+    ) -> Result<BTreeMap<usize, Value>, Error> {
+        let directory = std::path::absolute(directory).map_err(io_error)?;
+        if !std::fs::symlink_metadata(&directory).is_ok_and(|metadata| metadata.is_dir()) {
+            return Err(invalid("partial replica results are not a real directory"));
+        }
+        let expected = crate::sweep::isolated_config(&entry.configuration, &directory);
+        let saved: crate::benchmark::BenchmarkConfig =
+            toml::from_str(&crate::read_config(&directory.join("benchmark.toml"))?)
+                .map_err(|_| invalid("partial replica configuration is malformed"))?;
+        if saved != expected {
+            return Err(invalid("partial replica configuration changed"));
+        }
+        let records = directory.join(".asb-completions");
+        let mut claims = BTreeMap::new();
+        match std::fs::symlink_metadata(&records) {
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(invalid("partial outcome directory is not a real directory"));
+            }
+            Ok(_) => {
+                for file in std::fs::read_dir(&records).map_err(io_error)? {
+                    let file = file.map_err(io_error)?;
+                    if claims.len() >= entry.configuration.concurrency
+                        || file
+                            .path()
+                            .extension()
+                            .is_none_or(|extension| extension != "json")
+                    {
+                        return Err(invalid(
+                            "partial replica outcome population is excessive or unfinished",
+                        ));
+                    }
+                    let record: Outcome = read_private(&file.path())?;
+                    validate_outcome(&record, entry)?;
+                    let replica = record.replica.ok_or_else(|| {
+                        invalid("partial replica outcomes require explicit slot identities")
+                    })?;
+                    if record.schema_version != 2
+                        || claims.insert(replica.index, record.summary).is_some()
+                    {
+                        return Err(invalid(
+                            "partial replica slot identity is missing or duplicated",
+                        ));
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(io_error(error)),
+        }
+        let mut completed = BTreeMap::new();
+        for slot in 1..=entry.configuration.concurrency {
+            let replica = Identity {
+                index: slot,
+                total: entry.configuration.concurrency,
+            };
+            if self.has_replica(index, slot)? {
+                let summary = self.verify_replica(index, replica, &directory, entry)?;
+                if claims.get(&slot) != Some(&summary) {
+                    return Err(invalid(
+                        "replica receipt and partial outcome population disagree",
+                    ));
+                }
+                completed.insert(slot, summary);
+            } else {
+                if claims.contains_key(&slot) || self.replica_started(index, slot)? {
+                    return Err(invalid(
+                        "an unsealed or interrupted replica group exists; an already-started slot needs owned-resource recovery before retry",
+                    ));
+                }
+                self.reservation(index, replica, entry)?;
+                let config = crate::runner::replica::configuration(&expected, replica)?;
+                let workspace = PathBuf::from(config.workspace);
+                let mut outputs = vec![
+                    PathBuf::from(config.log_file),
+                    crate::runner::replica::runtime_path(&workspace),
+                    workspace,
+                ];
+                if let Some(settings) = config
+                    .measurements
+                    .as_ref()
+                    .filter(|settings| settings.enabled)
+                {
+                    outputs.push(PathBuf::from(&settings.directory));
+                }
+                for output in outputs {
+                    match std::fs::symlink_metadata(output) {
+                        Ok(_) => {
+                            return Err(invalid(
+                                "a reserved replica already has attempt outputs; preserve them and recover the slot before retry",
+                            ));
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                        Err(error) => return Err(io_error(error)),
+                    }
+                }
+            }
+        }
+        Ok(completed)
+    }
+    pub(in crate::sweep) fn replica_started(
+        &self,
+        index: usize,
+        replica: usize,
+    ) -> Result<bool, Error> {
+        match std::fs::symlink_metadata(start_path(self, index, replica)) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(io_error(error)),
+        }
+    }
     pub(in crate::sweep) fn has_replica(
         &self,
         index: usize,
@@ -110,6 +311,22 @@ fn path(inputs: &Inputs, index: usize, replica: usize) -> PathBuf {
     inputs
         .directory
         .join("replicas")
+        .join(format!("{index:06}"))
+        .join(format!("{replica:03}.json"))
+}
+
+fn start_path(inputs: &Inputs, index: usize, replica: usize) -> PathBuf {
+    inputs
+        .directory
+        .join("started")
+        .join(format!("{index:06}"))
+        .join(format!("{replica:03}.json"))
+}
+
+fn pending_path(inputs: &Inputs, index: usize, replica: usize) -> PathBuf {
+    inputs
+        .directory
+        .join("pending")
         .join(format!("{index:06}"))
         .join(format!("{replica:03}.json"))
 }
@@ -298,6 +515,105 @@ mod tests {
                 .verify_replica(0, identity, &fixture.directory, &fixture.entry)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn pending_slots_require_a_positive_reservation_and_no_started_attempt() {
+        let fixture = Fixture::new(false);
+        let identity = Identity { index: 1, total: 2 };
+        let record = record(&fixture, identity);
+        std::fs::remove_file(fixture.directory.join(".asb-completions/1.json")).unwrap();
+        let config =
+            crate::sweep::isolated_config(&fixture.entry.configuration, &fixture.directory);
+        std::fs::write(
+            fixture.directory.join("benchmark.toml"),
+            toml::to_string_pretty(&config).unwrap(),
+        )
+        .unwrap();
+        let observer = Observer {
+            inputs: &fixture.inputs,
+            index: 0,
+            directory: &fixture.directory,
+            entry: &fixture.entry,
+            publication: Mutex::new(()),
+        };
+        observer.reserve().unwrap();
+        observer.starting(identity).unwrap();
+        observer.completed(identity, &record).unwrap();
+        assert!(!pending_path(&fixture.inputs, 0, 1).exists());
+        assert!(fixture.inputs.replica_started(0, 1).unwrap());
+        let partial = fixture
+            .inputs
+            .partial_replicas(0, &fixture.directory, &fixture.entry)
+            .unwrap();
+        assert_eq!(partial.keys().copied().collect::<Vec<_>>(), [1]);
+        assert_eq!(
+            partial[&1]["workload_success"], false,
+            "a graded failure is preserved, never retried"
+        );
+        assert!(pending_path(&fixture.inputs, 0, 2).exists());
+        let unstarted = Identity { index: 2, total: 2 };
+        observer.starting(unstarted).unwrap();
+        assert!(!pending_path(&fixture.inputs, 0, 2).exists());
+        assert!(
+            observer.starting(unstarted).is_err(),
+            "intent cannot be consumed twice"
+        );
+        let error = fixture
+            .inputs
+            .partial_replicas(0, &fixture.directory, &fixture.entry)
+            .unwrap_err();
+        assert!(error.to_string().contains("already-started slot"));
+    }
+
+    #[test]
+    fn missing_changed_or_used_reservations_and_existing_outputs_reject_admission() {
+        for case in ["missing", "changed", "output", "started-deleted"] {
+            let fixture = Fixture::new(true);
+            let identity = Identity { index: 1, total: 2 };
+            let record = record(&fixture, identity);
+            std::fs::remove_file(fixture.directory.join(".asb-completions/1.json")).unwrap();
+            let config =
+                crate::sweep::isolated_config(&fixture.entry.configuration, &fixture.directory);
+            std::fs::write(
+                fixture.directory.join("benchmark.toml"),
+                toml::to_string_pretty(&config).unwrap(),
+            )
+            .unwrap();
+            let observer = Observer {
+                inputs: &fixture.inputs,
+                index: 0,
+                directory: &fixture.directory,
+                entry: &fixture.entry,
+                publication: Mutex::new(()),
+            };
+            observer.reserve().unwrap();
+            observer.starting(identity).unwrap();
+            observer.completed(identity, &record).unwrap();
+            let pending = pending_path(&fixture.inputs, 0, 2);
+            match case {
+                "missing" => std::fs::remove_file(&pending).unwrap(),
+                "changed" => {
+                    let mut data: Value = read_private(&pending).unwrap();
+                    data["input_digest"] = json!("wrong input");
+                    std::fs::write(&pending, serde_json::to_vec(&data).unwrap()).unwrap();
+                }
+                "output" => {
+                    std::fs::create_dir(fixture.directory.join("workspace-concurrency-2")).unwrap()
+                }
+                _ => {
+                    observer.starting(Identity { index: 2, total: 2 }).unwrap();
+                    std::fs::remove_file(start_path(&fixture.inputs, 0, 2)).unwrap();
+                }
+            }
+            assert!(
+                fixture
+                    .inputs
+                    .partial_replicas(0, &fixture.directory, &fixture.entry)
+                    .is_err(),
+                "{case}"
+            );
+        }
     }
 
     #[test]

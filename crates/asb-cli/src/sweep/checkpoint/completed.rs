@@ -51,8 +51,8 @@ impl Inputs {
         parent: &Path,
         results: &Path,
         plan: &crate::sweep::plan::SweepPlan,
-    ) -> Result<BTreeMap<usize, Vec<Value>>, Error> {
-        let mut reused = BTreeMap::new();
+    ) -> Result<crate::sweep::resume::State, Error> {
+        let mut reused = crate::sweep::resume::State::default();
         for (index, entry) in plan.entries.iter().enumerate() {
             let directory = results.join(crate::sweep::execution::result_name(
                 index,
@@ -70,35 +70,28 @@ impl Inputs {
                             self.verify_replica(index, identity, &directory, entry)?;
                         }
                     }
-                    reused.insert(index, summaries);
+                    reused.groups.insert(index, summaries);
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     match std::fs::symlink_metadata(&directory) {
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
                         Err(error) => return Err(io_error(error)),
                         Ok(_) => {
-                            let mut summaries = Vec::new();
-                            // A stopped owner may have persisted each replica
-                            // but not yet published the final group receipt.
-                            // Recover only when every selected slot is sealed.
-                            for replica in 1..=entry.configuration.concurrency {
-                                if !self.has_replica(index, replica)? {
-                                    return Err(invalid(
-                                        "an unsealed or interrupted replica group exists; its incomplete replicas still require recovery without rerunning graded members",
-                                    ));
-                                }
-                                summaries.push(self.verify_replica(
-                                    index,
-                                    crate::runner::replica::Identity {
-                                        index: replica,
-                                        total: entry.configuration.concurrency,
-                                    },
-                                    &directory,
-                                    entry,
-                                )?);
+                            let summaries = self
+                                .partial_replicas(index, &directory, entry)
+                                .map_err(|error| {
+                                    invalid(&format!(
+                                        "an unsealed or interrupted replica group exists: {error}"
+                                    ))
+                                })?;
+                            if summaries.len() == entry.configuration.concurrency {
+                                outcome_state(&directory, entry)?;
+                                reused
+                                    .groups
+                                    .insert(index, summaries.into_values().collect());
+                            } else {
+                                reused.slots.insert(index, summaries);
                             }
-                            outcome_state(&directory, entry)?;
-                            reused.insert(index, summaries);
                         }
                     }
                 }
@@ -461,7 +454,7 @@ mod tests {
                 .inputs
                 .resume_outcomes(&fixture.root, &results, &plan)
                 .unwrap()
-                .is_empty()
+                .has_no_saved_outcomes()
         );
         let directory = results.join(crate::sweep::execution::result_name(
             0,

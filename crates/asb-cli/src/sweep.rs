@@ -201,7 +201,7 @@ pub(crate) fn run_with_options(
             .expect("resume input validation")
             .resume_outcomes(parent, &results_root, &plan)?
     } else {
-        std::collections::BTreeMap::new()
+        resume::State::default()
     };
     if !json && !options.resume && backup.is_dir() {
         writeln!(
@@ -357,6 +357,7 @@ fn reuse_replay_inputs(
     source: &Path,
     destination: &Path,
     config: &BenchmarkConfig,
+    allow_existing: bool,
 ) -> Result<(), Error> {
     let entries = match std::fs::read_dir(source) {
         Ok(entries) => entries,
@@ -393,6 +394,25 @@ fn reuse_replay_inputs(
             .canonicalize()
             .map_err(|error| Error::Io(error.to_string()))?;
         std::fs::create_dir_all(destination).map_err(|error| Error::Io(error.to_string()))?;
+        let target = destination.join(&name);
+        if allow_existing && std::fs::symlink_metadata(&target).is_ok() {
+            let metadata = std::fs::symlink_metadata(&target).map_err(crate::io_error)?;
+            #[cfg(unix)]
+            let same = {
+                use std::os::unix::fs::MetadataExt;
+                let source = std::fs::metadata(&original).map_err(crate::io_error)?;
+                metadata.is_file()
+                    && metadata.dev() == source.dev()
+                    && metadata.ino() == source.ino()
+            };
+            #[cfg(not(unix))]
+            let same =
+                metadata.is_file() && target.canonicalize().ok() == original.canonicalize().ok();
+            if same {
+                continue;
+            }
+            return Err(Error::Input("existing replay input is not the preserved recording; restore its original hard link or use the original explicit --cassette-root".into()));
+        }
         std::fs::hard_link(&original, destination.join(name)).map_err(|error| Error::Io(format!("cannot reuse preserved replay input {}: {error}; use an explicit --cassette-root to replay directly from its preserved location", original.display())))?;
     }
     Ok(())
