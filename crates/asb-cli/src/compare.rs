@@ -96,7 +96,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 format!("measurements-concurrency-{replica}")
             });
             let run_path = measurement_dir.join("run.json");
-            let artifacts = artifact_links(parent, &result_dir);
+            let artifacts = artifact_links(parent, &measurement_dir);
             if !run_path.is_file() {
                 benchmark_data.push(BenchmarkData {
                 label,
@@ -341,13 +341,12 @@ fn benchmark_identity(path: &Path) -> Result<(String, String, String, String, us
     ))
 }
 
-fn artifact_links(sweep_parent: &Path, result_dir: &Path) -> Vec<String> {
+fn artifact_links(sweep_parent: &Path, measurement_dir: &Path) -> Vec<String> {
     let mut files = Vec::new();
     // Measurement artifacts are the primary evidence for a comparison. Add
     // them before the bounded recursive inventory so a large external
     // workload workspace cannot crowd collector artifacts out of the
     // HTML report's artifact links.
-    let measurement_dir = result_dir.join("measurements");
     if let Ok(entries) = fs::read_dir(measurement_dir.as_path()) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -407,43 +406,56 @@ fn write_execution_timeline_svg(path: &Path, benchmarks: &[BenchmarkData]) -> Re
         else {
             continue;
         };
-        let number = |name| {
-            component
-                .get(name)
-                .and_then(Value::as_f64)
-                .filter(|v| *v >= 0.0)
+        let state = |name| {
+            benchmark
+                .metrics
+                .get(&format!("perfetto-state-summary.{name}"))
+                .copied()
+                .unwrap_or(0.0)
         };
-        let user = number("cpu_user_ms").unwrap_or(0.0);
-        let system = number("cpu_system_ms").unwrap_or(0.0);
-        let io_wait = number("io_wait_ms").unwrap_or(0.0);
-        let runnable_wait = number("scheduler_wait_ms").unwrap_or(0.0);
+        let running = state("running_ms");
+        let runnable = state("runnable_ms");
+        let sleeping = state("interruptible_sleep_ms");
+        let blocked = state("uninterruptible_sleep_ms");
+        let io_wait = state("io_wait_ms");
+        let other_state = state("other_scheduler_state_ms");
         let wall = component
             .get("wall_ms")
             .and_then(Value::as_f64)
             .unwrap_or(0.0);
-        if user + system + io_wait + runnable_wait <= 0.0 && wall <= 0.0 {
+        if running + runnable + sleeping + blocked + io_wait + other_state <= 0.0 && wall <= 0.0 {
             continue;
         }
-        // The residual is deliberately not called sleep: concurrent children
-        // can make CPU accounting exceed wall time, and not every sleep state
-        // is observable through portable proc accounting.
-        let other = (wall - user - system - io_wait - runnable_wait).max(0.0);
+        let other =
+            (wall - running - runnable - sleeping - blocked - io_wait - other_state).max(0.0);
         rows.push((
             benchmark.label.as_str(),
-            [user, system, io_wait, runnable_wait, other],
+            [
+                running,
+                runnable,
+                sleeping,
+                blocked,
+                io_wait,
+                other_state,
+                other,
+            ],
         ));
     }
     if rows.is_empty() {
         return Ok(false);
     }
     let height = 100 + rows.len() * 44;
-    let colors = ["#1976d2", "#7b1fa2", "#ef6c00", "#c62828", "#90a4ae"];
+    let colors = [
+        "#1976d2", "#c62828", "#78909c", "#6a1b9a", "#ef6c00", "#b0bec5", "#eceff1",
+    ];
     let labels = [
-        "user CPU",
-        "system CPU",
-        "block I/O wait",
-        "runnable wait",
-        "other wall time",
+        "running",
+        "runnable",
+        "interruptible sleep",
+        "uninterruptible sleep",
+        "I/O wait",
+        "other scheduler state",
+        "unclassified elapsed wall time",
     ];
     let mut svg = format!(
         "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"980\" height=\"{height}\" viewBox=\"0 0 980 {height}\"><title>Agent execution time composition</title><rect width=\"100%\" height=\"100%\" fill=\"#fff\"/><text x=\"24\" y=\"30\" font-family=\"sans-serif\" font-size=\"18\" font-weight=\"bold\">Agent execution time composition</text><text x=\"24\" y=\"51\" font-family=\"sans-serif\" font-size=\"12\" fill=\"#52606d\">Process-tree accounting; CPU categories may overlap wall time for concurrent children.</text>"
@@ -460,7 +472,7 @@ fn write_execution_timeline_svg(path: &Path, benchmarks: &[BenchmarkData]) -> Re
         for (i, value) in values.iter().enumerate() {
             if *value > 0.0 {
                 let width = 690.0 * value / total;
-                svg.push_str(&format!("<rect class=\"bar\" x=\"{x:.2}\" y=\"{y}\" width=\"{width:.2}\" height=\"22\" fill=\"{}\"><title>{}: {:.2} ms</title></rect>", colors[i], labels[i], value));
+                svg.push_str(&format!("<rect class=\"bar\" data-label=\"{}\" data-value=\"{value:.2} ms\" x=\"{x:.2}\" y=\"{y}\" width=\"{width:.2}\" height=\"22\" fill=\"{}\"><title>{}: {:.2} ms</title></rect>", escape(labels[i]), colors[i], labels[i], value));
                 x += width;
             }
         }
@@ -1345,6 +1357,11 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
+            root.join("sweep-results/000-one/measurements/perfetto-state-timeline.svg"),
+            "<svg><title>Exact scheduler state timeline</title></svg>",
+        )
+        .unwrap();
+        std::fs::write(
             root.join("sweep-results/000-one/measurements/bpftrace-sched-latency.json"),
             r#"{"metrics":{"bpftrace.sched-latency.wakeup_latency_events":7}}"#,
         )
@@ -1381,7 +1398,7 @@ mod tests {
         assert!(timeline.is_file());
         let timeline_svg = std::fs::read_to_string(timeline).unwrap();
         assert!(timeline_svg.contains("Agent execution time composition"));
-        assert!(timeline_svg.contains("block I/O wait"));
+        assert!(timeline_svg.contains("I/O wait"));
         assert!(
             root.join("results/sweep-comparison/metric-host.logical_cpus.svg")
                 .is_file()
@@ -1438,6 +1455,7 @@ mod tests {
         assert!(!report.contains("run.json"));
         assert!(report.contains("Perfetto metric SVG"));
         assert!(report.contains("perfetto-metric-scheduler_events.svg"));
+        assert!(report.contains("perfetto-state-timeline.svg"));
         assert!(report.contains("<div class=\"embedded-svg perfetto-metric\""));
         assert!(report.contains("bpftrace profile SVG"));
         assert!(report.contains("bpftrace-sched-latency.svg"));

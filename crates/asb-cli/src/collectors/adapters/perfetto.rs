@@ -617,7 +617,10 @@ fn write_state_timeline_svg(
     trace_id: &str,
 ) -> Result<(), String> {
     if !processor.is_file() || !trace.is_file() {
-        return Ok(());
+        return write_timeline_notice(
+            dir,
+            "Timeline unavailable: native trace or trace processor is missing.",
+        );
     }
     let query = format!(
         "{} SELECT th.tid, st.ts, st.dur, st.state, COALESCE(st.io_wait,0) FROM thread_state st JOIN thread th ON st.utid=th.utid CROSS JOIN bounds WHERE th.upid IN tree AND st.ts >= bounds.start_ts AND st.ts < bounds.end_ts AND st.dur > 0 ORDER BY th.tid, st.ts LIMIT 4096",
@@ -630,7 +633,10 @@ fn write_state_timeline_svg(
         .output()
         .map_err(|e| format!("cannot extract Perfetto state timeline: {e}"))?;
     if !output.status.success() {
-        return Ok(());
+        return write_timeline_notice(
+            dir,
+            "Timeline unavailable: this trace processor cannot extract thread-state intervals.",
+        );
     }
     let mut spans = Vec::new();
     for line in bounded(&output.stdout).lines() {
@@ -654,8 +660,30 @@ fn write_state_timeline_svg(
         });
     }
     if spans.is_empty() {
-        return Ok(());
+        return write_timeline_notice(
+            dir,
+            "Timeline unavailable: the trace contains no process-tree scheduler intervals.",
+        );
     }
+    let mut summary = BTreeMap::<String, f64>::new();
+    for span in &spans {
+        let (name, _) = state_style(&span.state, span.io_wait);
+        let key = match name {
+            "running" => "running_ms",
+            "runnable" => "runnable_ms",
+            "I/O wait" => "io_wait_ms",
+            "uninterruptible sleep" => "uninterruptible_sleep_ms",
+            "interruptible sleep" => "interruptible_sleep_ms",
+            _ => "other_scheduler_state_ms",
+        };
+        *summary.entry(key.to_owned()).or_default() += span.dur as f64 / 1_000_000.0;
+    }
+    measurements::write_json(
+        &dir.join("perfetto-state-summary.json"),
+        &serde_json::json!({
+            "schema_version": 1, "collector": "perfetto-state-summary", "metrics": summary
+        }),
+    )?;
     let start = spans.iter().map(|s| s.ts).min().unwrap_or(0);
     let end = spans
         .iter()
@@ -697,6 +725,10 @@ fn write_state_timeline_svg(
     svg.push_str("</svg>\n");
     fs::write(dir.join("perfetto-state-timeline.svg"), svg)
         .map_err(|e| format!("cannot write Perfetto state timeline SVG: {e}"))
+}
+
+fn write_timeline_notice(dir: &Path, message: &str) -> Result<(), String> {
+    fs::write(dir.join("perfetto-state-timeline.svg"), format!("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"980\" height=\"100\" viewBox=\"0 0 980 100\"><title>Perfetto state timeline unavailable</title><rect width=\"100%\" height=\"100%\" fill=\"#fff4e5\"/><text x=\"20\" y=\"40\" font-family=\"sans-serif\" font-size=\"18\">Perfetto state timeline unavailable</text><text x=\"20\" y=\"70\" font-family=\"sans-serif\" font-size=\"13\">{}</text></svg>\n", escape_svg(message))).map_err(|e| format!("cannot write Perfetto state timeline notice: {e}"))
 }
 
 fn state_style(state: &str, io_wait: bool) -> (&'static str, &'static str) {
@@ -911,10 +943,32 @@ pub(crate) fn perfetto_scope_sql(pid: u32, trace_id: &str) -> String {
 }
 
 pub(crate) fn perfetto_config(pid: Option<u32>) -> String {
+    perfetto_config_with_schedstats(pid, schedstat_events_available())
+}
+
+fn schedstat_events_available() -> bool {
+    [
+        "sched_stat_iowait",
+        "sched_stat_blocked",
+        "sched_stat_sleep",
+        "sched_stat_runtime",
+    ]
+    .iter()
+    .all(|event| {
+        [
+            "/sys/kernel/tracing/events/sched",
+            "/sys/kernel/debug/tracing/events/sched",
+        ]
+        .iter()
+        .any(|root| Path::new(root).join(event).join("enable").is_file())
+    })
+}
+
+pub(crate) fn perfetto_config_with_schedstats(pid: Option<u32>, schedstats: bool) -> String {
     // Tracebox's bundled schema rejects FtraceConfig.pid_filter. Process
     // scoping is applied during post-processing using ASB lifecycle markers.
     let _ = pid;
-    r#"duration_ms: 3600000
+    let mut config = r#"duration_ms: 3600000
 buffers { size_kb: 65536 fill_policy: RING_BUFFER }
 data_sources {
   config {
@@ -939,7 +993,16 @@ data_sources {
   }
 }
 "#
-    .to_owned()
+    .to_owned();
+    if schedstats {
+        let insertion = "      ftrace_events: \"sched/sched_stat_iowait\"\n      ftrace_events: \"sched/sched_stat_blocked\"\n      ftrace_events: \"sched/sched_stat_sleep\"\n      ftrace_events: \"sched/sched_stat_runtime\"\n";
+        config = config.replacen(
+            "      ftrace_events: \"sched/sched_switch\"\n",
+            &format!("      ftrace_events: \"sched/sched_switch\"\n{insertion}"),
+            1,
+        );
+    }
+    config
 }
 
 fn perfetto_probe_config() -> String {
