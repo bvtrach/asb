@@ -32,6 +32,8 @@ class ManagedDockerWorkspace:
             raise ExecutionError("cannot attach to a task environment outside this attempt")
         workspace = cls(client, container.image, attempt, workdir)
         host = container.attrs.get("HostConfig", {})
+        if host.get("PidMode") not in [None, "", "private"]:
+            raise ExecutionError("task execution requires a private container PID namespace")
         workspace.limits = {"memory_bytes": host.get("Memory") or None,
                             "cpus": (host.get("NanoCpus") or 0) / 10**9 or None,
                             "pids": host.get("PidsLimit") if (host.get("PidsLimit") or 0) > 0 else None}
@@ -231,10 +233,40 @@ class ManagedDockerWorkspace:
                             response.close()
             finally:
                 if reset_needed.is_set() and not watchdog.is_alive() and not watchdog_error:
+                    container.wait(timeout=125)
                     container.start()
         if watchdog.is_alive() or watchdog_error:
             raise ExecutionError("Docker could not stop the timed-out execution tree")
         return result
+
+    def quiesce_unconfirmed_agent(self):
+        """Stop every process in this owned PID namespace, retaining its files.
+
+        A failed/old guest supervisor cannot publish a trustworthy completion
+        acknowledgement. Container exit must be observed before restarting its
+        original entry point and considering any partial submission for grading.
+        """
+        if not self.active.acquire(blocking=False):
+            raise ExecutionError("cannot stop an unconfirmed agent during another task operation")
+        try:
+            container = self.container
+            if container is None:
+                raise ExecutionError("unconfirmed agent workspace is no longer available")
+            container.reload()
+            labels = container.attrs.get("Config", {}).get("Labels", {}) or {}
+            if (labels.get("asb.owner") != "asb" or labels.get("asb.attempt") != self.attempt
+                    or container.attrs.get("HostConfig", {}).get("PidMode") not in [None, "", "private"]):
+                raise ExecutionError("refused process-tree reset outside this owned PID namespace")
+            if container.attrs.get("State", {}).get("Running", True):
+                container.kill()
+            container.wait(timeout=125)
+            container.start()
+        except ExecutionError:
+            raise
+        except Exception as error:
+            raise ExecutionError("could not confirm stopped agent tree before submission capture") from error
+        finally:
+            self.active.release()
 
     def close(self):
         if self.container is None:

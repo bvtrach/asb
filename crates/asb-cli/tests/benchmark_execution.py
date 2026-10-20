@@ -51,6 +51,11 @@ class Container:
         self.killed = threading.Event()
     def start(self):
         self.events.append("start")
+    def wait(self, timeout):
+        assert timeout == 125
+        self.events.append("wait")
+    def reload(self):
+        pass
     def exec_run(self, argv):
         if "asb-resume" in argv:
             self.events.append("resume")
@@ -185,7 +190,7 @@ class ExecutionTests(unittest.TestCase):
             result = workspace.execute(["agent"], timeout=0.02)
             self.assertEqual(result["exit_code"], 137)
             self.assertTrue(result["timed_out"])
-            self.assertEqual(container.events[-2:], ["kill", "start"])
+            self.assertEqual(container.events[-3:], ["kill", "wait", "start"])
             api.hang = False
             self.assertEqual(workspace.execute(["git", "diff"])["exit_code"], 0)
 
@@ -203,7 +208,7 @@ class ExecutionTests(unittest.TestCase):
             self.assertTrue(result["cancelled"])
             self.assertFalse(result["timed_out"])
             self.assertLess(result["elapsed_seconds"], 2)
-            self.assertEqual(container.events[-2:], ["kill", "start"])
+            self.assertEqual(container.events[-3:], ["kill", "wait", "start"])
 
     def test_callback_failure_cannot_resume_agent_or_leave_paused_process(self):
         workspace, container, api, _ = self.workspace()
@@ -213,7 +218,7 @@ class ExecutionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "synthetic collector"):
                 workspace.execute(["agent"], before_resume=attach)
             self.assertNotIn("resume", container.events)
-            self.assertEqual(container.events[-2:], ["kill", "start"])
+            self.assertEqual(container.events[-3:], ["kill", "wait", "start"])
             self.assertTrue(api.stream.closed)
             self.assertEqual(workspace.execute(["retry"])["exit_code"], 0)
 
@@ -242,6 +247,40 @@ class ExecutionTests(unittest.TestCase):
         with self.assertRaisesRegex(RUNTIME.ExecutionError, "outside this attempt"):
             workspace.close()
         self.assertNotIn("remove", container.events)
+
+    def test_unconfirmed_agent_is_reset_only_after_observed_container_exit(self):
+        workspace, container, _api, _ = self.workspace()
+        with workspace:
+            workspace.quiesce_unconfirmed_agent()
+            self.assertEqual(container.events[-3:], ["kill", "wait", "start"])
+            def failed_wait(timeout):
+                raise RuntimeError("synthetic stop failure")
+            container.wait = failed_wait
+            with self.assertRaisesRegex(RUNTIME.ExecutionError, "confirm stopped"):
+                workspace.quiesce_unconfirmed_agent()
+            self.assertEqual(container.events[-1], "kill")
+
+    def test_unconfirmed_agent_reset_refuses_other_owners_or_shared_pid_namespaces(self):
+        for change in ["owner", "pid"]:
+            workspace, container, _api, _ = self.workspace()
+            workspace.__enter__()
+            if change == "owner":
+                container.attrs["Config"]["Labels"]["asb.attempt"] = "another-attempt"
+            else:
+                container.attrs["HostConfig"] = {"PidMode":"host"}
+            with self.assertRaisesRegex(RUNTIME.ExecutionError, "owned PID namespace"):
+                workspace.quiesce_unconfirmed_agent()
+            self.assertNotIn("kill", container.events)
+
+    def test_attach_refuses_shared_container_pid_namespaces(self):
+        workspace, container, _api, creation = self.workspace()
+        workspace.__enter__()
+        container.image = workspace.image
+        for mode in ["host", "container:some-other-container"]:
+            container.attrs["HostConfig"] = {"PidMode":mode}
+            with self.assertRaisesRegex(RUNTIME.ExecutionError, "private container PID namespace"):
+                RUNTIME.ManagedDockerWorkspace.attach(workspace.client, container, workspace.attempt, "/task")
+        workspace.close()
 
 
 if __name__ == "__main__":

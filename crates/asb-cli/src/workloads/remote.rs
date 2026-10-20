@@ -277,6 +277,9 @@ impl Session {
                     let metadata: crate::agents::driver::GuestResult =
                         serde_json::from_value(result["metadata"].clone())
                             .map_err(|_| "guest returned invalid agent result metadata")?;
+                    if !metadata.tree_quiesced {
+                        return Err("isolated agent process tree was not confirmed stopped before evaluation".into());
+                    }
                     if let Some(session) = context.measurements.as_deref_mut() {
                         session.import_execution_namespace_state(&metadata.namespace_collectors)?;
                     }

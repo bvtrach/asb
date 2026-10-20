@@ -41,6 +41,8 @@ pub(crate) struct GuestResult {
     pub steps: Option<u64>,
     pub execution_failure: Option<String>,
     #[serde(default)]
+    pub tree_quiesced: bool,
+    #[serde(default)]
     pub namespace_collectors: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
@@ -231,6 +233,7 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
             .steps
             .or_else(|| adapter.step_count(&stdout, &stderr)),
         execution_failure: adapter.execution_failure(&stdout, &stderr),
+        tree_quiesced: cfg!(target_os = "linux"),
         namespace_collectors,
     };
     let destination = request.run_dir.join("agent-result.json");

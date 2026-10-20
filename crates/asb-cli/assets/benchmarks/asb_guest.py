@@ -213,15 +213,23 @@ def _execute_agent(task, request, before_resume, on_output, cancelled, resources
         relay.check()
     observation = {key: result.get(key) for key in ["exit_code", "timed_out", "cancelled",
                    "output_truncated", "elapsed_seconds", "preparation_seconds", "target"]}
-    journal = task.artifacts / "execution.json"
-    journal.write_text(json.dumps(observation))
-    journal.chmod(0o600)
     try:
         metadata = task.checked(["cat", "/opt/asb-private/attempt/agent-result.json"], output_limit=1024 * 1024)
         result["metadata"] = json.loads(metadata)
+        if not isinstance(result["metadata"], dict):
+            raise ExecutionError("guest result is not a structured record")
     except (ExecutionError, ValueError):
         # Keep partial work eligible for evaluation after timeout/client death.
         # Unknown usage is never invented from text or an expected minimum.
         result["metadata"] = {"schema_version": 1, "exit_code": result["exit_code"],
                               "final_response": None, "token_usage": {}, "steps": None}
+    if result["metadata"].get("tree_quiesced") is not True:
+        task.workspace.quiesce_unconfirmed_agent()
+        result["metadata"]["tree_quiesced"] = True
+        observation["agent_tree_cleanup"] = "owned-container-reset"
+    else:
+        observation["agent_tree_cleanup"] = "supervisor-confirmed"
+    journal = task.artifacts / "execution.json"
+    journal.write_text(json.dumps(observation))
+    journal.chmod(0o600)
     return result

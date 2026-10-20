@@ -235,3 +235,175 @@ fn malformed_guest_request_fails_without_echoing_input_or_starting_an_agent() {
     assert!(output.stdout.is_empty());
     assert!(!String::from_utf8_lossy(&output.stderr).contains("sensitive-fixture"));
 }
+
+#[cfg(target_os = "linux")]
+fn background_agent(project: &Project, hold_streams: bool, code: i32) -> PathBuf {
+    let program = project.0.join(".asb-tools/pi/bin/pi");
+    let source = format!(
+        r#"#!/usr/bin/env python3
+import json,os,signal,sys,time
+from pathlib import Path
+first = os.fork()
+if first == 0:
+    os.setsid()
+    if os.fork() != 0:
+        os._exit(0)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    Path('helper.pid').write_text(str(os.getpid()))
+    if not {hold_streams}:
+        os.close(1)
+        os.close(2)
+    time.sleep(1.2)
+    Path('late-write').write_text('submission changed after client exit')
+    os._exit(0)
+os.waitpid(first,0)
+deadline=time.monotonic()+2
+while not Path('helper.pid').exists():
+    if time.monotonic()>deadline:
+        sys.exit(99)
+    time.sleep(.005)
+print(json.dumps(dict(type='result',result='fixture completed')),flush=True)
+sys.exit({code})
+"#,
+        hold_streams = if hold_streams { "True" } else { "False" }
+    );
+    std::fs::write(&program, source).unwrap();
+    program
+}
+
+#[cfg(target_os = "linux")]
+fn resume_fixture(process: &mut Process) {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let status = std::fs::read_to_string(format!("/proc/{}/status", process.0.id())).unwrap();
+        if status
+            .lines()
+            .any(|line| line.starts_with("State:") && line.contains('T'))
+        {
+            break;
+        }
+        assert!(process.0.try_wait().unwrap().is_none());
+        assert!(Instant::now() < deadline, "fixture never stopped at gate");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        Command::new("kill")
+            .args(["-CONT", &process.0.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn assert_helper_quiesced(project: &Project) {
+    let pid = std::fs::read_to_string(project.0.join("workspace/helper.pid")).unwrap();
+    assert!(
+        !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+        "helper was not stopped and reaped"
+    );
+    std::thread::sleep(Duration::from_millis(800));
+    assert!(
+        !project.0.join("workspace/late-write").exists(),
+        "helper changed submission after client exit"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guest_quiesces_double_forked_helpers_before_returning_any_client_result() {
+    let mut unrelated = Process(Command::new("sleep").arg("15").spawn().unwrap());
+    for (hold_streams, code) in [(true, 0), (false, 7)] {
+        let project = Project::new();
+        background_agent(&project, hold_streams, code);
+        let mut process = Process(
+            Command::new(env!("CARGO_BIN_EXE_asb"))
+                .arg("__asb-agent")
+                .env_clear()
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .env("HOME", &project.0)
+                .env("ASB_GUEST_AGENT_REQUEST", project.request().to_string())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let mut stdout = BufReader::new(process.0.stdout.take().unwrap());
+        let mut ready = String::new();
+        stdout.read_line(&mut ready).unwrap();
+        assert_eq!(ready.trim(), format!("__ASB_GATE__:{}", process.0.id()));
+        resume_fixture(&mut process);
+        let mut output = String::new();
+        stdout.read_to_string(&mut output).unwrap();
+        assert_eq!(process.0.wait().unwrap().code(), Some(code));
+        let result: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(project.0.join("private/attempt/agent-result.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(result["exit_code"], code);
+        assert_helper_quiesced(&project);
+        assert!(
+            unrelated.0.try_wait().unwrap().is_none(),
+            "unrelated process was affected"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn native_gate_stops_and_reaps_adopted_helpers_without_changing_client_failure() {
+    let project = Project::new();
+    let program = background_agent(&project, true, 7);
+    let mut process = Process(
+        Command::new(env!("CARGO_BIN_EXE_asb"))
+            .arg("__asb-gate")
+            .arg(program)
+            .current_dir(project.0.join("workspace"))
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    resume_fixture(&mut process);
+    let mut output = String::new();
+    process
+        .0
+        .stdout
+        .take()
+        .unwrap()
+        .read_to_string(&mut output)
+        .unwrap();
+    assert_eq!(process.0.wait().unwrap().code(), Some(7));
+    assert_helper_quiesced(&project);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn guest_output_failure_still_quiesces_owned_helpers_without_publishing_a_result() {
+    let project = Project::new();
+    background_agent(&project, true, 7);
+    let mut process = Process(
+        Command::new(env!("CARGO_BIN_EXE_asb"))
+            .arg("__asb-agent")
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", &project.0)
+            .env("ASB_GUEST_AGENT_REQUEST", project.request().to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stdout = BufReader::new(process.0.stdout.take().unwrap());
+    let mut ready = String::new();
+    stdout.read_line(&mut ready).unwrap();
+    assert_eq!(ready.trim(), format!("__ASB_GATE__:{}", process.0.id()));
+    // Simulate a failed output consumer while the prepared client starts.
+    drop(stdout);
+    resume_fixture(&mut process);
+    assert!(!process.0.wait().unwrap().success());
+    assert!(!project.0.join("private/attempt/agent-result.json").exists());
+    assert_helper_quiesced(&project);
+}

@@ -241,6 +241,7 @@ class NormalRunQualification(unittest.TestCase):
                     if os.environ.get("ASB_TEST_EXPECT_RUNTIME_KIND"):
                         self.assertEqual(receipt["kind"],os.environ["ASB_TEST_EXPECT_RUNTIME_KIND"])
                     observation = json.loads((matching[0] / "execution.json").read_text())
+                    self.assertEqual(observation["agent_tree_cleanup"], "supervisor-confirmed")
                     self.assertLessEqual(abs(record["elapsed_ms"] - observation["elapsed_seconds"] * 1000), 1)
                     self.assertGreater(observation["preparation_seconds"], 0)
                     if terminal:

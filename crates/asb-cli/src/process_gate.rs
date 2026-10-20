@@ -8,6 +8,11 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::process::Command;
 
+#[cfg(target_os = "linux")]
+mod descendants;
+#[cfg(target_os = "linux")]
+pub(crate) use descendants::DescendantScope;
+
 /// A loader-bundled runtime uses its launcher for recursive ASB execution.
 pub(crate) fn executable() -> io::Result<std::path::PathBuf> {
     if let Some(path) = std::env::var_os("ASB_RUNTIME_EXECUTABLE") {
@@ -127,14 +132,23 @@ pub(crate) fn run_gate(args: &[OsString]) -> std::process::ExitCode {
         return std::process::ExitCode::from(2);
     };
     #[cfg(target_os = "linux")]
-    if let Err(error) = become_child_subreaper() {
-        eprintln!("asb process gate could not retain orphaned descendants: {error}");
-        return std::process::ExitCode::from(2);
-    }
+    let mut descendants = match DescendantScope::new() {
+        Ok(scope) => scope,
+        Err(error) => {
+            eprintln!("asb process gate could not retain orphaned descendants: {error}");
+            return std::process::ExitCode::from(2);
+        }
+    };
     if pause_current().is_err() {
         return std::process::ExitCode::from(2);
     }
-    match Command::new(program).args(target_args).status() {
+    let status = Command::new(program).args(target_args).status();
+    #[cfg(target_os = "linux")]
+    if let Err(error) = descendants.quiesce() {
+        eprintln!("asb process gate could not stop owned agent descendants: {error}");
+        return std::process::ExitCode::from(2);
+    }
+    match status {
         Ok(status) => std::process::ExitCode::from(status.code().unwrap_or(1).clamp(0, 255) as u8),
         Err(_) => std::process::ExitCode::from(127),
     }
@@ -153,29 +167,5 @@ fn become_child_subreaper() -> io::Result<()> {
         Ok(())
     } else {
         Err(io::Error::last_os_error())
-    }
-}
-
-#[cfg(all(test, target_os = "linux"))]
-mod tests {
-    use super::become_child_subreaper;
-
-    #[test]
-    fn gate_can_retain_orphaned_descendants() {
-        become_child_subreaper().expect("set child subreaper");
-        let mut value = 0;
-        // SAFETY: PR_GET_CHILD_SUBREAPER writes one integer to a valid local
-        // pointer owned by this test process.
-        let result = unsafe {
-            libc::prctl(
-                libc::PR_GET_CHILD_SUBREAPER,
-                (&mut value as *mut i32) as libc::c_ulong,
-                0,
-                0,
-                0,
-            )
-        };
-        assert_eq!(result, 0);
-        assert_eq!(value, 1);
     }
 }

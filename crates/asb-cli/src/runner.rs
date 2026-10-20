@@ -1344,7 +1344,14 @@ fn wait_with_output(
     show_output: bool,
     output: &mut dyn Write,
 ) -> std::io::Result<Output> {
-    wait_with_output_streams(child, show_output, output, None, MAX_AGENT_RUNTIME)
+    wait_with_output_streams(
+        child,
+        show_output,
+        output,
+        None,
+        MAX_AGENT_RUNTIME,
+        &mut || Ok(()),
+    )
 }
 
 pub(crate) fn run_guest_process(
@@ -1353,12 +1360,20 @@ pub(crate) fn run_guest_process(
     stderr: &mut dyn Write,
     runtime: Duration,
 ) -> Result<Output, Error> {
+    #[cfg(target_os = "linux")]
+    let mut descendants = crate::process_gate::DescendantScope::new()
+        .map_err(|error| Error::Run(format!("cannot retain guest agent descendants: {error}")))?;
     let child = command
         .spawn()
         .map(OwnedChild)
         .map_err(|error| Error::Run(format!("cannot start guest agent: {error}")))?;
-    wait_with_output_streams(child, true, stdout, Some(stderr), runtime)
-        .map_err(|error| Error::Run(format!("cannot wait for guest agent: {error}")))
+    wait_with_output_streams(child, true, stdout, Some(stderr), runtime, &mut || {
+        #[cfg(target_os = "linux")]
+        return descendants.quiesce();
+        #[cfg(not(target_os = "linux"))]
+        Ok(())
+    })
+    .map_err(|error| Error::Run(format!("cannot wait for guest agent: {error}")))
 }
 
 fn wait_with_output_streams(
@@ -1367,6 +1382,7 @@ fn wait_with_output_streams(
     output: &mut dyn Write,
     mut error_output: Option<&mut dyn Write>,
     runtime: Duration,
+    after_exit: &mut dyn FnMut() -> std::io::Result<()>,
 ) -> std::io::Result<Output> {
     let stdout = child
         .stdout
@@ -1385,6 +1401,7 @@ fn wait_with_output_streams(
     let mut stderr_capture = Vec::new();
     let mut finished_streams = 0;
     let mut status = None;
+    let mut quiesced = false;
     let deadline = Instant::now() + runtime;
     let mut timed_out = false;
     while (finished_streams < 2 || status.is_none()) && !timed_out {
@@ -1414,14 +1431,23 @@ fn wait_with_output_streams(
         }
         if status.is_none() {
             status = child.try_wait()?;
+            if status.is_some() {
+                after_exit()?;
+                quiesced = true;
+            }
         }
         if status.is_none() && Instant::now() >= deadline {
             timed_out = true;
             let _ = child.kill();
             status = Some(child.wait()?);
+            after_exit()?;
+            quiesced = true;
         }
     }
     let status = status.unwrap_or(child.wait()?);
+    if !quiesced {
+        after_exit()?;
+    }
     if timed_out {
         stderr_capture.extend_from_slice(
             format!(

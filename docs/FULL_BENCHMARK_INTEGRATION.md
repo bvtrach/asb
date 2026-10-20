@@ -855,3 +855,60 @@ measured replay to complete. Explicit guest/runtime launcher overrides retain
 their existing behavior. Serialized real namespace/Perfetto execution on the
 main-refreshed branch passed again in 51.2 seconds; the additional kernel-path
 repair still needs its own final local/hosted qualification.
+
+### Quiescence before submission capture
+
+The Linux guest driver and measured native gate now own exclusive subreaper
+scopes. After the principal client exits, they verify direct child ownership
+with `waitid(P_PIDFD)`, signal pinned pidfds rather than stale numeric PIDs,
+and stop/reap adopted descendants, including double forks and helpers that
+ignore TERM or hold output pipes. Cleanup has a 500 ms graceful period and a
+five-second bound. A startup probe checks the required kernel APIs before
+starting the client. The shared runner never becomes a child-owning supervisor;
+the old unit check that changed the shared test process's subreaper state was
+replaced by tests in actual short-lived supervisors.
+
+The generic output waiter invokes cleanup as soon as the principal is reaped,
+not after inherited output pipes close. Its failure/drop path also tears down
+owned helpers. Only a quiesced guest writes completed metadata; nonzero client
+exit codes are preserved. Missing/old/unconfirmed metadata instead triggers
+an owned-container stop/wait/restart before partial submission evaluation.
+This preserves the filesystem, does not turn process failure into success,
+and records the cleanup source in `execution.json`. Failure to confirm a
+stopped tree cannot proceed to grading. Task attachment and reset reject host
+or shared container PID namespaces; no host process groups or unrelated
+containers are signalled.
+
+Provider-free tests cover process-list bounds, kernel refusal to signal a
+non-child, double-forked helpers, ignored TERM, inherited/closed output streams,
+zero/nonzero clients, consumer failure without completed metadata, unrelated
+fixture survival, reset ordering and refusal, and failed reset acknowledgement.
+Local gates passed 361 unit tests, 84 offline CLI tests, seven guest-driver
+integration tests, all ten protocol suites, strict Clippy and the full build.
+The first actual Docker supervisor qualification passed in 6.5 seconds and a
+real Pi/synthetic-provider SWE-bench Lite run with official grading passed in
+59.7 seconds. The final reset/metadata additions still need their own Docker,
+packaging and hosted exact-head checks before this checkpoint is qualified.
+
+This completes the normal/client-error pre-submission quiescence mechanism,
+not abrupt-supervisor/host-crash recovery. Full-population planning, distinct
+task scheduling/resume and coverage reporting, SWE source-image fallback,
+final review/merge/main CI and release `0.2.0` remain open.
+
+Final actual Docker qualification of the reset/acknowledgement additions
+passed in 9.8 seconds: the normal supervisor preserved its namespace peer,
+then the explicit unconfirmed-agent reset stopped that old peer exec and
+preserved an identical submission hash. Real Pi with the synthetic provider
+and official Terminal-Bench 2.1 grading passed in 49.5 seconds. Terminal-Bench
+1.0 sweep replay passed in 38.1 seconds with no provider/catalog calls and the
+expected SVG/HTML comparison artifacts. These are representative original
+task qualifications, not complete-suite or AI-solving claims.
+
+A final ordinary-suite run exposed a transient `ETXTBSY` when the executable
+replacement fixture started its freshly copied binary while another test had
+forked with a briefly inherited writer. That fixture now retries only that
+specific exec failure within two seconds, without retrying benchmark results.
+A separate Codex record fixture failed once without a cassette; diagnostic
+coverage now retains its fixture run log. Its cause was not reproduced and is
+not claimed repaired. The complete offline CLI suite then passed a focused
+rerun and three additional concurrent stress runs (84 tests each).

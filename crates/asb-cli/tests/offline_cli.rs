@@ -933,7 +933,13 @@ fetch(endpoint + '/responses', {method:'POST',headers:{'content-type':'applicati
     stop.store(true, Ordering::Relaxed);
     worker.join().unwrap();
     expect_success(&run);
-    expect_success(&record);
+    assert!(
+        record.status.success(),
+        "record stdout={} stderr={} log={}",
+        String::from_utf8_lossy(&record.stdout),
+        String::from_utf8_lossy(&record.stderr),
+        std::fs::read_to_string(project.0.join("run.log")).unwrap_or_default()
+    );
     expect_success(&replay);
     assert_eq!(
         before_replay, after_replay,
@@ -1071,28 +1077,48 @@ fn running_binary_replacement_does_not_break_measured_replay_gate() {
     let project = replay_project(1);
     let executable = project.0.join("running-asb");
     std::fs::copy(env!("CARGO_BIN_EXE_asb"), &executable).unwrap();
-    let child = Command::new(&executable)
-        .current_dir(&project.0)
-        .args([
-            "run",
-            "benchmark.toml",
-            "--replay",
-            "--cassette",
-            "tape.jsonl",
-            "--measurements",
-            "measurements",
-        ])
-        .env_clear()
-        .env("HOME", &project.0)
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .unwrap();
+    let child = spawn_copied_fixture(
+        Command::new(&executable)
+            .current_dir(&project.0)
+            .args([
+                "run",
+                "benchmark.toml",
+                "--replay",
+                "--cassette",
+                "tape.jsonl",
+                "--measurements",
+                "measurements",
+            ])
+            .env_clear()
+            .env("HOME", &project.0)
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped()),
+    );
     // Remove only the test-created copy, after exec has loaded it. The kernel
     // keeps its running inode alive while the old pathname no longer exists.
     std::fs::remove_file(executable).unwrap();
     expect_success(&child.wait_with_output().unwrap());
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_copied_fixture(command: &mut Command) -> std::process::Child {
+    // Another test can fork while fs::copy owns its output descriptor. The
+    // inherited writer exists briefly until exec closes it, producing ETXTBSY
+    // even after our copy returned. Retry only that transient exec failure.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        match command.spawn() {
+            Ok(child) => return child,
+            Err(error)
+                if error.raw_os_error() == Some(libc::ETXTBSY)
+                    && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => panic!("copied ASB fixture could not start: {error}"),
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]

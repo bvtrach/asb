@@ -127,6 +127,15 @@ subreaper. This retains helpers that daemonize or outlive an intermediate
 wrapper under the benchmark root, so perf inheritance, bpftrace fork tracking,
 pidstat sampling, and process-accounted timing include the complete relevant
 tree without collecting unrelated host processes.
+The guest driver likewise owns a private child supervisor; both supervisors
+stop and reap leftover helpers before accepting an execution result. Offline
+guest fixtures exercise double forks, ignored TERM, inherited output pipes,
+nonzero exits and output-consumer failure, and verify that unrelated fixture
+processes survive. The optional `benchmark_live_quiescence.py` qualification
+uses the installed SWE-bench fixture and explicit
+`ASB_TEST_BENCHMARK_ASB`/`ASB_TEST_SWECATALOG_ROOT` paths to check the actual
+Docker kernel API and filesystem-preserving reset path. It starts only a
+synthetic client and never contacts an LLM provider.
 
 Two opt-in host checks exercise the accounting and BPF paths without a provider:
 

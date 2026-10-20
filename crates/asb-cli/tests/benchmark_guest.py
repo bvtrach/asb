@@ -43,6 +43,21 @@ class Container:
 
 
 class GuestBootstrapTests(unittest.TestCase):
+    def test_unconfirmed_tree_cannot_publish_a_result_when_container_reset_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def unavailable(_argv, **_kwargs):
+                raise ExecutionError("guest result is missing")
+            def failed_reset():
+                raise ExecutionError("could not confirm stopped agent tree")
+            task = SimpleNamespace(artifacts=root, agent_timeout=15, checked=unavailable,
+                workspace=SimpleNamespace(container=Container(), quiesce_unconfirmed_agent=failed_reset,
+                    execute=lambda *_args, **_kwargs: {"stdout":b"", "stderr":b"", "exit_code":2}))
+            with patch("asb_guest.prepare_agent", return_value=({}, {})):
+                with self.assertRaisesRegex(ExecutionError, "confirm stopped"):
+                    execute_agent(task, {}, None, None, None)
+            self.assertFalse((root / "execution.json").exists())
+
     def test_local_forwarding_precedes_install_and_is_closed_on_install_failure_or_success(self):
         for failure in (False, True):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
@@ -74,7 +89,7 @@ class GuestBootstrapTests(unittest.TestCase):
                             "timed_out":False, "cancelled":False}
                 def checked(argv, **_options):
                     return json.dumps({"schema_version":1,"exit_code":0,"final_response":"done",
-                                       "token_usage":{},"steps":None}).encode() if argv[0] == "cat" else b""
+                                       "token_usage":{},"steps":None,"tree_quiesced":True}).encode() if argv[0] == "cat" else b""
                 task = SimpleNamespace(workspace=SimpleNamespace(container=container, execute=execute),
                                        artifacts=root, checked=checked)
                 request = {"binary":str(binary),"project_root":str(root),"tools_root":str(root/"tools"),
@@ -166,7 +181,7 @@ class GuestBootstrapTests(unittest.TestCase):
             self.assertTrue(any(name == "npm/_cacache/index-v5/entry" for _, name, _ in container.files))
 
     def test_bootstrap_uses_exact_selected_tool_and_private_request_not_argv(self):
-        for timed_out, measured in [(False, False), (True, False), (False, True)]:
+        for timed_out, measured, confirmed in [(False, False, True), (True, False, False), (False, True, True), (False, False, False)]:
             with self.subTest(timed_out=timed_out, measured=measured), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 (root / ".asb").mkdir()
@@ -192,10 +207,13 @@ class GuestBootstrapTests(unittest.TestCase):
                     if argv[0] == "cat":
                         if timed_out:
                             raise ExecutionError("no completed metadata")
-                        return json.dumps({"schema_version":1,"exit_code":0,"final_response":"done", "token_usage":{},"steps":None}).encode()
+                        return json.dumps({"schema_version":1,"exit_code":0,"final_response":"done", "token_usage":{},"steps":None,
+                                           "tree_quiesced":confirmed}).encode()
                     return b""
 
-                task = SimpleNamespace(workspace=SimpleNamespace(container=container, execute=execute),
+                resets = []
+                task = SimpleNamespace(workspace=SimpleNamespace(container=container, execute=execute,
+                                       quiesce_unconfirmed_agent=lambda:resets.append("stopped")),
                                        artifacts=root, checked=checked, agent_timeout=1234)
                 request = {"binary":str(binary), "project_root":str(root), "tools_root":str(root / "tools"),
                            "measure_target":measured,
@@ -204,6 +222,10 @@ class GuestBootstrapTests(unittest.TestCase):
                 ended = []
                 result = execute_agent(task, request, attached.append, lambda *_: None, None,
                                        on_ended=lambda result: ended.append(result["exit_code"]))
+                self.assertEqual(resets, [] if confirmed else ["stopped"])
+                self.assertTrue(result["metadata"]["tree_quiesced"])
+                journal = json.loads((root / "execution.json").read_text())
+                self.assertEqual(journal["agent_tree_cleanup"], "supervisor-confirmed" if confirmed else "owned-container-reset")
                 self.assertEqual([call[0][-1] for call in calls], ["node", "pi", "__asb-agent"])
                 self.assertNotIn("private-fixture", repr([call[0] for call in calls]))
                 private = calls[-1][1]["environment"]["ASB_GUEST_AGENT_REQUEST"]

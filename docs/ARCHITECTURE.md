@@ -166,6 +166,20 @@ native process path. The generic execution context carries the selected
 configuration and negotiated connection, and the owning session returns
 separate process output, adapter-parsed results and observed execution time.
 The runner does not choose container images, dataset formats or graders.
+The Linux guest driver and measured native process gate are exclusive child
+supervisors. They retain double-forked helpers as subreapers, verify kernel
+child ownership through pidfds, stop/reap remaining helpers after the principal
+client exits, and only then publish a completed result. A 500 ms TERM grace is
+followed by KILL with a five-second teardown bound; the required kernel APIs
+are probed before client launch. The shared multi-run process never takes this
+ownership role. Guest output-consumer errors also trigger owned-child cleanup.
+If guest metadata cannot confirm quiescence, the workload controller waits for
+its owned private-PID-namespace container to stop and restarts its original
+entry point before grading partial work. The filesystem is retained, the
+client failure remains separate from the task grade, and the execution journal
+distinguishes supervisor confirmation from a container reset. Failed reset
+confirmation aborts evaluation. Host/shared container PID namespaces are not
+valid task targets. This cooperative teardown is not abrupt-host-crash recovery.
 
 The CLI is the stable user boundary. A benchmark configuration names an agent,
 workload, provider, model, concurrency, workspace, and log file. `concurrency`
