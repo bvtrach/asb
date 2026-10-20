@@ -13,6 +13,9 @@ use std::process::Command;
 
 const MATERIALIZER: &str = include_str!("../../../../assets/benchmarks/asb_swebench.py");
 const DOCKER_TRANSPORT: &str = include_str!("../../../../assets/benchmarks/asb_docker.py");
+const EXECUTION: &str = include_str!("../../../../assets/benchmarks/asb_execution.py");
+const TASK_SESSION: &str = include_str!("../../../../assets/benchmarks/asb_swebench_task.py");
+const TASK_SERVER: &str = include_str!("../../../../assets/benchmarks/asb_task_server.py");
 const MAX_CATALOG_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Deserialize)]
@@ -148,6 +151,9 @@ pub(super) fn install(
     let helper = tool_root.join("asb_swebench.py");
     publish_helper(&helper, MATERIALIZER)?;
     publish_helper(&tool_root.join("asb_docker.py"), DOCKER_TRANSPORT)?;
+    publish_helper(&tool_root.join("asb_execution.py"), EXECUTION)?;
+    publish_helper(&tool_root.join("asb_swebench_task.py"), TASK_SESSION)?;
+    publish_helper(&tool_root.join("asb_task_server.py"), TASK_SERVER)?;
     let python = tool_root.join("venv/bin/python");
     let status = Command::new(&python)
         .arg(&helper)

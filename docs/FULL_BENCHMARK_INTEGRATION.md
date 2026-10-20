@@ -193,6 +193,70 @@ access and reserved free disk space; the installer check uses a new isolated
 workload directory. Both retain their diagnostic artifacts under the supplied
 project. Ordinary CI uses only synthetic catalog/evaluator/transport fixtures.
 
+### Owned task execution and private controller bridge
+
+The new generic Docker execution helper creates an exclusively owned,
+resource-limited task container from a content-addressed image. It uses no
+host mounts, host networking or privileged mode. Its stopped shell gate
+reports namespace and Docker-daemon-host PIDs before a collector-ready
+callback may resume it. A daemon-host PID is not automatically claimed to be
+local to ASB. Argument/environment transport is structured; credentials are
+not put into controller command arguments or echoed by protocol diagnostics.
+Output capture is bounded, while live output can be streamed separately.
+
+The SWE-bench task helper prepares the exact dataset base commit in that
+container, provides only the public issue instruction, and captures a binary
+Git diff against that base including committed and untracked changes. Typed
+baseline evidence says `upstream-task-definition`, not a fabricated measured
+test failure. Timeouts stop the whole owned execution tree and restart only
+the container's idle process so partial filesystem changes can be captured.
+
+The private JSON-lines task bridge exposes ready/paused/output/completed,
+submission/evaluation and cleanup events. It executes the supplied command;
+it does not choose an agent or provider. EOF/cancellation/SIGTERM cleans the
+owned attempt, including an active evaluator. Evaluation uses the actual
+prepared image ID, rather than resolving a mutable image tag a second time.
+
+Live, provider-free qualifications passed:
+
+- All three SWE-bench populations: clean base, stopped gate with PID-namespace
+  verification, committed/untracked changes after exit 7, preserved partial
+  changes after a deadline, and container removal (about 23 seconds total).
+- Private bridge: unsuccessful synthetic changes graded unresolved and an
+  oracle/reference fix graded resolved, both after exit 7; EOF while executing
+  and SIGTERM while idle also remove the owned container. The reference fix
+  is a qualification fixture, never evidence that an AI agent solved the task.
+- A cancellation test exposed upstream thread-pool shutdown waiting before
+  container cleanup. Cancellation now removes the exact owned grader first,
+  unblocking its worker; both parent-controller EOF during grading and direct
+  evaluator SIGTERM were qualified, with no remaining containers. One orphan
+  created while reproducing that bug was explicitly removed; its evidence was
+  retained, and no unrelated container/image was removed.
+- The final combined bridge qualification passed all five controller cases
+  plus the independent direct-harness SIGTERM case in 97 seconds. This includes
+  a reference fix graded resolved after exit 7 and a non-fix graded unresolved
+  after exit 7. Both runtime and grader containers were checked absent.
+- A Docker SDK stream-wrapper leak found by the real environment test was
+  repaired by closing both the stream and HTTP response; the repeated test
+  produces no resource warnings. The SDK dependency is pinned to Docker 7.1.0.
+
+Run the additional optional checks with the same project/SDK interpreter:
+
+```sh
+ASB_TEST_SWECATALOG_ROOT="$BENCHMARK_PROJECT" \
+  "$BENCHMARK_PROJECT/.asb-tools/swebench/venv/bin/python" \
+  crates/asb-cli/tests/benchmark_live_task.py
+ASB_TEST_SWECATALOG_ROOT="$BENCHMARK_PROJECT" \
+  "$BENCHMARK_PROJECT/.asb-tools/swebench/venv/bin/python" \
+  crates/asb-cli/tests/benchmark_live_task_server.py
+```
+
+This is an actual execution/submission/evaluation helper, **not yet a usable
+ASB run path**. Rust session/runner wiring, selected-tool bootstrap and private
+runtime artifacts, container-aware collector accounting, local provider/tape
+connectivity, crash recovery, full-suite planning/reporting and both original
+Terminal-Bench runtime integrations remain required before merge/release.
+
 ### Terminal-Bench dataset compatibility checks
 
 The pinned Terminal-Bench 1 dataset checkout's exact registry subset was

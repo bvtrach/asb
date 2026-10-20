@@ -10,6 +10,16 @@ fn docker_transport_is_scoped_and_cleans_its_own_processes() {
     python_protocol("benchmark_docker.py");
 }
 
+#[test]
+fn managed_execution_pauses_for_collectors_and_bounds_each_attempt() {
+    python_protocol("benchmark_execution.py");
+}
+
+#[test]
+fn private_task_protocol_preserves_events_and_cleans_up_on_disconnect() {
+    python_protocol("benchmark_task_server.py");
+}
+
 fn python_protocol(test: &str) {
     let output = std::process::Command::new("python3")
         .arg(

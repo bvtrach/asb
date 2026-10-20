@@ -6,7 +6,7 @@ pub(super) static ADAPTER: StaticTool = StaticTool::new(
     "swebench",
     Recipe::Python {
         package: "swebench @ git+https://github.com/SWE-bench/SWE-bench.git@02e7a74ffd0b707aab73d203fe87bdc7c76afc8e",
-        dependencies: &[],
+        dependencies: &["docker==7.1.0"],
         executable: "swebench",
     },
     ToolKind::Support,

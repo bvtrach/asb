@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import tempfile
 import subprocess
+import threading
+import time
 import unittest
 import sys
 from types import SimpleNamespace
@@ -137,6 +139,42 @@ class CatalogTests(unittest.TestCase):
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_controller_disconnect_stops_its_evaluator_subprocess_promptly(self):
+        cancelled = threading.Event()
+        timer = threading.Timer(0.05, cancelled.set)
+        cleanup = []
+        with tempfile.TemporaryDirectory() as temporary, (Path(temporary) / "log").open("wb") as log:
+            started = time.monotonic()
+            timer.start()
+            try:
+                with self.assertRaises(InterruptedError):
+                    CATALOG.run_harness([sys.executable, "-c", "import time; time.sleep(60)"],
+                                        temporary, log, 60, cancelled=cancelled,
+                                        on_cancel=lambda: cleanup.append("owned evaluator removed"))
+            finally:
+                timer.cancel()
+                timer.join(timeout=1)
+            self.assertLess(time.monotonic() - started, 3)
+            self.assertEqual(cleanup, ["owned evaluator removed"])
+
+    def test_evaluator_cleanup_is_bound_to_the_exact_private_attempt(self):
+        task_id, run_id = "owner__repo-1", "asb-" + "a" * 32
+        expected = f"sweb.eval.{task_id}.{run_id}"
+        removed, looked_up = [], []
+        container = SimpleNamespace(name=expected, remove=lambda **kwargs: removed.append(kwargs))
+        def get(name):
+            looked_up.append(name)
+            return container
+        client = SimpleNamespace(containers=SimpleNamespace(get=get))
+        self.assertEqual(CATALOG.remove_evaluation_container(client, task_id, run_id)["status"], "removed")
+        self.assertEqual(looked_up, [expected])
+        self.assertEqual(removed, [{"force": True}])
+        container.name = "someone-elses-container"
+        self.assertEqual(CATALOG.remove_evaluation_container(client, task_id, run_id)["status"], "error")
+        self.assertEqual(len(removed), 1)
+        with self.assertRaises(CATALOG.CatalogError):
+            CATALOG.remove_evaluation_container(client, "../other", run_id)
+
     def evaluate(self, directory, executor, patch=b"synthetic patch", suffix="evaluation"):
         directory = Path(directory)
         if not (directory / "catalog.json").exists():
@@ -146,12 +184,12 @@ class EvaluationTests(unittest.TestCase):
                                            directory / "submission.patch", directory / suffix,
                                            60, executor)
 
-    def executor(self, resolved, wrong_task=False, applied=True):
+    def executor(self, resolved, wrong_task=False, applied=True, expected_image=None):
         def execute(arguments, directory, log, timeout):
             self.assertEqual(timeout, 180)
             self.assertEqual(arguments[arguments.index("--max_workers") + 1], "1")
             dataset = json.loads((directory / "dataset.json").read_bytes())
-            self.assertEqual(dataset, [row()])
+            self.assertEqual(dataset, [dict(row(), image=expected_image or row()["image"])])
             predictions = json.loads((directory / "submission.jsonl").read_bytes())
             self.assertEqual(predictions["model_patch"], "synthetic patch")
             run_id = arguments[arguments.index("--run_id") + 1]
@@ -166,7 +204,7 @@ class EvaluationTests(unittest.TestCase):
                 task_id: {"resolved": resolved, "patch_successfully_applied": applied},
             }))
             (directory / "image-identity.json").write_text(json.dumps({
-                "declared_image": row()["image"], "image_id": "sha256:" + "f" * 64,
+                "declared_image": dataset[0]["image"], "image_id": "sha256:" + "f" * 64,
                 "repository_digests": ["official/synthetic-task@sha256:" + "f" * 64],
             }))
             (directory / "sdk-identity.json").write_text(json.dumps({
@@ -226,6 +264,19 @@ class EvaluationTests(unittest.TestCase):
             second = self.evaluate(temporary, self.executor(False), suffix="second")
             self.assertNotEqual(first["run_id"], second["run_id"])
             self.assertNotEqual(first["outcome"], second["outcome"])
+
+    def test_evaluation_binds_to_actual_prepared_image_not_a_later_mutable_tag(self):
+        for digest, expected in [("f", True), ("e", False)]:
+            with tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                CATALOG.build_catalog([row()], "suite", "official/source", REVISION, "test", directory)
+                (directory / "patch").write_text("synthetic patch")
+                image = "sha256:" + digest * 64
+                result = CATALOG.evaluate_submission(directory / "catalog.json", "owner__repo-1",
+                    directory / "patch", directory / "evaluation", 60,
+                    self.executor(True, expected_image=image), image_identity={"image_id": image})
+                self.assertEqual(result["resolved"], expected)
+                self.assertEqual(result["source_image"], row()["image"])
 
 
 if __name__ == "__main__":

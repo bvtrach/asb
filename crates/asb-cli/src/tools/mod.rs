@@ -136,14 +136,15 @@ mod tests {
 
     #[test]
     fn official_benchmark_harnesses_have_pinned_project_local_python_recipes() {
-        for (id, expected_binary, expected_package) in [
+        for (id, expected_binary, expected_package, expected_dependencies) in [
             (
                 "swebench",
                 "swebench",
                 "swebench @ git+https://github.com/SWE-bench/SWE-bench.git@02e7a74ffd0b707aab73d203fe87bdc7c76afc8e",
+                &["docker==7.1.0"][..],
             ),
-            ("terminal-bench", "tb", "terminal-bench==0.2.18"),
-            ("harbor", "harbor", "harbor==0.24.0"),
+            ("terminal-bench", "tb", "terminal-bench==0.2.18", &[][..]),
+            ("harbor", "harbor", "harbor==0.24.0", &[][..]),
         ] {
             let adapter = find(id).unwrap();
             assert!(adapter.kind() == ToolKind::Support);
@@ -156,7 +157,7 @@ mod tests {
                 } => {
                     assert_eq!(package, expected_package);
                     assert_eq!(executable, expected_binary);
-                    assert!(dependencies.is_empty());
+                    assert_eq!(dependencies, expected_dependencies);
                 }
                 _ => panic!("{id} must install the actual official Python harness"),
             }

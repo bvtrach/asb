@@ -17,6 +17,8 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import uuid
 
 
@@ -201,7 +203,7 @@ def agent_instruction(row):
     return prompt
 
 
-def run_harness(arguments, directory, log, timeout):
+def run_harness(arguments, directory, log, timeout, cancelled=None, on_cancel=None):
     """One isolated evaluator process; timeout terminates its own process group."""
     environment = os.environ.copy()
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -209,22 +211,36 @@ def run_harness(arguments, directory, log, timeout):
     with subprocess.Popen(arguments, cwd=directory, env=environment, stdin=subprocess.DEVNULL,
                           stdout=log, stderr=log, start_new_session=True) as process:
         try:
-            return process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
+            deadline = time.monotonic() + timeout
+            while True:
+                if cancelled is not None and cancelled.is_set():
+                    raise InterruptedError("ASB evaluator controller disconnected")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(arguments, timeout)
+                try:
+                    return process.wait(timeout=min(0.1, remaining))
+                except subprocess.TimeoutExpired:
+                    pass
+        except (subprocess.TimeoutExpired, InterruptedError):
             # Give the controller's finally block time to remove only this
             # attempt's container before terminating a non-responsive helper.
             try:
-                os.killpg(process.pid, signal.SIGTERM)
-                process.wait(timeout=20)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
-            except ProcessLookupError:
-                process.wait()
+                if on_cancel is not None:
+                    on_cancel()
+            finally:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                    process.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
+                except ProcessLookupError:
+                    process.wait()
             raise
 
 
-def evaluate_submission(catalog_path, task_id, patch_path, artifacts, timeout, executor=run_harness):
+def evaluate_submission(catalog_path, task_id, patch_path, artifacts, timeout, executor=run_harness, image_identity=None):
     """Grade a frozen submission using upstream, never agent exit or source heuristics.
 
     Every invocation gets a new run ID and a new directory. The official SDK's
@@ -232,6 +248,13 @@ def evaluate_submission(catalog_path, task_id, patch_path, artifacts, timeout, e
     The executor seam is only for provider-free protocol tests.
     """
     catalog, row = read_task(catalog_path, task_id)
+    evaluation_row = dict(row)
+    if image_identity is not None:
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_identity.get("image_id", "")):
+            raise CatalogError("task environment has no immutable evaluator image identity")
+        # Evaluate against the exact image used for the attempt even when an
+        # upstream mutable tag has changed since preparation.
+        evaluation_row["image"] = image_identity["image_id"]
     if not isinstance(timeout, int) or not 1 <= timeout <= 86400:
         raise CatalogError("evaluation timeout must be between 1 and 86400 seconds")
     patch = read_limited(patch_path, MAX_PATCH_BYTES)
@@ -248,13 +271,14 @@ def evaluate_submission(catalog_path, task_id, patch_path, artifacts, timeout, e
         "patch_sha256": hashlib.sha256(patch).hexdigest(),
         "harness_revision": HARNESS_REVISION,
         "resolved": False, "outcome": "evaluation_error", "reason": None,
+        "source_image": row.get("image"),
     }
     atomic_write(artifacts / "submission.jsonl", encoded({
         "instance_id": task_id, "model_name_or_path": "asb",
         "model_patch": patch_text,
     }))
     # The evaluator reads this exact frozen row, not a floating upstream dataset.
-    atomic_write(artifacts / "dataset.json", encoded([row]))
+    atomic_write(artifacts / "dataset.json", encoded([evaluation_row]))
     if not patch_text.strip():
         result.update(outcome="unresolved", reason="empty_submission")
     else:
@@ -287,8 +311,9 @@ def evaluate_submission(catalog_path, task_id, patch_path, artifacts, timeout, e
                         raise CatalogError("official report claims resolution without an applied patch")
                     image = json.loads(read_limited(artifacts / "image-identity.json", MAX_METADATA_BYTES))
                     sdk = json.loads(read_limited(artifacts / "sdk-identity.json", MAX_METADATA_BYTES))
-                    if (image.get("declared_image") != row.get("image")
+                    if (image.get("declared_image") != evaluation_row.get("image")
                             or not re.fullmatch(r"sha256:[0-9a-f]{64}", image.get("image_id", ""))
+                            or (image_identity is not None and image.get("image_id") != image_identity["image_id"])
                             or sdk.get("revision") != HARNESS_REVISION):
                         raise CatalogError("official evaluator image or SDK identity does not match the attempt")
                     result.update(resolved=resolved, outcome="resolved" if resolved else "unresolved",
@@ -298,6 +323,8 @@ def evaluate_submission(catalog_path, task_id, patch_path, artifacts, timeout, e
                                   official_report=str(instance_path.relative_to(artifacts)))
             except subprocess.TimeoutExpired:
                 result.update(outcome="evaluation_timeout", reason="official_harness_deadline_exceeded")
+            except InterruptedError:
+                result.update(outcome="evaluation_cancelled", reason="controller_disconnected")
             except (CatalogError, KeyError, TypeError, ValueError, OSError):
                 result.update(outcome="evaluation_error", reason="invalid_official_report")
     atomic_write(artifacts / "evaluation.json", encoded(result))
@@ -331,6 +358,24 @@ def install_catalog(arguments):
     }
 
 
+def remove_evaluation_container(client, task_id, run_id):
+    if (not re.fullmatch(r"asb-[0-9a-f]{32}", run_id)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,255}", task_id)):
+        raise CatalogError("refused cleanup without an ASB evaluator identity")
+    name = f"sweb.eval.{task_id.lower()}.{run_id}"
+    cleanup = {"container": name, "status": "absent"}
+    try:
+        container = client.containers.get(name)
+        if container.name.lstrip("/") != name:
+            raise CatalogError("refused cleanup of a different evaluator container")
+        container.remove(force=True)
+        cleanup["status"] = "removed"
+    except Exception as error:
+        if getattr(error, "status_code", None) != 404:
+            cleanup.update(status="error", error_class=type(error).__name__)
+    return cleanup
+
+
 def official_harness(arguments):
     """Run the pinned SDK with scoped Docker transport and no root Python."""
     from asb_docker import DockerSession
@@ -342,15 +387,23 @@ def official_harness(arguments):
             or len(arguments.instance_ids) != 1
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,255}", arguments.instance_ids[0])):
         raise CatalogError("official evaluation needs one bounded task and a fresh ASB run identity")
+    cancelled, finished = threading.Event(), threading.Event()
     def interrupted(_signal, _frame):
-        raise InterruptedError("ASB evaluation was cancelled")
+        # Raising inside ThreadPoolExecutor.__exit__ waits for the evaluator
+        # thread before cleanup. A separate caretaker removes this exact
+        # attempt first, which unblocks that thread and allows prompt exit.
+        cancelled.set()
     signal.signal(signal.SIGTERM, interrupted)
     with DockerSession() as client:
         owned_name = f"sweb.eval.{arguments.instance_ids[0].lower()}.{arguments.run_id}"
         original_create = run_evaluation.create_container
         def create_container(test_spec, docker_client, run_id, logger):
+            if cancelled.is_set():
+                raise InterruptedError("ASB evaluation was cancelled before container creation")
             container = original_create(test_spec, docker_client, run_id, logger)
             try:
+                if cancelled.is_set():
+                    raise InterruptedError("ASB evaluation was cancelled during container creation")
                 image = container.image
                 atomic_write(Path.cwd() / "image-identity.json", encoded({
                     "declared_image": test_spec.image,
@@ -363,7 +416,10 @@ def official_harness(arguments):
             except BaseException:
                 # Creation succeeded but provenance capture failed; do not
                 # leak that newly owned container or accept an unbound score.
-                container.remove(force=True)
+                try:
+                    container.remove(force=True)
+                except docker.errors.NotFound:
+                    pass
                 raise
         def cleanup_container(_client, container, logger):
             if container is None:
@@ -375,6 +431,15 @@ def official_harness(arguments):
                 logger.info("Removed ASB attempt container through scoped Docker transport")
             except docker.errors.NotFound:
                 pass
+        def caretaker():
+            while not finished.is_set():
+                if cancelled.wait(0.05):
+                    cleanup = remove_evaluation_container(client, arguments.instance_ids[0], arguments.run_id)
+                    if cleanup["status"] == "removed":
+                        return
+                    time.sleep(0.05)
+        care = threading.Thread(target=caretaker, daemon=True)
+        care.start()
         try:
             run_evaluation._docker_client = lambda: client
             run_evaluation.create_container = create_container
@@ -388,20 +453,15 @@ def official_harness(arguments):
                 max_workers=arguments.max_workers, open_file_limit=arguments.open_file_limit,
                 run_id=arguments.run_id, timeout=arguments.timeout, rewrite_reports=False, modal=False,
             )
+            if cancelled.is_set():
+                raise InterruptedError("ASB evaluation was cancelled")
         finally:
             # Upstream cleans normal outcomes. This also covers controller
             # exceptions and graceful cancellation; never enumerate/remove
             # unrelated containers or prune host images.
-            name = owned_name
-            cleanup = {"container": name, "status": "absent"}
-            try:
-                container = client.containers.get(name)
-                container.remove(force=True)
-                cleanup["status"] = "removed"
-            except docker.errors.NotFound:
-                pass
-            except Exception as error:
-                cleanup.update(status="error", error_class=type(error).__name__)
+            finished.set()
+            care.join(timeout=2)
+            cleanup = remove_evaluation_container(client, arguments.instance_ids[0], arguments.run_id)
             atomic_write(Path.cwd() / "cleanup.json", encoded(cleanup))
     return {"status": "evaluated", "run_id": arguments.run_id}
 
@@ -419,6 +479,10 @@ def main(argv=None):
     commands.add_parser("identity")
     verify = commands.add_parser("verify")
     verify.add_argument("--catalog", type=Path, required=True)
+    session = commands.add_parser("session")
+    session.add_argument("--catalog", type=Path, required=True)
+    session.add_argument("--task", required=True)
+    session.add_argument("--artifacts", type=Path, required=True)
     evaluate = commands.add_parser("evaluate")
     evaluate.add_argument("--catalog", type=Path, required=True)
     evaluate.add_argument("--task", required=True)
@@ -435,6 +499,16 @@ def main(argv=None):
     harness.add_argument("--run_id", required=True)
     harness.add_argument("--timeout", type=int, required=True)
     arguments = parser.parse_args(argv)
+    if arguments.operation == "session":
+        from asb_docker import DockerSession
+        from asb_swebench_task import SweBenchTask
+        from asb_task_server import serve
+        def interrupted(_signal, _frame):
+            raise InterruptedError("ASB task session was cancelled")
+        signal.signal(signal.SIGTERM, interrupted)
+        with DockerSession() as client:
+            return serve(SweBenchTask(client, arguments.catalog, arguments.task, arguments.artifacts),
+                         sys.stdin, sys.stdout)
     try:
         if arguments.operation == "catalog":
             result = install_catalog(arguments)
