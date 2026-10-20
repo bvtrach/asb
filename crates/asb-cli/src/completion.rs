@@ -7,7 +7,7 @@ use std::io::Write;
 const TOP_LEVEL: &[&str] = &[
     "init", "setup", "run", "sweep", "compare", "provider", "tool", "workload",
 ];
-const INIT_OPTIONS: &[&str] = &["--reset"];
+const INIT_OPTIONS: &[&str] = &["--reset", "--yes", "-y"];
 const SETUP_OPTIONS: &[&str] = &[
     "--agent",
     "--workload",

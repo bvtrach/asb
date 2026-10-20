@@ -4,7 +4,7 @@ ASB is a small command-line benchmark runner. Initialize a project, install an
 agent/workload, create a configuration, then run it:
 
 ```text
-asb init [PROJECT_DIR] [--reset]
+asb init [PROJECT_DIR] [--reset] [--yes|-y]
 asb tool list
 asb tool install AGENT
 asb workload list
@@ -97,6 +97,13 @@ Python 3.12 or 3.13. If neither is available, it uses `uv` to download Python
 installation retries setup later; non-Python functionality remains available.
 If the directory is already initialized, ASB warns and makes no changes;
 rerun with `--reset` to remove managed state and create a fresh project.
+On Linux, init lists every privileged command it may run (including sysctl
+changes and delegated-cgroup setup) and asks for explicit `y`/`n` approval for
+each setup group; Enter is never treated as approval. Use `asb init --yes` (or
+`-y`) only when all listed commands are already reviewed and should be
+approved automatically. If passwordless sudo is unavailable, approved sysctl
+commands use the normal sudo password prompt; delegated-cgroup commands remain
+passwordless-only.
 For safety, reset accepts managed directories only as direct project children
 and refuses symbolic links. If your project uses nested or external managed
 directories, move their contents manually and update `.asb/project.toml` before

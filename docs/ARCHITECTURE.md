@@ -95,9 +95,13 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   `sudo sysctl -w ...` commands and requires an explicit `y` or `n` answer
   (Enter is not accepted as a default) before changing system-wide settings.
   After explicit approval it uses passwordless sudo when available, or lets
-  sudo prompt for the user's password when it is not. Declining, an invalid
-  answer, or a failed command leaves the setting unchanged; init remains
-  usable. It never edits sudoers or changes these settings silently.
+  sudo prompt for the user's password when it is not. Init separately lists
+  every delegated-cgroup command (`mkdir`, `chown`, `chmod`, and, when needed,
+  controller enablement) and asks for explicit approval before running them.
+  `asb init --yes` (or `-y`) approves all listed setup groups without prompts.
+  Declining, an invalid answer, or a failed command leaves the setting or
+  delegation unchanged; init remains usable. It never edits sudoers or changes
+  these settings silently.
   On a systemd cgroup-v2 host, the same best-effort init path creates a
   user-owned `asb.slice` beneath the current user slice, enables the CPU
   controller, and records its parent in `.asb/project.toml`; measured runs use
