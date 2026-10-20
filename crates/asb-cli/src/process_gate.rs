@@ -105,11 +105,56 @@ pub(crate) fn run_gate(args: &[OsString]) -> std::process::ExitCode {
     let Some((program, target_args)) = args.split_first() else {
         return std::process::ExitCode::from(2);
     };
+    #[cfg(target_os = "linux")]
+    if let Err(error) = become_child_subreaper() {
+        eprintln!("asb process gate could not retain orphaned descendants: {error}");
+        return std::process::ExitCode::from(2);
+    }
     if pause_current().is_err() {
         return std::process::ExitCode::from(2);
     }
     match Command::new(program).args(target_args).status() {
         Ok(status) => std::process::ExitCode::from(status.code().unwrap_or(1).clamp(0, 255) as u8),
         Err(_) => std::process::ExitCode::from(127),
+    }
+}
+
+/// Keep descendants that daemonize or outlive an intermediate helper attached
+/// to the measured root. Without a subreaper, Linux reparents those helpers
+/// to PID 1 and process-tree collectors can no longer observe them. This is
+/// set only in the short-lived gate child, never in the coordinator process.
+#[cfg(target_os = "linux")]
+fn become_child_subreaper() -> io::Result<()> {
+    // SAFETY: prctl does not dereference pointers for these operations and is
+    // scoped to the gate process.
+    let result = unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::become_child_subreaper;
+
+    #[test]
+    fn gate_can_retain_orphaned_descendants() {
+        become_child_subreaper().expect("set child subreaper");
+        let mut value = 0;
+        // SAFETY: PR_GET_CHILD_SUBREAPER writes one integer to a valid local
+        // pointer owned by this test process.
+        let result = unsafe {
+            libc::prctl(
+                libc::PR_GET_CHILD_SUBREAPER,
+                (&mut value as *mut i32) as libc::c_ulong,
+                0,
+                0,
+                0,
+            )
+        };
+        assert_eq!(result, 0);
+        assert_eq!(value, 1);
     }
 }
