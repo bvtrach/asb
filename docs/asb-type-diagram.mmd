@@ -336,7 +336,7 @@ classDiagram
         +state() Rc~RefCell<T>~
         +set_artifact(kind: SharedArtifact, path: PathBuf) void
         +artifact(kind: SharedArtifact) Option~&Path~
-        +agent_launch(program: &str) void
+        +agent_launch(program: &str, args: &[String]) void
         +attach_pid(pid: u32) Result~(), String~
         +finish(self, measurement: RunMeasurement~'a~) Result~(), String~
         +start_snapshot(name: &str, variable: &str, args: &[&str], enabled: bool, executable: &Path) Result~(), String~
@@ -546,7 +546,15 @@ classDiagram
         +cassette: Option~&'a Path~
     }
     class C075["collectors_adapters_AgentProcesses"] {
-        -memory: bool
+        +id() &'static str
+        +environment_flag() Option~&'static str~
+        +requires_pid() bool
+        +configure(session: &mut Session, selected: &[String]) Result~(), String~
+        +agent_launch(session: &mut Session, program: &str, args: &[String]) void
+        +attach_pid(session: &mut Session, pid: u32) Result~(), String~
+        +lifecycle_event(session: &mut Session, event: LifecycleEvent) Result~(), String~
+        +finish(session: &mut Session) Result~(), String~
+        +graph_section(name: &str) Option~collectors_GraphSection~
     }
     class C076["collectors_adapters_BpftraceCollector"] {
     }
@@ -563,15 +571,6 @@ classDiagram
     class C079["«trait» collectors::CollectorAdapter"] {
         +id() &'static str
         +start(session: &mut Session) Result~(), String~
-        +id() &'static str
-        +environment_flag() Option~&'static str~
-        +requires_pid() bool
-        +configure(session: &mut Session, selected: &[String]) Result~(), String~
-        +agent_launch(session: &mut Session, program: &str) void
-        +attach_pid(session: &mut Session, pid: u32) Result~(), String~
-        +lifecycle_event(session: &mut Session, event: LifecycleEvent) Result~(), String~
-        +finish(session: &mut Session) Result~(), String~
-        +graph_section(name: &str) Option~collectors_GraphSection~
         +id() &'static str
         +environment_flag() Option~&'static str~
         +tool_id() Option~&'static str~
@@ -679,7 +678,8 @@ classDiagram
     class C087["collectors_adapters_Identity"] {
         -executable: PathBuf
         -interpreter: Option~PathBuf~
-        +resolve(program: &str) Option~Self~
+        -runtime_arguments: Option~(String, String)~
+        +resolve(program: &str, args: &[String]) Option~Self~
         +matches(proc: &Path) bool
     }
     class C088["collectors_adapters_IoState"] {
@@ -1035,6 +1035,7 @@ classDiagram
     C060 ..> C061
     C060 ..> C064
     C065 --> C013
+    C075 ..> C067
     C078 --> C077
     C079 ..> C067
     C079 ..> C071
