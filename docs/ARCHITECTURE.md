@@ -66,6 +66,11 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   scheduler run-queue wait for the agent execution component. Network wait is
   represented as `null` unless a collector can observe it directly; ASB never
   assigns residual wall time to a guessed category.
+  `asb compare` also writes an execution-composition SVG with user CPU, system
+  CPU, block-I/O delay, runnable scheduler delay, and explicitly-labelled
+  remaining wall time. CPU categories are process-tree totals and may overlap
+  elapsed wall time when children execute concurrently; this is accounting
+  composition, not a fabricated single-thread state timeline.
   the Perfetto adapter validates tracefs/ftrace access and starts project-local
   Tracebox before preparation begins. It waits for recording readiness before
   emitting fixed, non-secret lifecycle tracepoints; after the agent is spawned,

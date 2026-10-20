@@ -256,6 +256,12 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
         write_line_svg(&comparison_dir.join(&filename), name, values)?;
         graphs.push(filename);
     }
+    if write_execution_timeline_svg(
+        &comparison_dir.join("execution-timeline.svg"),
+        &benchmark_data,
+    )? {
+        graphs.push("execution-timeline.svg".into());
+    }
     let summary = json!({
         "schema_version": 1,
         "sweep": sweep_path,
@@ -386,6 +392,83 @@ fn collect_artifacts(path: &Path, depth: usize, output: &mut Vec<PathBuf>) {
             return;
         }
     }
+}
+
+/// Render the process-tree accounting captured for every agent execution.
+/// The bars are accounting composition, not a chronological thread timeline:
+/// a concurrent process tree can execute and sleep simultaneously.
+fn write_execution_timeline_svg(path: &Path, benchmarks: &[BenchmarkData]) -> Result<bool, Error> {
+    let mut rows = Vec::new();
+    for benchmark in benchmarks {
+        let Some(component) = benchmark
+            .components
+            .as_ref()
+            .and_then(|v| v.pointer("/components/agent.execute"))
+        else {
+            continue;
+        };
+        let number = |name| {
+            component
+                .get(name)
+                .and_then(Value::as_f64)
+                .filter(|v| *v >= 0.0)
+        };
+        let user = number("cpu_user_ms").unwrap_or(0.0);
+        let system = number("cpu_system_ms").unwrap_or(0.0);
+        let io_wait = number("io_wait_ms").unwrap_or(0.0);
+        let runnable_wait = number("scheduler_wait_ms").unwrap_or(0.0);
+        let wall = component
+            .get("wall_ms")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        if user + system + io_wait + runnable_wait <= 0.0 && wall <= 0.0 {
+            continue;
+        }
+        // The residual is deliberately not called sleep: concurrent children
+        // can make CPU accounting exceed wall time, and not every sleep state
+        // is observable through portable proc accounting.
+        let other = (wall - user - system - io_wait - runnable_wait).max(0.0);
+        rows.push((
+            benchmark.label.as_str(),
+            [user, system, io_wait, runnable_wait, other],
+        ));
+    }
+    if rows.is_empty() {
+        return Ok(false);
+    }
+    let height = 100 + rows.len() * 44;
+    let colors = ["#1976d2", "#7b1fa2", "#ef6c00", "#c62828", "#90a4ae"];
+    let labels = [
+        "user CPU",
+        "system CPU",
+        "block I/O wait",
+        "runnable wait",
+        "other wall time",
+    ];
+    let mut svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"980\" height=\"{height}\" viewBox=\"0 0 980 {height}\"><title>Agent execution time composition</title><rect width=\"100%\" height=\"100%\" fill=\"#fff\"/><text x=\"24\" y=\"30\" font-family=\"sans-serif\" font-size=\"18\" font-weight=\"bold\">Agent execution time composition</text><text x=\"24\" y=\"51\" font-family=\"sans-serif\" font-size=\"12\" fill=\"#52606d\">Process-tree accounting; CPU categories may overlap wall time for concurrent children.</text>"
+    );
+    for (index, label) in labels.iter().enumerate() {
+        let x = 250 + index * 135;
+        svg.push_str(&format!("<rect x=\"{x}\" y=\"65\" width=\"10\" height=\"10\" fill=\"{}\"/><text x=\"{}\" y=\"75\" font-family=\"sans-serif\" font-size=\"11\">{}</text>", colors[index], x + 14, escape(label)));
+    }
+    for (row, (name, values)) in rows.iter().enumerate() {
+        let y = 94 + row * 44;
+        let total: f64 = values.iter().sum();
+        svg.push_str(&format!("<text x=\"24\" y=\"{}\" font-family=\"sans-serif\" font-size=\"12\">{}</text><rect x=\"250\" y=\"{}\" width=\"690\" height=\"22\" rx=\"3\" fill=\"#edf1f4\"/>", y + 15, escape(name), y));
+        let mut x = 250.0;
+        for (i, value) in values.iter().enumerate() {
+            if *value > 0.0 {
+                let width = 690.0 * value / total;
+                svg.push_str(&format!("<rect class=\"bar\" x=\"{x:.2}\" y=\"{y}\" width=\"{width:.2}\" height=\"22\" fill=\"{}\"><title>{}: {:.2} ms</title></rect>", colors[i], labels[i], value));
+                x += width;
+            }
+        }
+    }
+    svg.push_str("</svg>\n");
+    fs::write(path, svg)
+        .map_err(|e| Error::Run(format!("cannot write execution timeline SVG: {e}")))?;
+    Ok(true)
 }
 
 fn write_html_report(
@@ -1294,6 +1377,11 @@ mod tests {
             root.join("results/sweep-comparison/metric-component.agent.execute.cpu_user_ms.svg")
                 .is_file()
         );
+        let timeline = root.join("results/sweep-comparison/execution-timeline.svg");
+        assert!(timeline.is_file());
+        let timeline_svg = std::fs::read_to_string(timeline).unwrap();
+        assert!(timeline_svg.contains("Agent execution time composition"));
+        assert!(timeline_svg.contains("block I/O wait"));
         assert!(
             root.join("results/sweep-comparison/metric-host.logical_cpus.svg")
                 .is_file()
