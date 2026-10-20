@@ -199,7 +199,7 @@ function normalizeCassetteBody(body) {
     .replace(/\b20\d{2}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?\b/g, "<asb-file-mtime>")
     // WorkBuddy derives a memory-project slug from the absolute workspace;
     // canonicalize that generated slug when record and replay roots differ.
-    .replace(/srv-data-projects-[A-Za-z0-9_.-]+-(?:sweep-record-[A-Za-z0-9_.-]+-workspace|workspaces-replay-[A-Za-z0-9_.-]+)/g, "<asb-project-workspace>")
+    .replace(/srv-data-projects-[A-Za-z0-9_.-]+-(?:sweep-(?:record|replay)-[A-Za-z0-9_.-]+|workspaces(?:-replay)?-[A-Za-z0-9_.-]+)/g, "<asb-project-workspace>")
     // Codex includes a diagnostic token count in shell-tool output. It is
     // derived from the rendered transcript and can change during replay; it
     // is not provider request semantics.
@@ -474,6 +474,19 @@ async function handle(request, response) {
   };
 
   if (mode === "replay") {
+    // Capability probes may be issued by the client even when the replayed
+    // run would otherwise omit them.  If the cassette has the corresponding
+    // known probe at the cursor, consume it and return its recorded response
+    // instead of comparing the probe with the first workload request.
+    if (isReplayProbe(recordedRequest)
+      && interactions[cursor]?.request
+      && isReplayProbe(interactions[cursor].request)) {
+      const probe = interactions[cursor];
+      cursor += 1;
+      writeProgress();
+      await replayResponse(response, probe);
+      return;
+    }
     // A provider bridge may record a health/model probe that the agent omits
     // on replay. Consume only these known, credential-free probes when the
     // next request carries an LLM body; arbitrary mismatches stay fail-closed.
