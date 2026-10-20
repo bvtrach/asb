@@ -66,7 +66,11 @@ impl Observer<'_> {
 }
 
 impl CompletionObserver for Observer<'_> {
-    fn starting(&self, replica: Identity) -> Result<(), Error> {
+    fn starting(
+        &self,
+        replica: Identity,
+        cohort: Option<&crate::measurements::ExecutionCohort>,
+    ) -> Result<(), Error> {
         if !replica.valid() || replica.total != self.entry.configuration.concurrency {
             return Err(invalid("execution intent does not match its selected slot"));
         }
@@ -79,6 +83,7 @@ impl CompletionObserver for Observer<'_> {
                 "entry":self.entry,"owner_pid":std::process::id(),
                 "intent_id":TaskIdentity::local("replica-start",None).attempt_id,
                 "reservation_id":reservation.reservation_id,
+                "execution_cohort":cohort,
             }),
         )?;
         let pending = pending_path(self.inputs, self.index, replica.index);
@@ -95,7 +100,13 @@ impl CompletionObserver for Observer<'_> {
             .lock()
             .map_err(|_| invalid("replica evidence publication failed"))?;
         let outcome = std::path::absolute(record).map_err(io_error)?;
-        let (roots, _) = state(self.directory, self.entry, replica, &outcome)?;
+        let (roots, _) = state(
+            self.directory,
+            self.entry,
+            replica,
+            &outcome,
+            &start_path(self.inputs, self.index, replica.index),
+        )?;
         let fingerprint = self.inputs.snapshotter.fingerprint(
             &roots,
             &context(self.index, replica, self.entry, &self.inputs.initial.digest),
@@ -279,7 +290,13 @@ impl Inputs {
         entry: &PlannedBenchmark,
     ) -> Result<Value, Error> {
         let receipt: Receipt = read_private(&path(self, index, replica.index))?;
-        let (roots, summary) = state(directory, entry, replica, &receipt.outcome)?;
+        let (roots, summary) = state(
+            directory,
+            entry,
+            replica,
+            &receipt.outcome,
+            &start_path(self, index, replica.index),
+        )?;
         if receipt.schema_version != 1
             || receipt.scope != REPLICA_SCOPE
             || receipt.configuration != index
@@ -341,6 +358,7 @@ fn state(
     entry: &PlannedBenchmark,
     replica: Identity,
     record: &Path,
+    intent_path: &Path,
 ) -> Result<(Vec<Root>, Value), Error> {
     let directory = std::path::absolute(directory).map_err(io_error)?;
     if !replica.valid()
@@ -360,6 +378,22 @@ fn state(
         ));
     }
     let mut roots = vec![Root::path("replica-outcome", record.to_path_buf())];
+    if !outcome.summary["execution_cohort"].is_null() {
+        let intent: Value = read_private(intent_path)?;
+        if intent["scope"] != "replica-execution-intent"
+            || intent["replica"]
+                != serde_json::to_value(replica).map_err(|_| invalid("cannot encode replica"))?
+            || intent["execution_cohort"] != outcome.summary["execution_cohort"]
+        {
+            return Err(invalid(
+                "execution cohort does not match its pre-start intent",
+            ));
+        }
+        roots.push(Root::path(
+            "replica-start-intent",
+            intent_path.to_path_buf(),
+        ));
+    }
     roots.push(Root::path(
         "configuration",
         directory.join("benchmark.toml"),
@@ -538,7 +572,7 @@ mod tests {
             publication: Mutex::new(()),
         };
         observer.reserve().unwrap();
-        observer.starting(identity).unwrap();
+        observer.starting(identity, None).unwrap();
         observer.completed(identity, &record).unwrap();
         assert!(!pending_path(&fixture.inputs, 0, 1).exists());
         assert!(fixture.inputs.replica_started(0, 1).unwrap());
@@ -553,10 +587,10 @@ mod tests {
         );
         assert!(pending_path(&fixture.inputs, 0, 2).exists());
         let unstarted = Identity { index: 2, total: 2 };
-        observer.starting(unstarted).unwrap();
+        observer.starting(unstarted, None).unwrap();
         assert!(!pending_path(&fixture.inputs, 0, 2).exists());
         assert!(
-            observer.starting(unstarted).is_err(),
+            observer.starting(unstarted, None).is_err(),
             "intent cannot be consumed twice"
         );
         let error = fixture
@@ -588,7 +622,7 @@ mod tests {
                 publication: Mutex::new(()),
             };
             observer.reserve().unwrap();
-            observer.starting(identity).unwrap();
+            observer.starting(identity, None).unwrap();
             observer.completed(identity, &record).unwrap();
             let pending = pending_path(&fixture.inputs, 0, 2);
             match case {
@@ -602,7 +636,9 @@ mod tests {
                     std::fs::create_dir(fixture.directory.join("workspace-concurrency-2")).unwrap()
                 }
                 _ => {
-                    observer.starting(Identity { index: 2, total: 2 }).unwrap();
+                    observer
+                        .starting(Identity { index: 2, total: 2 }, None)
+                        .unwrap();
                     std::fs::remove_file(start_path(&fixture.inputs, 0, 2)).unwrap();
                 }
             }

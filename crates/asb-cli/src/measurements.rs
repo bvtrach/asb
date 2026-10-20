@@ -6,6 +6,8 @@
 //! terminal output.
 
 use crate::collectors;
+mod cohort;
+pub use cohort::ExecutionCohort;
 use serde::{Deserialize, Serialize};
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
@@ -369,6 +371,8 @@ pub fn available_collectors() -> Vec<String> {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RunMeasurement<'a> {
+    pub replica_index: Option<usize>,
+    pub execution_cohort: Option<&'a ExecutionCohort>,
     pub schema_version: u32,
     pub run_id: String,
     pub status: &'a str,
@@ -1790,6 +1794,8 @@ mod tests {
             ))
             .unwrap();
         let run = RunMeasurement {
+            replica_index: None,
+            execution_cohort: None,
             schema_version: 1,
             run_id: "test".into(),
             status: "completed",

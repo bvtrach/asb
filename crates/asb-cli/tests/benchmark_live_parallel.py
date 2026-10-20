@@ -139,6 +139,11 @@ class ParallelOriginalTaskQualification(unittest.TestCase):
                         intent = json.loads((artifacts / "sweep-results/.checkpoint/started" / f"{index:06}/001.json").read_bytes())
                         self.assertEqual(intent["scope"], "replica-execution-intent")
                         self.assertEqual(intent["replica"], {"index":1,"total":1})
+                        cohort = completion["summary"]["execution_cohort"]
+                        self.assertEqual(cohort["selected_replicas"], 1)
+                        self.assertEqual(cohort["admitted_slots"], [1])
+                        self.assertEqual(intent["execution_cohort"], cohort)
+                        self.assertEqual(completion["summary"]["replica_index"], 1)
                         self.assertTrue(intent["reservation_id"])
                         self.assertFalse((artifacts / "sweep-results/.checkpoint/pending" / f"{index:06}/001.json").exists())
                         self.assertTrue(completion["workload_cleanup_confirmed"])

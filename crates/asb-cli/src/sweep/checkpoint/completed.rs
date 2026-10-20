@@ -272,6 +272,23 @@ fn outcome_state(
 fn validate_outcome(record: &Outcome, entry: &PlannedBenchmark) -> Result<TaskIdentity, Error> {
     let summary = &record.summary;
     let config = &entry.configuration;
+    if !summary["execution_cohort"].is_null() {
+        let cohort: crate::measurements::ExecutionCohort =
+            serde_json::from_value(summary["execution_cohort"].clone())
+                .map_err(|_| invalid("outcome execution cohort is malformed"))?;
+        let replica = record
+            .replica
+            .ok_or_else(|| invalid("outcome cohort has no replica identity"))?;
+        if summary["replica_index"].as_u64() != Some(replica.index as u64)
+            || !cohort.admits(replica.index, replica.total)
+        {
+            return Err(invalid(
+                "outcome cohort does not match its selected replica",
+            ));
+        }
+    } else if !summary["replica_index"].is_null() {
+        return Err(invalid("outcome replica has no execution cohort"));
+    }
     let task: TaskIdentity = serde_json::from_value(summary["task"].clone())
         .map_err(|_| invalid("outcome task identity is missing or malformed"))?;
     let baseline: BaselineEvidence =
@@ -326,6 +343,8 @@ fn validate_outcome(record: &Outcome, entry: &PlannedBenchmark) -> Result<TaskId
 
 fn measurement_matches(measured: &Value, summary: &Value) -> bool {
     [
+        "replica_index",
+        "execution_cohort",
         "schema_version",
         "task",
         "agent",

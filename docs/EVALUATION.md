@@ -151,6 +151,23 @@ and abrupt-crash recovery remain unfinished. See the exact requirements and evid
 [the full integration ledger](FULL_BENCHMARK_INTEGRATION.md).
 No old smoke result is retroactively interpreted as an upstream grade.
 
+## Dispatch context and resumed measurements
+
+New run summaries, logs and measurement records include `replica_index` and
+`execution_cohort`: an opaque dispatch ID, the selected replica count and the
+ordered slots admitted in that invocation. A partial resume preserves cached
+records and gives newly executed slots a new cohort containing only those
+slots. Selected concurrency is not evidence that cached and fresh measurements
+were collected under the same load. Even membership in one dispatch cohort
+does not prove exact temporal overlap; preparation can stagger execution.
+
+Comparison JSON preserves this provenance. HTML labels distinct dispatch
+groups and their admitted slots; legacy records remain explicitly unknown.
+Dispatch identities and slot counts are metadata, not numeric performance
+metrics. Malformed or contradictory declarations are rejected. Resume receipts
+bind the recorded context to measurement outputs and the pre-start intent;
+changing that history invalidates reuse rather than relabeling old data.
+
 ## Steps and tokens
 
 The old step collector searched JSON keys/text for words such as `step`,

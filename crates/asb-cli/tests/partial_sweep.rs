@@ -98,6 +98,14 @@ fetch(base+'/responses',{method:'POST',headers:{'content-type':'application/json
     // official local grade must remain completed, not be retried until green.
     let original = rows(&asb(root, &args), false);
     assert_eq!(original.len(), 3);
+    let original_cohort = original[0]["execution_cohort"].clone();
+    assert_eq!(original_cohort["selected_replicas"], 3);
+    assert_eq!(original_cohort["admitted_slots"], json!([1, 2, 3]));
+    assert!(
+        original
+            .iter()
+            .all(|row| row["execution_cohort"] == original_cohort)
+    );
     let results = root.join("sweep-results");
     let directory = results.join("000-benchmark");
     let checkpoint = results.join(".checkpoint");
@@ -172,6 +180,16 @@ fetch(base+'/responses',{method:'POST',headers:{'content-type':'application/json
         assert_eq!(launches.lines().filter(|line| *line == slot).count(), count);
     }
     let fresh = resumed.iter().find(|row| row["reused"] != true).unwrap();
+    assert_eq!(fresh["replica_index"], 2);
+    assert_eq!(fresh["execution_cohort"]["selected_replicas"], 3);
+    assert_eq!(fresh["execution_cohort"]["admitted_slots"], json!([2]));
+    assert_ne!(fresh["execution_cohort"]["id"], original_cohort["id"]);
+    assert!(
+        resumed
+            .iter()
+            .filter(|row| row["reused"] == true)
+            .all(|row| row["execution_cohort"] == original_cohort)
+    );
     assert_ne!(fresh["task"]["attempt_id"], previous_attempt);
     assert_eq!(read(&replica_path)["replica"], json!({"index":2,"total":3}));
     assert_eq!(
@@ -186,6 +204,37 @@ fetch(base+'/responses',{method:'POST',headers:{'content-type':'application/json
         assert!(original.iter().any(|old| old["task"] == row["task"]));
     }
     assert!(!pending.exists());
+    let comparison = read(root.join("results/sweep-comparison/comparison.json"));
+    for row in &resumed {
+        let measured = comparison["benchmarks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|measured| measured["task"] == row["task"])
+            .unwrap();
+        assert_eq!(measured["execution_cohort"], row["execution_cohort"]);
+        assert_eq!(measured["replica_index"], row["replica_index"]);
+        assert!(
+            measured["metrics"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .all(|key| !key.contains("execution_cohort") && key != "replica_index")
+        );
+    }
+    let html = std::fs::read_to_string(root.join("results/sweep-comparison/report.html")).unwrap();
+    assert!(html.contains("Dispatch group 1:"));
+    assert!(html.contains("Dispatch group 2:"));
+    assert!(html.contains("not proof of simultaneous execution"));
+    let measured_path = directory.join("measurements-concurrency-2/run.json");
+    let measured_bytes = std::fs::read(&measured_path).unwrap();
+    let mut contradictory = read(&measured_path);
+    contradictory["execution_cohort"]["admitted_slots"] = json!([1]);
+    std::fs::write(&measured_path, serde_json::to_vec(&contradictory).unwrap()).unwrap();
+    let rejected = asb(root, &["compare", "sweep.toml"]);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("execution cohort"));
+    std::fs::write(&measured_path, measured_bytes).unwrap();
     let seal = read(checkpoint.join("inputs.json"));
     assert_eq!(seal["status"], "stable");
     assert_eq!(seal["initial"], initial);
@@ -197,4 +246,15 @@ fetch(base+'/responses',{method:'POST',headers:{'content-type':'application/json
         archive.join("group.json").exists(),
         "all replaced fixture evidence remains preserved"
     );
+    let current_intent = std::fs::read(&started_path).unwrap();
+    let mut changed_intent = read(&started_path);
+    changed_intent["execution_cohort"]["admitted_slots"] = json!([1, 2, 3]);
+    std::fs::write(&started_path, serde_json::to_vec(&changed_intent).unwrap()).unwrap();
+    let rejected = asb(root, &continuation);
+    assert!(!rejected.status.success());
+    assert_eq!(
+        std::fs::read_to_string(root.join("launches")).unwrap(),
+        launches
+    );
+    std::fs::write(&started_path, current_intent).unwrap();
 }

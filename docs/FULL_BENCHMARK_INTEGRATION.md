@@ -1553,3 +1553,41 @@ load), population-scale presentation, cold-cache qualification, final review/
 merge, exact-main CI and the minor release. The original selected concurrency
 must not be presented as proof that restored and newly executed measurements
 were collected simultaneously.
+
+### Dispatch context for resumed measurements
+
+Run summaries, logs, measurement files and comparison JSON now preserve an
+explicit execution cohort and original replica index. One fresh dispatch
+records its selected replica count and ordered admitted slots. Partial resume
+retains cached contexts unchanged and assigns only newly executed slots a new
+cohort; the selected concurrency is never rewritten to imply the old load was
+recreated. HTML gives cohorts local group numbers and explicitly states that
+dispatch membership is not proof of exact temporal overlap. Legacy measurement
+context stays unknown. These metadata fields are excluded from numeric charts.
+
+Pre-start intents carry the context, and individual outcome receipts bind that
+intent as well as the matching measurement and summary. Validation rejects
+out-of-range, unsorted, duplicate, malformed or contradictory declarations.
+The provider-free partial-sweep regression proves original three-slot context,
+new slot-2-only context, preserved false grade and identities, correct JSON/HTML
+disclosure, and refusal after measurement or intent tampering without launching
+another client.
+
+Source verification passed strict Clippy, 425 unit tests, 87 offline CLI tests,
+all thirteen benchmark protocol suites, guest/diagram/replay/partial-resume
+regressions and `make build`. Actual upstream runtime, packaging and hosted
+qualification results are recorded separately rather than inferred from those
+offline checks.
+
+Actual mixed original SWE-bench Lite/Terminal-Bench 1.0 qualification passed
+in 84.8 seconds with real Pi and the synthetic provider. It verifies matching
+pre-start and completion cohort metadata alongside official grading, scoped
+collectors, report graphs, complete reuse without extra requests and container
+cleanup. Artifacts are retained under
+`target/benchmark-runtime/parallel-original-tasks-can2rb1_`. This remains a
+warm-cache representative known-repair test, not full-population solving.
+
+This closes dispatch-context disclosure, not the overall delivery checklist.
+Owned-resource recovery for already-started unfinished attempts, scalable
+population presentation, cold-cache qualification, final review/merge, exact
+main CI and the minor release remain outstanding.

@@ -29,7 +29,11 @@ pub(crate) trait CompletionObserver: Sync {
     /// Persist execution intent before measurement/provider/workload startup.
     /// Unlike optional completion metadata, failure must stop this attempt
     /// before any process or environment is started under the observer.
-    fn starting(&self, _replica: Identity) -> Result<(), Error> {
+    fn starting(
+        &self,
+        _replica: Identity,
+        _cohort: Option<&crate::measurements::ExecutionCohort>,
+    ) -> Result<(), Error> {
         Ok(())
     }
     fn completed(&self, replica: Identity, record: &Path) -> Result<(), Error>;

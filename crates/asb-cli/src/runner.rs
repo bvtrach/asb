@@ -44,6 +44,8 @@ fn emit_warning(
 
 #[derive(Serialize)]
 struct RunResult<'a> {
+    replica_index: Option<usize>,
+    execution_cohort: Option<&'a measurements::ExecutionCohort>,
     schema_version: u32,
     status: &'a str,
     agent: &'a str,
@@ -74,6 +76,7 @@ struct RunResult<'a> {
 /// Execution choices shared by single runs, replicas, and sweeps.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RunOptions<'a> {
+    pub execution_cohort: Option<&'a measurements::ExecutionCohort>,
     pub json: bool,
     pub show_output: bool,
     pub measurement_dir: Option<&'a str>,
@@ -122,6 +125,17 @@ pub(crate) fn run_with_diagnostics(
             return reuse::render_reused(std::slice::from_ref(summary), options.json, output);
         }
     }
+    let cohort = measurements::ExecutionCohort {
+        id: workloads::TaskIdentity::local("execution-cohort", None).attempt_id,
+        selected_replicas: config.concurrency,
+        admitted_slots: (1..=config.concurrency)
+            .filter(|slot| !options.reused.is_some_and(|saved| saved.contains_key(slot)))
+            .collect(),
+    };
+    let options = RunOptions {
+        execution_cohort: Some(&cohort),
+        ..options
+    };
     if let Some(measures) = config.measurements.as_ref().filter(|value| value.enabled) {
         // Parallel sweep configurations can share project-local tool paths.
         // Serialize dependency publication, not benchmark execution.
@@ -332,8 +346,16 @@ fn run_mode(
         respect_record_timings,
         ..
     } = options;
+    if options
+        .execution_cohort
+        .is_some_and(|cohort| !cohort.admits(options.replica.index, options.replica.total))
+    {
+        return Err(Error::Input(
+            "dispatch cohort does not admit the selected replica".into(),
+        ));
+    }
     if let Some(observer) = options.on_completion {
-        observer.starting(options.replica)?;
+        observer.starting(options.replica, options.execution_cohort)?;
     }
     let tape_request = mode.map(|mode| (mode, cassette));
     let tape_cassette = tape_request.map(|(mode, requested)| {
@@ -906,6 +928,8 @@ fn run_mode(
     let evaluation_kind = workloads::scored_kind(configured_kind, &workload_baseline);
     let resolution_eligible = workloads::resolution_eligible(evaluation_kind);
     let result = RunResult {
+        replica_index: Some(options.replica.index),
+        execution_cohort: options.execution_cohort,
         schema_version: 2,
         status: if success && evaluation_kind == "invalid-baseline" {
             "unscored"
@@ -957,6 +981,8 @@ fn run_mode(
             .event(LifecycleEvent::RunFinishing)
             .map_err(Error::Run)?;
         let measured = measurements::RunMeasurement {
+            replica_index: result.replica_index,
+            execution_cohort: result.execution_cohort,
             schema_version: 2,
             run_id: format!("{}-{}", result.workload, result.elapsed_ms),
             status: result.status,
@@ -1249,6 +1275,8 @@ fn resolve_log_path(config_path: &Path, configured_path: &str) -> PathBuf {
 
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
     let summary = serde_json::json!({
+        "replica_index": result.replica_index,
+        "execution_cohort": result.execution_cohort,
         "schema_version": result.schema_version,
         "agent": result.agent,
         "workload": result.workload,
@@ -1654,7 +1682,11 @@ mod tests {
     fn intent_publication_failure_stops_before_provider_workload_or_measurement_startup() {
         struct FailedIntent;
         impl super::replica::CompletionObserver for FailedIntent {
-            fn starting(&self, _: super::replica::Identity) -> Result<(), crate::Error> {
+            fn starting(
+                &self,
+                _: super::replica::Identity,
+                _: Option<&crate::measurements::ExecutionCohort>,
+            ) -> Result<(), crate::Error> {
                 Err(crate::Error::Io("fixture intent publication failed".into()))
             }
             fn completed(
@@ -1915,6 +1947,8 @@ mod tests {
         assert!(output.status.success());
         session
             .finish(crate::measurements::RunMeasurement {
+                replica_index: None,
+                execution_cohort: None,
                 schema_version: 1,
                 run_id: "test".into(),
                 status: "completed",
@@ -2167,6 +2201,8 @@ mod tests {
 
     fn result<'a>() -> RunResult<'a> {
         RunResult {
+            replica_index: None,
+            execution_cohort: None,
             schema_version: 2,
             status: "completed",
             agent: "codex",

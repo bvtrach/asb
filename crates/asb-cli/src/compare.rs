@@ -17,6 +17,8 @@ const Y_TICKS: usize = 5;
 
 #[derive(Debug)]
 struct BenchmarkData {
+    replica_index: Option<usize>,
+    execution_cohort: Option<crate::measurements::ExecutionCohort>,
     label: String,
     directory: PathBuf,
     agent: String,
@@ -84,6 +86,8 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             let artifacts = artifact_links(parent, &measurement_dir);
             if !run_path.is_file() {
                 benchmark_data.push(BenchmarkData {
+                replica_index: None,
+                execution_cohort: None,
                 label,
                 directory: result_dir.clone(),
                 agent: agent.clone(),
@@ -121,6 +125,41 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                         )));
                     }
                 }
+            }
+            let execution_cohort = run_value
+                .get("execution_cohort")
+                .filter(|value| !value.is_null())
+                .map(|value| {
+                    serde_json::from_value::<crate::measurements::ExecutionCohort>(value.clone())
+                })
+                .transpose()
+                .map_err(|error| {
+                    Error::Input(format!(
+                        "invalid execution cohort in {}: {error}",
+                        run_path.display()
+                    ))
+                })?;
+            let replica_index = run_value
+                .get("replica_index")
+                .filter(|value| !value.is_null())
+                .map(|value| {
+                    value
+                        .as_u64()
+                        .and_then(|value| usize::try_from(value).ok())
+                        .ok_or_else(|| {
+                            Error::Input(format!("invalid replica index in {}", run_path.display()))
+                        })
+                })
+                .transpose()?;
+            if execution_cohort.is_some() != replica_index.is_some()
+                || execution_cohort.as_ref().is_some_and(|cohort| {
+                    replica_index != Some(replica) || !cohort.admits(replica, concurrency)
+                })
+            {
+                return Err(Error::Input(format!(
+                    "execution cohort does not match replica selection in {}",
+                    run_path.display()
+                )));
             }
             let task = run_value
                 .get("task")
@@ -297,6 +336,8 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 }
             }
             benchmark_data.push(BenchmarkData {
+                replica_index,
+                execution_cohort,
                 label,
                 directory: result_dir.clone(),
                 agent: agent.clone(),
@@ -317,6 +358,17 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
         }
     }
 
+    let mut cohorts = BTreeMap::new();
+    for benchmark in &benchmark_data {
+        if let Some(cohort) = &benchmark.execution_cohort
+            && let Some(previous) = cohorts.insert(&cohort.id, cohort)
+            && previous != cohort
+        {
+            return Err(Error::Input(
+                "conflicting execution cohort declarations in sweep measurements".into(),
+            ));
+        }
+    }
     let mut metric_values: BTreeMap<String, Vec<(String, f64)>> = BTreeMap::new();
     let mut series_values: BTreeMap<String, Vec<(String, TimeSeries)>> = BTreeMap::new();
     for benchmark in &benchmark_data {
@@ -402,6 +454,8 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             "agent": benchmark.agent,
             "workload": benchmark.workload,
             "task": benchmark.task,
+            "replica_index": benchmark.replica_index,
+            "execution_cohort": benchmark.execution_cohort,
             "selection": benchmark.selection,
             "evaluation_completed": benchmark.evaluation_completed,
             "workload_evaluation": benchmark.workload_evaluation,
@@ -628,6 +682,13 @@ fn write_html_report(
     scheduling: Option<crate::sweep::scheduler::Scheduling>,
 ) -> Result<(), Error> {
     let mut dimensions: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    let mut dispatch_groups = BTreeMap::new();
+    for benchmark in benchmarks {
+        if let Some(cohort) = &benchmark.execution_cohort {
+            let next = dispatch_groups.len() + 1;
+            dispatch_groups.entry(cohort.id.as_str()).or_insert(next);
+        }
+    }
     dimensions.insert(
         "benchmark",
         benchmarks.iter().map(|item| item.label.clone()).collect(),
@@ -795,7 +856,9 @@ fn write_html_report(
             escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
             escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
             runtime, success, tokens,
-            evaluation_details,
+            format_args!("{}<p>{}</p>", evaluation_details, benchmark.execution_cohort.as_ref().map_or_else(
+                || "Dispatch context unknown (legacy or missing measurement).".into(),
+                |cohort| format!("Dispatch group {}: {} of {} selected replicas admitted; slots {}. Dispatch membership is not proof of simultaneous execution. Resumed measurements may belong to different cohorts.", dispatch_groups[cohort.id.as_str()], cohort.admitted_slots.len(), cohort.selected_replicas, cohort.admitted_slots.iter().map(usize::to_string).collect::<Vec<_>>().join(", ")))),
             component_details,
             host_details,
             metrics_details,
@@ -1037,6 +1100,10 @@ fn flatten_numbers(prefix: &str, value: &Value, output: &mut BTreeMap<String, f6
         }
         Value::Object(object) => {
             for (key, child) in object {
+                if prefix.is_empty() && matches!(key.as_str(), "execution_cohort" | "replica_index")
+                {
+                    continue;
+                }
                 let next = if prefix.is_empty() {
                     key.clone()
                 } else {
@@ -1464,6 +1531,19 @@ mod tests {
     use super::run;
     use serde_json::{Value, json};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn dispatch_provenance_is_not_a_numeric_measurement() {
+        let mut metrics = std::collections::BTreeMap::new();
+        super::flatten_numbers(
+            "",
+            &json!({"replica_index":2,"execution_cohort":{
+            "id":"abcd","selected_replicas":3,"admitted_slots":[2]},"elapsed_ms":42}),
+            &mut metrics,
+        );
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics["elapsed_ms"], 42.0);
+    }
 
     #[test]
     fn agent_process_graphs_include_all_agents_but_not_unavailable_measurements() {
