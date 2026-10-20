@@ -11,6 +11,10 @@ pub enum Mode {
     Replay,
 }
 
+pub(crate) fn input_files() -> Result<Vec<std::path::PathBuf>, Error> {
+    proxy::input_files(proxy::adapters::llmtape::NAME)
+}
+
 /// A running record/replay chain.
 pub struct Session(proxy::Chain);
 
@@ -45,7 +49,12 @@ impl Session {
         self.0.url()
     }
 
+    #[cfg(test)]
     pub fn stop(self) -> Result<(), Error> {
         self.0.stop()
+    }
+
+    pub(crate) fn finish(self) -> proxy::Completion {
+        self.0.finish()
     }
 }

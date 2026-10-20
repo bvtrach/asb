@@ -18,8 +18,12 @@ struct Outcome {
     schema_version: u32,
     scope: String,
     workload_cleanup_confirmed: bool,
+    #[serde(default)]
+    proxy_cleanup_confirmed: bool,
     summary: Value,
     workload_evidence: Vec<PathBuf>,
+    #[serde(default)]
+    proxy_evidence: Vec<PathBuf>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -132,6 +136,7 @@ fn outcome_roots(directory: &Path, entry: &PlannedBenchmark) -> Result<Vec<Root>
     let mut attempts = BTreeSet::new();
     let mut summaries = BTreeMap::new();
     let mut evidence = BTreeSet::new();
+    let mut proxy_outputs = BTreeSet::new();
     for file in files {
         let record: Outcome = read_private(&file)?;
         let summary = &record.summary;
@@ -143,6 +148,7 @@ fn outcome_roots(directory: &Path, entry: &PlannedBenchmark) -> Result<Vec<Root>
         if record.schema_version != 1
             || record.scope != "task-outcome-not-yet-a-resume-receipt"
             || !record.workload_cleanup_confirmed
+            || !record.proxy_cleanup_confirmed
             || summary["schema_version"] != 2
             || !entry.selection.matches(&task)
             || task.attempt_id.is_empty()
@@ -157,6 +163,7 @@ fn outcome_roots(directory: &Path, entry: &PlannedBenchmark) -> Result<Vec<Root>
             || summary["workload_evaluation"] != entry.selection.evaluation_kind
             || !baseline.supports(&entry.selection.evaluation_kind)
             || record.workload_evidence.len() > 64
+            || record.proxy_evidence.len() > 64
             || (entry.selection.dataset.is_some() && record.workload_evidence.is_empty())
         {
             return Err(invalid(
@@ -170,6 +177,14 @@ fn outcome_roots(directory: &Path, entry: &PlannedBenchmark) -> Result<Vec<Root>
                 ));
             }
             evidence.insert(path);
+        }
+        for path in record.proxy_evidence {
+            if !path.is_absolute() {
+                return Err(invalid("declared proxy output path is relative"));
+            }
+            // A failed agent may have made no calls and produced no recording.
+            // Bind that absence too, rather than retrying a graded false task.
+            proxy_outputs.insert(path);
         }
         summaries.insert(task.attempt_id, record.summary);
     }
@@ -224,6 +239,9 @@ fn outcome_roots(directory: &Path, entry: &PlannedBenchmark) -> Result<Vec<Root>
     let mut roots = vec![Root::path("configuration-results", directory)];
     for (index, path) in evidence.into_iter().enumerate() {
         roots.push(Root::path(format!("workload-evidence-{index}"), path));
+    }
+    for (index, path) in proxy_outputs.into_iter().enumerate() {
+        roots.push(Root::path(format!("proxy-output-{index}"), path));
     }
     Ok(roots)
 }
@@ -373,6 +391,7 @@ mod tests {
                 task.dataset = fixture.entry.selection.dataset.clone();
                 let outcome = json!({"schema_version":1,"scope":"task-outcome-not-yet-a-resume-receipt",
                     "workload_cleanup_confirmed":true,"workload_evidence":[fixture.evidence],
+                    "proxy_cleanup_confirmed":true,"proxy_evidence":[],
                     "summary":{"schema_version":2,"agent":"fixture-agent","provider":"fixture-provider",
                         "model":"fixture-model","workload":"fixture-suite","task":task,
                         "workload_evaluation":"upstream-harness","workload_success":resolved,
@@ -474,9 +493,32 @@ mod tests {
     }
 
     #[test]
+    fn external_proxy_outputs_and_their_observed_absence_are_bound() {
+        for initially_present in [false, true] {
+            let fixture = Fixture::new(false);
+            let output = fixture.root.join("external-recording.jsonl");
+            if initially_present {
+                std::fs::write(&output, "private recording sentinel").unwrap();
+            }
+            for index in 0..2 {
+                let mut record = fixture.read(index);
+                record["proxy_evidence"] = json!([output]);
+                fixture.write(index, &record);
+            }
+            fixture.seal().unwrap();
+            fixture.verify().unwrap();
+            let encoded = std::fs::read_to_string(fixture.inputs.completion_path(0)).unwrap();
+            assert!(!encoded.contains("private recording sentinel"));
+            std::fs::write(&output, "different recording").unwrap();
+            assert!(fixture.verify().is_err());
+        }
+    }
+
+    #[test]
     fn incomplete_wrong_or_duplicated_outcomes_never_produce_a_receipt() {
         for case in [
             "cleanup",
+            "proxy-cleanup",
             "grade",
             "task",
             "dataset",
@@ -491,6 +533,7 @@ mod tests {
             "extra",
             "temporary",
             "relative-evidence",
+            "relative-proxy-output",
             "missing-evidence",
             "no-evidence",
         ] {
@@ -498,6 +541,7 @@ mod tests {
             let mut record = fixture.read(0);
             match case {
                 "cleanup" => record["workload_cleanup_confirmed"] = json!(false),
+                "proxy-cleanup" => record["proxy_cleanup_confirmed"] = json!(false),
                 "grade" => record["summary"]["workload_success"] = Value::Null,
                 "task" => record["summary"]["task"]["task_id"] = json!("different-task"),
                 "dataset" => {
@@ -520,6 +564,7 @@ mod tests {
                 )
                 .unwrap(),
                 "relative-evidence" => record["workload_evidence"] = json!(["relative"]),
+                "relative-proxy-output" => record["proxy_evidence"] = json!(["relative"]),
                 "missing-evidence" => {
                     record["workload_evidence"] = json!([fixture.root.join("missing")])
                 }

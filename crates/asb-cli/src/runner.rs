@@ -663,10 +663,22 @@ fn run_mode(
         )?;
         (child, run_dir, None, None)
     };
-    let mut run_error = tape_session
-        .take()
-        .and_then(|session| session.stop().err())
-        .map(|error| error.to_string());
+    let (proxy_evidence, mut run_error) = match tape_session.take() {
+        Some(session) => {
+            let completed = session.finish();
+            (
+                completed.evidence,
+                completed.result.err().map(|error| error.to_string()),
+            )
+        }
+        None => (
+            crate::proxy::Evidence {
+                output_files: Vec::new(),
+                cleanup_confirmed: true,
+            },
+            None,
+        ),
+    };
     // A failed replay can have served only part of the recording. Its full
     // cassette is not evidence of this attempt's token usage. Keep native
     // usage available, but trust cassette totals only after proxy validation.
@@ -935,6 +947,7 @@ fn run_mode(
         &result,
         workload_cleanup_confirmed,
         &workload_session.checkpoint_evidence(),
+        &proxy_evidence,
     );
     if json {
         render_json(&result, output)?;
@@ -1957,7 +1970,18 @@ mod tests {
         for resolved in [true, false] {
             result.workload_success = Some(resolved);
             result.success_rate = Some(if resolved { 1.0 } else { 0.0 });
-            completion::persist(&config, "run.log", &result, resolved, &evidence).unwrap();
+            completion::persist(
+                &config,
+                "run.log",
+                &result,
+                resolved,
+                &evidence,
+                &crate::proxy::Evidence {
+                    output_files: Vec::new(),
+                    cleanup_confirmed: true,
+                },
+            )
+            .unwrap();
         }
         let directory = root.join(".asb-completions");
         let files: Vec<_> = std::fs::read_dir(&directory)
@@ -1983,6 +2007,8 @@ mod tests {
             );
             let resolved = record["summary"]["workload_success"].as_bool().unwrap();
             assert_eq!(record["workload_cleanup_confirmed"], resolved);
+            assert_eq!(record["proxy_cleanup_confirmed"], true);
+            assert_eq!(record["proxy_evidence"], serde_json::json!([]));
             outcomes.push(resolved);
             #[cfg(unix)]
             {
@@ -2012,7 +2038,11 @@ mod tests {
                     "run.log",
                     &result,
                     true,
-                    &[]
+                    &[],
+                    &crate::proxy::Evidence {
+                        output_files: Vec::new(),
+                        cleanup_confirmed: true
+                    }
                 )
                 .is_err()
             );

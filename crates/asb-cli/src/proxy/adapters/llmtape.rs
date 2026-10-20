@@ -33,6 +33,7 @@ struct RunningLlmtape {
     progress: Option<PathBuf>,
     cassette: PathBuf,
     mode: Mode,
+    cleanup_confirmed: bool,
     _scratch: Scratch,
 }
 
@@ -54,6 +55,10 @@ impl Drop for StartingChild {
 impl ProxyAdapter for LlmtapeAdapter {
     fn name(&self) -> &'static str {
         NAME
+    }
+
+    fn input_files(&self) -> Result<Vec<PathBuf>, Error> {
+        execution_input_files(configured_override().as_deref())
     }
 
     fn start(
@@ -160,6 +165,7 @@ impl ProxyAdapter for LlmtapeAdapter {
                         .then(|| replay_cassette.with_extension("jsonl.progress.json")),
                     cassette: cassette.clone(),
                     mode: request.mode,
+                    cleanup_confirmed: false,
                     _scratch: scratch,
                 }));
             }
@@ -182,6 +188,16 @@ impl ProxyAdapter for LlmtapeAdapter {
 }
 
 impl ProxySession for RunningLlmtape {
+    fn output_files(&self) -> Vec<PathBuf> {
+        if self.mode == Mode::Record {
+            vec![self.cassette.clone()]
+        } else {
+            Vec::new()
+        }
+    }
+    fn cleanup_confirmed(&self) -> bool {
+        self.cleanup_confirmed
+    }
     fn url(&self) -> &str {
         &self.url
     }
@@ -190,8 +206,9 @@ impl ProxySession for RunningLlmtape {
         let Some(mut child) = self.child.take() else {
             return Ok(());
         };
-        crate::project::stop_network_child(&mut child)
-            .map_err(|error| Error::Run(format!("could not stop proxy adapter: {error}")))?;
+        let stopped = crate::project::stop_network_child(&mut child);
+        self.cleanup_confirmed = stopped.is_ok();
+        stopped.map_err(|error| Error::Run(format!("could not stop proxy adapter: {error}")))?;
         if self.mode == Mode::Replay {
             let progress = self
                 .progress
@@ -233,7 +250,7 @@ impl ProxySession for RunningLlmtape {
 
     fn abort(&mut self) {
         if let Some(mut child) = self.child.take() {
-            let _ = crate::project::stop_network_child(&mut child);
+            self.cleanup_confirmed = crate::project::stop_network_child(&mut child).is_ok();
         }
     }
 }
@@ -267,10 +284,7 @@ impl ProxyExecutable {
 /// Resolve an explicitly supplied proxy or materialize ASB's built-in proxy.
 /// ASB deliberately does not look up an unqualified host `llmtape` command.
 fn resolve_executable(directory: &Path) -> Result<ProxyExecutable, Error> {
-    if let Some(override_path) = std::env::var("ASB_LLM_TAPE")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    {
+    if let Some(override_path) = configured_override() {
         return Ok(ProxyExecutable::Override(override_path));
     }
     let script = directory.join(".asb-tape-proxy.mjs");
@@ -283,6 +297,22 @@ fn resolve_executable(directory: &Path) -> Result<ProxyExecutable, Error> {
         ))
     })?;
     Ok(ProxyExecutable::Builtin(script))
+}
+
+fn configured_override() -> Option<String> {
+    std::env::var("ASB_LLM_TAPE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn execution_input_files(override_path: Option<&str>) -> Result<Vec<PathBuf>, Error> {
+    // The built-in scripts are already bound by ASB's executable identity.
+    // Keep the actual command's host runtime or explicit override separately.
+    let program = Path::new(override_path.unwrap_or("node"));
+    let path = crate::tools::host_executable(program).ok_or_else(|| {
+        Error::Input("selected tape proxy executable is unavailable for input binding".into())
+    })?;
+    Ok(vec![path])
 }
 
 // Created exclusively, so teardown only removes files owned by this session.
@@ -352,6 +382,27 @@ mod tests {
     use std::net::TcpStream;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[cfg(unix)]
+    #[test]
+    fn declared_override_input_is_not_launched_or_materialized_and_keeps_its_symlink() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = test_root();
+        let program = root.join("proxy");
+        let marker = root.join("must-not-run");
+        std::fs::write(&program, format!("#!/bin/sh\ntouch {}\n", marker.display())).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let link = root.join("selected-proxy");
+        symlink(&program, &link).unwrap();
+        let files = super::execution_input_files(link.to_str()).unwrap();
+        assert_eq!(files.as_slice(), std::slice::from_ref(&link));
+        assert!(!marker.exists());
+        assert!(!root.join(".asb-tape-proxy.mjs").exists());
+        std::fs::set_permissions(program, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(super::execution_input_files(link.to_str()).is_err());
+        assert!(!marker.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn test_root() -> std::path::PathBuf {
         let stamp = SystemTime::now()

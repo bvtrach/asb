@@ -11,6 +11,7 @@ pub(super) fn persist(
     result: &RunResult<'_>,
     workload_cleanup_confirmed: bool,
     evidence: &[PathBuf],
+    proxy: &crate::proxy::Evidence,
 ) -> Result<(), Error> {
     let log = resolve_log_path(config, log);
     let directory = log
@@ -36,9 +37,17 @@ pub(super) fn persist(
     render_json(result, &mut summary)?;
     let summary: serde_json::Value = serde_json::from_slice(&summary)
         .map_err(|_| Error::Io("cannot encode task completion summary".into()))?;
+    let proxy_outputs = proxy
+        .output_files
+        .iter()
+        .map(std::path::absolute)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(crate::io_error)?;
     let content = serde_json::to_vec_pretty(&json!({"schema_version":1,
         "scope":"task-outcome-not-yet-a-resume-receipt",
         "workload_cleanup_confirmed":workload_cleanup_confirmed,
+        "proxy_cleanup_confirmed":proxy.cleanup_confirmed,
+        "proxy_evidence":proxy_outputs,
         "summary":summary,"workload_evidence":evidence}))
     .map_err(|_| Error::Io("cannot encode private task completion evidence".into()))?;
     let id = crate::workloads::TaskIdentity::local("completion-file", None).attempt_id;

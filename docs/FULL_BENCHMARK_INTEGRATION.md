@@ -1266,3 +1266,46 @@ duplicated into those output hashes. Artifacts are retained under
 are known-repair/synthetic-provider qualifications, not full-population or
 autonomous AI-solving claims. Previous checkpoint `4ef04e6` also passed its
 exact-head hosted CI `39475840348` (optional local-host job skipped).
+
+### Proxy and cassette input/output identity
+
+Record/replay input seals now ask the selected proxy adapters for their owned
+execution-file declarations. The embedded tape adapter declares the same host
+Node command or explicit override that startup selects, without starting a
+proxy or creating scripts/scratch files. Shared executable lookup preserves
+PATH order, access modes and symlink identities rather than canonicalizing
+away retargeting. Source and override selection remain inside the adapter;
+sweep/checkpoint code has no proxy/tool-name branches. These declarations do
+not yet claim transitive interpreter/shared-library closure.
+
+Replay input bindings now cover the physical source cassette directories for
+each selected configuration, independently of its fresh workspace/output tree.
+The source mapping shares the execution path naming and correctly points into
+preserved history when defaults or an explicit old-result root are replayed.
+The loopback integration mutates a source cassette during a sweep, independently
+of environment-file mutation, and requires a changed input seal. Repeated
+default/old-root replay checks require stable seals and history-backed inputs.
+Record outputs are not accidentally hashed as inputs.
+
+Proxy completion now exposes persistent output paths and resource-cleanup
+confirmation independently from request/completion validation. A rejected
+replay may still have a cleanly stopped process and a valid failed task grade.
+The runner records both facts without choosing an adapter. Outcome sealing
+requires both workload and proxy teardown confirmation and includes external
+recording outputs, even when a failed agent created no file; later appearance
+or modification invalidates that observed outcome. Old records lacking a proxy
+cleanup acknowledgement do not become eligible by default. Tests cover those
+states and ensure raw recording bytes never appear in a public digest.
+
+The pure fingerprint helper permits up to 100,000 root descriptions within
+its existing request, node, byte and time budgets, instead of rejecting every
+manifest with more than 10,000 cassette-source declarations. A provider-free
+65,536-root regression completes without reading any payload bytes and still
+rejects oversized root populations. This is format/cardinality qualification,
+not a claim to have evaluated 65,536 tasks or removed resource limits.
+
+Complete host runtime/library input closure, interrupted-replica handling and
+actual resume dispatch remain required. Scalable population presentation,
+abrupt-crash recovery, full review/merge, exact-main CI and the minor release
+also remain open. Previous outcome checkpoint `489982e` passed exact-head CI
+`39477763826` (optional local-host job skipped). New gate/runtime results follow.

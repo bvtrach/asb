@@ -168,6 +168,21 @@ fetch(url + '/responses', {method:'POST', headers:{'content-type':'application/j
         .unwrap();
         assert_eq!(current["selection_plan"]["execution_mode"], "replay");
         assert_eq!(current["evaluation_coverage"]["evaluated_attempts"], 8);
+        let seal: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join("sweep-results/.checkpoint/inputs.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(seal["status"], "stable", "{seal}");
+        let source = seal["roots"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|input| input["name"] == "replay-source-0")
+            .unwrap();
+        let source = Path::new(source["path"].as_str().unwrap());
+        assert!(source.starts_with(root.join("sweep-history")));
+        assert!(source.ends_with("sweep-results/000-benchmark/cassettes"));
+        assert!(source.join(cassette.file_name().unwrap()).is_file());
         assert!(
             current["benchmarks"]
                 .as_array()

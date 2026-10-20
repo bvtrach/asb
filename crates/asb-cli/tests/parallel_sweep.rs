@@ -84,6 +84,12 @@ const expected=['first-1','first-2','second'];
     fs.unlinkSync(process.env.ASB_TEST_INPUT);
     fs.symlinkSync(home+'/replacement-input', process.env.ASB_TEST_INPUT);
   }
+  if(!first && fs.existsSync(home+'/mutate-cassette')) {
+    const file=home+'/tapes/000-first/cassettes/benchmark-pi-bug-fix-fixture-model.jsonl';
+    const tape=JSON.parse(fs.readFileSync(file,'utf8').trim());
+    tape.response.body='{"changed_source":true}';
+    fs.writeFileSync(file,JSON.stringify(tape)+'\n');
+  }
   const conf=JSON.parse(fs.readFileSync(process.env.PI_CODING_AGENT_DIR+'/models.json'));
   const url=conf.providers.asb.baseUrl;
   if(!/^http:\/\/127\.0\.0\.1:\d+\/v1$/.test(url)) throw new Error('not loopback');
@@ -174,6 +180,26 @@ const expected=['first-1','first-2','second'];
     let seal = read_json(&root.join("sweep-results/.checkpoint/inputs.json"));
     assert_eq!(seal["scope"], "input-stability-only-not-a-resume-receipt");
     assert_eq!(seal["status"], "stable");
+    let roots = seal["roots"].as_array().unwrap();
+    for (index, name) in [(0, "000-first"), (1, "001-second")] {
+        let input = roots
+            .iter()
+            .find(|input| input["name"] == format!("replay-source-{index}"))
+            .unwrap();
+        assert_eq!(
+            input["path"],
+            root.join("tapes")
+                .join(name)
+                .join("cassettes")
+                .to_str()
+                .unwrap()
+        );
+    }
+    assert!(
+        roots
+            .iter()
+            .any(|input| input["name"] == "proxy-execution-file-0")
+    );
     for index in 0..2 {
         let completion = read_json(&root.join(format!(
             "sweep-results/.checkpoint/completed/{index:06}.json"
@@ -375,4 +401,38 @@ const expected=['first-1','first-2','second'];
                 .exists()
         );
     }
+    // Isolate cassette mutation from the earlier environment-file change.
+    // The barrier ensures every replica's proxy has already copied its input.
+    std::fs::remove_file(root.join("retarget-input")).unwrap();
+    std::fs::write(
+        root.join("mutate-cassette"),
+        "change only the replay source",
+    )
+    .unwrap();
+    for name in ["first-1", "first-2", "second"] {
+        std::fs::remove_file(root.join(format!("started-{name}"))).unwrap();
+    }
+    let replay = asb(root, &arguments);
+    assert!(!replay.status.success());
+    let rows: Vec<serde_json::Value> = String::from_utf8(replay.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row["workload_success"] == true)
+            .count(),
+        1
+    );
+    let seal = read_json(&root.join("sweep-results/.checkpoint/inputs.json"));
+    assert_eq!(
+        seal["status"], "changed",
+        "source cassette changes must invalidate the input seal: {seal}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("replacement-input")).unwrap(),
+        "changed declared input"
+    );
 }

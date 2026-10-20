@@ -132,7 +132,11 @@ pub(crate) fn run_with_options(
     // This seal records input stability only; it does not authorize reuse of
     // completed tasks or suppress execution. Continuation also needs sealed
     // completion/evaluator evidence, which is a separate contract.
-    let checkpoint = checkpoint::Inputs::begin(parent, &results_root, &plan).ok();
+    let preserved_source = backup.join(format!("{stem}-results"));
+    let replay_sources =
+        execution::replay_sources(&plan, replay_inputs.as_deref().unwrap_or(&preserved_source));
+    let checkpoint =
+        checkpoint::Inputs::begin(parent, &results_root, &plan, mode, &replay_sources).ok();
     if !json && backup.is_dir() {
         writeln!(
             output,

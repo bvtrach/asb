@@ -146,9 +146,33 @@ impl ToolAdapter for StaticTool {
 }
 
 fn host_program_on_path(program: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|paths| {
-        std::env::split_paths(&paths).any(|directory| {
-            let Ok(metadata) = std::fs::metadata(directory.join(program)) else {
+    host_executable(Path::new(program)).is_some()
+}
+
+/// Resolve the same first executable PATH entry as Command without launching
+/// it. Preserve symlinks so input binding can detect later retargeting.
+pub(crate) fn host_executable(program: &Path) -> Option<std::path::PathBuf> {
+    host_executable_in(program, std::env::var_os("PATH").as_deref())
+}
+
+fn host_executable_in(
+    program: &Path,
+    search: Option<&std::ffi::OsStr>,
+) -> Option<std::path::PathBuf> {
+    if program.as_os_str().is_empty() {
+        return None;
+    }
+    let candidates = if program.components().count() > 1 || program.is_absolute() {
+        vec![program.to_path_buf()]
+    } else {
+        std::env::split_paths(search?)
+            .map(|directory| directory.join(program))
+            .collect()
+    };
+    candidates
+        .into_iter()
+        .find(|path| {
+            let Ok(metadata) = std::fs::metadata(path) else {
                 return false;
             };
             if !metadata.is_file() {
@@ -164,7 +188,7 @@ fn host_program_on_path(program: &str) -> bool {
                 true
             }
         })
-    })
+        .and_then(|path| std::path::absolute(path).ok())
 }
 
 static REGISTRY: &[&dyn ToolAdapter] = &[
@@ -240,6 +264,42 @@ pub(crate) fn resolve(id: &str, project_root: &Path, tools_dir: &str) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn host_input_resolution_preserves_path_precedence_permissions_and_symlinks() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let root = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("host-input", None).attempt_id);
+        let first = root.join("first");
+        let second = root.join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let program = second.join("fixture-program");
+        std::fs::write(&program, "#!/bin/sh\nexit 99\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::write(first.join("fixture-program"), "not executable").unwrap();
+        std::fs::set_permissions(
+            first.join("fixture-program"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let search = std::env::join_paths([&first, &second]).unwrap();
+        assert_eq!(
+            host_executable_in(Path::new("fixture-program"), Some(&search)),
+            Some(program.clone())
+        );
+        std::fs::remove_file(first.join("fixture-program")).unwrap();
+        symlink(&program, first.join("fixture-program")).unwrap();
+        assert_eq!(
+            host_executable_in(Path::new("fixture-program"), Some(&search)),
+            Some(first.join("fixture-program"))
+        );
+        assert_eq!(host_executable_in(&program, None), Some(program));
+        assert!(host_executable_in(Path::new("missing"), Some(&search)).is_none());
+        assert!(host_executable_in(Path::new("fixture-program"), None).is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn official_benchmark_harnesses_have_pinned_project_local_python_recipes() {

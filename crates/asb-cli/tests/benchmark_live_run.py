@@ -208,6 +208,17 @@ class NormalRunQualification(unittest.TestCase):
                             self.assertIn("<svg", (measurement_root / "perfetto-state-timeline.svg").read_text())
                     if sweep:
                         comparison = artifacts / "results/sweep-comparison"
+                        seal = json.loads((artifacts / "sweep-results/.checkpoint/inputs.json").read_bytes())
+                        self.assertEqual(seal["status"], "stable", seal)
+                        names = [entry["name"] for entry in seal["roots"]]
+                        self.assertEqual(any(name.startswith("proxy-execution-file-") for name in names), bool(tape_mode))
+                        self.assertEqual(any(name.startswith("replay-source-") for name in names), tape_mode == "replay")
+                        outcome_seal = json.loads((artifacts / "sweep-results/.checkpoint/completed/000000.json").read_bytes())
+                        outputs = [entry for entry in outcome_seal["roots"] if entry["name"].startswith("proxy-output-")]
+                        self.assertEqual(len(outputs), 1 if tape_mode == "record" else 0)
+                        if tape_mode == "record":
+                            self.assertEqual(Path(outputs[0]["path"]),cassette)
+                            self.assertTrue(cassette.is_file())
                         coverage = json.loads((comparison / "comparison.json").read_text())
                         self.assertEqual(coverage["evaluation_coverage"]["eligible_selected_attempts"], 1)
                         self.assertEqual(coverage["evaluation_coverage"]["evaluated_attempts"], 1)

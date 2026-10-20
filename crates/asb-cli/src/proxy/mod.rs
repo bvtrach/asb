@@ -9,6 +9,13 @@ use std::collections::HashMap;
 /// An adapter starts one hop using its own optional typed configuration.
 pub(crate) trait ProxyAdapter: Sync {
     fn name(&self) -> &'static str;
+    /// Adapter-owned execution files, without starting a hop or touching a
+    /// cassette. Transitive interpreter/library discovery is a separate layer.
+    fn input_files(&self) -> Result<Vec<std::path::PathBuf>, Error> {
+        Err(Error::Input(
+            "selected proxy does not declare its execution inputs".into(),
+        ))
+    }
     fn start(
         &self,
         upstream: Option<&str>,
@@ -16,13 +23,48 @@ pub(crate) trait ProxyAdapter: Sync {
     ) -> Result<Box<dyn ProxySession>, Error>;
 }
 
+pub(crate) fn input_files(default_name: &str) -> Result<Vec<std::path::PathBuf>, Error> {
+    let mut paths = Vec::new();
+    for name in configured_chain(default_name)? {
+        let adapter = adapters::REGISTRY
+            .iter()
+            .copied()
+            .find(|adapter| adapter.name().eq_ignore_ascii_case(&name))
+            .ok_or_else(|| {
+                Error::Input("selected proxy has no registered input declaration".into())
+            })?;
+        paths.extend(adapter.input_files()?);
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
 /// An owned hop. Both shutdown methods must be safe to call more than once.
 pub(crate) trait ProxySession {
     fn url(&self) -> &str;
+    /// Persistent outputs owned by this hop, not replay inputs or scratch.
+    fn output_files(&self) -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
+    /// Resource teardown is distinct from request/completion validation.
+    fn cleanup_confirmed(&self) -> bool {
+        false
+    }
     /// Stop and validate the completed session, if the adapter requires it.
     fn finish(&mut self) -> Result<(), Error>;
     /// Stop without completion validation, including on partial startup.
     fn abort(&mut self);
+}
+
+pub(crate) struct Completion {
+    pub result: Result<(), Error>,
+    pub evidence: Evidence,
+}
+
+pub(crate) struct Evidence {
+    pub output_files: Vec<std::path::PathBuf>,
+    pub cleanup_confirmed: bool,
 }
 
 pub(crate) struct Chain {
@@ -101,16 +143,31 @@ impl Chain {
         &self.url
     }
 
-    pub(crate) fn stop(mut self) -> Result<(), Error> {
+    #[cfg(test)]
+    pub(crate) fn stop(self) -> Result<(), Error> {
+        self.finish().result
+    }
+
+    pub(crate) fn finish(mut self) -> Completion {
         let mut failure = None;
+        let mut output_files = self
+            .hops
+            .iter()
+            .flat_map(|hop| hop.output_files())
+            .collect::<Vec<_>>();
+        output_files.sort();
+        output_files.dedup();
         for hop in self.hops.iter_mut().rev() {
             if let Err(error) = hop.finish() {
                 failure.get_or_insert(error);
             }
         }
-        match failure {
-            Some(error) => Err(error),
-            None => Ok(()),
+        Completion {
+            result: failure.map_or(Ok(()), Err),
+            evidence: Evidence {
+                output_files,
+                cleanup_confirmed: self.hops.iter().all(|hop| hop.cleanup_confirmed()),
+            },
         }
     }
 }
@@ -197,6 +254,9 @@ mod tests {
         }
     }
     impl ProxySession for FixtureSession {
+        fn cleanup_confirmed(&self) -> bool {
+            !self.active
+        }
         fn url(&self) -> &str {
             &self.url
         }
@@ -221,6 +281,23 @@ mod tests {
                 self.active = false;
             }
         }
+    }
+
+    #[test]
+    fn rejected_completion_keeps_resource_cleanup_as_a_separate_fact() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let adapter = FixtureAdapter {
+            name: "fixture",
+            fail: false,
+            fail_finish: true,
+            events,
+        };
+        let completed = Chain::start_selected(&[&adapter], None, &HashMap::new())
+            .unwrap()
+            .finish();
+        assert!(completed.result.is_err());
+        assert!(completed.evidence.cleanup_confirmed);
+        assert!(completed.evidence.output_files.is_empty());
     }
 
     #[test]

@@ -219,12 +219,27 @@ impl Inputs {
         parent: &Path,
         results: &Path,
         plan: &super::plan::SweepPlan,
+        mode: Option<crate::tape::Mode>,
+        replay_sources: &[PathBuf],
     ) -> Result<Self, Error> {
         let directory = results.join(".checkpoint");
         let mut roots = vec![
             Root::executable()?,
             Root::path("selection-plan", results.join("plan.json")),
         ];
+        if mode.is_some() {
+            for (index, path) in crate::tape::input_files()?.into_iter().enumerate() {
+                roots.push(Root::path(format!("proxy-execution-file-{index}"), path));
+            }
+        }
+        if mode == Some(crate::tape::Mode::Replay) {
+            for (index, path) in replay_sources.iter().enumerate() {
+                roots.push(Root::path(
+                    format!("replay-source-{index}"),
+                    std::path::absolute(path).map_err(crate::io_error)?,
+                ));
+            }
+        }
         let mut projects = BTreeSet::new();
         let mut python = PathBuf::from("python3");
         for entry in &plan.entries {

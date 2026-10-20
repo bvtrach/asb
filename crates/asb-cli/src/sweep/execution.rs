@@ -9,6 +9,21 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+pub(super) fn result_name(index: usize, reference: &Path) -> String {
+    format!("{index:03}-{}", safe_name(reference))
+}
+
+pub(super) fn replay_sources(plan: &plan::SweepPlan, root: &Path) -> Vec<PathBuf> {
+    plan.entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            root.join(result_name(index, Path::new(&entry.reference)))
+                .join("cassettes")
+        })
+        .collect()
+}
+
 pub(super) struct Execution<'a> {
     pub source: &'a str,
     pub parent: &'a Path,
@@ -28,10 +43,8 @@ impl Execution<'_> {
     }
 
     fn directory(&self, index: usize) -> PathBuf {
-        self.results.join(format!(
-            "{index:03}-{}",
-            safe_name(&self.config_path(index))
-        ))
+        self.results
+            .join(result_name(index, &self.config_path(index)))
     }
 
     pub(super) fn output_path(&self, index: usize) -> PathBuf {
@@ -74,7 +87,7 @@ impl Execution<'_> {
             let previous = self
                 .backup
                 .join(self.results.file_name().expect("results name"))
-                .join(format!("{index:03}-{}", safe_name(&config_path)))
+                .join(result_name(index, &config_path))
                 .join("cassettes");
             reuse_replay_inputs(&previous, &result_dir.join("cassettes"), config)?;
         }
@@ -92,7 +105,7 @@ impl Execution<'_> {
             Error::Run(format!("cannot write {}: {error}", isolated_path.display()))
         })?;
         let cassette = self.replay_inputs.map(|root| {
-            root.join(format!("{index:03}-{}", safe_name(&config_path)))
+            root.join(result_name(index, &config_path))
                 .join("cassettes")
                 .join(cassette_filename(config))
         });

@@ -175,7 +175,14 @@ ASB executable, saved plan, project configuration, installed tools/workloads,
 project Python and file-valued environment overrides. Environment values enter
 only a keyed digest, never the public response. Changed, excessive or
 unsupported inputs cannot claim stability. This optional seal is explicitly
-not a resume receipt: host runtime/proxy/cassette input closure remains required.
+not a resume receipt: complete host runtime/interpreter/library closure remains
+required. Record/replay dispatch asks the selected proxy adapters for their
+execution files without starting them or materializing scratch scripts. The
+default adapter binds its selected host Node executable or explicit proxy
+override, preserving symlinks and PATH precedence. Replay additionally binds
+the actual source cassette directories, including rebased/preserved history
+paths. Record cassettes are outputs, not replay inputs. Shared-library and
+interpreter dependencies are not yet implied by an execution-file declaration.
 After workload cleanup and measurement completion, the runner writes private
 `.asb-completions/` outcome records beside the run log, including unresolved
 outcomes, actual task identity, cleanup status and workload-owned evaluator
@@ -183,13 +190,17 @@ evidence paths. These records omit agent stdout/stderr. After a configuration's
 replicas finish, the checkpoint binds its complete result tree and all declared
 evaluator roots into `.checkpoint/completed/<index>.json`. Every replica must
 have a unique, matching task identity, an actual boolean evaluator outcome,
-supported baseline evidence and confirmed cleanup. Enabled measurement records
+supported baseline evidence and confirmed workload/proxy cleanup. Proxy-owned
+output files (including external recording paths) join the evidence roots;
+an absent output from a failed attempt is bound as absent, not treated as a
+request to retry a graded failure until it produces a recording. Replay validation failure is separate from
+whether its proxy process stopped. Enabled measurement records
 must agree with the outcome summaries. Both resolved and unresolved grades are
 sealed; incomplete, malformed or mismatched groups are not. Publication cannot
 replace an existing receipt, and verification rejects changed results, evidence,
 selection or input identity. Temporary output spools live outside the per-task
 result tree, so hashing excludes no evidence filenames. These outcome-only
-seals still lack complete runtime/proxy/cassette input closure and never suppress
+seals still lack complete runtime input closure and never suppress
 execution or change the grade. No `--resume` behavior is provided by these
 foundations alone.
 Sessions may execute through a workload-owned controller rather than the

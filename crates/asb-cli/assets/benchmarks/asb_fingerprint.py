@@ -11,6 +11,7 @@ import time
 MAX_BYTES = 64 * 1024**3
 MAX_NODES = 300000
 MAX_REQUEST = 16 * 1024**2
+MAX_ROOTS = 100000
 
 
 class FingerprintError(ValueError):
@@ -179,7 +180,7 @@ def fingerprint(request, environment):
                   if name not in {"_", "PWD", "OLDPWD", "SHLVL"}}
         context = {"context": context, "environment": values}
     roots = request["roots"]
-    if not isinstance(roots, list) or len(roots) > 10000:
+    if not isinstance(roots, list) or len(roots) > MAX_ROOTS:
         raise FingerprintError("invalid input root population")
     exclude = request.get("exclude", [])
     if not isinstance(exclude, list) or any(not isinstance(name, str) or "/" in name or "\\" in name for name in exclude):

@@ -18,6 +18,18 @@ KEY = bytes(range(32))
 
 
 class FingerprintTests(unittest.TestCase):
+    def test_full_manifest_root_population_fits_without_unbounding_the_helper(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            missing = str(Path(temporary) / "not-installed")
+            request = {"key":KEY.hex(), "context":None,
+                "roots":[{"name":f"source-{index:06}", "path":missing} for index in range(65536)]}
+            result = fingerprint.fingerprint(request, {})
+            self.assertEqual(result["nodes"],65536)
+            self.assertEqual(result["bytes"],0)
+            request["roots"] = [{"name":"unused", "path":missing}] * (fingerprint.MAX_ROOTS+1)
+            with self.assertRaisesRegex(fingerprint.FingerprintError,"population"):
+                fingerprint.fingerprint(request,{})
+
     def test_parent_components_follow_actual_symlink_resolution(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
