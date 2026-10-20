@@ -1294,6 +1294,70 @@ fetch(target, {method:'POST',headers:{'content-type':'application/json'},body:JS
 
 #[cfg(unix)]
 #[test]
+fn hermes_replay_routes_responses_and_collects_usage_ledger() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = replay_project(1);
+    project.write(
+        "benchmark.toml",
+        "agent='hermes'\nworkload='bug-fix'\nprovider='cli2key'\nmodel='test-model'\nworkspace='workspace'\nlog_file='run.log'\n",
+    );
+    let body = serde_json::json!({
+        "model": "test-model",
+        "input": "offline",
+        "tools": [{"type": "function"}]
+    })
+    .to_string();
+    let response = serde_json::json!({
+        "id": "resp_fixture",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": "done"}]}]
+    })
+    .to_string();
+    let cassette = serde_json::json!({
+        "request": {"method": "POST", "url": "/v1/responses", "body": body},
+        "response": {"status": 200, "headers": {"content-type": "application/json"}, "body": response}
+    });
+    project.write("tape.jsonl", &format!("{cassette}\n"));
+    let executable = ".asb-tools/hermes/bin/hermes";
+    project.write(
+        executable,
+        r##"#!/usr/bin/env node
+const fs = require('fs');
+const usage = process.argv[process.argv.indexOf('--usage-file') + 1];
+const body = {model:'test-model',input:'offline',tools:[{type:'function'}]};
+fetch(process.env.OPENAI_BASE_URL.replace(/\/$/, '') + '/responses', {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
+  .then(response => {
+    if (!response.ok) { process.exitCode = 1; return; }
+    fs.writeFileSync('src/parser.py', "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n");
+    fs.mkdirSync(require('path').dirname(usage), {recursive:true});
+    fs.writeFileSync(usage, JSON.stringify({input_tokens:12,output_tokens:4,cache_read_tokens:2,total_tokens:18}));
+    process.stdout.write('done\n');
+  }).catch(() => { process.exitCode = 1; });
+"##,
+    );
+    std::fs::set_permissions(
+        project.0.join(executable),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let result = replay(
+        &project,
+        "success",
+        &["--json", "--measurements", "measurements"],
+    );
+    expect_success(&result);
+    let json: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(json["token_usage"]["input_tokens"], 12);
+    assert_eq!(json["token_usage"]["output_tokens"], 4);
+    assert_eq!(json["token_usage"]["cached_tokens"], 2);
+    assert_eq!(json["token_usage"]["total_tokens"], 16);
+    let measurement: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(project.0.join("measurements/run.json")).unwrap())
+            .unwrap();
+    assert_eq!(measurement["token_usage"], json["token_usage"]);
+}
+
+#[cfg(unix)]
+#[test]
 fn pi_mock_replay_counts_cumulative_snapshots_once_in_every_output() {
     use std::os::unix::fs::PermissionsExt;
     let project = replay_project(1);

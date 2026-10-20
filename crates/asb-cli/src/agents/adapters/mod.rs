@@ -7,6 +7,7 @@ mod cline;
 mod codex;
 mod continue_agent;
 mod goose;
+mod hermes;
 mod mini_swe;
 mod opencode;
 mod openhands;
@@ -26,6 +27,7 @@ pub(super) static REGISTRY: &[&dyn AgentAdapter] = &[
     &openjiuwen::ADAPTER,
     &claude_code::ADAPTER,
     &goose::ADAPTER,
+    &hermes::ADAPTER,
     &cline::ADAPTER,
     &continue_agent::ADAPTER,
 ];
