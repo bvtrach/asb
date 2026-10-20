@@ -1134,7 +1134,7 @@
 <text text-anchor="start" x="411.5" y="-5321.8" font-family="Helvetica,sans-Serif" font-size="9.00">+finish_component(name: &amp;str, now: Instant) void</text>
 <text text-anchor="start" x="411.5" y="-5311.8" font-family="Helvetica,sans-Serif" font-size="9.00">+start_process_sampler(pid: u32) void</text>
 <text text-anchor="start" x="411.5" y="-5301.8" font-family="Helvetica,sans-Serif" font-size="9.00">+stop_process_sampler() void</text>
-<text text-anchor="start" x="411.5" y="-5291.8" font-family="Helvetica,sans-Serif" font-size="9.00">+write_component_measurements(elapsed_ms: u128) Result&lt;(), String&gt;</text>
+<text text-anchor="start" x="411.5" y="-5291.8" font-family="Helvetica,sans-Serif" font-size="9.00">+write_component_measurements() Result&lt;(), String&gt;</text>
 <text text-anchor="start" x="411.5" y="-5281.8" font-family="Helvetica,sans-Serif" font-size="9.00">+record_cpu_accounting(user_usec: u64, system_usec: u64, source: &amp;str) void</text>
 <text text-anchor="start" x="411.5" y="-5271.8" font-family="Helvetica,sans-Serif" font-size="9.00">+sampled_cpu_accounting() Option&lt;(f64, f64)&gt;</text>
 <text text-anchor="start" x="411.5" y="-5261.8" font-family="Helvetica,sans-Serif" font-size="9.00">+cgroup_parent() Option&lt;&amp;Path&gt;</text>
