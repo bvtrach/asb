@@ -1309,3 +1309,24 @@ actual resume dispatch remain required. Scalable population presentation,
 abrupt-crash recovery, full review/merge, exact-main CI and the minor release
 also remain open. Previous outcome checkpoint `489982e` passed exact-head CI
 `39477763826` (optional local-host job skipped). New gate/runtime results follow.
+
+Proxy/cassette implementation `e895d83d` was merged with main `4d765890`
+(PR #241's child-owned built-in proxy readiness), producing `0cb5927b`.
+The constructor conflict retained the upstream ephemeral-port/readiness logic
+and this branch's separate cleanup acknowledgement. The combined tree passed
+strict Clippy, 408 unit tests (six opt-in ignored), 87 offline CLI tests, all
+twelve protocol suites (including thirteen fingerprint cases), seven guest
+driver checks, replay/parallel/diagram regressions and `make build`.
+Exact-head hosted CI `39480823032` passed, including packaged tests and
+install/smoke qualification; the optional local-host job was skipped.
+
+Actual normal SWE-bench Lite sweep record and replay qualification passed on
+the combined code in 67.9 and 66.6 seconds. It ran real Pi against the synthetic
+provider, applied the known repair and used official grading, namespace
+collectors and comparison graphs. Record asserted that its external cassette
+was bound as an output and not a replay input. Replay asserted a source binding,
+stable input identity and zero provider/catalog requests; both required sealed
+outcomes and original evaluator evidence/cleanup. Retained artifacts are under
+`target/benchmark-runtime/normal-cli-guest-5kq6s168` (record) and
+`target/benchmark-runtime/normal-cli-guest-8si_lzkd` (replay). These remain
+representative known-repair checks, not full-population or AI-solving claims.
