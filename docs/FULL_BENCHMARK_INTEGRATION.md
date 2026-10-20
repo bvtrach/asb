@@ -1929,3 +1929,14 @@ hosted gates follow. Remaining full delivery work is interrupted evaluator/
 submission handling, native/proxy owner recovery, complete sweep reconciliation,
 population-scale presentation, final full-diff review/PR merge, exact-main CI
 and the new minor release.
+
+The fresh-install evidence commit `cfd5295d` exposed a latent hosted-test
+ordering defect: ambiguous legacy records were correctly rejected, but the
+first diagnostic depended on filesystem directory iteration order. The bounded
+outcome reader now sorts paths solely to make validation diagnostics stable;
+replica mapping still uses explicit identity or a unique measured task attempt,
+never filenames. The regression additionally reverses filenames and proves the
+entire valid comparison remains identical, then checks duplicate-attempt
+rejection. It passed 50 direct repetitions, followed by the full 440-unit/
+87-offline-CLI/fifteen-protocol source suite, strict Clippy and build. Packaging
+and exact-head hosted verification follow this repair.

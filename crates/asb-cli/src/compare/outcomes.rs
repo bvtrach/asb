@@ -103,16 +103,20 @@ pub(super) fn load(directory: &Path, total: usize) -> Result<BTreeMap<usize, Rec
         Ok(_) => (),
     }
     let mut outcomes = BTreeMap::new();
-    let mut files = 0;
+    let mut files = Vec::new();
     for entry in fs::read_dir(&directory).map_err(crate::io_error)? {
-        let path = entry.map_err(crate::io_error)?.path();
-        files += 1;
-        if files > 2 * crate::benchmark::MAX_CONCURRENCY {
+        if files.len() >= 2 * crate::benchmark::MAX_CONCURRENCY {
             return Err(invalid(
                 &directory,
                 "outcome file population exceeds its limit",
             ));
         }
+        files.push(entry.map_err(crate::io_error)?.path());
+    }
+    // Deterministic validation diagnostics, never a replica mapping. Actual
+    // slots still come from explicit identity or a unique measured attempt.
+    files.sort();
+    for path in files {
         // A stopped writer can leave an unpublished temporary record. It earns
         // no grade, but must not hide the completed results of other replicas.
         if path
@@ -664,6 +668,32 @@ mod tests {
         let report = fixture.compare().unwrap();
         assert_eq!(report["benchmarks"][0]["metrics"]["success_rate"], 1.0);
         assert_eq!(report["benchmarks"][1]["metrics"]["success_rate"], 0.0);
+        let records = fixture.directory().join(".asb-completions");
+        fs::rename(
+            records.join("001.json"),
+            records.join("z-first-attempt.json"),
+        )
+        .unwrap();
+        fs::rename(
+            records.join("002.json"),
+            records.join("a-second-attempt.json"),
+        )
+        .unwrap();
+        let reordered = fixture.compare().unwrap();
+        assert_eq!(
+            reordered, report,
+            "filenames may order validation but cannot choose replica identity"
+        );
+        fs::rename(
+            records.join("z-first-attempt.json"),
+            records.join("001.json"),
+        )
+        .unwrap();
+        fs::rename(
+            records.join("a-second-attempt.json"),
+            records.join("002.json"),
+        )
+        .unwrap();
         fs::copy(
             fixture
                 .directory()
