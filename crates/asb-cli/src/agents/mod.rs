@@ -139,6 +139,36 @@ pub(super) fn read_usage_document(path: &Path) -> Option<serde_json::Value> {
     serde_json::from_slice(&bytes).ok()
 }
 
+/// Read a counter from the last final-result envelope, never from intermediate
+/// snapshots, nested tool payloads, or a previous result with a newer partial
+/// result after it. Adapters choose the field and its client-defined meaning.
+pub(super) fn final_result_counter(stdout: &str, field: &str) -> Option<u64> {
+    fn result(value: &serde_json::Value) -> Option<&serde_json::Value> {
+        match value {
+            serde_json::Value::Array(events) => events.iter().rev().find_map(result),
+            serde_json::Value::Object(event)
+                if event.get("type").and_then(|v| v.as_str()) == Some("result") =>
+            {
+                Some(value)
+            }
+            _ => None,
+        }
+    }
+    let document = serde_json::from_str::<serde_json::Value>(stdout)
+        .ok()
+        .or_else(|| {
+            let mut latest = None;
+            for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
+                let value = serde_json::from_str::<serde_json::Value>(line).ok()?;
+                if result(&value).is_some() {
+                    latest = Some(value);
+                }
+            }
+            latest
+        })?;
+    result(&document)?.get(field)?.as_u64()
+}
+
 type CommandBuilder = for<'a> fn(&CommandContext<'a>) -> CommandSpec;
 type PreparationHook = for<'a> fn(&mut PreparationContext<'a>) -> Result<(), Error>;
 type CollectionHook = for<'a> fn(&CollectionContext<'a>) -> AgentArtifacts;
@@ -514,6 +544,41 @@ pub(crate) fn resolve(id: &str, project_root: &Path, tools_dir: &str) -> Option<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn final_result_counter_uses_the_latest_native_value_without_summing() {
+        for (output, expected) in [
+            (r#"{"type":"result","turns":0}"#, Some(0)),
+            (
+                r#"[{"type":"assistant","turns":99},{"type":"result","turns":3},{"type":"result","turns":3}]"#,
+                Some(3),
+            ),
+            (
+                "{\"type\":\"result\",\"turns\":2}\n{\"type\":\"result\",\"turns\":4}",
+                Some(4),
+            ),
+            (r#"[{"type":"result","turns":3},{"type":"result"}]"#, None),
+            (r#"{"type":"result","turns":-1}"#, None),
+            (r#"{"type":"result","turns":1.5}"#, None),
+            (r#"{"type":"result","turns":"3"}"#, None),
+            (
+                r#"{"type":"tool","result":{"type":"result","turns":3}}"#,
+                None,
+            ),
+            ("broken", None),
+            (
+                "{\"type\":\"result\",\"turns\":3}\n{\"type\":\"result\",\"turns\":",
+                None,
+            ),
+            ("{\"type\":\"result\",\"turns\":3}\nbroken", None),
+        ] {
+            assert_eq!(
+                super::final_result_counter(output, "turns"),
+                expected,
+                "{output}"
+            );
+        }
+    }
+
     #[test]
     fn replay_agent_configs_use_the_tape_endpoint_without_live_credentials() {
         let root =

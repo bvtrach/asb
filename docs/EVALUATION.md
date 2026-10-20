@@ -126,6 +126,12 @@ The old step collector searched JSON keys/text for words such as `step`,
 and invented one step when plain output existed. Those counts were not a
 reliable action count. Schema 2 delegates extraction to agent adapters.
 Qwen Code uses its final `num_turns`; Cline uses final `run_result.iterations`.
+Claude Code and Workbuddy use their final native `num_turns` counters.
+mini-SWE uses its trajectory's `info.model_stats.api_calls`, the counter used
+for its step limit; attempted failed model calls count too. Pi counts terminal
+main-agent `turn_end` events across complete, balanced agent cycles, including
+failed/retried turns; duplicated messages in `agent_end` add no steps.
+Compaction and other auxiliary model calls are outside Pi's main-agent turn count.
 Intermediate snapshots are not summed. Unsupported, incomplete or malformed
 output gives `null` (human output: `unknown`), not an invented zero or one.
 Goose and Continue currently lack a verified complete-run step counter here
