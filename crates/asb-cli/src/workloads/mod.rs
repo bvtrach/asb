@@ -611,7 +611,9 @@ pub(crate) fn evaluate(
     let has_hyphenation = normalized.contains("replace(' ', '-')")
         || normalized.contains("replace(\" \", \"-\")")
         || normalized.contains("'-'.join(value.lower().split())")
-        || normalized.contains("\"-\".join(value.lower().split())");
+        || normalized.contains("\"-\".join(value.lower().split())")
+        || normalized.contains("'-'.join(value.lower().replace('_', ' ').split())")
+        || normalized.contains("\"-\".join(value.lower().replace(\"_\", \" \").split())");
     let has_label = normalized.contains(&format!(
         "def suite_label() -> str:\n    return \"{}\"",
         expected_label
@@ -1129,6 +1131,12 @@ mod tests {
         fs::write(
             workspace.join("external-workload/asb-trial/tests/test_task.py"),
             "# intentionally tampered by the agent\n",
+        )
+        .unwrap();
+        assert!(evaluate("agentbench", &workspace, "").unwrap());
+        fs::write(
+            &task,
+            "def normalize(value: str) -> str:\n    return '-'.join(value.lower().replace('_', ' ').split())\n\ndef suite_label() -> str:\n    return \"agentbench\"\n",
         )
         .unwrap();
         assert!(evaluate("agentbench", &workspace, "").unwrap());
