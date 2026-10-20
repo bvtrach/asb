@@ -1432,3 +1432,57 @@ representative known-repair qualification, not full-population AI solving.
 Per-replica interrupted-group recovery, scalable population presentation,
 abrupt-crash recovery, cold-cache qualification, final review/merge,
 exact-main CI and the minor release remain open.
+
+### Stable replica slots and independently published completion evidence
+
+The runner now assigns a one-based `(index,total)` identity to every replica.
+Its shared configuration helper owns workspace/log/measurement suffixes and
+native runtime paths; checkpoint validation uses that same helper rather than
+inferring a slot from completion order or an agent's output. Private outcome
+schema 2 records this identity and the actual execution-output paths. Existing
+schema-1 complete-group evidence remains readable, while independent replica
+sealing requires the explicit new identity and paths.
+
+A generic optional completion observer runs after grading, workload/proxy
+cleanup and measurement completion, before waiting for sibling replicas. It
+publishes immutable private receipts under
+`.checkpoint/replicas/<configuration>/<replica>.json`, bound to the original
+declared-input digest, selection, outcome, generated configuration, own
+workspace/log/runtime/measurements and external grader/proxy evidence. A
+false grade is completed evidence too. Sibling output mutation does not
+invalidate that replica; edits to its own output or grader evidence do. Missing
+cleanup, wrong slots/populations, omitted/shared output paths and measurement
+slot mismatches cannot earn a receipt. Per-configuration publication is
+serialized without serializing execution; metadata failure never changes a
+fresh task's grade. Outcome publication also synchronizes its directory before
+notifying the observer.
+
+Resume can recover the window where every replica was sealed but the owner
+stopped before publishing its final group receipt. It validates every selected
+replica and the complete outcome population, preserves original attempts and
+grades, and neither retries them nor republishes a group receipt during
+validation. Missing/unsealed genuinely unfinished slots remain a recovery
+requirement; no partial-slot execution or abrupt-crash resource cleanup is
+claimed by this increment.
+
+Provider-free tests cover bounded slot identity, canonical output naming,
+duplicate-slot rejection, false-grade evidence before sibling completion,
+independent sibling mutation, immutable receipt publication and own-evidence
+mutation. A real loopback replay barrier prevents replica 2 from finishing
+until replica 1's receipt exists, proving publication precedes group completion.
+Eight-replica replay checks individual receipts, recovery without a final group
+receipt, no new agent launches, and rejection when one replica seal is missing.
+Strict Clippy, 419 unit tests, 87 offline CLI tests, thirteen protocol suites,
+guest/replay regressions and `make build` passed.
+
+The actual real-Pi/original SWE-bench Lite/Terminal-Bench 1.0 synthetic-provider
+qualification passed in 79.0 seconds, including new private slot/receipt checks,
+official grades, completed-group resume, original attempt identity, no extra
+completion requests, scoped collectors/graphs and cleanup. Artifacts remain at
+`target/benchmark-runtime/parallel-original-tasks-dlv1nuqt`. This is warm-cache
+representative known-repair qualification, not full-population AI solving.
+Package and hosted gates follow.
+
+Actual continuation of unfinished replica slots and owned-resource crash
+recovery, population-scale presentation, cold-cache qualification, final
+review/merge, exact-main CI and the minor release remain open.

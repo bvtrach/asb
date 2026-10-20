@@ -72,6 +72,7 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
                     mode,
                     cassette: options.cassette.as_deref(),
                     respect_record_timings: options.respect_record_timings,
+                    ..Default::default()
                 },
                 stdout,
             )

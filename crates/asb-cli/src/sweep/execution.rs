@@ -113,6 +113,15 @@ impl Execution<'_> {
                 .join("cassettes")
                 .join(cassette_filename(config))
         });
+        let observer = self
+            .checkpoint
+            .map(|inputs| super::checkpoint::ReplicaObserver {
+                inputs,
+                index,
+                directory: &resolved,
+                entry,
+                publication: Mutex::new(()),
+            });
         let result = runner::run_with_diagnostics(
             isolated_path.to_string_lossy().as_ref(),
             runner::RunOptions {
@@ -122,6 +131,10 @@ impl Execution<'_> {
                 mode: self.options.mode,
                 cassette: cassette.as_deref().and_then(Path::to_str),
                 respect_record_timings: self.options.respect_record_timings,
+                on_completion: observer
+                    .as_ref()
+                    .map(|observer| observer as &dyn runner::replica::CompletionObserver),
+                ..Default::default()
             },
             output,
             self.warnings,

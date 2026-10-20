@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 const HELPER: &str = include_str!("../../assets/benchmarks/asb_fingerprint.py");
 mod completed;
+pub(super) use completed::replicas::Observer as ReplicaObserver;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

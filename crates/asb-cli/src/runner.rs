@@ -1,5 +1,6 @@
 //! Live execution of one configured benchmark.
 mod completion;
+pub(crate) mod replica;
 
 use super::{Error, io_error, read_config};
 use crate::agents;
@@ -78,6 +79,8 @@ pub(crate) struct RunOptions<'a> {
     pub mode: Option<tape::Mode>,
     pub cassette: Option<&'a str>,
     pub respect_record_timings: bool,
+    pub replica: replica::Identity,
+    pub on_completion: Option<&'a dyn replica::CompletionObserver>,
 }
 
 /// Execute one configured benchmark, optionally through a local llmtape proxy.
@@ -99,6 +102,9 @@ pub(crate) fn run_with_diagnostics(
     let text = read_config(config_path)?;
     let config: BenchmarkConfig = toml::from_str(&text)
         .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
+    if !options.replica.valid() {
+        return Err(Error::Input("invalid benchmark replica identity".into()));
+    }
     if let Some(measures) = config.measurements.as_ref().filter(|value| value.enabled) {
         // Parallel sweep configurations can share project-local tool paths.
         // Serialize dependency publication, not benchmark execution.
@@ -141,13 +147,13 @@ fn run_concurrent(
     let tape_request = options.mode.map(|mode| (mode, options.cassette));
     let mut jobs = Vec::with_capacity(config.concurrency);
     for index in 1..=config.concurrency {
-        let mut replica = config.clone();
-        replica.concurrency = 1;
-        replica.workspace = parallel_path(&replica.workspace, index);
-        replica.log_file = parallel_path(&replica.log_file, index);
-        if let Some(measurements) = replica.measurements.as_mut() {
-            measurements.directory = parallel_path(&measurements.directory, index);
-        }
+        let replica = replica::configuration(
+            config,
+            replica::Identity {
+                index,
+                total: config.concurrency,
+            },
+        )?;
         let cassette = tape_request.map(|(mode, requested)| {
             let base = requested
                 .map(PathBuf::from)
@@ -176,6 +182,10 @@ fn run_concurrent(
                         config_path,
                         replica,
                         RunOptions {
+                            replica: replica::Identity {
+                                index: index + 1,
+                                total: config.concurrency,
+                            },
                             measurement_dir: measurement_path,
                             mode,
                             cassette: cassette_path,
@@ -297,6 +307,7 @@ fn run_mode(
         mode,
         cassette,
         respect_record_timings,
+        ..
     } = options;
     let tape_request = mode.map(|mode| (mode, cassette));
     let tape_cassette = tape_request.map(|(mode, requested)| {
@@ -536,13 +547,16 @@ fn run_mode(
         },
         output,
     );
-    let (child, run_dir, guest, execution_elapsed_ms) = if let Some(result) = isolated {
+    let (child, run_dir, guest, execution_elapsed_ms, runtime_output) = if let Some(result) =
+        isolated
+    {
         let result = result.map_err(Error::Run)?;
         (
             result.output,
             PathBuf::new(),
             Some(result.metadata),
             result.elapsed_ms,
+            None,
         )
     } else {
         // Adapters run with the benchmark workspace as their current directory.
@@ -604,9 +618,7 @@ fn run_mode(
         )?;
         // Agent state must not appear inside the workload checkout, where it can
         // affect git status, tools, and therefore the recorded agent trajectory.
-        let mut runtime_path = workspace.as_os_str().to_os_string();
-        runtime_path.push(".asb-agent-runtime");
-        let runtime_path = PathBuf::from(runtime_path);
+        let runtime_path = replica::runtime_path(&workspace);
         // Run-specific agent artifacts must not be confused with earlier runs or
         // simultaneous replicas, including after process IDs are reused.
         static RUN_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -669,7 +681,7 @@ fn run_mode(
             show_output,
             output,
         )?;
-        (child, run_dir, None, None)
+        (child, run_dir, None, None, Some(runtime_path))
     };
     let (proxy_evidence, mut run_error) = match tape_session.take() {
         Some(session) => {
@@ -949,14 +961,28 @@ fn run_mode(
     // This private record preserves evaluator outcomes, including unresolved
     // tasks. Its absence never changes a benchmark grade or blocks execution;
     // a future continuation must also validate its input and evidence seals.
-    let _ = completion::persist(
+    let mut completion_outputs = vec![workspace.clone()];
+    if let Some(path) = measurement_path.as_ref() {
+        completion_outputs.push(path.clone());
+    }
+    if let Some(path) = runtime_output {
+        completion_outputs.push(path);
+    }
+    if let Ok(record) = completion::persist(
         config_path,
         &config.log_file,
         &result,
         workload_cleanup_confirmed,
         &workload_session.checkpoint_evidence(),
         &proxy_evidence,
-    );
+        &completion::Context {
+            replica: options.replica,
+            outputs: &completion_outputs,
+        },
+    ) && let Some(observer) = options.on_completion
+    {
+        let _ = observer.completed(options.replica, &record);
+    }
     if json {
         render_json(&result, output)?;
     } else {
@@ -1988,6 +2014,7 @@ mod tests {
                     output_files: Vec::new(),
                     cleanup_confirmed: true,
                 },
+                &Default::default(),
             )
             .unwrap();
         }
@@ -2004,6 +2031,9 @@ mod tests {
             let text = String::from_utf8(bytes.clone()).unwrap();
             assert!(!text.contains("private agent"));
             let record: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(record["schema_version"], 2);
+            assert_eq!(record["replica"], serde_json::json!({"index":1,"total":1}));
+            assert_eq!(record["outputs"], serde_json::json!([root.join("run.log")]));
             assert_eq!(record["scope"], "task-outcome-not-yet-a-resume-receipt");
             assert_eq!(
                 record["summary"]["task"]["attempt_id"],
@@ -2050,7 +2080,8 @@ mod tests {
                     &crate::proxy::Evidence {
                         output_files: Vec::new(),
                         cleanup_confirmed: true
-                    }
+                    },
+                    &Default::default(),
                 )
                 .is_err()
             );

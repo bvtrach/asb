@@ -32,6 +32,8 @@ replacing prior results. Configurations that never started can run normally;
 an interrupted/partially completed replica group currently requires recovery
 and is not automatically retried. Without `--resume`, prior results are
 preserved in sweep history and execution starts fresh.
+If every replica finished and has an individual evidence receipt, resume can
+recover a missing final group receipt without launching those replicas again.
 
 `setup tui` opens a Ratatui wizard with agent, provider, model, workload, and
 measurement steps. Select multiple entries with Space; Tab or Enter advances

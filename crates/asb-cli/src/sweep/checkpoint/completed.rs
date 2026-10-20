@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 const LIMIT: u64 = 1024 * 1024;
 const SCOPE: &str = "outcome-evidence-only-not-complete-input-closure";
+pub(super) mod replicas;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,6 +25,10 @@ struct Outcome {
     workload_evidence: Vec<PathBuf>,
     #[serde(default)]
     proxy_evidence: Vec<PathBuf>,
+    #[serde(default)]
+    replica: Option<crate::runner::replica::Identity>,
+    #[serde(default)]
+    outputs: Vec<PathBuf>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -56,6 +61,15 @@ impl Inputs {
             match std::fs::symlink_metadata(self.completion_path(index)) {
                 Ok(_) => {
                     let (_, summaries) = self.verify_completed(index, &directory, entry)?;
+                    for replica in 1..=entry.configuration.concurrency {
+                        let identity = crate::runner::replica::Identity {
+                            index: replica,
+                            total: entry.configuration.concurrency,
+                        };
+                        if self.has_replica(index, replica)? {
+                            self.verify_replica(index, identity, &directory, entry)?;
+                        }
+                    }
                     reused.insert(index, summaries);
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -63,9 +77,28 @@ impl Inputs {
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
                         Err(error) => return Err(io_error(error)),
                         Ok(_) => {
-                            return Err(invalid(
-                                "an unsealed or interrupted replica group exists; it must be recovered without rerunning its graded members",
-                            ));
+                            let mut summaries = Vec::new();
+                            // A stopped owner may have persisted each replica
+                            // but not yet published the final group receipt.
+                            // Recover only when every selected slot is sealed.
+                            for replica in 1..=entry.configuration.concurrency {
+                                if !self.has_replica(index, replica)? {
+                                    return Err(invalid(
+                                        "an unsealed or interrupted replica group exists; its incomplete replicas still require recovery without rerunning graded members",
+                                    ));
+                                }
+                                summaries.push(self.verify_replica(
+                                    index,
+                                    crate::runner::replica::Identity {
+                                        index: replica,
+                                        total: entry.configuration.concurrency,
+                                    },
+                                    &directory,
+                                    entry,
+                                )?);
+                            }
+                            outcome_state(&directory, entry)?;
+                            reused.insert(index, summaries);
                         }
                     }
                 }
@@ -177,53 +210,29 @@ fn outcome_state(
     let mut summaries = BTreeMap::new();
     let mut evidence = BTreeSet::new();
     let mut proxy_outputs = BTreeSet::new();
+    let mut replica_attempts = BTreeMap::new();
     for file in files {
         let record: Outcome = read_private(&file)?;
-        let summary = &record.summary;
-        let task: TaskIdentity = serde_json::from_value(summary["task"].clone())
-            .map_err(|_| invalid("outcome task identity is missing or malformed"))?;
-        let baseline: BaselineEvidence =
-            serde_json::from_value(summary["workload_baseline"].clone())
-                .map_err(|_| invalid("outcome baseline evidence is missing or malformed"))?;
-        if record.schema_version != 1
-            || record.scope != "task-outcome-not-yet-a-resume-receipt"
-            || !record.workload_cleanup_confirmed
-            || !record.proxy_cleanup_confirmed
-            || summary["schema_version"] != 2
-            || !entry.selection.matches(&task)
-            || task.attempt_id.is_empty()
-            || task.attempt_id.len() > 256
-            || !attempts.insert(task.attempt_id.clone())
-            || summary["agent"] != config.agent
-            || summary["workload"] != config.workload
-            || summary["provider"] != config.provider
-            || summary["model"] != config.model
-            || summary["workload_success"].as_bool().is_none()
-            || summary["process_success"].as_bool().is_none()
-            || summary["workload_evaluation"] != entry.selection.evaluation_kind
-            || !baseline.supports(&entry.selection.evaluation_kind)
-            || record.workload_evidence.len() > 64
-            || record.proxy_evidence.len() > 64
-            || (entry.selection.dataset.is_some() && record.workload_evidence.is_empty())
+        let task = validate_outcome(&record, entry)?;
+        if !attempts.insert(task.attempt_id.clone()) {
+            return Err(invalid("outcome contains duplicate attempt identities"));
+        }
+        if let Some(replica) = record.replica
+            && replica_attempts
+                .insert(replica.index, task.attempt_id.clone())
+                .is_some()
         {
-            return Err(invalid(
-                "outcome identity, grade, baseline or cleanup is incomplete",
-            ));
+            return Err(invalid("outcome contains duplicate replica slots"));
+        }
+        for path in record.outputs {
+            if !path.starts_with(&directory) {
+                proxy_outputs.insert(path);
+            }
         }
         for path in record.workload_evidence {
-            if !path.is_absolute() || !path.exists() {
-                return Err(invalid(
-                    "declared evaluator evidence is missing or relative",
-                ));
-            }
             evidence.insert(path);
         }
         for path in record.proxy_evidence {
-            if !path.is_absolute() {
-                return Err(invalid("declared proxy output path is relative"));
-            }
-            // A failed agent may have made no calls and produced no recording.
-            // Bind that absence too, rather than retrying a graded false task.
             proxy_outputs.insert(path);
         }
         summaries.insert(task.attempt_id, record.summary);
@@ -248,29 +257,10 @@ fn outcome_state(
                 .get(attempt)
                 .ok_or_else(|| invalid("measurement and outcome identify different attempts"))?;
             if !measured_attempts.insert(attempt.to_owned())
-                || [
-                    "schema_version",
-                    "task",
-                    "agent",
-                    "workload",
-                    "provider",
-                    "model",
-                    "process_success",
-                    "workload_success",
-                    "workload_evaluation",
-                    "workload_baseline",
-                    "workload_baseline_passed",
-                    "success_rate",
-                    "token_usage",
-                    "elapsed_ms",
-                    "steps",
-                    "failure_kind",
-                    "failure_reason",
-                    "workload_failure",
-                    "adapter_smoke_success",
-                ]
-                .iter()
-                .any(|field| measured[*field] != summary[*field])
+                || replica_attempts
+                    .get(&replica)
+                    .is_some_and(|expected| expected != attempt)
+                || !measurement_matches(&measured, summary)
             {
                 return Err(invalid("measurement and outcome disagree on task results"));
             }
@@ -284,6 +274,87 @@ fn outcome_state(
         roots.push(Root::path(format!("proxy-output-{index}"), path));
     }
     Ok((roots, summaries.into_values().collect()))
+}
+
+fn validate_outcome(record: &Outcome, entry: &PlannedBenchmark) -> Result<TaskIdentity, Error> {
+    let summary = &record.summary;
+    let config = &entry.configuration;
+    let task: TaskIdentity = serde_json::from_value(summary["task"].clone())
+        .map_err(|_| invalid("outcome task identity is missing or malformed"))?;
+    let baseline: BaselineEvidence =
+        serde_json::from_value(summary["workload_baseline"].clone())
+            .map_err(|_| invalid("outcome baseline evidence is missing or malformed"))?;
+    if !matches!(record.schema_version, 1 | 2)
+        || (record.schema_version == 2
+            && record
+                .replica
+                .is_none_or(|replica| !replica.valid() || replica.total != config.concurrency))
+        || record.scope != "task-outcome-not-yet-a-resume-receipt"
+        || !record.workload_cleanup_confirmed
+        || !record.proxy_cleanup_confirmed
+        || summary["schema_version"] != 2
+        || !entry.selection.matches(&task)
+        || task.attempt_id.is_empty()
+        || task.attempt_id.len() > 256
+        || summary["agent"] != config.agent
+        || summary["workload"] != config.workload
+        || summary["provider"] != config.provider
+        || summary["model"] != config.model
+        || summary["workload_success"].as_bool().is_none()
+        || summary["process_success"].as_bool().is_none()
+        || summary["workload_evaluation"] != entry.selection.evaluation_kind
+        || !baseline.supports(&entry.selection.evaluation_kind)
+        || record.workload_evidence.len() > 64
+        || record.proxy_evidence.len() > 64
+        || record.outputs.len() > 64
+        || record.outputs.iter().any(|path| !path.is_absolute())
+        || (entry.selection.dataset.is_some() && record.workload_evidence.is_empty())
+    {
+        return Err(invalid(
+            "outcome identity, grade, baseline or cleanup is incomplete",
+        ));
+    }
+    for path in &record.workload_evidence {
+        if !path.is_absolute() || !path.exists() {
+            return Err(invalid(
+                "declared evaluator evidence is missing or relative",
+            ));
+        }
+    }
+    for path in &record.proxy_evidence {
+        if !path.is_absolute() {
+            return Err(invalid("declared proxy output path is relative"));
+        }
+        // A failed agent may have made no calls and produced no recording.
+        // Bind that absence too, rather than retrying a graded false task.
+    }
+    Ok(task)
+}
+
+fn measurement_matches(measured: &Value, summary: &Value) -> bool {
+    [
+        "schema_version",
+        "task",
+        "agent",
+        "workload",
+        "provider",
+        "model",
+        "process_success",
+        "workload_success",
+        "workload_evaluation",
+        "workload_baseline",
+        "workload_baseline_passed",
+        "success_rate",
+        "token_usage",
+        "elapsed_ms",
+        "steps",
+        "failure_kind",
+        "failure_reason",
+        "workload_failure",
+        "adapter_smoke_success",
+    ]
+    .iter()
+    .all(|field| measured[*field] == summary[*field])
 }
 
 fn invalid(reason: &str) -> Error {
@@ -315,7 +386,7 @@ fn read_private<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Error>
     serde_json::from_slice(&bytes).map_err(|_| invalid("outcome record is malformed"))
 }
 
-fn publish(path: &Path, receipt: &Completion) -> Result<(), Error> {
+fn publish(path: &Path, receipt: &impl Serialize) -> Result<(), Error> {
     let directory = path.parent().expect("completion receipt parent");
     if let Ok(metadata) = std::fs::symlink_metadata(directory)
         && !metadata.is_dir()
@@ -367,12 +438,12 @@ mod tests {
     use super::*;
     use crate::workloads::TaskSelection;
 
-    struct Fixture {
-        root: PathBuf,
-        directory: PathBuf,
-        evidence: PathBuf,
-        inputs: Inputs,
-        entry: PlannedBenchmark,
+    pub(super) struct Fixture {
+        pub(super) root: PathBuf,
+        pub(super) directory: PathBuf,
+        pub(super) evidence: PathBuf,
+        pub(super) inputs: Inputs,
+        pub(super) entry: PlannedBenchmark,
     }
 
     #[test]
@@ -411,7 +482,7 @@ mod tests {
     }
 
     impl Fixture {
-        fn new(resolved: bool) -> Self {
+        pub(super) fn new(resolved: bool) -> Self {
             let root = std::env::temp_dir()
                 .join(TaskIdentity::local("completion-seal-test", None).attempt_id);
             let directory = root.join("results");
@@ -605,6 +676,7 @@ mod tests {
             "scope",
             "grader",
             "duplicate",
+            "duplicate-replica",
             "missing",
             "extra",
             "temporary",
@@ -631,6 +703,14 @@ mod tests {
                 "grader" => record["summary"]["workload_evaluation"] = json!("adapter-smoke"),
                 "duplicate" => {
                     record["summary"]["task"] = fixture.read(1)["summary"]["task"].clone()
+                }
+                "duplicate-replica" => {
+                    record["schema_version"] = json!(2);
+                    record["replica"] = json!({"index":1,"total":2});
+                    let mut sibling = fixture.read(1);
+                    sibling["schema_version"] = json!(2);
+                    sibling["replica"] = record["replica"].clone();
+                    fixture.write(1, &sibling);
                 }
                 "missing" => std::fs::remove_file(fixture.outcome_path(1)).unwrap(),
                 "extra" => fixture.write(2, &fixture.read(1)),

@@ -5,6 +5,12 @@ use serde_json::json;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+#[derive(Default)]
+pub(super) struct Context<'a> {
+    pub replica: super::replica::Identity,
+    pub outputs: &'a [PathBuf],
+}
+
 pub(super) fn persist(
     config: &Path,
     log: &str,
@@ -12,7 +18,11 @@ pub(super) fn persist(
     workload_cleanup_confirmed: bool,
     evidence: &[PathBuf],
     proxy: &crate::proxy::Evidence,
-) -> Result<(), Error> {
+    context: &Context<'_>,
+) -> Result<PathBuf, Error> {
+    if !context.replica.valid() {
+        return Err(Error::Input("invalid completion replica identity".into()));
+    }
     let log = resolve_log_path(config, log);
     let directory = log
         .parent()
@@ -43,7 +53,19 @@ pub(super) fn persist(
         .map(std::path::absolute)
         .collect::<Result<Vec<_>, _>>()
         .map_err(crate::io_error)?;
-    let content = serde_json::to_vec_pretty(&json!({"schema_version":1,
+    let mut outputs = vec![std::path::absolute(&log).map_err(crate::io_error)?];
+    outputs.extend(
+        context
+            .outputs
+            .iter()
+            .map(std::path::absolute)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(crate::io_error)?,
+    );
+    outputs.sort();
+    outputs.dedup();
+    let content = serde_json::to_vec_pretty(&json!({"schema_version":2,
+        "replica":context.replica,"outputs":outputs,
         "scope":"task-outcome-not-yet-a-resume-receipt",
         "workload_cleanup_confirmed":workload_cleanup_confirmed,
         "proxy_cleanup_confirmed":proxy.cleanup_confirmed,
@@ -60,8 +82,11 @@ pub(super) fn persist(
         options.mode(0o600);
     }
     let mut file = options.open(&temporary).map_err(crate::io_error)?;
+    let destination = directory.join(format!("{id}.json"));
     file.write_all(&content)
         .and_then(|()| file.sync_all())
-        .and_then(|()| std::fs::rename(&temporary, directory.join(format!("{id}.json"))))
-        .map_err(crate::io_error)
+        .and_then(|()| std::fs::rename(&temporary, &destination))
+        .and_then(|()| std::fs::File::open(&directory)?.sync_all())
+        .map_err(crate::io_error)?;
+    Ok(destination)
 }

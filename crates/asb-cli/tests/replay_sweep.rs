@@ -110,6 +110,19 @@ fetch(url + '/responses', {method:'POST', headers:{'content-type':'application/j
         let value: serde_json::Value =
             serde_json::from_str(std::fs::read_to_string(log).unwrap().trim()).unwrap();
         assert_eq!(value["status"], "completed");
+        let receipt: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join(format!(
+                "sweep-results/.checkpoint/replicas/000000/{index:03}.json"
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            receipt["replica"],
+            serde_json::json!({"index":index,"total":8})
+        );
+        assert_eq!(receipt["scope"], "completed-replica-declared-evidence");
+        assert_eq!(receipt["fingerprint"]["digest"].as_str().unwrap().len(), 64);
     }
     let comparison: serde_json::Value = serde_json::from_slice(
         &std::fs::read(root.join("results/sweep-comparison/comparison.json")).unwrap(),
@@ -198,10 +211,41 @@ fetch(url + '/responses', {method:'POST', headers:{'content-type':'application/j
         serde_json::from_slice::<serde_json::Value>(&before_inputs).unwrap()["initial"],
         serde_json::from_slice::<serde_json::Value>(&stable_seal).unwrap()["initial"]
     );
-    // Refuse a partial/unsealed replica group before admitting any work.
+    // Recover the window after all per-replica seals were written but before
+    // the coordinator published its final group receipt, without new attempts.
     let receipt = root.join("sweep-results/.checkpoint/completed/000000.json");
     let saved_receipt = root.join("preserved-receipt.json");
     std::fs::rename(&receipt, &saved_receipt).unwrap();
+    let recovered = asb(
+        &root,
+        &[
+            "sweep",
+            "sweep.toml",
+            "--replay",
+            "--cassette-root",
+            "tapes",
+            "--resume",
+            "--json",
+        ],
+    );
+    assert!(
+        recovered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recovered.stderr)
+    );
+    assert_eq!(
+        std::fs::read(root.join("agent-launches")).unwrap(),
+        launches
+    );
+    assert!(
+        !receipt.exists(),
+        "validation does not republish a missing group receipt"
+    );
+    let replica_receipt = root.join("sweep-results/.checkpoint/replicas/000000/001.json");
+    let saved_replica = root.join("preserved-replica-receipt.json");
+    std::fs::rename(&replica_receipt, &saved_replica).unwrap();
+    let stable_seal = std::fs::read(&input_seal).unwrap();
+    // One missing replica seal must not turn this group into a fresh retry.
     let rejected = asb(
         &root,
         &[
@@ -226,6 +270,7 @@ fetch(url + '/responses', {method:'POST', headers:{'content-type':'application/j
         launches
     );
     std::fs::rename(saved_receipt, &receipt).unwrap();
+    std::fs::rename(saved_replica, &replica_receipt).unwrap();
     // A pending initial seal left by a stopped owner still requires exact
     // current inputs and complete graded groups, not a previous success exit.
     let mut pending: serde_json::Value = serde_json::from_slice(&stable_seal).unwrap();

@@ -195,7 +195,21 @@ from an executable's pathname.
 After workload cleanup and measurement completion, the runner writes private
 `.asb-completions/` outcome records beside the run log, including unresolved
 outcomes, actual task identity, cleanup status and workload-owned evaluator
-evidence paths. These records omit agent stdout/stderr. After a configuration's
+evidence paths. These records omit agent stdout/stderr. When one replica
+finishes, a generic completion observer can independently bind its
+one-based slot, selected population, original input digest, private outcome
+record, workspace, log, native runtime state (if present), measurements and
+external evaluator/proxy evidence in
+`.checkpoint/replicas/<configuration>/<replica>.json`. These receipts publish
+after grading, workload/proxy cleanup and measurement completion, before the
+runner waits for the whole group. Sibling output paths do not enter that
+replica's seal. Slot-to-workspace/log/measurement naming comes from the same
+runner helper used to create replicas; the observer does not guess an agent's
+paths. Per-configuration evidence publication is serialized without serializing
+agent execution, and metadata publication failure never changes a fresh grade.
+Schema-2 private outcomes declare the slot and execution-output paths; old
+schema-1 whole-group outcomes retain their previous read compatibility.
+After a configuration's
 replicas finish, the checkpoint binds its complete result tree and all declared
 evaluator roots into `.checkpoint/completed/<index>.json`. Every replica must
 have a unique, matching task identity, an actual boolean evaluator outcome,
@@ -216,7 +230,11 @@ starting or skipping anything. It reuses complete groups without launching
 clients, preserves failed grades and failure exits, and admits configurations
 whose result directory does not exist. A pending initial seal from a stopped
 owner is usable only when the current declared inputs still match exactly.
-An existing unsealed/partially completed replica group is rejected intact;
+If a stopped owner missed the final group receipt but every selected replica
+has independently sealed evidence, continuation verifies those slots and the
+complete outcome population without creating new attempts or republishing a
+group receipt during validation. A genuinely unsealed/partially completed
+replica group is still rejected intact;
 per-replica continuation and owned-container crash recovery remain separate
 unfinished work. Missing keys are never regenerated for continuation, and
 invalid continuation never replaces historical input seals/results. JSONL

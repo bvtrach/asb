@@ -80,6 +80,12 @@ const expected=['first-1','first-2','second'];
     await new Promise(resolve=>setTimeout(resolve,10));
   }
   if(first && fs.existsSync(home+'/fail-first')) process.exit(7);
+  if(first && replica==='2') {
+    while(!fs.existsSync(home+'/sweep-results/.checkpoint/replicas/000000/001.json')) {
+      if(Date.now()>deadline) throw new Error('replica 1 evidence was not sealed before replica 2 finished');
+      await new Promise(resolve=>setTimeout(resolve,10));
+    }
+  }
   if(!first && fs.existsSync(home+'/retarget-input')) {
     fs.unlinkSync(process.env.ASB_TEST_INPUT);
     fs.symlinkSync(home+'/replacement-input', process.env.ASB_TEST_INPUT);
