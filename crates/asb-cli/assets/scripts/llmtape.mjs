@@ -3,7 +3,7 @@
 // Small project-local HTTP recorder/replayer embedded in ASB. It supplies the
 // bounded loopback protocol that ASB's tape module invokes.
 
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { performance } from "node:perf_hooks";
 import { cancelNetworkRequests, networkFetch } from "./network-fetch.mjs";
@@ -33,7 +33,8 @@ const args = process.argv.slice(2);
 const mode = args.shift();
 if (mode !== "record" && mode !== "replay") usage("mode must be record or replay");
 const port = Number(option(args, "--port"));
-if (!Number.isInteger(port) || port < 1 || port > 65535) usage("--port must be a valid TCP port");
+const readyFile = process.env.ASB_TAPE_READY_FILE;
+if (!Number.isInteger(port) || port < (readyFile ? 0 : 1) || port > 65535) usage("--port must be a valid TCP port");
 const cassette = mode === "record" ? option(args, "--out") : option(args, "--cassette");
 const upstream = mode === "record" ? option(args, "--upstream") : undefined;
 const respectRecordTimings = args.includes("--respect-record-timings");
@@ -603,7 +604,15 @@ const server = http.createServer((request, response) => {
 if (mode === "record") {
   if (existsSync(cassette)) writeFileSync(cassette, "");
 }
-server.listen(port, "127.0.0.1");
+server.listen(port, "127.0.0.1", () => {
+  if (readyFile) {
+    const temporary = `${readyFile}.tmp`;
+    writeFileSync(temporary, JSON.stringify({
+      schema_version: 1, pid: process.pid, host: "127.0.0.1", port: server.address().port,
+    }), { mode: 0o600, flag: "wx" });
+    renameSync(temporary, readyFile);
+  }
+});
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => { cancelNetworkRequests(); server.close(() => process.exit(0)); });
 }

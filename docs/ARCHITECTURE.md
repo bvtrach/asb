@@ -427,6 +427,13 @@ and requires only Node.js; it does not use or install an external recorder
 package. ASB never falls back to an unqualified host `PATH` lookup; set
 `ASB_LLM_TAPE` explicitly to use another compatible executable for the llmtape
 adapter.
+The built-in proxy binds an operating-system-selected loopback port itself and
+atomically publishes a bounded readiness receipt in its private session directory.
+ASB checks that receipt's child PID, loopback host and nonzero port before
+exposing the endpoint; an unrelated listening socket cannot satisfy readiness.
+Explicit `ASB_LLM_TAPE` overrides retain the legacy fixed-port/TCP readiness
+protocol for compatibility. Such overrides are responsible for their own
+listener ownership; they do not provide the built-in receipt guarantee.
 Measurement collection remains
 explicitly opt-in through `asb run --measurements DIR`; CI tests the tape on
 loopback but does not start live agents, live providers, or host collectors.
