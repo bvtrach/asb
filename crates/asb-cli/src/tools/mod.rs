@@ -7,10 +7,13 @@ use std::path::Path;
 pub(crate) mod bpftrace;
 mod cli2key;
 mod flamegraph;
+mod harbor;
 mod iostat;
 mod mpstat;
 mod perf;
 mod perfetto;
+mod swebench;
+mod terminal_bench;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum ToolKind {
@@ -96,6 +99,9 @@ static REGISTRY: &[&dyn ToolAdapter] = &[
     &bpftrace::ADAPTER,
     &perfetto::ADAPTER,
     &flamegraph::ADAPTER,
+    &swebench::ADAPTER,
+    &terminal_bench::ADAPTER,
+    &harbor::ADAPTER,
 ];
 pub(crate) fn all() -> &'static [&'static dyn ToolAdapter] {
     REGISTRY
@@ -122,4 +128,38 @@ pub(crate) fn resolve(id: &str, project_root: &Path, tools_dir: &str) -> Option<
     .find(|candidate| candidate.is_file())
     .and_then(|candidate| candidate.canonicalize().ok())
     .map(|candidate| candidate.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn official_benchmark_harnesses_have_pinned_project_local_python_recipes() {
+        for (id, expected_binary, expected_package) in [
+            (
+                "swebench",
+                "swebench",
+                "swebench @ git+https://github.com/SWE-bench/SWE-bench.git@02e7a74ffd0b707aab73d203fe87bdc7c76afc8e",
+            ),
+            ("terminal-bench", "tb", "terminal-bench==0.2.18"),
+            ("harbor", "harbor", "harbor==0.24.0"),
+        ] {
+            let adapter = find(id).unwrap();
+            assert!(adapter.kind() == ToolKind::Support);
+            assert_eq!(adapter.executable(), Some(expected_binary));
+            match adapter.recipe() {
+                Recipe::Python {
+                    package,
+                    dependencies,
+                    executable,
+                } => {
+                    assert_eq!(package, expected_package);
+                    assert_eq!(executable, expected_binary);
+                    assert!(dependencies.is_empty());
+                }
+                _ => panic!("{id} must install the actual official Python harness"),
+            }
+        }
+    }
 }

@@ -109,6 +109,17 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   files are stored under `.asb/fixtures/<name>/` and materialized into the run
   workspace without overwriting existing edits.
 
+`WorkloadAdapter` creates a distinct mutable `WorkloadSession` for each
+attempt. The session owns its task invocation, prepared workspace, initial
+baseline evidence and evaluator. The generic runner consumes those values
+without choosing a benchmark's grader. Task and attempt identities are stored
+in run/measurement records and preserved by comparison; optional dataset
+identities include source, revision and split. Generic contracts live in
+`workloads/session.rs`, separate from concrete adapters. The ongoing
+[full benchmark integration](FULL_BENCHMARK_INTEGRATION.md) extends this
+boundary with actual upstream catalogs, submissions, environments and
+evaluators; a session by itself is not proof of full benchmark support.
+
 The CLI is the stable user boundary. A benchmark configuration names an agent,
 workload, provider, model, concurrency, workspace, and log file. `concurrency`
 defaults to `1`; values greater than one run isolated replicas of the same

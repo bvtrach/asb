@@ -31,8 +31,30 @@ mod terminal_bench;
 pub(super) trait WorkloadAdapter: Sync {
     fn id(&self) -> &'static str;
     /// Smoke fixtures are not instances from the named upstream benchmark.
-    fn evaluation_kind(&self) -> &'static str {
+    fn evaluation_kind(&self, _name: &str) -> &'static str {
         "adapter-smoke"
+    }
+    fn evaluator(&self) -> super::session::Evaluator {
+        super::evaluate_external_smoke
+    }
+    fn prepare_task(
+        &self,
+        context: &super::PreparationContext<'_>,
+    ) -> Result<Box<dyn super::WorkloadSession>, String> {
+        let prompt = super::load_trial(
+            context.workload,
+            context.trial,
+            context.trial_set,
+            context.workload_directory,
+        )?;
+        self.prepare_fixture(context.workload, context.workspace)?;
+        self.prepare_source(context.workload_directory, context.workspace)?;
+        Ok(Box::new(super::session::FileSession::new(
+            context,
+            prompt,
+            self.evaluator(),
+            self.evaluation_kind(context.workload),
+        )))
     }
     fn matches(&self, name: &str) -> bool {
         self.id() == name
@@ -84,8 +106,15 @@ impl WorkloadAdapter for StaticExternalAdapter {
 
 pub(super) struct PromptAdapter;
 impl WorkloadAdapter for PromptAdapter {
-    fn evaluation_kind(&self) -> &'static str {
-        "bundled-fixture"
+    fn evaluation_kind(&self, name: &str) -> &'static str {
+        if name == "repository-navigation" {
+            "response-review"
+        } else {
+            "bundled-fixture"
+        }
+    }
+    fn evaluator(&self) -> super::session::Evaluator {
+        super::evaluate_builtin
     }
     fn id(&self) -> &'static str {
         "prompt"

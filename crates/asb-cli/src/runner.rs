@@ -45,6 +45,7 @@ struct RunResult<'a> {
     status: &'a str,
     agent: &'a str,
     workload: &'a str,
+    task: workloads::TaskIdentity,
     provider: &'a str,
     model: &'a str,
     process_success: bool,
@@ -416,7 +417,7 @@ fn run_mode(
     let workload_directory = std::env::var_os("ASB_WORKLOAD_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir));
-    let (prompt, workload_baseline_passed) = instrument_phase(
+    let mut workload_session = instrument_phase(
         measurement_session.as_mut(),
         LifecyclePhase::WorkloadPreparation,
         || {
@@ -426,32 +427,29 @@ fn run_mode(
                     workspace.display()
                 ))
             })?;
-            let prompt = workloads::load_trial(
-                &config.workload,
-                config.trial.as_deref(),
-                config.trial_set.as_deref(),
-                &workload_directory,
-            )
-            .map_err(Error::Input)?;
-            workloads::prepare_fixture(&config.workload, &workspace).map_err(Error::Run)?;
-            workloads::prepare_external(&config.workload, &workload_directory, &workspace)
-                .map_err(Error::Run)?;
-            let baseline = workloads::evaluate(&config.workload, &workspace, "")
-                .ok()
-                .map(|evaluation| evaluation == workloads::Evaluation::Passed);
-            Ok((prompt, baseline))
+            workloads::prepare_task(&workloads::PreparationContext {
+                workload: &config.workload,
+                trial: config.trial.as_deref(),
+                trial_set: config.trial_set.as_deref(),
+                workload_directory: &workload_directory,
+                workspace: &workspace,
+            })
+            .map_err(Error::Run)
         },
     )?;
+    let prompt = workload_session.invocation().prompt.clone();
+    let workspace = workload_session.invocation().workspace.clone();
+    let workload_baseline_passed = workload_session.baseline_passed();
     if !json && workload_baseline_passed == Some(true) {
         emit_warning(warnings, output, "The workload already passes before the agent starts. Files are preserved, but this run cannot earn task-resolution credit. Use a fresh workspace for a new benchmark attempt.".into())?;
     }
     if !json
         && workload_baseline_passed.is_none()
-        && workloads::resolution_eligible(workloads::evaluation_kind(&config.workload, &workspace))
+        && workloads::resolution_eligible(workload_session.evaluation_kind())
     {
         emit_warning(warnings, output, "The initial workload baseline could not be verified. This run cannot earn task-resolution credit. Inspect the workload fixture and use a fresh workspace.".into())?;
     }
-    if !json && workloads::evaluation_kind(&config.workload, &workspace) == "adapter-smoke" {
+    if !json && workload_session.evaluation_kind() == "adapter-smoke" {
         emit_warning(warnings, output, "Selected external workload runs only an adapter smoke exercise, not an upstream benchmark task. Benchmark task success will be unavailable; an official dataset and evaluator are not integrated yet.".into())?;
     }
     let mut tape_session = instrument_phase(
@@ -677,13 +675,7 @@ fn run_mode(
         match instrument_operation(
             measurement_session.as_mut(),
             LifecyclePhase::WorkloadEvaluation,
-            || {
-                workloads::evaluate(
-                    &config.workload,
-                    &workspace,
-                    final_response.as_deref().unwrap_or_default(),
-                )
-            },
+            || workload_session.evaluate(final_response.as_deref().unwrap_or_default()),
         )? {
             Ok(workloads::Evaluation::Passed) => (Some(true), None),
             Ok(workloads::Evaluation::Failed(reason)) => {
@@ -784,7 +776,7 @@ fn run_mode(
         elapsed_ms,
         success,
     });
-    let configured_kind = workloads::evaluation_kind(&config.workload, &workspace);
+    let configured_kind = workload_session.evaluation_kind();
     let evaluation_kind = workloads::scored_kind(configured_kind, workload_baseline_passed);
     let resolution_eligible = workloads::resolution_eligible(evaluation_kind);
     let result = RunResult {
@@ -800,6 +792,7 @@ fn run_mode(
         },
         agent: &config.agent,
         workload: &config.workload,
+        task: workload_session.invocation().identity.clone(),
         provider: &config.provider,
         model: &config.model,
         process_success,
@@ -846,6 +839,7 @@ fn run_mode(
             success_rate: result.success_rate,
             agent: result.agent,
             workload: result.workload,
+            task: Some(&result.task),
             provider: result.provider,
             model: result.model,
             elapsed_ms,
@@ -1094,6 +1088,7 @@ fn resolve_log_path(config_path: &Path, configured_path: &str) -> PathBuf {
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
     let summary = serde_json::json!({
         "schema_version": result.schema_version,
+        "task": result.task,
         "process_success": result.process_success,
         "workload_success": result.workload_success,
         "workload_evaluation": result.workload_evaluation,
@@ -1660,6 +1655,7 @@ mod tests {
                 adapter_smoke_success: None,
                 agent: "fixture",
                 workload: "fixture",
+                task: None,
                 workload_evaluation: "fixture",
                 workload_baseline_passed: Some(false),
                 provider: "fixture",
@@ -1800,6 +1796,7 @@ mod tests {
             status: "completed",
             agent: "codex",
             workload: "bug-fix",
+            task: crate::workloads::TaskIdentity::local("bug-fix", None),
             provider: "openrouter",
             model: "test-model",
             process_success: true,

@@ -6,6 +6,22 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 mod adapters;
+mod session;
+pub use session::TaskIdentity;
+pub(crate) use session::{PreparationContext, WorkloadSession};
+
+pub(crate) fn prepare_task(
+    context: &PreparationContext<'_>,
+) -> Result<Box<dyn WorkloadSession>, String> {
+    adapters::find(context.workload)
+        .ok_or_else(|| {
+            format!(
+                "no workload adapter is registered for `{}`",
+                context.workload
+            )
+        })?
+        .prepare_task(context)
+}
 
 const MAX_PROMPT_BYTES: u64 = 64 * 1024;
 
@@ -251,6 +267,7 @@ pub(super) fn populate_builtin_fixtures(directory: &Path) -> Result<usize, std::
 }
 
 /// Materialize the selected fixture into the run workspace without overwriting edits.
+#[cfg(test)]
 pub(crate) fn prepare_fixture(name: &str, directory: &Path) -> Result<usize, String> {
     adapters::find(name).map_or(Ok(0), |adapter| adapter.prepare_fixture(name, directory))
 }
@@ -288,6 +305,7 @@ pub(super) fn prepare_builtin_fixture(name: &str, directory: &Path) -> Result<us
 }
 
 /// Copy an installed external workload source into the run workspace.
+#[cfg(test)]
 pub(crate) fn prepare_external(
     name: &str,
     workload_directory: &Path,
@@ -381,13 +399,7 @@ fn adapter_trial_label(name: &str) -> String {
 /// adapter is selected and installed, ASB runs the small adapter-smoke trial
 /// that is materialized beside that reference.
 pub(crate) fn evaluation_kind(name: &str, _workspace: &Path) -> &'static str {
-    if name == "repository-navigation" {
-        return "response-review";
-    }
-    if source_expectation(name).is_some() {
-        return "bundled-fixture";
-    }
-    adapters::find(name).map_or("ungraded", |adapter| adapter.evaluation_kind())
+    adapters::find(name).map_or("ungraded", |adapter| adapter.evaluation_kind(name))
 }
 
 /// Only an actual task evaluator can contribute to task-resolution rate.
@@ -580,7 +592,18 @@ fn source_satisfies(path: &Path, expectation: &SourceExpectation) -> Result<Eval
 /// task success.  Grading is implemented in Rust over evaluator-owned,
 /// immutable expectations; no agent-controlled tests, subprocess, shell, or
 /// inherited credentials are executed.
+#[cfg(test)]
 pub(crate) fn evaluate(
+    name: &str,
+    workspace: &Path,
+    agent_output: &str,
+) -> Result<Evaluation, String> {
+    adapters::find(name)
+        .ok_or_else(|| format!("no grader is available for workload `{name}`"))?
+        .evaluator()(name, workspace, agent_output)
+}
+
+pub(super) fn evaluate_builtin(
     name: &str,
     workspace: &Path,
     agent_output: &str,
@@ -603,11 +626,17 @@ pub(crate) fn evaluate(
     if let Some(expectation) = source_expectation(name) {
         return source_satisfies(workspace, &expectation);
     }
-    let directory = if adapters::find(name).is_some() {
-        workspace.join("external-workload").join("asb-trial")
-    } else {
-        return Err(format!("no grader is available for workload `{name}`"));
-    };
+    Err(format!(
+        "no bundled grader is available for workload `{name}`"
+    ))
+}
+
+pub(super) fn evaluate_external_smoke(
+    name: &str,
+    workspace: &Path,
+    _agent_output: &str,
+) -> Result<Evaluation, String> {
+    let directory = workspace.join("external-workload").join("asb-trial");
     let implementation = directory.join("src/task.py");
     let relative = "external-workload/asb-trial/src/task.py";
     let metadata = match fs::metadata(&implementation) {

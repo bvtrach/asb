@@ -264,6 +264,8 @@ pub struct RunMeasurement<'a> {
     pub adapter_smoke_success: Option<bool>,
     pub agent: &'a str,
     pub workload: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<&'a crate::workloads::TaskIdentity>,
     pub workload_evaluation: &'a str,
     pub workload_baseline_passed: Option<bool>,
     pub provider: &'a str,
@@ -1369,6 +1371,7 @@ mod tests {
             adapter_smoke_success: None,
             agent: "a",
             workload: "w",
+            task: None,
             workload_evaluation: "bundled-fixture",
             workload_baseline_passed: Some(false),
             provider: "p",

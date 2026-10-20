@@ -107,7 +107,8 @@ mod adapter_layout_tests {
             (
                 "workloads",
                 super::workloads::external_adapter_names().collect(),
-                &["mod.rs"],
+                // Task/session contracts are category-wide, not adapters.
+                &["mod.rs", "session.rs"],
             ),
             ("proxy", super::proxy::names().collect(), &["mod.rs"]),
             (

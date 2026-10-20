@@ -26,6 +26,7 @@ struct BenchmarkData {
     directory: PathBuf,
     agent: String,
     workload: String,
+    task: Option<crate::workloads::TaskIdentity>,
     workload_evaluation: String,
     provider: String,
     model: String,
@@ -103,6 +104,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 directory: result_dir.clone(),
                 agent: agent.clone(),
                 workload: workload.clone(),
+                task: None,
                 workload_evaluation: crate::workloads::evaluation_kind(&workload, Path::new("")).into(),
                 provider: provider.clone(),
                 model: model.clone(),
@@ -119,6 +121,18 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 continue;
             }
             let run_value = read_json(&run_path)?;
+            let task = run_value
+                .get("task")
+                .map(|value| {
+                    serde_json::from_value::<crate::workloads::TaskIdentity>(value.clone())
+                })
+                .transpose()
+                .map_err(|error| {
+                    Error::Input(format!(
+                        "invalid task identity in {}: {error}",
+                        run_path.display()
+                    ))
+                })?;
             let run_status = match run_value.get("status").and_then(Value::as_str) {
                 Some(status)
                     if run_value.get("workload_evaluation").and_then(Value::as_str)
@@ -249,6 +263,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 directory: result_dir.clone(),
                 agent: agent.clone(),
                 workload: workload.clone(),
+                task,
                 workload_evaluation,
                 provider: provider.clone(),
                 model: model.clone(),
@@ -304,6 +319,10 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             &benchmark.model,
             &benchmark.workload,
             &benchmark.workload_evaluation,
+            benchmark
+                .task
+                .as_ref()
+                .and_then(|task| task.dataset.as_ref()),
         ))
         .map_err(|error| Error::Run(error.to_string()))?;
         resolution_groups.entry(key).or_default().observe(
@@ -327,6 +346,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             "directory": benchmark.directory,
             "agent": benchmark.agent,
             "workload": benchmark.workload,
+            "task": benchmark.task,
             "workload_evaluation": benchmark.workload_evaluation,
             "provider": benchmark.provider,
             "model": benchmark.model,

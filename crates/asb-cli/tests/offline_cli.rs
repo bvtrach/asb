@@ -1449,6 +1449,10 @@ fn replay_returns_json_and_writes_completed_log_offline() {
     let log: serde_json::Value =
         serde_json::from_slice(&std::fs::read(project.0.join("run.log")).unwrap()).unwrap();
     assert_eq!(log["status"], "completed");
+    assert_eq!(summary["task"], log["task"]);
+    assert_eq!(summary["task"]["workload"], "bug-fix");
+    assert_eq!(summary["task"]["task_id"], "bug-fix");
+    assert!(!summary["task"]["attempt_id"].as_str().unwrap().is_empty());
     assert!(
         log["stdout"]
             .as_str()
