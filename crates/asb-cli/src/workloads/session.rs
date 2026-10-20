@@ -78,7 +78,7 @@ pub(crate) struct ExecutionContext<'a> {
     pub project_root: &'a Path,
     pub project_config: &'a crate::project::ProjectConfig,
     pub replay: bool,
-    pub measured: bool,
+    pub measurements: Option<&'a mut crate::measurements::Session>,
     pub show_output: bool,
 }
 
@@ -163,9 +163,13 @@ pub(crate) trait WorkloadSession {
         }
     }
     fn evaluate(&mut self, final_response: &str) -> Result<Evaluation, String>;
+    /// Confirm owned resource cleanup before reporting the run as completed.
+    fn finish(&mut self) -> Result<(), String> {
+        Ok(())
+    }
     fn execute(
         &mut self,
-        _context: &ExecutionContext<'_>,
+        _context: &mut ExecutionContext<'_>,
         _output: &mut dyn std::io::Write,
     ) -> Option<Result<ExecutionResult, String>> {
         None

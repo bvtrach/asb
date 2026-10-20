@@ -166,8 +166,8 @@ class GuestBootstrapTests(unittest.TestCase):
             self.assertTrue(any(name == "npm/_cacache/index-v5/entry" for _, name, _ in container.files))
 
     def test_bootstrap_uses_exact_selected_tool_and_private_request_not_argv(self):
-        for timed_out in [False, True]:
-            with self.subTest(timed_out=timed_out), tempfile.TemporaryDirectory() as directory:
+        for timed_out, measured in [(False, False), (True, False), (False, True)]:
+            with self.subTest(timed_out=timed_out, measured=measured), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 (root / ".asb").mkdir()
                 (root / ".asb/project.toml").write_text("tools_dir='tools'\n")
@@ -175,9 +175,16 @@ class GuestBootstrapTests(unittest.TestCase):
                 binary.write_bytes(elf())
                 container = Container()
                 calls = []
+                probes, attached = [], []
+                def probe(argv):
+                    probes.append(argv)
+                    return SimpleNamespace(exit_code=0, output=b'{"namespace_pid":42,"start_time_ticks":123,"boot_id":"fixture"}')
+                container.exec_run = probe
 
                 def execute(argv, **options):
                     calls.append((argv, options))
+                    if argv[-1] == "__asb-agent":
+                        options["before_resume"]({"namespace_pid":42})
                     return {"stdout":b"out", "stderr":b"err", "exit_code":124 if timed_out and argv[-1] == "__asb-agent" else 0,
                             "timed_out":timed_out and argv[-1] == "__asb-agent", "cancelled":False}
 
@@ -191,9 +198,10 @@ class GuestBootstrapTests(unittest.TestCase):
                 task = SimpleNamespace(workspace=SimpleNamespace(container=container, execute=execute),
                                        artifacts=root, checked=checked, agent_timeout=1234)
                 request = {"binary":str(binary), "project_root":str(root), "tools_root":str(root / "tools"),
+                           "measure_target":measured,
                            "bootstrap":{"runtime_tools":["node"],"assets":[]},
                            "request":{"config":{"agent":"pi"},"connection":{"credential":"private-fixture"}}}
-                result = execute_agent(task, request, lambda _: None, lambda *_: None, None)
+                result = execute_agent(task, request, attached.append, lambda *_: None, None)
                 self.assertEqual([call[0][-1] for call in calls], ["node", "pi", "__asb-agent"])
                 self.assertNotIn("private-fixture", repr([call[0] for call in calls]))
                 private = calls[-1][1]["environment"]["ASB_GUEST_AGENT_REQUEST"]
@@ -201,6 +209,11 @@ class GuestBootstrapTests(unittest.TestCase):
                 self.assertEqual(json.loads(private)["timeout_seconds"], 1234)
                 self.assertEqual(calls[-1][1]["timeout"], 1234)
                 self.assertEqual(calls[-1][1]["gate"], "application")
+                self.assertEqual(len(probes), int(measured))
+                self.assertEqual(len(attached), 1)
+                if measured:
+                    self.assertEqual(probes[0], ["/opt/asb-runtime/asb", "__asb-target", "42"])
+                    self.assertEqual(attached[0]["process_identity"]["start_time_ticks"], 123)
                 self.assertIsNone(result["metadata"]["token_usage"].get("total_tokens"))
                 self.assertEqual(result["metadata"]["exit_code"], 124 if timed_out else 0)
 

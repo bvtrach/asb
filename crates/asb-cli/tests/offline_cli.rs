@@ -1631,6 +1631,8 @@ fn offline_replay_writes_ordered_lifecycle_events_for_all_executed_phases() {
         serde_json::json!({"kind":"agent_exited"}),
         serde_json::json!({"kind":"phase_begin","phase":"workload_evaluation"}),
         serde_json::json!({"kind":"phase_end","phase":"workload_evaluation"}),
+        serde_json::json!({"kind":"phase_begin","phase":"workload_cleanup"}),
+        serde_json::json!({"kind":"phase_end","phase":"workload_cleanup"}),
         serde_json::json!({"kind":"run_finishing"}),
     ];
     assert_eq!(events, expected);

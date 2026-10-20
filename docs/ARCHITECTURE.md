@@ -331,7 +331,15 @@ stream: only task-loopback listeners are opened, and host destinations remain
 on the host. Endpoint and HTTP/HTTPS/SOCKS proxy ports are rewritten before
 installation; TLS hostnames and raw protocol bytes are preserved. The relay
 spans installation/execution and closes on cancellation or any failure.
-Container collector targeting and full-population planning remain unfinished.
+Measured isolated sessions verify the daemon PID against this host's kernel
+boot ID, namespace PID mapping, stopped state, process start time and owned
+container cgroup before dispatching through the collector interface. They
+never move Docker processes into native ASB cgroups. CPU accounting reads
+existing container counters over the agent interval and labels those totals
+as whole-container CPU, separately from agent-tree samples. Zero sampled CPU
+without observed activity is unavailable, not an exact zero total. Wider
+collector qualification/entry-point matching and full-population planning
+remain unfinished.
 See the full benchmark delivery
 checklist before claiming complete upstream benchmark support.
 The explicit `terminal-bench-1.0` and `terminal-bench-2.1` adapters likewise

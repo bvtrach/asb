@@ -207,6 +207,35 @@ impl Controller {
         }
         Ok(response)
     }
+
+    pub(crate) fn finish(&mut self, timeout: Duration) -> Result<(), String> {
+        let deadline = Instant::now() + timeout;
+        self.send(&serde_json::json!({"op":"close"}))?;
+        // Keep stdin open until cleanup acknowledges completion. EOF is
+        // cancellation and is only the fallback for a failed caller.
+        let response = self.receive(deadline)?;
+        if response["event"] != "closed" || response["cleanup"] != "removed" {
+            return Err("workload resource cleanup did not confirm removal; inspect private task cleanup artifacts".into());
+        }
+        self.input.take();
+        loop {
+            if let Some(status) = self
+                .child
+                .try_wait()
+                .map_err(|_| "cannot check completed workload controller")?
+            {
+                return if status.success() {
+                    Ok(())
+                } else {
+                    Err("workload controller failed after resource cleanup".into())
+                };
+            }
+            if Instant::now() >= deadline {
+                return Err("workload controller did not exit after resource cleanup".into());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 }
 
 impl Drop for Controller {
@@ -248,6 +277,39 @@ impl Drop for Controller {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn explicit_cleanup_waits_for_confirmation_and_exit_beyond_drop_grace() {
+        let mut command = Command::new("python3");
+        command.args(["-u", "-c", "import json,sys,time\nprint(json.dumps(dict(event='ready')),flush=True)\nrequest=json.loads(sys.stdin.readline())\nassert request['op']=='close'\ntime.sleep(3.2)\nprint(json.dumps(dict(event='closed',cleanup='removed')),flush=True)\n"]);
+        let mut controller = Controller::spawn(&mut command).unwrap();
+        controller
+            .receive(Instant::now() + Duration::from_secs(3))
+            .unwrap();
+        controller.finish(Duration::from_secs(8)).unwrap();
+        assert!(controller.child.try_wait().unwrap().unwrap().success());
+    }
+
+    #[test]
+    fn cleanup_failure_missing_ack_and_failed_controller_exit_are_not_success() {
+        for (event, cleanup, code) in [
+            ("closed", "cleanup_failed", 0),
+            ("closed", "not_created", 0),
+            ("completed", "removed", 0),
+            ("closed", "removed", 1),
+        ] {
+            let script = format!(
+                "import json,sys\nprint(json.dumps(dict(event='ready')),flush=True)\nsys.stdin.readline()\nprint(json.dumps(dict(event='{event}',cleanup='{cleanup}')),flush=True)\nsys.exit({code})\n"
+            );
+            let mut command = Command::new("python3");
+            command.args(["-u", "-c", &script]);
+            let mut controller = Controller::spawn(&mut command).unwrap();
+            controller
+                .receive(Instant::now() + Duration::from_secs(3))
+                .unwrap();
+            assert!(controller.finish(Duration::from_secs(3)).is_err());
+        }
+    }
 
     #[test]
     fn output_encoding_preserves_binary_and_rejects_noncanonical_padding() {

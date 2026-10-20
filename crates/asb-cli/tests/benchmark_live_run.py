@@ -29,6 +29,7 @@ class NormalRunQualification(unittest.TestCase):
         instance = ("hello-world" if suite.endswith("1.0") else "cancel-async-tasks") if terminal else "astropy__astropy-12907"
         resolved = os.environ.get("ASB_TEST_BENCHMARK_RESOLVED") == "1"
         tape_mode = os.environ.get("ASB_TEST_BENCHMARK_TAPE_MODE")
+        measured = os.environ.get("ASB_TEST_BENCHMARK_MEASURED") == "1"
         self.assertIn(tape_mode, [None, "record", "replay"])
         binary = Path(os.environ["ASB_TEST_BENCHMARK_ASB"]).absolute()
         artifacts = Path(tempfile.mkdtemp(prefix="normal-cli-guest-", dir=root))
@@ -129,6 +130,8 @@ class NormalRunQualification(unittest.TestCase):
                     if cold:
                         environment.pop("NPM_CONFIG_OFFLINE")
                     command_line = [binary, "run", configuration, "--json"]
+                    if measured:
+                        command_line += ["--measurements", str(artifacts / "measurements")]
                     if tape_mode:
                         command_line += ["--" + tape_mode, "--cassette", os.environ["ASB_TEST_BENCHMARK_CASSETTE"]]
                     result = subprocess.run(command_line, cwd=root,
@@ -143,6 +146,23 @@ class NormalRunQualification(unittest.TestCase):
                     self.assertEqual(record["workload_baseline"]["kind"], "upstream-environment-definition" if terminal else "upstream-task-definition")
                     self.assertIsNone(record["workload_baseline_passed"])
                     self.assertEqual(record["success_rate"], 1.0 if resolved else 0.0)
+                    if measured:
+                        target = json.loads((artifacts / "measurements/execution-target.json").read_text())
+                        self.assertEqual(target["scope"], "verified-local-isolated-process-tree")
+                        self.assertEqual(target["cgroup_membership"], "preserved")
+                        self.assertNotEqual(target["host_pid"], process.pid if host_provider else os.getpid())
+                        self.assertGreater(target["host_pid"], 1)
+                        lifecycle = json.loads((artifacts / "measurements/lifecycle.json").read_text())
+                        events = [event["event"]["kind"] for event in lifecycle]
+                        self.assertEqual([event for event in events if event.startswith("agent_")],
+                            ["agent_spawn", "agent_execute_begin", "agent_started", "agent_execute_end", "agent_exited"])
+                        accounting = json.loads((artifacts / "measurements/cpu-accounting.json").read_text())
+                        self.assertEqual(accounting["cleanup"], "not_created")
+                        self.assertIsNone(accounting["remediation"])
+                        if accounting["metrics"] is not None and "cpu_user_ms" in accounting["metrics"]:
+                            self.assertGreater(accounting["metrics"]["cpu_user_ms"] + accounting["metrics"]["cpu_system_ms"], 0)
+                        self.assertIn("not agent-only CPU", accounting["container_scope"])
+                        self.assertIn("container_cpu_user_ms", accounting["metrics"])
                     if tape_mode == "replay":
                         if host_provider:
                             self.assertFalse((host_root / "calls.json").exists(), "replay contacted the provider")

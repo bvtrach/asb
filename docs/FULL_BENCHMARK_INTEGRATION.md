@@ -688,3 +688,73 @@ were confirmed absent after the tests.
 Remaining full-goal gates include measured container targets, complete selected
 population scheduling/resume/reporting, abrupt-crash recovery, SWE-bench source
 image fallback, full-diff review, PR merge, exact-main CI and release `0.2.0`.
+
+### Verified local measurement targets and checked normal cleanup
+
+The isolated execution contract now carries an optional mutable measurement
+session. Before resuming the stopped guest gate, ASB compares its private
+kernel boot ID, namespace PID and start time with this host's bounded `/proc`
+reads. The host process must still be stopped, map to the reported namespace
+PID, retain its start time and belong to the exact owned container cgroup.
+Daemon PID numbers alone, a remote daemon, unrelated cgroups, stale processes
+and malformed identity fields are rejected before collector attachment.
+The same bundled runtime produces the identity snapshot without requiring
+task-image Python/proc utilities. A read-only control exec avoids recursively
+acquiring the task execution lock while its gate is stopped.
+
+Collectors receive a generic isolated-process attachment hook, not benchmark
+or provider dispatch. PID-based collectors use the verified host root. Native
+CPU cgroup attachment is explicitly bypassed: Docker processes are never moved
+into a new ASB leaf, and no host cgroup is created, removed or modified for
+these attempts. The owning CPU adapter instead reads existing container CPU
+counters, freezes their delta at `AgentExecuteEnd` (before grading), and exposes
+separately named `container_cpu_user_ms`/`container_cpu_system_ms`. They include
+runtime relay/background services and must not be labeled agent-only CPU.
+Sampled agent CPU stays separate; when no CPU activity was observed at sampling
+resolution, it is unavailable rather than an invented zero total.
+
+Normal measured CLI qualification passed with real Pi and synthetic host-local
+providers for SWE-bench Lite (61.4 seconds), Terminal-Bench 1.0 (37.9 seconds)
+and Terminal-Bench 2.1 (49.1 seconds). Tests check verified target provenance,
+ordered agent lifecycle events and preserved cgroup membership. This qualifies
+the core targeting path, not every optional collector or full population.
+Agent-entrypoint-only sampler identity mapping and wider optional-collector
+qualification remain necessary; do not claim those from PID dispatch alone.
+
+Measured replay exposed a normal cleanup race: the destructor's three-second
+grace could terminate an SDK controller before Compose cleanup confirmation.
+The workload-session contract now has explicit checked `finish()`. The runner
+executes a separate `workload.cleanup` lifecycle phase after grading, keeps the
+controller input open until resource removal is acknowledged, and verifies
+successful controller exit. Missing/failed acknowledgements become operational
+run failures without erasing an independently successful task grade. Drop/EOF
+remains cancellation fallback, not evidence of successful normal cleanup.
+
+Measured Terminal-Bench 1.0 replay passed after that repair in 38.4 seconds:
+official grading, read-only container CPU deltas, zero provider/catalog calls,
+the final cleanup receipt and owned process exit were all checked. The original
+failed cleanup receipt is retained; read-only checks confirmed no containers
+or networks remained for that specific attempt. No global pruning was used.
+
+Ordinary tests cover target identity mismatches, stopped-state/namespace checks,
+preserved cgroup membership, separate/frozen CPU deltas, decreasing counters,
+unknown sampled CPU versus exact zero counters, control-probe dispatch,
+cleanup slower than the old destructor grace, and failed/missing acknowledgements
+or unsuccessful controller exit. The full lifecycle regression includes the
+new cleanup phase. Preceding forwarding milestone `870cf57` passed hosted CI.
+Final gates for the current measurement/cleanup changes are still in progress.
+
+The final pre-main-refresh local gates passed: 343 unit tests, 82 offline CLI
+tests, all ten protocol suites, diagram/guest/replay checks, strict Clippy,
+full development build, package verification/integrity and the packaged crate's
+complete ordinary suite. Two replay-error checks failed once during the first
+concurrent run, then passed both focused reproduction and the complete rerun;
+the lifecycle expectation was separately updated for the intentional cleanup
+phase. Do not treat these local passes as exact-head hosted or main CI evidence.
+
+Remaining complete-goal work includes agent-entrypoint-specific isolated
+collector support/qualification, full-population planning/scheduling/reporting
+and resume, background-agent quiescence before submission capture,
+failure-path cleanup/recovery and abrupt-controller-crash recovery,
+SWE-bench source-image fallback,
+final review, PR merge, exact-main CI and minor release `0.2.0`.

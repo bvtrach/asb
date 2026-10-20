@@ -1,6 +1,6 @@
 //! Optional accounting in an exclusive, delegated cgroup-v2 leaf. The process
 //! gate is moved before it starts the agent; all descendants inherit the leaf.
-use crate::collectors::{CollectorAdapter, PreflightContext};
+use crate::collectors::{CollectorAdapter, LifecycleEvent, PreflightContext};
 use crate::measurements::{self, Session};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
@@ -14,6 +14,33 @@ pub(super) static ADAPTER: CpuAccounting = CpuAccounting;
 struct State {
     leaf: Option<Leaf>,
     reason: Option<String>,
+    isolated: bool,
+    external: Option<ExternalCounter>,
+    external_reason: Option<String>,
+}
+
+struct ExternalCounter {
+    path: PathBuf,
+    initial: (u64, u64),
+    final_delta: Option<(u64, u64)>,
+}
+
+impl ExternalCounter {
+    fn finish(&mut self) -> Result<(), String> {
+        self.final_delta = None;
+        let final_value = read_cpu_stat(&self.path.join("cpu.stat"))?;
+        self.final_delta = Some((
+            final_value
+                .0
+                .checked_sub(self.initial.0)
+                .ok_or("container CPU counter decreased")?,
+            final_value
+                .1
+                .checked_sub(self.initial.1)
+                .ok_or("container CPU counter decreased")?,
+        ));
+        Ok(())
+    }
 }
 
 struct Leaf {
@@ -83,21 +110,104 @@ impl CollectorAdapter for CpuAccounting {
         if values.is_none()
             && let Some((user_ms, system_ms)) = session.sampled_cpu_accounting()
         {
-            values = Some(((user_ms * 1_000.0) as u64, (system_ms * 1_000.0) as u64));
+            if state.isolated && user_ms == 0.0 && system_ms == 0.0 {
+                session.suppress_unobserved_sampled_cpu();
+                state.reason = Some("No agent-tree CPU activity was observed at the sampling resolution; CPU totals are unavailable, not zero. Container cgroup membership was preserved.".into());
+            } else {
+                values = Some(((user_ms * 1_000.0) as u64, (system_ms * 1_000.0) as u64));
+            }
+        }
+        let container_values = state
+            .external
+            .as_ref()
+            .and_then(|counter| counter.final_delta);
+        let mut metrics = serde_json::Map::new();
+        if let Some((user, system)) = values {
+            metrics.insert(
+                "cpu_user_ms".into(),
+                serde_json::json!(user as f64 / 1000.0),
+            );
+            metrics.insert(
+                "cpu_system_ms".into(),
+                serde_json::json!(system as f64 / 1000.0),
+            );
+        }
+        if let Some((user, system)) = container_values {
+            metrics.insert(
+                "container_cpu_user_ms".into(),
+                serde_json::json!(user as f64 / 1000.0),
+            );
+            metrics.insert(
+                "container_cpu_system_ms".into(),
+                serde_json::json!(system as f64 / 1000.0),
+            );
         }
         measurements::write_json(
             &session.dir.join("cpu-accounting.json"),
             &serde_json::json!({
                 "schema_version": 1, "collector": "cpu-accounting",
-                "status": if values.is_some() { "completed" } else { "unavailable" },
-                "source": source,
+                "status": if metrics.is_empty() { "unavailable" } else { "completed" },
+                "source": if container_values.is_some() { "read-only-container-cgroup-and-optional-agent-sampling" } else { source },
                 "reason": state.reason,
-                "remediation": if source == "proc-sampling" { Some("Run ASB inside a delegated cgroup-v2 scope or set ASB_CGROUP_PARENT to an existing writable delegated cgroup; process-tree sampling was used as the fallback.") } else { None },
+                "remediation": if source == "proc-sampling" && !state.isolated { Some("Run ASB inside a delegated cgroup-v2 scope or set ASB_CGROUP_PARENT to an existing writable delegated cgroup; process-tree sampling was used as the fallback.") } else { None },
                 "cleanup": cleanup,
-                "metrics": values.map(|(user, system)| serde_json::json!({"cpu_user_ms": user as f64 / 1000.0, "cpu_system_ms": system as f64 / 1000.0})),
+                "metrics": if metrics.is_empty() { serde_json::Value::Null } else { serde_json::Value::Object(metrics) },
+                "container_scope": if state.isolated { Some("whole-owned-container-including-runtime-relay-and-background-services; not agent-only CPU") } else { None },
+                "container_accounting_reason": state.external_reason,
             }),
         )
     }
+
+    fn attach_isolated_pid(&self, session: &mut Session, pid: u32) -> Result<(), String> {
+        let state = session.state::<State>();
+        let mut state = state.borrow_mut();
+        state.isolated = true;
+        state.reason = Some("Container cgroup membership is preserved; agent-tree CPU accounting uses process sampling, which can miss short-lived processes. Container-wide counters must not be reported as agent-only CPU.".into());
+        match external_counter(pid) {
+            Ok(counter) => state.external = Some(counter),
+            Err(reason) => state.external_reason = Some(reason),
+        }
+        Ok(())
+    }
+
+    fn lifecycle_event(&self, session: &mut Session, event: LifecycleEvent) -> Result<(), String> {
+        if event == LifecycleEvent::AgentExecuteEnd {
+            let state = session.state::<State>();
+            let mut state = state.borrow_mut();
+            if let Some(counter) = state.external.as_mut()
+                && let Err(reason) = counter.finish()
+            {
+                state.external_reason = Some(reason);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn external_counter(pid: u32) -> Result<ExternalCounter, String> {
+    // Identity/ownership was established by the execution adapter. This
+    // adapter observes the existing membership, never cgroup.procs writes.
+    let membership = fs::read_to_string(format!("/proc/{pid}/cgroup"))
+        .map_err(|error| format!("cannot read existing container cgroup: {error}"))?;
+    let relative = membership
+        .lines()
+        .find_map(|line| line.strip_prefix("0::"))
+        .ok_or("container has no readable unified cgroup membership")?;
+    if !relative.starts_with('/') || relative.split('/').any(|part| matches!(part, "." | "..")) {
+        return Err("invalid existing container cgroup path".into());
+    }
+    let root = Path::new("/sys/fs/cgroup");
+    let path = fs::canonicalize(root.join(relative.trim_start_matches('/')))
+        .map_err(|error| format!("cannot resolve existing container cgroup: {error}"))?;
+    if !path.starts_with(root) || path == root {
+        return Err("container cgroup is not a distinct cgroup-v2 scope".into());
+    }
+    let initial = read_cpu_stat(&path.join("cpu.stat"))?;
+    Ok(ExternalCounter {
+        path,
+        initial,
+        final_delta: None,
+    })
 }
 
 fn read_cpu_stat(path: &Path) -> Result<(u64, u64), String> {
@@ -235,6 +345,80 @@ mod tests {
         assert_eq!(json["status"], "unavailable");
         assert!(json["metrics"].is_null());
         assert_eq!(json["cleanup"], "not_created");
+        drop(session);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn isolated_attachment_never_creates_or_moves_a_cgroup_leaf() {
+        let dir = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("isolated-cpu", None).attempt_id);
+        let mut session = Session::start_with_collectors(&dir, &[], None).unwrap();
+        // An invalid/unowned PID is intentional: this method must not move it
+        // or create a cgroup. Missing read-only counters remain unavailable.
+        ADAPTER.attach_isolated_pid(&mut session, u32::MAX).unwrap();
+        assert!(session.state::<State>().borrow().leaf.is_none());
+        ADAPTER.finish(&mut session).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.join("cpu-accounting.json")).unwrap()).unwrap();
+        assert_eq!(value["cleanup"], "not_created");
+        assert!(value["remediation"].is_null());
+        assert!(
+            value["reason"]
+                .as_str()
+                .unwrap()
+                .contains("Container cgroup membership is preserved")
+        );
+        drop(session);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn container_counters_are_read_only_separate_and_frozen_before_grading() {
+        let dir = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("container-cpu", None).attempt_id);
+        fs::create_dir_all(dir.join("existing-cgroup")).unwrap();
+        let path = dir.join("existing-cgroup");
+        fs::write(path.join("cpu.stat"), "user_usec 100\nsystem_usec 20\n").unwrap();
+        let mut session =
+            Session::start_with_collectors(&dir.join("measurements"), &[], None).unwrap();
+        {
+            let state = session.state::<State>();
+            let mut state = state.borrow_mut();
+            state.isolated = true;
+            state.external = Some(ExternalCounter {
+                path: path.clone(),
+                initial: (100, 20),
+                final_delta: None,
+            });
+        }
+        fs::write(path.join("cpu.stat"), "user_usec 300\nsystem_usec 90\n").unwrap();
+        ADAPTER
+            .lifecycle_event(&mut session, LifecycleEvent::AgentExecuteEnd)
+            .unwrap();
+        // Grading/environment cleanup happens later and must not inflate the
+        // recorded agent-execution interval's whole-container counters.
+        fs::write(
+            path.join("cpu.stat"),
+            "user_usec 99999\nsystem_usec 88888\n",
+        )
+        .unwrap();
+        ADAPTER.finish(&mut session).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(
+            &fs::read(dir.join("measurements/cpu-accounting.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(value["metrics"]["container_cpu_user_ms"], 0.2);
+        assert_eq!(value["metrics"]["container_cpu_system_ms"], 0.07);
+        assert!(value["metrics"].get("cpu_user_ms").is_none());
+        assert!(!path.join("cgroup.procs").exists());
+        let mut counter = ExternalCounter {
+            path: path.clone(),
+            initial: (100000, 100000),
+            final_delta: Some((1, 1)),
+        };
+        assert!(counter.finish().is_err());
+        assert!(counter.final_delta.is_none());
         drop(session);
         fs::remove_dir_all(dir).unwrap();
     }

@@ -15,6 +15,7 @@ struct Session {
     baseline: BaselineEvidence,
     guest_workspace: String,
     agent_timeout: Duration,
+    measurement_active: bool,
 }
 
 pub(crate) fn launch(
@@ -118,18 +119,16 @@ pub(crate) fn launch(
         baseline,
         guest_workspace,
         agent_timeout: Duration::from_secs_f64(agent_timeout),
+        measurement_active: false,
     }))
 }
 
 impl Session {
     fn run(
         &mut self,
-        context: &ExecutionContext<'_>,
+        context: &mut ExecutionContext<'_>,
         output: &mut dyn std::io::Write,
     ) -> Result<ExecutionResult, String> {
-        if context.measured {
-            return Err("isolated benchmark collector targeting is still being integrated; disable measurements for this development execution".into());
-        }
         let connection = context
             .connection
             .ok_or("isolated execution needs a negotiated API connection")?;
@@ -173,7 +172,7 @@ impl Session {
             }
         }
         self.controller.send(&json!({"op":"agent", "binary":binary, "project_root":context.project_root,
-            "tools_root":tools_root, "bootstrap":bootstrap,
+            "tools_root":tools_root, "bootstrap":bootstrap, "measure_target":context.measurements.is_some(),
             "project_configuration":toml::to_string(&project).map_err(|_| "cannot encode guest project configuration")?,
             "environment":environment, "network":std::env::var("ASB_BENCHMARK_NETWORK").ok(),
             "request":{"config":config,"connection":connection,"prompt":self.invocation.prompt,
@@ -182,9 +181,39 @@ impl Session {
         loop {
             let event = self.controller.receive(deadline)?;
             match event["event"].as_str() {
-                Some("paused") => self
-                    .controller
-                    .send(&json!({"op":"resume","exec_id":event["target"]["exec_id"]}))?,
+                Some("paused") => {
+                    if let Some(session) = context.measurements.as_deref_mut() {
+                        use crate::collectors::LifecycleEvent as Event;
+                        if self.measurement_active {
+                            return Err(
+                                "isolated execution returned a second measurement target".into()
+                            );
+                        }
+                        let target = super::target::verify(&event["target"])?;
+                        crate::measurements::write_json(
+                            &session.dir.join("execution-target.json"),
+                            &json!({
+                                "schema_version":1,"scope":"verified-local-isolated-process-tree",
+                                "host_pid":target.pid,"namespace_pid":target.namespace_pid,
+                                "start_time_ticks":target.start_time_ticks,"cgroup":target.cgroup,
+                                "cgroup_membership":"preserved"
+                            }),
+                        )?;
+                        session.event(Event::MeasurementsReady)?;
+                        session.event(Event::AgentSpawn)?;
+                        session.event(Event::AgentExecuteBegin)?;
+                        self.measurement_active = true;
+                        session.event(Event::AgentStarted)?;
+                        if let Err(error) = session.attach_isolated_pid(target.pid) {
+                            session.event(Event::AgentExecuteEnd)?;
+                            session.event(Event::AgentAttachFailed)?;
+                            self.measurement_active = false;
+                            return Err(error);
+                        }
+                    }
+                    self.controller
+                        .send(&json!({"op":"resume","exec_id":event["target"]["exec_id"]}))?;
+                }
                 Some("output") => {
                     let bytes = decode_base64(&event["data"])?;
                     if context.show_output {
@@ -194,6 +223,11 @@ impl Session {
                     }
                 }
                 Some("completed") => {
+                    if let Some(session) = context.measurements.as_deref_mut() {
+                        session.event(crate::collectors::LifecycleEvent::AgentExecuteEnd)?;
+                        session.event(crate::collectors::LifecycleEvent::AgentExited)?;
+                        self.measurement_active = false;
+                    }
                     let result = &event["result"];
                     let metadata = serde_json::from_value(result["metadata"].clone())
                         .map_err(|_| "guest returned invalid agent result metadata")?;
@@ -227,6 +261,9 @@ impl Session {
 }
 
 impl WorkloadSession for Session {
+    fn finish(&mut self) -> Result<(), String> {
+        self.controller.finish(Duration::from_secs(240))
+    }
     fn invocation(&self) -> &TaskInvocation {
         &self.invocation
     }
@@ -241,10 +278,18 @@ impl WorkloadSession for Session {
     }
     fn execute(
         &mut self,
-        context: &ExecutionContext<'_>,
+        context: &mut ExecutionContext<'_>,
         output: &mut dyn std::io::Write,
     ) -> Option<Result<ExecutionResult, String>> {
-        Some(self.run(context, output))
+        let result = self.run(context, output);
+        if result.is_err() && self.measurement_active {
+            self.measurement_active = false;
+            if let Some(session) = context.measurements.as_deref_mut() {
+                let _ = session.event(crate::collectors::LifecycleEvent::AgentExecuteEnd);
+                let _ = session.event(crate::collectors::LifecycleEvent::AgentWaitFailed);
+            }
+        }
+        Some(result)
     }
     fn evaluate(&mut self, _response: &str) -> Result<Evaluation, String> {
         let event = self.controller.request(

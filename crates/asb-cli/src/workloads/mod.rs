@@ -10,6 +10,7 @@ mod controller;
 pub(crate) mod relay;
 mod remote;
 mod session;
+pub(crate) mod target;
 pub(crate) fn registered_sources() -> impl Iterator<Item = (&'static str, &'static str)> {
     adapters::sources()
 }

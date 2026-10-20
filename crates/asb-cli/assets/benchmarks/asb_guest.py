@@ -188,9 +188,23 @@ def _execute_agent(task, request, before_resume, on_output, cancelled, resources
     guest["timeout_seconds"] = request.get("timeout", getattr(task, "agent_timeout", 900))
     guest.update(project_root="/opt/asb-project", runtime_dir="/opt/asb-private", run_dir="/opt/asb-private/attempt")
     environment = dict(environment, ASB_GUEST_AGENT_REQUEST=json.dumps(guest))
+    def attach(target):
+        if request.get("measure_target", False):
+            # The task execution lock is already held while the gate is
+            # stopped. This read-only control probe must not recursively start
+            # another managed workspace execution.
+            probe = container.exec_run(["/opt/asb-runtime/asb", "__asb-target", str(target["namespace_pid"])])
+            if probe.exit_code != 0 or len(probe.output) > 65536:
+                raise ExecutionError("cannot read isolated measurement identity")
+            try:
+                target = dict(target, process_identity=json.loads(probe.output))
+            except ValueError:
+                raise ExecutionError("isolated process did not return valid measurement identity") from None
+        if before_resume is not None:
+            before_resume(target)
     result = task.workspace.execute(["/opt/asb-runtime/asb", "__asb-agent"], environment=environment,
                                     timeout=request.get("timeout", getattr(task, "agent_timeout", 900)), output_limit=256 * 1024,
-                                    gate="application", before_resume=before_resume,
+                                    gate="application", before_resume=attach,
                                     on_output=on_output, cancelled=ForwardingCancellation(cancelled, relays))
     for relay in relays:
         relay.check()

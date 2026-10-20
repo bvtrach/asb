@@ -115,6 +115,7 @@ pub(crate) enum LifecyclePhase {
     ProxyPreparation,
     AgentPreparation,
     WorkloadEvaluation,
+    WorkloadCleanup,
 }
 
 impl LifecyclePhase {
@@ -126,6 +127,7 @@ impl LifecyclePhase {
             Self::ProxyPreparation => "proxy.prepare",
             Self::AgentPreparation => "agent.prepare",
             Self::WorkloadEvaluation => "workload.evaluate",
+            Self::WorkloadCleanup => "workload.cleanup",
         }
     }
 }
@@ -217,6 +219,15 @@ pub(crate) trait CollectorAdapter: Sync {
         _pid: u32,
     ) -> Result<(), String> {
         Ok(())
+    }
+    /// A verified local isolated process is not ASB's direct child. Adapters
+    /// that manage membership must override this instead of moving its PID.
+    fn attach_isolated_pid(
+        &self,
+        session: &mut crate::measurements::Session,
+        pid: u32,
+    ) -> Result<(), String> {
+        self.attach_pid(session, pid)
     }
 }
 

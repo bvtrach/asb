@@ -586,6 +586,20 @@ impl Session {
         Some((timing.cpu_user_ms?, timing.cpu_system_ms?))
     }
 
+    /// No observed CPU at sampling resolution is not proof that a short
+    /// isolated execution consumed zero CPU. Keep missing totals missing.
+    pub(crate) fn suppress_unobserved_sampled_cpu(&mut self) {
+        if let Some(timing) = self.component_timings.get_mut("agent.execute")
+            && timing.cpu_accounting_source.as_deref() == Some("proc-sampling")
+            && timing.cpu_user_ms == Some(0.0)
+            && timing.cpu_system_ms == Some(0.0)
+        {
+            timing.cpu_user_ms = None;
+            timing.cpu_system_ms = None;
+            timing.cpu_accounting_source = None;
+        }
+    }
+
     pub(crate) fn cgroup_parent(&self) -> Option<&Path> {
         self.cgroup_parent.as_deref()
     }
@@ -626,6 +640,17 @@ impl Session {
         for collector in collectors::all() {
             if collector.requires_pid() {
                 collector.attach_pid(self, pid)?;
+            }
+        }
+        self.start_process_sampler(pid);
+        Ok(())
+    }
+
+    /// Attach only after the owning execution adapter proves host identity.
+    pub(crate) fn attach_isolated_pid(&mut self, pid: u32) -> Result<(), String> {
+        for collector in collectors::all() {
+            if collector.requires_pid() {
+                collector.attach_isolated_pid(self, pid)?;
             }
         }
         self.start_process_sampler(pid);
@@ -1321,6 +1346,35 @@ fn clock_ticks_per_second() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unobserved_sampled_cpu_is_unknown_but_exact_zero_cgroup_totals_are_preserved() {
+        let dir = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("sampled-zero", None).attempt_id);
+        let mut session = Session::start_with_collectors(&dir, &[], None).unwrap();
+        for (source, expected) in [("proc-sampling", None), ("cgroup-v2", Some(0.0))] {
+            session.component_timings.insert(
+                "agent.execute".into(),
+                ComponentTiming {
+                    cpu_user_ms: Some(0.0),
+                    cpu_system_ms: Some(0.0),
+                    cpu_accounting_source: Some(source.into()),
+                    ..ComponentTiming::default()
+                },
+            );
+            session.suppress_unobserved_sampled_cpu();
+            assert_eq!(
+                session.component_timings["agent.execute"].cpu_user_ms,
+                expected
+            );
+            assert_eq!(
+                session.component_timings["agent.execute"].cpu_system_ms,
+                expected
+            );
+        }
+        drop(session);
+        fs::remove_dir_all(dir).unwrap();
+    }
     use crate::collectors::adapters::bpftrace::{
         bpftrace_profile_names, parse_bpftrace_metrics, parse_bpftrace_series,
         selected_bpftrace_profiles, write_bpftrace_profile_svg,

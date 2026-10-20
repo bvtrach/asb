@@ -47,7 +47,7 @@ resolved eligible task attempts / all selected eligible task attempts
 
 Only an evaluator-confirmed complete pass earns numerator credit. A failed
 agent process does not discard a usable submission: ASB still evaluates the
-resulting task state. Process or proxy failures remain operational failures,
+resulting task state. Process, proxy or owned-resource cleanup failures remain operational failures,
 but a separately confirmed task resolution still earns task credit. Grading
 failures and absent evaluation do not earn credit; known
 eligible attempts remain in the comparison denominator even when measurements

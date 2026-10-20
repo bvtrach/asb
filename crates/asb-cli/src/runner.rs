@@ -510,13 +510,13 @@ fn run_mode(
         .transpose()?;
     let started = Instant::now();
     let isolated = workload_session.execute(
-        &workloads::ExecutionContext {
+        &mut workloads::ExecutionContext {
             config: &config,
             connection: connection.as_ref(),
             project_root: &project_root,
             project_config: &project_config,
             replay: tape_mode == Some(tape::Mode::Replay),
-            measured: measurement_session.is_some(),
+            measurements: measurement_session.as_mut(),
             show_output,
         },
         output,
@@ -741,6 +741,20 @@ fn run_mode(
             ),
         }
     };
+    if let Err(error) = instrument_operation(
+        measurement_session.as_mut(),
+        LifecyclePhase::WorkloadCleanup,
+        || workload_session.finish(),
+    )? {
+        let message = format!("workload cleanup failed: {error}");
+        match run_error.as_mut() {
+            Some(previous) => {
+                previous.push_str("; ");
+                previous.push_str(&message);
+            }
+            None => run_error = Some(message),
+        }
+    }
     let success = run_error.is_none() && process_success && workload_success == Some(true);
     let workload_failure =
         grading_failure
