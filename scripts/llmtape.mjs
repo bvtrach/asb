@@ -193,6 +193,9 @@ function normalizeCassetteBody(body) {
     // provider input and naturally differ between record and replay.
     .replace(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2} \d{2}:\d{2}\b/g, "<asb-file-mtime>")
     .replace(/\b20\d{2}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?\b/g, "<asb-file-mtime>")
+    // WorkBuddy derives a memory-project slug from the absolute workspace;
+    // canonicalize that generated slug when record and replay roots differ.
+    .replace(/srv-data-projects-[A-Za-z0-9_.-]+-(?:sweep-record-[A-Za-z0-9_.-]+-workspace|workspaces-replay-[A-Za-z0-9_.-]+)/g, "<asb-project-workspace>")
     // Codex includes a diagnostic token count in shell-tool output. It is
     // derived from the rendered transcript and can change during replay; it
     // is not provider request semantics.
@@ -200,7 +203,12 @@ function normalizeCassetteBody(body) {
     .replace(/original token count: \d+/g, "original token count: <asb-token-count>")
     .replace(/Total output lines: \d+/g, "Total output lines: <asb-line-count>")
     .replace(/codex-arg[A-Za-z0-9_-]+/g, "codex-arg<asb-random>")
-    .replace(/\bcall_[A-Za-z0-9_-]+/g, "call_<asb-call>")
+    // Normalize generated call identifiers, but never the JSON field name
+    // `call_id` itself. Replacing that key corrupts Responses tool events.
+    // Restore the malformed key emitted by older recordings before replacing
+    // their value marker.
+    .replace(/"call_<asb-call>":/g, '"call_id":')
+    .replace(/"(call_[A-Za-z0-9_-]+)"(?=\s*[,}\]])/g, '"call_<asb-call>"')
     .replace(/\bmsg_resp_[A-Za-z0-9_-]+/g, "msg_resp_<asb-response>");
   try {
     const sort = (value) => {
@@ -295,8 +303,18 @@ function requestKey(request) {
   return JSON.stringify([request.method, request.url, normalizeCassetteBody(request.body)]);
 }
 
+function sameEndpoint(actual, expected) {
+  if (actual.method !== expected.method) return false;
+  try {
+    return new URL(actual.url, "http://asb-tape.invalid").pathname
+      === new URL(expected.url, "http://asb-tape.invalid").pathname;
+  } catch {
+    return actual.url === expected.url;
+  }
+}
+
 function requestPrefixMatches(actual, expected) {
-  if (actual.method !== expected.method || actual.url !== expected.url) return false;
+  if (!sameEndpoint(actual, expected)) return false;
   try {
     const a = JSON.parse(actual.body || "null");
     const e = JSON.parse(expected.body || "null");
@@ -329,7 +347,7 @@ function requestPrefixMatches(actual, expected) {
 // replay deterministic by accepting only the same endpoint, model, and user
 // prompt for the next recorded interaction; arbitrary prompts still reject.
 function requestReplayCompatible(actual, expected) {
-  if (actual.method !== expected.method || actual.url !== expected.url) return false;
+  if (!sameEndpoint(actual, expected)) return false;
   try {
     const a = JSON.parse(actual.body || "null");
     const e = JSON.parse(expected.body || "null");
@@ -390,9 +408,23 @@ function writeProgress() {
 }
 
 function isReplayProbe(request) {
-  return !request.body
-    && (request.method === "HEAD" || request.method === "GET")
-    && /(?:\/api\/hello|\/health(?:z)?|\/models|\/api\/tags)(?:[/?]|$)/.test(request.url || "");
+  if (!request.body) {
+    return (request.method === "HEAD" || request.method === "GET")
+      && /(?:\/api\/hello|\/health(?:z)?|\/models|\/api\/tags)(?:[/?]|$)/.test(request.url || "");
+  }
+  try {
+    const parsed = JSON.parse(request.body);
+    if (request.url?.includes("/embeddings") && parsed.model === "text-embedding-3-small") {
+      return true;
+    }
+  } catch {
+    // Keep arbitrary malformed bodies fail-closed below.
+  }
+  // OpenJiuwen performs this local vision-capability check before its first
+  // workload request. It has no benchmark semantics and can be omitted when
+  // replaying on a provider/agent path that does not repeat the probe.
+  return typeof request.body === "string"
+    && request.body.includes("What color is this image? Reply with one word.");
 }
 writeProgress();
 
