@@ -539,6 +539,12 @@ impl Session {
         timing.cpu_accounting_source = Some(source.into());
     }
 
+    /// Return process-tree sampler totals when cgroup delegation is absent.
+    pub(crate) fn sampled_cpu_accounting(&self) -> Option<(f64, f64)> {
+        let timing = self.component_timings.get("agent.execute")?;
+        Some((timing.cpu_user_ms?, timing.cpu_system_ms?))
+    }
+
     pub(crate) fn trace_id(&self) -> &str {
         &self.trace_id
     }

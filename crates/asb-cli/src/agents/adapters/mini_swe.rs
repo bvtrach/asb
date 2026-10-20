@@ -81,6 +81,7 @@ fn collect(context: &CollectionContext<'_>) -> AgentArtifacts {
     }
     AgentArtifacts {
         token_usage: Some(trajectory_usage(&trajectory)),
+        steps: None,
         cleanup_paths: vec![trajectory],
     }
 }

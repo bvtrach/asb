@@ -332,6 +332,7 @@ classDiagram
         +stop_process_sampler() void
         +write_component_measurements(elapsed_ms: u128) Result~(), String~
         +record_cpu_accounting(user_usec: u64, system_usec: u64, source: &str) void
+        +sampled_cpu_accounting() Option~(f64, f64)~
         +trace_id() &str
         +state() Rc~RefCell<T>~
         +set_artifact(kind: SharedArtifact, path: PathBuf) void
@@ -456,6 +457,7 @@ classDiagram
     }
     class C061["agents::AgentArtifacts"] {
         +token_usage: Option~crate::measurements::TokenUsage~
+        +steps: Option~u64~
         +cleanup_paths: Vec~PathBuf~
     }
     class C062["agents::CollectionContext"] {

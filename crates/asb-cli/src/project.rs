@@ -281,8 +281,104 @@ pub fn init(
     if omitted_credentials {
         writeln!(output, "Proxy settings containing credentials or query data were not saved. Keep the corresponding proxy environment variables set when running ASB.").map_err(super::io_error)?;
     }
+    configure_host_capabilities(output)?;
     #[cfg(target_os = "linux")]
     writeln!(output, "For complete CPU accounting across short-lived child processes, use writable cgroup-v2 delegation. On systemd Linux, run:\n  systemd-run --user --scope -p Delegate=yes -- asb run CONFIG.toml\nFor a sweep, replace `asb run CONFIG.toml` with `asb sweep SWEEP.toml`. Other delegated setups can set ASB_CGROUP_PARENT to a writable cgroup-v2 directory. Without delegation, ASB uses sampled process accounting.").map_err(super::io_error)?;
+    Ok(())
+}
+
+/// Apply host-wide collector prerequisites only when the user has already
+/// granted non-interactive sudo. Init is deliberately best-effort: it never
+/// prompts, edits sudoers, or makes a project unusable when a setting cannot
+/// be changed. The settings are safe, explicit sysctls used by perf and the
+/// optional scheduler-statistics BPF profile.
+fn configure_host_capabilities(output: &mut dyn std::io::Write) -> Result<(), Error> {
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = output;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let sudo_ready = Command::new("sudo")
+            .args(["-n", "true"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        let current = |setting: &str| {
+            let proc_name = setting.strip_prefix("kernel.").unwrap_or(setting);
+            fs::read_to_string(format!("/proc/sys/kernel/{proc_name}")).ok()
+        };
+        let set = |assignment: &str| {
+            Command::new("sudo")
+                .args(["-n", "sysctl", "-w", assignment])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
+        };
+        configure_host_capabilities_with(output, sudo_ready, current, set)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn configure_host_capabilities_with(
+    output: &mut dyn std::io::Write,
+    sudo_ready: bool,
+    current: impl Fn(&str) -> Option<String>,
+    set: impl Fn(&str) -> bool,
+) -> Result<(), Error> {
+    const SETTINGS: &[(&str, &str, &str)] = &[
+        (
+            "kernel.perf_event_paranoid",
+            "-1",
+            "perf process-tree counters",
+        ),
+        (
+            "kernel.sched_schedstats",
+            "1",
+            "bpftrace io-wait scheduler statistics",
+        ),
+    ];
+
+    if !sudo_ready {
+        writeln!(
+            output,
+            "Host capability setup: passwordless sudo is unavailable; no host settings were changed."
+        )
+        .map_err(super::io_error)?;
+        return Ok(());
+    }
+
+    for (setting, wanted, purpose) in SETTINGS {
+        if current(setting).is_some_and(|value| value.trim() == *wanted) {
+            writeln!(
+                output,
+                "Host capability setup: {setting}={wanted} already enabled ({purpose})."
+            )
+            .map_err(super::io_error)?;
+            continue;
+        }
+
+        let assignment = format!("{setting}={wanted}");
+        if set(&assignment) {
+            writeln!(
+                output,
+                "Host capability setup: changed {setting}={wanted} using passwordless sudo ({purpose})."
+            )
+            .map_err(super::io_error)?;
+        } else {
+            writeln!(
+                output,
+                "Host capability setup: could not change {setting}={wanted}; continuing without changing host settings ({purpose})."
+            )
+            .map_err(super::io_error)?;
+        }
+    }
     Ok(())
 }
 
@@ -585,6 +681,53 @@ mod tests {
                 .is_file()
         );
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn host_capability_setup_is_best_effort_without_passwordless_sudo() {
+        let mut output = Vec::new();
+        let set_called = std::cell::Cell::new(false);
+        configure_host_capabilities_with(
+            &mut output,
+            false,
+            |_| None,
+            |_| {
+                set_called.set(true);
+                true
+            },
+        )
+        .expect("capability setup reports unavailable sudo");
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.contains("passwordless sudo is unavailable"));
+        assert!(!set_called.get());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn host_capability_setup_reports_existing_and_changed_settings() {
+        let mut output = Vec::new();
+        let assignments = std::cell::RefCell::new(Vec::new());
+        configure_host_capabilities_with(
+            &mut output,
+            true,
+            |setting| match setting {
+                "kernel.perf_event_paranoid" => Some("-1".into()),
+                _ => Some("0".into()),
+            },
+            |assignment| {
+                assignments.borrow_mut().push(assignment.to_owned());
+                true
+            },
+        )
+        .expect("capability setup succeeds");
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.contains("kernel.perf_event_paranoid=-1 already enabled"));
+        assert!(text.contains("changed kernel.sched_schedstats=1"));
+        assert_eq!(
+            assignments.into_inner(),
+            vec!["kernel.sched_schedstats=1".to_owned()]
+        );
     }
 
     #[test]

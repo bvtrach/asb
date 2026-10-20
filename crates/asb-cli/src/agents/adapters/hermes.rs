@@ -143,6 +143,7 @@ fn collect(context: &CollectionContext<'_>) -> AgentArtifacts {
     };
     AgentArtifacts {
         token_usage: Some(super::super::usage_fields(&value).with_derived_total()),
+        steps: value.get("api_calls").and_then(serde_json::Value::as_u64),
         cleanup_paths: vec![path],
     }
 }
@@ -260,7 +261,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
-            r#"{"input_tokens":11,"output_tokens":7,"cache_read_tokens":3,"total_tokens":21}"#,
+            r#"{"input_tokens":11,"output_tokens":7,"cache_read_tokens":3,"total_tokens":21,"api_calls":4}"#,
         )
         .unwrap();
         let artifacts = collect(&CollectionContext {
@@ -274,6 +275,7 @@ mod tests {
         assert_eq!(usage.output_tokens, Some(7));
         assert_eq!(usage.cached_tokens, Some(3));
         assert_eq!(usage.total_tokens, Some(18));
+        assert_eq!(artifacts.steps, Some(4));
         let _ = std::fs::remove_dir_all(root);
     }
 

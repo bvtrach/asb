@@ -90,6 +90,10 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   `/sys/fs/cgroup` to an existing cgroup-v2 directory. To obtain delegation on
   systemd Linux, run `systemd-run --user --scope -p Delegate=yes -- asb run
   CONFIG.toml` (or use `asb sweep SWEEP.toml`); `asb init` prints this advice.
+  During init, ASB also best-effort enables `kernel.perf_event_paranoid=-1`
+  and `kernel.sched_schedstats=1` when `sudo -n true` succeeds. It reports each
+  setting as already enabled, changed, or unchanged; it never prompts, edits
+  sudoers, or blocks initialization when passwordless sudo is unavailable.
   `asb compare` also writes an execution-composition SVG with user CPU, system
   CPU, block-I/O delay, runnable scheduler delay, and explicitly-labelled
   remaining wall time. CPU categories are process-tree totals and may overlap
