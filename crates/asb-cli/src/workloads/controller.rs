@@ -44,6 +44,10 @@ pub(crate) fn publish_asset(path: &std::path::Path, source: &str) -> Result<(), 
 pub(crate) fn publish_support(root: &std::path::Path) -> Result<(), crate::Error> {
     for (name, source) in [
         (
+            "asb_retained.py",
+            include_str!("../../assets/benchmarks/asb_retained.py"),
+        ),
+        (
             "asb_resources.py",
             include_str!("../../assets/benchmarks/asb_resources.py"),
         ),

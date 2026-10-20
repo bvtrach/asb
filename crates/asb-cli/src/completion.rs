@@ -24,6 +24,7 @@ const RUN_OPTIONS: &[&str] = &[
     "--measurements",
 ];
 const SWEEP_OPTIONS: &[&str] = &[
+    "--reconcile-completed",
     "--resume",
     "--record",
     "--replay",

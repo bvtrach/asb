@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
 mod coverage;
+mod reconciliation;
 const PLOT_TOP: f64 = 70.0;
 const PLOT_BOTTOM: f64 = 390.0;
 const PLOT_RIGHT: f64 = 880.0;
@@ -17,6 +18,7 @@ const Y_TICKS: usize = 5;
 
 #[derive(Debug)]
 struct BenchmarkData {
+    reconciled: bool,
     replica_index: Option<usize>,
     execution_cohort: Option<crate::measurements::ExecutionCohort>,
     label: String,
@@ -86,6 +88,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             let artifacts = artifact_links(parent, &measurement_dir);
             if !run_path.is_file() {
                 benchmark_data.push(BenchmarkData {
+                reconciled: false,
                 replica_index: None,
                 execution_cohort: None,
                 label,
@@ -336,6 +339,14 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 }
             }
             benchmark_data.push(BenchmarkData {
+                reconciled: reconciliation::recorded(
+                    &sweep_results,
+                    &result_dir,
+                    index,
+                    replica,
+                    concurrency,
+                    task.as_ref(),
+                )?,
                 replica_index,
                 execution_cohort,
                 label,
@@ -456,6 +467,7 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             "task": benchmark.task,
             "replica_index": benchmark.replica_index,
             "execution_cohort": benchmark.execution_cohort,
+            "reconciled": benchmark.reconciled,
             "selection": benchmark.selection,
             "evaluation_completed": benchmark.evaluation_completed,
             "workload_evaluation": benchmark.workload_evaluation,
@@ -856,7 +868,7 @@ fn write_html_report(
             escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
             escape(&benchmark.label), escape(&benchmark.agent), escape(&benchmark.provider), escape(&benchmark.model), escape(&benchmark.workload),
             runtime, success, tokens,
-            format_args!("{}<p>{}</p>", evaluation_details, benchmark.execution_cohort.as_ref().map_or_else(
+            format_args!("{}{}<p>{}</p>", evaluation_details, if benchmark.reconciled { "<p>Reconciled retained local outcome: current artifact consistency checked; no agent rerun or historical attestation.</p>" } else { "" }, benchmark.execution_cohort.as_ref().map_or_else(
                 || "Dispatch context unknown (legacy or missing measurement).".into(),
                 |cohort| format!("Dispatch group {}: {} of {} selected replicas admitted; slots {}. Dispatch membership is not proof of simultaneous execution. Resumed measurements may belong to different cohorts.", dispatch_groups[cohort.id.as_str()], cohort.admitted_slots.len(), cohort.selected_replicas, cohort.admitted_slots.iter().map(usize::to_string).collect::<Vec<_>>().join(", ")))),
             component_details,

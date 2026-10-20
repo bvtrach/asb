@@ -70,6 +70,21 @@ def restore_task_networks(client, container, original):
         client.networks.get(name).disconnect(container)
 
 
+def verify_retained(retained):
+    from asb_retained import require
+    result = retained.object("evaluation.json")
+    retained.grade(result)
+    require(retained.task.get("sdk") == {"package":"terminal-bench","version":"0.2.18"},
+            "retained original Terminal-Bench SDK differs")
+    tests = result.get("test_results")
+    require(isinstance(tests,dict) and tests and len(tests) <= 10000
+            and result.get("failure_mode") == "none" and result.get("parse_failure") == "none"
+            and result["resolved"] == all(status == "passed" for status in tests.values()),
+            "retained original Terminal-Bench parsed tests disagree")
+    pane = "official/" + retained.identity["task_id"] + "/" + retained.identity["attempt_id"] + "/panes/post-test.txt"
+    require(bool(retained.bytes(pane)), "retained original verifier pane is missing")
+
+
 class TerminalBenchTask:
     def __init__(self, client, catalog, task, artifacts):
         self.client, self.catalog_path, self.task_id = client, Path(catalog), task

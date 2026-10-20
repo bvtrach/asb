@@ -35,6 +35,7 @@ pub(crate) struct Options<'a> {
     pub jobs: usize,
     pub max_active_attempts: Option<usize>,
     pub resume: bool,
+    pub reconcile_completed: bool,
 }
 
 impl Default for Options<'_> {
@@ -48,6 +49,7 @@ impl Default for Options<'_> {
             jobs: 1,
             max_active_attempts: None,
             resume: false,
+            reconcile_completed: false,
         }
     }
 }
@@ -88,6 +90,11 @@ pub(crate) fn run_with_options(
         cassette_root,
         ..
     } = options;
+    if options.reconcile_completed && !options.resume {
+        return Err(Error::Input(
+            "--reconcile-completed requires --resume; original results were not replaced".into(),
+        ));
+    }
     let sweep_path = Path::new(path);
     let sweep = read_manifest(sweep_path)?;
     let parent = sweep_path.parent().unwrap_or_else(|| Path::new("."));
@@ -195,6 +202,12 @@ pub(crate) fn run_with_options(
     } else {
         checkpoint::Inputs::begin(parent, &results_root, &plan, mode, &replay_sources).ok()
     };
+    if options.reconcile_completed {
+        checkpoint
+            .as_ref()
+            .expect("resume input validation")
+            .reconcile_completed(parent, &results_root, &plan)?;
+    }
     let reused = if options.resume {
         checkpoint
             .as_ref()

@@ -131,6 +131,12 @@ reach it before either can receive its known repair. The test checks independent
 official grades, lifecycle journals, scoped collectors, comparison graphs and
 container cleanup. It never contacts a live LLM provider. Do not rebuild or
 package over the selected executable while a runtime qualification is using it.
+The same fixture removes completion receipts only after successful grading and
+cleanup, verifies that ordinary resume refuses the missing evidence, injects a
+contradictory retained grade and checks that explicit reconciliation publishes
+no receipts, then restores the original report and reconciles both outcomes
+without further provider requests. `benchmark_retained.py` supplies the
+provider-free retained-artifact protocol tests for all five adapters.
 Ordinary CI
 uses synthetic provider-free protocol tests.
 `benchmark_live_resources.py` additionally checks actual abrupt controller

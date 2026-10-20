@@ -1708,3 +1708,49 @@ native/proxy/source-image ownership recovery, full sweep-slot reconciliation,
 population-scale presentation, cold-cache qualification, final review/PR merge,
 exact-main CI and the new minor release. Allocation or quiescence records must
 not be reinterpreted as grading evidence or permission to repeat failed tasks.
+
+### Explicit retained-outcome receipt reconciliation
+
+`asb sweep SWEEP.toml --resume --reconcile-completed` now repairs missing
+replica/group receipts only for already-graded schema-2 outcomes with confirmed
+cleanup and their original allocation/start intent. Original input, selection
+and isolated configuration validation remain mandatory. The owning SWE-bench,
+Terminal-Bench 1 or Harbor adapter checks its own retained task, submission,
+SDK/image and official grading artifacts without executing tests, containers,
+agents or providers. An existing resource-owner lock rejects concurrent work.
+All candidate outcomes and existing receipts must validate before publishing
+missing immutable receipts; artifact fingerprints must remain stable. Existing
+receipts and raw evidence are never replaced. False grades remain false.
+
+Reconciliation deliberately establishes current local artifact consistency,
+not historical attestation of previously unsealed evidence. New receipts bind
+that provenance marker, reused JSONL summaries expose it and comparison HTML
+explains it. Already-sealed/legacy outcomes retain ordinary verification; no
+ungraded, incomplete or cleanup-unconfirmed attempt becomes completed through
+this option. Those require the still-unfinished interrupted-evaluation path.
+
+Provider-free tests check both grades for all five adapters, modified/missing
+grading artifacts, active owner locks, symlink/path escape, byte preservation,
+Harbor reward-file precedence, empty SWE submissions and bounded protocol
+responses. Rust checks preserve false grades, reject marker tampering and
+prove that one bad candidate prevents receipt publication for all candidates.
+Ordinary resume still refuses missing receipts.
+
+The expanded real-Pi/synthetic-provider mixed SWE-bench Lite/Terminal-Bench 1
+qualification passed in 103.5 seconds, with artifacts retained under
+`target/benchmark-runtime/parallel-original-tasks-9s68v23j`. After successful
+official grading and cleanup, the fixture archives both replica/group receipts,
+checks ordinary-resume refusal, contradicts one retained grader result and
+checks that no receipt is published, restores the original report, then
+reconciles both original outcomes with no extra provider requests. Comparison
+JSON/HTML preserves/discloses the provenance. This controlled metadata fault
+injection is not a crashed-evaluator recovery test or an AI-solving result.
+
+Source verification passed 432 unit tests, 87 offline CLI tests, all fifteen
+protocol suites and guest/diagram/parallel/replay/resume regressions, strict
+Clippy and `make build`. Package/hosted gates follow. Newly identified remaining
+work: comparison currently drops completed outcome grades when optional
+measurement records are absent; reporting must consume the private outcome
+summary independently of optional collection. Existing unfinished-evaluation,
+native/proxy/source-image recovery, full reconciliation, population-scale,
+cold-cache, merge/main-CI and minor-release requirements remain unchanged.

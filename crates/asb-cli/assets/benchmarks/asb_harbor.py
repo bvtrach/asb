@@ -146,6 +146,22 @@ def environment_class(command, attempt, artifacts, journal=None):
     return OwnedHarborEnvironment
 
 
+def verify_retained(retained):
+    from asb_retained import require
+    result = retained.object("evaluation.json")
+    retained.grade(result)
+    require(retained.task.get("sdk") == {"package":"harbor","version":"0.24.0"},
+            "retained original Harbor SDK differs")
+    rewards = result.get("rewards")
+    require(isinstance(rewards,dict) and set(rewards) == {"reward"}
+            and type(rewards["reward"]) in [int,float] and rewards["reward"] in [0,1]
+            and result["resolved"] == (rewards["reward"] == 1), "retained original Harbor reward disagrees")
+    encoded = retained.child("official/verifier/reward.json")
+    # Match the pinned SDK: JSON takes precedence when both outputs exist.
+    reward = retained.object("official/verifier/reward.json").get("reward") if encoded.is_file() else float(retained.bytes("official/verifier/reward.txt").decode().strip())
+    require(type(reward) in [int,float] and reward == rewards["reward"], "retained reward file differs from its report")
+
+
 class HarborTask:
     def __init__(self, client, catalog, task, artifacts):
         self.client, self.catalog_path, self.task_id = client, Path(catalog), task

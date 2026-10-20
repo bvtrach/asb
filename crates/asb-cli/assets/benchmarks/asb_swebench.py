@@ -378,6 +378,59 @@ def remove_evaluation_container(client, task_id, run_id, expected_labels=None):
     return cleanup
 
 
+def verify_retained(retained):
+    """Validate a closed SWE-bench record without executing tests or an agent."""
+    from asb_retained import require
+    require(retained.task.get("sdk") == sdk_identity(), "retained SWE-bench SDK identity differs")
+    patch = retained.bytes("candidate.patch", MAX_PATCH_BYTES)
+    digest = hashlib.sha256(patch).hexdigest()
+    require(retained.submission.get("patch_sha256") == digest
+            and retained.submission.get("patch_bytes") == len(patch)
+            and retained.submission.get("base_commit") == retained.task["baseline"].get("base_commit"),
+            "retained SWE-bench submission hash or base commit differs")
+    directories = []
+    for index, path in enumerate(retained.root.iterdir()):
+        require(index < 256, "retained attempt has excessive top-level artifacts")
+        if path.name.startswith("evaluation-"):
+            directories.append(path.name)
+    require(len(directories) == 1, "retained SWE-bench evaluator population is ambiguous")
+    prefix = directories[0] + "/"
+    result = retained.object(prefix + "evaluation.json")
+    require(result.get("schema_version") == 1
+            and result.get("harness_revision") == HARNESS_REVISION
+            and all(result.get(key) == retained.identity.get(key) for key in ["workload","task_id","dataset"]),
+            "retained SWE-bench evaluator identity differs")
+    require(result.get("patch_sha256") == digest, "retained evaluator patch hash differs")
+    if not patch.strip():
+        require(result.get("resolved") is False and result.get("outcome") == "unresolved"
+                and result.get("reason") == "empty_submission" and retained.summary["workload_success"] is False,
+                "retained empty submission has an invalid grade")
+        return
+    retained.grade(result)
+    rows = json.loads(retained.bytes(prefix + "dataset.json"))
+    require(isinstance(rows,list) and len(rows) == 1
+            and rows[0].get("instance_id") == retained.identity["task_id"]
+            and rows[0].get("base_commit") == retained.submission["base_commit"]
+            and rows[0].get("image") == result["image"].get("declared_image"),
+            "retained evaluator dataset row differs")
+    submitted = retained.object(prefix + "submission.jsonl")
+    require(submitted.get("instance_id") == retained.identity["task_id"]
+            and submitted.get("model_patch") == patch.decode("utf-8"), "retained evaluator submission differs")
+    report = retained.object(prefix + result["official_report"])
+    summary = retained.object(prefix + result["official_summary"])
+    task = retained.identity["task_id"]
+    require(set(report) == {task} and report[task].get("resolved") == result["resolved"]
+            and summary.get("total_instances") == 1 and summary.get("submitted_ids") == [task]
+            and summary.get("completed_ids") == [task]
+            and summary.get("resolved_ids") == ([task] if result["resolved"] else [])
+            and (not result["resolved"] or report[task].get("patch_successfully_applied") is True),
+            "retained official SWE-bench reports disagree")
+    require(result.get("sdk") == retained.object(prefix + "sdk-identity.json")
+            and result.get("image") == retained.object(prefix + "image-identity.json")
+            and result["image"].get("image_id") == retained.task["image"].get("image_id"),
+            "retained official evaluator image or SDK differs")
+
+
 def official_harness(arguments):
     """Run the pinned SDK with scoped Docker transport and no root Python."""
     from asb_docker import DockerSession

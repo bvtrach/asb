@@ -99,6 +99,7 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
                     jobs: usize::from(options.jobs),
                     max_active_attempts: options.max_active_attempts.map(usize::from),
                     resume: options.resume,
+                    reconcile_completed: options.reconcile_completed,
                 },
                 stdout,
             )
@@ -269,6 +270,12 @@ struct SweepArgs {
     /// Reuse validated completed groups and run untouched configurations; incomplete groups require recovery.
     #[arg(long)]
     resume: bool,
+    #[arg(
+        long,
+        requires = "resume",
+        help = "validate retained completed grades and repair missing receipts; never retry an agent"
+    )]
+    reconcile_completed: bool,
     #[arg(long)]
     record: bool,
     #[arg(long)]

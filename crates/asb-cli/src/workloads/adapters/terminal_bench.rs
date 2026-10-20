@@ -14,6 +14,16 @@ pub(super) struct TerminalBenchAdapter {
 }
 
 impl super::WorkloadAdapter for TerminalBenchAdapter {
+    fn verify_retained(
+        &self,
+        context: &crate::workloads::recovery::RetainedOutcomeContext<'_>,
+    ) -> Result<(), crate::Error> {
+        crate::workloads::remote::verify_retained(
+            self.tool,
+            self.runtime.trim_end_matches(".py"),
+            context,
+        )
+    }
     fn recover(
         &self,
         context: &crate::workloads::recovery::RecoveryContext<'_>,

@@ -21,7 +21,12 @@ pub(crate) fn render_reused(
             let safe: String = task.chars().filter(|value| !value.is_control()).collect();
             writeln!(
                 output,
-                "Reused completed task {safe}: {}.",
+                "Reused {}task {safe}: {}.",
+                if summary["reconciled"] == true {
+                    "reconciled retained outcome for "
+                } else {
+                    "completed "
+                },
                 if summary["workload_success"] == true {
                     "resolved"
                 } else {
@@ -57,6 +62,7 @@ mod tests {
             json!({"task":{"task_id":"unresolved"},"workload_success":false,"process_success":true,"token_usage":{"total_tokens":42}}),
             json!({"task":{"task_id":"resolved-partial-work"},"workload_success":true,"process_success":false}),
             json!({"task":{"task_id":"resolved"},"workload_success":true,"process_success":true}),
+            json!({"task":{"task_id":"reconciled-unresolved"},"workload_success":false,"process_success":true,"reconciled":true}),
         ];
         let before = summaries.clone();
         let mut output = Vec::new();
@@ -64,14 +70,16 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("2 reused benchmark outcome(s) remain failed")
+                .contains("3 reused benchmark outcome(s) remain failed")
         );
         let records: Vec<Value> = String::from_utf8(output)
             .unwrap()
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect();
-        assert_eq!(records.len(), 3);
+        assert_eq!(records.len(), 4);
+        assert_eq!(records[3]["workload_success"], false);
+        assert_eq!(records[3]["reconciled"], true);
         assert!(records.iter().all(|record| record["reused"] == true));
         assert_eq!(records[0]["workload_success"], false);
         assert_eq!(records[0]["token_usage"]["total_tokens"], 42);

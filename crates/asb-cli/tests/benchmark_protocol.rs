@@ -1,6 +1,11 @@
 //! Provider-free tests of the upstream workload protocol's pure data layer.
 
 #[test]
+fn retained_original_grades_are_checked_without_executing_agents_or_graders() {
+    python_protocol("benchmark_retained.py");
+}
+
+#[test]
 fn resource_recovery_preserves_evidence_and_only_quiesces_declared_owners() {
     python_protocol("benchmark_resources.py");
 }

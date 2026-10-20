@@ -21,6 +21,12 @@ pub(super) static ADAPTER: SweBenchAdapter = SweBenchAdapter {
 };
 
 impl WorkloadAdapter for SweBenchAdapter {
+    fn verify_retained(
+        &self,
+        context: &crate::workloads::recovery::RetainedOutcomeContext<'_>,
+    ) -> Result<(), crate::Error> {
+        crate::workloads::remote::verify_retained("swebench", "asb_swebench", context)
+    }
     fn recover(
         &self,
         context: &crate::workloads::recovery::RecoveryContext<'_>,

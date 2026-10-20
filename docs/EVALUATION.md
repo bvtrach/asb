@@ -168,6 +168,26 @@ metrics. Malformed or contradictory declarations are rejected. Resume receipts
 bind the recorded context to measurement outputs and the pre-start intent;
 changing that history invalidates reuse rather than relabeling old data.
 
+### Explicit reconciliation of already-graded outcomes
+
+If a controller owner stopped after grading and cleanup but before publishing
+completion receipts, use `asb sweep SWEEP.toml --resume --reconcile-completed`.
+This is opt-in: ordinary resume still refuses unsealed outcomes. The original
+input identity, selected task, replica start intent and workload allocation
+must match. Only schema-2 outcomes with boolean grades and confirmed cleanup
+qualify. Owning adapters check the retained task, submission and official
+grader artifacts read-only; no agent/provider, container or evaluator runs.
+All candidates are checked before any missing receipt is published, and
+existing receipts are never replaced. Missing or inconsistent artifacts fail
+without converting a failed/ungraded attempt into success.
+
+Repaired receipts record current local artifact consistency, **not historical
+attestation** that those previously unsealed files were never changed. Reused
+JSONL summaries and comparison reports disclose `reconciled: true`; its marker
+is bound into the new receipt. False task grades and failed process exits stay
+false/failed. This operation does not recover genuinely unfinished evaluation
+or authorize rerunning already-graded failures.
+
 ## Steps and tokens
 
 The old step collector searched JSON keys/text for words such as `step`,

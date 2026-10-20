@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 const LIMIT: u64 = 1024 * 1024;
 const SCOPE: &str = "outcome-evidence-only-not-complete-input-closure";
 mod allocations;
+mod reconcile;
 pub(super) mod replicas;
 
 #[derive(Deserialize)]
@@ -97,6 +98,16 @@ impl Inputs {
                     }
                 }
                 Err(error) => return Err(io_error(error)),
+            }
+        }
+        for (index, summaries) in &mut reused.groups {
+            for summary in summaries {
+                self.disclose_reconciliation(*index, summary)?;
+            }
+        }
+        for (index, summaries) in &mut reused.slots {
+            for summary in summaries.values_mut() {
+                self.disclose_reconciliation(*index, summary)?;
             }
         }
         Ok(reused)

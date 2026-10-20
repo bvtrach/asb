@@ -16,6 +16,8 @@ pub(in crate::sweep) struct Observer<'a> {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Receipt {
+    #[serde(default)]
+    reconciled: bool,
     schema_version: u32,
     scope: String,
     configuration: usize,
@@ -117,13 +119,20 @@ impl CompletionObserver for Observer<'_> {
         )?;
         let fingerprint = self.inputs.snapshotter.fingerprint(
             &roots,
-            &context(self.index, replica, self.entry, &self.inputs.initial.digest),
+            &context(
+                self.index,
+                replica,
+                self.entry,
+                &self.inputs.initial.digest,
+                false,
+            ),
             false,
             &[],
         )?;
         publish(
             &path(self.inputs, self.index, replica.index),
             &Receipt {
+                reconciled: false,
                 schema_version: 1,
                 scope: REPLICA_SCOPE.into(),
                 configuration: self.index,
@@ -138,6 +147,35 @@ impl CompletionObserver for Observer<'_> {
 }
 
 impl Inputs {
+    pub(super) fn reconciled_replica(&self, index: usize, slot: usize) -> Result<bool, Error> {
+        let receipt: Receipt = read_private(&path(self, index, slot))?;
+        Ok(receipt.reconciled)
+    }
+
+    pub(super) fn publish_reconciled(
+        &self,
+        index: usize,
+        replica: Identity,
+        outcome: PathBuf,
+        roots: Vec<Root>,
+        fingerprint: Fingerprint,
+    ) -> Result<(), Error> {
+        publish(
+            &path(self, index, replica.index),
+            &Receipt {
+                reconciled: true,
+                schema_version: 1,
+                scope: REPLICA_SCOPE.into(),
+                configuration: index,
+                replica,
+                input_digest: self.initial.digest.clone(),
+                outcome,
+                roots,
+                fingerprint,
+            },
+        )
+    }
+
     fn reservation(
         &self,
         index: usize,
@@ -320,7 +358,13 @@ impl Inputs {
         }
         let actual = self.snapshotter.fingerprint(
             &roots,
-            &context(index, replica, entry, &self.initial.digest),
+            &context(
+                index,
+                replica,
+                entry,
+                &self.initial.digest,
+                receipt.reconciled,
+            ),
             false,
             &[],
         )?;
@@ -333,7 +377,7 @@ impl Inputs {
     }
 }
 
-fn path(inputs: &Inputs, index: usize, replica: usize) -> PathBuf {
+pub(super) fn path(inputs: &Inputs, index: usize, replica: usize) -> PathBuf {
     inputs
         .directory
         .join("replicas")
@@ -357,12 +401,22 @@ fn pending_path(inputs: &Inputs, index: usize, replica: usize) -> PathBuf {
         .join(format!("{replica:03}.json"))
 }
 
-fn context(index: usize, replica: Identity, entry: &PlannedBenchmark, digest: &str) -> Value {
-    json!({"protocol":"asb-replica-evidence-v1","scope":REPLICA_SCOPE,
-        "configuration":index,"replica":replica,"entry":entry,"input_digest":digest})
+pub(super) fn context(
+    index: usize,
+    replica: Identity,
+    entry: &PlannedBenchmark,
+    digest: &str,
+    reconciled: bool,
+) -> Value {
+    let mut value = json!({"protocol":"asb-replica-evidence-v1","scope":REPLICA_SCOPE,
+        "configuration":index,"replica":replica,"entry":entry,"input_digest":digest});
+    if reconciled {
+        value["reconciliation"] = json!("retained-artifact-consistency");
+    }
+    value
 }
 
-fn state(
+pub(super) fn state(
     directory: &Path,
     entry: &PlannedBenchmark,
     replica: Identity,

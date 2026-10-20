@@ -15,6 +15,50 @@ pub(crate) fn prefetch(context: &super::PreflightContext<'_>) -> Result<(), crat
     Ok(())
 }
 
+pub(crate) fn verify_retained(
+    tool_id: &str,
+    module: &str,
+    context: &super::recovery::RetainedOutcomeContext<'_>,
+) -> Result<(), crate::Error> {
+    let recovery = &context.recovery;
+    recovery
+        .reference
+        .validate_location(recovery.project_root)?;
+    let tool = crate::project::resolve(recovery.project_root, &recovery.project_config.tools_dir)
+        .join(tool_id);
+    require_sdk(&tool, &recovery.reference.workload)?;
+    let mut command = Command::new(tool.join("venv/bin/python"));
+    command
+        .arg(tool.join("asb_retained.py"))
+        .arg("--module")
+        .arg(module)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .stderr(std::process::Stdio::null());
+    let mut controller = Controller::spawn(&mut command).map_err(crate::Error::Run)?;
+    controller
+        .send(&json!({"reference":recovery.reference,"summary":context.summary}))
+        .map_err(crate::Error::Run)?;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let result = controller.receive(deadline).map_err(crate::Error::Run)?;
+    if result["ok"] != true
+        || result["scope"] != "retained-artifact-consistency-not-historical-attestation"
+    {
+        let reason = result["reason"]
+            .as_str()
+            .filter(|reason| reason.len() <= 512 && !reason.chars().any(char::is_control))
+            .unwrap_or(
+                "retained upstream artifacts do not establish a consistent completed outcome",
+            );
+        return Err(crate::Error::Input(format!(
+            "cannot reconcile retained outcome: {reason}; inspect {} and preserve the original records rather than repeating the task",
+            recovery.reference.artifacts.display()
+        )));
+    }
+    controller
+        .complete_response(deadline)
+        .map_err(crate::Error::Run)
+}
+
 pub(crate) fn runtime_inputs(
     tool: &str,
     context: &crate::runtime_inputs::Context<'_>,

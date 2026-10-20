@@ -125,6 +125,45 @@ class ParallelOriginalTaskQualification(unittest.TestCase):
                     self.assertEqual({record["task"]["attempt_id"] for record in reused},
                         {record["task"]["attempt_id"] for record in records})
                     self.assertEqual(len(arrivals), original_calls, "continuation must not start either real client again")
+                    # Simulate a completed/cleaned-up task whose receipt writes
+                    # were lost. Preserve those receipts outside the result tree.
+                    checkpoint = artifacts / "sweep-results/.checkpoint"
+                    archive = artifacts / "reconciliation-archive"
+                    archive.mkdir()
+                    for index in range(2):
+                        (checkpoint / f"replicas/{index:06}/001.json").rename(archive / f"replica-{index}.json")
+                        (checkpoint / f"completed/{index:06}.json").rename(archive / f"group-{index}.json")
+                    rejected = subprocess.run([binary,"sweep",manifest,"--jobs","2","--max-active-attempts","2","--resume","--json"],
+                        cwd=root,env=environment,capture_output=True,timeout=60)
+                    self.assertNotEqual(rejected.returncode,0,"ordinary resume must not silently manufacture a receipt")
+                    self.assertEqual(len(arrivals),original_calls)
+                    allocation = json.loads((checkpoint / "allocated/000001/001.json").read_bytes())
+                    evaluator = Path(allocation["reference"]["artifacts"]) / "evaluation.json"
+                    evaluator_bytes = evaluator.read_bytes()
+                    inconsistent = json.loads(evaluator_bytes)
+                    inconsistent["resolved"] = False
+                    evaluator.write_text(json.dumps(inconsistent))
+                    invalid = subprocess.run([binary,"sweep",manifest,"--jobs","2","--max-active-attempts","2","--resume","--reconcile-completed","--json"],
+                        cwd=root,env=environment,capture_output=True,timeout=120)
+                    evaluator.write_bytes(evaluator_bytes)
+                    self.assertNotEqual(invalid.returncode,0,"inconsistent retained grades must not be promoted")
+                    self.assertFalse((checkpoint / "replicas/000000/001.json").exists(),"validate all candidates before publishing any")
+                    self.assertFalse((checkpoint / "replicas/000001/001.json").exists())
+                    self.assertEqual(len(arrivals),original_calls)
+                    repaired = subprocess.run([binary,"sweep",manifest,"--jobs","2","--max-active-attempts","2","--resume","--reconcile-completed","--json"],
+                        cwd=root,env=environment,capture_output=True,timeout=120)
+                    (artifacts / "reconcile.stdout").write_bytes(repaired.stdout)
+                    (artifacts / "reconcile.stderr").write_bytes(repaired.stderr)
+                    self.assertEqual(repaired.returncode,0,repaired.stderr.decode())
+                    repaired_rows = [json.loads(line) for line in repaired.stdout.splitlines()]
+                    self.assertEqual(len(repaired_rows),2)
+                    self.assertEqual(len(arrivals),original_calls,"receipt reconciliation cannot start another client")
+                    self.assertTrue(all(row["reused"] for row in repaired_rows))
+                    self.assertTrue(all(row["reconciled"] for row in repaired_rows))
+                    self.assertTrue(json.loads((checkpoint / "replicas/000000/001.json").read_bytes())["reconciled"])
+                    comparison = json.loads((artifacts / "results/sweep-comparison/comparison.json").read_bytes())
+                    self.assertTrue(next(row for row in comparison["benchmarks"] if row["workload"] == "swe-bench-lite")["reconciled"])
+                    self.assertIn("Reconciled retained local outcome",(artifacts / "results/sweep-comparison/report.html").read_text())
                     self.assertFalse(barrier.broken)
                     self.assertEqual({entry["task"] for entry in arrivals[:2]}, {"swe","terminal"},
                         "the barrier must overlap distinct clients, not two auxiliary calls from one client")

@@ -70,6 +70,17 @@ pub(crate) struct RecoveryContext<'a> {
     pub reference: &'a AttemptReference,
 }
 
+pub(crate) struct RetainedOutcomeContext<'a> {
+    pub recovery: RecoveryContext<'a>,
+    pub summary: &'a serde_json::Value,
+}
+
+pub(crate) fn verify_retained(context: &RetainedOutcomeContext<'_>) -> Result<(), Error> {
+    super::adapters::find(&context.recovery.reference.workload)
+        .ok_or_else(|| Error::Input("retained workload adapter is unavailable".into()))?
+        .verify_retained(context)
+}
+
 /// Publish before controller spawn. A partial write cannot launch a task.
 pub(super) fn remember(workspace: &Path, reference: &AttemptReference) -> Result<PathBuf, Error> {
     let directory = workspace.join(".asb-attempts");

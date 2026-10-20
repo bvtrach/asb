@@ -31,6 +31,14 @@ mod terminal_bench_1_0;
 mod terminal_bench_2_1;
 
 pub(super) trait WorkloadAdapter: Sync {
+    fn verify_retained(
+        &self,
+        _context: &super::recovery::RetainedOutcomeContext<'_>,
+    ) -> Result<(), crate::Error> {
+        Err(crate::Error::Input(
+            "this workload cannot validate retained upstream outcomes".into(),
+        ))
+    }
     fn id(&self) -> &'static str;
     fn recover(
         &self,

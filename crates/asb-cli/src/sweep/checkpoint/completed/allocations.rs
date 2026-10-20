@@ -103,6 +103,28 @@ pub(super) fn validate(
     Ok(true)
 }
 
+pub(super) fn reference(
+    inputs: &Inputs,
+    index: usize,
+    replica: Identity,
+    directory: &Path,
+    entry: &PlannedBenchmark,
+) -> Result<AttemptReference, Error> {
+    let path = path(inputs, index, replica.index);
+    if !validate(
+        &path,
+        &replicas::start_path(inputs, index, replica.index),
+        directory,
+        entry,
+        replica,
+    )? {
+        return Err(invalid(
+            "retained outcome has no original workload allocation",
+        ));
+    }
+    Ok(read_private::<Allocation>(&path)?.reference)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

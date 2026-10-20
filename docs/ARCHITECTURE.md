@@ -254,6 +254,16 @@ files are not rewritten during continuation. Existing default replay cassettes
 must still identify their original preserved hard links. Interrupted parallel
 terminal spools are privately archived after validation, never overwritten or
 treated as grading evidence.
+`asb sweep SWEEP.toml --resume --reconcile-completed` explicitly repairs missing
+completion receipts for already-graded, cleanup-confirmed schema-2 outcomes.
+Original inputs, selection, start intent and workload allocation must still
+match. The owning workload adapter verifies retained task/submission/grader
+artifacts read-only under the resource owner's lock. All candidate outcomes
+are validated before publication; false grades remain false. Repaired receipts
+bind current artifacts and a reconciliation provenance marker, which JSONL and
+comparison reports disclose. This is current local consistency validation,
+not historical attestation. It never launches an agent, provider, environment
+or evaluator, and cannot turn an ungraded interrupted attempt into a grade.
 Sessions may execute through a workload-owned controller rather than the
 native process path. The generic execution context carries the selected
 configuration and negotiated connection, and the owning session returns
