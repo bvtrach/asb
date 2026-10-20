@@ -148,7 +148,8 @@ pub(crate) trait CollectorAdapter: Sync {
     fn requires_pid(&self) -> bool {
         false
     }
-    /// Describe the selected agent, never its prompt or environment.
+    /// Inspect the prepared entry point. Arguments can include prompts and
+    /// must never be logged or persisted by this hook.
     fn agent_launch(
         &self,
         _session: &mut crate::measurements::Session,
