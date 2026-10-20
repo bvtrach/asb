@@ -39,7 +39,9 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
         None => stdout
             .write_all(Cli::command().render_help().to_string().as_bytes())
             .map_err(io_error),
-        Some(CommandLine::Init(options)) => project::init(options.root, options.reset, stdout),
+        Some(CommandLine::Init(options)) => {
+            project::init(options.root, options.reset, options.yes, stdout)
+        }
         Some(CommandLine::Setup(options)) => match options.mode {
             Some(SetupMode::Tui) => tui::setup(stdout),
             None => config::setup(options.into(), stdout),
@@ -182,6 +184,9 @@ struct InitArgs {
     root: Option<PathBuf>,
     #[arg(long)]
     reset: bool,
+    /// Approve every privileged host-setup questionnaire without prompting.
+    #[arg(long, short = 'y')]
+    yes: bool,
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
