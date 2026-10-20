@@ -1383,3 +1383,52 @@ qualification or an evaluation of the full populations.
 Actual resume dispatch, interrupted replica handling, scalable population
 presentation, abrupt-crash recovery, final review/merge, exact-main CI and the
 minor release remain open; these changes do not close those delivery gates.
+
+### Completed-group continuation dispatch
+
+`asb sweep --resume` now consumes the original plan and validates the selected
+dataset/task population, execution mode, replay timing and scheduling. It
+recomputes declared input identity with the original private key, then checks
+every reusable group's outcome/measurement/evaluator/proxy evidence before
+admitting any work. Neither input-only nor outcome-only seals authorize reuse
+on their own. A missing original key is never silently regenerated. Missing,
+changed, malformed or unbounded input/evidence rejects continuation without
+replacing the existing results or input seal. Fresh execution remains available
+without these optional continuation requirements.
+
+Validated completed groups return their original summary and attempt IDs
+without starting agents, providers, proxies or workload environments. JSONL
+adds `reused: true`; human output identifies reuse explicitly. A false task
+grade or failed client remains a failed result/command, not an invitation to
+retry until it passes. Original measurements/logs are not rewritten and the
+comparison continues to count the original attempts once. Configurations with
+no result directory can be admitted normally. A pending initial seal left by a
+stopped owner requires the same current inputs and complete evidence; process
+exit alone is never completion evidence.
+
+An existing unsealed or partially completed replica group is currently rejected
+intact before scheduling. Per-replica continuation and owned-resource recovery
+must still be added; the current option is not an abrupt-crash recovery promise.
+Runtime identity is the declared component/file/environment graph, not a claim
+of whole-host immutability or arbitrary dynamic application input coverage.
+
+Provider-free tests cover unchanged eight-replica reuse with no new agent
+launches, preserved logs/attempts, changed executable rejection, missing
+checkpoint keys, pending input seals and unsealed-group rejection. Unit cases
+preserve false grades/client failures, output errors and safe one-line human
+presentation. Replay tests also check preserved-history/default cassette paths.
+The source suite passed 416 unit tests, 87 offline CLI tests, thirteen protocol
+suites, guest/replay checks, strict Clippy and `make build`; final package and
+hosted gates follow.
+
+The actual mixed original SWE-bench Lite/Terminal-Bench 1.0 qualification passed
+in 79.6 seconds with real Pi and a synthetic loopback provider. It then resumed
+both configurations, required original task/attempt identities and official
+grades, and observed no additional completion requests. Existing scoped
+collector/graph/cleanup checks still passed. Artifacts are retained under
+`target/benchmark-runtime/parallel-original-tasks-d03_v9om`. This is a warm-cache
+representative known-repair qualification, not full-population AI solving.
+
+Per-replica interrupted-group recovery, scalable population presentation,
+abrupt-crash recovery, cold-cache qualification, final review/merge,
+exact-main CI and the minor release remain open.

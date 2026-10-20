@@ -35,6 +35,7 @@ pub(super) struct Execution<'a> {
     pub options: Options<'a>,
     pub warnings: &'a Mutex<BTreeSet<String>>,
     pub checkpoint: Option<&'a super::checkpoint::Inputs>,
+    pub reused: &'a std::collections::BTreeMap<usize, Vec<serde_json::Value>>,
 }
 
 impl Execution<'_> {
@@ -73,6 +74,9 @@ impl Execution<'_> {
 
     /// Sequential defaults retain immediate warnings and --show-output.
     pub(super) fn run_to(&self, index: usize, output: &mut dyn Write) -> Result<(), Error> {
+        if let Some(summaries) = self.reused.get(&index) {
+            return super::resume::render_reused(summaries, self.options.json, output);
+        }
         let entry = &self.plan.entries[index];
         let config = &entry.configuration;
         let config_path = checked_reference(self.parent, &entry.reference, self.source)?;

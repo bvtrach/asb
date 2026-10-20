@@ -208,10 +208,19 @@ must agree with the outcome summaries. Both resolved and unresolved grades are
 sealed; incomplete, malformed or mismatched groups are not. Publication cannot
 replace an existing receipt, and verification rejects changed results, evidence,
 selection or input identity. Temporary output spools live outside the per-task
-result tree, so hashing excludes no evidence filenames. These outcome-only
-seals still lack complete runtime input closure and never suppress
-execution or change the grade. No `--resume` behavior is provided by these
-foundations alone.
+result tree, so hashing excludes no evidence filenames. Neither an input-only
+nor an outcome-only seal is sufficient to suppress execution or change a grade.
+`asb sweep --resume` combines current declared-input validation with the original
+selection/mode/scheduling and every completed group's evidence seal before
+starting or skipping anything. It reuses complete groups without launching
+clients, preserves failed grades and failure exits, and admits configurations
+whose result directory does not exist. A pending initial seal from a stopped
+owner is usable only when the current declared inputs still match exactly.
+An existing unsealed/partially completed replica group is rejected intact;
+per-replica continuation and owned-container crash recovery remain separate
+unfinished work. Missing keys are never regenerated for continuation, and
+invalid continuation never replaces historical input seals/results. JSONL
+summaries carry `reused: true`; human output explicitly identifies reuse.
 Sessions may execute through a workload-owned controller rather than the
 native process path. The generic execution context carries the selected
 configuration and negotiated connection, and the owning session returns
@@ -647,9 +656,9 @@ Sequential defaults retain immediate preparation warnings and streaming
 JSONL. Shared tool dependency publication is serialized without serializing
 execution. Each JSONL summary includes agent/provider/model/workload names and
 its actual task/attempt identity, so completion-order output remains identifiable.
-These mechanisms are not a content-bound resume/crash-recovery
-protocol or a claim that a complete original population has been evaluated.
-Every new sweep starts fresh output workspaces. Previous results and reports
+Scheduling and output exclusion are separate from completed-group continuation
+and do not claim abrupt-crash container recovery or full-population evaluation.
+Without `--resume`, every new sweep starts fresh output workspaces. Previous results and reports
 are protected by a per-output operating-system file lock held from planning
 through final comparison. A competing writer fails before moving prior data;
 unrelated manifests remain independent. The persistent lock file is never

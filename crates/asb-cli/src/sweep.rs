@@ -12,6 +12,7 @@ mod checkpoint;
 mod execution;
 mod lock;
 pub(crate) mod plan;
+mod resume;
 pub(crate) mod scheduler;
 mod spool;
 
@@ -33,6 +34,7 @@ pub(crate) struct Options<'a> {
     pub cassette_root: Option<&'a Path>,
     pub jobs: usize,
     pub max_active_attempts: Option<usize>,
+    pub resume: bool,
 }
 
 impl Default for Options<'_> {
@@ -45,6 +47,7 @@ impl Default for Options<'_> {
             cassette_root: None,
             jobs: 1,
             max_active_attempts: None,
+            resume: false,
         }
     }
 }
@@ -111,11 +114,32 @@ pub(crate) fn run_with_options(
     let scheduling =
         scheduler::Scheduling::new(options.jobs, options.max_active_attempts, &weights)?;
     plan.scheduling = Some(scheduling);
+    if options.resume {
+        let results = parent.join(format!("{stem}-results"));
+        if !std::fs::symlink_metadata(&results).is_ok_and(|metadata| metadata.is_dir()) {
+            return Err(Error::Input("cannot resume: the existing sweep results must be a real directory; run without --resume to start a fresh sweep".into()));
+        }
+        let saved = plan::SweepPlan::load(&results, parent, &sweep)?.ok_or_else(|| {
+            Error::Input("cannot resume: the original sweep plan is missing".into())
+        })?;
+        if saved.execution_mode != plan.execution_mode
+            || saved.respect_record_timings != plan.respect_record_timings
+            || saved.scheduling != plan.scheduling
+            || saved
+                .entries
+                .iter()
+                .zip(&plan.entries)
+                .any(|(old, current)| old.selection != current.selection)
+        {
+            return Err(Error::Input("cannot resume: dataset selection, execution mode, replay timing or scheduling differs from the original sweep; use the original options or start a fresh sweep".into()));
+        }
+        plan = saved;
+    }
     // Warm selected workload dependencies before moving old output or taking
     // input snapshots. This is execution preflight, never optional metadata
     // discovery. Deduplicate over the full population, not once per task.
     let mut prepared = BTreeSet::new();
-    for entry in &plan.entries {
+    for entry in plan.entries.iter().filter(|_| !options.resume) {
         let (root, project) = crate::project::load(&parent.join(&entry.reference))?;
         if prepared.insert((
             root.clone(),
@@ -144,7 +168,11 @@ pub(crate) fn run_with_options(
     } else {
         None
     };
-    let results_root = plan::fresh_results(parent, stem, &plan)?;
+    let results_root = if options.resume {
+        parent.join(format!("{stem}-results"))
+    } else {
+        plan::fresh_results(parent, stem, &plan)?
+    };
     let backup = parent.join(format!("{stem}-history")).join(&plan.run_id);
     let replay_inputs = relocated_input
         .as_ref()
@@ -156,9 +184,26 @@ pub(crate) fn run_with_options(
     let preserved_source = backup.join(format!("{stem}-results"));
     let replay_sources =
         execution::replay_sources(&plan, replay_inputs.as_deref().unwrap_or(&preserved_source));
-    let checkpoint =
-        checkpoint::Inputs::begin(parent, &results_root, &plan, mode, &replay_sources).ok();
-    if !json && backup.is_dir() {
+    let checkpoint = if options.resume {
+        Some(checkpoint::Inputs::resume(
+            parent,
+            &results_root,
+            &plan,
+            mode,
+            &replay_sources,
+        )?)
+    } else {
+        checkpoint::Inputs::begin(parent, &results_root, &plan, mode, &replay_sources).ok()
+    };
+    let reused = if options.resume {
+        checkpoint
+            .as_ref()
+            .expect("resume input validation")
+            .resume_outcomes(parent, &results_root, &plan)?
+    } else {
+        std::collections::BTreeMap::new()
+    };
+    if !json && !options.resume && backup.is_dir() {
         writeln!(
             output,
             "Previous sweep results were preserved under {}.",
@@ -179,6 +224,7 @@ pub(crate) fn run_with_options(
         options,
         warnings: &warnings,
         checkpoint: checkpoint.as_ref(),
+        reused: &reused,
         restore_recordings: cassette_root.is_none()
             || relocated_input
                 .as_ref()

@@ -14,7 +14,7 @@ asb provider models [PROVIDER] [--free]
 asb setup tui
 asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--workspace DIR] [--output FILE]
 asb run CONFIG [--record|--replay] [--cassette FILE] [--json] [--measurements DIR]
-asb sweep SWEEP.toml [--record|--replay] [--cassette-root DIR] [--respect-record-timings] [--json]
+asb sweep SWEEP.toml [--record|--replay] [--cassette-root DIR] [--respect-record-timings] [--resume] [--json]
 asb compare SWEEP.toml
 ```
 
@@ -23,6 +23,15 @@ provider, model, workload, concurrency, and position within the sweep. The
 percentage indicates how far through the configuration list execution has
 reached, not how much of the current benchmark has completed. `--json` omits
 these human-readable progress lines.
+
+`asb sweep SWEEP.toml --resume` keeps the original sweep and reuses complete,
+evidence-checked replica groups, including unresolved results. Use the same
+execution mode, cassette-root and scheduling options as the original command.
+Changed declared inputs or grading evidence reject continuation without
+replacing prior results. Configurations that never started can run normally;
+an interrupted/partially completed replica group currently requires recovery
+and is not automatically retried. Without `--resume`, prior results are
+preserved in sweep history and execution starts fresh.
 
 `setup tui` opens a Ratatui wizard with agent, provider, model, workload, and
 measurement steps. Select multiple entries with Space; Tab or Enter advances

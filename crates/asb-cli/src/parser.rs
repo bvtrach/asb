@@ -97,6 +97,7 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
                     cassette_root: options.cassette_root.as_deref().map(std::path::Path::new),
                     jobs: usize::from(options.jobs),
                     max_active_attempts: options.max_active_attempts.map(usize::from),
+                    resume: options.resume,
                 },
                 stdout,
             )
@@ -258,6 +259,9 @@ struct RunArgs {
 struct SweepArgs {
     #[arg(value_name = "SWEEP")]
     path: String,
+    /// Reuse validated completed groups and run untouched configurations; incomplete groups require recovery.
+    #[arg(long)]
+    resume: bool,
     #[arg(long)]
     record: bool,
     #[arg(long)]

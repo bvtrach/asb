@@ -223,6 +223,97 @@ impl Inputs {
         mode: Option<crate::tape::Mode>,
         replay_sources: &[PathBuf],
     ) -> Result<Self, Error> {
+        let state = Self::build(parent, results, plan, mode, replay_sources)?;
+        state.publish("pending", None)?;
+        Ok(state)
+    }
+
+    /// Verify existing declared inputs without replacing their historical seal.
+    /// A killed owner can leave a pending seal; completed outcomes still need
+    /// their separate immutable evidence checks before any execution is skipped.
+    pub(super) fn resume(
+        parent: &Path,
+        results: &Path,
+        plan: &super::plan::SweepPlan,
+        mode: Option<crate::tape::Mode>,
+        replay_sources: &[PathBuf],
+    ) -> Result<Self, Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Saved {
+            schema_version: u32,
+            status: String,
+            scope: String,
+            roots: Vec<Root>,
+            initial: Fingerprint,
+            r#final: Option<Fingerprint>,
+        }
+        let directory = results.join(".checkpoint");
+        if !std::fs::symlink_metadata(&directory).is_ok_and(|metadata| metadata.is_dir())
+            || !std::fs::symlink_metadata(directory.join("key"))
+                .is_ok_and(|metadata| metadata.is_file() && metadata.len() == 32)
+        {
+            return Err(resume_error(
+                "the original private input checkpoint is missing",
+            ));
+        }
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let file = options
+            .open(directory.join("inputs.json"))
+            .map_err(|_| resume_error("the original input seal is missing"))?;
+        let metadata = file.metadata().map_err(crate::io_error)?;
+        if !metadata.is_file() || metadata.len() > 16 * 1024 * 1024 {
+            return Err(resume_error(
+                "the original input seal is not a bounded regular file",
+            ));
+        }
+        let mut bytes = Vec::new();
+        file.take(16 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(crate::io_error)?;
+        if bytes.len() > 16 * 1024 * 1024 {
+            return Err(resume_error(
+                "the original input seal exceeds its size limit",
+            ));
+        }
+        let saved: Saved = serde_json::from_slice(&bytes)
+            .map_err(|_| resume_error("the original input seal is malformed"))?;
+        if saved.schema_version != 1
+            || saved.scope != "input-stability-only-not-a-resume-receipt"
+            || !saved.initial.valid()
+            || saved.roots.len() > 100000
+            || match saved.status.as_str() {
+                "pending" => saved.r#final.is_some(),
+                "stable" => saved.r#final.as_ref() != Some(&saved.initial),
+                _ => true,
+            }
+        {
+            return Err(resume_error(
+                "the previous sweep does not have stable or pending declared inputs",
+            ));
+        }
+        let current = Self::build(parent, results, plan, mode, replay_sources)?;
+        if current.initial != saved.initial {
+            return Err(resume_error(
+                "the executable, configuration, runtime, environment or replay inputs changed",
+            ));
+        }
+        Ok(current)
+    }
+
+    fn build(
+        parent: &Path,
+        results: &Path,
+        plan: &super::plan::SweepPlan,
+        mode: Option<crate::tape::Mode>,
+        replay_sources: &[PathBuf],
+    ) -> Result<Self, Error> {
         let directory = results.join(".checkpoint");
         let mut roots = vec![
             Root::executable()?,
@@ -303,7 +394,6 @@ impl Inputs {
             initial,
             runtime: Some(runtime),
         };
-        state.publish("pending", None)?;
         Ok(state)
     }
 
@@ -364,6 +454,12 @@ impl Inputs {
             .and_then(|()| std::fs::rename(&temporary, self.directory.join("inputs.json")))
             .map_err(crate::io_error)
     }
+}
+
+fn resume_error(reason: &str) -> Error {
+    Error::Input(format!(
+        "cannot resume this sweep: {reason}; existing results were not replaced; restore the original inputs or run without --resume for a fresh sweep"
+    ))
 }
 
 #[cfg(unix)]

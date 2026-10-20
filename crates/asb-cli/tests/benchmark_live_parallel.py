@@ -99,6 +99,18 @@ class ParallelOriginalTaskQualification(unittest.TestCase):
                     records = [json.loads(line) for line in result.stdout.splitlines()]
                     self.assertEqual(len(records), 2)
                     self.assertGreaterEqual(len(arrivals), 4, "both real clients need a tool call and completion")
+                    original_calls = len(arrivals)
+                    resumed = subprocess.run([binary,"sweep",manifest,"--jobs","2","--max-active-attempts","2","--resume","--json"],
+                        cwd=root, env=environment, capture_output=True, timeout=120)
+                    (artifacts / "resume.stdout").write_bytes(resumed.stdout)
+                    (artifacts / "resume.stderr").write_bytes(resumed.stderr)
+                    self.assertEqual(resumed.returncode, 0, resumed.stderr.decode())
+                    reused = [json.loads(line) for line in resumed.stdout.splitlines()]
+                    self.assertEqual(len(reused), 2)
+                    self.assertTrue(all(record["reused"] and record["workload_success"] for record in reused))
+                    self.assertEqual({record["task"]["attempt_id"] for record in reused},
+                        {record["task"]["attempt_id"] for record in records})
+                    self.assertEqual(len(arrivals), original_calls, "continuation must not start either real client again")
                     self.assertFalse(barrier.broken)
                     self.assertEqual({entry["task"] for entry in arrivals[:2]}, {"swe","terminal"},
                         "the barrier must overlap distinct clients, not two auxiliary calls from one client")

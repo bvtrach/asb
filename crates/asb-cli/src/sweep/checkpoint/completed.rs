@@ -1,4 +1,4 @@
-//! Content-bound outcomes, separate from the still-incomplete input closure.
+//! Content-bound outcomes, validated separately from declared input stability.
 use super::{Fingerprint, Inputs, Root};
 use crate::sweep::plan::PlannedBenchmark;
 use crate::workloads::{BaselineEvidence, TaskIdentity};
@@ -38,9 +38,46 @@ pub(in crate::sweep) struct Completion {
 }
 
 impl Inputs {
+    /// Validate all existing groups before permitting reuse or new work. An
+    /// incomplete replica group cannot be retried as if its graded members
+    /// never happened. Recovery/per-replica continuation is handled separately.
+    pub(in crate::sweep) fn resume_outcomes(
+        &self,
+        parent: &Path,
+        results: &Path,
+        plan: &crate::sweep::plan::SweepPlan,
+    ) -> Result<BTreeMap<usize, Vec<Value>>, Error> {
+        let mut reused = BTreeMap::new();
+        for (index, entry) in plan.entries.iter().enumerate() {
+            let directory = results.join(crate::sweep::execution::result_name(
+                index,
+                &parent.join(&entry.reference),
+            ));
+            match std::fs::symlink_metadata(self.completion_path(index)) {
+                Ok(_) => {
+                    let (_, summaries) = self.verify_completed(index, &directory, entry)?;
+                    reused.insert(index, summaries);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    match std::fs::symlink_metadata(&directory) {
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                        Err(error) => return Err(io_error(error)),
+                        Ok(_) => {
+                            return Err(invalid(
+                                "an unsealed or interrupted replica group exists; it must be recovered without rerunning its graded members",
+                            ));
+                        }
+                    }
+                }
+                Err(error) => return Err(io_error(error)),
+            }
+        }
+        Ok(reused)
+    }
+
     /// A graded false outcome is completed, not a request for another try.
     /// Errors leave the benchmark result intact and cannot create a reusable
-    /// receipt. This does not yet provide resume dispatch or full input closure.
+    /// receipt. Reuse additionally requires validating the original input seal.
     pub(in crate::sweep) fn completed(
         &self,
         index: usize,
@@ -54,7 +91,7 @@ impl Inputs {
             self.verify_completed(index, directory, entry)?;
             return Ok(());
         }
-        let roots = outcome_roots(directory, entry)?;
+        let (roots, _) = outcome_state(directory, entry)?;
         let context = self.completion_context(index, entry);
         let fingerprint = self.snapshotter.fingerprint(&roots, &context, false, &[])?;
         let receipt = Completion {
@@ -73,9 +110,9 @@ impl Inputs {
         index: usize,
         directory: &Path,
         entry: &PlannedBenchmark,
-    ) -> Result<Completion, Error> {
+    ) -> Result<(Completion, Vec<Value>), Error> {
         let receipt: Completion = read_private(&self.completion_path(index))?;
-        let roots = outcome_roots(directory, entry)?;
+        let (roots, summaries) = outcome_state(directory, entry)?;
         if receipt.schema_version != 1
             || receipt.scope != SCOPE
             || receipt.index != index
@@ -94,7 +131,7 @@ impl Inputs {
         if actual != receipt.fingerprint {
             return Err(invalid("completed result or evaluator evidence changed"));
         }
-        Ok(receipt)
+        Ok((receipt, summaries))
     }
 
     fn completion_context(&self, index: usize, entry: &PlannedBenchmark) -> Value {
@@ -109,7 +146,10 @@ impl Inputs {
     }
 }
 
-fn outcome_roots(directory: &Path, entry: &PlannedBenchmark) -> Result<Vec<Root>, Error> {
+fn outcome_state(
+    directory: &Path,
+    entry: &PlannedBenchmark,
+) -> Result<(Vec<Root>, Vec<Value>), Error> {
     let directory = std::path::absolute(directory).map_err(io_error)?;
     let outcomes = directory.join(".asb-completions");
     let metadata = std::fs::symlink_metadata(&outcomes).map_err(io_error)?;
@@ -243,7 +283,7 @@ fn outcome_roots(directory: &Path, entry: &PlannedBenchmark) -> Result<Vec<Root>
     for (index, path) in proxy_outputs.into_iter().enumerate() {
         roots.push(Root::path(format!("proxy-output-{index}"), path));
     }
-    Ok(roots)
+    Ok((roots, summaries.into_values().collect()))
 }
 
 fn invalid(reason: &str) -> Error {
@@ -335,6 +375,41 @@ mod tests {
         entry: PlannedBenchmark,
     }
 
+    #[test]
+    fn continuation_distinguishes_untouched_tasks_from_unsealed_replica_groups() {
+        let fixture = Fixture::new(false);
+        let plan: crate::sweep::plan::SweepPlan = serde_json::from_value(json!({
+            "schema_version":1,"run_id":"abc","execution_mode":"live",
+            "entries":[&fixture.entry]
+        }))
+        .unwrap();
+        let results = fixture.root.join("sweep-results");
+        std::fs::create_dir(&results).unwrap();
+        assert!(
+            fixture
+                .inputs
+                .resume_outcomes(&fixture.root, &results, &plan)
+                .unwrap()
+                .is_empty()
+        );
+        let directory = results.join(crate::sweep::execution::result_name(
+            0,
+            &fixture.root.join(&fixture.entry.reference),
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let marker = directory.join("existing-work");
+        std::fs::write(&marker, "must be preserved").unwrap();
+        let error = fixture
+            .inputs
+            .resume_outcomes(&fixture.root, &results, &plan)
+            .unwrap_err();
+        assert!(error.to_string().contains("interrupted replica group"));
+        assert_eq!(
+            std::fs::read_to_string(marker).unwrap(),
+            "must be preserved"
+        );
+    }
+
     impl Fixture {
         fn new(resolved: bool) -> Self {
             let root = std::env::temp_dir()
@@ -420,7 +495,7 @@ mod tests {
         fn seal(&self) -> Result<(), Error> {
             self.inputs.completed(0, &self.directory, &self.entry)
         }
-        fn verify(&self) -> Result<Completion, Error> {
+        fn verify(&self) -> Result<(Completion, Vec<Value>), Error> {
             self.inputs
                 .verify_completed(0, &self.directory, &self.entry)
         }
