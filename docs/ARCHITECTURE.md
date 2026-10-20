@@ -81,9 +81,15 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   paths, credentials, or provider data) and omits unavailable fields.
   Every measured run also writes `components.json`: lifecycle component wall
   times plus process-accounted user/system CPU time, block-I/O delay, and
-  scheduler run-queue wait for the agent execution component. Network wait is
-  represented as `null` unless a collector can observe it directly; ASB never
-  assigns residual wall time to a guessed category.
+  scheduler run-queue wait for the agent execution component.
+  The `run.total` component measures elapsed wall time from measurement-session
+  start through `RunFinishing`, including measured preparation, execution,
+  evaluation and cleanup; it excludes pre-session collector preflight and
+  subsequent collector/report processing. The execution-only `elapsed_ms` in
+  `run.json` and the run summary remains separate (guest-observed for isolated
+  workloads). A session without `RunFinishing` uses its current elapsed clock.
+  Network wait is represented as `null` unless a collector can observe it
+  directly; ASB never assigns residual wall time to a guessed category.
   An automatic `cpu-accounting` adapter attaches the paused Linux process gate
   to an exclusive cgroup-v2 leaf when writable delegation is available. All
   children inherit the group, retaining their user/system CPU counters after
