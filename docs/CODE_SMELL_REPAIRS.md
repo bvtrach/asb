@@ -320,7 +320,26 @@ no Docker, installed SDK, real agent or provider. Independent source review,
 full qualification and delivery remain pending. Saved sweep modes and internal
 command identifiers remain separate work. Blocking controller request writes,
 Python nominal-interval deadline accounting and controller Drop custody are not
-repaired by these typed contracts and must not be claimed bounded here.
+repaired by those typed contracts and must not be claimed bounded there.
+
+Separate Unix controller transport candidate: actual regressions first reproduced
+a one-second blocked stdin write despite a 100 ms request budget, an escaped
+stdout reader after Controller destruction with an owned writer retained, and
+Python polling past its fake monotonic deadline. The Unix implementation now
+uses nonblocking owned process pipes and a bounded caller-owned duplex pump,
+without a reader thread. Write/response and acknowledgement/exit operations
+share absolute deadlines; failed close cannot restart the cleanup clock.
+Direct-child fallback custody is fallibly established before spawn. Explicit
+cleanup and destruction poll within their deadline and hand uncertain children
+to that existing keeper, never an unconditional caller wait or new Drop worker.
+Python uses monotonic elapsed time and rejects late queued requests. Exact
+wire/grade-token/normal-removal versus preserving-cancellation contracts remain.
+Owned-child, pipe-pressure, framing, sentinel, pidfd, setup-failure and unwind
+fixtures require no SDK, Docker, real agent, provider or host changes. Independent
+review, full qualification and delivery remain pending. Non-Unix retains the
+legacy blocking implementation and remains explicitly unqualified for this
+bounded transport guarantee; this is not a completed portable lifecycle repair,
+arbitrary descendant supervision, container recovery or a hard OS scheduling bound.
 
 cli2key startup/session candidate, staged patch **0.2.23** after checkpoint
 **0.2.22**: explicit external versus local ownership

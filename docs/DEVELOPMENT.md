@@ -552,7 +552,22 @@ bad grade or evaluator exception revokes the first grade's permission and
 requires stopped preservation without normal close. Generic controller tests
 retain untagged inspection, sanitized errors, framing limits and cancellation
 draining, including unknown in-flight events. These are offline protocol tests,
-not original SDK/container qualification or a repair of blocking request I/O.
+not original SDK/container qualification.
+`cargo test --locked --offline --lib workloads::controller::transport_tests`
+qualifies the Unix caller-side transport with actual non-reading children,
+duplex pipe pressure, bounded queued events, exact/oversized/unterminated frames,
+one write/response deadline and one cleanup acknowledgement/exit deadline.
+A Linux fixture retains only its own child's stdout writer through `/proc`,
+then proves Controller destruction releases the parent read descriptor without
+waiting for that writer. It creates no orphan descendant. Fault fixtures pin
+the direct child with a pidfd, force pending/error exit observation and unwind
+after admission, require the pre-established keeper to reap it and leave an
+unrelated sentinel alive. Worker creation failure launches no controller; pipe
+setup failure remains inside the existing custody guard. No fixture needs a
+genuinely kernel-stuck task. Python fake-monotonic-clock tests account for delayed
+polls and reject a late queued close instead of authorizing teardown. These
+checks do not qualify Docker resources, arbitrary descendants, OS spawn latency
+or the retained legacy non-Unix blocking transport.
 `benchmark_live_resources.py` additionally checks actual abrupt controller
 SIGKILL with an installed SWE-bench task image: the durable ownership journal
 quiesces only its recorded container, retains a partial output file and an

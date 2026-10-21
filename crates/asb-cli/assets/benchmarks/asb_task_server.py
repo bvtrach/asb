@@ -9,11 +9,18 @@ import base64
 import json
 import queue
 import threading
+import time
 from enum import Enum
 
 from asb_execution import ExecutionError
 
 MAX_REQUEST = 1024 * 1024
+DEFAULT_IDLE_TIMEOUT = 900
+ATTACHMENT_TIMEOUT = 60
+REQUEST_POLL_INTERVAL = 0.05
+REQUEST_QUEUE_TIMEOUT = 1
+DEFAULT_EXECUTION_TIMEOUT = 900
+DEFAULT_EVALUATION_TIMEOUT = 1800
 
 
 class Operation(str, Enum):
@@ -38,7 +45,7 @@ class Event(str, Enum):
     CLOSED = "closed"
 
 
-def serve(task, source, destination, idle_timeout=900):
+def serve(task, source, destination, idle_timeout=DEFAULT_IDLE_TIMEOUT):
     requests = queue.Queue(maxsize=64)
     peer_closed, stop_reader = threading.Event(), threading.Event()
     task.cancelled = peer_closed
@@ -67,7 +74,7 @@ def serve(task, source, destination, idle_timeout=900):
                 if request.get("op") == Operation.CANCEL:
                     peer_closed.set()
                     return
-                requests.put(request, timeout=1)
+                requests.put(request, timeout=REQUEST_QUEUE_TIMEOUT)
         except (OSError, ValueError, queue.Full):
             peer_closed.set()
 
@@ -75,19 +82,24 @@ def serve(task, source, destination, idle_timeout=900):
         # Polling this event also handles EOF while idle or paused. No global
         # filesystem leases or stale process-name assumptions are involved.
         timeout = idle_timeout if timeout is None else min(timeout, idle_timeout)
-        elapsed = 0.0
-        while elapsed < timeout:
+        deadline = time.monotonic() + timeout
+        while True:
             if peer_closed.is_set():
                 raise ExecutionError("ASB controller disconnected")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ExecutionError("ASB controller did not respond before the protocol deadline")
             try:
-                return requests.get(timeout=min(0.05, timeout - elapsed))
+                request = requests.get(timeout=min(REQUEST_POLL_INTERVAL, remaining))
+                if time.monotonic() >= deadline:
+                    raise ExecutionError("ASB controller did not respond before the protocol deadline")
+                return request
             except queue.Empty:
-                elapsed += min(0.05, timeout - elapsed)
-        raise ExecutionError("ASB controller did not respond before the protocol deadline")
+                pass
 
     def attach(target):
         emit(Event.PAUSED, target=target)
-        response = receive(timeout=60)
+        response = receive(timeout=ATTACHMENT_TIMEOUT)
         if response.get("op") != Operation.RESUME or response.get("exec_id") != target["exec_id"]:
             raise ExecutionError("execution was cancelled before collector attachment completed")
 
@@ -119,7 +131,7 @@ def serve(task, source, destination, idle_timeout=900):
                         else:
                             result = task.workspace.execute(
                                 request.get("argv"), request.get("environment"),
-                                timeout=request.get("timeout", 900), output_limit=request.get("output_limit", 256 * 1024),
+                                timeout=request.get("timeout", DEFAULT_EXECUTION_TIMEOUT), output_limit=request.get("output_limit", 256 * 1024),
                                 before_resume=attach, on_output=output, cancelled=peer_closed,
                                 gate=request.get("gate", "shell"),
                             )
@@ -130,7 +142,7 @@ def serve(task, source, destination, idle_timeout=900):
                     elif operation == Operation.CAPTURE:
                         emit(Event.SUBMISSION, submission=task.capture_submission())
                     elif operation == Operation.EVALUATE:
-                        emit(Event.EVALUATED, result=task.evaluate(timeout=request.get("timeout", 1800)))
+                        emit(Event.EVALUATED, result=task.evaluate(timeout=request.get("timeout", DEFAULT_EVALUATION_TIMEOUT)))
                     else:
                         raise ExecutionError("unknown task protocol operation")
                 except ExecutionError as error:

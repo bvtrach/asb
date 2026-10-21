@@ -481,7 +481,12 @@ fn broken_output_and_deadline_use_same_preserving_error_envelope() {
             show_output: true,
         };
         session
-            .dispatch_agent(&mut context, &connection, fixture.prepared())
+            .dispatch_agent(
+                &mut context,
+                &connection,
+                fixture.prepared(),
+                Instant::now() + Duration::from_secs(3),
+            )
             .unwrap();
         let result = session.receive_execution(
             &mut context,

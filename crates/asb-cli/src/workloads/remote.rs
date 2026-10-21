@@ -66,10 +66,14 @@ pub(crate) fn verify_retained(
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .stderr(std::process::Stdio::null());
     let mut controller = Controller::spawn(&mut command).map_err(crate::Error::Run)?;
-    controller
-        .send(&json!({"reference":recovery.reference,"summary":context.summary}))
-        .map_err(crate::Error::Run)?;
     let deadline = Instant::now() + INSPECTION_TIMEOUT;
+    controller.limit_cleanup_to(deadline);
+    controller
+        .send(
+            &json!({"reference":recovery.reference,"summary":context.summary}),
+            deadline,
+        )
+        .map_err(crate::Error::Run)?;
     let result = controller.receive(deadline).map_err(crate::Error::Run)?;
     if result["ok"] != true
         || result["scope"] != "retained-artifact-consistency-not-historical-attestation"
@@ -135,15 +139,19 @@ fn retained_grade_request(
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .stderr(std::process::Stdio::null());
     let mut controller = Controller::spawn(&mut command).map_err(crate::Error::Run)?;
-    controller
-        .send(&json!({"reference":context.reference,"catalog":grading_catalog}))
-        .map_err(crate::Error::Run)?;
     let deadline = Instant::now()
         + if grading_catalog.is_some() {
             RETAINED_GRADING_TIMEOUT
         } else {
             INSPECTION_TIMEOUT
         };
+    controller.limit_cleanup_to(deadline);
+    controller
+        .send(
+            &json!({"reference":context.reference,"catalog":grading_catalog}),
+            deadline,
+        )
+        .map_err(crate::Error::Run)?;
     let report = controller.receive(deadline).map_err(crate::Error::Run)?;
     if report["ok"] == false {
         let error_class = report["error_class"]
@@ -359,6 +367,7 @@ pub(crate) fn recover(
     crate::project::apply_network_proxy(&mut command, context.project_root)?;
     let mut controller = Controller::spawn(&mut command).map_err(crate::Error::Run)?;
     let deadline = Instant::now() + RECOVERY_TIMEOUT;
+    controller.limit_cleanup_to(deadline);
     let report = controller.receive(deadline).map_err(crate::Error::Run)?;
     if report["ok"] == false {
         let reason = if report["error_class"] == "RecoveryError" {
@@ -587,8 +596,8 @@ impl Session {
         connection: &crate::endpoint::Connection,
         prepared: PreparedBootstrap,
     ) -> Result<ExecutionResult, String> {
-        self.dispatch_agent(context, connection, prepared)?;
         let deadline = Instant::now() + self.agent_timeout + AGENT_TRANSPORT_ALLOWANCE;
+        self.dispatch_agent(context, connection, prepared, deadline)?;
         self.receive_execution(context, output, deadline)
     }
 
@@ -597,6 +606,7 @@ impl Session {
         context: &mut ExecutionContext<'_>,
         connection: &crate::endpoint::Connection,
         prepared: PreparedBootstrap,
+        deadline: Instant,
     ) -> Result<(), String> {
         let PreparedBootstrap {
             binary,
@@ -644,7 +654,8 @@ impl Session {
                 "project_root":"/opt/asb-project","runtime_dir":"/opt/asb-private","run_dir":"/opt/asb-private/attempt","replay":context.replay,
                 "namespace_collectors":namespace_collectors}),
         };
-        self.controller.send(&Request::Agent { payload }.value()?)
+        self.controller
+            .send(&Request::Agent { payload }.value()?, deadline)
     }
 
     fn receive_execution(
@@ -664,7 +675,7 @@ impl Session {
             })?;
             match EventKind::of(&event) {
                 Some(EventKind::Paused) => {
-                    self.resume_measured_target(context, &event)?;
+                    self.resume_measured_target(context, &event, deadline)?;
                 }
                 Some(EventKind::Output) => {
                     let bytes = decode_base64(&event["data"])?;
@@ -708,6 +719,7 @@ impl Session {
         &mut self,
         context: &mut ExecutionContext<'_>,
         event: &Value,
+        deadline: Instant,
     ) -> Result<(), String> {
         if let Some(session) = context.measurements.as_deref_mut() {
             use crate::collectors::LifecycleEvent as Event;
@@ -743,6 +755,7 @@ impl Session {
                 exec_id: &event["target"]["exec_id"],
             }
             .value()?,
+            deadline,
         )
     }
 
