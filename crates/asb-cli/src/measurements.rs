@@ -378,6 +378,9 @@ pub fn available_collectors() -> Vec<String> {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RunMeasurement<'a> {
+    pub(crate) execution_plan_fingerprint: Option<&'a str>,
+    pub(crate) module: Option<&'a crate::workloads::contracts::ModuleDescriptor>,
+    pub(crate) benchmark_outcome: Option<&'a crate::workloads::outcome::BenchmarkOutcome>,
     pub replica_index: Option<usize>,
     pub execution_cohort: Option<&'a ExecutionCohort>,
     pub schema_version: u32,
@@ -840,9 +843,9 @@ impl Session {
         self.shared_artifacts.get(&kind).map(PathBuf::as_path)
     }
 
-    pub(crate) fn agent_launch_prepared(&mut self, command: &Command) {
+    pub(crate) fn agent_launch_prepared(&mut self, target: &crate::launch::TargetLaunch) {
         for collector in self.adapters.clone() {
-            collector.agent_launch_prepared(self, command);
+            collector.agent_launch_prepared(self, target);
         }
     }
 
@@ -1978,6 +1981,9 @@ mod tests {
             ))
             .unwrap();
         let run = RunMeasurement {
+            execution_plan_fingerprint: None,
+            module: None,
+            benchmark_outcome: None,
             replica_index: None,
             execution_cohort: None,
             schema_version: 1,

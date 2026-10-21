@@ -2,13 +2,16 @@
 
 mod agents;
 mod benchmark;
+mod benchmark_paths;
 pub mod cassette;
 mod collectors;
 mod compare;
 mod completion;
 mod config;
 mod endpoint;
+mod executables;
 mod install;
+mod launch;
 mod measurements;
 mod models;
 mod output_lock;
@@ -145,6 +148,7 @@ mod adapter_layout_tests {
                     "mod.rs",
                     "session.rs",
                     "contracts.rs", // Generic module metadata and protocol schema.
+                    "outcome.rs",   // Generic evaluation, metric and lineage contract.
                     "selection.rs", // Generic pre-execution catalog/identity contract.
                     "recovery.rs",  // Generic attempt references and adapter dispatch.
                     "controller.rs",

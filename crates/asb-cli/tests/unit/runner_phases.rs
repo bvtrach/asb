@@ -49,6 +49,60 @@ impl workloads::WorkloadSession for Workload {
             _ => Err("official verifier unavailable".into()),
         }
     }
+    fn metric_policy(&self) -> workloads::outcome::MetricPolicy {
+        use workloads::outcome::*;
+        if self.grade < 3 {
+            return MetricPolicy::default();
+        }
+        MetricPolicy {
+            id: "accuracy".into(),
+            reward: "accuracy".into(),
+            rewards: std::collections::BTreeMap::from([(
+                "accuracy".into(),
+                RewardSpec {
+                    unit: "ratio".into(),
+                    range: Some([0.0, 1.0]),
+                },
+            )]),
+            ..Default::default()
+        }
+    }
+    fn checkpoint_evidence(&self) -> Vec<PathBuf> {
+        if self.grade >= 3 {
+            vec![self.invocation.workspace.join("grade.json")]
+        } else {
+            vec![]
+        }
+    }
+    fn evaluate_outcome(&mut self, response: &str) -> workloads::outcome::EvaluationOutcome {
+        use workloads::outcome::EvaluationOutcome as Evaluation;
+        if self.grade >= 3 {
+            assert_eq!(response, "submission");
+            self.operations.borrow_mut().push("evaluate");
+            return match self.grade {
+                3 => Evaluation::Completed {
+                    resolution: None,
+                    rewards: std::collections::BTreeMap::from([("accuracy".into(), 0.5)]),
+                    reason: None,
+                },
+                4 => Evaluation::Pending {
+                    reason: "queued".into(),
+                },
+                _ => Evaluation::Error {
+                    reason: "native verifier unavailable".into(),
+                },
+            };
+        }
+        match self.evaluate(response) {
+            Ok(workloads::Evaluation::Passed) => Evaluation::binary(true),
+            Ok(workloads::Evaluation::Failed(reason)) => Evaluation::Completed {
+                resolution: Some(false),
+                rewards: std::collections::BTreeMap::from([("resolution".into(), 0.0)]),
+                reason: Some(reason),
+            },
+            Err(reason) => Evaluation::Error { reason },
+        }
+    }
     fn finish(&mut self) -> Result<(), String> {
         self.operations.borrow_mut().push(if self.grade == 2 {
             "preserve"
@@ -76,6 +130,9 @@ fn prepared(
     cleanup_error: bool,
     measurements: Option<measurements::Session>,
 ) -> (PreparedAttempt, Rc<RefCell<Vec<&'static str>>>) {
+    if grade >= 3 {
+        std::fs::write(fixture.0.join("grade.json"), "native evaluator evidence").unwrap();
+    }
     let operations = Rc::new(RefCell::new(Vec::new()));
     (
         PreparedAttempt {
@@ -192,9 +249,10 @@ fn required_prelaunch_lifecycle_errors_admit_no_client_process() {
             .env_clear()
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        let target = crate::launch::TargetLaunch::direct(&command);
         let error = run_measured_agent(
             &mut command,
-            "/bin/sh",
+            &target,
             None,
             Some(&mut session),
             false,
@@ -214,6 +272,82 @@ fn required_prelaunch_lifecycle_errors_admit_no_client_process() {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn changed_gate_carrier_or_target_framing_is_rejected_before_custody_or_execution() {
+    use std::os::unix::fs::PermissionsExt;
+    for variant in ["carrier", "framing", "short", "target", "adapter-prefix"] {
+        let fixture = Fixture::new();
+        let marker = fixture.0.join("must-not-run");
+        let gate_program = fixture.0.join("fixture-gate");
+        std::fs::write(
+            &gate_program,
+            "#!/bin/sh\nprintf executed > \"$ASB_REPLACEMENT_MARKER\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&gate_program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut launch = crate::launch::ProcessLaunch::new("/bin/true");
+        launch.arg("immutable-adapter-prefix");
+        let (mut command, route) = launch.native(Some(&gate_program));
+        assert_eq!(command.get_program(), gate_program.as_os_str());
+        command = if variant == "carrier" {
+            let mut replacement = Command::new("/bin/sh");
+            replacement.args(["-c", "printf executed > \"$ASB_REPLACEMENT_MARKER\""]);
+            replacement
+        } else {
+            let mut replacement = Command::new(&gate_program);
+            match variant {
+                "framing" => {
+                    replacement.args(["wrong-framing", "ignored"]);
+                }
+                "target" => {
+                    replacement.args(["__asb-gate", crate::launch::FORMAT, "0", "/bin/false"]);
+                }
+                "adapter-prefix" => {
+                    replacement.args([
+                        "__asb-gate",
+                        crate::launch::FORMAT,
+                        "0",
+                        "/bin/true",
+                        "changed-adapter-prefix",
+                    ]);
+                }
+                "short" => {}
+                _ => unreachable!(),
+            }
+            replacement
+        };
+        command
+            .env("ASB_REPLACEMENT_MARKER", &marker)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let target = route.target(&command);
+        let scope = crate::process_cleanup::test_support::Scope::new();
+        let error = run_measured_agent(
+            &mut command,
+            &target,
+            Some(route),
+            None,
+            false,
+            &mut Vec::new(),
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        assert!(
+            error.contains("cannot validate ASB gate launch")
+                && error.contains("without replacing it"),
+            "{variant}: {error}"
+        );
+        assert_eq!(
+            scope.count(),
+            0,
+            "invalid route must not establish a reaper"
+        );
+        assert!(!marker.exists(), "{variant}: replacement command executed");
+    }
+}
+
 #[test]
 fn spawn_and_wait_errors_remain_primary_when_failure_markers_also_fail() {
     for spawn_failure in [false, true] {
@@ -228,9 +362,11 @@ fn spawn_and_wait_errors_remain_primary_when_failure_markers_also_fail() {
             Command::new("/bin/true")
         };
         // Deliberately leave pipes absent in the wait-failure case.
+        let mut target = crate::launch::TargetLaunch::direct(&command);
+        target.program = "fixture".into();
         let error = run_measured_agent(
             &mut command,
-            "fixture",
+            &target,
             None,
             Some(&mut session),
             false,
@@ -276,6 +412,49 @@ fn native_and_guest_apply_the_same_adapter_terminal_answer_policy() {
         let outcome = execution.agent_outcome("openjiuwen", &fixture.0);
         assert!(outcome.failure.is_none());
         assert_eq!(outcome.final_response.as_deref(), Some("finished"));
+    }
+}
+
+#[test]
+fn native_reward_pending_and_error_survive_marker_and_cleanup_failures() {
+    use workloads::outcome::EvaluationOutcome as Evaluation;
+    for grade in [3, 4, 5] {
+        for event in [
+            LifecycleEvent::PhaseBegin(LifecyclePhase::WorkloadEvaluation),
+            LifecycleEvent::PhaseEnd(LifecyclePhase::WorkloadEvaluation),
+            LifecycleEvent::PhaseBegin(LifecyclePhase::WorkloadCleanup),
+        ] {
+            let fixture = Fixture::new();
+            let mut session =
+                measurements::Session::start_with_collectors(&fixture.0.join("measure"), &[], None)
+                    .unwrap();
+            session.test_event_failure = Some(event);
+            let (prepared, operations) = prepared(&fixture, grade, true, Some(session));
+            let result = prepared
+                .executed(evidence(7, false), AttemptIssues::default())
+                .settle(None)
+                .evaluate("submission")
+                .finish();
+            match &result.outcome.evaluation {
+                Evaluation::Completed {
+                    resolution,
+                    rewards,
+                    ..
+                } => {
+                    assert_eq!(grade, 3);
+                    assert_eq!(*resolution, None);
+                    assert_eq!(rewards["accuracy"], 0.5);
+                }
+                Evaluation::Pending { .. } => assert_eq!(grade, 4),
+                Evaluation::Error { .. } => assert_eq!(grade, 5),
+            }
+            assert_eq!(&*operations.borrow(), &["evaluate", "finish"]);
+            assert_eq!(result.outcome.success(), None);
+            assert_eq!(result.evaluator_evidence.len(), 1);
+            assert!(!result.cleanup_confirmed);
+            assert!(result.issues.collector_failure().is_some());
+            assert!(result.issues.run_error.is_some());
+        }
     }
 }
 
@@ -413,9 +592,10 @@ fn actual_native_duration_excludes_slow_execution_end_collector_hook() {
         .stderr(Stdio::piped())
         .env_clear();
     let started = Instant::now();
+    let target = crate::launch::TargetLaunch::direct(&command);
     let output = run_measured_agent(
         &mut command,
-        "/bin/true",
+        &target,
         None,
         Some(&mut session),
         false,
@@ -460,8 +640,9 @@ fn broken_native_terminal_retains_capture_and_finishes_already_admitted_work() {
             .env_clear()
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        let target = crate::launch::TargetLaunch::direct(&command);
         let measured =
-            run_measured_agent(&mut command, "/bin/sh", None, None, true, &mut writer).unwrap();
+            run_measured_agent(&mut command, &target, None, None, true, &mut writer).unwrap();
         assert_eq!(
             writer.writes, 1,
             "never retry a broken terminal for every chunk/stream"
@@ -510,9 +691,10 @@ fn native_postexecution_event_failure_retains_actual_child_output_and_grade() {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .env_clear();
+        let target = crate::launch::TargetLaunch::direct(&command);
         let measured = run_measured_agent(
             &mut command,
-            "/bin/sh",
+            &target,
             None,
             Some(&mut session),
             false,
@@ -544,6 +726,9 @@ fn native_postexecution_event_failure_retains_actual_child_output_and_grade() {
 
 fn result() -> RunResult<'static> {
     RunResult {
+        execution_plan_fingerprint: None,
+        module: None,
+        benchmark_outcome: None,
         replica_index: Some(1),
         execution_cohort: None,
         schema_version: 2,
@@ -714,6 +899,8 @@ fn full_runner_entry_explicit_provider_finish_preserves_grades_and_primary_failu
         "provider-client-failed-finish",
         "provider-early-failed-finish",
         "provider-success",
+        "provider-native-failed-finish",
+        "provider-native-success",
     ]);
 }
 
@@ -837,7 +1024,12 @@ fn full_entry_child(case: &str) {
         LifecycleEvent::RunFinishing
     };
     let _scope = if provider_case {
-        entry_test_support::Scope::provider(&root, calls.clone(), case != "provider-success")
+        entry_test_support::Scope::provider(
+            &root,
+            calls.clone(),
+            !case.ends_with("success"),
+            case.contains("native"),
+        )
     } else {
         entry_test_support::Scope::new(&root, event, calls.clone())
     };
@@ -896,7 +1088,7 @@ fn full_entry_child(case: &str) {
     );
     if provider_case {
         let error = result.err().map(|error| error.to_string());
-        assert_eq!(error.is_none(), case == "provider-success", "{error:?}");
+        assert_eq!(error.is_none(), case.ends_with("success"), "{error:?}");
         assert_eq!(
             calls
                 .borrow()
@@ -921,11 +1113,11 @@ fn full_entry_child(case: &str) {
         );
         assert_eq!(
             observer.completed.load(Ordering::SeqCst),
-            usize::from(case == "provider-success")
+            usize::from(case.ends_with("success"))
         );
         assert_eq!(
             root.join(".asb-completions").exists(),
-            case == "provider-success"
+            case.ends_with("success")
         );
         let log: serde_json::Value =
             serde_json::from_slice(&std::fs::read(root.join("run.jsonl")).unwrap()).unwrap();
@@ -934,9 +1126,31 @@ fn full_entry_child(case: &str) {
             serde_json::from_slice(&std::fs::read(root.join("measurements/run.json")).unwrap())
                 .unwrap();
         for record in [&log, &summary, &measured] {
+            if case.contains("native") {
+                assert!(record["workload_success"].is_null());
+                assert!(record["success_rate"].is_null());
+                assert_eq!(
+                    record["benchmark_outcome"]["evaluation"]["status"],
+                    "completed"
+                );
+                assert!(record["benchmark_outcome"]["evaluation"]["resolution"].is_null());
+                assert_eq!(
+                    record["benchmark_outcome"]["evaluation"]["rewards"]["accuracy"],
+                    0.5
+                );
+            } else {
+                assert_eq!(
+                    record["workload_success"],
+                    case != "provider-false-failed-finish"
+                );
+            }
             assert_eq!(
-                record["workload_success"],
-                case != "provider-false-failed-finish"
+                record["benchmark_outcome"]["cleanup_confirmed"],
+                case.ends_with("success")
+            );
+            assert_eq!(
+                record["benchmark_outcome"]["execution_success"],
+                case != "provider-client-failed-finish"
             );
             assert_eq!(
                 record["process_success"],

@@ -8,6 +8,7 @@ struct Hook {
     event: Option<LifecycleEvent>,
     calls: Rc<RefCell<Vec<&'static str>>>,
     provider_finish: Option<bool>,
+    native_reward: bool,
 }
 thread_local! { static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) }; }
 
@@ -21,12 +22,18 @@ impl Scope {
                 event: Some(event),
                 calls,
                 provider_finish: None,
+                native_reward: false,
             });
         });
         Self
     }
 
-    pub fn provider(root: &Path, calls: Rc<RefCell<Vec<&'static str>>>, fail: bool) -> Self {
+    pub fn provider(
+        root: &Path,
+        calls: Rc<RefCell<Vec<&'static str>>>,
+        fail: bool,
+        native_reward: bool,
+    ) -> Self {
         HOOK.with(|slot| {
             assert!(slot.borrow().is_none());
             *slot.borrow_mut() = Some(Hook {
@@ -34,6 +41,7 @@ impl Scope {
                 event: None,
                 calls,
                 provider_finish: Some(fail),
+                native_reward,
             });
         });
         Self
@@ -118,12 +126,13 @@ pub(crate) fn observe_workload(
         slot.borrow()
             .as_ref()
             .filter(|hook| hook.root == root)
-            .map(|hook| hook.calls.clone())
+            .map(|hook| (hook.calls.clone(), hook.native_reward))
     });
     match calls {
-        Some(calls) => Box::new(Observed {
+        Some((calls, native_reward)) => Box::new(Observed {
             inner: workload,
             calls,
+            native_reward,
         }),
         None => workload,
     }
@@ -131,6 +140,7 @@ pub(crate) fn observe_workload(
 struct Observed {
     inner: Box<dyn workloads::WorkloadSession>,
     calls: Rc<RefCell<Vec<&'static str>>>,
+    native_reward: bool,
 }
 impl workloads::WorkloadSession for Observed {
     fn invocation(&self) -> &workloads::session::TaskInvocation {
@@ -149,12 +159,58 @@ impl workloads::WorkloadSession for Observed {
         self.calls.borrow_mut().push("evaluate");
         self.inner.evaluate(response)
     }
+    fn evaluate_outcome(&mut self, response: &str) -> workloads::outcome::EvaluationOutcome {
+        self.calls.borrow_mut().push("evaluate");
+        if self.native_reward {
+            std::fs::write(
+                self.invocation().workspace.join("native-grade.json"),
+                "fixture numeric evaluator evidence",
+            )
+            .unwrap();
+            workloads::outcome::EvaluationOutcome::Completed {
+                resolution: None,
+                rewards: std::collections::BTreeMap::from([("accuracy".into(), 0.5)]),
+                reason: None,
+            }
+        } else {
+            self.inner.evaluate_outcome(response)
+        }
+    }
+    fn metric_policy(&self) -> workloads::outcome::MetricPolicy {
+        if !self.native_reward {
+            return self.inner.metric_policy();
+        }
+        workloads::outcome::MetricPolicy {
+            id: "accuracy".into(),
+            reward: "accuracy".into(),
+            rewards: std::collections::BTreeMap::from([(
+                "accuracy".into(),
+                workloads::outcome::RewardSpec {
+                    unit: "ratio".into(),
+                    range: Some([0.0, 1.0]),
+                },
+            )]),
+            ..Default::default()
+        }
+    }
+    fn module_descriptor(&self) -> Option<workloads::contracts::ModuleDescriptor> {
+        self.inner.module_descriptor().map(|mut module| {
+            if self.native_reward {
+                module.protocol.score_policy = "metric:accuracy@1".into();
+            }
+            module
+        })
+    }
     fn finish(&mut self) -> Result<(), String> {
         self.calls.borrow_mut().push("finish");
         self.inner.finish()
     }
     fn checkpoint_evidence(&self) -> Vec<PathBuf> {
-        self.inner.checkpoint_evidence()
+        if self.native_reward {
+            vec![self.invocation().workspace.join("native-grade.json")]
+        } else {
+            self.inner.checkpoint_evidence()
+        }
     }
     fn execute(
         &mut self,

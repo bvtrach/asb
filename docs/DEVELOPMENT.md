@@ -47,6 +47,21 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+`cargo test --locked --offline --test tui_terminal` drives the actual current
+binary through a bounded PTY. Workload fixtures use only local fake catalogs:
+advertised Enter finishes, Tab edits, Back discards, saved choices reopen,
+edits replace subsets, and deselected workloads are excluded. Checkpoints
+inspect disk before finish and cancellation, then verify exact published
+subsets and terminal echo/canonical-mode restoration. No agent/provider runs
+or host changes are needed.
+`cargo test --locked --offline --lib executables::tests` installs local shell
+fixtures through every registered agent/tool source-install route, then checks
+readiness and actually executes the selected fixture. Isolated subprocess
+cases cover external execution overrides, broken/non-executable/symlink
+candidates, host-tool policy and custom project roots. The Codex adapter also
+checks its native-package preference and explicit-source precedence. No package
+manager, provider, real agent or download is invoked by these path-policy tests.
+
 `cargo test --locked --offline --lib install::source` checks atomic installation
 with local fake downloads and version probes. The shared private `OwnedReaper`
 is established fallibly before each downloader or version subprocess starts.
@@ -71,6 +86,20 @@ Perf-stat regression fixtures process a complete synthetic file larger than
 the diagnostic cap, retain missing-interval timestamps and hybrid CPU counter
 totals, and reject invalid or excessive input without publishing partial totals.
 They need neither perf permissions nor a live agent/provider.
+Flamegraph pipeline regressions use synthetic local tools and pin each direct
+child's identity with a pidfd. Success, stage failures, output-file errors,
+preflight failures, timeout and unwinding must stop and reap every admitted
+stage while leaving an unrelated sentinel alive. Cleanup signals only owned
+direct children, never a process-name/PID-parent search. The caller's cleanup
+wait is bounded; an unconfirmed kernel-stuck child remains owned by a fallback
+reaper and is reported as a cleanup failure, not a completed graph. These
+fixtures neither invoke host perf nor qualify arbitrary tool descendants.
+The fallback worker is created fallibly before any tool is spawned. Creation
+failure starts no tools; cleanup transfers uncertain direct children through
+a private ownership slot, without spawning a thread or waiting on that worker.
+Deterministic test-only faults cover worker-creation failure and uncertain
+cleanup polling. Exit receipts also check idle, failed and unwinding workers;
+these tests do not need a genuinely kernel-stuck process.
 CPU/I/O and BPF adapter fixtures likewise place final samples/cumulative maps
 beyond 256 KiB, pass unrelated diagnostic strings and require full-file means,
 series and final values. Shared output tests reject incomplete, oversized,
@@ -86,6 +115,29 @@ report JavaScript under Node with an injected DOM fixture: every filter
 dimension, combined intersections, replica identities, select/clear all,
 empty charts, hover cleanup and selection restoration. SVG-generation tests
 also check that bars, series/legends and composition rows carry benchmark groups.
+`cargo test --locked --offline --lib compare::pipeline_tests` exercises actual
+report generation without benchmarks or providers: cross-row/population
+validation before writes, bounded growing/replaced/FIFO inputs, symlink-parent
+path semantics, aligned nullable observations, full-source JSON with bounded
+graphs, gap preservation, atomic regeneration, persistent writer exclusion,
+recoverable previous generations and truthful post-publication failures.
+It runs the actual generated SVG and embedded interaction script under Node's
+synthetic DOM, including observed-sample hover, zoom, pan and modal controls;
+signed scalar fixtures additionally check negative/mixed/extreme finite and
+subnormal geometry, unchanged JSON values, embedded HTML and signed-value hover.
+this is not browser-layout qualification. The ignored
+`real_headless_browser_qualifies_generated_report_interactions` test can use an
+existing local browser selected explicitly with `ASB_TEST_CHROMIUM`; it never
+downloads one or modifies host/Snap permissions. A host confinement failure is
+not a passing browser qualification. Existing state/event SVGs remain intact.
+Private-backend tests force unsupported exchange, failed no-replace capability,
+backup/commit/rollback and directory-sync errors on real owned directories. They
+prove old user-added files and unrelated sentinels survive and a racing foreign
+destination is never overwritten. The recoverable fallback explicitly permits
+a short missing-destination/crash window; after a crash, preserve the sibling
+`.asb-report-previous-*` backup before restoring it to an absent report path.
+Linux uses `renameat2`; macOS uses `renamex_np` with `RENAME_SWAP`/`RENAME_EXCL`.
+These are source contracts, not a claim of native macOS execution on Linux.
 Reserved-`all` tests cover complete registry expansion, enabled/original trial
 populations, catalog-name collisions and provider-scoped model discovery using
 only a bounded loopback HTTP fixture with no real provider credentials.
@@ -151,10 +203,13 @@ credentials or provider. The same guard/reaper remains owned on success.
 The caller's cleanup wait has one five-second budget across both children and
 readers; unconfirmed children retain fallback custody rather than being
 dropped. This does not establish descendant or abrupt-crash cleanup.
-The `provider_finish` library fixtures additionally run five actual replay-only
+The `provider_finish` library fixtures additionally run seven actual replay-only
 benchmark attempts: true/false grades, client failure, early preparation failure
 and successful finish. They require explicit finish once, preserve each grade
 and primary error, report cleanup uncertainty and withhold completion receipts.
+Native completed rewards with nullable resolution remain valid through normal
+finish; provider uncertainty preserves their numeric reward and execution
+observation while setting structured cleanup confirmation false.
 Loopback catalog fixtures cover successful parsing, invalid JSON and HTTP failure
 combined with finish failure. Both use only fixture credentials. Output-worker
 exit receipts confirm cooperative exit even after the caller releases an
@@ -185,6 +240,32 @@ counts and unrelated-script/tool exclusions. Fork-only workers remain an
 explicitly unclassified lower bound, not a guessed count.
 Run `asb run` with credentials only as an explicit local
 smoke/benchmark operation.
+
+Model catalog transport uses nonblocking Unix pipes, polling request input,
+response output and diagnostic output concurrently. A single 35-second
+operation budget includes a 30-second I/O phase and up to five seconds reserved
+for direct-child cleanup; individual reads, writes and exit observation never
+restart that clock. Bodies remain capped at 16 MiB and diagnostics retain only
+the final 8 KiB for sanitized HTTP/proxy/content-type metadata. Credentials stay
+in the in-memory request sent through stdin, never argv or a transport file.
+Errors, deadline expiry and unwinding close owned pipe handles and stop/reap
+only the direct curl child. If bounded exit observation cannot confirm cleanup,
+an already-established private `OwnedReaper` retains custody and the request
+fails explicitly. This bounds caller-side observation, not an uninterruptible
+kernel operation or scheduling delay. It does not supervise arbitrary curl
+descendants; inherited open pipes cannot extend the I/O deadline.
+The bounded transport currently requires Unix. Non-Unix model discovery fails
+before spawning a request; a cancellable non-Unix pipe implementation remains
+an outstanding portability contract, not an unbounded fallback.
+`cargo test --offline --locked --lib models::` includes private subprocess
+fixtures for duplex pipe pressure, blocked stdin, oversized output, inherited
+stdout/stderr, deadlines, setup errors, uncertain cleanup and unwinding. Linux
+pidfd observations verify original direct-child exit/reaping and unrelated
+sentinel survival. Existing fake-curl fixtures retain HTTP/proxy/JSON/error and
+credential-redaction checks, and require curl's actual size/time arguments to
+match the shared reader/watchdog contract. Real subprocess fixtures accept an
+exactly 16 MiB JSON body and reject one extra byte. No real curl request,
+installed agent or provider is used by these tests.
 
 Coverage is an optional local diagnostic, not a required CI check or merge
 threshold. The former `coverage-90-percent` CI job and required check were
@@ -218,6 +299,16 @@ and local path-package sources stay in the denominator; no product module is exc
 Missing-project capability fixtures test the same private initialized-file guard
 used by production, and ancestor discovery uses an owned fixture parent/child.
 They never assume TMPDIR has no real ancestor project or pass one to host setup.
+
+`cargo test --locked --offline --lib project::` includes the shared host-setup
+request/consent/capability policy tests. Fake executors exercise the actual sysctl
+and cgroup orchestration, every prerequisite failure, interactive versus
+passwordless mode, independent group consent, `--yes`, invalid/empty/EOF answers,
+and reader/writer/flush errors. These tests execute no host commands. Existing
+isolated fake-sudo/proc-input fixtures additionally check production argv/stdin
+construction without changing sysctls or cgroups. A prompt or pre-execution
+output failure grants no approval; execution failures remain best-effort and
+never imply rollback of commands that already succeeded.
 
 Token accounting has synthetic, provider-free regression fixtures for all
 registered agent families, plus replay CLI checks for JSON, logs, and
@@ -591,6 +682,33 @@ subreaper. This retains helpers that daemonize or outlive an intermediate
 wrapper under the benchmark root, so perf inheritance, bpftrace fork tracking,
 pidstat sampling, and process-accounted timing include the complete relevant
 tree without collecting unrelated host processes.
+Changes to native custody must preserve the private Hello/Quiescent protocol,
+Starting-versus-Admitted cleanup distinction, stopped-owner-loss watcher and
+wait-only fallback ownership. Build the actual current `asb` binary before
+running the `process_gate` library tests: those tests exercise the real gate,
+not the libtest executable. Run the `guest_agent` native-gate matrix as well;
+it covers owner loss after validated Hello, while stopped, after resume and
+after a short-lived spawning thread exits, with double-forked TERM-resistant
+writers and an unrelated sentinel. Protocol stand-ins test malformed/absent
+receipts and bounded fallback custody only; they do not qualify kernel
+descendant teardown or a live provider. No root permissions are required.
+Launch-descriptor regressions use the actual current ASB binary with offline
+local programs. They cover cleared/removed/overridden environments, raw OS
+argument/environment bytes, explicit client argv[0], child-only PATH, working
+directory, stdin/stdout/stderr, current UID/GID, an owned process group and an
+existing async-signal-safe configuration callback. NUL inputs fail before
+spawn; missing clients cannot become success. The original binary-replacement,
+guest-wrapper and owner-loss matrices remain required. The previous valid
+ASBGATE1 Hello is explicitly rejected without resuming the old runtime.
+Full-entry gate-route regressions replace the carrier, shorten/change framing
+or retarget its executable; every case must fail before a child or reaper is
+created. Validation consumes the one-shot route, and admission exclusively
+borrows that configured command until spawn. Create a fresh launch command for
+another attempt rather than reusing pre-exec descriptor callbacks.
+Do not reconstruct an opaque `Command` from `get_envs`/`get_args`: those APIs
+do not reveal environment clearing, credentials, I/O and arbitrary callbacks.
+Rust 1.93 runs pre-exec callbacks before applying its prepared environment;
+see the [pinned execution order](https://github.com/rust-lang/rust/blob/1.93.0/library/std/src/sys/process/unix/unix.rs#L383-L408).
 The guest driver likewise owns a private child supervisor. By default both
 supervisors stop and reap leftover helpers before accepting an execution result.
 An adapter may instead delegate guest service lifetime through evaluation to

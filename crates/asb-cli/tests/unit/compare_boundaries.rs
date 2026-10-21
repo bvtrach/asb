@@ -24,6 +24,37 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn structured_reward_without_execution_task_is_rejected() {
+    use crate::workloads::outcome::*;
+    let root = Fixture::new();
+    root.write("sweep.toml", "configs=['one.toml']\n");
+    root.write(
+        "one.toml",
+        "agent='cline'\nprovider='local'\nmodel='m'\nworkload='bug-fix'\n",
+    );
+    let record = json!({
+        "schema_version":2,"status":"completed","success":true,
+        "process_success":true,"workload_success":true,
+        "workload_evaluation":"bundled-fixture","workload_baseline_passed":false,
+        "benchmark_outcome":BenchmarkOutcome {
+            schema_version:1,execution_success:Some(true),
+            evaluation:EvaluationOutcome::binary(true),cleanup_confirmed:Some(true),
+            evidence:vec![],policy:MetricPolicy::default(),
+            lineage:EvaluationLineage {execution_attempt:"unbound".into(),evaluation_id:"eval".into(),supersedes:None},
+        }
+    });
+    root.write(
+        "sweep-results/000-one/measurements/run.json",
+        record.to_string(),
+    );
+    let error = run(root.0.join("sweep.toml").to_str().unwrap(), &mut Vec::new()).unwrap_err();
+    assert!(
+        error.to_string().contains("no execution task identity"),
+        "{error}"
+    );
+}
+
+#[test]
 fn embedded_svg_distinguishes_missing_oversized_encoding_and_non_svg_documents() {
     let root = Fixture::new();
     assert!(
@@ -75,7 +106,7 @@ fn references_reject_escape_wrong_extension_and_missing_file_without_creating_it
         ("missing.toml", "references missing benchmark"),
     ] {
         assert!(
-            checked_reference(&root.0, reference, "fixture-sweep")
+            checked_benchmark_reference(&root.0, reference, "fixture-sweep")
                 .unwrap_err()
                 .to_string()
                 .contains(reason)
@@ -83,7 +114,7 @@ fn references_reject_escape_wrong_extension_and_missing_file_without_creating_it
     }
     let path = root.write("nested/valid.toml", "agent='fixture'\n");
     assert_eq!(
-        checked_reference(&root.0, "nested/valid.toml", "fixture-sweep").unwrap(),
+        checked_benchmark_reference(&root.0, "nested/valid.toml", "fixture-sweep").unwrap(),
         path
     );
     assert_eq!(fs::read_dir(&root.0).unwrap().count(), 1);

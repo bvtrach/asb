@@ -8,8 +8,13 @@ use std::sync::{Arc, Condvar, Mutex};
 
 #[derive(Default)]
 struct State {
-    children: Vec<Child>,
+    children: Vec<(Child, ReapPolicy)>,
     closed: bool,
+}
+
+enum ReapPolicy {
+    Terminate,
+    WaitOnly,
 }
 
 /// A private handoff cannot disconnect like a channel. The worker retains its
@@ -34,8 +39,10 @@ impl OwnedReaper {
                 }
                 let children = std::mem::take(&mut state.children);
                 drop(state); // Never hold the handoff lock across a kernel wait.
-                for mut child in children {
-                    let _ = child.kill();
+                for (mut child, policy) in children {
+                    if matches!(policy, ReapPolicy::Terminate) {
+                        let _ = child.kill();
+                    }
                     let _ = child.wait();
                 }
                 #[cfg(all(test, target_os = "linux"))]
@@ -48,12 +55,22 @@ impl OwnedReaper {
     /// Transfer custody without creating another worker or waiting for exit.
     /// The worker starts reaping when this handoff owner is dropped.
     pub(crate) fn adopt(&self, child: Child) {
+        self.adopt_with_policy(child, ReapPolicy::Terminate);
+    }
+
+    /// Keep a supervising gate alive until it confirms and finishes its own
+    /// descendant teardown. Killing this child would abandon its custody.
+    pub(crate) fn adopt_wait_only(&self, child: Child) {
+        self.adopt_with_policy(child, ReapPolicy::WaitOnly);
+    }
+
+    fn adopt_with_policy(&self, child: Child, policy: ReapPolicy) {
         self.0
             .0
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .children
-            .push(child);
+            .push((child, policy));
     }
 }
 

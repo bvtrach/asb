@@ -1,6 +1,7 @@
 //! Offline HTML/SVG reports for benchmark configurations and sweeps.
 
-use crate::{Error, read_config};
+use crate::Error;
+use crate::benchmark_paths::{benchmark_stem, checked_benchmark_reference};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,8 +13,18 @@ const MAX_BYTES: u64 = 16 * 1024 * 1024;
 mod coverage;
 mod metric_identity;
 use metric_identity::{GraphNames, flatten_numbers, insert_unique, path_key};
+mod model;
 pub(crate) mod outcomes;
+mod planning;
+mod publication;
 mod reconciliation;
+mod rendering;
+mod series;
+mod source;
+use model::{ResultSource, RowId, ValidatedReport};
+use planning::PreparedReport;
+use series::TimeSeries;
+use source::read_json;
 const PLOT_TOP: f64 = 70.0;
 const PLOT_BOTTOM: f64 = 390.0;
 const PLOT_RIGHT: f64 = 880.0;
@@ -21,7 +32,12 @@ const Y_TICKS: usize = 5;
 
 #[derive(Debug)]
 struct BenchmarkData {
-    result_source: &'static str,
+    id: RowId,
+    legacy_evaluation_provenance: Option<crate::workloads::outcome::LegacyEvaluationProvenance>,
+    execution_plan_fingerprint: Option<String>,
+    module: Option<crate::workloads::contracts::ModuleDescriptor>,
+    benchmark_outcome: Option<crate::workloads::outcome::BenchmarkOutcome>,
+    result_source: ResultSource,
     reconciled: bool,
     replica_index: Option<usize>,
     execution_cohort: Option<crate::measurements::ExecutionCohort>,
@@ -41,12 +57,7 @@ struct BenchmarkData {
     components: Option<Value>,
     status: Option<String>,
     artifacts: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct TimeSeries {
-    values: Vec<f64>,
-    timestamps_ms: Option<Vec<f64>>,
+    artifact_sources: BTreeMap<String, PathBuf>,
 }
 
 /// Report a benchmark's recorded results or compare the members of a sweep.
@@ -56,646 +67,31 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
 
 /// Generate an offline report for either a benchmark or a sweep manifest.
 pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Error> {
-    let sweep_path = Path::new(path);
-    let input: toml::Value = toml::from_str(&crate::sweep::read_manifest_text(sweep_path)?)
-        .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
-    let single = !input
-        .as_table()
-        .is_some_and(|table| table.contains_key("configs"));
-    let sweep = if single {
-        crate::sweep::SweepFile {
-            configs: vec![
-                sweep_path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .into_owned(),
-            ],
-        }
-    } else {
-        crate::sweep::read_manifest(sweep_path)?
-    };
-    let parent = sweep_path.parent().unwrap_or_else(|| Path::new("."));
-    let stem = sweep_path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("sweep");
-    let sweep_results = parent.join(format!("{stem}-results"));
-    let plan = if single {
-        None
-    } else {
-        crate::sweep::plan::SweepPlan::load(&sweep_results, parent, &sweep)?
-    };
-    let comparison_dir = parent.join("results").join(format!("{stem}-comparison"));
-    fs::create_dir_all(&comparison_dir).map_err(|error| {
-        Error::Run(format!(
-            "cannot create comparison directory {}: {error}",
-            comparison_dir.display()
-        ))
-    })?;
-
-    let mut benchmark_data = Vec::new();
-    let mut actual_attempts = BTreeSet::new();
-    for (index, reference) in sweep.configs.iter().enumerate() {
-        let config = checked_reference(parent, reference, path)?;
-        let mut result_dir = sweep_results.join(format!("{index:03}-{}", safe_name(&config)));
-        let (agent, workload, provider, model, concurrency) = benchmark_identity(&config)?;
-        let standalone = if single {
-            Some(
-                toml::from_str::<crate::benchmark::BenchmarkConfig>(&read_config(&config)?)
-                    .map_err(|error| {
-                        Error::Input(format!(
-                            "cannot parse benchmark {}: {error}",
-                            config.display()
-                        ))
-                    })?,
-            )
-        } else {
-            None
-        };
-        if let Some(configuration) = &standalone {
-            result_dir = crate::runner::resolve_log_path(&config, &configuration.log_file)
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .to_path_buf();
-        }
-        let selection = plan
-            .as_ref()
-            .map(|plan| plan.entries[index].selection.clone());
-        let mut outcomes = if let Some(configuration) = &standalone {
-            outcomes::load_run(&config, configuration)?
-        } else {
-            outcomes::load(&result_dir, concurrency)?
-        };
-        if let Some(plan) = &plan {
-            let mut imports = crate::sweep::recovered::load(
-                &sweep_results.join(".checkpoint"),
-                &result_dir,
-                index,
-                &plan.entries[index],
-            )?;
-            let closed = crate::sweep::closed_slot_reports(
-                &sweep_results.join(".checkpoint"),
-                &result_dir,
-                index,
-                &plan.entries[index],
-            )?;
-            for (slot, (_, value)) in &closed {
-                if let Some((_, imported)) = imports.get(slot) {
-                    if imported["task"] != value["task"]
-                        || imported["workload_success"] != value["workload_success"]
-                    {
-                        return Err(Error::Input(
-                            "closed slot conflicts with its imported grade; preserve both records"
-                                .into(),
-                        ));
-                    }
-                    imports.remove(slot);
-                }
-            }
-            outcomes::add_imports(&mut outcomes, imports)?;
-            outcomes::add_closed(&mut outcomes, closed)?;
-        } else if !single
-            && (result_dir.join(".asb-imported-grades").exists()
-                || sweep_results.join(".checkpoint/closed-slots").exists())
-        {
-            return Err(Error::Input(
-                "retained grades require their original saved sweep plan".into(),
-            ));
-        }
-        for replica in 1..=concurrency {
-            let label = if concurrency == 1 {
-                format!("{index:03}-{}", safe_name(&config))
-            } else {
-                format!("{index:03}-{}-concurrency-{replica}", safe_name(&config))
-            };
-            let measurement_dir = if let Some(configuration) = &standalone {
-                let selected = crate::runner::replica::configuration(
-                    configuration,
-                    crate::runner::replica::Identity {
-                        index: replica,
-                        total: concurrency,
-                    },
-                )?;
-                let (root, _) = crate::project::load(&config)?;
-                selected
-                    .measurements
-                    .as_ref()
-                    .filter(|value| value.enabled)
-                    .map(|value| crate::project::resolve(&root, &value.directory))
-            } else {
-                Some(result_dir.join(if concurrency == 1 {
-                    "measurements".to_owned()
-                } else {
-                    format!("measurements-concurrency-{replica}")
-                }))
-            };
-            let measurement_dir = if single {
-                outcomes
-                    .get(&replica)
-                    .and_then(|record| record.summary.get("measurement_directory"))
-                    .and_then(Value::as_str)
-                    .map(PathBuf::from)
-                    .or(measurement_dir)
-            } else {
-                measurement_dir
-            };
-            let capture_enabled = measurement_dir.is_some();
-            let measurement_dir =
-                measurement_dir.unwrap_or_else(|| result_dir.join(".disabled-measurements"));
-            let mut run_path = measurement_dir.join("run.json");
-            let artifacts = if capture_enabled {
-                artifact_links(parent, &measurement_dir)
-            } else {
-                Vec::new()
-            };
-            let outcome = outcomes.get(&replica);
-            let grade_only_closed =
-                outcome.is_some_and(|record| record.source == "recovered-official-grade");
-            let measured = capture_enabled && run_path.is_file() && !grade_only_closed;
-            if !measured && outcome.is_none() {
-                let workload_evaluation = selection.as_ref().map_or_else(
-                    || crate::workloads::evaluation_kind(&workload, Path::new("")).into(),
-                    |selection| selection.evaluation_kind.clone(),
-                );
-                benchmark_data.push(BenchmarkData {
-                    result_source: "missing",
-                    reconciled: false,
-                    replica_index: None,
-                    execution_cohort: None,
-                    label,
-                    directory: result_dir.clone(),
-                    agent: agent.clone(),
-                    workload: workload.clone(),
-                    task: None,
-                    selection: selection.clone(),
-                    evaluation_completed: false,
-                    workload_evaluation,
-                    provider: provider.clone(),
-                    model: model.clone(),
-                    metrics: BTreeMap::new(),
-                    series: BTreeMap::new(),
-                    host_metadata: None,
-                    components: None,
-                    status: Some(format!(
-                        "missing measurements: expected {} (measurement collection may be disabled, or the run stopped before writing results)",
-                        run_path.display()
-                    )),
-                    artifacts,
-                });
-                continue;
-            }
-            let run_value = if measured {
-                let measured = read_json(&run_path)?;
-                if let Some(outcome) = outcome {
-                    outcome.check_measurement(&measured)?;
-                }
-                measured
-            } else {
-                let outcome = outcome.expect("a recorded outcome is required without measurements");
-                run_path = outcome.path.clone();
-                outcome.summary.clone()
-            };
-            if single || plan.is_some() || outcome.is_some() {
-                for (field, expected) in [
-                    ("agent", &agent),
-                    ("workload", &workload),
-                    ("provider", &provider),
-                    ("model", &model),
-                ] {
-                    if run_value.get(field).and_then(Value::as_str) != Some(expected.as_str()) {
-                        return Err(Error::Input(format!(
-                            "result {} does not match selected `{field}`; inspect the attempt instead of mixing results from another configuration",
-                            run_path.display()
-                        )));
-                    }
-                }
-            }
-            let execution_cohort = run_value
-                .get("execution_cohort")
-                .filter(|value| !value.is_null())
-                .map(|value| {
-                    serde_json::from_value::<crate::measurements::ExecutionCohort>(value.clone())
-                })
-                .transpose()
-                .map_err(|error| {
-                    Error::Input(format!(
-                        "invalid execution cohort in {}: {error}",
-                        run_path.display()
-                    ))
-                })?;
-            let replica_index = run_value
-                .get("replica_index")
-                .filter(|value| !value.is_null())
-                .map(|value| {
-                    value
-                        .as_u64()
-                        .and_then(|value| usize::try_from(value).ok())
-                        .ok_or_else(|| {
-                            Error::Input(format!("invalid replica index in {}", run_path.display()))
-                        })
-                })
-                .transpose()?;
-            if execution_cohort.is_some() != replica_index.is_some()
-                || execution_cohort.as_ref().is_some_and(|cohort| {
-                    replica_index != Some(replica) || !cohort.admits(replica, concurrency)
-                })
-            {
-                return Err(Error::Input(format!(
-                    "execution cohort does not match replica selection in {}",
-                    run_path.display()
-                )));
-            }
-            let task = run_value
-                .get("task")
-                .filter(|value| !value.is_null())
-                .map(|value| {
-                    serde_json::from_value::<crate::workloads::TaskIdentity>(value.clone())
-                })
-                .transpose()
-                .map_err(|error| {
-                    Error::Input(format!(
-                        "invalid task identity in {}: {error}",
-                        run_path.display()
-                    ))
-                })?;
-            if let Some(configuration) = &standalone
-                && task.as_ref().is_some_and(|task| {
-                    task.workload != workload
-                        || configuration
-                            .trial
-                            .as_ref()
-                            .is_some_and(|trial| trial != &task.task_id)
-                })
-            {
-                return Err(Error::Input(format!(
-                    "result {} does not match the benchmark's selected task",
-                    run_path.display()
-                )));
-            }
-            if let (Some(selection), Some(task)) = (&selection, &task)
-                && !selection.matches(task)
-            {
-                return Err(Error::Input(format!(
-                    "measurement {} does not match the planned dataset instance",
-                    run_path.display()
-                )));
-            }
-            if (single || plan.is_some() || outcome.is_some())
-                && let Some(task) = &task
-                && (task.attempt_id.is_empty()
-                    || task.attempt_id.len() > 256
-                    || task.workload != workload
-                    || !actual_attempts.insert(task.attempt_id.clone()))
-            {
-                return Err(Error::Input(format!(
-                    "result {} has a mismatched, missing, oversized or duplicate actual attempt identity; an attempt cannot be counted twice",
-                    run_path.display()
-                )));
-            }
-            let identity_bound = selection
-                .as_ref()
-                .is_none_or(|selection| task.as_ref().is_some_and(|task| selection.matches(task)));
-            let run_status = if !measured {
-                outcome.map(outcomes::Recorded::status)
-            } else {
-                match run_value.get("status").and_then(Value::as_str) {
-                Some(status)
-                    if run_value.get("workload_evaluation").and_then(Value::as_str)
-                        == Some("adapter-smoke") =>
-                {
-                    Some(format!(
-                        "{status}: adapter smoke only; upstream task resolution not measured"
-                    ))
-                }
-                Some("unscored") => Some(
-                    "unscored: initial task was already passing or its baseline could not be verified".into()
-                ),
-                Some(status) if run_value.get("success") == Some(&Value::Bool(false)) => Some(
-                    if let Some(reason) = run_value.get("failure_reason").and_then(Value::as_str) {
-                        format!("benchmark run failed: {reason}")
-                    } else {
-                        format!(
-                            "benchmark run failed (status={status}, exit_code={})",
-                            run_value
-                                .get("exit_code")
-                                .map(Value::to_string)
-                                .unwrap_or_else(|| "null".into())
-                        )
-                    },
-                ),
-                Some(status) => Some(status.to_owned()),
-                None => Some("unknown".into()),
-            }
-            };
-            let workload_evaluation = run_value
-                .get("workload_evaluation")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-                .to_owned();
-            let workload_evaluation = crate::workloads::scored_kind(
-                &workload_evaluation,
-                &crate::workloads::BaselineEvidence::from_record(&run_value),
-            )
-            .to_owned();
-            if let Some(selection) = selection
-                .as_ref()
-                .filter(|selection| selection.dataset.is_some())
-                && crate::workloads::resolution_eligible(&workload_evaluation)
-                && workload_evaluation != selection.evaluation_kind
-            {
-                return Err(Error::Input(format!(
-                    "measurement {} does not match the planned evaluator; a different task grader cannot earn this benchmark's score",
-                    run_path.display()
-                )));
-            }
-            let mut metrics = BTreeMap::new();
-            let evaluation_completed = identity_bound
-                && crate::workloads::resolution_eligible(&workload_evaluation)
-                && run_value
-                    .get("workload_success")
-                    .and_then(Value::as_bool)
-                    .is_some();
-            flatten_numbers("", &run_value, &mut metrics)?;
-            // Correct old presentations without rewriting their raw evidence.
-            if !crate::workloads::resolution_eligible(&workload_evaluation) {
-                metrics.remove("success_rate");
-            } else {
-                let resolved = evaluation_completed
-                    && run_value.get("workload_success").and_then(Value::as_bool) == Some(true);
-                metrics.insert("success_rate".into(), if resolved { 1.0 } else { 0.0 });
-            }
-            if run_value
-                .get("schema_version")
-                .and_then(Value::as_u64)
-                .unwrap_or(1)
-                < 2
-            {
-                metrics.remove("steps");
-            }
-            let mut series = BTreeMap::new();
-            let mut host_metadata = None;
-            let mut components = None;
-            let collector_files = if measured {
-                Some(
-                    fs::read_dir(&measurement_dir)
-                        .map_err(|error| Error::Input(error.to_string()))?,
-                )
-            } else {
-                None
-            };
-            for entry in collector_files.into_iter().flatten() {
-                let file = entry
-                    .map_err(|error| Error::Input(error.to_string()))?
-                    .path();
-                if file.extension().and_then(|value| value.to_str()) != Some("json")
-                    || file.file_name().and_then(|value| value.to_str()) == Some("run.json")
-                {
-                    continue;
-                }
-                let collector = read_json(&file)?;
-                let name = file
-                    .file_stem()
-                    .and_then(|value| value.to_str())
-                    .unwrap_or("collector");
-                if name == "system" {
-                    host_metadata = Some(collector.clone());
-                    flatten_numbers("host", &collector, &mut metrics)?;
-                }
-                if name == "components" {
-                    components = Some(collector.clone());
-                    if let Some(component_values) = collector.get("components") {
-                        flatten_numbers("component", component_values, &mut metrics)?;
-                    }
-                }
-                if let Some(collector_metrics) = collector.get("metrics") {
-                    flatten_numbers(&path_key(name), collector_metrics, &mut metrics)?;
-                }
-                // Collector stdout is retained for diagnosis, but is not a
-                // numerical series: scraping its last token created noisy and
-                // misleading graphs for repeated mpstat/iostat samples.
-                if let Some(collector_series) = collector.get("series") {
-                    let collector_timestamps = collector.get("series_timestamps");
-                    let timestamp_map = collector_timestamps.and_then(Value::as_object);
-                    if let Some(series_map) = collector_series.as_object() {
-                        for (metric, raw_values) in series_map {
-                            let points = series_values(raw_values);
-                            if points.len() < 2 {
-                                continue;
-                            }
-                            insert_unique(
-                                &mut series,
-                                metric.clone(),
-                                TimeSeries {
-                                    values: points,
-                                    timestamps_ms: timestamp_map
-                                        .and_then(|map| map.get(metric))
-                                        .map(series_values),
-                                },
-                            )?;
-                        }
-                    } else {
-                        let points = series_values(collector_series);
-                        if points.len() >= 2 {
-                            insert_unique(
-                                &mut series,
-                                name.to_owned(),
-                                TimeSeries {
-                                    values: points,
-                                    timestamps_ms: None,
-                                },
-                            )?;
-                        }
-                    }
-                }
-            }
-            benchmark_data.push(BenchmarkData {
-                result_source: if measured {
-                    "measurements"
-                } else {
-                    outcome.expect("recorded outcome").source
-                },
-                reconciled: if grade_only_closed {
-                    true
-                } else if single
-                    || outcome.is_some_and(|outcome| outcome.source == "imported-official-grade")
-                {
-                    false
-                } else {
-                    reconciliation::recorded(
-                        &sweep_results,
-                        &result_dir,
-                        index,
-                        replica,
-                        concurrency,
-                        task.as_ref(),
-                    )?
-                },
-                replica_index,
-                execution_cohort,
-                label,
-                directory: result_dir.clone(),
-                agent: agent.clone(),
-                workload: workload.clone(),
-                task,
-                selection: selection.clone(),
-                evaluation_completed,
-                workload_evaluation,
-                provider: provider.clone(),
-                model: model.clone(),
-                metrics,
-                series,
-                host_metadata,
-                components,
-                status: run_status,
-                artifacts,
-            });
-        }
-    }
-
-    let mut cohorts = BTreeMap::new();
-    for benchmark in &benchmark_data {
-        if let Some(cohort) = &benchmark.execution_cohort
-            && let Some(previous) = cohorts.insert(&cohort.id, cohort)
-            && previous != cohort
-        {
-            return Err(Error::Input(
-                "conflicting execution cohort declarations in sweep measurements".into(),
-            ));
-        }
-    }
-    let mut metric_values: BTreeMap<String, Vec<(String, f64)>> = BTreeMap::new();
-    let mut series_values: BTreeMap<String, Vec<(String, TimeSeries)>> = BTreeMap::new();
-    for benchmark in &benchmark_data {
-        for (name, value) in &benchmark.metrics {
-            metric_values
-                .entry(name.clone())
-                .or_default()
-                .push((benchmark.label.clone(), *value));
-        }
-        for (name, values) in &benchmark.series {
-            series_values
-                .entry(name.clone())
-                .or_default()
-                .push((benchmark.label.clone(), values.clone()));
-        }
-    }
-    let mut graphs = Vec::new();
-    let mut graph_names = GraphNames::default();
-    let agent_labels: BTreeMap<_, _> = benchmark_data
-        .iter()
-        .map(|benchmark| (benchmark.label.clone(), benchmark.agent.clone()))
-        .collect();
-    for (name, values) in &metric_values {
-        let filename = graph_names.allocate("metric", name);
-        write_bar_svg(&comparison_dir.join(&filename), name, values, &agent_labels)?;
-        graphs.push(filename);
-    }
-    for (name, values) in &series_values {
-        let filename = graph_names.allocate("series", name);
-        write_line_svg(&comparison_dir.join(&filename), name, values)?;
-        graphs.push(filename);
-    }
-    if write_execution_timeline_svg(
-        &comparison_dir.join("execution-timeline.svg"),
-        &benchmark_data,
-    )? {
-        graphs.push("execution-timeline.svg".into());
-    }
-    let mut resolution_groups: BTreeMap<String, crate::workloads::ResolutionSummary> =
-        BTreeMap::new();
-    for benchmark in &benchmark_data {
-        let key = serde_json::to_string(&(
-            &benchmark.agent,
-            &benchmark.provider,
-            &benchmark.model,
-            &benchmark.workload,
-            coverage::group_kind(benchmark),
-            benchmark
-                .task
-                .as_ref()
-                .and_then(|task| task.dataset.as_ref())
-                .or_else(|| {
-                    benchmark
-                        .selection
-                        .as_ref()
-                        .and_then(|selection| selection.dataset.as_ref())
-                }),
-        ))
-        .map_err(|error| Error::Run(error.to_string()))?;
-        resolution_groups.entry(key).or_default().observe(
-            coverage::group_kind(benchmark),
-            benchmark
-                .metrics
-                .get("success_rate")
-                .is_some_and(|value| *value == 1.0),
-        );
-    }
-    let evaluation_coverage = coverage::evaluation_summary(&benchmark_data);
-    let population_coverage = coverage::populations(&benchmark_data)?;
-    let summary = json!({
-        "schema_version": 2,
-        "success_rate_definition": "resolved task attempts / all selected task attempts, including failures; not process exit rate or pass@k; smoke checks excluded",
-        "resolution_groups": resolution_groups,
-        "selection_plan": plan.as_ref().map(|plan| json!({"run_id":plan.run_id,"configuration_match":true,"execution_mode":plan.execution_mode,"respect_record_timings":plan.respect_record_timings,"scheduling":plan.scheduling})),
-        "evaluation_coverage":evaluation_coverage,
-        "population_coverage":population_coverage,
-        "input": sweep_path,
-        "input_kind": if single { "benchmark" } else { "sweep" },
-        "sweep": if single { Value::Null } else { json!(sweep_path) },
-        "results_directory": if single { json!(parent) } else { json!(sweep_results) },
-        "comparison_directory": comparison_dir,
-        "report": "report.html",
-        "benchmarks": benchmark_data.iter().map(|benchmark| json!({
-            "name": benchmark.label,
-            "directory": benchmark.directory,
-            "agent": benchmark.agent,
-            "workload": benchmark.workload,
-            "task": benchmark.task,
-            "replica_index": benchmark.replica_index,
-            "execution_cohort": benchmark.execution_cohort,
-            "reconciled": benchmark.reconciled,
-            "result_source": benchmark.result_source,
-            "selection": benchmark.selection,
-            "evaluation_completed": benchmark.evaluation_completed,
-            "workload_evaluation": benchmark.workload_evaluation,
-            "provider": benchmark.provider,
-            "model": benchmark.model,
-            "metrics": benchmark.metrics,
-            "host_metadata": benchmark.host_metadata,
-            "components": benchmark.components,
-            "series": benchmark.series.iter().map(|(name, series)| (name, &series.values)).collect::<BTreeMap<_, _>>(),
-            "series_timestamps": benchmark.series.iter().filter_map(|(name, series)| series.timestamps_ms.as_ref().map(|timestamps| (name, timestamps))).collect::<BTreeMap<_, _>>(),
-            "status": benchmark.status,
-            "artifacts": benchmark.artifacts,
-        })).collect::<Vec<_>>(),
-        "graphs": graphs,
-    });
-    let summary_path = comparison_dir.join("comparison.json");
-    let mut file = fs::File::create(&summary_path).map_err(|error| {
-        Error::Run(format!("cannot create {}: {error}", summary_path.display()))
-    })?;
-    serde_json::to_writer_pretty(&mut file, &summary)
-        .map_err(|error| Error::Run(format!("cannot write {}: {error}", summary_path.display())))?;
-    writeln!(file).map_err(|error| Error::Run(error.to_string()))?;
-    write_html_report(
-        &comparison_dir,
-        &benchmark_data,
-        &graphs,
-        plan.as_ref().map(|plan| plan.execution_mode.as_str()),
-        plan.as_ref().and_then(|plan| plan.scheduling),
-    )?;
+    let loaded = source::load(path)?;
+    let validated = ValidatedReport::validate(loaded)?;
+    let prepared = PreparedReport::prepare(validated)?;
+    let mut files = prepared.graph_names();
+    files.extend(["comparison.json".into(), "report.html".into()]);
+    let publisher = publication::Publisher::begin(&prepared.data.request.comparison_dir, files)?;
+    rendering::render(publisher.stage(), &prepared)?;
+    let published = publisher.commit()?;
     writeln!(
         output,
         "Compared {} benchmarks; wrote {} graphs, report.html, and {}",
-        benchmark_data.len(),
-        graphs.len(),
-        comparison_dir.display()
+        prepared.data.rows.len(),
+        prepared.graphs.len(),
+        prepared.data.request.comparison_dir.display()
     )
-    .map_err(|error| Error::Io(error.to_string()))?;
-    Ok(comparison_dir.join("report.html"))
+    .map_err(|error| published.confirmation_error(error))?;
+    if let Some(backup) = &published.backup {
+        writeln!(output, "Previous report preserved at {}", backup.display())
+            .map_err(|error| published.confirmation_error(error))?;
+    }
+    if published.recoverable_fallback {
+        writeln!(output,"Report published using recoverable replacement, not atomic exchange; a brief destination-absence/crash window was possible. The previous report backup was retained.").map_err(|error|published.confirmation_error(error))?;
+    }
+    Ok(published.report)
 }
-
 /// Invoke the platform opener without a shell; report paths are never commands.
 pub(crate) fn open_report(path: &Path) -> Result<(), Error> {
     let path = path.canonicalize().map_err(crate::io_error)?;
@@ -720,9 +116,15 @@ pub(crate) fn open_report(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(test)]
 fn benchmark_identity(path: &Path) -> Result<(String, String, String, String, usize), Error> {
-    let text = read_config(path)?;
-    let value: toml::Value = toml::from_str(&text).map_err(|error| {
+    benchmark_identity_text(path, &source::read_benchmark_text(path)?)
+}
+fn benchmark_identity_text(
+    path: &Path,
+    text: &str,
+) -> Result<(String, String, String, String, usize), Error> {
+    let value: toml::Value = toml::from_str(text).map_err(|error| {
         Error::Input(format!(
             "cannot parse benchmark {}: {error}",
             path.display()
@@ -766,7 +168,7 @@ fn benchmark_identity(path: &Path) -> Result<(String, String, String, String, us
     ))
 }
 
-fn artifact_links(sweep_parent: &Path, measurement_dir: &Path) -> Vec<String> {
+fn artifact_inventory(sweep_parent: &Path, measurement_dir: &Path) -> Vec<(String, PathBuf)> {
     let mut files = Vec::new();
     // Measurement artifacts are the primary evidence for a comparison. Add
     // them before the bounded recursive inventory so a large external
@@ -793,8 +195,14 @@ fn artifact_links(sweep_parent: &Path, measurement_dir: &Path) -> Vec<String> {
     files
         .into_iter()
         .filter(|path| path.file_name().and_then(|name| name.to_str()) != Some("run.json"))
-        .filter_map(|path| relative_artifact(sweep_parent, &path))
-        .map(|path| format!("../../{}", path.to_string_lossy().replace('\\', "/")))
+        .filter_map(|path| {
+            let physical = path.canonicalize().ok()?;
+            let relative = relative_artifact(sweep_parent, &physical)?;
+            Some((
+                format!("../../{}", relative.to_string_lossy().replace('\\', "/")),
+                physical,
+            ))
+        })
         .collect()
 }
 
@@ -847,7 +255,7 @@ fn collect_artifacts(path: &Path, depth: usize, output: &mut Vec<PathBuf>) {
 /// Render the process-tree accounting captured for every agent execution.
 /// The bars are accounting composition, not a chronological thread timeline:
 /// a concurrent process tree can execute and sleep simultaneously.
-fn write_execution_timeline_svg(path: &Path, benchmarks: &[BenchmarkData]) -> Result<bool, Error> {
+fn composition_rows(benchmarks: &[BenchmarkData]) -> Vec<(&str, [f64; 7])> {
     let mut rows = Vec::new();
     for benchmark in benchmarks {
         let Some(component) = benchmark
@@ -892,6 +300,11 @@ fn write_execution_timeline_svg(path: &Path, benchmarks: &[BenchmarkData]) -> Re
             ],
         ));
     }
+    rows
+}
+
+fn write_execution_timeline_svg(path: &Path, benchmarks: &[BenchmarkData]) -> Result<bool, Error> {
+    let rows = composition_rows(benchmarks);
     if rows.is_empty() {
         return Ok(false);
     }
@@ -936,51 +349,23 @@ fn write_execution_timeline_svg(path: &Path, benchmarks: &[BenchmarkData]) -> Re
     Ok(true)
 }
 
-fn write_html_report(
-    comparison_dir: &Path,
-    benchmarks: &[BenchmarkData],
-    graphs: &[String],
-    selection_mode: Option<&str>,
-    scheduling: Option<crate::sweep::scheduler::Scheduling>,
-) -> Result<(), Error> {
-    let mut dimensions: BTreeMap<&str, Vec<String>> = BTreeMap::new();
-    let mut dispatch_groups = BTreeMap::new();
-    for benchmark in benchmarks {
-        if let Some(cohort) = &benchmark.execution_cohort {
-            let next = dispatch_groups.len() + 1;
-            dispatch_groups.entry(cohort.id.as_str()).or_insert(next);
-        }
-    }
-    dimensions.insert(
-        "benchmark",
-        benchmarks.iter().map(|item| item.label.clone()).collect(),
-    );
-    dimensions.insert(
-        "agent",
-        benchmarks.iter().map(|item| item.agent.clone()).collect(),
-    );
-    dimensions.insert(
-        "provider",
-        benchmarks
-            .iter()
-            .map(|item| item.provider.clone())
-            .collect(),
-    );
-    dimensions.insert(
-        "model",
-        benchmarks.iter().map(|item| item.model.clone()).collect(),
-    );
-    dimensions.insert(
-        "workload",
-        benchmarks
-            .iter()
-            .map(|item| item.workload.clone())
-            .collect(),
-    );
-    for values in dimensions.values_mut() {
-        values.sort();
-        values.dedup();
-    }
+fn write_html_report(stage: &Path, prepared: &PreparedReport) -> Result<(), Error> {
+    let benchmarks = &prepared.data.rows;
+    let graphs = prepared.graph_names();
+    let selection_mode = prepared
+        .data
+        .request
+        .plan
+        .as_ref()
+        .map(|plan| plan.execution_mode.as_str());
+    let scheduling = prepared
+        .data
+        .request
+        .plan
+        .as_ref()
+        .and_then(|plan| plan.scheduling);
+    let dimensions = &prepared.dimensions;
+    let dispatch_groups = &prepared.dispatch_groups;
 
     let mut html = String::from(HTML_HEAD);
     html = html.replacen(
@@ -996,15 +381,16 @@ fn write_html_report(
         html.push_str(&format!("<p class=\"scheduling\">Sweep scheduling: up to {} distinct configurations; {} active attempt slots, including replicas. Concurrent tasks share host resources.</p>", scheduling.jobs, scheduling.max_active_attempts));
     }
     html.push_str("<header class=\"hero\"><p class=\"eyebrow\">ASB BENCHMARK REPORT</p><h1>Benchmark comparison</h1><p>Explore recorded benchmark results and measurements. Use the filters to focus the report without rerunning anything.</p></header>");
-    let coverage = coverage::evaluation_summary(benchmarks);
+    let coverage = &prepared.evaluation;
     html.push_str(&format!("<section class=\"explain\"><strong>Evaluation coverage</strong><p>Execution mode: {}.</p><p>{}/{} eligible selected attempts evaluated; {} have no completed evaluation. {} attempts are unscored. {}</p><p>Partial results are not a complete-population benchmark score. See population_coverage in comparison.json for dataset selection, unique tasks and complete one-attempt-per-task scores.</p></section>",
         escape(selection_mode.unwrap_or("unknown")),
         coverage.evaluated_attempts, coverage.eligible_selected_attempts, coverage.unevaluated_attempts, coverage.unscored_attempts,
         if selection_mode.is_some() {"Pre-run task selection is preserved and matches the configurations."} else {"No pre-run selection snapshot exists; dataset completeness cannot be established from these legacy records."}));
-    html.push_str(&coverage::html_table(benchmarks)?);
+    html.push_str(&coverage::html_table(&prepared.populations));
+    html.push_str(&coverage::metric_html(&prepared.metric_groups));
     html.push_str("<section class=\"explain\"><strong>How to read this report</strong><p>Each row is one selected task attempt for an agent/provider/model/workload combination. Runtime, success rate, token usage, host metadata, component timings, and structured collector measurements are summarized in the table and charts. Network wait remains null unless directly observed. The complete machine-readable evidence inventory is available in comparison.json.</p></section>");
     html.push_str("<section class=\"filters\"><div class=\"section-title\"><h2>Filter results</h2><div><button type=\"button\" data-action=\"all\">Select all</button><button type=\"button\" data-action=\"none\">Clear all</button></div></div><div class=\"filter-grid\">");
-    for (group, values) in &dimensions {
+    for (group, values) in dimensions {
         html.push_str(&format!("<fieldset><legend>{}</legend>", title_case(group)));
         for value in values {
             let escaped = escape(value);
@@ -1083,7 +469,7 @@ fn write_html_report(
                 .collect::<String>();
             let mut previews = String::new();
             for artifact in &benchmark.artifacts {
-                if benchmark.result_source == "recovered-official-grade" {
+                if benchmark.result_source == ResultSource::RecoveredOfficialGrade {
                     // Preserved partial collectors are diagnostic downloads,
                     // never final execution charts for a grade-only closure.
                     continue;
@@ -1091,12 +477,11 @@ fn write_html_report(
                 let name = artifact.rsplit('/').next().unwrap_or(artifact);
                 match crate::collectors::display_artifact(name) {
                     Some(crate::collectors::ArtifactDisplay::Svg { class, label }) => {
-                        previews.push_str(&inline_svg_artifact(
-                            comparison_dir,
-                            artifact,
-                            class,
-                            label,
-                        )?);
+                        let svg =
+                            prepared.data.previews.get(artifact).ok_or_else(|| {
+                                Error::Run("validated SVG preview is missing".into())
+                            })?;
+                        previews.push_str(&inline_svg_markup(svg, class, label));
                     }
                     Some(crate::collectors::ArtifactDisplay::Status {
                         class,
@@ -1135,7 +520,7 @@ fn write_html_report(
     }
     html.push_str("</tbody></table></div></section>");
     let mut sections = std::collections::BTreeMap::<(&str, &str), Vec<&String>>::new();
-    for graph in graphs {
+    for graph in &graphs {
         if let Some(section) = crate::collectors::graph_section(graph) {
             sections
                 .entry((section.title, section.description))
@@ -1146,7 +531,7 @@ fn write_html_report(
     for ((title, description), section_graphs) in sections {
         html.push_str(&format!("<section><div class=\"section-title\"><h2>{}</h2><p class=\"muted\">{}</p></div><div class=\"charts\">", escape(title), escape(description)));
         for graph in section_graphs {
-            html.push_str(&chart_figure(comparison_dir, graph)?);
+            html.push_str(&chart_figure(stage, graph)?);
         }
         html.push_str("</div></section>");
     }
@@ -1155,12 +540,12 @@ fn write_html_report(
         .iter()
         .filter(|graph| crate::collectors::graph_section(graph).is_none())
     {
-        html.push_str(&chart_figure(comparison_dir, graph)?);
+        html.push_str(&chart_figure(stage, graph)?);
     }
     html.push_str("</div></section><footer>Generated locally by <code>asb compare</code>. No provider or agent was contacted.</footer></main>");
     html.push_str(INTERACTIVE_SCRIPT);
     html.push_str(HTML_SCRIPT);
-    fs::write(comparison_dir.join("report.html"), html)
+    fs::write(stage.join("report.html"), html)
         .map_err(|error| Error::Run(format!("cannot write HTML report: {error}")))
 }
 
@@ -1175,40 +560,22 @@ fn chart_figure(comparison_dir: &Path, graph: &str) -> Result<String, Error> {
     ))
 }
 
+#[cfg(test)]
 fn inline_svg_artifact(
     comparison_dir: &Path,
     artifact: &str,
     class: &str,
     fallback: &str,
 ) -> Result<String, Error> {
-    let path = comparison_dir.join(artifact);
-    let metadata = fs::metadata(&path).map_err(|error| {
-        Error::Run(format!(
-            "cannot read embedded SVG artifact {artifact}: {error}"
-        ))
-    })?;
-    if metadata.len() > MAX_BYTES {
-        return Err(Error::Run(format!(
-            "embedded SVG artifact {artifact} exceeds 16 MiB"
-        )));
-    }
-    let svg = fs::read_to_string(&path).map_err(|error| {
-        Error::Run(format!(
-            "cannot read embedded SVG artifact {artifact}: {error}"
-        ))
-    })?;
-    let trimmed = svg.trim_start();
-    if !trimmed.starts_with("<svg") && !trimmed.starts_with("<?xml") {
-        return Err(Error::Run(format!(
-            "embedded SVG artifact {artifact} does not contain an SVG document"
-        )));
-    }
-    Ok(format!(
+    let svg = source::read_svg(&comparison_dir.join(artifact), artifact)?;
+    Ok(inline_svg_markup(&svg, class, fallback))
+}
+fn inline_svg_markup(svg: &str, class: &str, fallback: &str) -> String {
+    format!(
         "<div class=\"embedded-svg {class}\" aria-label=\"{}\">{svg}</div>",
         escape(fallback)
-    ))
+    )
 }
-
 fn title_case(value: &str) -> String {
     let mut chars = value.chars();
     chars.next().map_or_else(String::new, |first| {
@@ -1228,79 +595,11 @@ const INLINE_SVG_STYLE: &str = r#".embedded-svg{display:block;overflow:auto;bord
 
 const JSON_DETAILS_STYLE: &str = ".json-details{max-height:360px;overflow:auto;background:#f4f7fa;border:1px solid var(--line);border-radius:7px;padding:10px;font:12px/1.4 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap}";
 
-const INTERACTIVE_SCRIPT: &str = r#"<script>
-document.querySelectorAll('.interactive-chart').forEach(chart=>{
-  const stage=chart.querySelector('.chart-stage');
-  const svg=stage.querySelector('svg');
-  const tooltip=chart.querySelector('.chart-tooltip');
-  const reset=chart.querySelector('.chart-reset');
-  const expand=chart.querySelector('.chart-expand');
-  const close=chart.querySelector('.chart-close');
-  const backdrop=chart.querySelector('.chart-backdrop');
-  const original=svg.getAttribute('viewBox').split(/\s+/).map(Number);
-  let view={x:original[0],y:original[1],w:original[2],h:original[3]};
-  let drag=null;
-  const interactive=[...svg.querySelectorAll('.bar,.series,.series-point')];
-  const clearHover=()=>interactive.forEach(item=>item.classList.remove('hovered'));
-  const positionTooltip=(event)=>{
-    const bounds=stage.getBoundingClientRect();
-    const left=Math.min(Math.max(8,event.clientX-bounds.left+12),Math.max(8,bounds.width-tooltip.offsetWidth-8));
-    const top=Math.min(Math.max(8,event.clientY-bounds.top-42),Math.max(8,bounds.height-tooltip.offsetHeight-8));
-    tooltip.style.left=`${left}px`;tooltip.style.top=`${top}px`;
-  };
-  const show=(item,event)=>{
-    clearHover();
-    item.classList.add('hovered');
-    if(item.classList.contains('series-point')){
-      const series=svg.querySelector(`.series[data-series-index="${item.dataset.seriesIndex}"]`);
-      if(series)series.classList.add('hovered');
-    }
-    tooltip.textContent=item.dataset.timestamp?`${item.dataset.label}: ${item.dataset.value} @ ${item.dataset.timestamp} ms`:`${item.dataset.label}: ${item.dataset.value}`;
-    tooltip.classList.add('visible');
-    positionTooltip(event);
-  };
-  interactive.forEach(item=>item.addEventListener('pointerenter',event=>show(item,event)));
-  stage.addEventListener('pointermove',event=>{if(!drag)positionTooltip(event)});
-  stage.addEventListener('pointerleave',()=>{clearHover();tooltip.classList.remove('visible')});
-  const applyView=()=>svg.setAttribute('viewBox',`${view.x} ${view.y} ${view.w} ${view.h}`);
-  const setExpanded=expanded=>{
-    chart.classList.toggle('expanded',expanded);
-    document.body.classList.toggle('chart-open',expanded);
-    expand.hidden=expanded;close.hidden=!expanded;
-    if(expanded)close.focus();else expand.focus();
-  };
-  svg.addEventListener('wheel',event=>{
-    event.preventDefault();
-    const bounds=svg.getBoundingClientRect();
-    const factor=event.deltaY<0?.85:1.15;
-    const mx=view.x+(event.clientX-bounds.left)/bounds.width*view.w;
-    const my=view.y+(event.clientY-bounds.top)/bounds.height*view.h;
-    const w=Math.min(original[2],Math.max(original[2]/8,view.w*factor));
-    const h=Math.min(original[3],Math.max(original[3]/8,view.h*factor));
-    view.x=Math.max(0,Math.min(original[2]-w,mx-(mx-view.x)*w/view.w));
-    view.y=Math.max(0,Math.min(original[3]-h,my-(my-view.y)*h/view.h));
-    view.w=w;view.h=h;applyView();
-  },{passive:false});
-  svg.addEventListener('pointerdown',event=>{
-    if(event.target.closest('.bar,.series-point'))return;
-    drag={x:event.clientX,y:event.clientY,view:{...view}};svg.classList.add('is-panning');svg.setPointerCapture(event.pointerId);
-  });
-  svg.addEventListener('pointermove',event=>{
-    if(!drag)return;
-    const bounds=svg.getBoundingClientRect();
-    view.x=Math.max(0,Math.min(original[2]-view.w,drag.view.x-(event.clientX-drag.x)/bounds.width*view.w));
-    view.y=Math.max(0,Math.min(original[3]-view.h,drag.view.y-(event.clientY-drag.y)/bounds.height*view.h));
-    applyView();
-  });
-  const stopDrag=event=>{if(!drag)return;drag=null;svg.classList.remove('is-panning');if(svg.hasPointerCapture(event.pointerId))svg.releasePointerCapture(event.pointerId)};
-  svg.addEventListener('pointerup',stopDrag);svg.addEventListener('pointercancel',stopDrag);
-  reset.addEventListener('click',()=>{view={x:original[0],y:original[1],w:original[2],h:original[3]};applyView()});
-  expand.addEventListener('click',()=>setExpanded(true));
-  close.addEventListener('click',()=>setExpanded(false));
-  backdrop.addEventListener('click',()=>setExpanded(false));
-  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&chart.classList.contains('expanded'))setExpanded(false)});
-});
-</script>"#;
+const INTERACTIVE_SCRIPT: &str = concat!(
+    "<script>\n",
+    include_str!("compare/report_interactions.js"),
+    "\n</script>"
+);
 
 const HTML_SCRIPT: &str = concat!(
     "<script>\n",
@@ -1308,85 +607,47 @@ const HTML_SCRIPT: &str = concat!(
     "\n</script></body></html>"
 );
 
-fn checked_reference(parent: &Path, reference: &str, sweep: &str) -> Result<PathBuf, Error> {
-    let path = Path::new(reference);
-    if path.is_absolute()
-        || path
-            .components()
-            .any(|component| component == std::path::Component::ParentDir)
-    {
-        return Err(Error::Input(format!(
-            "sweep {sweep} contains unsafe benchmark path {reference}"
-        )));
-    }
-    if path.extension().and_then(|value| value.to_str()) != Some("toml") {
-        return Err(Error::Input(format!(
-            "sweep {sweep} entry {reference} is not a .toml benchmark"
-        )));
-    }
-    let resolved = parent.join(path);
-    if !resolved.is_file() {
-        return Err(Error::Input(format!(
-            "sweep {sweep} references missing benchmark {}",
-            resolved.display()
-        )));
-    }
-    Ok(resolved)
-}
-
-fn read_json(path: &Path) -> Result<Value, Error> {
-    let metadata = fs::metadata(path)
-        .map_err(|error| Error::Input(format!("cannot read {}: {error}", path.display())))?;
-    if metadata.len() > MAX_BYTES {
-        return Err(Error::Input(format!(
-            "measurement file {} exceeds 16 MiB",
-            path.display()
-        )));
-    }
-    let text = fs::read_to_string(path)
-        .map_err(|error| Error::Input(format!("cannot read {}: {error}", path.display())))?;
-    serde_json::from_str(&text).map_err(|error| {
-        Error::Input(format!(
-            "invalid measurement JSON {}: {error}",
-            path.display()
-        ))
-    })
-}
-
-fn series_values(value: &Value) -> Vec<f64> {
-    value
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_f64)
-        .take(2_048)
-        .collect()
-}
-
 fn write_bar_svg(
     path: &Path,
     title: &str,
     values: &[(String, f64)],
     labels: &BTreeMap<String, String>,
 ) -> Result<(), Error> {
+    let min = values
+        .iter()
+        .map(|(_, value)| *value)
+        .fold(0.0_f64, f64::min);
     let max = values
         .iter()
         .map(|(_, value)| *value)
         .fold(0.0_f64, f64::max)
-        .max(1.0);
+        .max(if min < 0.0 { 0.0 } else { 1.0 });
     let width = 900.0;
     let height = 460.0;
     let left = 70.0;
     let bottom = PLOT_BOTTOM;
     let bar_width = (width - left - 20.0) / values.len().max(1) as f64;
     let mut svg = svg_header(width, height, title);
-    append_y_axis(&mut svg, left, PLOT_TOP, bottom, PLOT_RIGHT, max, title);
+    append_y_axis(
+        &mut svg,
+        left,
+        PLOT_TOP,
+        bottom,
+        PLOT_RIGHT,
+        (min, max),
+        title,
+    );
+    let baseline = bottom - domain_fraction(0.0, min, max) * (bottom - PLOT_TOP);
+    if min < 0.0 {
+        svg.push_str(&format!("<line class=\"zero-baseline\" x1=\"{left}\" y1=\"{baseline:.1}\" x2=\"{PLOT_RIGHT}\" y2=\"{baseline:.1}\" stroke=\"black\"/>"));
+    }
     for (index, (label, value)) in values.iter().enumerate() {
         svg.push_str(&format!("<g data-benchmark=\"{}\">", escape(label)));
         let display = labels.get(label).unwrap_or(label);
         let x = left + index as f64 * bar_width + 4.0;
-        let bar_height = value.max(0.0) / max * (bottom - PLOT_TOP);
-        let y = bottom - bar_height;
+        let endpoint = bottom - domain_fraction(*value, min, max) * (bottom - PLOT_TOP);
+        let bar_height = (endpoint - baseline).abs();
+        let y = endpoint.min(baseline);
         let width = (bar_width - 8.0).max(2.0);
         svg.push_str(&format!(
             "<rect class=\"bar\" data-label=\"{}\" data-value=\"{value}\" x=\"{x:.1}\" y=\"{y:.1}\" width=\"{width:.1}\" height=\"{bar_height:.1}\" fill=\"#4472c4\"><title>{} [{}]: {value}</title></rect>",
@@ -1398,7 +659,17 @@ fn write_bar_svg(
         let (label_y, placement, color) = if bar_height >= 24.0 {
             // Keep a small top inset while retaining enough contrast against
             // the bar fill for the value to remain readable.
-            (y + 16.0, "inside", "#ffffff")
+            (
+                if *value < 0.0 {
+                    endpoint - 6.0
+                } else {
+                    y + 16.0
+                },
+                "inside",
+                "#ffffff",
+            )
+        } else if *value < 0.0 {
+            (endpoint + 14.0, "below", "#18212b")
         } else {
             // Short and zero-height bars cannot contain a label. Place the
             // baseline just above the bar with the same small spacing.
@@ -1416,11 +687,15 @@ fn write_bar_svg(
         .map_err(|error| Error::Run(format!("cannot write {}: {error}", path.display())))
 }
 
-fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> Result<(), Error> {
+fn write_series_svg(
+    path: &Path,
+    title: &str,
+    values: &[(String, &TimeSeries)],
+) -> Result<(), Error> {
     const WIDTH: f64 = 1_200.0;
     const LEFT: f64 = 100.0;
     const RIGHT: f64 = 1_160.0;
-    const LEGEND_TOP: f64 = 50.0;
+    const LEGEND_TOP: f64 = 68.0;
     const LEGEND_COLUMNS: usize = 2;
     const LEGEND_MAX_CHARS: usize = 46;
     const LEGEND_LINE_HEIGHT: f64 = 16.0;
@@ -1428,9 +703,18 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> 
     const PLOT_HEIGHT: f64 = 320.0;
     let max = values
         .iter()
-        .flat_map(|(_, points)| points.values.iter().copied())
+        .flat_map(|(_, points)| points.values.iter().flatten().copied())
         .fold(0.0_f64, f64::max)
         .max(1.0);
+    let min = values
+        .iter()
+        .flat_map(|(_, points)| points.values.iter().flatten().copied())
+        .fold(0.0_f64, f64::min);
+    let index_length = values
+        .iter()
+        .map(|(_, points)| points.values.len())
+        .max()
+        .unwrap_or(0);
     let timestamp_bounds = values
         .iter()
         .filter_map(|(_, points)| points.timestamps_ms.as_ref())
@@ -1463,20 +747,17 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> 
     let bottom = plot_top + PLOT_HEIGHT;
     let height = bottom + 72.0;
     let mut svg = svg_header(WIDTH, height, title);
+    svg.push_str("<text x=\"24\" y=\"44\" font-size=\"11\">Bounded display: at most 2048 original observations per series, preserving endpoints/extrema and null gaps. Full aligned observations: comparison.json.</text>");
     svg.push_str(&format!(
         "<rect class=\"legend-panel\" x=\"{LEFT:.1}\" y=\"{:.1}\" width=\"{:.1}\" height=\"{legend_height:.1}\" rx=\"8\" fill=\"#f4f8fb\" stroke=\"#dce4ec\"/>",
         LEGEND_TOP - 12.0,
         RIGHT - LEFT
     ));
-    append_y_axis(&mut svg, LEFT, plot_top, bottom, RIGHT, max, title);
+    append_y_axis(&mut svg, LEFT, plot_top, bottom, RIGHT, (min, max), title);
     append_series_x_axis(
         &mut svg,
         timestamp_bounds,
-        values
-            .iter()
-            .map(|(_, points)| points.values.len())
-            .max()
-            .unwrap_or(0),
+        index_length,
         LEFT,
         bottom,
         RIGHT,
@@ -1484,49 +765,49 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> 
     for (series_index, (label, points)) in values.iter().enumerate() {
         svg.push_str(&format!("<g data-benchmark=\"{}\">", escape(label)));
         let color = ["#4472c4", "#ed7d31", "#70ad47", "#a5a5a5", "#ffc000"][series_index % 5];
-        let coordinates = points
-            .values
-            .iter()
-            .enumerate()
-            .map(|(index, value)| {
+        let indices = points.render_indices();
+        if let Some(indices) = indices {
+            if indices.is_empty() {
+                svg.push_str(&format!("<text x=\"{LEFT}\" y=\"{}\" class=\"series-unavailable\">{}: no observed samples; null gaps retained in comparison.json</text>",plot_top+18.0,escape(label)));
+            }
+            let mut segment = Vec::new();
+            let mut previous = None;
+            for index in indices {
+                let Some(value) = points.values[index] else {
+                    continue;
+                };
+                if previous
+                    .is_some_and(|old| points.values[old + 1..index].iter().any(Option::is_none))
+                    && !segment.is_empty()
+                {
+                    append_polyline(&mut svg, &segment, series_index, label, color);
+                    segment.clear();
+                }
                 let x = line_x(
                     index,
                     points.timestamps_ms.as_deref(),
                     timestamp_bounds,
-                    points.values.len(),
+                    index_length,
                     LEFT,
                     RIGHT,
                 );
-                let y = bottom - value.max(0.0) / max * (bottom - plot_top);
-                format!("{x:.1},{y:.1}")
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
-        svg.push_str(&format!(
-            "<polyline class=\"series\" data-series-index=\"{series_index}\" data-label=\"{}\" points=\"{coordinates}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"2\"/>",
-            escape(label)
-        ));
-        for (index, value) in points.values.iter().enumerate() {
-            let x = line_x(
-                index,
-                points.timestamps_ms.as_deref(),
-                timestamp_bounds,
-                points.values.len(),
-                LEFT,
-                RIGHT,
-            );
-            let y = bottom - value.max(0.0) / max * (bottom - plot_top);
-            let timestamp = points
-                .timestamps_ms
-                .as_ref()
-                .and_then(|timestamps| timestamps.get(index))
-                .map_or_else(String::new, |timestamp| {
-                    format!(" data-timestamp=\"{timestamp}\"")
-                });
-            svg.push_str(&format!(
-                "<circle class=\"series-point\" data-series-index=\"{series_index}\" data-label=\"{}\" data-value=\"{value}\"{timestamp} cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"6\" fill=\"transparent\" stroke=\"none\"/>",
-                escape(label)
-            ));
+                let fraction = domain_fraction(value, min, max);
+                let y = bottom - fraction * (bottom - plot_top);
+                segment.push(format!("{x:.1},{y:.1}"));
+                let timestamp = points
+                    .timestamps_ms
+                    .as_ref()
+                    .map_or_else(String::new, |times| {
+                        format!(" data-timestamp=\"{}\"", times[index])
+                    });
+                svg.push_str(&format!("<circle class=\"series-point\" data-series-index=\"{series_index}\" data-label=\"{}\" data-value=\"{value}\" data-sample-index=\"{index}\"{timestamp} cx=\"{x:.1}\" cy=\"{y:.1}\" r=\"6\" fill=\"transparent\" stroke=\"none\"/>",escape(label)));
+                previous = Some(index);
+            }
+            if !segment.is_empty() {
+                append_polyline(&mut svg, &segment, series_index, label, color);
+            }
+        } else {
+            svg.push_str(&format!("<text x=\"{LEFT}\" y=\"{}\" class=\"series-unavailable\">{}: graph unavailable—too many missing-data segments; full observations retained in comparison.json</text>",plot_top+18.0,escape(label)));
         }
         let column = series_index % legend_columns;
         let row = series_index / legend_columns;
@@ -1568,6 +849,23 @@ fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> 
     fs::write(path, svg)
         .map_err(|error| Error::Run(format!("cannot write {}: {error}", path.display())))
 }
+fn append_polyline(
+    svg: &mut String,
+    coordinates: &[String],
+    series_index: usize,
+    label: &str,
+    color: &str,
+) {
+    svg.push_str(&format!("<polyline class=\"series\" data-series-index=\"{series_index}\" data-label=\"{}\" points=\"{}\" fill=\"none\" stroke=\"{color}\" stroke-width=\"2\"/>",escape(label),coordinates.join(" ")));
+}
+#[cfg(test)]
+fn write_line_svg(path: &Path, title: &str, values: &[(String, TimeSeries)]) -> Result<(), Error> {
+    let borrowed = values
+        .iter()
+        .map(|(label, series)| (label.clone(), series))
+        .collect::<Vec<_>>();
+    write_series_svg(path, title, &borrowed)
+}
 
 fn line_x(
     index: usize,
@@ -1586,7 +884,7 @@ fn line_x(
                 if max > min {
                     (*timestamp - min) / (max - min)
                 } else {
-                    index as f64 / length.saturating_sub(1).max(1) as f64
+                    0.0
                 }
             },
         );
@@ -1653,13 +951,22 @@ fn wrap_label(value: &str, max_chars: usize) -> Vec<String> {
     lines
 }
 
+/// Normalize finite observations without overflowing an opposite-sign domain.
+fn domain_fraction(value: f64, min: f64, max: f64) -> f64 {
+    if (max - min).is_finite() {
+        (value - min) / (max - min)
+    } else {
+        (value * 0.5 - min * 0.5) / (max * 0.5 - min * 0.5)
+    }
+}
+
 fn append_y_axis(
     svg: &mut String,
     left: f64,
     top: f64,
     bottom: f64,
     right: f64,
-    max: f64,
+    domain: (f64, f64),
     title: &str,
 ) {
     svg.push_str(&format!(
@@ -1668,7 +975,7 @@ fn append_y_axis(
     for tick in 0..=Y_TICKS {
         let fraction = tick as f64 / Y_TICKS as f64;
         let y = bottom - fraction * (bottom - top);
-        let value = max * fraction;
+        let value = domain.0 * (1.0 - fraction) + domain.1 * fraction;
         svg.push_str(&format!(
             "<line x1=\"{left}\" y1=\"{y:.1}\" x2=\"{right}\" y2=\"{y:.1}\" stroke=\"#dddddd\"/><text x=\"{:.1}\" y=\"{:.1}\" text-anchor=\"end\" font-size=\"11\">{}</text>",
             left - 6.0,
@@ -1740,30 +1047,12 @@ fn escape(value: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn safe_name(path: &Path) -> String {
-    safe_name_str(
-        path.file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or("benchmark"),
-    )
-}
-
-fn safe_name_str(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 #[path = "../tests/unit/compare_boundaries.rs"]
 mod boundary_tests;
+#[cfg(test)]
+#[path = "../tests/unit/report_pipeline.rs"]
+mod pipeline_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2085,7 +1374,7 @@ mod tests {
             &[(
                 "agent-with-a-deliberately-long-series-name-for-the-legend".into(),
                 super::TimeSeries {
-                    values: vec![0.0, 100.0],
+                    values: vec![Some(0.0), Some(100.0)],
                     timestamps_ms: Some(vec![10.0, 20.0]),
                 },
             )],
@@ -2126,7 +1415,7 @@ mod tests {
                         index + 1
                     ),
                     super::TimeSeries {
-                        values: vec![1.0, 2.0, 3.0],
+                        values: vec![Some(1.0), Some(2.0), Some(3.0)],
                         timestamps_ms: None,
                     },
                 )
@@ -2170,6 +1459,9 @@ mod tests {
         assert!(svg.contains("class=\"bar-value\" data-placement=\"above\""));
         assert!(svg.contains(">100</text>"));
         assert!(svg.contains(">1</text>"));
+        assert!(!svg.contains("zero-baseline"));
+        assert!(svg.contains("y=\"70.0\" width=\"397.0\" height=\"320.0\""));
+        assert!(svg.contains("y=\"386.8\" width=\"397.0\" height=\"3.2\""));
         let _ = std::fs::remove_dir_all(root);
     }
 

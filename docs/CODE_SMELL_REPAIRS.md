@@ -14,6 +14,17 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+Integrated candidate, staged patch **0.2.18**: the independently reviewed
+launch-descriptor/one-shot admission repair (`b1a54fde`) is combined with the
+reviewed workload-wizard stack (`cbe3e0ed`), retaining shared benchmark paths,
+bounded flamegraph cleanup, host prerequisite consent and adapter-owned
+executable readiness. Adapter package preferences and source readiness coexist
+with the raw-OS launch descriptor; native command configuration and exclusive
+gate admission remain intact. Fresh full offline source and package
+qualification, independent integration review, exact-head hosted CI, PR merge,
+post-merge verification and a patch release remain pending. This staging entry
+does not claim delivery or close the other audit repair classes.
+
 ## 1. Endpoint preparation invariants
 
 Eight production adapter branches used `unreachable!` for unsupported wire
@@ -46,6 +57,32 @@ nested-versus-literal keys, then consolidate genuinely equivalent sanitizers
 without changing established result/workspace identities unintentionally.
 Also review duplicated manifest reference validation and executable resolution;
 same names alone do not prove equivalent semantics. Pending.
+
+Executable-policy candidate, staged patch **0.2.16**: project-local source
+installation, readiness and launch share one registry-neutral executable lookup.
+Explicit source overrides precede adapter-owned package preferences; unusable
+present candidates cannot silently fall through to stale fallback code. Codex
+owns its native-package preference, and host discovery cannot claim a project
+installation. Root independently reviewed the original production repair and
+reran all seven isolated policy fixtures after current-stack integration. These
+exercise actual source installation and execution for every registered agent
+and tool, custom roots, override precedence, broken/non-executable/symlink
+entries and host-only discovery. Existing installer regressions now call the
+same shared executable predicate rather than a removed duplicate. Final full
+source/package checks, review of integration, PR merge, post-merge verification
+and the patch release remain pending.
+
+Shared benchmark-path candidate, staged patch **0.2.13**: all five equivalent legacy normalizers now
+use one component/stem policy, and both sweep execution and comparison use the
+same checked TOML-reference contract. Filename prefixes, Unicode-per-character
+replacement, non-UTF-8 fallback and existing symlink behavior are unchanged.
+The graph allocator still owns collision-free identities; the shared lossy
+normalizer is not a uniqueness or confinement mechanism. Tests preserve those
+boundaries and exercise actual CLI rejection in both commands before artifact
+creation. Independent source review found no blocker. Ordinary source tests
+and strict Clippy passed; release-head functional package/hosted checks, PR,
+post-merge validation and a patch release remain pending. This does not close
+the separate executable-resolution or orchestration classes.
 
 Candidate report repair: flatten numeric paths with escaped object separators
 and empty-key identities; reserve bounded portable SVG names, using digest
@@ -88,6 +125,33 @@ coverage gates passed before integration with newer main. The integrated
 candidate stages patch **0.2.9**, after the shell-completion repair; fresh
 release-head qualification and delivery remain pending. Other subprocess/publication cleanup
 items in this class are not claimed complete.
+
+Model-catalog transport candidate, staged patch **0.2.11**: replace blocking curl stdin/stdout operations,
+stderr-reader joins and caller-side waits with fair nonblocking Unix polling
+under one operation/cleanup deadline. Preserve proxy settings, response limits
+and sanitized protocol diagnostics. Direct-child ownership uses the shared
+pre-established reaper on uncertain cleanup; no successful catalog can bypass
+exit/EOF checks. Actual offline process fixtures cover pressure, inherited pipes,
+timeouts, custody and reaping. The body limit and I/O timeout are shared with
+curl's actual arguments; exact-limit success and one-byte-over rejection have
+real subprocess regressions. Independent source review and a separate execution
+of all 36 focused model tests passed. Non-Unix discovery fails before spawn;
+cancellable non-Unix transport remains a separate portability contract. Full
+release-head qualification and delivery remain pending. Main `398c36cc` removed
+the hosted coverage gate and the user explicitly confirmed keeping that removal;
+local measurements are optional diagnostics, not a required hosted check.
+
+Flamegraph cleanup candidate, staged patch **0.2.14**: the perf-script/stack-collapse/render pipeline
+owns every directly spawned stage. A failure, timeout or unwind signals all
+remaining stages before polling against one shared cleanup deadline, preserving
+the original error and retaining unconfirmed children in the shared private
+`OwnedReaper` established before any spawn. It no longer selects processes by
+parent PID or returns from an upstream failure while forgetting a downstream
+child. Offline real-child tests cover stage/file/spawn failures, timeout,
+unwind, fallback-custody handoff, actual reaping and unrelated sentinel survival.
+The reviewed source is integrated with current main; fresh ordinary/package
+qualification, coverage, a PR, post-merge checks and a patch release remain
+pending. This does not claim arbitrary descendant or crash-persistent cleanup.
 
 ## 4. Typed domain and wire contracts
 
@@ -132,6 +196,38 @@ native timing. Hosted and full final verification remain required.
 Audit correction: current `perfetto_instance_config` is seven lines, not the
 reported 630. Comparison's filter JavaScript is already a separate asset.
 Do not perform redundant extraction based on stale line counts.
+Comparison candidate, staged patch **0.2.19**: explicit loaded/validated/prepared/rendered/published
+states replace intertwined loading, grading coverage, graph planning and output
+publication. Stable identities, typed result provenance and one-time population
+aggregation preserve existing evidence semantics. Confirmed fixes retain null
+positions with original timestamps (no shifted samples), disclose bounded
+original-index extrema-preserving line rendering instead of silent truncation,
+and provide nearest observed-sample hover text. Opened-once bounded source reads
+reject nonregular files and growth; retained physical SVG paths prevent
+symlink-parent components from being misread as logical output links.
+Generation-specific private staging and a separate persistent report lock
+publish whole generations with Linux/macOS native atomic exchange and preserve the old tree
+as a recoverable backup. Pre-commit failures leave old bytes unchanged;
+post-commit sync/output errors truthfully report published-but-unconfirmed.
+Offline source/DOM/publication regressions require no provider or privileged
+collector. Real browser qualification remains opt-in and host-dependent. This
+candidate passed independent source review and a separate execution of all 25
+pipeline regressions (one explicit real-browser opt-in remains ignored). Signed
+scalar bars preserve negative observations, finite zero-based geometry even at
+opposite-sign floating-point extremes, and exact original values in embedded
+HTML hover. Worker full qualification passed 990 tests with 21 explicit skips
+at `4cb19e48`. Integrated version/package and ordinary hosted verification remain
+pending; this is not a release or a universal non-Linux atomicity claim.
+When the filesystem lacks exchange, a private no-replace probe precedes the
+recoverable backup/commit/rollback fallback. This path honestly discloses a
+temporary absent-destination/crash window, retains the old backup on failed
+restore and never overwrites a racing foreign destination. Missing safe native
+no-replace support fails closed without first moving user data. MacOS native
+calls are selected explicitly; Linux fixtures do not qualify a macOS runtime.
+Separate confirmed follow-up: bar charts still clamp signed values to zero.
+The signed-domain repair above covers line-series axes only; bar baselines,
+rectangles, signed ticks and labels need their own offline coordinate tests
+and repair before claiming all chart families faithfully display negatives.
 The custom BPF scope validator is also a small function (about sixty lines),
 not the reported 533; its confirmed correctness defect is tracked below.
 
@@ -187,6 +283,15 @@ their adapters. Audit mutable globals for necessary scope: atomics for unique
 names and synchronized process ownership are not intrinsically defects.
 Avoid removing synchronization without an ownership replacement. Pending.
 
+Host prerequisite consent/probes now have a separate candidate repair: private
+typed requests, consumed approvals, one capability probe per sysctl/cgroup setup,
+and explicit independent-versus-dependent failure policies. Sysctls retain
+approved interactive fallback; cgroup delegation remains passwordless-only and
+requires separate consent. Offline fake-executor tests and the existing isolated
+fake-sudo fixtures cover both routes. This candidate does not repair wizard
+worker ownership or change tracefs lease/installation semantics; independent
+review and delivery are still pending.
+
 Process-gate inspection found an additional launch-contract problem: its
 `pre_exec` closure allocates buffers and enumerates the environment after fork
 in a multithreaded process. That needs async-signal-safety review and a launch
@@ -196,15 +301,66 @@ intent, although no current production caller uses that method; do not claim
 an observed credential leak. Tests must preserve explicit environment removal,
 clearing, non-UTF8 arguments/environment, I/O, owner death and descendant cleanup.
 
+Separate launch-descriptor candidate (not yet merged/released): the adapter
+returns an OS-string client executable/prefix/explicit argv[0] descriptor;
+native preparation constructs the gate command once before all configuration.
+The same actual `Command` retains standard-library environment clearing,
+removals/overrides, cwd, I/O, credentials and process settings. No getter-based
+rebuild or private `Command` layout is used. The post-fork ASB callback only
+adjusts the private receipt FD with async-signal-safe `fcntl` and captures an
+OS error; allocation, environment enumeration and manual exec argument arrays
+are gone. A typed target view keeps collectors separate from gate framing;
+route validation checks the original carrier and raw framing before any reaper
+or child is created. Only its exclusive validated token can establish admission;
+replacement/shortened/retargeted commands and direct routes are refused.
+bare unprovable PATH identities remain unavailable. The private ASBGATE2 ABI
+refuses the prior valid ASBGATE1 Hello before resume. Offline actual-binary
+fixtures cover clear/remove/override, child-only PATH, cwd/I/O, raw executable,
+argument and environment bytes, explicit client argv[0], current UID/GID,
+an owned process group, an existing async-safe callback and launch failures.
+This does not expand the separate runtime-fingerprint JSON wire to arbitrary
+filesystem byte encodings or fix output-reader memory/wait limits. Full
+independent integration review and fresh ordinary/package CI remain required.
+
 Independent review additionally found that wizard installation workers are
 detached: a draw error can return while an installer still mutates project
 files. Shared progress handling must own worker completion/cancellation, with
 a fake-install regression for terminal failure during active work.
 
-Coverage-driven inspection also found a wizard transition defect: saving
-trials consumes `selected_workload`, so the advertised next Enter reopens
-trial selection instead of finishing. Add bounded event-loop/PTY regressions,
-not only helper tests, and repair the explicit save/finish state in this class.
+Prerequisite native gate custody repair stages patch **0.2.12**, separately
+from the TUI worker repair; it is not yet merged or released.
+Its private `ManagedGate` is used by the actual runner ownership boundary:
+versioned PID-bound Hello precedes admission, completion requires Quiescent
+plus direct exit, startup failure never resumes an unsupported launcher, and
+admitted cancellation never kills the supervising gate. A precreated wait-only
+fallback retains uncertain custody; the gate retries identity-scoped teardown
+and its existing independent watcher handles stopped parent death. This does
+not yet repair the TUI workers, the pre-exec allocation contract or stream
+memory/reader lifetime. Independent review approved source candidate
+`ca4ba33b`; its ordinary offline suite passed 897 tests with 20 explicit
+optional skips. Tests include the actual gate's double-forked TERM-resistant
+helpers, proof-writer noninheritance and owner loss after Hello, while stopped,
+after resume and after the spawning thread exits. Protocol stand-ins separately
+exercise malformed/missing receipts, bounded uncertainty and wait-only custody;
+they do not qualify kernel teardown. Starting polling errors retain custody
+before returning their original diagnostic. The staged candidate integrates
+the reviewed runner publication repairs and current development policy;
+fresh exact-head functional/package CI, independent review, merge and
+post-merge release verification remain required.
+
+Workload-wizard candidate, staged patch **0.2.17**: explicit browsing, editing
+and saved states repair the advertised Enter-to-finish action. Saved subsets
+are restored when editing, replaced rather than appended, retained across
+deselection, and published only for selected workloads. Every selected subset
+must be nonempty and present in the reloaded catalog; all configurations are
+validated and serialized before the first write. This is semantic validation,
+not a claim of transactional multi-file I/O. Independent source review approved
+`6758b426`; a separate execution passed all 39 TUI unit tests and both terminal
+integration tests, including ten actual PTY workflow scenarios and terminal
+restoration. Worker full offline qualification passed 956 tests with 20 explicit
+optional skips. Version/package, exact-head hosted CI, merge and post-merge
+release verification remain pending. Detached installation-worker custody and
+other TUI structural issues remain separate repair classes.
 
 ## 7. Limits, diagnostics and CLI consistency
 
