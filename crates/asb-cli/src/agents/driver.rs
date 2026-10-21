@@ -361,7 +361,7 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
     let PreparedGuest {
         mut command,
         mut artifact_owner,
-        instrumentation: _instrumentation,
+        instrumentation,
     } = prepare(&request)?;
     // Keep the same launch identity even if a tool renames/deletes its cwd.
     // Looking up current_dir again after execution can erase a valid outcome.
@@ -383,7 +383,7 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
         session.attach_pid(std::process::id()).map_err(Error::Run)?;
         Some(session)
     };
-    if let (Some(guard), Some(owner)) = (&command.instrumentation, &request.owned_instrumentation) {
+    if let (Some(guard), Some(owner)) = (&instrumentation, &request.owned_instrumentation) {
         guard.revalidate(owner)?;
     }
     // Preparation and command construction are complete before the outer
