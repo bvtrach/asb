@@ -642,3 +642,24 @@ qualification evidence is preserved. All handles are terminal. No full suite,
 PR, push or release; independent source review precedes broad caller dependency
 on this owner-authority API. Remaining read/pump/start faults and complete typed
 all-caller Abort propagation are still required, not inferred from these19 tests.
+
+### Further actual-owner constructor gap: observed before correction
+
+Root's review of baaf805e found that ProducerLease::new still allocated a fresh
+state even for the same actual Stage, and with_state accepted arbitrary state.
+An old Stage-issued permission therefore stayed valid while an alternate lease
+admitted a writer into that SAME actual Stage. Generation checks alone did not
+close this constructor path. The added real-Stage regression records rejection
+while an actual helper is stopped at its own ready/release handshake, then
+releases and settles the helper, verifies an unrelated sentinel survived and
+stops that sentinel independently BEFORE its final assertion.
+
+`target/installer44-owner-binding-red.log` records the intended0PASS/1FAIL in
+0.06s, exit101; the old actual-owner permission was accepted during admission.
+The owning actual build ran FIRST (0.13s, exit0); its hash remains the preserved
+baaf staging actual b518297ec9662e0fde38286bf170c88365186bd036b7a92b01911117de1f473d.
+See `installer44-owner-binding-red-before.sha256`. The fixture writes
+`alternate-owner-cleanup-confirmed` only after actual settlement and sentinel
+cleanup. This is an observed prototype authority gap; no production installer
+repair, full qualification or historical user failure is inferred. This
+checkpoint adds the regression/evidence ONLY, before repairing the constructor.

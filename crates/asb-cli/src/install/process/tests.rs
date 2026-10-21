@@ -578,6 +578,62 @@ fn actual_staging_rejects_second_lane_and_stale_permission_then_publishes_only_m
 }
 
 #[test]
+fn actual_staging_alternate_constructor_cannot_restore_old_permission_during_admission() {
+    let root = root();
+    let context = context(&root);
+    let destination = root.join("installed");
+    fs::write(&destination, "old-installed").unwrap();
+    let staging = Arc::new(crate::install::source::Staging::new(&destination).unwrap());
+    let old_permission = staging.producer_scope(&context).finish().unwrap();
+    let alternate = ProducerLease::new(Arc::clone(&staging), &root);
+    let mut lane = ProcessScope::new(&context, alternate);
+    let mut sentinel = Sentinel::start();
+    let mut step = lane
+        .prepare(
+            "/bin/sh",
+            Purpose::Probe,
+            "same actual owner alternate lease",
+        )
+        .unwrap();
+    step.command_mut().env_clear().env("PATH", "/usr/bin:/bin").current_dir(&root)
+        .args(["-c", "printf partial > \"$1\"; printf ready > ready; while ! test -f release; do sleep .01; done", "fixture"])
+        .arg(staging.producer_path()).stdin(std::process::Stdio::null());
+    let (send, receive) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let result = lane.run(step);
+        let _ = send.send(result.is_ok());
+    });
+    struct ReleaseFile(PathBuf);
+    impl Drop for ReleaseFile {
+        fn drop(&mut self) {
+            let _ = fs::write(&self.0, "release");
+        }
+    }
+    let release = ReleaseFile(root.join("release"));
+    wait_file(&root.join("ready"));
+    let denied = staging.accept_producer_permission(old_permission).is_err();
+    fs::write(&release.0, "release").unwrap();
+    assert!(
+        receive.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "actual producer did not settle"
+    );
+    let sentinel_alive = sentinel.0.try_wait().unwrap().is_none();
+    sentinel.0.stop().unwrap();
+    assert!(sentinel_alive);
+    assert_eq!(fs::read_to_string(destination).unwrap(), "old-installed");
+    assert!(staging.producer_path().exists());
+    fs::write(
+        root.join("alternate-owner-cleanup-confirmed"),
+        "actual helper settled; sentinel independently stopped",
+    )
+    .unwrap();
+    assert!(
+        denied,
+        "alternate constructor left old actual-owner permission valid during admission"
+    );
+}
+
+#[test]
 fn actual_staging_rejects_other_owner_proof_without_publishing_or_cleaning_its_bytes() {
     let root = root();
     let context = context(&root);
