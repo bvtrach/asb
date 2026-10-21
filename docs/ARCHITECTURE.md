@@ -223,9 +223,20 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   every delegated-cgroup command (`mkdir`, `chown`, `chmod`, and, when needed,
   controller enablement) and asks for explicit approval before running them.
   `asb init --yes` (or `-y`) approves all listed setup groups without prompts.
-  Declining, an invalid answer, or a failed command leaves the setting or
-  delegation unchanged; init remains usable. It never edits sudoers or changes
+  Declining or an invalid answer runs no listed mutation commands. A failed
+  command is reported and init remains usable. It never edits sudoers or changes
   these settings silently.
+  The private `project::host_setup` policy separates declared operations,
+  capability, explicit consent, and execution. A consumed approval owns exactly
+  one command group. The initial passwordless-sudo probe is shared within the
+  sysctl/cgroup setup invocation, not across processes or independent groups.
+  An approved interactive sysctl does not promote cgroup setup to interactive
+  sudo, even if sudo refreshed credentials; this preserves the prior policy.
+  Sysctl failures do not suppress independent settings, while cgroup creation,
+  ownership, permissions and optional controller enabling stop at the first
+  failed prerequisite. Failure is best-effort, not rollback: earlier successful
+  operations may remain applied. Tracefs retains its separate lease and setup
+  contract, sharing only the explicit consent parser.
   On a systemd cgroup-v2 host, the same best-effort init path creates a
   user-owned `asb.slice` beneath the current user slice, enables the CPU
   controller, and records its parent in `.asb/project.toml`; measured runs use
