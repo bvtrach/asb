@@ -15,6 +15,20 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn response_review_declares_the_graded_answer_not_workspace_changes() {
+        use crate::workloads::contracts::SubmissionKind;
+        let response = crate::workloads::descriptor("repository-navigation").unwrap();
+        assert_eq!(response.protocol.submission, SubmissionKind::ResponseText);
+        assert_eq!(
+            crate::workloads::descriptor("bug-fix")
+                .unwrap()
+                .protocol
+                .submission,
+            SubmissionKind::Workspace
+        );
+    }
+
+    #[test]
     fn prompt_family_routes_prompt_population_fixture_setup_and_trials() {
         let root = std::env::temp_dir().join(format!("asb-prompt-adapter-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);

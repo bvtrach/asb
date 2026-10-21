@@ -7,6 +7,10 @@ or standalone path sandbox. Comparison retains its collision-free graph-name
 allocator. Sweep execution and comparison share the relative-TOML reference
 checks, including existing symlink behavior and actionable path diagnostics.
 
+The versioned [benchmark module contracts](BENCHMARK_MODULES.md) separate suite,
+dataset, harness and evaluation protocol. Owning adapters expose descriptors
+through `asb workload describe`; new selection snapshots bind the same metadata.
+
 The maintained overview below explains ASB's runtime boundaries. It can be
 supplemented—not replaced—by generated Rust type, dataflow, and control-flow
 diagrams. Generate them locally with `make uml`, `make flows`, or

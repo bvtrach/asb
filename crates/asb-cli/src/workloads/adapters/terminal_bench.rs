@@ -18,6 +18,22 @@ pub(super) struct TerminalBenchAdapter {
 }
 
 impl super::WorkloadAdapter for TerminalBenchAdapter {
+    fn descriptor(&self, _name: &str) -> crate::workloads::contracts::ModuleDescriptor {
+        use crate::workloads::contracts::{EvaluationMode, ModuleDescriptor, SubmissionKind};
+        ModuleDescriptor::official(
+            self.id,
+            "terminal-bench",
+            self.id,
+            crate::workloads::session::DatasetIdentity {
+                source: self.source.into(),
+                revision: self.revision.into(),
+                split: self.split.into(),
+            },
+            self.tool,
+            SubmissionKind::EnvironmentState,
+            EvaluationMode::InPlace,
+        )
+    }
     fn process_lifetime(&self) -> crate::workloads::session::ProcessLifetime {
         crate::workloads::session::ProcessLifetime::ThroughEvaluation
     }
@@ -105,6 +121,7 @@ impl super::WorkloadAdapter for TerminalBenchAdapter {
     ) -> Result<Option<crate::workloads::PlanningCatalog>, String> {
         let catalog = catalog::read(self, directory)?;
         Ok(Some(crate::workloads::PlanningCatalog {
+            requirements: catalog::requirements(self, directory, &catalog)?,
             dataset: catalog.dataset,
             task_ids: catalog.tasks.into_iter().map(|task| task.id).collect(),
             evaluation_kind: "upstream-harness",
@@ -171,6 +188,7 @@ impl super::WorkloadAdapter for TerminalBenchAdapter {
 /// Legacy reference/smoke alias; never relabel old smoke results as official.
 pub(super) static ADAPTER: StaticExternalAdapter = StaticExternalAdapter::new(
     "terminal-bench",
+    "https://raw.githubusercontent.com/harbor-framework/terminal-bench/452bf305c6daa62fc59061d22133a7cbc7c1572e/README.md",
     &[
         (
             "smoke",
@@ -185,7 +203,11 @@ pub(super) static ADAPTER: StaticExternalAdapter = StaticExternalAdapter::new(
             "Debugging task from the local Terminal-Bench checkout.",
         ),
     ],
-);
+).with_bundle(super::SourceBundle {
+    archive: "https://github.com/harbor-framework/terminal-bench/archive/452bf305c6daa62fc59061d22133a7cbc7c1572e.tar.gz",
+    marker: "terminal-bench/terminal-bench@452bf305c6daa62fc59061d22133a7cbc7c1572e",
+    prompt: "Use the installed upstream Terminal-Bench checkout in `external-workload`. Inspect its README, task definitions, and local runner instructions, then execute or improve a concrete terminal task using only the installed checkout and run its focused tests. Do not download additional data during the run.\n",
+});
 
 #[cfg(test)]
 mod tests {
