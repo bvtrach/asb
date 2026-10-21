@@ -578,7 +578,8 @@ pub(crate) fn read_manifest_text(path: &Path) -> Result<String, Error> {
     Ok(text)
 }
 
-fn parse_manifest(path: &Path, value: toml::Value) -> Result<SweepFile, Error> {
+/// Validate an already captured TOML snapshot without rereading its path.
+pub(crate) fn parse_manifest(path: &Path, value: toml::Value) -> Result<SweepFile, Error> {
     let label = path.display().to_string();
     if !value
         .as_table()
