@@ -112,6 +112,12 @@ evidence files remain intact. Workspace coverage objects and raw profiles are
 cleaned while dependency compilation caches are retained. This also prevents
 obsolete test-binary maps from distorting totals after version or feature changes.
 No live provider, real agent installation, or privileged collector is necessary.
+The production map excludes only registry/git package directories identified by
+locked offline Cargo metadata (including relocated/symlinked caches). Workspace
+and local path-package sources stay in the denominator; no product module is excluded.
+Missing-project capability fixtures test the same private initialized-file guard
+used by production, and ancestor discovery uses an owned fixture parent/child.
+They never assume TMPDIR has no real ancestor project or pass one to host setup.
 
 Token accounting has synthetic, provider-free regression fixtures for all
 registered agent families, plus replay CLI checks for JSON, logs, and

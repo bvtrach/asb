@@ -12,6 +12,24 @@ from pathlib import Path
 import re
 
 
+def dependency_path_regex(metadata):
+    """Exclude only Cargo-identified registry/git packages, not local code."""
+    members = set(metadata["workspace_members"])
+    roots = set()
+    for package in metadata["packages"]:
+        source = package["source"]
+        if package["id"] in members or source is None:
+            continue
+        if not source.startswith(("registry+", "git+")):
+            raise ValueError("unsupported Cargo dependency source")
+        manifest = Path(package["manifest_path"])
+        if not manifest.is_absolute():
+            raise ValueError("Cargo manifest path must be absolute")
+        root = manifest.parent
+        roots.update((str(root), str(root.resolve())))
+    return "|".join("^" + re.escape(root) + "/" for root in sorted(roots)) or "a^"
+
+
 def executable_lines(report):
     """Parse LLVM's text format, unioning duplicate generic instantiations."""
     result = {}
