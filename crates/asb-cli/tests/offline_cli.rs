@@ -3830,6 +3830,105 @@ fn cli2key_failed_startup_must_stop_its_mock_bridge() {
     );
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn concurrent_cli2key_replicas_use_distinct_default_bridges_and_reap_both() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = Project::new();
+    project.init();
+    project.write("benchmark.toml", "agent='pi'\nworkload='bug-fix'\nprovider='cli2key'\nmodel='fixture-model'\nconcurrency=2\nworkspace='workspace'\nlog_file='run.log'\n");
+    project.write(
+        ".asb-tools/pi/bin/pi",
+        r##"#!/usr/bin/env node
+fetch(process.env.OPENAI_BASE_URL+'/probe', {
+  headers:{authorization:'Bearer '+process.env.OPENAI_API_KEY},
+  signal:AbortSignal.timeout(5000)
+}).then(async response => {
+  if (!response.ok) process.exitCode=1;
+  else console.log('fixture complete');
+}).catch(() => { process.exitCode=1; });
+"##,
+    );
+    std::fs::set_permissions(
+        project.0.join(".asb-tools/pi/bin/pi"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    install_fake_bridge(
+        &project,
+        r##"#!/usr/bin/env node
+const http = require('http'), fs = require('fs');
+setTimeout(() => process.exit(3), 10000).unref();
+http.createServer((req,res) => {
+  if (req.url === '/v1/probe') {
+    if (req.headers.authorization !== 'Bearer fixture-key') {res.writeHead(401); return res.end();}
+    fs.appendFileSync(process.env.ASB_TEST_CALLS, JSON.stringify({pid:process.pid})+'\n');
+    const deadline=Date.now()+3000;
+    const timer=setInterval(() => {
+      if (fs.readFileSync(process.env.ASB_TEST_CALLS,'utf8').trim().split('\n').length >= 2) {
+        clearInterval(timer); res.writeHead(200); res.end('ok');
+      } else if (Date.now()>deadline) {clearInterval(timer); res.writeHead(500); res.end();}
+    },10);
+    return;
+  }
+  res.writeHead(200, {'content-type':'application/json'});
+  res.end(JSON.stringify({data:[{id:'fixture-model'}]}));
+}).listen(Number(process.env.CODEX_BRIDGE_PORT), '127.0.0.1', function () {
+  fs.appendFileSync(process.env.ASB_TEST_BRIDGES, JSON.stringify({pid:process.pid,port:this.address().port})+'\n');
+  console.log('Codex Bridge API key: fixture-key');
+});
+"##,
+    );
+    let records = project.0.join("bridges.jsonl");
+    let calls = project.0.join("calls.jsonl");
+    let result = project.command_with_env(
+        &["run", "benchmark.toml", "--json"],
+        &[
+            ("ASB_TEST_BRIDGES", records.to_str().unwrap()),
+            ("ASB_TEST_CALLS", calls.to_str().unwrap()),
+        ],
+    );
+    let summaries = stdout(&result)
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(summaries.len(), 2, "{}", stderr(&result));
+    assert!(
+        summaries.iter().all(|row| row["process_success"] == true),
+        "{}",
+        stderr(&result)
+    );
+    let bridges = std::fs::read_to_string(records)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(bridges.len(), 2);
+    assert_ne!(bridges[0]["port"], bridges[1]["port"]);
+    let calls = std::fs::read_to_string(calls)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line).unwrap()["pid"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        calls.len(),
+        2,
+        "both concurrent client requests must reach different owned bridges"
+    );
+    for bridge in bridges {
+        let pid = bridge["pid"].as_u64().unwrap() as u32;
+        let _wait = wait_for_fixture(&project, pid);
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "owned bridge survived completion"
+        );
+    }
+}
+
 #[test]
 fn init_detects_network_proxies_without_persisting_credentials() {
     let project = Project::new();
