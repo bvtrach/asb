@@ -453,11 +453,8 @@ fn npm_contract(root: &Path) {
         fs::read_to_string(directory.join("package.json")).unwrap(),
         NPM_INSTALL_MANIFEST
     );
-    assert!(
-        progress
-            .iter()
-            .any(|(percent, stage)| *percent == 15 && stage == "installing npm package")
-    );
+    assert!(progress.iter().any(|(percent, stage)| *percent == 15
+        && *stage == crate::install::ProgressStage::InstallingPackage));
     // Existing user manifests must never be replaced by the default overrides.
     fs::write(
         directory.join("package.json"),

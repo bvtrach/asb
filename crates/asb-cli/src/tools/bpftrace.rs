@@ -27,8 +27,11 @@ pub(super) static ADAPTER: StaticTool = StaticTool::new(
 /// install it.  bpftrace is kernel-sensitive; using the exact host binary and
 /// recording `uname -r` prevents silently reusing a project tool from another
 /// machine or kernel image.
-fn install_bpftrace(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
-    progress(10, "checking host bpftrace");
+fn install_bpftrace(
+    root: &Path,
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
+) -> Result<PathBuf, Error> {
+    progress(10, crate::install::ProgressStage::CheckingHost);
     let source = match host_executable("bpftrace") {
         Ok(source) => source,
         Err(host_error) => match build_bpftrace(root, progress) {
@@ -42,7 +45,7 @@ fn install_bpftrace(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<P
         },
     };
     let version = command_output(&source, &["--version"], "bpftrace version")?;
-    progress(95, "recording kernel compatibility");
+    progress(95, crate::install::ProgressStage::Finalizing);
     let kernel = command_output(Path::new("uname"), &["-r"], "kernel release")?;
     let machine = command_output(Path::new("uname"), &["-m"], "kernel architecture")?;
     let bin = root.join("bin");
@@ -68,17 +71,21 @@ fn install_bpftrace(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<P
             "cannot write bpftrace compatibility metadata: {error}"
         ))
     })?;
-    progress(100, "ready");
+    progress(100, crate::install::ProgressStage::Ready);
     Ok(destination)
 }
 
-fn build_bpftrace(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
+fn build_bpftrace(
+    root: &Path,
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
+) -> Result<PathBuf, Error> {
     let source_dir = root.join("source");
     let build_dir = root.join("build");
     let archive = root.join(".bpftrace-source.tar.gz");
     if !source_dir.is_dir() {
         fs::create_dir_all(root)
             .map_err(|error| Error::Io(format!("cannot create {}: {error}", root.display())))?;
+        progress(10, crate::install::ProgressStage::Downloading);
         let status = Command::new("curl")
             .args([
                 "--fail",
@@ -97,7 +104,7 @@ fn build_bpftrace(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<Pat
                 bpftrace_source_commands()
             )));
         }
-        progress(25, "downloading bpftrace source");
+        progress(25, crate::install::ProgressStage::Extracting);
         fs::create_dir_all(&source_dir).map_err(|error| {
             Error::Io(format!("cannot create bpftrace source directory: {error}"))
         })?;
@@ -115,8 +122,8 @@ fn build_bpftrace(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<Pat
                 bpftrace_dependency_commands("tar")
             )));
         }
-        progress(40, "extracting bpftrace source");
     }
+    progress(40, crate::install::ProgressStage::Configuring);
     let status = Command::new("cmake")
         .args(["-S"])
         .arg(&source_dir)
@@ -131,7 +138,7 @@ fn build_bpftrace(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<Pat
             bpftrace_source_commands()
         )));
     }
-    progress(60, "configuring bpftrace build");
+    progress(60, crate::install::ProgressStage::Building);
     let status = Command::new("cmake")
         .args(["--build"])
         .arg(&build_dir)
@@ -144,7 +151,7 @@ fn build_bpftrace(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<Pat
             bpftrace_source_commands()
         )));
     }
-    progress(90, "building bpftrace");
+    progress(90, crate::install::ProgressStage::Validating);
     find_built_bpftrace(&build_dir).ok_or_else(|| {
         Error::Io(format!(
             "bpftrace built without a discoverable executable under {}",
