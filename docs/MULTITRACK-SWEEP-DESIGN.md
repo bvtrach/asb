@@ -34,6 +34,13 @@ selection algorithms and exact per-slot track choices. Generate an omitted seed
 once at sweep planning; all configuration choices are schedule-independent in
 configuration/batch/replica order. Validate the whole bounded plan before moving
 old results or admitting work. Decode only selected payloads into private inputs.
+Bound total sweep slots, plan bytes, private selected bytes and outcome/proof
+enumeration across all configurations, not merely each N times C population.
+Reject predictable aggregate exhaustion before activation or paid work.
+
+Plain live/legacy N1 sweeps retain their existing single-batch layout and behavior.
+Explicit repeats and new ZIP record/replay use campaign layouts. Keep migration
+tests for old saved plans, legacy recordings, imported grades and continuation.
 
 Never fabricate a prepared material hash to initialize a recorder. A replay
 source identity is an expectation; current material comes from the workload
@@ -52,6 +59,8 @@ nested pools or gates waiting on workers that cannot obtain held permits.
 Resume loads the original saved plan and verifies choices against the frozen
 source identity. It never generates another seed or silently resamples a changed
 catalogue. Validate all reuse candidates before publishing any replacement state.
+Resolve omitted seed/selector by loading the saved plan first; explicitly supplied
+values that disagree must fail rather than silently override historical choices.
 False grades are completed observations, not permission to rerun an agent.
 Started/unsettled attempts and unknown cleanup retain explicit recovery policy;
 they must not be mistaken for untouched slots.
@@ -61,6 +70,8 @@ gates, while each keeps its original slot/replica identity. Compare their genuin
 material with the saved prepared identity; do not fake arrivals for reused peers.
 Any changed resumed execution cohort/resource population must be disclosed rather
 than claimed to be an uninterrupted concurrency measurement.
+Persist actual admitted participant count, cohort and continuation identity as
+well as configured C, so a resumed partial batch cannot masquerade as full C.
 
 Bind outcomes to immutable track/association proofs, not a growing ZIP or raw
 JSONL that confirmed publication can remove. Group proof validation by recording
@@ -68,6 +79,16 @@ and reuse one bounded metadata/index pass. Final bundle publication is separate
 from per-slot completion: publication-only recovery must never relaunch clients.
 Preserve interrupted/failed attempts and no-overwrite ownership. Any explicit new
 attempt needs a distinct attempt association; never rewrite a committed track.
+
+Keep three independent state planes: planned slot/recording intent, actual
+attempt allocation/start/settlement, and final bundle publication. A journal
+Started record reserves a slot after material verification; it does not prove
+that an agent launched. Actual started-but-unsettled attempts require explicit
+recovery, not an implicit new client. No automatic retry feature is introduced.
+A deliberate new run uses a new campaign/recording while preserving old attempts;
+it must not append replacement tracks that violate batch/replica ID mapping.
+Input seals bind immutable declared replay identity and selected payloads, never
+mutable recording outputs or raw captures removed after publication.
 
 ## Comparison
 
