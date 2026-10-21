@@ -1,6 +1,44 @@
 use super::*;
 use serde::ser::{Error as _, SerializeMap};
 
+#[cfg(unix)]
+#[test]
+fn incomplete_snapshot_retains_raw_prefix_without_parsing_and_finishes_sibling() {
+    let root = std::env::temp_dir().join(format!(
+        "asb-incomplete-snapshot-{}",
+        crate::tools::runtime::unique_id()
+    ));
+    let mut session = Session::start_with_collectors(&root, &[], None).unwrap();
+    stopped_fixture(&mut session, "admission");
+    stopped_fixture(&mut session, "sibling");
+    session.incomplete_collectors.insert(
+        "admission".into(),
+        "producer write failed after a valid prefix".into(),
+    );
+    let _ = session.finish(fixture_measurement());
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("admission.json")).unwrap()).unwrap();
+    assert_eq!(record["status"], "failed");
+    assert_eq!(
+        record["stdout"], "",
+        "incomplete capture must not be read as stopped evidence"
+    );
+    assert_eq!(record["metrics"], serde_json::json!({}));
+    assert!(
+        record["stderr"]
+            .as_str()
+            .unwrap()
+            .contains("producer write failed")
+    );
+    assert_eq!(fs::read(root.join("admission.stdout")).unwrap(), b"A=17\n");
+    assert!(root.join("admission.stderr").is_file());
+    assert!(!root.join("sibling.stdout").exists());
+    assert!(root.join("sibling.json").is_file());
+    assert!(root.join("run.json").is_file());
+    assert!(root.join("summary.json").is_file());
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn later_collector_admission_failure_retains_sources_and_finalizes_admitted_sibling() {

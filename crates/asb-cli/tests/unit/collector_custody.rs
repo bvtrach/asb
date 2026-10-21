@@ -35,15 +35,17 @@ impl Fixture {
         ProcessTreeSnapshot::start(
             self.identity(),
             PathBuf::from("python3"),
-            Box::new(move |_| {
-                vec![
+            Box::new(move |_| SnapshotCommand {
+                runtime: Duration::from_secs(3),
+                stream_bytes: 1024 * 1024,
+                arguments: vec![
                     "-I".into(),
                     "-S".into(),
                     "-B".into(),
                     "-u".into(),
                     "-c".into(),
                     script.clone(),
-                ]
+                ],
             }),
             stdout,
             File::create(self.directory.join("stderr")).unwrap(),
@@ -140,6 +142,16 @@ fn actual_enospc_is_reported_as_producer_failure_instead_of_silent_completion() 
             .unwrap(),
     );
     fixture.wait_for(&ready);
+    // Observe the completed write attempt, rather than racing an intentional
+    // cancellation that correctly discards an unfinished observation.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !snapshot.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        snapshot.is_finished(),
+        "producer did not settle its write attempt"
+    );
     let completion = format!("{:?}", snapshot.stop());
     let diagnostic = fs::read_to_string(fixture.directory.join("stderr")).unwrap();
     assert!(

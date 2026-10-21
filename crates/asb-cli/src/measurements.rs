@@ -7,6 +7,9 @@
 
 use crate::collectors;
 mod cohort;
+mod snapshot;
+use snapshot::ProcessTreeSnapshot;
+pub(crate) use snapshot::SnapshotCommand;
 #[cfg(test)]
 mod coverage_tests;
 pub use cohort::ExecutionCohort;
@@ -18,7 +21,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -207,98 +210,7 @@ struct ProcessSampler {
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
-pub(crate) type TreeSnapshotArguments = Box<dyn Fn(&[u32]) -> Vec<String> + Send>;
-
-/// Periodic bounded observations over stable process-tree identities. The
-/// owning collector supplies its command arguments; this worker knows no tool
-/// names or command-line flags.
-struct ProcessTreeSnapshot {
-    stop: Arc<AtomicBool>,
-    handle: Option<std::thread::JoinHandle<()>>,
-}
-
-impl ProcessTreeSnapshot {
-    fn start(
-        root: ProcessIdentity,
-        executable: PathBuf,
-        arguments: TreeSnapshotArguments,
-        mut stdout_file: File,
-        mut stderr_file: File,
-    ) -> Option<Self> {
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread_stop = Arc::clone(&stop);
-        let handle = std::thread::Builder::new()
-            .name("asb-process-tree-snapshot".into())
-            .spawn(move || {
-                let started = Instant::now();
-                while !thread_stop.load(Ordering::Relaxed) {
-                    if !root.matches() {
-                        break;
-                    }
-                    let members = process_tree_pids(root.pid)
-                        .into_iter()
-                        .filter_map(ProcessIdentity::read)
-                        .filter(|member| member.in_tree(root))
-                        .collect::<Vec<_>>();
-                    if !root.matches() {
-                        break;
-                    }
-                    let pids = members.iter().map(|member| member.pid).collect::<Vec<_>>();
-                    if pids.is_empty() {
-                        break;
-                    }
-                    // The owning adapter requests one bounded observation.
-                    match Command::new(&executable).args(arguments(&pids)).output() {
-                        Ok(output) => {
-                            // A bounded pidstat interval is only attributable
-                            // if all listed process generations survived it.
-                            if !root.matches() || members.iter().any(|member| !member.in_tree(root))
-                            {
-                                continue;
-                            }
-                            {
-                                use std::io::Write;
-                                let _ = writeln!(
-                                    stdout_file,
-                                    "# asb-snapshot-elapsed-seconds {:.6}",
-                                    started.elapsed().as_secs_f64()
-                                );
-                                let _ = stdout_file.write_all(&output.stdout);
-                            }
-                            {
-                                use std::io::Write;
-                                let _ = stderr_file.write_all(&output.stderr);
-                            }
-                        }
-                        Err(error) => {
-                            use std::io::Write;
-                            let _ = writeln!(
-                                stderr_file,
-                                "process-tree sampler command failed: {error}"
-                            );
-                        }
-                    }
-                    let interval = measurement_interval_ms();
-                    let deadline = Instant::now() + Duration::from_millis(interval);
-                    while !thread_stop.load(Ordering::Relaxed) && Instant::now() < deadline {
-                        std::thread::sleep(Duration::from_millis(25));
-                    }
-                }
-            })
-            .ok()?;
-        Some(Self {
-            stop,
-            handle: Some(handle),
-        })
-    }
-
-    fn stop(mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
-}
+pub(crate) type TreeSnapshotArguments = Box<dyn Fn(&[u32]) -> SnapshotCommand + Send>;
 
 impl ProcessSampler {
     fn start(root: ProcessIdentity, interval_ms: u64) -> Option<Self> {
@@ -480,7 +392,8 @@ pub struct Session {
     component_timings: BTreeMap<String, ComponentTiming>,
     process_sampler: Option<ProcessSampler>,
     process_identity: Option<ProcessIdentity>,
-    process_tree_snapshots: Vec<ProcessTreeSnapshot>,
+    process_tree_snapshots: Vec<(String, ProcessTreeSnapshot)>,
+    incomplete_collectors: BTreeMap<String, String>,
     clock_ticks_per_second: Option<u64>,
 }
 
@@ -499,7 +412,7 @@ impl Drop for Session {
                 collector.adapter.graceful_shutdown(&collector.name),
             );
         }
-        self.stop_process_tree_snapshots();
+        let _ = self.stop_process_tree_snapshots();
         self.stop_process_sampler();
         if self.run_started && !self.run_finishing {
             let _ = write_json(&self.dir.join("lifecycle.json"), &self.lifecycle);
@@ -649,6 +562,7 @@ impl Session {
             process_sampler: None,
             process_identity: None,
             process_tree_snapshots: Vec::new(),
+            incomplete_collectors: BTreeMap::new(),
             clock_ticks_per_second: clock_ticks_per_second(),
         };
         for collector in session.adapters.clone() {
@@ -686,7 +600,9 @@ impl Session {
             event,
             collectors::LifecycleEvent::AgentExecuteEnd | collectors::LifecycleEvent::RunFailed
         ) {
-            self.stop_process_tree_snapshots();
+            if let Err(error) = self.stop_process_tree_snapshots() {
+                errors.push(error);
+            }
             self.stop_process_sampler();
             if let Err(error) = self.stop_collector_processes(true) {
                 errors.push(error);
@@ -957,7 +873,7 @@ impl Session {
 
     /// Finish collectors and write the run record and aggregate summary.
     pub fn finish<'a>(mut self, measurement: RunMeasurement<'a>) -> Result<(), String> {
-        self.stop_process_tree_snapshots();
+        let snapshot_result = self.stop_process_tree_snapshots();
         self.stop_process_sampler();
         let mut errors = Vec::new();
         let mut observe = |result: Result<(), String>| {
@@ -965,6 +881,7 @@ impl Session {
                 errors.push(error);
             }
         };
+        observe(snapshot_result);
         observe(self.stop_collector_processes(false));
         observe(self.process_stopped_collectors());
         observe(write_json(&self.dir.join("run.json"), &measurement));
@@ -1050,11 +967,16 @@ impl Session {
         {
             // Admission owns exact source handles, not post-exit pathnames.
             let captures = &mut collector.captures;
-            let mut read_failed = false;
-            for capture in captures.iter_mut() {
-                if let Err(error) = capture.freeze() {
-                    read_failed = true;
-                    errors.push(error);
+            let producer_incomplete = self.incomplete_collectors.contains_key(&collector.name);
+            let mut read_failed = producer_incomplete;
+            // An unfinished worker can still own these exact writer handles.
+            // Neither freeze nor parse that evidence as a stopped capture.
+            if !producer_incomplete {
+                for capture in captures.iter_mut() {
+                    if let Err(error) = capture.freeze() {
+                        read_failed = true;
+                        errors.push(error);
+                    }
                 }
             }
             let mut diagnostic =
@@ -1066,15 +988,30 @@ impl Session {
                         String::new()
                     }
                 };
-            let stdout = diagnostic(&captures[0]);
-            let mut stderr = diagnostic(&captures[1]);
+            let stdout = if producer_incomplete {
+                String::new()
+            } else {
+                diagnostic(&captures[0])
+            };
+            let mut stderr = if producer_incomplete {
+                String::new()
+            } else {
+                diagnostic(&captures[1])
+            };
+            if let Some(error) = self.incomplete_collectors.get(&collector.name) {
+                stderr = bounded(format!("{error}\n{stderr}").as_bytes());
+            }
             let context = collectors::ProcessContext::new(
                 &collector.name,
                 &status,
                 [&stdout, &stderr],
                 [&captures[0], &captures[1]],
             );
-            let mut data = match collector.adapter.process(self, &context) {
+            let mut data = match if read_failed {
+                Err("producer capture is incomplete".into())
+            } else {
+                collector.adapter.process(self, &context)
+            } {
                 Ok(data) => data,
                 Err(error) => {
                     let mut data = collectors::ProcessData::from_output(&context);
@@ -1158,7 +1095,7 @@ impl Session {
                 captures[1].writer()?,
             )
             .ok_or_else(|| format!("cannot start {name} process-tree sampler"))?;
-            self.process_tree_snapshots.push(sampler);
+            self.process_tree_snapshots.push((name.into(), sampler));
             // Keep a bounded placeholder child so the existing collector
             // lifecycle and result processing remain unchanged.
             let child = Command::new("sleep")
@@ -1203,9 +1140,19 @@ impl Session {
         PathBuf::from(tool_binary_name(name))
     }
 
-    fn stop_process_tree_snapshots(&mut self) {
-        for sampler in std::mem::take(&mut self.process_tree_snapshots) {
-            sampler.stop();
+    fn stop_process_tree_snapshots(&mut self) -> Result<(), String> {
+        let mut errors = Vec::new();
+        for (name, sampler) in std::mem::take(&mut self.process_tree_snapshots) {
+            if let Err(error) = sampler.stop() {
+                self.incomplete_collectors
+                    .insert(name.clone(), error.clone());
+                errors.push(format!("{name} producer capture failed: {error}"));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
         }
     }
 }

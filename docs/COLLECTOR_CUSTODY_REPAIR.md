@@ -1,7 +1,7 @@
 # Collector producer custody and completeness repair
 
-This is the class-35 design and observed-red checkpoint, based on publication
-source `f8139463`. No production repair, passing qualification, PR or release is claimed.
+This is the class-35 design, observed-red evidence and partial implementation,
+based on publication source `f8139463`. No complete qualification, PR or release is claimed.
 The retained version remains 0.2.32 until its later reviewed stack integration.
 
 ## Confirmed current gaps
@@ -102,9 +102,10 @@ formatting and sequential documentation/build gates. Exact-head hosted/package
 CI, independent review, merge, both post-merge jobs and a patch release remain
 separate delivery obligations; the removed 90% coverage gate stays removed.
 
-## Candidate guardian-control seam, awaiting further review
+## Approved guardian-control seam
 
-Do not implement this protocol merely from the first observed-red approval.
+The parent independently approved this optional protocol after inspecting the
+observed-red evidence; implementation still requires independent source review.
 The preferred seam is an optional dedicated nonblocking control socket created
 before admission alongside the existing keeper/receipt. Ordinary benchmark
 gates retain their existing receipt ABI and cancellation behavior. A collector
@@ -131,4 +132,62 @@ quiescence, completed capture I/O and successful flush/publication obligations.
 On grace expiry, use proof-aware guardian cancellation and wait-only fallback,
 not KILL of an admitted guardian. This candidate requires independent review of
 framing, partial writes, late replies, descriptor inheritance and all races before
-production implementation; no new authorization/signing policy is proposed.
+final qualification; no new authorization/signing policy is proposed.
+
+## Partial foundation implementation (not class-35 completion)
+
+The optional control channel uses fixed 16-byte versioned frames, at most three
+bounded replies, and a fixed interruption request with no caller PID or signal.
+Capability readiness precedes resume. The guardian interrupts only its pinned
+principal with SIGINT, separately acknowledges delivery and reports exact
+principal exit; its existing quiescence receipt and cancellation remain distinct.
+Control descriptors are removed from the target environment and CLOEXEC; the
+wake-only child closes its copy. Request writes use an absolute caller deadline;
+guardian replies have a fixed 100 ms ceiling per tiny frame. Ordinary gates do
+not negotiate or inherit the optional channel.
+
+The first production caller is the process-tree snapshot worker. Adapters supply
+observation time/output limits; generic runtime uses guarded admission, bounded
+nonblocking capture and checked output writes/flush. Intentional cancellation
+discards its in-flight sample, not a partial sample. The caller waits at most six
+seconds for worker settlement; a still-running worker retains its existing
+captures and guardian, returns explicit uncertainty and is not joined/replaced.
+Potentially blocking regular-file I/O cannot honestly be declared quiescent just
+because this caller wait expired. Sticky producer errors prevent freezing,
+parsing or consuming matching raw capture and clear derived values. Error
+messages retain the underlying write/flush reason.
+
+The three initially-red tests now pass. The ENOSPC fixture additionally waits
+for the actual write attempt to finish before stopping, so it does not race a
+valid intentional cancellation that discards an unfinished sample. The original
+red checkpoint and transcript remain unchanged. Actual process control tests
+separate acknowledgement from flush/exit, check a nonzero exact principal exit,
+and preserve an unrelated sentinel. Codec tests cover fragmentation, duplicates,
+owner disconnect, malformed/truncated frames and exhausted request deadlines.
+
+Remaining mandatory work: replace the sleeping snapshot lifecycle placeholder;
+migrate ordinary collector child ownership and external kill/pkill/unbounded
+wait; bounded Perfetto readiness and proper flush-before-parse; deterministic
+WriteZero/read-error/worker-failure and controlled-owner-loss fixtures; all
+sibling, independent grade, provider/resource, artifact and receipt integration
+cases. These are not covered by the first three green regressions or the gate
+tests. No full offline suite or final qualification is authorized at this stage.
+Main has independently advanced to `cabaa5766` with bundled recording/replay;
+later integration must preserve its cleanup and recording completeness, not
+replace those functions wholesale from this older baseline.
+
+Focused foundation evidence (not full qualification): actual ASB build succeeded
+before final tests; `measurements::` passed 76/0/0 and `process_gate::` passed
+23/0/0. The actual binary remained
+`f6ea8797c7e81ec9b921fd4e9243c164bcbddcb9b9ca3d209af1735cecdb2a30`
+before/after both groups. Offline locked all-features Clippy for lib/tests passed
+with `-D warnings`; formatting and diff whitespace checks passed. Logs are
+`target/collector35-foundation-build-second.log`,
+`target/collector35-foundation-final-{measurements,control}.log`,
+`target/collector35-foundation-final-binary-{before,after}.sha256`, and
+`target/collector35-foundation-clippy-second.log`. Earlier compile attempts and
+the initial Clippy type-complexity failure are retained separately, not replaced.
+Only the exclusive diagnostics cache was used, with incremental compilation off
+and two build jobs. No host permission, service, provider, real collector or
+live tracing change was made. Independent source review is next; this partial
+foundation must not be published as the complete collector migration.

@@ -14,21 +14,44 @@ const CLEANUP: Duration = Duration::from_secs(6);
 pub(crate) struct Admission<'a> {
     receiver: Receiver,
     writer: UnixStream,
+    control: Option<(super::control::Parent, UnixStream)>,
     keeper: OwnedReaper,
     command: &'a mut Command,
 }
 
 impl<'a> Admission<'a> {
     pub(crate) fn new(validated: crate::launch::ValidatedGate<'a>) -> io::Result<Self> {
+        Self::prepare(validated, false)
+    }
+
+    pub(crate) fn with_principal_control(
+        validated: crate::launch::ValidatedGate<'a>,
+    ) -> io::Result<Self> {
+        Self::prepare(validated, true)
+    }
+
+    fn prepare(validated: crate::launch::ValidatedGate<'a>, controlled: bool) -> io::Result<Self> {
         let command = validated.into_command();
         let keeper = OwnedReaper::new("asb-gate-custody").map_err(io::Error::other)?;
         let (receiver, writer) = Receiver::pair()?;
         let fd = writer.as_raw_fd();
         command.env(receipt::ENV_FD, fd.to_string());
         super::install_receipt(command, fd);
+        let control = if controlled {
+            let (parent, peer) = super::control::Parent::pair()?;
+            let fd = peer.as_raw_fd();
+            command.env(super::control::ENV_FD, fd.to_string());
+            super::install_receipt(command, fd);
+            Some((parent, peer))
+        } else {
+            // Ordinary gates must never adopt a stale inherited control FD.
+            command.env_remove(super::control::ENV_FD);
+            None
+        };
         Ok(Self {
             receiver,
             writer,
+            control,
             keeper,
             command,
         })
@@ -40,9 +63,14 @@ impl<'a> Admission<'a> {
             receiver,
             writer,
             keeper,
+            control,
             ..
         } = self;
         drop(writer);
+        let control = control.map(|(parent, peer)| {
+            drop(peer);
+            parent
+        });
         Ok(ManagedGate {
             child: Some(child),
             receiver,
@@ -51,6 +79,7 @@ impl<'a> Admission<'a> {
             complete: None,
             observed: None,
             startup_deadline: Instant::now() + STARTUP,
+            control,
         })
     }
 }
@@ -63,6 +92,7 @@ pub(crate) struct ManagedGate {
     complete: Option<ExitStatus>,
     observed: Option<ExitStatus>,
     startup_deadline: Instant,
+    control: Option<super::control::Parent>,
 }
 
 impl ManagedGate {
@@ -96,11 +126,15 @@ impl ManagedGate {
         let deadline = self.startup_deadline;
         loop {
             self.receiver.poll(self.id()).map_err(incompatible)?;
+            let id = self.id();
+            if let Some(control) = self.control.as_mut() {
+                control.poll(id).map_err(incompatible)?;
+            }
             if let Some(status) = self.child.as_mut().expect("owned gate").try_wait()? {
                 self.observed = Some(status);
                 return Err(incompatible("gate exited before admission"));
             }
-            if self.receiver.hello {
+            if self.receiver.hello && self.control.as_ref().is_none_or(|control| control.ready) {
                 let status = std::fs::read_to_string(format!("/proc/{}/status", self.id()))?;
                 if status.lines().any(|line| {
                     line.starts_with("State:") && line.split_whitespace().nth(1) == Some("T")
@@ -130,6 +164,10 @@ impl ManagedGate {
             ));
         }
         self.receiver.poll(self.id())?;
+        let id = self.id();
+        if let Some(control) = self.control.as_mut() {
+            control.poll(id)?;
+        }
         let status = match self.observed {
             Some(status) => Some(status),
             None => self.child.as_mut().expect("owned gate").try_wait()?,
@@ -140,6 +178,10 @@ impl ManagedGate {
             // read may have raced it. Poll once more; never wait for EOF, which
             // may be held by a duplicated descriptor in a protocol fixture.
             self.receiver.poll(self.id())?;
+            let id = self.id();
+            if let Some(control) = self.control.as_mut() {
+                control.poll(id)?;
+            }
             let code = self.receiver.quiescent.ok_or_else(|| io::Error::other(
                 "native gate exited without a quiescence receipt; descendant cleanup is unconfirmed"
             ))?;
@@ -165,6 +207,33 @@ impl ManagedGate {
 
     pub(crate) fn stop(&mut self) -> io::Result<ExitStatus> {
         self.stop_before(Instant::now() + CLEANUP)
+    }
+
+    /// A request acknowledgement is not completion. Callers still need the
+    /// existing guardian exit plus quiescence proof before parsing captures.
+    pub(crate) fn interrupt_principal(&mut self, deadline: Instant) -> io::Result<()> {
+        if !self.admitted || self.complete.is_some() || self.observed.is_some() {
+            return Err(io::Error::other(
+                "principal interruption requires a live admitted controlled gate",
+            ));
+        }
+        let id = self.id();
+        let control = self
+            .control
+            .as_mut()
+            .ok_or_else(|| io::Error::other("gate has no principal-control capability"))?;
+        control.poll(id)?;
+        control.interrupt(deadline)
+    }
+
+    pub(crate) fn principal_exit(&self) -> Option<super::control::PrincipalExit> {
+        self.control.as_ref().and_then(|control| control.exited)
+    }
+
+    pub(crate) fn interruption_acknowledged(&self) -> bool {
+        self.control
+            .as_ref()
+            .is_some_and(|control| control.acknowledged)
     }
 
     fn stop_before(&mut self, deadline: Instant) -> io::Result<ExitStatus> {
