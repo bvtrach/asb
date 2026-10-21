@@ -1,7 +1,7 @@
 use super::{StaticTool, ToolKind};
 use crate::Error;
 use crate::install::{
-    LoggedStatus, Recipe, command_output, install_source, make_executable, verify_sha256,
+    LoggedStatus, Recipe, command_output, install_verified_source, make_executable,
 };
 use std::{
     fs,
@@ -179,8 +179,14 @@ fn find_perf(dir: &Path) -> Option<PathBuf> {
 
 fn build_perf(stage: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
     let archive = stage.join("perf.tar.gz");
-    install_source(SOURCE, &archive, "Linux perf source")?;
-    verify_sha256(&archive, SOURCE_SHA256, "Linux perf source")?;
+    install_verified_source(
+        SOURCE,
+        &archive,
+        "Linux perf source",
+        SOURCE_SHA256,
+        false,
+        |_| Ok(()),
+    )?;
     let source = stage.join("source");
     fs::create_dir(&source)
         .map_err(|e| Error::Io(format!("cannot create perf source directory: {e}")))?;

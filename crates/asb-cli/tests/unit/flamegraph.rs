@@ -87,6 +87,7 @@ fn isolated_flamegraph_missing_inputs_pipeline_failures_and_owned_timeout() {
         let mut sudo = std::collections::BTreeSet::new();
         let selected = vec!["flamegraph".to_owned()];
         let mut context = crate::collectors::PreflightContext {
+            states: &mut crate::collectors::CollectorStates::default(),
             measurement_dir: &session.dir,
             selected: &selected,
             tool_dir: Some(&tools),
