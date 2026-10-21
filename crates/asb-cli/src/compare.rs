@@ -33,6 +33,8 @@ const Y_TICKS: usize = 5;
 #[derive(Debug)]
 struct BenchmarkData {
     id: RowId,
+    planning: Option<Value>,
+    effective_budgets: Option<Value>,
     legacy_evaluation_provenance: Option<crate::workloads::outcome::LegacyEvaluationProvenance>,
     execution_plan_fingerprint: Option<String>,
     module: Option<crate::workloads::contracts::ModuleDescriptor>,
@@ -382,6 +384,7 @@ fn write_html_report(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
     }
     html.push_str("<header class=\"hero\"><p class=\"eyebrow\">ASB BENCHMARK REPORT</p><h1>Benchmark comparison</h1><p>Explore recorded benchmark results and measurements. Use the filters to focus the report without rerunning anything.</p></header>");
     let coverage = &prepared.evaluation;
+    html.push_str("<p>Declared planning and controller caps are recorded separately in comparison.json, not plotted as measurements. Missing policy metadata remains unknown.</p>");
     html.push_str(&format!("<section class=\"explain\"><strong>Evaluation coverage</strong><p>Execution mode: {}.</p><p>{}/{} eligible selected attempts evaluated; {} have no completed evaluation. {} attempts are unscored. {}</p><p>Partial results are not a complete-population benchmark score. See population_coverage in comparison.json for dataset selection, unique tasks and complete one-attempt-per-task scores.</p></section>",
         escape(selection_mode.unwrap_or("unknown")),
         coverage.evaluated_attempts, coverage.eligible_selected_attempts, coverage.unevaluated_attempts, coverage.unscored_attempts,

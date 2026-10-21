@@ -52,6 +52,8 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   cohorts once, including conservative missing-slot coverage; JSON and HTML
   render those same summaries without consulting the live workload registry.
   Native rewards retain nullable resolution and independent execution status.
+  Recorded planning objects, controller caps and module revisions remain
+  provenance metadata; they never become observed metric charts.
   See [benchmark outcomes](BENCHMARK_OUTCOMES.md) for policy semantics.
   Sources are opened once as bounded regular
   files (64 KiB per benchmark, 32 MiB retained configurations, 16 MiB per
