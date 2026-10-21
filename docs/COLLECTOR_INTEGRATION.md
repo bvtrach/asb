@@ -97,3 +97,42 @@ for root review/clearance; build/docs/package gates, exact-head hosted CI,
 merge/post-merge validation and release remain separate obligations. Earlier
 collector, raw, installer and runtime qualifications are not substituted for
 this new combined tree's remaining gates.
+
+## Fresh full local qualification
+
+Root independently approved focused proof `8ca779ca` and authorized the full
+locked/offline workspace/all-target/all-feature suite at that exact signed
+source. It passed **1,361 tests, zero failures, 21 existing opt-in skips** across
+**24 outer Cargo targets**. The library passed 1,128 with 13 skips; the other
+targets passed 233 with eight skips. The summary keeps the final outer result
+per Cargo target and does not count the three nested one-test subprocess
+summaries again. No failed full run was retried, and no source edit or binary
+relink occurred while runtime tests were active.
+
+After the full handle was terminal, separate doctests passed (zero cases),
+strict workspace/all-target/all-feature Clippy (`-D warnings`) and formatting
+passed, then sequential offline `make -j1 build` completed the actual build,
+private Rustdoc, pinned AutoUML 0.7.2 type diagrams, data/control flow diagrams,
+interactive HTML views and Bash/Zsh completions. Both generated shell syntax
+checks passed. Graphviz emitted two normal straight-line layout fallback
+warnings, not failed gates. The existing shared pinned UML executable was only
+invoked; no tool installation, foreign-cache cleanup or host mutation occurred.
+
+The actual executable remained SHA-256
+`d916dafa3c619940177308dad57094a30143218f90a72e2e9caac5acbfc15c10`
+before/after full tests and after every subsequent gate. A frozen copy is retained
+at `target/qualification/collector39-8ca779ca-asb`. Full compilation used the
+exclusive diagnostics cache, one job and disabled incremental compilation; the
+admission disk floor was respected. Runtime and generated-output handles are
+all terminal. Existing untracked fixture `.asb/` and `target/` directories beneath
+the crate are retained as evidence, not committed or recursively removed.
+
+Logs are `target/collector39-full.log`, `collector39-full-summary.log`,
+`collector39-doctests.log`, `collector39-full-{clippy,fmt}.log`,
+`collector39-make.log`, `collector39-{bash,zsh}-syntax.log` and
+`collector39-full-{before,after}.sha256` / `collector39-final.sha256`.
+This final qualification update changes documentation only; production, tests,
+Cargo and CI remain identical to qualified `8ca779ca`. Earlier red/failure and
+old-source qualifications remain separate and preserved. Final independent
+proof review, exact-head hosted/package CI, PR/merge, both post-merge jobs and a
+release remain pending. No push, PR, merge-to-main or release was performed.
