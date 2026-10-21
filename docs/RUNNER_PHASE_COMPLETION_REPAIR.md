@@ -303,3 +303,22 @@ generated Bash/Zsh syntax checks. Production, tests, Cargo, workflows and
 scripts remain unchanged from qualified `e71a3b62`. Actual-main ancestry,
 exact-head hosted/package CI, both post-merge jobs and signed stage43 release
 remain required; this is not a native non-Linux or live SDK qualification.
+
+## Actual-main promotion
+
+Signed merge `b01b30e685def0155afda19caf115d6a6542b1be` preserves actual main
+`32329d76bfabef76ee4b9db1c32b5d82b5335c9a` (merged termination PR #307).
+The conflict-free incoming delta against root-approved `551fe3cd` contains only
+eight proof documents; production, tests, Cargo and workflows remain identical
+to independently qualified `e71a3b62`. No full suite is rerun for unchanged
+production, and no incoming proof is mistaken for this tree's qualification.
+
+Official-binding PR #306 has exact-head run `39687408084` and both post-merge
+jobs `39688437266` green. Signed v0.2.41 targets
+`fb4cce4d8f82547b998228685a2659b839118b20`, tag object
+`1a66fb951c6e1a423e4cd66b3c646339eae475ff`, with GitHub-verified valid signature;
+release published at 2026-10-21 22:54:42 UTC. Termination PR #307 passed exact-head
+run `39688577324`; its post-merge run `39689920357` is in progress at this
+checkpoint. Stage43 must wait for that class's complete verification and signed
+release before merging. Own exact-head hosted/package CI, both post-merge jobs
+and signed release remain required. The coverage threshold remains removed.
