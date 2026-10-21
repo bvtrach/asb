@@ -24,8 +24,13 @@ planning/cap objects omitted by an older private outcome, while conflicting
 objects are rejected rather than plotted as measurements. The actual integrated
 binary builds; focused runner/sweep/report tests passed 84/73/68 tests with five
 explicit opt-in skips, followed by 21 actual CLI tests, strict Clippy and
-formatting. Fresh integration source review, full offline qualification,
-hosted/package CI, PR merge,
+formatting. Independent integration source review approved `64a44bc1`.
+Its full all-target/all-feature offline suite passed **1,090 tests** with
+21 explicit optional skips and no failures across twenty targets. Strict Clippy,
+formatting and sequential build/private Rust docs/pinned AutoUML 0.7.2/flow
+diagrams/interactive views/shell completions all passed. The actual executable
+SHA-256 stayed `46792b8401bc9ca7bb0052cbcaac3e2a2c05cc0ea00bb926218d56d74aba1ad4`
+before/after the full suite and final build. Hosted/package CI, PR merge,
 post-merge verification and a patch release remain pending. This entry neither
 closes other audit classes nor restores the removed coverage gate.
 
@@ -192,8 +197,8 @@ commit. Coverage is optional, not a delivery gate. This does
 not claim arbitrary descendant or crash-persistent cleanup.
 
 Bounded child-capture candidate, staged patch **0.2.28** (original source
-`823f5081` independently approved; integrated full qualification and release
-pending): the common runner no longer accumulates an
+`823f5081` independently approved; integration `64a44bc1` source-approved and
+offline-qualified above; hosted delivery and release pending): the common runner no longer accumulates an
 unbounded channel/transcript, treats read failures as EOF, eagerly waits after
 pipe closure, or leaves blocking reader threads behind. Owned nonblocking pipe
 pumping caps evidence during capture, preserves the confirmed child-exit clock
