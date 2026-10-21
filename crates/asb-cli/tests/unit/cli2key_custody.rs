@@ -295,6 +295,15 @@ fn ignored_lifetime_eof_uses_grace_inside_the_shared_cleanup_budget() {
 
 #[test]
 fn embedded_proxy_finish_cancels_and_reaps_its_owned_curl_before_exit() {
+    embedded_proxy_finish_fixture(false);
+}
+
+#[test]
+fn high_descriptor_listener_must_not_escape_to_the_owned_curl() {
+    embedded_proxy_finish_fixture(true);
+}
+
+fn embedded_proxy_finish_fixture(high_descriptor: bool) {
     use std::net::{TcpListener, TcpStream};
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/cli2key-custody-fixtures")
@@ -328,7 +337,16 @@ fn embedded_proxy_finish_cancels_and_reaps_its_owned_curl_before_exit() {
         .stdin(Stdio::piped())
         .stderr(Stdio::null());
     let mut local = Local::new().unwrap();
-    let address = local.spawn_proxy(proxy).unwrap();
+    let address = if high_descriptor {
+        // Own and release these inert descriptors only; leave a hole below a
+        // high listener FD before exec. No shared flags or foreign FDs change.
+        let held: Vec<_> = (0..256).map(|_| File::open("/dev/null").unwrap()).collect();
+        let reservation = super::super::proxy::Reservation::new().unwrap();
+        drop(held);
+        local.spawn_reserved_proxy(proxy, reservation).unwrap()
+    } else {
+        local.spawn_proxy(proxy).unwrap()
+    };
     let port = address.port();
     let proxy_pid = local.children[0].id();
     let mut request = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
@@ -391,15 +409,23 @@ fn embedded_proxy_finish_cancels_and_reaps_its_owned_curl_before_exit() {
         })
         .expect("owned listening socket not found");
     let listener_target = format!("socket:[{listener_inode}]");
+    let mut inherited_listener = false;
     for entry in std::fs::read_dir(format!("/proc/{curl_pid}/fd")).unwrap() {
         if let Ok(target) = std::fs::read_link(entry.unwrap().path()) {
-            assert_ne!(
-                target.to_string_lossy(),
-                listener_target,
-                "curl inherited the owned listening socket"
-            );
+            inherited_listener |= target.to_string_lossy() == listener_target;
         }
     }
+    let parent_listener_fds: Vec<_> = std::fs::read_dir("/proc/self/fd")
+        .unwrap()
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            (std::fs::read_link(entry.path()).ok()?.to_string_lossy() == listener_target)
+                .then(|| entry.file_name())
+        })
+        .collect();
+    println!(
+        "high_descriptor={high_descriptor} parent_listener_fds={parent_listener_fds:?} curl_inherited={inherited_listener}"
+    );
     // SAFETY: pin only the observed direct child of the fixture-owned proxy.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, curl_pid, 0) } as i32;
     assert!(fd >= 0);
@@ -448,6 +474,12 @@ fn embedded_proxy_finish_cancels_and_reaps_its_owned_curl_before_exit() {
     drop(upstream);
     drop(held);
     std::fs::remove_dir_all(root).unwrap();
+    // Intentional high-FD reproduction asserts only AFTER confirmed proxy,
+    // curl, connection and reservation cleanup above.
+    assert!(
+        !inherited_listener,
+        "curl inherited the owned listening socket"
+    );
 }
 
 fn wait_fixture_receipt(path: &std::path::Path) {
