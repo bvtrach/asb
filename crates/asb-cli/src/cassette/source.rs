@@ -34,6 +34,66 @@ pub struct Source {
     limits: Limits,
 }
 
+/// Pinned metadata before observing any legacy payload. A caller can retain a
+/// whole population of these inspections and reject it before hashing bytes.
+pub(crate) struct SourceInspection {
+    storage: InspectionStorage,
+    limits: Limits,
+}
+
+enum InspectionStorage {
+    Bundle(Box<Archive>),
+    Legacy(Vec<(File, PathBuf, u64, u64)>),
+}
+
+impl SourceInspection {
+    pub(crate) fn observe(self) -> Result<Source, Error> {
+        let storage = match self.storage {
+            InspectionStorage::Bundle(archive) => Storage::Bundle(archive),
+            InspectionStorage::Legacy(candidates) => {
+                // Revalidate every pinned declaration before the first hash.
+                // Never refresh a source through its possibly replaced name.
+                for (file, _, _, expected) in &candidates {
+                    let metadata = file.metadata().map_err(io_error)?;
+                    if !metadata.is_file() || metadata.len() != *expected {
+                        return Err(Error(
+                            "legacy cassette length changed after inspection".into(),
+                        ));
+                    }
+                }
+                let mut tracks = Vec::new();
+                let mut files = Vec::new();
+                let mut remaining = self.limits.max_total_bytes;
+                for (mut file, path, id, expected) in candidates {
+                    let track = observe(
+                        &mut file,
+                        &path,
+                        id,
+                        Limits {
+                            max_track_bytes: expected.min(self.limits.max_track_bytes),
+                            max_total_bytes: remaining,
+                            ..self.limits
+                        },
+                    )?;
+                    if track.bytes != expected {
+                        return Err(Error(
+                            "legacy cassette length changed after inspection".into(),
+                        ));
+                    }
+                    remaining -= track.bytes;
+                    tracks.push(track);
+                    files.push(file);
+                }
+                Storage::Legacy { tracks, files }
+            }
+        };
+        Ok(Source {
+            storage,
+            limits: self.limits,
+        })
+    }
+}
+
 impl Source {
     /// Presence is not usability: invalid present links/files must never select
     /// another cassette implicitly. Validation follows on the selected source.
@@ -60,16 +120,25 @@ impl Source {
     /// the supported 64 legacy concurrency paths, preserving sparse track IDs.
     /// A present base takes precedence, as in historical single-file replay.
     pub fn open(path: &Path, limits: Limits) -> Result<Self, Error> {
+        Self::inspect(path, limits)?.observe()
+    }
+
+    /// Validate metadata and pin sources without hashing legacy JSONL payloads.
+    pub(crate) fn inspect(path: &Path, limits: Limits) -> Result<SourceInspection, Error> {
         limits.validate()?;
-        let mut files = Vec::new();
-        let mut tracks = Vec::new();
         let mut candidates = Vec::new();
         if let Some(mut file) = open_regular(path)? {
             let mut prefix = [0; 4];
             let count = file.read(&mut prefix).map_err(io_error)?;
             if count >= 2 && prefix[..2] == *b"PK" {
-                return Ok(Self {
-                    storage: Storage::Bundle(Box::new(Archive::open(path, limits)?)),
+                #[cfg(test)]
+                ADMISSION_REPLACEMENT.with(|replacement| {
+                    if let Some((replacement, target)) = replacement.borrow_mut().take() {
+                        std::fs::rename(replacement, target).unwrap();
+                    }
+                });
+                return Ok(SourceInspection {
+                    storage: InspectionStorage::Bundle(Box::new(Archive::from_file(file, limits)?)),
                     limits,
                 });
             }
@@ -94,7 +163,8 @@ impl Source {
         // Bound the entire discovered layout before hashing even its first
         // payload. Recheck each file against the remaining budget below.
         let mut total = 0u64;
-        for (file, _, _) in &candidates {
+        let mut pinned = Vec::new();
+        for (file, path, id) in candidates {
             let bytes = file.metadata().map_err(io_error)?.len();
             if bytes > limits.max_track_bytes {
                 return Err(Error("legacy cassette exceeds byte limit".into()));
@@ -103,24 +173,10 @@ impl Source {
                 .checked_add(bytes)
                 .filter(|total| *total <= limits.max_total_bytes)
                 .ok_or_else(|| Error("legacy cassette layout exceeds total byte limit".into()))?;
+            pinned.push((file, path, id, bytes));
         }
-        let mut remaining = limits.max_total_bytes;
-        for (mut file, path, id) in candidates {
-            let track = observe(
-                &mut file,
-                &path,
-                id,
-                Limits {
-                    max_total_bytes: remaining,
-                    ..limits
-                },
-            )?;
-            remaining -= track.bytes;
-            tracks.push(track);
-            files.push(file);
-        }
-        Ok(Self {
-            storage: Storage::Legacy { tracks, files },
+        Ok(SourceInspection {
+            storage: InspectionStorage::Legacy(pinned),
             limits,
         })
     }
@@ -245,6 +301,11 @@ fn observe(file: &mut File, path: &Path, id: u64, limits: Limits) -> Result<Lega
 
 #[cfg(test)]
 thread_local! { static OBSERVATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static ADMISSION_REPLACEMENT: std::cell::RefCell<Option<(PathBuf, PathBuf)>> = const { std::cell::RefCell::new(None) };
+}
 
 #[cfg(test)]
 pub(super) fn take_observation_count() -> usize {

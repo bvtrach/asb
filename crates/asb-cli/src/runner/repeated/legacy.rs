@@ -13,13 +13,25 @@ pub(super) struct Prepared {
     files: Vec<File>,
 }
 
-impl Prepared {
+/// A routing/metadata declaration, not a serializable payload identity. No
+/// empty or capacity-only digest can escape as a publishable ReplayInput.
+pub(super) struct Inspection {
+    files: Vec<File>,
+    inputs: Vec<InputMetadata>,
+}
+
+struct InputMetadata {
+    source: PathBuf,
+    bytes: u64,
+}
+
+impl Inspection {
     pub fn open(
         config_path: &Path,
         config: &BenchmarkConfig,
         options: RunOptions<'_>,
         slots: &mut [Slot],
-    ) -> Result<(Self, Vec<ReplayInput>), Error> {
+    ) -> Result<Self, Error> {
         let base = options
             .cassette
             .map(PathBuf::from)
@@ -55,13 +67,9 @@ impl Prepared {
                         Error::Input("replay inputs exceed 2 GiB aggregate bound".into())
                     })?;
                 let id = inputs.len();
-                inputs.push(ReplayInput {
-                    complete: None,
-                    track: None,
+                inputs.push(InputMetadata {
                     source: source.clone(),
-                    private: format!("inputs/recording-{}.jsonl", id + 1).into(),
                     bytes,
-                    sha256: String::new(),
                 });
                 files.push(file);
                 seen.insert(source, id);
@@ -69,21 +77,52 @@ impl Prepared {
             };
             replicas.push(id);
         }
+        for slot in slots {
+            slot.replay_input = Some(replicas[slot.replica - 1]);
+        }
+        Ok(Self { files, inputs })
+    }
+
+    pub fn observe(mut self) -> Result<(Prepared, Vec<ReplayInput>), Error> {
         #[cfg(test)]
         tests::after_metadata_pass();
-        for (input, file) in inputs.iter_mut().zip(&mut files) {
+        // Validate ALL pinned lengths again before even the first payload read.
+        for (input, file) in self.inputs.iter().zip(&self.files) {
+            if check_metadata(file)? != input.bytes {
+                return Err(Error::Input(
+                    "legacy replay input length changed before reading".into(),
+                ));
+            }
+        }
+        let mut inputs = Vec::new();
+        for (index, (input, file)) in self.inputs.into_iter().zip(&mut self.files).enumerate() {
             let (bytes, sha256) = transfer(file, input.bytes, &mut std::io::sink())?;
             if bytes != input.bytes {
                 return Err(Error::Input(
                     "legacy replay input changed during planning".into(),
                 ));
             }
-            input.sha256 = sha256;
+            inputs.push(ReplayInput {
+                complete: None,
+                track: None,
+                source: input.source,
+                private: format!("inputs/recording-{}.jsonl", index + 1).into(),
+                bytes,
+                sha256,
+            });
         }
-        for slot in slots {
-            slot.replay_input = Some(replicas[slot.replica - 1]);
-        }
-        Ok((Self { files }, inputs))
+        Ok((Prepared { files: self.files }, inputs))
+    }
+}
+
+impl Prepared {
+    pub fn open(
+        config_path: &Path,
+        config: &BenchmarkConfig,
+        options: RunOptions<'_>,
+        slots: &mut [Slot],
+    ) -> Result<(Self, Vec<ReplayInput>), Error> {
+        Inspection::open(config_path, config, options, slots)?.observe()
     }
 
     pub fn stage(mut self, root: &Path, plan: &Plan) -> Result<Option<String>, Error> {

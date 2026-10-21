@@ -68,6 +68,67 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn inspected_routing_has_no_payload_identity_until_all_lengths_are_rechecked() {
+    for changed in [false, true] {
+        let fixture = Fixture::new(2);
+        for replica in 1..=2 {
+            fs::write(
+                crate::benchmark_paths::replica_path(&fixture.source, replica),
+                b"{}\n",
+            )
+            .unwrap();
+        }
+        let mut slots = planned_slots(&fixture.config, 2, false).unwrap();
+        TRANSFERS.with(|count| count.set(0));
+        let inspection = Inspection::open(
+            &fixture.config_path,
+            &fixture.config,
+            RunOptions {
+                mode: Some(crate::tape::Mode::Replay),
+                cassette: Some(fixture.source.to_str().unwrap()),
+                ..Default::default()
+            },
+            &mut slots,
+        )
+        .unwrap();
+        TRANSFERS.with(|count| assert_eq!(count.get(), 0));
+        assert_eq!(inspection.inputs.len(), 2);
+        if changed {
+            fs::write(
+                crate::benchmark_paths::replica_path(&fixture.source, 2),
+                b"grown\n",
+            )
+            .unwrap();
+            assert!(
+                inspection
+                    .observe()
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("length changed before reading")
+            );
+            TRANSFERS.with(|count| assert_eq!(count.get(), 0));
+        } else {
+            let (_, inputs) = inspection.observe().unwrap();
+            TRANSFERS.with(|count| assert_eq!(count.get(), 2));
+            assert!(
+                inputs
+                    .iter()
+                    .all(|input| input.sha256 == crate::cassette::digest(b"{}\n"))
+            );
+            assert_eq!(
+                slots
+                    .iter()
+                    .map(|slot| slot.replay_input)
+                    .collect::<Vec<_>>(),
+                [Some(0), Some(1), Some(0), Some(1)]
+            );
+        }
+        assert!(!fixture.root.join("results").exists());
+    }
+}
+
+#[test]
 fn pinned_inputs_survive_result_rotation_replacement_and_unlink() {
     for change in ["rename", "unlink"] {
         let fixture = Fixture::new(2);

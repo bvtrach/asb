@@ -241,6 +241,16 @@ all-execution comparison and offline replay still pass.
 
 ## Ownership and shared contracts
 
+The input-inspection checkpoint separates pinned source metadata from observed
+payload identities. `Source::open` still performs both steps for ordinary
+callers; the internal inspection owns the exact file used by the ZIP decoder,
+not a pathname reopen after format probing. Legacy routing likewise retains
+typed metadata without constructing empty-digest `ReplayInput` values. Each
+observer checks all pinned lengths before its first payload hash. Regressions
+cover late length changes, retained descriptors after pathname replacement and
+the ZIP probe-to-decode replacement window. These are prerequisites, not a
+claim that sweep-wide inspection/budgeting or modern continuation is finished.
+
 Extract a reusable runner-owned campaign plan and bounded reader from the
 standalone repeated coordinator. Sweep and compare consume that same contract;
 they must not implement parallel copies of selection, isolation or validation.
@@ -290,6 +300,25 @@ concurrency. Batches remain sequential inside a configuration; do not introduce
 nested pools or gates waiting on workers that cannot obtain held permits.
 
 ## Continuation and publication
+
+Independent continuation review identified a required distinction before modern
+resume can be enabled. A published campaign plan is intended work, not positive
+proof that a missing slot was never attempted. Initial publication must retain
+an explicit untouched reservation, consumed by the slot's create-new start
+record before workload allocation. Saved starts, allocations, outcomes and
+runtime/workspace observations are checked together; absence of a completion
+record must never become automatic retry permission. Complete negative grades
+remain completed observations. Missing or uncertain settlement requires explicit
+owned-resource recovery, not a fresh verifier/client invocation.
+
+Recording recovery also has a terminal boundary. An interrupted, unfrozen
+journal and a frozen/published archive are different states. The latter cannot
+accept remaining planned slots: final no-overwrite publication and stable track
+IDs prohibit reopening it as a new recorder. Publication-only recovery must
+launch zero clients. Continuing pending slots after terminal publication needs
+an explicit immutable continuation-artifact design; until that is implemented,
+the operation must refuse before historical writes and explain the retained
+terminal state. Such refusal is not full modern-continuation acceptance.
 
 Resume loads the original saved plan and verifies choices against the frozen
 source identity. It never generates another seed or silently resamples a changed
