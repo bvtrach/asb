@@ -24,8 +24,9 @@ execution allowance while sending the preparation request. Python task-loop
 deadlines retain the shared preparation budget and reject late dequeued requests.
 The existing non-Unix compatibility path receives the same settlement semantics,
 but its blocking I/O/Drop remains explicitly unqualified by Unix tests.
-Source integration and new test-source updates are pending independent review;
-no fresh build, tests, hosted CI, PR, merge or release is claimed for this tree.
+Independent source review approved integration `a5aa6e03`; its only minor finding,
+a duplicate Python `time` import, is removed in this follow-up. No fresh build,
+tests, hosted CI, PR, merge or release is claimed for this tree.
 
 Integrated candidate, staged patch **0.2.30**: independently source-approved
 typed task-controller contracts `ac8c7753` and historical layout correction
