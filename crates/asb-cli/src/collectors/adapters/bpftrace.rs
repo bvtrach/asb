@@ -73,8 +73,10 @@ fn process(
 ) -> Result<ProcessData, String> {
     let mut result = ProcessData::from_output(context);
     if let Some(profile) = context.name.strip_prefix("bpftrace-") {
-        result.metrics = parse_bpftrace_metrics(profile, context.stdout);
-        result.series = parse_bpftrace_series(profile, context.stdout);
+        let output = super::super::read_complete_output(context.stdout_path)?;
+        result.metrics = parse_bpftrace_metrics(profile, &output);
+        result.series = parse_bpftrace_series(profile, &output);
+        super::super::validate_processed_output(&result)?;
         write_bpftrace_profile_svg(&session.dir, profile, &result.status, &result.metrics)?;
     }
     Ok(result)
@@ -697,6 +699,34 @@ pub(crate) fn parse_bpftrace_series(profile: &str, output: &str) -> BTreeMap<Str
 #[cfg(test)]
 mod tests {
     use super::{BPFTRACE_PROFILES, profile_probe_program, validate_custom_program_scope};
+
+    #[test]
+    fn bpf_processing_includes_final_cumulative_maps_beyond_the_diagnostic_cap() {
+        let mut input = "@asb_syscalls: 2\n".to_owned();
+        input.push_str(&"# ignored fixture filler\n".repeat(15000));
+        input.push_str("@asb_syscalls: 900\n");
+        assert!(input.len() > 256 * 1024);
+        let result = crate::collectors::process_output_fixture(
+            &super::ADAPTER,
+            "bpftrace-syscall-rate",
+            &input,
+        )
+        .unwrap();
+        assert_eq!(result.status, "completed");
+        assert_eq!(result.metrics["bpftrace.syscall-rate.syscalls"], 900.0);
+        assert_eq!(
+            result.series["bpftrace.syscall-rate.syscalls"],
+            [2.0, 900.0]
+        );
+        assert!(
+            crate::collectors::process_output_fixture(
+                &super::ADAPTER,
+                "bpftrace-syscall-rate",
+                "@asb_syscalls: 9"
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn optional_wait_profiles_have_explicit_semantics_and_requirements() {
