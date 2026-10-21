@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-const MAX_CONFIG_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_CONFIG_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) const MAX_PLAN_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Deserialize, Serialize)]

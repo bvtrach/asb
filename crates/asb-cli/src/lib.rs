@@ -120,7 +120,7 @@ impl std::fmt::Display for CliError {
 impl std::error::Error for CliError {}
 
 pub(crate) fn read_config(path: &std::path::Path) -> Result<String, CliError> {
-    const MAX_CONFIG_BYTES: u64 = 64 * 1024;
+    const MAX_CONFIG_BYTES: u64 = crate::benchmark::MAX_CONFIG_BYTES as u64;
     let metadata = std::fs::metadata(path)
         .map_err(|error| CliError::Input(format!("cannot read {}: {error}", path.display())))?;
     if metadata.len() > MAX_CONFIG_BYTES {

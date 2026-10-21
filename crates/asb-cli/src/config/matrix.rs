@@ -6,6 +6,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod prepared;
 mod selections;
 
 pub(super) fn setup(mut options: SetupOptions, output: &mut dyn Write) -> Result<(), Error> {
@@ -243,8 +244,14 @@ fn stamp() -> u128 {
 }
 
 fn render(config: &BenchmarkConfig) -> Result<String, Error> {
-    toml::to_string_pretty(config)
-        .map_err(|error| Error::Input(format!("cannot render configuration: {error}")))
+    let text = toml::to_string_pretty(config)
+        .map_err(|error| Error::Input(format!("cannot render configuration: {error}")))?;
+    if text.len() > crate::benchmark::MAX_CONFIG_BYTES {
+        return Err(Error::Input(
+            "generated benchmark configuration exceeds 64 KiB; shorten selected values; no setup files were written".into(),
+        ));
+    }
+    Ok(text)
 }
 
 fn create_parent(path: &Path, output: &mut dyn Write) -> Result<(), Error> {
@@ -265,17 +272,10 @@ fn create_parent(path: &Path, output: &mut dyn Write) -> Result<(), Error> {
 /// Shared CLI/TUI publisher: all selections must be validated before calling.
 pub(crate) fn publish_sweep(
     path: &Path,
-    mut configs: Vec<BenchmarkConfig>,
+    configs: Vec<BenchmarkConfig>,
     output: &mut dyn Write,
 ) -> Result<(), Error> {
-    if configs.is_empty() || configs.len() > crate::sweep::MAX_CONFIGS {
-        return Err(Error::Input(
-            "invalid setup configuration population".into(),
-        ));
-    }
-    for config in &configs {
-        crate::planning::resolve(config)?;
-    }
+    let prepared = prepared::Sweep::new(path, configs)?;
     if path.exists() {
         return Err(Error::Input(format!(
             "sweep {} already exists; choose a new --output filename",
@@ -283,33 +283,14 @@ pub(crate) fn publish_sweep(
         )));
     }
     create_parent(path, output)?;
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-    let group = format!("{stem}-configs-{}", stamp());
-    let directory = std::path::absolute(parent.join(&group)).map_err(crate::io_error)?;
+    let directory = &prepared.directory;
     fs::create_dir(&directory)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", directory.display())))?;
-    let mut references = Vec::new();
-    for (index, config) in configs.iter_mut().enumerate() {
-        let filename = format!("benchmark-{index:03}.toml");
-        config.log_file = format!("benchmark-{index:03}.log");
-        // Ordinary `asb run` also gets non-overlapping measurement directories.
-        if let Some(measures) = config.measurements.as_mut() {
-            measures.directory = directory
-                .join(format!("measurements-{index:03}"))
-                .to_string_lossy()
-                .into_owned();
-        }
+    for (filename, text) in &prepared.configurations {
         let file = directory.join(&filename);
-        fs::write(&file, render(config)?)
+        fs::write(&file, text)
             .map_err(|error| Error::Io(format!("cannot write {}: {error}", file.display())))?;
-        references.push(format!("{group}/{filename}"));
     }
-    let text = toml::to_string_pretty(&crate::sweep::SweepFile {
-        resources: None,
-        configs: references,
-    })
-    .map_err(|error| Error::Input(error.to_string()))?;
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -321,13 +302,13 @@ pub(crate) fn publish_sweep(
                 directory.display()
             ))
         })?;
-    file.write_all(text.as_bytes())
+    file.write_all(prepared.manifest.as_bytes())
         .and_then(|()| file.sync_all())
         .map_err(crate::io_error)?;
     writeln!(
         output,
         "Wrote {} benchmarks and sweep {}\nRun it with: asb sweep '{}'",
-        configs.len(),
+        prepared.configurations.len(),
         path.display(),
         path.display()
     )
