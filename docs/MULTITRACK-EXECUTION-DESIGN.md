@@ -850,6 +850,35 @@ launcher settlement.
 
 ## Current test coverage
 
+### Integration with consuming runner phases
+
+Repeated attempts retain main's consuming admission/preparation/execution/
+settlement/evaluation/finalization transitions. Material rendezvous registration
+precedes fallible intent/project admission, so a failed observer cannot strand
+other replicas. Native fresh HOME/XDG state is established inside agent
+preparation before the selected adapter configures its command; legacy attempts
+retain inherited HOME semantics. Native wrapper and replay routing preparation
+remain owned by the extracted native module, not duplicated in the runner.
+
+Positive resource settlement and cleanup diagnostics remain separate facts:
+confirmed stopped/preserved resources can carry a normal-removal diagnostic,
+which fails the attempt without inventing an unknown disposition or a grade.
+The resource disposition and captured artifact list flow into the run result,
+measurement record and completion evidence. Optional post-execution collector
+errors cannot discard an available submission. Completion callbacks require
+both log and measurement publication; missing evidence stops subsequent batches.
+Agent-output publication loss remains an I/O failure even when another task
+failure has priority in the diagnostic, and therefore also stops admission.
+
+The material rendezvous does **not** establish launch readiness. The next
+integration step is a separate shared per-batch launch rendezvous after agent
+installation/session setup and actual stopped-target/collector verification,
+before any target resumes. Its preparation budget must span Rust dispatch,
+Python bootstrap, SDK transport setup and controller attachment without a fresh
+budget at each stage. Failure must notify peers before potentially slow owned
+resource cancellation. These are outstanding requirements, not guarantees of
+the material rendezvous.
+
 Gate tests cover delayed siblings, early return, panic, identity mismatch,
 duplicate admission, bounded timeout, expired single/multi-slot arrivals and
 earlier-batch reference mismatch. Runner fixtures prove unsupported single-slot

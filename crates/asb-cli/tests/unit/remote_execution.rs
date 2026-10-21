@@ -114,6 +114,61 @@ fn completed() -> Value {
 }
 
 #[test]
+fn completed_guest_survives_capture_end_errors_and_still_grades_then_closes() {
+    for failed_event in [
+        crate::collectors::LifecycleEvent::AgentExecuteEnd,
+        crate::collectors::LifecycleEvent::AgentExited,
+    ] {
+        let fixture = Fixture::new();
+        let mut session = fixture.session(
+            &[json!({"event":"execution_ended"}), completed()],
+            "removed",
+        );
+        // Private protocol seam represents the already verified/resumed target;
+        // no PID, namespace or installation checks are bypassable in production.
+        session.measurement_active = true;
+        let mut measurements = crate::measurements::Session::start_with_collectors(
+            &fixture.0.join("measurements"),
+            &[],
+            None,
+        )
+        .unwrap();
+        measurements.test_event_failure = Some(failed_event);
+        let config = configuration();
+        let project = crate::project::ProjectConfig::default();
+        let connection = connection();
+        let mut context = ExecutionContext {
+            config: &config,
+            connection: Some(&connection),
+            project_root: &fixture.0,
+            project_config: &project,
+            replay: true,
+            measurements: Some(&mut measurements),
+            show_output: false,
+        };
+        let result = session.run_prepared(
+            &mut context,
+            &mut Vec::new(),
+            &connection,
+            fixture.prepared(),
+        );
+        let result = session.settle_execution(&mut context, result).unwrap();
+        assert_eq!(result.output.stdout, b"ok");
+        assert_eq!(result.output.status.code(), Some(7));
+        assert_eq!(result.elapsed_ms, Some(125));
+        assert_eq!(result.collector_errors.len(), 1);
+        assert!(result.collector_errors[0].contains("fixture collector event failure"));
+        assert!(!session.measurement_active);
+        assert!(matches!(
+            session.evaluate("ignored").unwrap(),
+            Evaluation::Failed(_)
+        ));
+        session.finish().unwrap();
+        assert_eq!(fixture.operations(), ["agent", "evaluate", "close"]);
+    }
+}
+
+#[test]
 fn prepared_protocol_preserves_output_exit_time_and_grades_only_after_completion() {
     for show_output in [false, true] {
         let fixture = Fixture::new();
@@ -265,6 +320,52 @@ impl Write for BrokenOutput {
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
+}
+
+#[test]
+fn broken_human_output_does_not_cancel_a_completed_guest_submission_or_grader() {
+    let fixture = Fixture::new();
+    let mut session = fixture.session(
+        &[
+            json!({"event":"output","data":"aGk="}),
+            json!({"event":"output","data":"YWdhaW4="}),
+            completed(),
+        ],
+        "removed",
+    );
+    let config = configuration();
+    let project = crate::project::ProjectConfig::default();
+    let connection = connection();
+    let mut context = ExecutionContext {
+        config: &config,
+        connection: Some(&connection),
+        project_root: &fixture.0,
+        project_config: &project,
+        replay: true,
+        measurements: None,
+        show_output: true,
+    };
+    let result = session.run_prepared(
+        &mut context,
+        &mut BrokenOutput,
+        &connection,
+        fixture.prepared(),
+    );
+    let result = session.settle_execution(&mut context, result).unwrap();
+    assert_eq!(result.output.stdout, b"ok");
+    assert_eq!(result.output.status.code(), Some(7));
+    assert!(
+        result
+            .output_error
+            .unwrap()
+            .contains("fixture output failure")
+    );
+    assert!(matches!(
+        session.evaluate("ignored").unwrap(),
+        Evaluation::Failed(_)
+    ));
+    session.finish().unwrap();
+    assert_eq!(fixture.operations(), ["agent", "evaluate", "close"]);
 }
 #[test]
 fn broken_output_and_deadline_use_same_preserving_error_envelope() {

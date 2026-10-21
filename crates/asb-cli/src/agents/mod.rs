@@ -77,6 +77,10 @@ pub(crate) trait AgentAdapter: Sync {
     fn execution_failure(&self, _stdout: &str, _stderr: &str) -> Option<String> {
         None
     }
+    /// Validate a terminal answer independently of the native/guest launcher.
+    fn final_response_failure(&self, _response: Option<&str>) -> Option<String> {
+        None
+    }
 }
 
 pub(crate) struct PreparationContext<'a> {
@@ -207,6 +211,7 @@ type FinalResponseHook = fn(&str, &Path) -> Option<String>;
 type ProcessHook = fn(&str) -> Result<Command, Error>;
 type StepCountHook = fn(&str, &str) -> Option<u64>;
 type FailureHook = fn(&str, &str) -> Option<String>;
+type ResponseFailureHook = fn(Option<&str>) -> Option<String>;
 
 /// Trait-object implementation whose behavior is supplied by individual files.
 pub(super) struct StaticAdapter {
@@ -222,6 +227,7 @@ pub(super) struct StaticAdapter {
     process: Option<ProcessHook>,
     step_count: Option<StepCountHook>,
     failure: Option<FailureHook>,
+    response_failure: Option<ResponseFailureHook>,
     replay_credential_vars: &'static [&'static str],
     state_environment_vars: &'static [&'static str],
 }
@@ -247,6 +253,7 @@ impl StaticAdapter {
             process: None,
             step_count: None,
             failure: None,
+            response_failure: None,
             replay_credential_vars: &[],
             state_environment_vars: &[],
         }
@@ -274,6 +281,11 @@ impl StaticAdapter {
 
     pub(super) const fn with_execution_failure(mut self, hook: FailureHook) -> Self {
         self.failure = Some(hook);
+        self
+    }
+
+    pub(super) const fn with_final_response_failure(mut self, hook: ResponseFailureHook) -> Self {
+        self.response_failure = Some(hook);
         self
     }
 
@@ -362,6 +374,9 @@ impl AgentAdapter for StaticAdapter {
     }
     fn execution_failure(&self, stdout: &str, stderr: &str) -> Option<String> {
         self.failure.and_then(|hook| hook(stdout, stderr))
+    }
+    fn final_response_failure(&self, response: Option<&str>) -> Option<String> {
+        self.response_failure.and_then(|hook| hook(response))
     }
 }
 pub(crate) fn prepare(agent: &str, context: &mut PreparationContext<'_>) -> Result<(), Error> {
