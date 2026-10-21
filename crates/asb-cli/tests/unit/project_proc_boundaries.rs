@@ -285,20 +285,25 @@ fn malformed_project_loading_reset_and_missing_configuration_are_actionable() {
     assert!(load(&root).unwrap_err().to_string().contains("cannot read"));
     fs::remove_file(&config).unwrap();
     assert!(
-        !load(&root)
-            .unwrap()
-            .0
-            .join(CONFIG_DIR)
-            .join(CONFIG_FILE)
-            .is_file(),
-        "unexpected ancestor project: refuse host configuration"
-    );
-    assert!(
-        configure_host(Some(root.clone()), false, &mut Vec::new())
+        initialized_config_path(&root)
             .unwrap_err()
             .to_string()
             .contains("no initialized project")
     );
+    // Own the entire positive discovery chain. TMPDIR can sit beneath a real
+    // project, which must never be loaded or passed to host configuration.
+    let ancestor = root.join("owned-parent");
+    fs::create_dir_all(ancestor.join(CONFIG_DIR)).unwrap();
+    let ancestor_config = ancestor.join(CONFIG_DIR).join(CONFIG_FILE);
+    fs::write(
+        &ancestor_config,
+        toml::to_string(&ProjectConfig::default()).unwrap(),
+    )
+    .unwrap();
+    let child = ancestor.join("child");
+    fs::create_dir(&child).unwrap();
+    assert_eq!(load(&child).unwrap().0, ancestor);
+    assert_eq!(initialized_config_path(&ancestor).unwrap(), ancestor_config);
     assert!(reject_symlink(&root.join("absent")).is_ok());
     let loop_path = root.join("loop");
     symlink(&loop_path, &loop_path).unwrap();
