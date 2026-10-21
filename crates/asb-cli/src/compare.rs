@@ -21,6 +21,7 @@ const Y_TICKS: usize = 5;
 
 #[derive(Debug)]
 struct BenchmarkData {
+    legacy_evaluation_provenance: Option<crate::workloads::outcome::LegacyEvaluationProvenance>,
     execution_plan_fingerprint: Option<String>,
     module: Option<crate::workloads::contracts::ModuleDescriptor>,
     benchmark_outcome: Option<crate::workloads::outcome::BenchmarkOutcome>,
@@ -222,6 +223,7 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
                     |selection| selection.evaluation_kind.clone(),
                 );
                 benchmark_data.push(BenchmarkData {
+                    legacy_evaluation_provenance: None,
                     execution_plan_fingerprint: None,
                     module: selection.as_ref().and_then(|s| s.module.clone()),
                     benchmark_outcome: None,
@@ -419,6 +421,28 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
                 )));
             }
             let mut metrics = BTreeMap::new();
+            let legacy_evaluation_provenance: Option<
+                crate::workloads::outcome::LegacyEvaluationProvenance,
+            > = run_value
+                .get("legacy_evaluation_provenance")
+                .filter(|value| !value.is_null())
+                .map(|v| serde_json::from_value(v.clone()))
+                .transpose()
+                .map_err(|_| Error::Input("invalid retained grade provenance".into()))?;
+            if let Some(provenance) = &legacy_evaluation_provenance
+                && (provenance.execution_attempt.as_deref()
+                    != task.as_ref().map(|t| t.attempt_id.as_str())
+                    || provenance.evaluation_id.is_some()
+                    || provenance.supersedes.is_some()
+                    || provenance
+                        .evidence_manifest_sha256
+                        .as_ref()
+                        .is_some_and(|hash| {
+                            hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit())
+                        }))
+            {
+                return Err(Error::Input("retained grade provenance differs from original attempt or invents evaluation identity".into()));
+            }
             let execution_plan_fingerprint: Option<String> = run_value
                 .get("execution_plan_fingerprint")
                 .filter(|v| !v.is_null())
@@ -626,6 +650,7 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
                 }
             }
             benchmark_data.push(BenchmarkData {
+                legacy_evaluation_provenance,
                 execution_plan_fingerprint,
                 module,
                 benchmark_outcome,
@@ -777,6 +802,7 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
         "benchmarks": benchmark_data.iter().map(|benchmark| json!({
             "name": benchmark.label,
             "module": benchmark.module,
+            "legacy_evaluation_provenance": benchmark.legacy_evaluation_provenance,
             "execution_plan_fingerprint": benchmark.execution_plan_fingerprint,
             "benchmark_outcome": benchmark.benchmark_outcome,
             "directory": benchmark.directory,

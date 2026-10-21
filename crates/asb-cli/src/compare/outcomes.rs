@@ -618,6 +618,7 @@ mod tests {
                     version: 2,
                     reward: "accuracy".into(),
                     aggregation: Aggregation::TaskMean,
+                    missing_rewards: MissingRewardPolicy::Exclude,
                     rewards: BTreeMap::from([(
                         "accuracy".into(),
                         RewardSpec {
@@ -646,6 +647,7 @@ mod tests {
         assert_eq!(groups.len(), 1);
         let group = groups.values().next().unwrap();
         assert_eq!(group["estimate"], 0.375);
+        assert_eq!(group["policy"]["missing_rewards"], "exclude");
         assert_eq!(group["repetitions_by_task"]["original-task"], 4);
         assert_eq!(group["selected_attempts"], 4);
         assert_eq!(group["complete"], false);
@@ -654,6 +656,7 @@ mod tests {
             fs::read_to_string(fixture.root.join("results/sweep-comparison/report.html")).unwrap();
         assert!(html.contains("accuracy v2 / accuracy"));
         assert!(html.contains("0.375000"));
+        assert!(html.contains("observed-only rewards; missing excluded"));
         let mut bad = fixture.record(1, Value::Null, true, true);
         bad["summary"]["benchmark_outcome"] = rows[0]["benchmark_outcome"].clone();
         bad["summary"]["benchmark_outcome"]["lineage"]["execution_attempt"] = json!("foreign");
@@ -725,6 +728,20 @@ mod tests {
             assert_eq!(report["evaluation_coverage"]["selected_attempts"], 4);
             assert_eq!(report["evaluation_coverage"]["evaluated_attempts"], 2);
             assert_eq!(report["evaluation_coverage"]["unevaluated_attempts"], 2);
+            let metric = report["metric_groups"]
+                .as_object()
+                .unwrap()
+                .values()
+                .next()
+                .unwrap();
+            assert_eq!(
+                metric["estimate"], 0.25,
+                "binary metric must retain the selected-attempt denominator"
+            );
+            assert_eq!(metric["rewarded_attempts"], 2);
+            assert_eq!(metric["contributing_attempts"], 4);
+            assert_eq!(metric["policy"]["missing_rewards"], "zero");
+            assert_eq!(metric["complete"], false);
             let group = report["resolution_groups"]
                 .as_object()
                 .unwrap()
