@@ -145,7 +145,7 @@ pub(super) fn read(adapter: &TerminalBenchAdapter, directory: &Path) -> Result<C
         || catalog.dataset.source != adapter.source
         || catalog.dataset.revision != adapter.revision
         || catalog.dataset.split != adapter.split
-        || catalog.sdk.package != adapter.tool
+        || catalog.sdk.package != adapter.engine.tool()
         || catalog.sdk.version != adapter.version
         || catalog.tasks.len() != adapter.expected_tasks
         || !hash(&catalog.source_sha256)
@@ -227,10 +227,10 @@ pub(super) fn install(
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
 ) -> Result<(), Error> {
     let _network = project::network_project(context.project_root);
-    if !install::tool_installed_locally(adapter.tool, context.tools_root) {
+    if !install::tool_installed_locally(adapter.engine.tool(), context.tools_root) {
         install::tool_with_progress(
             install::ToolInstallOptions {
-                name: adapter.tool.into(),
+                name: adapter.engine.tool().into(),
                 source: None,
                 dir: Some(context.tools_root.to_path_buf()),
                 dry_run: false,
@@ -239,14 +239,14 @@ pub(super) fn install(
             progress,
         )?;
     }
-    let tool = context.tools_root.join(adapter.tool);
+    let tool = context.tools_root.join(adapter.engine.tool());
     let helper = tool.join("asb_terminal_catalog.py");
     ensure_helpers(&tool)?;
     if !runtime_available(adapter, &tool)? {
         progress(10, crate::install::ProgressStage::Dependencies);
         install::tool_with_progress(
             install::ToolInstallOptions {
-                name: adapter.tool.into(),
+                name: adapter.engine.tool().into(),
                 source: None,
                 dir: Some(context.tools_root.to_path_buf()),
                 dry_run: false,
@@ -257,7 +257,7 @@ pub(super) fn install(
         if !runtime_available(adapter, &tool)? {
             return Err(Error::Input(format!(
                 "installed evaluator runtime is unusable; run `asb tool install {}` and inspect .asb/install.log",
-                adapter.tool
+                adapter.engine.tool()
             )));
         }
     }
@@ -334,7 +334,9 @@ pub(super) fn install(
         if !run("install", Some(&archive))? {
             return Err(Error::Input(format!(
                 "{} dataset validation failed; inspect .asb/install.log; reinstall `{}` with `asb tool install {}` if its SDK is incompatible",
-                adapter.id, adapter.tool, adapter.tool
+                adapter.id,
+                adapter.engine.tool(),
+                adapter.engine.tool()
             )));
         }
     }

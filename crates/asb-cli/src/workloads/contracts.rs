@@ -193,7 +193,7 @@ impl ModuleDescriptor {
 }
 
 #[cfg(test)]
-#[path = "contracts_baselines.rs"]
+#[path = "../../tests/unit/workload_contract_baselines.rs"]
 mod baselines;
 
 #[cfg(test)]

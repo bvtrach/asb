@@ -133,10 +133,10 @@ pub(super) fn install(
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
 ) -> Result<(), Error> {
     let _network_project = project::network_project(context.project_root);
-    if !install::tool_installed_locally("swebench", context.tools_root) {
+    if !install::tool_installed_locally(super::ENGINE.tool(), context.tools_root) {
         install::tool_with_progress(
             install::ToolInstallOptions {
-                name: "swebench".into(),
+                name: super::ENGINE.tool().into(),
                 source: None,
                 dir: Some(context.tools_root.to_path_buf()),
                 dry_run: false,
@@ -145,9 +145,9 @@ pub(super) fn install(
             progress,
         )?;
     }
-    let tool_root = context.tools_root.join("swebench");
-    ensure_helpers(&tool_root)?;
-    let helper = tool_root.join("asb_swebench.py");
+    let tool_root = context.tools_root.join(super::ENGINE.tool());
+    super::ENGINE.publish(&tool_root)?;
+    let helper = tool_root.join(super::ENGINE.script());
     let python = tool_root.join("venv/bin/python");
     let status = Command::new(&python)
         .arg(&helper)

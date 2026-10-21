@@ -6,6 +6,9 @@ use super::WorkloadAdapter;
 use crate::workloads::{InstallationContext, Trial};
 use std::path::Path;
 
+pub(super) const ENGINE: super::official_engine::EngineBinding =
+    super::official_engine::EngineBinding::new("swebench", "asb_swebench", catalog::ensure_helpers);
+
 pub(super) struct SweBenchAdapter {
     pub id: &'static str,
     pub dataset: &'static str,
@@ -37,7 +40,7 @@ impl WorkloadAdapter for SweBenchAdapter {
                 revision: self.revision.into(),
                 split: "test".into(),
             },
-            "swebench",
+            ENGINE.tool(),
             SubmissionKind::Patch,
             EvaluationMode::FreshEnvironment,
         )
@@ -54,39 +57,25 @@ impl WorkloadAdapter for SweBenchAdapter {
                 "retained task dataset differs from the installed grading catalog".into(),
             ));
         }
-        let runtime = crate::workloads::remote::InspectionRuntime::new(context.project_root)?;
-        catalog::ensure_helpers(&runtime.0)?;
-        crate::workloads::remote::grade_retained(
-            "swebench",
-            "asb_swebench",
-            context,
-            &runtime.0,
-            &workloads.join(self.id).join("catalog.json"),
-        )
+        ENGINE.grade_retained(context, &workloads.join(self.id).join("catalog.json"))
     }
     fn inspect_grade(
         &self,
         context: &crate::workloads::recovery::RecoveryContext<'_>,
     ) -> Result<serde_json::Value, crate::Error> {
-        let tool = crate::project::resolve(context.project_root, &context.project_config.tools_dir)
-            .join("swebench");
-        context.reference.validate_location(context.project_root)?;
-        crate::workloads::remote::require_sdk(&tool, self.id)?;
-        let runtime = crate::workloads::remote::InspectionRuntime::new(context.project_root)?;
-        catalog::ensure_helpers(&runtime.0)?;
-        crate::workloads::remote::inspect_grade("swebench", "asb_swebench", context, &runtime.0)
+        ENGINE.inspect_grade(self.id, context)
     }
     fn verify_retained(
         &self,
         context: &crate::workloads::recovery::RetainedOutcomeContext<'_>,
     ) -> Result<(), crate::Error> {
-        crate::workloads::remote::verify_retained("swebench", "asb_swebench", context)
+        ENGINE.verify_retained(context)
     }
     fn recover(
         &self,
         context: &crate::workloads::recovery::RecoveryContext<'_>,
     ) -> Result<serde_json::Value, crate::Error> {
-        crate::workloads::remote::recover("swebench", context)
+        ENGINE.recover(context)
     }
     fn id(&self) -> &'static str {
         self.id
@@ -95,15 +84,13 @@ impl WorkloadAdapter for SweBenchAdapter {
         &self,
         context: &crate::workloads::PreflightContext<'_>,
     ) -> Result<(), crate::Error> {
-        crate::workloads::remote::require_sdk(&context.tool_root("swebench"), self.id)?;
-        catalog::ensure_helpers(&context.tool_root("swebench"))?;
-        crate::workloads::remote::prefetch(context)
+        ENGINE.preflight(self.id, context)
     }
     fn runtime_inputs(
         &self,
         context: &crate::runtime_inputs::Context<'_>,
     ) -> Result<Vec<crate::runtime_inputs::Dependency>, crate::Error> {
-        crate::workloads::remote::runtime_inputs("swebench", context)
+        ENGINE.runtime_inputs(context)
     }
 
     fn install(
