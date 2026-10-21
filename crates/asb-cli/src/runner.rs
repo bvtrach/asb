@@ -98,6 +98,7 @@ pub(crate) struct RunOptions<'a> {
     pub batch: Option<&'a repeated::BatchIdentity>,
     pub verify_initial_material: bool,
     pub preparation_gate: Option<&'a batch::Gate>,
+    pub launch_gate: Option<&'a batch::Gate>,
     pub execution_cohort: Option<&'a measurements::ExecutionCohort>,
     pub json: bool,
     pub show_output: bool,
@@ -616,6 +617,19 @@ fn run_mode(
             return Err(abort_prepared(error, arrival, workload_session.as_mut()));
         }
     }
+    let launch = options
+        .launch_gate
+        .map(|gate| {
+            let identity = options
+                .preparation_gate
+                .ok_or_else(|| Error::Run("launch admission requires verified material".into()))?
+                .confirmed_identity()?;
+            batch::LaunchAdmission::new(gate, options.replica, identity)
+        })
+        .transpose()?;
+    let launch = launch
+        .as_ref()
+        .map(|launch| launch as &dyn workloads::session::LaunchReadiness);
     let workload_baseline = workload_session.baseline_evidence();
     let workload_baseline_passed = workload_baseline.measured_passed();
     if !json && workload_baseline_passed == Some(true) {
@@ -666,6 +680,7 @@ fn run_mode(
         measurements: measurement_session,
         tape: tape_session,
     };
+    let _launch_failure = workloads::session::LaunchFailureGuard(launch);
     let tape_url = prepared.tape.as_ref().map(|session| session.url());
     let provider_endpoint =
         tape_url.or_else(|| providers::local_bridge_endpoint(&config.provider, bridge.as_deref()));
@@ -684,6 +699,7 @@ fn run_mode(
     let started = Instant::now();
     let isolated = prepared.workload.execute(
         &mut workloads::ExecutionContext {
+            launch,
             config: &config,
             connection: connection.as_ref(),
             project_root: &project_root,
@@ -727,7 +743,7 @@ fn run_mode(
             }
             .prepare(prepared.measurements.as_mut())?;
             let (evidence, native_issues) =
-                native.execute(prepared.measurements.as_mut(), show_output, output)?;
+                native.execute(prepared.measurements.as_mut(), show_output, output, launch)?;
             issues = native_issues;
             (
                 evidence.output,
@@ -1095,15 +1111,36 @@ fn instrument_phase<T>(
 
 /// Run the agent while delivering every lifecycle event through the collector
 /// interface, including failures after the execution span has begun.
+#[cfg(test)]
 fn run_measured_agent(
+    command: &mut Command,
+    program: &str,
+    target_args: Option<&[String]>,
+    session: Option<&mut measurements::Session>,
+    show_output: bool,
+    output: &mut dyn Write,
+) -> Result<MeasuredOutput, Error> {
+    run_measured_agent_with_launch(
+        command,
+        program,
+        target_args,
+        session,
+        show_output,
+        output,
+        None,
+    )
+}
+
+fn run_measured_agent_with_launch(
     command: &mut Command,
     program: &str,
     target_args: Option<&[String]>,
     mut session: Option<&mut measurements::Session>,
     show_output: bool,
     output: &mut dyn Write,
+    launch: Option<&dyn workloads::session::LaunchReadiness>,
 ) -> Result<MeasuredOutput, Error> {
-    let started = Instant::now();
+    let mut started = Instant::now();
     if let Some(session) = session.as_deref_mut() {
         session.agent_launch_prepared(command);
     }
@@ -1118,6 +1155,11 @@ fn run_measured_agent(
         crate::process_gate::install(command, &executable, program, target_args);
         gated = true;
     }
+    if launch.is_some() && (!gated || !cfg!(target_os = "linux")) {
+        return Err(Error::Run(
+            "shared launch requires a verifiable stopped native process gate".into(),
+        ));
+    }
     let mut child = {
         let mut emit = |event| {
             if let Some(session) = session.as_deref_mut() {
@@ -1127,8 +1169,10 @@ fn run_measured_agent(
         };
         emit(LifecycleEvent::MeasurementsReady)?;
         emit(LifecycleEvent::AgentSpawn)?;
-        emit(LifecycleEvent::AgentExecuteBegin)?;
-        let child = match command.spawn() {
+        if launch.is_none() {
+            emit(LifecycleEvent::AgentExecuteBegin)?;
+        }
+        match command.spawn() {
             Ok(child) => OwnedChild(child, gated),
             Err(error) => {
                 let mut primary = format!("could not start {program}: {error}");
@@ -1142,10 +1186,19 @@ fn run_measured_agent(
                 }
                 return Err(Error::Run(primary));
             }
-        };
-        emit(LifecycleEvent::AgentStarted)?;
-        child
+        }
     };
+    let _launch_failure = workloads::session::LaunchFailureGuard(launch);
+    if let Some(session) = session.as_deref_mut() {
+        session
+            .event(LifecycleEvent::AgentStarted)
+            .map_err(Error::Run)?;
+    }
+    #[cfg(unix)]
+    if launch.is_some() {
+        crate::process_gate::wait_stopped(&mut child.0)
+            .map_err(|error| Error::Run(format!("native launch target is not stopped: {error}")))?;
+    }
     if let Some(session) = session.as_deref_mut()
         && let Err(error) = session.attach_pid(child.id())
     {
@@ -1159,6 +1212,15 @@ fn run_measured_agent(
             }
         }
         return Err(Error::Run(primary));
+    }
+    if let Some(launch) = launch {
+        launch.ready().map_err(Error::Run)?;
+        if let Some(session) = session.as_deref_mut() {
+            session
+                .event(LifecycleEvent::AgentExecuteBegin)
+                .map_err(Error::Run)?;
+        }
+        started = Instant::now();
     }
     #[cfg(unix)]
     if gated {

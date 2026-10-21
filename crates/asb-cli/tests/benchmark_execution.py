@@ -387,6 +387,25 @@ class ExecutionTests(unittest.TestCase):
             self.assertFalse(container.resumed)
             self.assertEqual(container.events[-4:],["kill","wait","start","remove"])
 
+    def test_preparation_failure_notifies_peers_before_namespace_kill(self):
+        for fault in ["transport","attach"]:
+            workspace,container,api,_ = self.workspace()
+            order = []
+            original_kill = container.kill
+            def kill():
+                order.append("kill")
+                original_kill()
+            container.kill = kill
+            def fail(*_args):
+                raise RUNTIME.ExecutionError("preparation failed")
+            with workspace,self.assertRaisesRegex(RUNTIME.ExecutionError,"preparation failed"):
+                workspace.execute(["agent"],
+                    transport_factory=fail if fault == "transport" else None,
+                    before_resume=fail if fault == "attach" else None,
+                    on_preparation_failure=lambda:order.append("notify"))
+            self.assertEqual(order[0],"notify")
+            self.assertFalse(container.resumed)
+
     def test_alternate_transport_stream_uses_shared_execution_deadline_and_cancel(self):
         for cancel in [False,True]:
             workspace,container,api,_ = self.workspace()

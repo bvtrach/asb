@@ -114,6 +114,114 @@ fn completed() -> Value {
 }
 
 #[test]
+fn unmeasured_shared_launch_requires_valid_target_and_aborts_before_cancellation() {
+    use super::super::session::LaunchReadiness;
+    use std::cell::Cell;
+    struct Launch<'a> {
+        fixture: &'a Fixture,
+        fail_ready: bool,
+        ready: Cell<usize>,
+        aborted: Cell<bool>,
+    }
+    impl LaunchReadiness for Launch<'_> {
+        fn ready(&self) -> Result<(), String> {
+            self.ready.set(self.ready.get() + 1);
+            if self.fail_ready {
+                Err("sibling preparation failed".into())
+            } else {
+                Ok(())
+            }
+        }
+        fn abort(&self) {
+            assert!(
+                !self.fixture.operations().iter().any(|op| op == "cancel"),
+                "peers must be notified before namespace cancellation"
+            );
+            self.aborted.set(true);
+        }
+        fn remaining(&self) -> Result<Duration, String> {
+            Ok(Duration::from_secs(1800))
+        }
+    }
+    for fault in [
+        "none",
+        "bad-target",
+        "missing-target",
+        "preparation-failed",
+        "ready-failure",
+    ] {
+        let fixture = Fixture::new();
+        let mut target = json!({"container_id":"a".repeat(64),"exec_id":"b".repeat(64),
+            "namespace_pid":42,"daemon_pid":null,"pid_scope":"container-namespace"});
+        if fault == "bad-target" {
+            target["exec_id"] = json!("invalid");
+        }
+        let events = match fault {
+            "missing-target" => vec![completed()],
+            "preparation-failed" => vec![
+                json!({"event":"preparation_failed"}),
+                json!({"event":"error","error_class":"ExecutionError","reason":"selected agent runtime installation failed; inspect private install artifacts"}),
+            ],
+            _ => vec![json!({"event":"paused","target":target}), completed()],
+        };
+        let mut session = fixture.session(&events, "stopped-preserved");
+        let config = configuration();
+        let project = crate::project::ProjectConfig::default();
+        let connection = connection();
+        let launch = Launch {
+            fixture: &fixture,
+            fail_ready: fault == "ready-failure",
+            ready: Cell::new(0),
+            aborted: Cell::new(false),
+        };
+        let mut context = ExecutionContext {
+            launch: Some(&launch),
+            config: &config,
+            connection: Some(&connection),
+            project_root: &fixture.0,
+            project_config: &project,
+            replay: true,
+            measurements: None,
+            show_output: false,
+        };
+        let result = session.run_prepared(
+            &mut context,
+            &mut Vec::new(),
+            &connection,
+            fixture.prepared(),
+        );
+        let result = session.settle_execution(&mut context, result);
+        assert_eq!(result.is_ok(), fault == "none", "{fault}");
+        if fault == "preparation-failed" {
+            assert!(
+                result
+                    .as_ref()
+                    .err()
+                    .unwrap()
+                    .contains("selected agent runtime installation failed")
+            );
+        }
+        assert_eq!(
+            launch.ready.get(),
+            usize::from(matches!(fault, "none" | "ready-failure")),
+            "{fault}"
+        );
+        assert_eq!(launch.aborted.get(), fault != "none", "{fault}");
+        if fault == "none" {
+            session.cancel().unwrap();
+        }
+        assert_eq!(
+            fixture.operations(),
+            if fault == "none" {
+                vec!["agent", "resume", "cancel"]
+            } else {
+                vec!["agent", "cancel"]
+            }
+        );
+    }
+}
+
+#[test]
 fn completed_guest_survives_capture_end_errors_and_still_grades_then_closes() {
     for failed_event in [
         crate::collectors::LifecycleEvent::AgentExecuteEnd,
@@ -138,6 +246,7 @@ fn completed_guest_survives_capture_end_errors_and_still_grades_then_closes() {
         let project = crate::project::ProjectConfig::default();
         let connection = connection();
         let mut context = ExecutionContext {
+            launch: None,
             config: &config,
             connection: Some(&connection),
             project_root: &fixture.0,
@@ -183,6 +292,7 @@ fn prepared_protocol_preserves_output_exit_time_and_grades_only_after_completion
         let project = crate::project::ProjectConfig::default();
         let connection = connection();
         let mut context = ExecutionContext {
+            launch: None,
             config: &config,
             connection: Some(&connection),
             project_root: &fixture.0,
@@ -226,6 +336,7 @@ fn unknown_grade_settlement_never_repeats_evaluation_or_cancellation() {
     let project = crate::project::ProjectConfig::default();
     let connection = connection();
     let mut context = ExecutionContext {
+        launch: None,
         config: &config,
         connection: Some(&connection),
         project_root: &fixture.0,
@@ -276,6 +387,7 @@ fn protocol_errors_preserve_original_reason_and_cancel_instead_of_grading() {
         let project = crate::project::ProjectConfig::default();
         let connection = connection();
         let mut context = ExecutionContext {
+            launch: None,
             config: &config,
             connection: Some(&connection),
             project_root: &fixture.0,
@@ -337,6 +449,7 @@ fn broken_human_output_does_not_cancel_a_completed_guest_submission_or_grader() 
     let project = crate::project::ProjectConfig::default();
     let connection = connection();
     let mut context = ExecutionContext {
+        launch: None,
         config: &config,
         connection: Some(&connection),
         project_root: &fixture.0,
@@ -381,6 +494,7 @@ fn broken_output_and_deadline_use_same_preserving_error_envelope() {
         let project = crate::project::ProjectConfig::default();
         let connection = connection();
         let mut context = ExecutionContext {
+            launch: None,
             config: &config,
             connection: Some(&connection),
             project_root: &fixture.0,
@@ -421,6 +535,7 @@ fn production_preparation_still_rejects_unregistered_agent_without_protocol_disp
     let project = crate::project::ProjectConfig::default();
     let connection = connection();
     let mut context = ExecutionContext {
+        launch: None,
         config: &config,
         connection: Some(&connection),
         project_root: &fixture.0,
@@ -464,6 +579,7 @@ fn measured_protocol_rejects_unverified_target_and_execution_end_before_start() 
         .unwrap();
         measurements.event(LifecycleEvent::RunStarted).unwrap();
         let mut context = ExecutionContext {
+            launch: None,
             config: &config,
             connection: Some(&connection),
             project_root: &fixture.0,
@@ -519,6 +635,7 @@ fn completed_metadata_retains_unknown_timing_and_requires_valid_service_handoff(
         let project = crate::project::ProjectConfig::default();
         let connection = connection();
         let mut context = ExecutionContext {
+            launch: None,
             config: &config,
             connection: Some(&connection),
             project_root: &fixture.0,
@@ -569,6 +686,7 @@ fn completed_metadata_retains_unknown_timing_and_requires_valid_service_handoff(
         let project = crate::project::ProjectConfig::default();
         let connection = connection();
         let mut context = ExecutionContext {
+            launch: None,
             config: &config,
             connection: Some(&connection),
             project_root: &fixture.0,

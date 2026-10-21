@@ -838,7 +838,7 @@ at launch/gate/execution/return. Test shell replacement/death, malformed or
 duplicate receipts, blocked channels, sibling preparation failure and teardown
 uncertainty. Qualify an actual installed client on a true same-shell original
 task with repeat-two/concurrency-two. Repeated installed-client context parity,
-configured non-root runtime accessibility, post-preparation batch rendezvous
+configured non-root runtime accessibility, live post-preparation batch rendezvous
 and full cancellation/release-race qualification remain outstanding; the
 successful separate-shell and fixture-client qualifications do not close them.
 The existing private-runtime prefix rule also needs an explicit owned-path
@@ -870,14 +870,37 @@ both log and measurement publication; missing evidence stops subsequent batches.
 Agent-output publication loss remains an I/O failure even when another task
 failure has priority in the diagnostic, and therefore also stops admission.
 
-The material rendezvous does **not** establish launch readiness. The next
-integration step is a separate shared per-batch launch rendezvous after agent
-installation/session setup and actual stopped-target/collector verification,
-before any target resumes. Its preparation budget must span Rust dispatch,
-Python bootstrap, SDK transport setup and controller attachment without a fresh
-budget at each stage. Failure must notify peers before potentially slow owned
-resource cancellation. These are outstanding requirements, not guarantees of
-the material rendezvous.
+The material rendezvous does **not** establish launch readiness. A separate
+per-batch launch gate is now registered immediately after material confirmation,
+before later fallible setup. Its single 1800-second budget arms once at the
+first registration, not when workload preparation begins and not per replica.
+Adapters receive an identity-free admission interface; the runner binds the
+already verified compatibility identity. Native targets must reach their real
+stopped gate and attach configured collectors before admission. Repeated native
+execution refuses unavailable gates rather than running ungated. Remote attempts
+must report a valid owned namespace/container/exec target even without host
+measurements; host collectors additionally require the existing host PID proof.
+Missing/duplicate readiness is refused. No peer resumes before all arrive.
+
+The remaining preparation budget crosses the private agent request and anchors
+one Python monotonic deadline before bootstrap. Runtime/client installs, SDK
+transport setup, final workspace preparation and controller attachment use its
+remaining time; the attachment wait no longer inherits the unrelated 60-second
+or ordinary idle timeout caps. Actual agent runtime starts after readiness and
+keeps its separate budget. SDK staging/upload calls are checked at boundaries;
+an SDK/daemon call already blocked inside its own implementation is not forcibly
+interrupted by these checks. The managed workspace watchdog owns its container
+cancellation, and Rust retains the bounded controller cancellation contract.
+This is not a hard real-time guarantee for uninterruptible kernel/SDK calls.
+
+Preparation failure notification precedes relay/transport/namespace teardown,
+including workspace watchdog expiry. The private protocol aborts waiting peers
+immediately, then retains the bounded final adapter diagnostic rather than
+discarding it during cancellation. Failure notification is idempotent and may
+not replace resource settlement if its output channel is broken. Guards notify
+peers before dropping prepared resources or a stopped native child. These paths
+have synthetic/real-local-process coverage; fresh original-SDK repeat-two by
+concurrency-two qualification remains outstanding.
 
 Gate tests cover delayed siblings, early return, panic, identity mismatch,
 duplicate admission, bounded timeout, expired single/multi-slot arrivals and

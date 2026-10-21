@@ -50,6 +50,19 @@ class Container(BaseContainer):
 
 
 class SDKSessionTests(unittest.TestCase):
+    def test_original_session_keeps_absolute_shared_deadline_after_slow_preparation(self):
+        from asb_terminal_session import SessionTransport
+        now = [100.0]
+        with patch("asb_terminal_session.time.monotonic",side_effect=lambda:now[0]):
+            launcher = SDKSessionLauncher(None,"fixture",None,preparation_deadline=1900)
+            now[0] = 1100
+            transport = SessionTransport(launcher,None,None)
+            self.assertEqual(transport.deadline,1900)
+            self.assertGreater(transport.deadline-now[0],90)
+            for invalid in [True,float("nan"),float("inf"),1100,3000]:
+                with self.subTest(invalid=invalid),self.assertRaises(ExecutionError):
+                    SDKSessionLauncher(None,"fixture",None,preparation_deadline=invalid)
+
     def test_missing_or_dead_original_shell_cannot_mark_verifier_started(self):
         import asb_terminal_bench_1 as terminal
         for session in [None,SimpleNamespace(is_session_alive=lambda:False)]:

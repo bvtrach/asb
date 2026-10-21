@@ -4,6 +4,7 @@ The parent SDK shell survives a foreground launcher and failed coding client.
 Private FIFO IO is bridged separately; only the stopped child can be measured.
 """
 import json
+import math
 import re
 import shlex
 import threading
@@ -35,15 +36,23 @@ def _receive_release(root, nonce):
 class SDKSessionLauncher:
     inherit_working_directory = True
 
-    def __init__(self, session, host_binary, artifacts, *, require_host_target=True):
+    def __init__(self, session, host_binary, artifacts, *, require_host_target=True, preparation_deadline=None, on_preparation_failure=None):
         self.session,self.host_binary,self.artifacts = session,str(host_binary),artifacts
         self.require_host_target,self.transports = require_host_target,[]
+        if preparation_deadline is not None and (type(preparation_deadline) not in [int,float]
+                or not math.isfinite(preparation_deadline) or not 0 < preparation_deadline-time.monotonic() <= 1800):
+            raise ExecutionError("invalid SDK launch preparation deadline")
+        self.preparation_deadline = preparation_deadline
+        self.on_preparation_failure = on_preparation_failure
 
     def __call__(self,api,container,command,environment,workdir):
         transport = SessionTransport(self,api,container)
         self.transports.append(transport)  # Own even a partially failed start.
         try:transport.start(command,environment,workdir)
         except BaseException as error:
+            if self.on_preparation_failure is not None:
+                try:self.on_preparation_failure()
+                except BaseException:pass
             try:transport.close()
             except BaseException:
                 raise ExecutionError("SDK session launch failed and transport settlement remains unconfirmed") from error
@@ -67,7 +76,7 @@ class SessionTransport:
         self.bridge,self.worker,self.worker_error = None,None,None
         self.namespace_pid,self.parent_pid,self.closed,self.close_error = None,None,False,None
         self.parent_released = False
-        self.deadline = time.monotonic()+90
+        self.deadline = owner.preparation_deadline if owner.preparation_deadline is not None else time.monotonic()+90
 
     @property
     def exec_id(self):

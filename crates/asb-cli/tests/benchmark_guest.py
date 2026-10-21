@@ -13,7 +13,7 @@ from unittest.mock import patch
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).parents[1] / "assets/benchmarks"))
 from asb_execution import ExecutionError
-from asb_guest import execute_agent, stage_public_cache, stage_bootstrap
+from asb_guest import execute_agent, stage_public_cache, stage_bootstrap, PreparationBudget
 from asb_runtime import elf as inspect_elf
 
 
@@ -43,6 +43,64 @@ class Container:
 
 
 class GuestBootstrapTests(unittest.TestCase):
+    def test_preparation_budget_is_bounded_anchored_and_not_restarted(self):
+        for invalid in [True, False, 0, -1, 1801, float("nan"), float("inf"), "900"]:
+            with self.subTest(invalid=invalid), self.assertRaises(ExecutionError):
+                PreparationBudget(invalid)
+        now = [100.0]
+        with patch("asb_guest.time.monotonic", side_effect=lambda:now[0]):
+            budget = PreparationBudget(1800)
+            now[0] += 1000
+            self.assertEqual(budget.remaining(),800)
+            now[0] += 801
+            with self.assertRaisesRegex(ExecutionError,"deadline exceeded"):budget.remaining()
+            self.assertTrue(budget.expired())
+
+    def test_slow_bootstrap_and_original_session_share_budget_without_extending_agent_runtime(self):
+        now, calls, deadlines = [100.0], [], []
+        with tempfile.TemporaryDirectory() as directory, patch("asb_guest.time.monotonic", side_effect=lambda:now[0]):
+            root = Path(directory)
+            (root/".asb").mkdir()
+            (root/".asb/project.toml").write_text("tools_dir='tools'\n")
+            binary = root/"asb"
+            binary.write_bytes(elf())
+            def execute(argv, **options):
+                calls.append((argv,options))
+                if argv[-1] == "__asb-agent":
+                    self.assertEqual(options["preparation_timeout"],1000)
+                    self.assertEqual(options["timeout"],12)
+                    now[0] += 200  # Beyond both former 60/90-second waits.
+                    options["before_resume"]({"namespace_pid":42})
+                    now[0] += 2000
+                    self.assertFalse(options["cancelled"].is_set(), "preparation budget must not become an agent runtime limit")
+                else:
+                    now[0] += 400
+                return dict(stdout=b"",stderr=b"",exit_code=0,timed_out=False,cancelled=False)
+            def transport(request):
+                deadlines.append(request["preparation_deadline"])
+                return SimpleNamespace(inherit_working_directory=True)
+            task = SimpleNamespace(artifacts=root,agent_timeout=12,prepare_agent_transport=transport,
+                workspace=SimpleNamespace(container=Container(),execute=execute),
+                checked=lambda argv,**_:json.dumps(dict(schema_version=1,tree_quiesced=True,token_usage={})).encode() if argv[0] == "cat" else b"")
+            request = dict(binary=str(binary),project_root=str(root),tools_root=str(root/"tools"),preparation_seconds=1800,
+                bootstrap=dict(runtime_tools=["node"],assets=[]),request=dict(config=dict(agent="pi")))
+            execute_agent(task,request,None,None,None)
+            self.assertEqual([call[0][-1] for call in calls],["node","pi","__asb-agent"])
+            self.assertEqual(deadlines,[1900])
+
+    def test_expired_bootstrap_notifies_before_relay_teardown_and_never_launches_client(self):
+        now, order = [0.0], []
+        def expired(_task,_request,_cancelled,resources,_relays,budget):
+            resources.callback(lambda:order.append("relay-close"))
+            now[0] = 1900
+            return {},{}
+        task = SimpleNamespace(prepare_agent_transport=lambda _:self.fail("expired bootstrap reached client preparation"))
+        with patch("asb_guest.time.monotonic",side_effect=lambda:now[0]), patch("asb_guest.prepare_agent",side_effect=expired):
+            with self.assertRaisesRegex(ExecutionError,"deadline exceeded"):
+                execute_agent(task,dict(preparation_seconds=1800),None,None,None,
+                    on_preparation_failure=lambda:order.append("notify-peers"))
+        self.assertEqual(order,["notify-peers","relay-close"])
+
     def test_owned_service_handoff_uses_guest_metadata_without_reset_or_duplicate_end(self):
         import os
         with tempfile.TemporaryDirectory() as directory:

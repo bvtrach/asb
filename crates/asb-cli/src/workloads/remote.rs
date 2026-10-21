@@ -655,7 +655,17 @@ impl Session {
         prepared: PreparedBootstrap,
     ) -> Result<ExecutionResult, String> {
         self.dispatch_agent(context, connection, prepared)?;
-        let deadline = Instant::now() + self.agent_timeout + AGENT_TRANSPORT_ALLOWANCE;
+        let preparation = context
+            .launch
+            .map(|launch| launch.remaining())
+            .transpose()?
+            .unwrap_or_default();
+        let allowance = if context.launch.is_some() {
+            Duration::from_secs(20)
+        } else {
+            AGENT_TRANSPORT_ALLOWANCE
+        };
+        let deadline = Instant::now() + preparation + self.agent_timeout + allowance;
         self.receive_execution(context, output, deadline)
     }
 
@@ -698,6 +708,7 @@ impl Session {
             }
         }
         self.controller.send(&json!({"op":"agent", "binary":binary, "project_root":context.project_root,
+            "preparation_seconds":context.launch.map(|launch| launch.remaining().map(|remaining| remaining.as_secs_f64())).transpose()?,
             "tools_root":tools_root, "bootstrap":bootstrap, "measure_target":context.measurements.is_some(),
             "project_configuration":guest_project_configuration(context.project_config)?,
             "environment":environment, "network":std::env::var("ASB_BENCHMARK_NETWORK").ok(),
@@ -710,10 +721,12 @@ impl Session {
         &mut self,
         context: &mut ExecutionContext<'_>,
         output: &mut dyn std::io::Write,
-        deadline: Instant,
+        mut deadline: Instant,
     ) -> Result<ExecutionResult, String> {
         let mut collector_errors = Vec::new();
         let mut output_error = None;
+        let mut launched = false;
+        let mut preparation_failed = false;
         loop {
             let event = self.controller.receive(deadline).map_err(|error| {
                 output_error.as_ref().map_or_else(
@@ -723,7 +736,21 @@ impl Session {
             })?;
             match event["event"].as_str() {
                 Some("paused") => {
+                    if launched {
+                        return Err("isolated execution returned a second launch target".into());
+                    }
                     self.resume_measured_target(context, &event)?;
+                    launched = true;
+                }
+                Some("preparation_failed") => {
+                    if let Some(launch) = context.launch {
+                        launch.abort();
+                    }
+                    preparation_failed = true;
+                    // Peers are already cancelled. Retain the adapter's bounded
+                    // failure reason after its transport finalizers return,
+                    // rather than discarding it in cancellation's raw drain.
+                    deadline = deadline.min(Instant::now() + CANCELLATION_TIMEOUT);
                 }
                 Some("output") => {
                     let bytes = decode_base64(&event["data"])?;
@@ -753,6 +780,12 @@ impl Session {
                     }
                 }
                 Some("completed") => {
+                    if preparation_failed {
+                        return Err("isolated preparation failed before shared launch; inspect private task artifacts".into());
+                    }
+                    if context.launch.is_some() && !launched {
+                        return Err("isolated execution omitted shared launch readiness".into());
+                    }
                     let mut result = self.completed_execution(context, &event)?;
                     result.collector_errors.extend(collector_errors);
                     result.output_error = output_error;
@@ -768,6 +801,26 @@ impl Session {
         context: &mut ExecutionContext<'_>,
         event: &Value,
     ) -> Result<(), String> {
+        if context.launch.is_some() {
+            let target = &event["target"];
+            let valid_hex = |value: &Value| {
+                value.as_str().is_some_and(|text| {
+                    text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+            };
+            if !valid_hex(&target["container_id"])
+                || !valid_hex(&target["exec_id"])
+                || !target["namespace_pid"]
+                    .as_u64()
+                    .is_some_and(|pid| pid > 1 && pid <= u32::MAX as u64)
+                || !matches!(
+                    target["pid_scope"].as_str(),
+                    Some("docker-daemon-host" | "container-namespace")
+                )
+            {
+                return Err("isolated launch gate returned invalid stopped-target identity".into());
+            }
+        }
         if let Some(session) = context.measurements.as_deref_mut() {
             use crate::collectors::LifecycleEvent as Event;
             if self.measurement_active {
@@ -787,6 +840,12 @@ impl Session {
                 session.event(Event::AgentAttachFailed)?;
                 return Err(error);
             }
+        }
+        if let Some(launch) = context.launch {
+            launch.ready()?;
+        }
+        if let Some(session) = context.measurements.as_deref_mut() {
+            use crate::collectors::LifecycleEvent as Event;
             session.event(Event::PhaseEnd(
                 crate::collectors::LifecyclePhase::AgentPreparation,
             ))?;
@@ -866,6 +925,11 @@ impl Session {
         context: &mut ExecutionContext<'_>,
         mut result: Result<ExecutionResult, String>,
     ) -> Result<ExecutionResult, String> {
+        if result.is_err()
+            && let Some(launch) = context.launch
+        {
+            launch.abort();
+        }
         if result.is_err() && self.preparation_active {
             self.preparation_active = false;
             if let Some(session) = context.measurements.as_deref_mut() {

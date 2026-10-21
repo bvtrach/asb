@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).parents[1] / "assets/benchmarks"))
@@ -35,6 +36,32 @@ class Task:
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_shared_launch_attach_wait_exceeds_legacy_idle_and_sixty_second_caps(self):
+        import queue
+        now, waiting = [0.0], [False]
+        class VirtualQueue(queue.Queue):
+            def get(self, **options):
+                if waiting[0] and now[0] < 120:
+                    now[0] += 40
+                    raise queue.Empty
+                result = super().get(**options)
+                if waiting[0]:waiting[0] = False
+                return result
+        def execute(_task,_request,attach,*_args,**options):
+            budget = options["preparation_budget"]
+            self.assertEqual(budget.deadline,1800)
+            waiting[0] = True
+            attach(dict(exec_id="owned-exec"))
+            self.assertEqual(now[0],120)
+            return dict(stdout=b"",stderr=b"",exit_code=0)
+        with patch("asb_task_server.queue.Queue",VirtualQueue), \
+                patch("asb_task_server.time.monotonic",side_effect=lambda:now[0]), \
+                patch("asb_guest.execute_agent",side_effect=execute):
+            status,events,_ = self.run_protocol([dict(op="agent",preparation_seconds=1800),
+                dict(op="resume",exec_id="owned-exec"),dict(op="close")])
+        self.assertEqual(status,0)
+        self.assertEqual([event["event"] for event in events],["ready","paused","completed","closed"])
+
     def test_material_capture_is_explicit_offline_and_never_starts_execution(self):
         class MaterialTask(Task):
             calls = 0

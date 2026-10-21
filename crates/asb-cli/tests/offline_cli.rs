@@ -3853,8 +3853,11 @@ fn cli2key_success_stops_its_mock_bridge_after_model_discovery() {
         r##"#!/usr/bin/env node
 const http = require('http'), fs = require('fs');
 fs.writeFileSync(process.env.ASB_TEST_PIDFILE, String(process.pid));
-// Mark timeout separately so a slow test cannot mistake it for ASB cleanup.
-setTimeout(() => { fs.writeFileSync(process.env.ASB_TEST_EXPIRED, 'expired'); process.exit(0); }, 2000).unref();
+// Safety net, not the cleanup mechanism. Outlive the compatibility proxy's
+// five-second readiness budget under parallel test load; otherwise this fixture
+// can exit before a healthy ASB reaches it. The assertions below still require
+// ASB to reap the bridge before this timer fires.
+setTimeout(() => { fs.writeFileSync(process.env.ASB_TEST_EXPIRED, 'expired'); process.exit(0); }, 10000).unref();
 http.createServer((req,res) => {
   if (req.url !== '/v1/models') { res.writeHead(404); return res.end(); }
   res.writeHead(200, {'content-type':'application/json'});

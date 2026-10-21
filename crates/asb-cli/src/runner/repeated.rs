@@ -102,6 +102,7 @@ pub(super) fn run(
         || options.replica.total != 1
         || options.reused.is_some()
         || options.preparation_gate.is_some()
+        || options.launch_gate.is_some()
         || options.batch.is_some()
     {
         return Err(Error::Input(
@@ -217,6 +218,7 @@ pub(super) fn run(
             publish(&prepared, &json!({"schema_version":1,"scope":"verified-prepared-material","compatibility":compatibility}))
         }));
         let mut selected = config.clone();
+        let launch_gate = batch::Gate::deferred(config.concurrency, Duration::from_secs(1800))?;
         selected.workspace = path_text(&batch_root.join("workspace"))?;
         selected.log_file = path_text(&batch_root.join("run.jsonl"))?;
         let measures = measurement_root
@@ -240,6 +242,7 @@ pub(super) fn run(
                 repeat: None,
                 batch: Some(&identity),
                 preparation_gate: Some(&gate),
+                launch_gate: Some(&launch_gate),
                 verify_initial_material: true,
                 measurement_dir: override_measurements.as_deref(),
                 cassette: private_cassette.as_deref(),

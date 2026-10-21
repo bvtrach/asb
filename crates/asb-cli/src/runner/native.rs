@@ -167,6 +167,7 @@ impl PreparedNative {
         measurements: Option<&mut measurements::Session>,
         show_output: bool,
         output: &mut dyn Write,
+        launch: Option<&dyn workloads::session::LaunchReadiness>,
     ) -> Result<(ExecutionEvidence, AttemptIssues), Error> {
         // The process gate must execute the fully prepared command, not the
         // adapter's original executable. Some adapters (for example OpenJiuwen)
@@ -179,13 +180,14 @@ impl PreparedNative {
             .get_args()
             .map(|value| value.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        let child = run_measured_agent(
+        let child = run_measured_agent_with_launch(
             &mut self.command,
             &gate_program,
             Some(&gate_args),
             measurements,
             show_output,
             output,
+            launch,
         )?;
         Ok((
             ExecutionEvidence {

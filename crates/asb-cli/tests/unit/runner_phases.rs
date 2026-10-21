@@ -256,6 +256,124 @@ fn confirmed_preservation_keeps_diagnostic_without_fabricating_a_grade() {
     assert_eq!(operations.borrow().as_slice(), ["evaluate", "finish"]);
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn native_launch_waits_for_siblings_and_refuses_an_unverifiable_sibling_gate() {
+    use support::IsolatedEnvironment;
+    if std::env::var_os("ASB_NATIVE_LAUNCH_TEST_CHILD").is_none() {
+        let executable = std::env::current_exe().unwrap();
+        let runtime = executable.parent().unwrap().parent().unwrap().join("asb");
+        let child = Command::new(&executable)
+            .args(["--exact", "runner::phases::tests::native_launch_waits_for_siblings_and_refuses_an_unverifiable_sibling_gate", "--nocapture"])
+            .isolated_env()
+            .env("ASB_NATIVE_LAUNCH_TEST_CHILD", "1")
+            .env("ASB_RUNTIME_EXECUTABLE", runtime)
+            .output().unwrap();
+        assert!(
+            child.status.success(),
+            "{}",
+            String::from_utf8_lossy(&child.stdout)
+        );
+        return;
+    }
+    use crate::workloads::session::LaunchReadiness;
+    use std::sync::mpsc;
+    struct Announce<'a> {
+        admission: super::super::batch::LaunchAdmission<'a>,
+        arrived: mpsc::Sender<()>,
+    }
+    impl LaunchReadiness for Announce<'_> {
+        fn ready(&self) -> Result<(), String> {
+            self.arrived.send(()).unwrap();
+            self.admission.ready()
+        }
+        fn abort(&self) {
+            self.admission.abort();
+        }
+        fn remaining(&self) -> Result<Duration, String> {
+            self.admission.remaining()
+        }
+    }
+    fn material() -> crate::cassette::Compatibility {
+        crate::cassette::Compatibility {
+            agent: "fixture".into(),
+            provider: "fixture".into(),
+            model: "fixture".into(),
+            workload: "fixture".into(),
+            task: "fixture".into(),
+            dataset_sha256: None,
+            prompt_sha256: "a".repeat(64),
+            material_sha256: "b".repeat(64),
+        }
+    }
+    fn run(
+        marker: &Path,
+        launch: &dyn LaunchReadiness,
+        verifiable: bool,
+    ) -> Result<MeasuredOutput, Error> {
+        let args = vec![
+            "-c".into(),
+            "printf started > \"$1\"".into(),
+            "fixture".into(),
+            marker.to_str().unwrap().into(),
+        ];
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        run_measured_agent_with_launch(
+            &mut command,
+            "/bin/sh",
+            verifiable.then_some(args.as_slice()),
+            None,
+            false,
+            &mut Vec::new(),
+            Some(launch),
+        )
+    }
+    for verifiable in [false, true] {
+        let fixture = Fixture::new();
+        let gate = super::super::batch::Gate::deferred(2, Duration::from_secs(5)).unwrap();
+        let first_marker = fixture.0.join("first");
+        let second_marker = fixture.0.join("second");
+        std::thread::scope(|scope| {
+            let (tx, rx) = mpsc::channel();
+            let first_gate = &gate;
+            let first_marker = &first_marker;
+            let first = scope.spawn(move || {
+                let admission = Announce {
+                    admission: super::super::batch::LaunchAdmission::new(
+                        first_gate,
+                        replica::Identity { index: 1, total: 2 },
+                        material(),
+                    )
+                    .unwrap(),
+                    arrived: tx,
+                };
+                run(first_marker, &admission, true)
+            });
+            rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            assert!(
+                !first_marker.exists(),
+                "ready replica executed before its sibling was prepared"
+            );
+            let second = super::super::batch::LaunchAdmission::new(
+                &gate,
+                replica::Identity { index: 2, total: 2 },
+                material(),
+            )
+            .unwrap();
+            let result = run(&second_marker, &second, verifiable);
+            drop(second);
+            assert_eq!(result.is_ok(), verifiable);
+            assert_eq!(first.join().unwrap().is_ok(), verifiable);
+        });
+        assert_eq!(first_marker.exists(), verifiable);
+        assert_eq!(second_marker.exists(), verifiable);
+    }
+}
+
 #[test]
 fn spawn_and_wait_errors_remain_primary_when_failure_markers_also_fail() {
     for spawn_failure in [false, true] {

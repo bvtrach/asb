@@ -7,13 +7,14 @@ use std::time::{Duration, Instant};
 pub(crate) struct Gate {
     state: Mutex<State>,
     changed: Condvar,
-    deadline: Instant,
+    timeout: Duration,
     observer: Option<Arc<PreparationObserver>>,
 }
 
 type PreparationObserver = dyn Fn(&Compatibility) -> Result<(), Error> + Send + Sync;
 
 struct State {
+    deadline: Option<Instant>,
     registered: Vec<bool>,
     ready: Vec<bool>,
     identity: Option<Compatibility>,
@@ -45,6 +46,11 @@ impl Gate {
         }
         Ok(Self {
             state: Mutex::new(State {
+                deadline: Some(
+                    Instant::now()
+                        .checked_add(timeout)
+                        .ok_or_else(|| Error::Input("preparation deadline overflows".into()))?,
+                ),
                 registered: vec![false; total],
                 ready: vec![false; total],
                 identity: expected,
@@ -52,11 +58,16 @@ impl Gate {
                 released: false,
             }),
             changed: Condvar::new(),
-            deadline: Instant::now()
-                .checked_add(timeout)
-                .ok_or_else(|| Error::Input("preparation deadline overflows".into()))?,
+            timeout,
             observer: None,
         })
+    }
+
+    /// A separate launch budget starts at the first post-material registration.
+    pub(crate) fn deferred(total: usize, timeout: Duration) -> Result<Self, Error> {
+        let mut gate = Self::new(total, None, timeout)?;
+        gate.state.get_mut().map_err(|_| unavailable())?.deadline = None;
+        Ok(gate)
     }
 
     pub(crate) fn observe(mut self, observer: Arc<PreparationObserver>) -> Self {
@@ -86,6 +97,13 @@ impl Gate {
         if let Some(reason) = &state.aborted {
             return Err(Error::Run(reason.clone()));
         }
+        if state.deadline.is_none() {
+            state.deadline = Some(
+                Instant::now()
+                    .checked_add(self.timeout)
+                    .ok_or_else(unavailable)?,
+            );
+        }
         state.registered[replica.index - 1] = true;
         Ok(Arrival {
             gate: self,
@@ -110,7 +128,8 @@ impl Arrival<'_> {
 
     pub(crate) fn ready(&mut self, identity: Compatibility) -> Result<(), Error> {
         let mut state = self.gate.state.lock().map_err(|_| unavailable())?;
-        if Instant::now() >= self.gate.deadline && !state.released {
+        let deadline = state.deadline.ok_or_else(unavailable)?;
+        if Instant::now() >= deadline && !state.released {
             state.aborted = Some("batch preparation timed out; no agent was admitted".into());
         } else if self.settled || state.ready[self.index] {
             state.aborted = Some("preparation slot arrived more than once".into());
@@ -140,7 +159,7 @@ impl Arrival<'_> {
                 if let Err(error) = published {
                     state.aborted =
                         Some(format!("cannot publish prepared batch identity: {error}"));
-                } else if Instant::now() >= self.gate.deadline {
+                } else if Instant::now() >= deadline {
                     state.aborted =
                         Some("batch preparation timed out; no agent was admitted".into());
                 } else if state.aborted.is_none() {
@@ -157,7 +176,7 @@ impl Arrival<'_> {
                 self.settled = true;
                 return Ok(());
             }
-            let remaining = self.gate.deadline.saturating_duration_since(Instant::now());
+            let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 state.aborted = Some("batch preparation timed out; no agent was admitted".into());
                 self.gate.changed.notify_all();
@@ -170,6 +189,57 @@ impl Arrival<'_> {
                 .map_err(|_| unavailable())?;
             state = next;
         }
+    }
+}
+
+/// The runner binds verified material once; adapters cannot fabricate identity.
+pub(crate) struct LaunchAdmission<'a> {
+    arrival: Mutex<Arrival<'a>>,
+    identity: Compatibility,
+}
+
+impl<'a> LaunchAdmission<'a> {
+    pub(crate) fn new(
+        gate: &'a Gate,
+        replica: Identity,
+        identity: Compatibility,
+    ) -> Result<Self, Error> {
+        Ok(Self {
+            arrival: Mutex::new(gate.register(replica)?),
+            identity,
+        })
+    }
+}
+
+impl crate::workloads::session::LaunchReadiness for LaunchAdmission<'_> {
+    fn ready(&self) -> Result<(), String> {
+        self.arrival
+            .lock()
+            .map_err(|_| unavailable().to_string())?
+            .ready(self.identity.clone())
+            .map_err(|error| error.to_string())
+    }
+    fn abort(&self) {
+        self.arrival
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .abort("replica failed before shared launch readiness");
+    }
+    fn remaining(&self) -> Result<Duration, String> {
+        let arrival = self.arrival.lock().map_err(|_| unavailable().to_string())?;
+        let state = arrival
+            .gate
+            .state
+            .lock()
+            .map_err(|_| unavailable().to_string())?;
+        if let Some(reason) = &state.aborted {
+            return Err(reason.clone());
+        }
+        state
+            .deadline
+            .and_then(|deadline| deadline.checked_duration_since(Instant::now()))
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| "shared launch preparation deadline exceeded".into())
     }
 }
 
@@ -223,6 +293,25 @@ mod tests {
                 .unwrap();
             rx.recv_timeout(Duration::from_secs(1)).unwrap();
         });
+    }
+
+    #[test]
+    fn launch_deadline_arms_once_after_material_and_never_restarts_for_siblings() {
+        use crate::workloads::session::LaunchReadiness;
+        let gate = Gate::deferred(2, Duration::from_secs(1800)).unwrap();
+        assert!(gate.state.lock().unwrap().deadline.is_none());
+        let first =
+            LaunchAdmission::new(&gate, Identity { index: 1, total: 2 }, material()).unwrap();
+        let deadline = gate.state.lock().unwrap().deadline.unwrap();
+        let second =
+            LaunchAdmission::new(&gate, Identity { index: 2, total: 2 }, material()).unwrap();
+        assert_eq!(gate.state.lock().unwrap().deadline, Some(deadline));
+        assert!(first.remaining().unwrap() > Duration::from_secs(1700));
+        gate.state.lock().unwrap().deadline = Some(Instant::now() - Duration::from_secs(1));
+        assert!(first.remaining().is_err());
+        assert!(second.ready().is_err());
+        assert!(first.ready().is_err());
+        assert!(gate.confirmed_identity().is_err());
     }
 
     #[test]

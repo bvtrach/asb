@@ -6,6 +6,7 @@ collectors and resumes execution. Docker-daemon PIDs are deliberately not
 claimed to be local-host PIDs: the caller must establish that separately.
 """
 import json
+import math
 import re
 import threading
 import time
@@ -208,19 +209,19 @@ class ManagedDockerWorkspace:
 
     def execute(self, argv, environment=None, timeout=900, output_limit=256 * 1024, before_resume=None,
                 on_output=None, cancelled=None, gate="shell", preparation_timeout=None,
-                workload_owner=None, on_execution_end=None, transport_factory=None):
+                workload_owner=None, on_execution_end=None, transport_factory=None, on_preparation_failure=None):
         if self.container is None:
             raise ExecutionError("workspace is not running")
         if not self.active.acquire(blocking=False):
             raise ExecutionError("one command is already running in this task workspace")
         try:
             return self._execute(argv, environment or {}, timeout, output_limit, before_resume, on_output, cancelled, gate, preparation_timeout,
-                                 workload_owner, on_execution_end, transport_factory)
+                                 workload_owner, on_execution_end, transport_factory, on_preparation_failure)
         finally:
             self.active.release()
 
     def _execute(self, argv, environment, timeout, output_limit, before_resume, on_output, cancelled, gate, preparation_timeout,
-                 workload_owner, on_execution_end, transport_factory):
+                 workload_owner, on_execution_end, transport_factory, on_preparation_failure):
         if (not isinstance(argv, list) or not argv or len(argv) > 10000
                 or any(not isinstance(value, str) or "\x00" in value for value in argv)
                 or not isinstance(environment, dict)
@@ -232,7 +233,7 @@ class ManagedDockerWorkspace:
         if not 0 < timeout <= 86400 or not 1 <= output_limit <= 16 * 1024**2:
             raise ExecutionError("invalid execution timeout or output limit")
         preparation_timeout = min(timeout, 60) if preparation_timeout is None else preparation_timeout
-        if not 0 < preparation_timeout <= 300:
+        if type(preparation_timeout) not in [int,float] or not math.isfinite(preparation_timeout) or not 0 < preparation_timeout <= 1800:
             raise ExecutionError("invalid execution preparation timeout")
         if cancelled is not None and cancelled.is_set():
             raise ExecutionError("execution was cancelled before starting")
@@ -255,6 +256,10 @@ class ManagedDockerWorkspace:
         watchdog_error = []
         started = time.monotonic()
         execution_started = None
+        def preparation_failed():
+            if execution_started is None and on_preparation_failure is not None:
+                try:on_preparation_failure()
+                except BaseException:pass
         phase_deadline, phase_lock = [started + preparation_timeout], threading.Lock()
 
         def deadline():
@@ -269,6 +274,7 @@ class ManagedDockerWorkspace:
             else:
                 return
             reset_needed.set()
+            preparation_failed()
             try:
                 # Killing this owned container terminates the entire tree,
                 # including daemonized helpers, without host-wide signals.
@@ -390,6 +396,7 @@ class ManagedDockerWorkspace:
             # A failed collector callback, malformed gate or protocol failure
             # must not leave a paused/live agent behind. Preserve its filesystem
             # by restarting only PID 1 after the complete old tree is gone.
+            preparation_failed()
             reset_needed.set()
             try:
                 container.kill()

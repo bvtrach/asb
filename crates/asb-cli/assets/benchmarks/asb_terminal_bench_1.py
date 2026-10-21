@@ -213,7 +213,8 @@ class TerminalBenchTask:
         from asb_terminal_session import SDKSessionLauncher
         self.prepare_agent_session()
         self.agent_launcher = SDKSessionLauncher(self.agent_session,request["binary"],self.artifacts,
-            require_host_target=request.get("measure_target",False))
+            require_host_target=request.get("measure_target",False), preparation_deadline=request.get("preparation_deadline"),
+            on_preparation_failure=request.get("on_preparation_failure"))
         return self.agent_launcher
 
     @quiet_sdk
