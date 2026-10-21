@@ -1,6 +1,6 @@
 //! Fresh sequential batches with a durable intended-slot plan and outcome links.
 mod replay;
-use super::campaign::{Plan, ReplayInput, Slot};
+use super::campaign::{MAX_EXECUTIONS, Plan, ReplayInput, Slot, planned_slots};
 use super::{RunOptions, batch, replica};
 use crate::{Error, benchmark::BenchmarkConfig, cassette::Compatibility, io_error};
 use serde::Serialize;
@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-const MAX_EXECUTIONS: u64 = 65_533;
 const MAX_PLAN_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OUTCOME_BYTES: u64 = 1024 * 1024;
 
@@ -168,6 +167,7 @@ pub(super) fn run(
         replay_inputs,
         slots,
     };
+    plan.validate_layout()?;
     let bytes = encode(&plan)?;
     private_directory(&parent, true)?;
     private_directory(&root, false)?;
@@ -470,47 +470,6 @@ fn must_stop(
     let ordinary_failure =
         matches!(result, Err(Error::Run(_))) && completed == selected && prepared && cleanup;
     (result.is_err() && !ordinary_failure) || !prepared || !cleanup || completed != selected
-}
-
-fn planned_slots(
-    config: &BenchmarkConfig,
-    repeat: u64,
-    measured: bool,
-) -> Result<Vec<Slot>, Error> {
-    let mut slots = Vec::new();
-    for batch in 1..=repeat {
-        let mut selected = config.clone();
-        selected.workspace = format!("batch-{batch}/workspace");
-        selected.log_file = format!("batch-{batch}/run.jsonl");
-        for replica in 1..=config.concurrency {
-            let selected = replica::configuration(
-                &selected,
-                replica::Identity {
-                    index: replica,
-                    total: config.concurrency,
-                },
-            )?;
-            let measures = PathBuf::from(format!("batch-{batch}/measurements"));
-            slots.push(Slot {
-                replay_track: None,
-                id: (batch - 1) * config.concurrency as u64 + replica as u64,
-                batch,
-                replica,
-                workspace: selected.workspace.into(),
-                log: selected.log_file.into(),
-                measurements: measured.then(|| {
-                    if config.concurrency == 1 {
-                        measures
-                    } else {
-                        super::parallel_path(measures.to_str().expect("generated UTF-8"), replica)
-                            .into()
-                    }
-                }),
-                replay_input: None,
-            });
-        }
-    }
-    Ok(slots)
 }
 
 fn replay_inputs(

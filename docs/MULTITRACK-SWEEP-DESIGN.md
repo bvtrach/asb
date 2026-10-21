@@ -12,6 +12,16 @@ current operational contract. These DTOs are not activation capabilities: the
 bounded reader, semantic validation, sweep lifecycle, continuation and reporting
 integration below remain required before this feature is available.
 
+Fresh plans now use one shared, allocation-bounded slot constructor and pass
+pure structural validation before publication. Validation binds schema, mode,
+configuration, exact batch/replica paths, replay table references and saved track
+choices; it reads no source/payload/outcome and cannot authorize continuation.
+Selected numeric legacy retains the backend's selected-track size limit, while
+unselected legacy retains its historical smaller transfer limit. Full source
+selection validation, workload compatibility and settled attempt evidence remain
+separate obligations. Tests cover path parity for every supported concurrency,
+structural mutation matrices, all execution modes and input-size boundaries.
+
 ## Ownership and shared contracts
 
 Extract a reusable runner-owned campaign plan and bounded reader from the
