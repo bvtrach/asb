@@ -46,9 +46,20 @@ fn original_binding(
 }
 
 pub(super) fn reporting_summary(entry: &PlannedBenchmark, report: &Value) -> Value {
+    use sha2::{Digest, Sha256};
+    let provenance = crate::workloads::outcome::LegacyEvaluationProvenance {
+        execution_attempt: report["task"]["attempt_id"].as_str().map(str::to_owned),
+        source_scope: report["scope"].as_str().map(str::to_owned),
+        evidence_manifest_sha256: report
+            .get("evidence")
+            .map(|evidence| format!("{:x}", Sha256::digest(evidence.to_string().as_bytes()))),
+        evaluation_id: None,
+        supersedes: None,
+    };
     let mut value = report.clone();
     let object = value.as_object_mut().expect("validated inspected grade");
     object.remove("evidence");
+    object.insert("legacy_evaluation_provenance".into(), json!(provenance));
     // Schema 2 controls scoring; this is not a RunSummary and lacks a cohort
     // because no execution observations are being recovered.
     object.insert("schema_version".into(), json!(2));

@@ -58,6 +58,27 @@ fn report_import_removes_private_evidence_without_fabricating_execution_metrics(
     assert_eq!(report["agent"], "pi");
     assert_eq!(report["provider"], "openrouter");
     assert_eq!(report["workload_success"], true);
+    assert_eq!(
+        report["legacy_evaluation_provenance"]["execution_attempt"],
+        "owned-attempt"
+    );
+    assert!(report["legacy_evaluation_provenance"]["evaluation_id"].is_null());
+    assert!(report["legacy_evaluation_provenance"]["supersedes"].is_null());
+    assert_eq!(
+        report["legacy_evaluation_provenance"]["evidence_manifest_sha256"]
+            .as_str()
+            .unwrap()
+            .len(),
+        64
+    );
+    assert!(report.get("module").is_none());
+    assert!(report.get("execution_plan_fingerprint").is_none());
+    assert!(report.get("benchmark_outcome").is_none());
+    assert_eq!(
+        report,
+        reporting_summary(&fixture.entry(), &source),
+        "inspection must not mint new evaluation IDs"
+    );
     for field in [
         "evidence",
         "elapsed_ms",

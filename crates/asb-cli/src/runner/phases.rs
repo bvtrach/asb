@@ -227,31 +227,33 @@ impl ExecutedAttempt {
     }
 }
 
-pub(super) enum EvaluationOutcome {
-    Passed,
-    Failed(String),
-    GraderError(String),
+pub(super) struct EvaluationOutcome {
+    pub evaluation: workloads::outcome::EvaluationOutcome,
 }
 
 impl EvaluationOutcome {
     pub fn success(&self) -> Option<bool> {
-        match self {
-            Self::Passed => Some(true),
-            Self::Failed(_) => Some(false),
-            Self::GraderError(_) => None,
-        }
+        self.evaluation.resolution()
     }
     pub fn failure(&self) -> Option<(&'static str, String)> {
-        match self {
-            Self::Passed => None,
-            Self::Failed(reason) => Some((
+        use workloads::outcome::EvaluationOutcome as Evaluation;
+        match &self.evaluation {
+            Evaluation::Completed {
+                resolution: Some(false),
+                reason,
+                ..
+            } => Some((
                 "workload_check_failed",
-                format!("workload check failed: {reason}"),
+                format!(
+                    "workload check failed: {}",
+                    reason.as_deref().unwrap_or("unresolved")
+                ),
             )),
-            Self::GraderError(reason) => Some((
+            Evaluation::Error { reason } => Some((
                 "grader_error",
                 format!("workload grader could not evaluate the result: {reason}"),
             )),
+            _ => None,
         }
     }
 }
@@ -259,28 +261,59 @@ impl EvaluationOutcome {
 pub(super) struct EvaluatedAttempt {
     settled: SettledAttempt,
     outcome: EvaluationOutcome,
+    evaluator_evidence: Vec<PathBuf>,
 }
 
 impl SettledAttempt {
-    pub fn evaluate(mut self, response: &str) -> EvaluatedAttempt {
-        let outcome = match self.issues.operation(
-            self.prepared.measurements.as_mut(),
-            LifecyclePhase::WorkloadEvaluation,
-            || self.prepared.workload.evaluate(response),
+    #[cfg(test)]
+    pub fn evaluate(self, response: &str) -> EvaluatedAttempt {
+        let policy = self.prepared.workload.metric_policy();
+        self.evaluate_with_policy(response, &policy)
+    }
+
+    pub fn evaluate_with_policy(
+        mut self,
+        response: &str,
+        policy: &workloads::outcome::MetricPolicy,
+    ) -> EvaluatedAttempt {
+        use workloads::outcome::EvaluationOutcome as Evaluation;
+        let mut evaluation = self
+            .issues
+            .operation(
+                self.prepared.measurements.as_mut(),
+                LifecyclePhase::WorkloadEvaluation,
+                || Ok(self.prepared.workload.evaluate_outcome(response)),
+            )
+            .unwrap_or_else(|reason| Evaluation::Error { reason });
+        if let Err(reason) = policy.validate_evaluation(&evaluation) {
+            evaluation = Evaluation::Error { reason };
+        }
+        let evaluator_evidence = self.prepared.workload.checkpoint_evidence();
+        if policy != &workloads::outcome::MetricPolicy::default()
+            && evaluation.completed()
+            && evaluator_evidence.is_empty()
+        {
+            evaluation = Evaluation::Error {
+                reason: "native reward evaluator supplied no evidence artifacts".into(),
+            };
+        }
+        if matches!(
+            evaluation,
+            Evaluation::Error { .. }
+                | Evaluation::Completed {
+                    resolution: Some(false),
+                    ..
+                }
         ) {
-            Ok(workloads::Evaluation::Passed) => EvaluationOutcome::Passed,
-            Ok(workloads::Evaluation::Failed(reason)) => {
-                self.issues.event(
-                    self.prepared.measurements.as_mut(),
-                    LifecycleEvent::PhaseFailed(LifecyclePhase::WorkloadEvaluation),
-                );
-                EvaluationOutcome::Failed(reason)
-            }
-            Err(error) => EvaluationOutcome::GraderError(error),
-        };
+            self.issues.event(
+                self.prepared.measurements.as_mut(),
+                LifecycleEvent::PhaseFailed(LifecyclePhase::WorkloadEvaluation),
+            );
+        }
         EvaluatedAttempt {
             settled: self,
-            outcome,
+            outcome: EvaluationOutcome { evaluation },
+            evaluator_evidence,
         }
     }
 }
@@ -292,6 +325,7 @@ pub(super) struct FinalizedAttempt {
     pub proxy_evidence: crate::proxy::Evidence,
     pub cassette_usage_verified: bool,
     pub outcome: EvaluationOutcome,
+    pub evaluator_evidence: Vec<PathBuf>,
     pub cleanup_confirmed: bool,
     pub issues: AttemptIssues,
 }
@@ -316,6 +350,7 @@ impl EvaluatedAttempt {
             proxy_evidence: self.settled.proxy_evidence,
             cassette_usage_verified: self.settled.cassette_usage_verified,
             outcome: self.outcome,
+            evaluator_evidence: self.evaluator_evidence,
             cleanup_confirmed,
             issues: self.settled.issues,
         }
@@ -421,6 +456,9 @@ pub(super) fn finish_measurements(
     }
     issues.event(Some(&mut session), LifecycleEvent::RunFinishing);
     let measured = measurements::RunMeasurement {
+        execution_plan_fingerprint: result.execution_plan_fingerprint,
+        module: result.module.as_ref(),
+        benchmark_outcome: result.benchmark_outcome.as_ref(),
         replica_index: result.replica_index,
         execution_cohort: result.execution_cohort,
         schema_version: 2,
