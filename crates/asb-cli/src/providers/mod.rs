@@ -32,6 +32,39 @@ pub struct ProviderSpec {
 pub(crate) trait ProviderSession {
     fn api_key(&self) -> &str;
     fn base_url(&self) -> &str;
+    /// Explicit normal teardown; Drop remains a fallback for unwinding.
+    fn finish(&mut self) -> Result<(), crate::Error> {
+        Ok(())
+    }
+}
+
+/// Consume normal session custody exactly once, including a failed finish.
+pub(crate) fn finish_session(
+    session: &mut Option<Box<dyn ProviderSession>>,
+) -> Result<(), crate::Error> {
+    session
+        .take()
+        .map_or(Ok(()), |mut session| session.finish())
+}
+
+/// Settle an early operation without replacing its primary typed failure.
+pub(crate) fn finish_result<T>(
+    result: Result<T, crate::Error>,
+    session: &mut Option<Box<dyn ProviderSession>>,
+) -> Result<T, crate::Error> {
+    match (result, finish_session(session)) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(cleanup)) => Err(cleanup),
+        (Err(primary), Err(cleanup)) => {
+            let append = |reason: String| format!("{reason}; provider cleanup failed: {cleanup}");
+            Err(match primary {
+                crate::Error::Input(reason) => crate::Error::Input(append(reason)),
+                crate::Error::Io(reason) => crate::Error::Io(append(reason)),
+                crate::Error::Run(reason) => crate::Error::Run(append(reason)),
+                crate::Error::Usage(reason) => crate::Error::Run(append(reason.into())),
+            })
+        }
+    }
 }
 
 /// Response shape used by a provider's model-list endpoint.

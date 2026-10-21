@@ -135,6 +135,33 @@ Do not perform redundant extraction based on stale line counts.
 The custom BPF scope validator is also a small function (about sixty lines),
 not the reported 533; its confirmed correctness defect is tracked below.
 
+cli2key startup/session candidate: explicit external versus local ownership
+keeps the shared fallibly pre-established `OwnedReaper` through successful
+session transfer. Both children enter immediate custody; each nonblocking
+output worker is created fallibly before its child. Readiness has byte, line,
+message, channel and time bounds, followed by deliberate drain/discard for the
+session lifetime. One cleanup deadline covers both children/readers; uncertain
+children transfer to the existing worker, and startup errors retain cleanup
+diagnostics. Finished readers alone are joined; stopped workers retain their
+transport until they exit. Offline fixtures check limits, silence, creation
+failure, both spawn error/unwind boundaries, pinned direct-child reaping,
+deadline/poll-error handoff, retained output writers and sentinel survival.
+External endpoint/key behavior and two-listener concurrent authenticated
+requests retain their regressions. This repairs provider-owned direct-child
+custody and readiness, not other provider/collector lifecycle paths, arbitrary
+descendants or crash recovery. Independent review and delivery remain pending.
+The shared provider-session interface now includes an explicit default no-op
+finish contract. cli2key consumes its local owner exactly once and reports
+uncertainty; generic model discovery always finishes after fetch/parse, while
+the runner closes after grading/workload cleanup and before publication.
+Provider cleanup failure is ancillary to client/grading failure, preserves the
+official grade and prevents a continuation receipt. An early-error envelope
+also finishes after preparation/execution errors. Private replay-only full-entry
+fixtures and loopback catalog fixtures verify success, independent true/false
+grades, client/preparation/fetch/parse failures and finish uncertainty without
+duplicate cleanup or retry. Worker receipts distinguish cooperative reader exit
+from releasing an unfinished handle after the caller's shared deadline.
+
 ## 6. Shared implementation and lifecycle policies
 
 Review repeated sudo consent/probes, three wizard progress-worker patterns,

@@ -486,6 +486,31 @@ bridge. It removes only Codex host metadata (`additional_tools` and reasoning
 context) that the bridge API cannot accept, while forwarding prompts, function
 tools, credentials, and streaming responses unchanged. External
 `CLI2KEY_BASE_URL` endpoints are used directly and are not modified.
+External cli2key endpoints own no local processes. A local provider session
+retains its startup guard and pre-established fallible `OwnedReaper` through
+both bridge and compatibility-hop lifetimes. Before each child starts, a
+fallible output worker owns a nonblocking Unix socket transport. Readiness is
+limited to five seconds, 64 KiB, 64 messages and 4 KiB per line (including
+output without a newline). Only the key/readiness result enters a single-slot
+channel; subsequent output is continuously drained and discarded. No startup
+output or key is included in diagnostics. Non-Unix local startup fails before
+spawning and can still use an explicitly configured external endpoint.
+Failure, unwinding and session destruction kill only the directly owned
+children and poll against one five-second cleanup deadline shared by both
+children and readers. Unconfirmed children transfer to the existing reaper;
+cooperatively stopped readers retain their own transports until exit. Only
+already-finished threads are joined; after the shared deadline an unfinished
+handle is released and the nonblocking worker exits when scheduled to observe
+its stop flag. Worker-exit receipts test that behavior separately from caller
+waiting. Startup errors retain their original diagnostic and cleanup uncertainty.
+The generic `ProviderSession::finish` contract explicitly settles model catalog
+sessions after fetch/parse, and benchmark sessions after grading/workload cleanup
+but before result publication. A finish error preserves the original catalog,
+client or official grading failure and the independent grade, reports ancillary
+cleanup uncertainty and prevents a completion receipt. Early preparation errors
+also attempt finish exactly once; silent Drop cleanup is the unwind fallback.
+This bounds caller waiting, not actual kernel-stuck exit, descendant supervision
+or crash-persistent recovery.
 Agents, providers, and workloads use the same source layout: each has a
 `mod.rs` for category-wide behavior and an `adapters/` directory containing
 the adapter registry (`adapters/mod.rs`) and one module per implementation.

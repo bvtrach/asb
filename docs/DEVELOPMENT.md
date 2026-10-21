@@ -141,6 +141,24 @@ The cli2key concurrency regression uses two mock bridge listeners and mock
 clients, with fixture-only credentials. Both authenticated local requests must
 overlap and reach different owned servers; both servers must be reaped afterward.
 It does not use the installed cli2key package or a backend subscription.
+`cargo test --locked --offline --lib cli2key` additionally checks real local
+startup fixtures with oversized/unterminated output, excessive messages/bytes,
+silent startup, post-readiness draining and cleanup while another output
+writer remains open. Reader/reaper creation fails before child admission.
+Injected errors and unwinding after either spawn, shared-deadline/poll-error
+handoff, pidfd-pinned reaping and unrelated sentinel survival require no host
+credentials or provider. The same guard/reaper remains owned on success.
+The caller's cleanup wait has one five-second budget across both children and
+readers; unconfirmed children retain fallback custody rather than being
+dropped. This does not establish descendant or abrupt-crash cleanup.
+The `provider_finish` library fixtures additionally run five actual replay-only
+benchmark attempts: true/false grades, client failure, early preparation failure
+and successful finish. They require explicit finish once, preserve each grade
+and primary error, report cleanup uncertainty and withhold completion receipts.
+Loopback catalog fixtures cover successful parsing, invalid JSON and HTTP failure
+combined with finish failure. Both use only fixture credentials. Output-worker
+exit receipts confirm cooperative exit even after the caller releases an
+unfinished thread handle at its deadline; no unconditional join is used.
 The agent-process sampler regression launches a bounded local Node fixture,
 changes its process title and checks two seconds of continued sampling, an
 unrelated Node process and the original process's exit. It uses no provider,

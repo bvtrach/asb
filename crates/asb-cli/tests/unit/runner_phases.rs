@@ -706,6 +706,17 @@ fn full_runner_entry_observer_warning_is_redacted_and_broken_warning_writer_keep
     isolated_full_entry_cases(&["observer-failure", "observer-warning-writer"]);
 }
 
+#[test]
+fn full_runner_entry_explicit_provider_finish_preserves_grades_and_primary_failures() {
+    isolated_full_entry_cases(&[
+        "provider-true-failed-finish",
+        "provider-false-failed-finish",
+        "provider-client-failed-finish",
+        "provider-early-failed-finish",
+        "provider-success",
+    ]);
+}
+
 fn isolated_full_entry_cases(cases: &[&str]) {
     use support::IsolatedEnvironment;
     let executable = std::env::current_exe().unwrap();
@@ -760,6 +771,7 @@ fn full_entry_child(case: &str) {
             }
         }
     }
+    let provider_case = case.starts_with("provider-");
     let fixture = Fixture::new();
     let root = fixture.0.canonicalize().unwrap();
     let project = project::ProjectConfig {
@@ -786,6 +798,24 @@ fn full_entry_child(case: &str) {
     let body = serde_json::json!({"model":"fixture","tools":[{"type":"function","function":{"name":"fixture","parameters":{"type":"object"}}}],"messages":[]});
     let row = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body.to_string()},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{}"}});
     std::fs::write(&cassette, format!("{row}\n")).unwrap();
+    if provider_case {
+        let node = crate::tools::host_executable(Path::new("node")).unwrap();
+        let answer = if case == "provider-false-failed-finish" {
+            "incorrect"
+        } else {
+            "src/cli.py src/registry.py lookup"
+        };
+        let response = serde_json::json!({"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":answer}]}]});
+        let exit = if case == "provider-client-failed-finish" {
+            7
+        } else {
+            0
+        };
+        std::fs::write(&agent, format!("#!{}\nfetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw new Error('fixture request failed');await r.text();console.log(JSON.stringify({response}));process.exitCode={exit};}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
+    }
+    if case == "provider-early-failed-finish" {
+        std::fs::write(root.join("workspace"), "blocking fixture file").unwrap();
+    }
     let config: BenchmarkConfig = toml::from_str("agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='repository-navigation'\nworkspace='workspace'\nlog_file='run.jsonl'\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n").unwrap();
     let config_path = root.join("benchmark.toml");
     std::fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
@@ -806,7 +836,11 @@ fn full_entry_child(case: &str) {
     } else {
         LifecycleEvent::RunFinishing
     };
-    let _scope = entry_test_support::Scope::new(&root, event, calls.clone());
+    let _scope = if provider_case {
+        entry_test_support::Scope::provider(&root, calls.clone(), case != "provider-success")
+    } else {
+        entry_test_support::Scope::new(&root, event, calls.clone())
+    };
     let observer = Observer {
         started: AtomicUsize::new(0),
         completed: AtomicUsize::new(0),
@@ -853,15 +887,84 @@ fn full_entry_child(case: &str) {
         on_completion: Some(&observer),
         ..Default::default()
     };
-    let error = run_mode(
+    let result = run_mode(
         &config_path,
         config,
         options,
         &mut output,
         &Mutex::new(BTreeSet::new()),
-    )
-    .unwrap_err()
-    .to_string();
+    );
+    if provider_case {
+        let error = result.err().map(|error| error.to_string());
+        assert_eq!(error.is_none(), case == "provider-success", "{error:?}");
+        assert_eq!(
+            calls
+                .borrow()
+                .iter()
+                .filter(|call| **call == "provider-finish")
+                .count(),
+            1
+        );
+        assert!(!calls.borrow().contains(&"provider-fallback"));
+        if case == "provider-early-failed-finish" {
+            let error = error.unwrap();
+            assert!(error.starts_with("cannot create workspace"), "{error}");
+            assert!(error.contains("fixture provider cleanup uncertain"));
+            assert_eq!(calls.borrow().as_slice(), ["provider-finish"]);
+            assert!(!counter.exists());
+            assert!(!root.join(".asb-completions").exists());
+            return;
+        }
+        assert_eq!(
+            calls.borrow().as_slice(),
+            ["evaluate", "finish", "provider-finish"]
+        );
+        assert_eq!(
+            observer.completed.load(Ordering::SeqCst),
+            usize::from(case == "provider-success")
+        );
+        assert_eq!(
+            root.join(".asb-completions").exists(),
+            case == "provider-success"
+        );
+        let log: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("run.jsonl")).unwrap()).unwrap();
+        let summary: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+        let measured: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("measurements/run.json")).unwrap())
+                .unwrap();
+        for record in [&log, &summary, &measured] {
+            assert_eq!(
+                record["workload_success"],
+                case != "provider-false-failed-finish"
+            );
+            assert_eq!(
+                record["process_success"],
+                case != "provider-client-failed-finish"
+            );
+        }
+        if let Some(error) = error {
+            assert!(
+                error.contains("fixture provider cleanup uncertain"),
+                "{error}"
+            );
+            if case == "provider-client-failed-finish" {
+                assert_eq!(summary["failure_kind"], "agent_failure");
+                assert!(
+                    error
+                        .find(summary["failure_reason"].as_str().unwrap())
+                        .unwrap()
+                        < error.find("provider cleanup failed").unwrap()
+                );
+            } else if case == "provider-false-failed-finish" {
+                assert_eq!(summary["failure_kind"], "workload_check_failed");
+            } else {
+                assert_eq!(summary["failure_kind"], "provider_cleanup_error");
+            }
+        }
+        return;
+    }
+    let error = result.unwrap_err().to_string();
     assert!(
         error.contains("replay consumed 0 of 1"),
         "primary proxy validation must not be replaced: {error}"
