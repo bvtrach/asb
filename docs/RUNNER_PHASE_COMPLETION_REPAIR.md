@@ -1,9 +1,13 @@
 # Runner phase completion: design and red checkpoint
 
+## Historical red checkpoint dcd2467d
+
 Baseline: independently reviewed and locally qualified setup40 `f3883ca8`.
-This checkpoint changes only private tests and this document. Version 0.2.40
-remains the historical baseline, not a reserved delivery slot. No production
-repair, full qualification, push, PR or release is claimed.
+The historical red checkpoint `dcd2467d` changed only private tests and this
+document; it contained no production repair or full qualification and made no
+push, PR or release claim. Version 0.2.40 was its historical baseline, not a
+reserved delivery slot. The later production implementation and focused evidence
+are recorded in the implementation and qualification sections below.
 
 ## Source findings and approved design
 
