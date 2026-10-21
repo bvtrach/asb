@@ -427,6 +427,8 @@ mod tests {
     #[test]
     fn acknowledged_resources_do_not_settle_before_controller_reaping() {
         for normal in [false, true] {
+            #[cfg(target_os = "linux")]
+            let scope = crate::process_cleanup::test_support::Scope::new();
             let mut command = Command::new("python3");
             command.args(["-u","-c","import json,sys,time\nprint(json.dumps(dict(event='ready')),flush=True)\nsys.stdin.readline()\nprint(json.dumps(dict(event='closed',cleanup='stopped-preserved')),flush=True)\ntime.sleep(10)\n"]);
             let mut controller = Controller::spawn(&mut command).unwrap();
@@ -441,9 +443,24 @@ mod tests {
                 controller.cancel(Duration::from_millis(100)).unwrap_err()
             };
             assert!(failed.contains("did not exit"), "{failed}");
-            assert!(controller.child().try_wait().unwrap().is_none());
-            controller.child().kill().unwrap();
-            controller.child().wait().unwrap();
+            #[cfg(unix)]
+            {
+                // Expired bounded cleanup has already transferred the child;
+                // an acknowledgement alone cannot claim successful settlement.
+                assert!(failed.contains("retains custody"), "{failed}");
+                drop(controller);
+                #[cfg(target_os = "linux")]
+                {
+                    scope.wait_finished();
+                    assert_eq!(scope.count(), 1);
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                assert!(controller.child().try_wait().unwrap().is_none());
+                controller.child().kill().unwrap();
+                controller.child().wait().unwrap();
+            }
         }
     }
 
