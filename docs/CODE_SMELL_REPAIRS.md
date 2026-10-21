@@ -58,7 +58,7 @@ without changing established result/workspace identities unintentionally.
 Also review duplicated manifest reference validation and executable resolution;
 same names alone do not prove equivalent semantics. Pending.
 
-Executable-policy candidate, staged patch **0.2.17**: project-local source
+Executable-policy candidate, staged patch **0.2.18**: project-local source
 installation, readiness and launch share one registry-neutral executable lookup.
 Explicit source overrides precede adapter-owned package preferences; unusable
 present candidates cannot silently fall through to stale fallback code. Codex
@@ -225,7 +225,7 @@ typed requests, consumed approvals, one capability probe per sysctl/cgroup setup
 and explicit independent-versus-dependent failure policies. Sysctls retain
 approved interactive fallback; cgroup delegation remains passwordless-only and
 requires separate consent. Offline fake-executor tests and the existing isolated
-fake-sudo fixtures cover both routes. This candidate does not repair wizard
+fake-sudo fixtures cover both routes. This repair does not repair wizard
 worker ownership or change tracefs lease/installation semantics. Independently
 reviewed PR #279 merged as `76a604bd5ef850e4aa2b29c6cd0dc031a965403b`;
 exact-head ordinary/package CI and both post-merge jobs passed (run
@@ -287,7 +287,7 @@ merged as `ac80fcb4201cc679afd280b79775b46cfe20ef5b`. Exact-head
 ordinary/package CI and both post-merge jobs passed (run `39622744776`);
 the signed release points to that exact commit.
 
-Workload-wizard candidate, staged patch **0.2.18**: explicit browsing, editing
+Workload-wizard candidate, staged patch **0.2.19**: explicit browsing, editing
 and saved states repair the advertised Enter-to-finish action. Saved subsets
 are restored when editing, replaced rather than appended, retained across
 deselection, and published only for selected workloads. Every selected subset
