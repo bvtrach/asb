@@ -60,7 +60,7 @@ dependencies = [
 
 [[package]]
 name = "asb-cli"
-version = "0.2.39"
+version = "0.2.40"
 dependencies = [
  "clap",
  "clap_complete",

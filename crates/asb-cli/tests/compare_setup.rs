@@ -84,6 +84,98 @@ fn setup_args() -> Vec<&'static str> {
     ]
 }
 
+#[test]
+fn actual_setup_late_size_failure_writes_nothing_and_valid_files_round_trip() {
+    let project = Project::new();
+    project.write("scalar.toml", "prior configuration bytes");
+    let path = project.0.join("scalar.toml");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o751)).unwrap();
+    }
+    let oversized = "x".repeat(70_000);
+    let mut scalar = setup_args();
+    scalar.extend(["--workspace", &oversized, "--output", "scalar.toml"]);
+    let output = project.command(&scalar);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("64 KiB"));
+    assert_eq!(std::fs::read(&path).unwrap(), b"prior configuration bytes");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o751
+        );
+    }
+    let mut late = setup_args();
+    late.extend(["--model", &oversized, "--output", "unpublished/late.toml"]);
+    let output = project.command(&late);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no setup files were written"));
+    assert!(!project.0.join("unpublished").exists());
+    assert!(!std::fs::read_dir(&project.0).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("-configs-")
+    }));
+    let mut valid = setup_args();
+    valid.extend(["--output", "scalar.toml"]);
+    success(project.command(&valid));
+    let config: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(config["model"].as_str(), Some("fixture"));
+    success(project.command(&["compare", "scalar.toml"]));
+}
+
+#[cfg(unix)]
+#[test]
+fn actual_setup_in_non_utf8_project_refuses_unrepresentable_runtime_paths_before_writing() {
+    use std::os::unix::ffi::OsStringExt;
+    let outer = Project::new();
+    let project = Project(
+        outer
+            .0
+            .join(std::ffi::OsString::from_vec(b"project-\xff".to_vec())),
+    );
+    project.write(
+        ".asb/project.toml",
+        "tools_dir='tools'\nworkloads_dir='catalogs'\nworkspace_dir='workspace'\n",
+    );
+    project.write("prior.toml", "prior configuration unchanged");
+    let before = std::fs::read_dir(&project.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut args = setup_args();
+    args.extend([
+        "--model",
+        "second-model",
+        "--output",
+        "not-created/selection.toml",
+    ]);
+    let output = project.command(&args);
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("UTF-8") && error.contains("no setup files were written"),
+        "{error}"
+    );
+    assert_eq!(
+        std::fs::read(project.0.join("prior.toml")).unwrap(),
+        b"prior configuration unchanged"
+    );
+    assert_eq!(
+        std::fs::read_dir(&project.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<std::collections::BTreeSet<_>>(),
+        before
+    );
+}
+
 #[cfg(unix)]
 #[test]
 #[allow(unsafe_code)]
