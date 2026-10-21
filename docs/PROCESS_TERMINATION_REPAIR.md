@@ -2,7 +2,8 @@
 
 Initial implementation follows independently approved design `4e79cadd` on
 reviewed setup40 source `f3883ca8`. Version 0.2.42 is reserved staging, not a
-release. This checkpoint is not full qualification or hosted/package evidence.
+release. That initial checkpoint alone is not full qualification or hosted/package
+evidence; later combined-source local qualification is recorded separately below.
 
 One serde-validated ProcessTermination preserves full i32 codes and bounded
 nonzero signals. A shared optional Observation carries that fact plus a fixed
@@ -210,3 +211,56 @@ Clippy (`-D warnings`), formatting and diff checks also passed; logs have suffix
 not reuse of official41's 1401-test full qualification or a full result for42.
 The newly generated untracked `crates/asb-cli/.asb` and prior fixture directories
 are preserved. No unrelated source, cache or host state was changed.
+
+## Fresh combined42 full local qualification
+
+After independently reviewing protected-tree merge `71e72c37`, root explicitly
+authorized a fresh full suite conditional on the successful combined focus and
+strict lint above. Exact qualified source is signed documentation checkpoint
+`9b843ee32ce22e2e4c240133aeaf536784b11556`; its production and tests are unchanged
+from that reviewed merge. No source edit or executable relink occurred during
+the full runtime suite. Post-test lint/build/documentation began only after the
+full suite and separate doctest handle were terminal with exit zero.
+
+| Gate at combined42 source 9b843ee3 | Actual result |
+| --- | --- |
+| Locked/offline workspace all-target/all-feature tests | **1413 passed / 0 failed / 21 existing opt-in skips**, 24 outer targets |
+| Library portion | 1177 passed / 0 failed / 13 ignored, 24.31s |
+| Other outer targets | 236 passed / 0 failed / 8 ignored |
+| Python protocol integration within full run | 35 passed / 0 failed / 0 ignored, 99.87s |
+| Separate workspace all-feature doctests | 0 tests / 0 failures |
+| Strict workspace all-target/all-feature Clippy, `-D warnings` | passed |
+| Formatting and whitespace diff checks | passed |
+| Sequential offline `make -j1 build` | passed |
+| Private Rustdoc, pinned AutoUML 0.7.2 DOT/Mermaid/SVG, flows and interactive HTML | passed |
+| Bash/Zsh completions and separate Bash/Zsh syntax checks | passed |
+
+`target/termination42-full-summary.log` retains the final summary for each
+outer Cargo target, not nested one-test subprocess summaries. All 24 summaries
+were inspected and summed; no opt-in test was enabled or removed. Fresh evidence
+is `termination42-full.log`, `termination42-full-doctests.log`,
+`termination42-full-{clippy,fmt,diffcheck,make,bash-syntax,zsh-syntax}.log`.
+Both full/doctest and later gate handles terminated zero. No failure or retry
+occurred in this fresh combined full qualification. Earlier diagnosed failures
+and their original hashes/transcripts remain preserved as documented above.
+
+Before full tests, after full tests, after make/shell syntax and in the preserved
+frozen copy, SHA256 is identically
+`a8876a2c2ced0174019dfe1a06dcc6012f4b78dd2cbe83e964e4d0b8b45e164e`.
+Evidence: `termination42-full-{before,after,final,frozen}.sha256`; frozen copy:
+`target/qualification/termination42-9b843ee3-asb`. The distinct pre-integration
+`termination42-c6bdb0bf-asb` copy remains unchanged as well.
+
+Build, test, lint, doctest and make used only the allocated home-filesystem
+target, locked/offline Cargo, one job and incremental disabled. Every compiler
+admission had at least 3 GiB available; final headroom was approximately 205 GiB.
+Make used the verified existing pinned AutoUML executable without installing
+anything. Graphviz's two ordinary straight-line-edge fallback warnings did not
+fail generation. The source checkout's untracked fixture directories and
+zero-byte `.asb/install.log` are retained, not silently staged or removed.
+
+This is local offline Linux x86-64 qualification of the reviewed combined41+42
+source, not a native Windows/ARM/other-kernel or live provider/SDK/container
+qualification. Version 0.2.42 remains staged. Independent final proof review,
+actual-main delivery ancestry, exact-head hosted/package CI, merge, both
+post-merge jobs and release remain pending; no push or PR action was performed.
