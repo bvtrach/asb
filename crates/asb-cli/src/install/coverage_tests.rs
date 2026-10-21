@@ -282,7 +282,7 @@ fn host_recipe_contract(root: &Path) {
     .unwrap();
     assert_eq!(path, destination.join("bin/fixture-host"));
     assert_eq!(fs::read(&path).unwrap(), fs::read("/bin/true").unwrap());
-    assert!(executable_file(&path));
+    assert!(crate::executables::is_executable(&path));
     assert!(stages.iter().any(|(percent, _)| *percent == 55));
     let blocked = root.join("tools/blocked");
     fs::create_dir_all(&blocked).unwrap();
@@ -387,7 +387,7 @@ fn host_contract(root: &Path) {
         install_host_dependency("fixture-host-tool", &destination).unwrap(),
         destination
     );
-    assert!(executable_file(&destination));
+    assert!(crate::executables::is_executable(&destination));
     let original = fs::read(&destination).unwrap();
     fs::write(root.join("bin/fixture-host-tool"), "replacement").unwrap();
     install_host_dependency("fixture-host-tool", &destination).unwrap();
@@ -425,7 +425,7 @@ fn host_contract(root: &Path) {
         &mut |_, _| {},
     )
     .unwrap();
-    assert!(executable_file(&installed));
+    assert!(crate::executables::is_executable(&installed));
     assert_eq!(fs::read(installed).unwrap(), b"replacement");
 }
 

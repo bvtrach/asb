@@ -28,7 +28,7 @@ fn final_response_failure(response: Option<&str>) -> Option<String> {
 /// Launch the installed Python entry point with a narrow, in-process fix for
 /// upstream's loss of initial usage when a streaming delta carries a partial
 /// usage object. Non-Python custom executables continue to run unmodified.
-fn process(executable: &str) -> Result<std::process::Command, Error> {
+fn process(executable: &str) -> Result<crate::launch::ProcessLaunch, Error> {
     use std::io::{BufRead, BufReader, Read};
     use std::path::{Path, PathBuf};
     let path = Path::new(executable);
@@ -42,7 +42,7 @@ fn process(executable: &str) -> Result<std::process::Command, Error> {
         })
     };
     let Some(path) = path else {
-        return Ok(std::process::Command::new(executable));
+        return Ok(crate::launch::ProcessLaunch::new(executable));
     };
     let first = std::fs::File::open(&path)
         .ok()
@@ -60,9 +60,9 @@ fn process(executable: &str) -> Result<std::process::Command, Error> {
         })
         .map(PathBuf::from);
     let Some(interpreter) = interpreter else {
-        return Ok(std::process::Command::new(executable));
+        return Ok(crate::launch::ProcessLaunch::new(executable));
     };
-    let mut command = std::process::Command::new(interpreter);
+    let mut command = crate::launch::ProcessLaunch::new(interpreter);
     command
         .arg("-c")
         .arg(include_str!("openjiuwen/usage_compat.py"))
@@ -350,6 +350,7 @@ print(value.content, value.usage_metadata.input_tokens, value.usage_metadata.out
         std::fs::set_permissions(&entry, std::fs::Permissions::from_mode(0o755)).unwrap();
         let output = super::process(entry.to_str().unwrap())
             .unwrap()
+            .direct()
             .env("PYTHONPATH", &root)
             .output()
             .unwrap();

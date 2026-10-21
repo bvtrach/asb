@@ -21,6 +21,7 @@ pub(super) struct NativePlan<'a> {
 
 pub(super) struct PreparedNative {
     command: Command,
+    route: crate::launch::CommandRoute,
     run_dir: PathBuf,
     runtime_path: PathBuf,
 }
@@ -67,10 +68,24 @@ impl NativePlan<'_> {
         {
             program = local;
         }
-        let mut command = agents::find(&config.agent).map_or_else(
-            || Ok(Command::new(&program)),
+        let launch = agents::find(&config.agent).map_or_else(
+            || Ok(crate::launch::ProcessLaunch::new(&program)),
             |adapter| adapter.process(&program),
         )?;
+        #[cfg(unix)]
+        let gate =
+            if (measurements.is_some() || cfg!(target_os = "linux"))
+                && gate_target_available(&launch.program)
+            {
+                Some(crate::process_gate::executable().map_err(|error| {
+                    Error::Run(format!("cannot resolve ASB process gate: {error}"))
+                })?)
+            } else {
+                None
+            };
+        #[cfg(not(unix))]
+        let gate = None;
+        let (mut command, route) = launch.native(gate.as_deref());
         project::apply_network_proxy(&mut command, config_path)?;
         command.args(specification.args);
         // Do not leak an enclosing Codex session into the benchmark agent. These
@@ -149,6 +164,7 @@ impl NativePlan<'_> {
 
         Ok(PreparedNative {
             command,
+            route,
             run_dir,
             runtime_path,
         })
@@ -167,16 +183,11 @@ impl PreparedNative {
         // install a process wrapper that carries compatibility and output fixes;
         // bypassing it at the gate would silently undo those fixes while still
         // appearing to attach collectors correctly.
-        let gate_program = self.command.get_program().to_string_lossy().into_owned();
-        let gate_args = self
-            .command
-            .get_args()
-            .map(|value| value.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
+        let target = self.route.target(&self.command);
         let child = run_measured_agent(
             &mut self.command,
-            &gate_program,
-            Some(&gate_args),
+            &target,
+            Some(self.route),
             measurements,
             show_output,
             output,
@@ -253,10 +264,11 @@ mod tests {
         }
         .prepare(None)
         .unwrap();
-        assert_eq!(prepared.command.get_program(), interpreter.as_os_str());
-        let args: Vec<_> = prepared
-            .command
-            .get_args()
+        let target = prepared.route.target(&prepared.command);
+        assert_eq!(target.program, interpreter.as_os_str());
+        let args: Vec<_> = target
+            .args
+            .iter()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect();
         assert_eq!(args[0], "-c");

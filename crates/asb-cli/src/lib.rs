@@ -2,13 +2,16 @@
 
 mod agents;
 mod benchmark;
+mod benchmark_paths;
 pub mod cassette;
 mod collectors;
 mod compare;
 mod completion;
 mod config;
 mod endpoint;
+mod executables;
 mod install;
+mod launch;
 mod measurements;
 mod models;
 mod output_lock;

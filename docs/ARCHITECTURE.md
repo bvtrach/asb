@@ -1,5 +1,12 @@
 # Architecture
 
+Benchmark cassette/result labels and manifest references share the private
+`benchmark_paths` policy. Its legacy component normalization is lossy and keeps
+existing artifact names stable; it must not be used as a uniqueness allocator
+or standalone path sandbox. Comparison retains its collision-free graph-name
+allocator. Sweep execution and comparison share the relative-TOML reference
+checks, including existing symlink behavior and actionable path diagnostics.
+
 The versioned [benchmark module contracts](BENCHMARK_MODULES.md) separate suite,
 dataset, harness and evaluation protocol. Owning adapters expose descriptors
 through `asb workload describe`; new selection snapshots bind the same metadata.
@@ -36,8 +43,33 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   every command resolves relative paths from this project root;
 - `runner`: configuration loading, bounded agent-output logging, and live agent
   process execution;
-- `compare`: offline sweep-result loading, numeric aggregation, and dependency-free
-  SVG bar/line chart generation;
+- `compare`: offline reports use explicit loaded, globally validated, prepared,
+  rendered and published phases. Stable row identities and typed result sources
+  bind original evaluation evidence; preparation computes population coverage
+  and unique chart identities once. Sources are opened once as bounded regular
+  files (64 KiB per benchmark, 32 MiB retained configurations, 16 MiB per
+  manifest/collector/preview and 64 MiB per saved plan). Manifest, configuration
+  and saved-plan validation consume retained snapshots, never a refreshed second
+  identity read. Collector previews retain physical paths separately from published
+  logical links. Nullable time-series observations keep aligned timestamps in
+  full JSON; SVGs disclose a 2048-observation bound preserving segment endpoints
+  and extrema, never bridge unknown gaps, and distinguish sample indices from
+  measured milliseconds. Raw state/event timelines are not downsampled.
+  Scalar charts retain accepted negative metrics around an explicit zero
+  baseline, with signed labels and original observations in hover metadata.
+  Signed scalar and series coordinates share overflow-safe normalization;
+  nonnegative scalar scales retain their existing zero-to-maximum geometry.
+  A separate persistent report lock guards private same-filesystem staging;
+  Linux and macOS native rename/exchange publish a whole generation after rendering
+  and synchronization. Replaced generations, including user-added files, remain
+  recoverable backups. If exchange is unsupported, a no-replace capability probe
+  runs only in the private stage before moving the old report. A documented
+  recoverable backup/commit/rollback path then has a brief destination-absence
+  and crash window; it never overwrites a foreign destination. Failed rollback
+  retains the old backup and prints a restore command. Missing safe no-replace
+  support fails closed before moving user data. No native macOS runtime
+  qualification is implied by Linux tests. Post-commit
+  durability or confirmation errors explicitly report that publication occurred;
 - `measurements`: opt-in process-scoped runtime collection. It writes bounded JSON
   records for host facts, elapsed time, success rate, and normalized input,
   output, cached, and total token usage, and
@@ -227,9 +259,20 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   every delegated-cgroup command (`mkdir`, `chown`, `chmod`, and, when needed,
   controller enablement) and asks for explicit approval before running them.
   `asb init --yes` (or `-y`) approves all listed setup groups without prompts.
-  Declining, an invalid answer, or a failed command leaves the setting or
-  delegation unchanged; init remains usable. It never edits sudoers or changes
+  Declining or an invalid answer runs no listed mutation commands. A failed
+  command is reported and init remains usable. It never edits sudoers or changes
   these settings silently.
+  The private `project::host_setup` policy separates declared operations,
+  capability, explicit consent, and execution. A consumed approval owns exactly
+  one command group. The initial passwordless-sudo probe is shared within the
+  sysctl/cgroup setup invocation, not across processes or independent groups.
+  An approved interactive sysctl does not promote cgroup setup to interactive
+  sudo, even if sudo refreshed credentials; this preserves the prior policy.
+  Sysctl failures do not suppress independent settings, while cgroup creation,
+  ownership, permissions and optional controller enabling stop at the first
+  failed prerequisite. Failure is best-effort, not rollback: earlier successful
+  operations may remain applied. Tracefs retains its separate lease and setup
+  contract, sharing only the explicit consent parser.
   On a systemd cgroup-v2 host, the same best-effort init path creates a
   user-owned `asb.slice` beneath the current user slice, enables the CPU
   controller, and records its parent in `.asb/project.toml`; measured runs use
@@ -449,6 +492,53 @@ The native resume path confirms the stopped state before sending CONT, and
 cancellation uses TERM plus CONT with a bounded cleanup wait instead of
 immediately killing the supervisor. All watchers and signals are scoped to
 the attempt; no shared runner signal handler or process-group kill is used.
+Native runner custody is represented by `ManagedGate`, not a raw `Child`
+whose exit could be mistaken for descendant quiescence. Before spawn,
+`Admission` fallibly establishes a wait-only fallback owner and a private,
+nonblocking, versioned socket. The gate emits its PID-bound `Hello` only after
+the owner watcher exists; the runner validates both that receipt and stopped
+readiness before admitting execution with CONT. A stale launcher without this
+ABI is never resumed: startup cleanup uses KILL only, without TERM that could
+indirectly wake an old launcher's watcher. The diagnostic asks the user to
+rebuild/use the current ASB runtime; this is compatibility, not authorization.
+The socket is immediately CLOEXEC in the gate and explicitly closed in its
+forked wake-only child. The client cannot inherit the gate's proof writer.
+Normal completion requires both direct-child exit and a matching, ordered
+`Quiescent` frame, emitted only after owned descendants are stopped and reaped;
+EOF, principal exit and a helper result are not equivalent proofs. Receipt
+reads and writes are bounded and do not wait for EOF from duplicate writers.
+If a teardown sweep cannot establish quiescence, the gate retains supervision
+and retries rather than exiting and orphaning its tree. Caller cancellation
+waits at most six seconds before reporting explicit uncertainty and handing
+the still-owned gate to the precreated wait-only reaper. That reaper never
+kills an admitted guardian. Parent exit still wakes the independently owned
+gate through its existing pinned watcher. This is not a promise that an
+unkillable kernel task disappears within the caller deadline, nor a repair of
+the separate pre-exec allocation and output-reader resource-limit classes.
+The staged launch-descriptor repair separates an adapter's `ProcessLaunch`
+(raw OS executable, argument prefix and explicit client argv[0]) from its actual
+native `Command`. That command is constructed as the gate before any provider,
+adapter, environment, working-directory or I/O configuration and is never
+rebuilt from getters. Rust therefore applies the real `env_clear`, removals,
+overrides, stdio, child credentials and custom process settings. The remaining
+ASB pre-exec callback only changes the private receipt descriptor's CLOEXEC
+flag using `fcntl` and captures an OS error; it allocates no argument/environment
+buffers and never reads the environment after fork. A typed target view keeps
+collectors from treating the gate executable and private framing as the agent.
+The same adapter descriptor constructs direct commands for guest execution and
+runtime input discovery. Client argv[0] belongs in the descriptor, not in the
+gate command's argv[0]. Private `ASBGATE2` admission refuses the previous
+`ASBGATE1` runtime before CONT because it cannot interpret the new target frame.
+The actual native child retains PATH lookup under its final environment. A
+collector cannot infer inheritance versus `env_clear` from `Command` getters;
+bare targets without a provable explicit PATH and unsupported byte-level
+identities remain unavailable instead of being guessed from host PATH.
+Before establishing cleanup custody, the private route verifies the original
+gate executable, exact OS-string target framing and initial adapter arguments.
+A changed carrier, replaced prefix or truncation fails without spawning a child
+or creating a reaper. Admission
+accepts only that validated gated-route token and holds its exclusive command
+borrow through spawn, so there is no mutable configuration gap after checking.
 The native supervisor and its idle watcher are part of the measured process
 tree; process-tree totals include that instrumentation overhead. The watcher
 is created before cgroup attachment, so it remains outside the new accounting
@@ -635,6 +725,22 @@ see [evaluation semantics](EVALUATION.md). Step accounting delegates to the
 owning agent adapter's final counter and reports unknown instead of guessing
 from text or streaming JSON keys. No runner or collector branches on agent
 identity to interpret that counter.
+
+Agent/tool launch and installer/TUI readiness share one project executable
+policy. An explicit `<tools>/<id>/bin/<executable>` source override wins over
+adapter-owned package preferences, then the npm/venv and configured shared-bin
+layouts are considered. Codex owns its native npm-package preference in its
+agent adapter; the generic resolver does not branch on agent identities. A
+present but broken, non-executable or non-file higher-priority candidate stops
+resolution instead of silently executing stale fallback code. Symlinks must
+resolve to executable regular files. These checks do not eliminate changes
+between preparation and execution. Relative/custom tool directories and legacy
+shared-bin candidates are rooted in the selected project, never an unrelated
+working directory. `ASB_TOOL_DIR` remains an execution-only override: a missing
+candidate falls back to the project, a present unusable candidate stops launch,
+and neither case changes project-local installed status. Only explicitly
+host-backed tool recipes retain their separate host-availability fallback;
+host agents and external overrides are not project installations.
 
 Source-file installation stages bytes in a private sibling directory before
 atomically replacing its destination. HTTP downloads ignore user curlrc files,
@@ -1181,6 +1287,17 @@ local workload definitions and enabled/original trial catalogs. Expansion is
 deduplicated and retains the normal bounded sweep contract. `all` is reserved
 and cannot be a selectable identifier; dynamic catalogs reject collisions,
 the TUI excludes colliding entries and CI checks every static registry.
+
+The workload trial wizard reduces explicit browsing, editing and saved states.
+An editing state owns its workload and trial pane; saving replaces that
+workload's in-memory subset. In the saved state, Enter finishes and publishes,
+while Tab reopens the saved choices. Back discards unsaved edits. Browsing or
+deselecting a workload retains its saved subset for later reselection, but
+publication includes only selected workloads and requires each to have a saved
+subset. Saving and cancellation publish no trial-set files.
+Finish checks every saved ID against the current catalogs and serializes all
+selected configurations before writing any file. File I/O remains individually
+fallible; this is not an atomic transaction across multiple trial-set files.
 
 `asb compare BENCHMARK_OR_SWEEP.toml` dispatches by TOML shape, not filename.
 Standalone reports reuse the normal replica-path helper, read the most recent

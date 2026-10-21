@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 const MAX_CONFIG_BYTES: usize = 32 * 1024 * 1024;
-const MAX_PLAN_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_PLAN_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -159,7 +159,25 @@ impl SweepPlan {
         if bytes.len() > MAX_PLAN_BYTES {
             return Err(Error::Input("sweep plan exceeds 64 MiB".into()));
         }
-        let plan: Self = serde_json::from_slice(&bytes).map_err(|error| {
+        Self::decode(&path, &bytes, parent, manifest, |path| {
+            toml::from_str(&read_config(path)?).map_err(|error| Error::Input(error.to_string()))
+        })
+        .map(Some)
+    }
+
+    /// Decode one retained plan/configuration snapshot with the same validation
+    /// used by ordinary loading, without refreshing caller-owned input bytes.
+    pub(crate) fn decode(
+        path: &Path,
+        bytes: &[u8],
+        parent: &Path,
+        manifest: &SweepFile,
+        mut configuration: impl FnMut(&Path) -> Result<BenchmarkConfig, Error>,
+    ) -> Result<Self, Error> {
+        if bytes.len() > MAX_PLAN_BYTES {
+            return Err(Error::Input("sweep plan exceeds 64 MiB".into()));
+        }
+        let plan: Self = serde_json::from_slice(bytes).map_err(|error| {
             Error::Input(format!("invalid sweep plan {}: {error}", path.display()))
         })?;
         if plan.schema_version != 1
@@ -183,8 +201,7 @@ impl SweepPlan {
         }
         for (entry, reference) in plan.entries.iter().zip(&manifest.configs) {
             let path = parent.join(reference);
-            let config: BenchmarkConfig = toml::from_str(&read_config(&path)?)
-                .map_err(|error| Error::Input(error.to_string()))?;
+            let config = configuration(&path)?;
             if !entry.selection.valid()
                 || entry.reference != *reference
                 || entry.configuration != config
@@ -206,7 +223,7 @@ impl SweepPlan {
                     .collect::<Vec<_>>(),
             )?;
         }
-        Ok(Some(plan))
+        Ok(plan)
     }
 }
 

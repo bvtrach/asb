@@ -15,6 +15,7 @@ pub(crate) mod workload_process;
 use super::{Error, io_error, read_config};
 use crate::agents;
 use crate::benchmark::BenchmarkConfig;
+use crate::benchmark_paths::component;
 use crate::collectors::{LifecycleEvent, LifecyclePhase};
 use crate::measurements;
 use crate::models;
@@ -979,26 +980,33 @@ fn instrument_phase<T>(
 /// interface, including failures after the execution span has begun.
 fn run_measured_agent(
     command: &mut Command,
-    program: &str,
-    target_args: Option<&[String]>,
+    target: &crate::launch::TargetLaunch,
+    route: Option<crate::launch::CommandRoute>,
     mut session: Option<&mut measurements::Session>,
     show_output: bool,
     output: &mut dyn Write,
 ) -> Result<MeasuredOutput, Error> {
     let started = Instant::now();
+    let gated = route
+        .as_ref()
+        .is_some_and(crate::launch::CommandRoute::is_gated);
+    #[cfg(target_os = "linux")]
+    let admission = if let Some(route) = route.filter(|route| route.is_gated()) {
+        let validated = route
+            .validate_gate(command)
+            .map_err(|error| Error::Run(format!("cannot validate ASB gate launch: {error}")))?;
+        Some(
+            crate::process_gate::Admission::new(validated).map_err(|error| {
+                Error::Run(format!(
+                    "cannot establish ASB process gate custody: {error}"
+                ))
+            })?,
+        )
+    } else {
+        None
+    };
     if let Some(session) = session.as_deref_mut() {
-        session.agent_launch_prepared(command);
-    }
-    let mut gated = false;
-    #[cfg(unix)]
-    if (session.is_some() || cfg!(target_os = "linux"))
-        && let Some(target_args) = target_args
-        && gate_target_available(program)
-    {
-        let executable = crate::process_gate::executable()
-            .map_err(|error| Error::Run(format!("cannot resolve ASB process gate: {error}")))?;
-        crate::process_gate::install(command, &executable, program, target_args);
-        gated = true;
+        session.agent_launch_prepared(target);
     }
     let mut child = {
         let mut emit = |event| {
@@ -1010,10 +1018,20 @@ fn run_measured_agent(
         emit(LifecycleEvent::MeasurementsReady)?;
         emit(LifecycleEvent::AgentSpawn)?;
         emit(LifecycleEvent::AgentExecuteBegin)?;
-        let child = match command.spawn() {
-            Ok(child) => OwnedChild(child, gated),
+        #[cfg(target_os = "linux")]
+        let spawned = match admission {
+            Some(admission) => admission.spawn().map(OwnedChild::Gated),
+            None => command.spawn().map(OwnedChild::Direct),
+        };
+        #[cfg(not(target_os = "linux"))]
+        let spawned = command.spawn().map(OwnedChild::Direct);
+        let child = match spawned {
+            Ok(child) => child,
             Err(error) => {
-                let mut primary = format!("could not start {program}: {error}");
+                let mut primary = format!(
+                    "could not start {}: {error}",
+                    target.program.to_string_lossy()
+                );
                 for event in [
                     LifecycleEvent::AgentExecuteEnd,
                     LifecycleEvent::AgentSpawnFailed,
@@ -1044,7 +1062,7 @@ fn run_measured_agent(
     }
     #[cfg(unix)]
     if gated {
-        crate::process_gate::resume(&mut child.0).map_err(|error| {
+        child.resume().map_err(|error| {
             Error::Run(format!("could not resume measured agent process: {error}"))
         })?;
     }
@@ -1089,7 +1107,10 @@ fn run_measured_agent(
             })
         }
         Err(error) => {
-            let mut primary = format!("could not wait for {program}: {error}");
+            let mut primary = format!(
+                "could not wait for {}: {error}",
+                target.program.to_string_lossy()
+            );
             if let Some(secondary) = issues.collector_failure() {
                 primary.push_str(&format!("; {secondary}"));
             }
@@ -1099,10 +1120,12 @@ fn run_measured_agent(
 }
 
 #[cfg(unix)]
-fn gate_target_available(program: &str) -> bool {
+fn gate_target_available(program: impl AsRef<std::ffi::OsStr>) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let program = program.as_ref();
     let path = Path::new(program);
     if !path.is_file() {
-        return !program.contains('/');
+        return !program.as_bytes().contains(&b'/');
     }
     let Ok(bytes) = std::fs::read(path) else {
         return false;
@@ -1132,23 +1155,10 @@ fn default_cassette(config_path: &Path, config: &BenchmarkConfig) -> std::path::
         .join("cassettes")
         .join(format!(
             "{stem}-{}-{}-{}.jsonl",
-            safe_name(&config.agent),
-            safe_name(&config.workload),
-            safe_name(&config.model)
+            component(&config.agent),
+            component(&config.workload),
+            component(&config.model)
         ))
-}
-
-fn safe_name(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect()
 }
 
 fn write_log(
@@ -1359,39 +1369,82 @@ enum OutputChunk {
 
 // std::process::Child does not stop a process on drop. Own it from spawn
 // through all collector attachment, output and wait error paths.
-struct OwnedChild(Child, bool);
+enum OwnedChild {
+    Direct(Child),
+    #[cfg(target_os = "linux")]
+    Gated(crate::process_gate::ManagedGate),
+}
 
 impl OwnedChild {
     fn stop(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        #[cfg(target_os = "linux")]
-        if self.1 {
-            return crate::process_gate::cancel_gate(&mut self.0);
+        match self {
+            Self::Direct(child) => {
+                let _ = child.kill();
+                child.wait()
+            }
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.stop(),
         }
-        let _ = self.0.kill();
-        self.0.wait()
     }
-}
-
-impl std::ops::Deref for OwnedChild {
-    type Target = Child;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+    fn id(&self) -> u32 {
+        match self {
+            Self::Direct(child) => child.id(),
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.id(),
+        }
     }
-}
-
-impl std::ops::DerefMut for OwnedChild {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        match self {
+            Self::Direct(child) => child.try_wait(),
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.try_wait(),
+        }
+    }
+    fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        match self {
+            Self::Direct(child) => child.wait(),
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.wait(),
+        }
+    }
+    fn take_stdout(&mut self) -> Option<std::process::ChildStdout> {
+        match self {
+            Self::Direct(child) => child.stdout.take(),
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.take_stdout(),
+        }
+    }
+    fn take_stderr(&mut self) -> Option<std::process::ChildStderr> {
+        match self {
+            Self::Direct(child) => child.stderr.take(),
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.take_stderr(),
+        }
+    }
+    #[cfg(unix)]
+    fn resume(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Direct(child) => crate::process_gate::resume(child),
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.resume(),
+        }
     }
 }
 
 impl Drop for OwnedChild {
     fn drop(&mut self) {
-        if self.0.try_wait().ok().flatten().is_none() {
-            let _ = self.stop();
+        // ManagedGate owns its own bounded cancellation/handoff policy. Never
+        // follow it with an unconditional raw wait in this outer owner.
+        match self {
+            Self::Direct(child) => {
+                if child.try_wait().ok().flatten().is_none() {
+                    let _ = child.kill();
+                }
+                let _ = child.wait();
+            }
+            #[cfg(target_os = "linux")]
+            Self::Gated(_) => {}
         }
-        let _ = self.0.wait();
     }
 }
 
@@ -1426,7 +1479,7 @@ pub(crate) fn run_guest_process(
         .map_err(|error| Error::Run(format!("cannot retain guest agent descendants: {error}")))?;
     let child = command
         .spawn()
-        .map(|child| OwnedChild(child, false))
+        .map(OwnedChild::Direct)
         .map_err(|error| Error::Run(format!("cannot start guest agent: {error}")))?;
     wait_with_output_streams(child, true, stdout, Some(stderr), runtime, &mut || {
         #[cfg(target_os = "linux")]
@@ -1480,12 +1533,10 @@ fn capture_with_output_streams(
     after_exit: &mut dyn FnMut() -> std::io::Result<()>,
 ) -> std::io::Result<CapturedOutput> {
     let stdout = child
-        .stdout
-        .take()
+        .take_stdout()
         .ok_or_else(|| std::io::Error::other("agent stdout was not piped"))?;
     let stderr = child
-        .stderr
-        .take()
+        .take_stderr()
         .ok_or_else(|| std::io::Error::other("agent stderr was not piped"))?;
     let (sender, receiver) = mpsc::channel();
     let stdout_sender = sender.clone();
@@ -1797,9 +1848,10 @@ mod tests {
         session.test_attach_failure = fail_attach;
         let marker = dir.join("marker");
         session.set_test_marker(&marker);
+        let target = crate::launch::TargetLaunch::direct(command);
         let _ = super::run_measured_agent(
             command,
-            "fixture",
+            &target,
             None,
             Some(&mut session),
             false,
@@ -2027,9 +2079,10 @@ mod tests {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
         let execution_started = std::time::Instant::now();
+        let target = crate::launch::TargetLaunch::direct(&command);
         let output = super::run_measured_agent(
             &mut command,
-            "sh",
+            &target,
             None,
             Some(&mut session),
             false,
@@ -2151,7 +2204,7 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = child.id();
-        let owned = super::OwnedChild(child, false);
+        let owned = super::OwnedChild::Direct(child);
         // Simulate returning from the runner after attachment fails.
         drop(owned);
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
@@ -2177,7 +2230,7 @@ mod tests {
             .unwrap();
         let pid = child.id();
         let error =
-            super::wait_with_output(super::OwnedChild(child, false), true, &mut FailingWriter)
+            super::wait_with_output(super::OwnedChild::Direct(child), true, &mut FailingWriter)
                 .unwrap_err();
         assert!(error.to_string().contains("fixture output failure"));
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
