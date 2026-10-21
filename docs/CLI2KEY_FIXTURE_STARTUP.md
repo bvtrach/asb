@@ -88,19 +88,23 @@ No local full-crate suite, hosted/package CI, PR publication, merge or release
 is claimed by that historical checkpoint. The then-planned main-30 repair was
 subsequently superseded by the peer main-31 integration below.
 
-## Current main-31 integration (qualification pending)
+## Main-31 integration and coordinated patch 32 (qualification pending)
 
 Actual main advanced to `cabaa576` through peer PR294 (version 0.2.31).
-The fixture branch retains that exact production, Cargo, workflow and version
-tree; its only delta is this document and the fixture repair in `offline_cli.rs`.
+The signed integration `01e3af38` retained that exact production, Cargo, workflow
+and version tree; its only delta was this document and the fixture repair in
+`offline_cli.rs`.
 The incoming cassette compatibility changes remain: fresh fake clients repair
 their own task material, and recorded output is read as a bounded cassette
 archive with complete-track validation rather than assumed plain JSONL. CI's
 new capture-session and tape-normalization script packaging checks are retained.
 
 The preceding version-30 test counts/hash are historical evidence, not proof of
-this integrated head. A fresh actual CLI build, complete offline target and
-strict lint/format qualification are required. No version bump, version-30
-release from version-31 main or replacement of the peer release is authorized
-by this fixture-only integration. Hosted CI, PR and release decisions remain
-with root after exact integration review and new qualification.
+this integrated head. Its version-31 build finished without starting tests.
+Root then authorized coordinated patch 0.2.32: only the package version in
+Cargo.toml and Cargo.lock changes alongside this fixture/document repair.
+The old version-30 delivery is superseded; the intended repair release includes
+peer main-31 without tagging version 30 or replacing/reusing the peer release.
+A fresh actual patch-32 CLI build, complete offline target and strict lint/format
+qualification are required; earlier hashes/results are not substituted.
+Hosted CI, PR, merge and release decisions remain with root after exact review.
