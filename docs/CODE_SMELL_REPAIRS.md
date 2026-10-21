@@ -25,8 +25,31 @@ deadlines retain the shared preparation budget and reject late dequeued requests
 The existing non-Unix compatibility path receives the same settlement semantics,
 but its blocking I/O/Drop remains explicitly unqualified by Unix tests.
 Independent source review approved integration `a5aa6e03`; its only minor finding,
-a duplicate Python `time` import, is removed in this follow-up. No fresh build,
-tests, hosted CI, PR, merge or release is claimed for this tree.
+a duplicate Python `time` import, was removed at `faf22231`. Initial focused
+qualification found one obsolete test accessing a child after correct Unix
+fallback handoff; independently reviewed test-only `8b9a009d` instead requires
+explicit custody uncertainty and the original pre-established worker's exit.
+Focused controller/protocol/remote and actual protocol/repeated-run targets
+passed 112 tests. The first full run then rejected the new generic controller
+directory through the strict layout guard; independently reviewed test-only
+`9e874106` adds exactly that directory and also forbids registered adapter stems
+as generic directories. A fresh full all-target/all-feature offline suite at
+`9e874106` passed **1,217 tests**, zero failures and 21 explicit optional skips
+across 22 targets. Both earlier failure transcripts remain retained.
+Strict Clippy subsequently rejected the test's complex tuple. Independently
+reviewed test-only `4a3b8647` replaces it with a named `CategoryLayout`, retaining
+the same five registry populations, allowlists and assertions without lint
+suppression. Its focused layout regression, strict all-target/all-feature
+Clippy and formatting passed; the full 1,217-test evidence above remains tied
+to `9e874106`, not falsely claimed as a fresh full run at `4a3b8647`.
+Sequential offline build/private Rust docs/pinned AutoUML 0.7.2/flows/interactive
+views/bash and zsh completions passed. The actual executable SHA-256 stayed
+unchanged before/after runtime tests and the final build:
+`26627f73727662096c474899ad97cde664f5236b1eaf1bb8c991345f1c30e1c8`.
+Signed ancestry merge `e8313859` retains typed-controller delivery head
+`940a9d39` and changes only the ledger, not production, tests or Cargo bytes.
+Hosted exact-head/package CI, PR merge, post-merge verification and release
+remain pending. No optional SDK/host/provider qualification is inferred.
 
 Integrated candidate, staged patch **0.2.30**: independently source-approved
 typed task-controller contracts `ac8c7753` and historical layout correction
