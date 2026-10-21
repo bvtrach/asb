@@ -338,6 +338,14 @@ compatible authentication style and obtains its connection details from that
 specific provider offer. It does not
 select providers based on agent identity or agents based on provider identity.
 No intersection produces an actionable error rather than a silent fallback.
+Each project-local cli2key session starts an independent bridge on a selected
+free loopback port by default, avoiding the upstream shared default port during
+concurrent replicas. Startup is serialized only through readiness; execution
+remains concurrent. Explicit `CODEX_BRIDGE_PORT` remains a fixed-port override;
+to intentionally share an existing bridge use `CLI2KEY_BASE_URL` and its key.
+The upstream pinned CLI cannot bind port zero, so free-port selection is not an
+atomic listener reservation against unrelated processes; a collision fails
+startup, never authorizes using somebody else's listener.
 The project-local cli2key session owns a small compatibility hop in front of the
 bridge. It removes only Codex host metadata (`additional_tools` and reasoning
 context) that the bridge API cannot accept, while forwarding prompts, function

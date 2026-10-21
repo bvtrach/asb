@@ -46,6 +46,10 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+The cli2key concurrency regression uses two mock bridge listeners and mock
+clients, with fixture-only credentials. Both authenticated local requests must
+overlap and reach different owned servers; both servers must be reaped afterward.
+It does not use the installed cli2key package or a backend subscription.
 The agent-process sampler regression launches a bounded local Node fixture,
 changes its process title and checks two seconds of continued sampling, an
 unrelated Node process and the original process's exit. It uses no provider,

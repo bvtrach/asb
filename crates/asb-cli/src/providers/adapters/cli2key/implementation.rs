@@ -4,11 +4,15 @@ use crate::Error;
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+// Upstream cannot bind port zero. Serialize startup through readiness, not
+// session lifetime, so our concurrent sessions select different free ports.
+static STARTUP: Mutex<()> = Mutex::new(());
 const BUILTIN_COMPAT_PROXY: &str = include_str!("../../../../assets/scripts/cli2key-proxy.mjs");
 const NETWORK_FETCH: &str = include_str!("../../../../assets/scripts/network-fetch.mjs");
 
@@ -84,8 +88,15 @@ impl Bridge {
         let executable = executable.ok_or(Error::Run(
             "cli2key provider needs a local bridge; run `asb tool install cli2key` in the initialized project, or set CLI2KEY_BASE_URL and CLI2KEY_API_KEY for an external bridge".into(),
         ))?;
+        let _startup = STARTUP.lock().map_err(|_| {
+            Error::Run("cli2key bridge startup coordination failed; retry the run".into())
+        })?;
         let host = std::env::var("CODEX_BRIDGE_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-        let port = std::env::var("CODEX_BRIDGE_PORT").unwrap_or_else(|_| "3456".into());
+        let port = match std::env::var("CODEX_BRIDGE_PORT") {
+            Ok(value) => value,
+            Err(std::env::VarError::NotPresent) => free_port()?.to_string(),
+            Err(_) => return Err(Error::Run("CODEX_BRIDGE_PORT must be valid UTF-8".into())),
+        };
         let port_number = port.parse::<u16>().map_err(|_| {
             Error::Run("CODEX_BRIDGE_PORT must be an integer from 1 to 65535".into())
         })?;
