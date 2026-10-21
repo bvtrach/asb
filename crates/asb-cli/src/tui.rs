@@ -37,7 +37,12 @@ const INFO_GLYPH: &str = "ⓘ";
 #[cfg(test)]
 #[path = "tui/coverage_tests.rs"]
 mod coverage_tests;
+#[cfg(test)]
+#[path = "tui/identity_tests.rs"]
+mod identity_tests;
 
+mod choice;
+use choice::{ChoiceKey, PaneKind};
 mod workload_state;
 use workload_state::{WorkloadAction, WorkloadStep, WorkloadWizard};
 
@@ -51,8 +56,7 @@ enum Availability {
 #[derive(Clone, Debug)]
 struct Choice {
     label: String,
-    provider: Option<String>,
-    model: Option<String>,
+    key: ChoiceKey,
     availability: Availability,
 }
 
@@ -70,18 +74,10 @@ struct Pane {
 
 impl Pane {
     fn new(choices: Vec<Choice>) -> Self {
+        let mut seen = BTreeSet::new();
         let choices = choices
             .into_iter()
-            .filter(|choice| {
-                let name = choice
-                    .label
-                    .strip_suffix(" [trial set]")
-                    .unwrap_or(&choice.label);
-                crate::selection_names::validate(name, "selection").is_ok()
-                    && choice.model.as_deref().is_none_or(|model| {
-                        crate::selection_names::validate(model, "model").is_ok()
-                    })
-            })
+            .filter(|choice| choice.key.valid() && seen.insert(choice.key.clone()))
             .collect::<Vec<_>>();
         Self {
             selected: vec![false; choices.len()],
@@ -181,20 +177,26 @@ impl Pane {
 struct App {
     root: PathBuf,
     project: project::ProjectConfig,
-    panes: Vec<Pane>,
-    step: usize,
+    panes: [Pane; 6],
+    step: PaneKind,
     message: String,
     message_color: Color,
     message_until: Option<std::time::Instant>,
 }
 
 impl App {
+    fn pane(&self, kind: PaneKind) -> &Pane {
+        &self.panes[kind.index()]
+    }
+    fn pane_mut(&mut self, kind: PaneKind) -> &mut Pane {
+        &mut self.panes[kind.index()]
+    }
+
     fn new(root: PathBuf, project: project::ProjectConfig) -> Self {
         let agents = agents::names()
             .map(|name| Choice {
                 label: (*name).into(),
-                provider: None,
-                model: None,
+                key: ChoiceKey::Agent((*name).into()),
                 availability: Availability::Unknown,
             })
             .collect();
@@ -204,8 +206,7 @@ impl App {
             .chain(std::iter::once("local"))
             .map(|name| Choice {
                 label: name.into(),
-                provider: None,
-                model: None,
+                key: ChoiceKey::Provider(name.into()),
                 availability: Availability::Unknown,
             })
             .collect();
@@ -215,10 +216,7 @@ impl App {
             .map(str::to_owned)
             .collect::<BTreeSet<_>>();
         for (index, choice) in workload_pane.choices.iter().enumerate() {
-            let name = choice
-                .label
-                .strip_suffix(" [trial set]")
-                .unwrap_or(&choice.label);
+            let name = choice.key.workload().expect("workload pane identity");
             workload_pane.sections[index] = Some(if external_names.contains(name) {
                 "External workloads"
             } else {
@@ -228,18 +226,16 @@ impl App {
         let measures = measurements::available_collectors()
             .into_iter()
             .map(|name| Choice {
+                key: ChoiceKey::Collector(name.clone()),
                 label: name,
-                provider: None,
-                model: None,
                 availability: Availability::Available,
             })
             .collect();
         let measure_pane = Pane::new(measures);
-        let concurrency_choices = (1..=16)
+        let concurrency_choices = (1..=crate::benchmark::MAX_CONCURRENCY)
             .map(|value| Choice {
                 label: value.to_string(),
-                provider: None,
-                model: None,
+                key: ChoiceKey::Concurrency(value),
                 availability: Availability::Available,
             })
             .collect();
@@ -248,7 +244,7 @@ impl App {
         let mut app = Self {
             root,
             project,
-            panes: vec![
+            panes: [
                 Pane::new(agents),
                 Pane::new(provider_choices),
                 Pane::new(Vec::new()),
@@ -256,42 +252,49 @@ impl App {
                 measure_pane,
                 concurrency_pane,
             ],
-            step: 0,
+            step: PaneKind::Agents,
             message: "Space selects; arrows move; Tab or Enter advances; Esc cancels.".into(),
             message_color: Color::Yellow,
             message_until: None,
         };
         app.refresh_availability();
         // Missing tools and their dependants are not selected implicitly.
-        for index in 0..app.panes[4].choices.len() {
-            let choice = &app.panes[4].choices[index];
-            let dependencies =
-                crate::collectors::expand_dependencies(std::slice::from_ref(&choice.label));
-            app.panes[4].selected[index] = dependencies.iter().all(|name| {
-                app.panes[4]
-                    .choices
-                    .iter()
-                    .any(|item| &item.label == name && item.availability == Availability::Available)
-            });
+        for index in 0..app.panes[PaneKind::Measurements.index()].choices.len() {
+            let choice = &app.panes[PaneKind::Measurements.index()].choices[index];
+            let dependencies = crate::collectors::expand_dependencies(&[choice
+                .key
+                .collector()
+                .expect("collector pane identity")
+                .to_owned()]);
+            app.panes[PaneKind::Measurements.index()].selected[index] =
+                dependencies.iter().all(|name| {
+                    app.panes[PaneKind::Measurements.index()]
+                        .choices
+                        .iter()
+                        .any(|item| {
+                            item.key.collector() == Some(name.as_str())
+                                && item.availability == Availability::Available
+                        })
+                });
         }
         app
     }
 
     fn refresh_availability(&mut self) {
         let tools = project::resolve(&self.root, &self.project.tools_dir);
-        for choice in &mut self.panes[0].choices {
-            choice.availability = if install::tool_available(&choice.label, &tools) {
+        for choice in &mut self.panes[PaneKind::Agents.index()].choices {
+            choice.availability = if install::tool_available(
+                choice.key.agent().expect("agent pane identity"),
+                &tools,
+            ) {
                 Availability::Available
             } else {
                 Availability::Missing
             };
         }
         let workloads = project::resolve(&self.root, &self.project.workloads_dir);
-        for choice in &mut self.panes[3].choices {
-            let name = choice
-                .label
-                .strip_suffix(" [trial set]")
-                .unwrap_or(&choice.label);
+        for choice in &mut self.panes[PaneKind::Workloads.index()].choices {
+            let name = choice.key.workload().expect("workload pane identity");
             let external = install::external_workload_names().any(|external| external == name);
             choice.availability = if install::workload_available(name, &workloads)
                 || (!external && workloads::load(name, &workloads).is_ok())
@@ -301,8 +304,11 @@ impl App {
                 Availability::Missing
             };
         }
-        for choice in &mut self.panes[4].choices {
-            choice.availability = if crate::collectors::find(&choice.label).is_some_and(|adapter| {
+        for choice in &mut self.panes[PaneKind::Measurements.index()].choices {
+            choice.availability = if crate::collectors::find(
+                choice.key.collector().expect("collector pane identity"),
+            )
+            .is_some_and(|adapter| {
                 adapter
                     .tool_id()
                     .is_none_or(|tool| install::tool_available(tool, &tools))
@@ -315,14 +321,18 @@ impl App {
     }
 
     fn sync_collector_dependencies(&mut self) -> Vec<String> {
-        let selected = self.panes[4]
+        let selected = self.panes[PaneKind::Measurements.index()]
             .selected_choices()
-            .map(|choice| choice.label.clone())
+            .filter_map(|choice| choice.key.collector().map(str::to_owned))
             .collect::<Vec<_>>();
         let expanded = crate::collectors::expand_dependencies(&selected);
-        let pane = &mut self.panes[4];
+        let pane = &mut self.panes[PaneKind::Measurements.index()];
         for (choice, enabled) in pane.choices.iter().zip(pane.selected.iter_mut()) {
-            if expanded.contains(&choice.label) {
+            if choice
+                .key
+                .collector()
+                .is_some_and(|id| expanded.iter().any(|name| name == id))
+            {
                 *enabled = true;
             }
         }
@@ -337,9 +347,9 @@ impl App {
         &mut self,
         mut discover: impl FnMut(&str) -> Result<Vec<String>, Error>,
     ) -> Option<String> {
-        let selected_providers = self.panes[1]
+        let selected_providers = self.panes[PaneKind::Providers.index()]
             .selected_choices()
-            .map(|choice| choice.label.clone())
+            .filter_map(|choice| choice.key.provider().map(str::to_owned))
             .collect::<Vec<_>>();
         let mut choices = Vec::new();
         let mut warnings = Vec::new();
@@ -365,25 +375,29 @@ impl App {
                         "{provider}:{model}{}",
                         if is_fallback { " [fallback]" } else { "" }
                     ),
-                    provider: Some(provider.clone()),
-                    model: Some(model),
+                    key: ChoiceKey::Model {
+                        provider: provider.clone(),
+                        model,
+                    },
                     availability: Availability::Unknown,
                 });
             }
         }
-        self.panes[2] = Pane::new(choices);
+        self.panes[PaneKind::Models.index()] = Pane::new(choices);
         (!warnings.is_empty()).then(|| warnings.join(" | "))
     }
 
     fn advance(&mut self) -> Result<Option<Generated>, Error> {
-        if !self.panes[self.step].has_selection() {
+        if !self.pane(self.step).has_selection() {
             self.message = "Select at least one item before continuing.".into();
             return Ok(None);
         }
-        let model_warning = (self.step == 1).then(|| self.refresh_models()).flatten();
-        if self.step + 1 < self.panes.len() {
-            self.step += 1;
-            self.message = model_warning.unwrap_or_else(|| DESCRIPTIONS[self.step].into());
+        let model_warning = (self.step == PaneKind::Providers)
+            .then(|| self.refresh_models())
+            .flatten();
+        if let Some(next) = self.step.next() {
+            self.step = next;
+            self.message = model_warning.unwrap_or_else(|| self.step.description().into());
             self.message_color = Color::Yellow;
             self.message_until = None;
             Ok(None)
@@ -393,9 +407,9 @@ impl App {
     }
 
     fn back(&mut self) {
-        if self.step > 0 {
-            self.step -= 1;
-            self.message = DESCRIPTIONS[self.step].into();
+        if let Some(previous) = self.step.previous() {
+            self.step = previous;
+            self.message = self.step.description().into();
         }
     }
 }
@@ -523,18 +537,14 @@ fn external_workload_choices(directory: &Path) -> Vec<Choice> {
                 Availability::Missing
             };
             Choice {
+                key: ChoiceKey::Prompt(label.clone()),
                 label,
-                provider: None,
-                model: None,
                 availability,
             }
         })
         .collect::<Vec<_>>();
     choices.sort_by_key(|choice| {
-        let name = choice
-            .label
-            .strip_suffix(" [trial set]")
-            .unwrap_or(&choice.label);
+        let name = choice.key.workload().expect("workload pane identity");
         (!external_names.contains(name), choice.label.clone())
     });
     choices
@@ -543,7 +553,7 @@ fn external_workload_choices(directory: &Path) -> Vec<Choice> {
 fn refresh_workload_availability(app: &mut WorkloadApp) {
     let directory = project::resolve(&app.root, &app.project.workloads_dir);
     for choice in &mut app.workloads.choices {
-        let name = &choice.label;
+        let name = choice.key.workload().expect("workload pane identity");
         choice.availability = if install::workload_available(name, &directory) {
             Availability::Available
         } else {
@@ -610,11 +620,12 @@ fn workload_loop(
                 } else if matches!(app.wizard.step, WorkloadStep::Saved { .. })
                     && code == KeyCode::Enter
                 {
-                    if app
-                        .workloads
-                        .selected_choices()
-                        .any(|choice| !app.wizard.selections.contains_key(&choice.label))
-                    {
+                    if app.workloads.selected_choices().any(|choice| {
+                        !choice
+                            .key
+                            .workload()
+                            .is_some_and(|name| app.wizard.selections.contains_key(name))
+                    }) {
                         app.message = "Save trials for every selected workload before finishing. Browse to open another workload.".into();
                     } else if app.wizard.reduce(WorkloadAction::Finish).unwrap_or(false) {
                         return write_trial_sets(app);
@@ -634,7 +645,11 @@ fn workload_loop(
                             "Select the highlighted workload before opening its trials.".into();
                         continue;
                     }
-                    let current = app.workloads.choices[index].label.clone();
+                    let current = app.workloads.choices[index]
+                        .key
+                        .workload()
+                        .expect("workload pane identity")
+                        .to_owned();
                     let trials = Pane::new(
                         workloads::installed_trials(
                             &current,
@@ -643,9 +658,8 @@ fn workload_loop(
                         .map_err(Error::Input)?
                         .into_iter()
                         .map(|trial| Choice {
+                            key: ChoiceKey::Trial(trial.id.clone()),
                             label: trial.id,
-                            provider: None,
-                            model: None,
                             availability: Availability::Available,
                         })
                         .collect(),
@@ -712,7 +726,11 @@ fn install_workload_selection(
         );
         return Ok(false);
     };
-    let name = choice.label.clone();
+    let name = choice
+        .key
+        .workload()
+        .expect("workload pane identity")
+        .to_owned();
     set_message(
         &mut app.message,
         &mut app.message_color,
@@ -945,7 +963,7 @@ fn write_trial_sets(app: &WorkloadApp) -> Result<usize, Error> {
     // complete selection before replacing any previously published subset.
     let mut pending = Vec::new();
     for choice in app.workloads.selected_choices() {
-        let workload = &choice.label;
+        let workload = choice.key.workload().expect("workload pane identity");
         let ids =
             app.wizard.selections.get(workload).ok_or_else(|| {
                 Error::Input(format!("save trials for {workload} before finishing"))
@@ -968,7 +986,7 @@ fn write_trial_sets(app: &WorkloadApp) -> Result<usize, Error> {
             .filter(|trial| ids.contains(&trial.id))
             .collect();
         let config = workloads::TrialSet {
-            workload: workload.clone(),
+            workload: workload.to_owned(),
             trials,
         };
         let path = directory.join(format!("{workload}.workload.toml"));
@@ -1190,10 +1208,10 @@ fn run_loop(
                 code: KeyCode::Tab | KeyCode::Enter,
                 ..
             } => {
-                if app.step == 4 {
-                    let selected = app.panes[4]
+                if app.step == PaneKind::Measurements {
+                    let selected = app.panes[PaneKind::Measurements.index()]
                         .selected_choices()
-                        .map(|choice| choice.label.clone())
+                        .filter_map(|choice| choice.key.collector().map(str::to_owned))
                         .collect::<Vec<_>>();
                     if !install_setup_dependencies(terminal, app, &selected)? {
                         continue;
@@ -1207,17 +1225,19 @@ fn run_loop(
             KeyEvent {
                 code: KeyCode::Char(' '),
                 ..
-            } if app.step == 5 => app.panes[5].toggle_single(),
+            } if app.step == PaneKind::Concurrency => {
+                app.panes[PaneKind::Concurrency.index()].toggle_single()
+            }
             KeyEvent {
                 code: KeyCode::Char(' '),
                 ..
-            } if matches!(app.step, 0 | 3 | 4) => {
+            } if app.step.installable() => {
                 toggle_setup_choice(app, |app, selected| match selected {
                     Some(selected) => install_setup_dependencies(terminal, app, selected),
                     None => install_setup_selection(terminal, app),
                 })?;
             }
-            key if handle_pane_key(&mut app.panes[app.step], key) => {}
+            key if handle_pane_key(app.pane_mut(app.step), key) => {}
             _ => {}
         }
     }
@@ -1314,14 +1334,14 @@ where
     F: FnMut(&mut App, Option<&[String]>) -> Result<bool, Error>,
 {
     let step = app.step;
-    let Some(index) = app.panes[step].active_index() else {
+    let Some(index) = app.panes[step.index()].active_index() else {
         return Ok(());
     };
-    if app.panes[step].selected[index] {
-        app.panes[step].selected[index] = false;
-        if step == 4 {
+    if app.panes[step.index()].selected[index] {
+        app.panes[step.index()].selected[index] = false;
+        if step == PaneKind::Measurements {
             app.sync_collector_dependencies();
-            if app.panes[step].selected[index] {
+            if app.panes[step.index()].selected[index] {
                 set_message(
                     &mut app.message,
                     &mut app.message_color,
@@ -1334,22 +1354,29 @@ where
         }
         return Ok(());
     }
-    if app.panes[step].choices[index].availability == Availability::Missing && !install(app, None)?
+    if app.panes[step.index()].choices[index].availability == Availability::Missing
+        && !install(app, None)?
     {
         return Ok(());
     }
-    if step == 4 {
-        let mut selected = app.panes[4]
+    if step == PaneKind::Measurements {
+        let mut selected = app.panes[PaneKind::Measurements.index()]
             .selected_choices()
-            .map(|choice| choice.label.clone())
+            .filter_map(|choice| choice.key.collector().map(str::to_owned))
             .collect::<Vec<_>>();
-        selected.push(app.panes[4].choices[index].label.clone());
+        selected.push(
+            app.panes[PaneKind::Measurements.index()].choices[index]
+                .key
+                .collector()
+                .expect("collector pane identity")
+                .to_owned(),
+        );
         if !install(app, Some(&selected))? {
             return Ok(());
         }
     }
-    app.panes[step].selected[index] = true;
-    if step == 4 {
+    app.panes[step.index()].selected[index] = true;
+    if step == PaneKind::Measurements {
         app.sync_collector_dependencies();
     }
     Ok(())
@@ -1365,24 +1392,17 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
             Constraint::Length(3),
         ])
         .split(frame.area());
-    let steps = [
-        "agent",
-        "provider",
-        "model",
-        "workload",
-        "measures",
-        "concurrency",
-    ];
+    let steps = PaneKind::ORDER.map(PaneKind::name);
     let step_line = steps
         .iter()
         .enumerate()
         .flat_map(|(index, name)| {
-            let style = if index == app.step {
+            let style = if index == app.step.index() {
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
-            } else if index < app.step {
+            } else if index < app.step.index() {
                 Style::default().fg(Color::Green)
             } else {
                 Style::default().fg(Color::DarkGray)
@@ -1403,22 +1423,22 @@ fn draw(frame: &mut ratatui::Frame<'_>, app: &App) {
         vertical[0],
     );
     frame.render_widget(
-        Paragraph::new(DESCRIPTIONS[app.step])
+        Paragraph::new(app.step.description())
             .wrap(Wrap { trim: true })
             .block(Block::default().borders(Borders::ALL).title("Step")),
         vertical[1],
     );
-    let pane = &app.panes[app.step];
-    render_choice_pane(frame, vertical[2], pane, !matches!(app.step, 1 | 2 | 5));
+    let pane = app.pane(app.step);
+    render_choice_pane(frame, vertical[2], pane, app.step.installable());
     frame.render_widget(
         Paragraph::new(Text::from(vec![
             Line::from(vec![
-                if matches!(app.step, 1 | 2 | 5) {
+                if !app.step.installable() {
                     Span::styled("Discovery only", Style::default().fg(Color::Yellow))
                 } else {
                     Span::styled("Space select/install", Style::default().fg(Color::Cyan))
                 },
-                if matches!(app.step, 1 | 2 | 5) {
+                if !app.step.installable() {
                     Span::raw(" | Enter next")
                 } else {
                     Span::raw(" | ⓘ green=ready red=missing yellow=unknown | Enter next")
@@ -1564,7 +1584,10 @@ fn install_setup_selection(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut App,
 ) -> Result<bool, Error> {
-    let Some(choice) = app.panes[app.step].choices.get(app.panes[app.step].cursor) else {
+    let Some(choice) = app.panes[app.step.index()]
+        .choices
+        .get(app.panes[app.step.index()].cursor)
+    else {
         set_message(
             &mut app.message,
             &mut app.message_color,
@@ -1576,7 +1599,7 @@ fn install_setup_selection(
         return Ok(false);
     };
     let label = choice.label.clone();
-    if !matches!(app.step, 0 | 3 | 4) {
+    let Some(request) = setup_install_request(app, choice) else {
         set_message(
             &mut app.message,
             &mut app.message_color,
@@ -1586,7 +1609,8 @@ fn install_setup_selection(
             true,
         );
         return Ok(false);
-    }
+    };
+    let step = app.step;
     set_message(
         &mut app.message,
         &mut app.message_color,
@@ -1595,37 +1619,6 @@ fn install_setup_selection(
         Color::Cyan,
         false,
     );
-    let step = app.step;
-    let install_label = if step == 4 {
-        crate::collectors::find(&label)
-            .and_then(|adapter| adapter.tool_id())
-            .unwrap_or(&label)
-            .to_owned()
-    } else {
-        label.clone()
-    };
-    let directory = project::resolve(
-        &app.root,
-        if step == 3 {
-            &app.project.workloads_dir
-        } else {
-            &app.project.tools_dir
-        },
-    );
-    let request = if step == 3 {
-        install::operation::Request::Workload {
-            name: install_label
-                .strip_suffix(" [trial set]")
-                .unwrap_or(&install_label)
-                .to_owned(),
-            directory,
-        }
-    } else {
-        install::operation::Request::Tool {
-            name: install_label,
-            directory,
-        }
-    };
     let result = drive_install(app.root.clone(), request, |status| {
         set_message(
             &mut app.message,
@@ -1642,9 +1635,9 @@ fn install_setup_selection(
     })?;
     app.refresh_availability();
     let ready = result.is_ok()
-        && app.panes[step]
+        && app.panes[step.index()]
             .choices
-            .get(app.panes[step].cursor)
+            .get(app.panes[step.index()].cursor)
             .is_some_and(|choice| choice.availability == Availability::Available);
     match result {
         Ok(()) if !ready => set_message(
@@ -1677,25 +1670,69 @@ fn install_setup_selection(
     Ok(ready)
 }
 
+/// Installation uses the typed domain identity, never its rendered annotation.
+fn setup_install_request(app: &App, choice: &Choice) -> Option<install::operation::Request> {
+    if !app.step.installable() {
+        return None;
+    }
+    let tools = project::resolve(&app.root, &app.project.tools_dir);
+    match (&choice.key, app.step) {
+        (ChoiceKey::Agent(name), PaneKind::Agents) => Some(install::operation::Request::Tool {
+            name: name.clone(),
+            directory: tools,
+        }),
+        (
+            ChoiceKey::Prompt(name) | ChoiceKey::TrialSet { workload: name, .. },
+            PaneKind::Workloads,
+        ) => Some(install::operation::Request::Workload {
+            name: name.clone(),
+            directory: project::resolve(&app.root, &app.project.workloads_dir),
+        }),
+        (ChoiceKey::Collector(id), PaneKind::Measurements) => {
+            let name = crate::collectors::find(id)?.tool_id()?;
+            Some(install::operation::Request::Tool {
+                name: name.into(),
+                directory: tools,
+            })
+        }
+        _ => None,
+    }
+}
+
 fn workload_choices(root: &Path, directory: &str) -> Vec<Choice> {
-    let path = project::resolve(root, directory);
-    let mut names = fs::read_dir(&path)
+    let directory = project::resolve(root, directory);
+    let mut choices = fs::read_dir(&directory)
         .ok()
         .into_iter()
         .flat_map(|entries| entries.filter_map(Result::ok))
         .filter_map(|entry| {
             let path = entry.path();
-            let file_name = path.file_name()?.to_str()?;
-            if path.extension().and_then(|value| value.to_str()) == Some("txt") {
-                return Some(file_name.trim_end_matches(".txt").to_owned());
+            if !path.is_file() {
+                return None;
             }
-            file_name
-                .strip_suffix(".workload.toml")
-                .map(|name| format!("{name} [trial set]"))
+            let filename = path.file_name()?.to_str()?;
+            let (key, label) = if let Some(name) = filename.strip_suffix(".txt") {
+                (ChoiceKey::Prompt(name.to_owned()), name.to_owned())
+            } else if let Some(name) = filename.strip_suffix(".workload.toml") {
+                (
+                    ChoiceKey::TrialSet {
+                        workload: name.to_owned(),
+                        file: PathBuf::from(filename),
+                    },
+                    format!("{name} [trial set]"),
+                )
+            } else {
+                return None;
+            };
+            Some(Choice {
+                key,
+                label,
+                availability: Availability::Unknown,
+            })
         })
-        .collect::<BTreeSet<_>>();
-    if names.is_empty() {
-        names.extend(
+        .collect::<Vec<_>>();
+    if choices.is_empty() {
+        choices.extend(
             [
                 "bug-fix",
                 "build-repair",
@@ -1706,40 +1743,38 @@ fn workload_choices(root: &Path, directory: &str) -> Vec<Choice> {
                 "test-generation",
             ]
             .into_iter()
-            .map(str::to_owned),
+            .map(|name| Choice {
+                key: ChoiceKey::Prompt(name.into()),
+                label: name.into(),
+                availability: Availability::Unknown,
+            }),
         );
     }
-    names.extend(install::external_workload_names().map(str::to_owned));
-    let external_names = install::external_workload_names()
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>();
-    let mut choices = names
-        .into_iter()
-        .map(|label| {
-            let name = label.strip_suffix(" [trial set]").unwrap_or(&label);
-            let availability = if external_names.contains(name) {
-                install::workload_available(name, &path)
-            } else {
-                workloads::load(name, &path).is_ok()
-            };
-            Choice {
-                label,
-                provider: None,
-                model: None,
-                availability: if availability {
-                    Availability::Available
-                } else {
-                    Availability::Missing
-                },
-            }
-        })
-        .collect::<Vec<_>>();
+    choices.extend(install::external_workload_names().map(|name| Choice {
+        key: ChoiceKey::Prompt(name.into()),
+        label: name.into(),
+        availability: Availability::Unknown,
+    }));
+    let external_names = install::external_workload_names().collect::<BTreeSet<_>>();
+    for choice in &mut choices {
+        let name = choice.key.workload().expect("workload identity");
+        let ready = if external_names.contains(name) {
+            install::workload_available(name, &directory)
+        } else {
+            workloads::load(name, &directory).is_ok()
+        };
+        choice.availability = if ready {
+            Availability::Available
+        } else {
+            Availability::Missing
+        };
+    }
     choices.sort_by_key(|choice| {
-        let name = choice
-            .label
-            .strip_suffix(" [trial set]")
-            .unwrap_or(&choice.label);
-        (external_names.contains(name), choice.label.clone())
+        (
+            external_names.contains(choice.key.workload().expect("workload identity")),
+            choice.label.clone(),
+            choice.key.clone(),
+        )
     });
     choices
 }
@@ -1749,33 +1784,41 @@ fn default_model(provider: &str) -> &'static str {
 }
 
 fn generate_configs(app: &App) -> Result<Generated, Error> {
-    let agents = app.panes[0]
+    let agents = app.panes[PaneKind::Agents.index()]
         .selected_choices()
-        .map(|choice| choice.label.clone())
+        .filter_map(|choice| choice.key.agent().map(str::to_owned))
         .collect::<Vec<_>>();
-    let providers = app.panes[1]
+    let providers = app.panes[PaneKind::Providers.index()]
         .selected_choices()
-        .map(|choice| choice.label.clone())
+        .filter_map(|choice| choice.key.provider().map(str::to_owned))
         .collect::<Vec<_>>();
-    let models = app.panes[2]
+    let models = app.panes[PaneKind::Models.index()]
         .selected_choices()
-        .filter_map(|choice| Some((choice.provider.clone()?, choice.model.clone()?)))
+        .filter_map(|choice| {
+            choice
+                .key
+                .model()
+                .map(|(provider, model)| (provider.to_owned(), model.to_owned()))
+        })
         .collect::<Vec<_>>();
-    let workloads = app.panes[3]
+    let workloads = app.panes[PaneKind::Workloads.index()]
         .selected_choices()
-        .map(|choice| selected_trials(app, &choice.label))
+        .map(|choice| selected_trials(app, &choice.key))
         .collect::<Result<Vec<_>, _>>()?;
     let measures = crate::collectors::expand_dependencies(
-        &app.panes[4]
+        &app.panes[PaneKind::Measurements.index()]
             .selected_choices()
-            .map(|choice| choice.label.clone())
+            .filter_map(|choice| choice.key.collector().map(str::to_owned))
             .collect::<Vec<_>>(),
     );
-    let concurrency = app.panes[5]
-        .selected_choices()
+    let mut concurrency = app.panes[PaneKind::Concurrency.index()].selected_choices();
+    let value = concurrency
         .next()
-        .and_then(|choice| choice.label.parse::<usize>().ok())
-        .unwrap_or(1);
+        .and_then(|choice| choice.key.concurrency());
+    if value.is_none() || concurrency.next().is_some() {
+        return Err(Error::Input("select exactly one concurrency value".into()));
+    }
+    let concurrency = value.expect("checked numeric concurrency");
     let valid_models = models
         .iter()
         .filter(|(provider, _)| providers.contains(provider))
@@ -1852,12 +1895,14 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
 
 type TrialSelection = (String, Option<String>, Vec<Option<String>>);
 
-fn selected_trials(app: &App, choice: &str) -> Result<TrialSelection, Error> {
-    let Some(workload) = choice.strip_suffix(" [trial set]") else {
-        return Ok((choice.to_owned(), None, vec![None]));
+fn selected_trials(app: &App, choice: &ChoiceKey) -> Result<TrialSelection, Error> {
+    let ChoiceKey::TrialSet { workload, file } = choice else {
+        return choice
+            .workload()
+            .map(|name| (name.to_owned(), None, vec![None]))
+            .ok_or_else(|| Error::Input("invalid workload selection identity".into()));
     };
-    let filename = format!("{workload}.workload.toml");
-    let path = project::resolve(&app.root, &app.project.workloads_dir).join(&filename);
+    let path = project::resolve(&app.root, &app.project.workloads_dir).join(file);
     let trial_set = workloads::read_trial_set(&path).map_err(Error::Input)?;
     if trial_set.trials.is_empty() {
         return Err(Error::Input(format!(
@@ -1867,7 +1912,7 @@ fn selected_trials(app: &App, choice: &str) -> Result<TrialSelection, Error> {
     }
     Ok((
         workload.to_owned(),
-        Some(filename),
+        Some(file.to_string_lossy().into_owned()),
         trial_set
             .trials
             .into_iter()
@@ -1883,8 +1928,8 @@ mod generation_tests;
 #[cfg(test)]
 mod tests {
     use super::{
-        App, Availability, Choice, Generated, Pane, default_model, generate_configs,
-        generated_summary, install_status_message,
+        App, Availability, Choice, ChoiceKey, Generated, Pane, PaneKind, default_model,
+        generate_configs, generated_summary, install_status_message,
     };
     use crate::install;
     use crate::project::ProjectConfig;
@@ -1896,10 +1941,13 @@ mod tests {
     #[test]
     fn reserved_all_is_never_a_selectable_tui_entry() {
         let mut reserved_model = choice("provider:all");
-        reserved_model.model = Some("all".into());
+        reserved_model.key = ChoiceKey::Model {
+            provider: "provider".into(),
+            model: "all".into(),
+        };
         let pane = Pane::new(vec![
             choice("all"),
-            choice("all [trial set]"),
+            trial_set_choice("all"),
             reserved_model,
             choice("small"),
         ]);
@@ -1911,36 +1959,59 @@ mod tests {
     fn choice(name: &str) -> Choice {
         Choice {
             label: name.into(),
-            provider: None,
-            model: None,
+            key: ChoiceKey::Prompt(name.into()),
             availability: Availability::Unknown,
+        }
+    }
+
+    fn agent_choice(name: &str) -> Choice {
+        Choice {
+            key: ChoiceKey::Agent(name.into()),
+            ..choice(name)
+        }
+    }
+    fn provider_choice(name: &str) -> Choice {
+        Choice {
+            key: ChoiceKey::Provider(name.into()),
+            ..choice(name)
+        }
+    }
+    fn trial_set_choice(name: &str) -> Choice {
+        Choice {
+            key: ChoiceKey::TrialSet {
+                workload: name.into(),
+                file: format!("{name}.workload.toml").into(),
+            },
+            ..choice(&format!("{name} [trial set]"))
         }
     }
 
     #[test]
     fn selecting_collector_selects_and_keeps_required_dependency() {
         let mut app = App::new(std::env::temp_dir(), ProjectConfig::default());
-        let flamegraph = app.panes[4]
+        let flamegraph = app.panes[PaneKind::Measurements.index()]
             .choices
             .iter()
             .position(|c| c.label == "flamegraph")
             .unwrap();
-        let perf = app.panes[4]
+        let perf = app.panes[PaneKind::Measurements.index()]
             .choices
             .iter()
             .position(|c| c.label == "perf")
             .unwrap();
-        app.panes[4].selected.fill(false);
-        app.panes[4].selected[flamegraph] = true;
+        app.panes[PaneKind::Measurements.index()]
+            .selected
+            .fill(false);
+        app.panes[PaneKind::Measurements.index()].selected[flamegraph] = true;
         app.sync_collector_dependencies();
-        assert!(app.panes[4].selected[perf]);
-        app.panes[4].selected[perf] = false;
+        assert!(app.panes[PaneKind::Measurements.index()].selected[perf]);
+        app.panes[PaneKind::Measurements.index()].selected[perf] = false;
         app.sync_collector_dependencies();
-        assert!(app.panes[4].selected[perf]);
-        app.panes[4].selected[flamegraph] = false;
-        app.panes[4].selected[perf] = false;
+        assert!(app.panes[PaneKind::Measurements.index()].selected[perf]);
+        app.panes[PaneKind::Measurements.index()].selected[flamegraph] = false;
+        app.panes[PaneKind::Measurements.index()].selected[perf] = false;
         app.sync_collector_dependencies();
-        assert!(!app.panes[4].selected[perf]);
+        assert!(!app.panes[PaneKind::Measurements.index()].selected[perf]);
     }
 
     #[test]
@@ -1996,27 +2067,27 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let mut app = App::new(root.clone(), ProjectConfig::default());
         assert!(app.advance().unwrap().is_none());
-        assert_eq!(app.step, 0);
+        assert_eq!(app.step, PaneKind::Agents);
         assert!(app.message.contains("Select at least one"));
         app.back();
-        assert_eq!(app.step, 0);
-        app.panes[0].selected[0] = true;
+        assert_eq!(app.step, PaneKind::Agents);
+        app.panes[PaneKind::Agents.index()].selected[0] = true;
         assert!(app.advance().unwrap().is_none());
-        assert_eq!(app.step, 1);
+        assert_eq!(app.step, PaneKind::Providers);
         app.back();
-        assert_eq!(app.step, 0);
+        assert_eq!(app.step, PaneKind::Agents);
         std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
     fn failed_catalog_discovery_warns_that_models_are_fallbacks() {
         let mut app = App::new(std::env::temp_dir(), ProjectConfig::default());
-        let index = app.panes[1]
+        let index = app.panes[PaneKind::Providers.index()]
             .choices
             .iter()
             .position(|choice| choice.label == "openrouter")
             .unwrap();
-        app.panes[1].selected[index] = true;
+        app.panes[PaneKind::Providers.index()].selected[index] = true;
         let warning = app
             .refresh_models_with(|_| {
                 Err(crate::Error::Input(
@@ -2027,11 +2098,22 @@ mod tests {
         assert!(warning.contains("fallback only"));
         assert!(warning.contains("HTTP 407"));
         assert!(warning.contains("asb provider models openrouter"));
-        assert_eq!(app.panes[2].choices.len(), 1);
-        assert!(app.panes[2].choices[0].label.contains("gpt-4o-mini"));
-        assert!(app.panes[2].choices[0].label.contains("[fallback]"));
+        assert_eq!(app.panes[PaneKind::Models.index()].choices.len(), 1);
+        assert!(
+            app.panes[PaneKind::Models.index()].choices[0]
+                .label
+                .contains("gpt-4o-mini")
+        );
+        assert!(
+            app.panes[PaneKind::Models.index()].choices[0]
+                .label
+                .contains("[fallback]")
+        );
         assert_eq!(
-            app.panes[2].choices[0].model.as_deref(),
+            app.panes[PaneKind::Models.index()].choices[0]
+                .key
+                .model()
+                .map(|(_, model)| model),
             Some("openai/gpt-4o-mini")
         );
     }
@@ -2039,31 +2121,31 @@ mod tests {
     #[test]
     fn empty_successful_catalog_does_not_invent_fallback_models() {
         let mut app = App::new(std::env::temp_dir(), ProjectConfig::default());
-        let index = app.panes[1]
+        let index = app.panes[PaneKind::Providers.index()]
             .choices
             .iter()
             .position(|choice| choice.label == "openrouter")
             .unwrap();
-        app.panes[1].selected[index] = true;
+        app.panes[PaneKind::Providers.index()].selected[index] = true;
         let warning = app.refresh_models_with(|_| Ok(Vec::new())).unwrap();
         assert!(warning.contains("no tool-capable models"));
-        assert!(app.panes[2].choices.is_empty());
+        assert!(app.panes[PaneKind::Models.index()].choices.is_empty());
     }
 
     #[test]
     fn successful_catalog_keeps_all_discovered_models_without_fallback_warning() {
         let mut app = App::new(std::env::temp_dir(), ProjectConfig::default());
-        let index = app.panes[1]
+        let index = app.panes[PaneKind::Providers.index()]
             .choices
             .iter()
             .position(|choice| choice.label == "openrouter")
             .unwrap();
-        app.panes[1].selected[index] = true;
+        app.panes[PaneKind::Providers.index()].selected[index] = true;
         assert!(
             app.refresh_models_with(|_| Ok(vec!["a/model".into(), "b/model".into()]))
                 .is_none()
         );
-        assert_eq!(app.panes[2].choices.len(), 2);
+        assert_eq!(app.panes[PaneKind::Models.index()].choices.len(), 2);
     }
 
     #[test]
@@ -2074,12 +2156,12 @@ mod tests {
         let mut app = App::new(root.clone(), ProjectConfig::default());
         for (width, height) in [(1, 1), (20, 5), (40, 12), (100, 30)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-            for step in 0..app.panes.len() {
+            for step in PaneKind::ORDER {
                 app.step = step;
                 terminal.draw(|frame| super::draw(frame, &app)).unwrap();
             }
             if width == 100 {
-                app.step = 0;
+                app.step = PaneKind::Agents;
                 terminal.draw(|frame| super::draw(frame, &app)).unwrap();
                 let rendered = terminal
                     .backend()
@@ -2249,14 +2331,12 @@ mod tests {
         let mut pane = Pane::new(vec![
             Choice {
                 label: "alpha".into(),
-                provider: None,
-                model: None,
+                key: ChoiceKey::Prompt("alpha".into()),
                 availability: Availability::Unknown,
             },
             Choice {
                 label: "beta".into(),
-                provider: None,
-                model: None,
+                key: ChoiceKey::Prompt("beta".into()),
                 availability: Availability::Unknown,
             },
         ]);
@@ -2278,13 +2358,13 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let app = App::new(root.clone(), ProjectConfig::default());
         assert!(
-            app.panes[0]
+            app.panes[PaneKind::Agents.index()]
                 .choices
                 .iter()
                 .all(|choice| choice.availability == Availability::Missing)
         );
         assert!(
-            app.panes[4]
+            app.panes[PaneKind::Measurements.index()]
                 .choices
                 .iter()
                 .filter(|choice| matches!(
@@ -2302,7 +2382,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         let app = App::new(root.clone(), ProjectConfig::default());
-        let workload = app.panes[3]
+        let workload = app.panes[PaneKind::Workloads.index()]
             .choices
             .iter()
             .find(|choice| choice.label == "terminal-bench")
@@ -2329,39 +2409,43 @@ mod tests {
 
     #[test]
     fn setup_selection_installs_missing_items_before_selection_and_retries_failure() {
-        for step in [0, 3, 4] {
+        for step in [
+            PaneKind::Agents,
+            PaneKind::Workloads,
+            PaneKind::Measurements,
+        ] {
             let mut app = App::new(std::env::temp_dir(), ProjectConfig::default());
             app.step = step;
-            app.panes[step].selected.fill(false);
-            app.panes[step].cursor = 0;
-            app.panes[step].choices[0].availability = Availability::Missing;
+            app.panes[step.index()].selected.fill(false);
+            app.panes[step.index()].cursor = 0;
+            app.panes[step.index()].choices[0].availability = Availability::Missing;
             let mut calls = 0;
             super::toggle_setup_choice(&mut app, |app, dependency| {
                 assert!(dependency.is_none());
-                assert!(!app.panes[step].selected[0]);
+                assert!(!app.panes[step.index()].selected[0]);
                 calls += 1;
                 Ok(false)
             })
             .unwrap();
             assert_eq!(calls, 1);
             assert!(
-                !app.panes[step].selected[0],
-                "failed install selected step {step}"
+                !app.panes[step.index()].selected[0],
+                "failed install selected step {step:?}"
             );
             super::toggle_setup_choice(&mut app, |app, dependency| {
-                assert!(!app.panes[step].selected[0]);
+                assert!(!app.panes[step.index()].selected[0]);
                 if dependency.is_none() {
                     calls += 1;
-                    app.panes[step].choices[0].availability = Availability::Available;
+                    app.panes[step.index()].choices[0].availability = Availability::Available;
                 }
                 Ok(true)
             })
             .unwrap();
             assert_eq!(calls, 2);
-            assert!(app.panes[step].selected[0]);
+            assert!(app.panes[step.index()].selected[0]);
             super::toggle_setup_choice(&mut app, |_, _| panic!("deselection must not install"))
                 .unwrap();
-            assert!(!app.panes[step].selected[0]);
+            assert!(!app.panes[step.index()].selected[0]);
         }
     }
 
@@ -2395,15 +2479,18 @@ mod tests {
                     .unwrap()
                     .success()
             );
-            app.step = 4;
-            let index = app.panes[4]
+            app.step = PaneKind::Measurements;
+            let index = app.panes[PaneKind::Measurements.index()]
                 .choices
                 .iter()
                 .position(|choice| choice.label == "flamegraph")
                 .unwrap();
-            app.panes[4].cursor = index;
-            app.panes[4].selected.fill(false);
-            app.panes[4].choices[index].availability = Availability::Available;
+            app.panes[PaneKind::Measurements.index()].cursor = index;
+            app.panes[PaneKind::Measurements.index()]
+                .selected
+                .fill(false);
+            app.panes[PaneKind::Measurements.index()].choices[index].availability =
+                Availability::Available;
             let selected_step = app.step;
             super::toggle_setup_choice(&mut app, |app, dependencies| {
                 assert!(dependencies.is_some());
@@ -2411,7 +2498,10 @@ mod tests {
                 super::finish_dependency_install(app, Ok(()), &["perf"], &tools_root)
             })
             .unwrap();
-            assert_eq!(app.panes[4].selected[index], state == "ready");
+            assert_eq!(
+                app.panes[PaneKind::Measurements.index()].selected[index],
+                state == "ready"
+            );
             assert_eq!(app.step, selected_step);
             if state != "ready" {
                 assert!(app.message.contains("dependency is not ready"));
@@ -2423,53 +2513,59 @@ mod tests {
     #[test]
     fn collector_dependency_install_failure_never_selects_collector() {
         let mut app = App::new(std::env::temp_dir(), ProjectConfig::default());
-        app.step = 4;
-        app.panes[4].selected.fill(false);
-        let flame = app.panes[4]
+        app.step = PaneKind::Measurements;
+        app.panes[PaneKind::Measurements.index()]
+            .selected
+            .fill(false);
+        let flame = app.panes[PaneKind::Measurements.index()]
             .choices
             .iter()
             .position(|choice| choice.label == "flamegraph")
             .unwrap();
-        let perf = app.panes[4]
+        let perf = app.panes[PaneKind::Measurements.index()]
             .choices
             .iter()
             .position(|choice| choice.label == "perf")
             .unwrap();
-        app.panes[4].cursor = flame;
-        app.panes[4].choices[flame].availability = Availability::Available;
+        app.panes[PaneKind::Measurements.index()].cursor = flame;
+        app.panes[PaneKind::Measurements.index()].choices[flame].availability =
+            Availability::Available;
         super::toggle_setup_choice(&mut app, |app, selected| {
             assert!(selected.unwrap().contains(&"flamegraph".to_owned()));
-            assert!(!app.panes[4].selected[flame]);
-            assert!(!app.panes[4].selected[perf]);
+            assert!(!app.panes[PaneKind::Measurements.index()].selected[flame]);
+            assert!(!app.panes[PaneKind::Measurements.index()].selected[perf]);
             Ok(false)
         })
         .unwrap();
-        assert!(!app.panes[4].selected[flame]);
-        assert!(!app.panes[4].selected[perf]);
+        assert!(!app.panes[PaneKind::Measurements.index()].selected[flame]);
+        assert!(!app.panes[PaneKind::Measurements.index()].selected[perf]);
         super::toggle_setup_choice(&mut app, |_, selected| {
             assert!(selected.is_some());
             Ok(true)
         })
         .unwrap();
-        assert!(app.panes[4].selected[flame]);
-        assert!(app.panes[4].selected[perf]);
-        app.panes[4].cursor = perf;
+        assert!(app.panes[PaneKind::Measurements.index()].selected[flame]);
+        assert!(app.panes[PaneKind::Measurements.index()].selected[perf]);
+        app.panes[PaneKind::Measurements.index()].cursor = perf;
         super::toggle_setup_choice(&mut app, |_, _| {
             panic!("required dependency is already selected")
         })
         .unwrap();
-        assert!(app.panes[4].selected[perf]);
+        assert!(app.panes[PaneKind::Measurements.index()].selected[perf]);
     }
 
     #[test]
     fn default_measurements_do_not_select_missing_tools_or_dependencies() {
         let app = App::new(std::env::temp_dir(), ProjectConfig::default());
-        for choice in app.panes[4].selected_choices() {
-            let dependencies =
-                crate::collectors::expand_dependencies(std::slice::from_ref(&choice.label));
+        for choice in app.panes[PaneKind::Measurements.index()].selected_choices() {
+            let dependencies = crate::collectors::expand_dependencies(&[choice
+                .key
+                .collector()
+                .expect("collector pane identity")
+                .to_owned()]);
             for name in dependencies {
                 assert!(
-                    app.panes[4]
+                    app.panes[PaneKind::Measurements.index()]
                         .choices
                         .iter()
                         .any(|item| item.label == name
@@ -2575,10 +2671,7 @@ mod tests {
             })
             .expect("external catalog is present");
         assert!(choices[..external_start].iter().all(|choice| {
-            let name = choice
-                .label
-                .strip_suffix(" [trial set]")
-                .unwrap_or(&choice.label);
+            let name = choice.key.workload().expect("workload pane identity");
             !external_names.contains(name)
         }));
         assert!(
@@ -2602,18 +2695,20 @@ mod tests {
         std::fs::create_dir_all(&root).expect("test root");
         let project = ProjectConfig::default();
         let mut app = App::new(root.clone(), project);
-        app.panes[0].selected[0] = true;
-        app.panes[1].selected[0] = true;
+        app.panes[PaneKind::Agents.index()].selected[0] = true;
+        app.panes[PaneKind::Providers.index()].selected[0] = true;
         // Use a catalog fixture rather than discovering from the selected
         // provider, which could read a developer key or contact a live API.
-        app.panes[2] = Pane::new(vec![Choice {
+        app.panes[PaneKind::Models.index()] = Pane::new(vec![Choice {
             label: "openai:fixture-model".into(),
-            provider: Some("openai".into()),
-            model: Some("fixture-model".into()),
+            key: ChoiceKey::Model {
+                provider: "openai".into(),
+                model: "fixture-model".into(),
+            },
             availability: Availability::Unknown,
         }]);
-        app.panes[2].selected[0] = true;
-        app.panes[3].selected[0] = true;
+        app.panes[PaneKind::Models.index()].selected[0] = true;
+        app.panes[PaneKind::Workloads.index()].selected[0] = true;
         let generated = generate_configs(&app).expect("configs generated");
         assert_eq!(generated.tests, 1);
         let manifest = crate::sweep::read_manifest(&generated.sweep).unwrap();
@@ -2647,15 +2742,17 @@ mod tests {
         )
         .unwrap();
         let mut app = App::new(root.clone(), ProjectConfig::default());
-        app.panes[0] = Pane::new(vec![choice("pi")]);
-        app.panes[1] = Pane::new(vec![choice("openrouter")]);
-        app.panes[2] = Pane::new(vec![Choice {
+        app.panes[PaneKind::Agents.index()] = Pane::new(vec![agent_choice("pi")]);
+        app.panes[PaneKind::Providers.index()] = Pane::new(vec![provider_choice("openrouter")]);
+        app.panes[PaneKind::Models.index()] = Pane::new(vec![Choice {
             label: "fixture-model".into(),
-            provider: Some("openrouter".into()),
-            model: Some("fixture-model".into()),
+            key: ChoiceKey::Model {
+                provider: "openrouter".into(),
+                model: "fixture-model".into(),
+            },
             availability: Availability::Unknown,
         }]);
-        app.panes[3] = Pane::new(vec![choice("swe-bench [trial set]")]);
+        app.panes[PaneKind::Workloads.index()] = Pane::new(vec![trial_set_choice("swe-bench")]);
         for pane in &mut app.panes[..4] {
             pane.selected[0] = true;
         }
@@ -2689,8 +2786,12 @@ mod tests {
                     .contains("missing measurements"))
         );
         // Reject an oversized cross product before creating another config.
-        app.panes[0] = Pane::new((0..32).map(|_| choice("pi")).collect());
-        app.panes[0].selected.fill(true);
+        app.panes[PaneKind::Agents.index()] = Pane::new(
+            (0..32)
+                .map(|index| agent_choice(&format!("fixture-agent-{index}")))
+                .collect(),
+        );
+        app.panes[PaneKind::Agents.index()].selected.fill(true);
         let before = std::fs::read_dir(&root).unwrap().count();
         assert!(
             generate_configs(&app)
@@ -2709,8 +2810,16 @@ mod tests {
         std::fs::create_dir_all(&root).expect("test root");
         let app = App::new(root.clone(), ProjectConfig::default());
         assert_eq!(app.panes.len(), 6);
-        assert_eq!(app.panes[5].selected_choices().count(), 1);
-        assert_eq!(app.panes[5].choices[0].label, "1");
+        assert_eq!(
+            app.panes[PaneKind::Concurrency.index()]
+                .selected_choices()
+                .count(),
+            1
+        );
+        assert_eq!(
+            app.panes[PaneKind::Concurrency.index()].choices[0].label,
+            "1"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
