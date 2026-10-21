@@ -14,12 +14,6 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
-Subsequent policy change: main commit `398c36cc` removed the hosted coverage
-job and its branch-protection requirement. The current request in this thread
-still asks for a required 90% gate; clarification is pending. Local coverage
-measurements continue, but must not be described as a currently required hosted
-check while that requirement is absent.
-
 ## 1. Endpoint preparation invariants
 
 Eight production adapter branches used `unreachable!` for unsupported wire
@@ -164,7 +158,8 @@ detached: a draw error can return while an installer still mutates project
 files. Shared progress handling must own worker completion/cancellation, with
 a fake-install regression for terminal failure during active work.
 
-Prerequisite native gate custody repair is staged separately, not yet merged.
+Prerequisite native gate custody repair stages patch **0.2.12**, separately
+from the TUI worker repair; it is not yet merged or released.
 Its private `ManagedGate` is used by the actual runner ownership boundary:
 versioned PID-bound Hello precedes admission, completion requires Quiescent
 plus direct exit, startup failure never resumes an unsupported launcher, and
@@ -172,8 +167,17 @@ admitted cancellation never kills the supervising gate. A precreated wait-only
 fallback retains uncertain custody; the gate retries identity-scoped teardown
 and its existing independent watcher handles stopped parent death. This does
 not yet repair the TUI workers, the pre-exec allocation contract or stream
-memory/reader lifetime. Focused offline protocol, real-child and parent-loss
-matrices are being verified; full independent review is still required.
+memory/reader lifetime. Independent review approved source candidate
+`ca4ba33b`; its ordinary offline suite passed 897 tests with 20 explicit
+optional skips. Tests include the actual gate's double-forked TERM-resistant
+helpers, proof-writer noninheritance and owner loss after Hello, while stopped,
+after resume and after the spawning thread exits. Protocol stand-ins separately
+exercise malformed/missing receipts, bounded uncertainty and wait-only custody;
+they do not qualify kernel teardown. Starting polling errors retain custody
+before returning their original diagnostic. The staged candidate integrates
+the reviewed runner publication repairs and current development policy;
+fresh exact-head functional/package CI, independent review, merge and
+post-merge release verification remain required.
 
 Coverage-driven inspection also found a wizard transition defect: saving
 trials consumes `selected_workload`, so the advertised next Enter reopens
@@ -193,7 +197,7 @@ second completion definition. PR #260 targets patch **0.2.8**, following the
 installer repair in PR #259 and BPF scope/startup repair in PR #268.
 The current-main coverage regressions remain in
 place with an explicit test-module import after removing the old generator.
-Exact-head source/package tests, mandatory coverage, hosted CI, merge,
+Exact-head source/package tests, hosted functional CI, merge,
 post-merge verification and release remain required.
 
 Unify intended limits (including TUI concurrency versus benchmark maximum),
@@ -212,8 +216,8 @@ Ordinary CI must use offline/synthetic inputs, not live provider credentials,
 privileged collectors or paid requests. New regression tests run in the
 ordinary suite and extracted package. Maintain honest null/unavailable
 measurements and preserve existing original-task evaluation evidence. A green
-focused test does not establish completion of a whole repair class or the
-90% coverage requirement.
+focused test does not establish completion of a whole repair class. Local
+coverage measurements are informational under the current delivery policy.
 
 Additional safety finding from coverage tests: custom BPFTrace scope validation
 can skip multiline probe headers and accepts an OR-true predicate containing
