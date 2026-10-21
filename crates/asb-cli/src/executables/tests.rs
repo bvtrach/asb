@@ -186,7 +186,12 @@ fn executable_policy_fixture_child() {
                 assert!(install::tool_installed_locally(adapter.id(), &tools_root));
                 let resolved = agents::resolve(adapter.id(), &root, TOOLS).unwrap();
                 assert_eq!(Path::new(&resolved), selected);
-                let result = adapter.process(&resolved).unwrap().direct().output().unwrap();
+                let result = adapter
+                    .process(&resolved)
+                    .unwrap()
+                    .direct()
+                    .output()
+                    .unwrap();
                 assert!(result.status.success(), "{}", adapter.id());
                 assert_eq!(
                     result.stdout,
