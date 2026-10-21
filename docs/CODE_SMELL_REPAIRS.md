@@ -485,15 +485,16 @@ slow TERM-resistant double-forked writers, unchanged unrelated sentinels and
 absence of writes after confirmed cleanup. Other fixtures cover install success
 and failure, helper framing, descriptor noninheritance, running-image pathname
 replacement, keeper failure and unwind custody. Existing trial-wizard regression
-coverage remains required. This candidate is not merged/released qualification,
+coverage remains required. This repair does not establish
 transactional installation rollback or bounded disappearance of unkillable
 kernel tasks. The user-confirmed removal of the CI coverage gate is retained.
 Independent source review approved the integrated `51e30654`; its full offline
 suite passed 1,062 tests with 21 optional skips, followed by strict Clippy,
 formatting and sequential build/private docs/diagrams/completions. Current main
 ancestry changes only this ledger, not that qualified production/test tree.
-Exact-head hosted/package CI, merge, both post-merge jobs and release remain
-pending for this **0.2.24** candidate.
+Exact-head hosted/package CI passed in run `39646000398`; PR #290 merged as
+`bb33f4007a6309c248239c6ee0080c1baeeddd3b`. Both post-merge jobs in run
+`39647416921` and the **0.2.24** release remain pending.
 
 ## 7. Limits, diagnostics and CLI consistency
 
