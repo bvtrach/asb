@@ -542,6 +542,7 @@ mod tests {
             };
             let configuration = toml::from_str("agent='fixture-agent'\nprovider='fixture-provider'\nmodel='fixture-model'\nworkload='fixture-suite'\ntrial='case-1'\nconcurrency=2\n").unwrap();
             let selection = TaskSelection {
+                module: None,
                 workload: "fixture-suite".into(),
                 task_id: "case-1".into(),
                 dataset: Some(

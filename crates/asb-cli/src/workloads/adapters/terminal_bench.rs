@@ -18,6 +18,22 @@ pub(super) struct TerminalBenchAdapter {
 }
 
 impl super::WorkloadAdapter for TerminalBenchAdapter {
+    fn descriptor(&self, _name: &str) -> crate::workloads::contracts::ModuleDescriptor {
+        use crate::workloads::contracts::{EvaluationMode, ModuleDescriptor, SubmissionKind};
+        ModuleDescriptor::official(
+            self.id,
+            "terminal-bench",
+            self.id,
+            crate::workloads::session::DatasetIdentity {
+                source: self.source.into(),
+                revision: self.revision.into(),
+                split: self.split.into(),
+            },
+            self.tool,
+            SubmissionKind::EnvironmentState,
+            EvaluationMode::InPlace,
+        )
+    }
     fn process_lifetime(&self) -> crate::workloads::session::ProcessLifetime {
         crate::workloads::session::ProcessLifetime::ThroughEvaluation
     }
