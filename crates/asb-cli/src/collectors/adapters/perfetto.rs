@@ -19,6 +19,11 @@ impl CollectorAdapter for PerfettoCollector {
     fn requires_pid(&self) -> bool {
         true
     }
+    fn stop_at_execution_end(&self) -> bool {
+        // Capture the entire typed lifecycle; scheduler queries still select
+        // only the agent's uniquely identified execution interval and tree.
+        false
+    }
     fn prioritizes_artifact(&self, name: &str) -> bool {
         name.starts_with("perfetto-metric-") || name == "perfetto-state-timeline.svg"
     }
