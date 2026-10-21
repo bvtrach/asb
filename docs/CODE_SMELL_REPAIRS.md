@@ -27,8 +27,8 @@ their private fixture state is independent. Attempt-artifact repair 33 remains
 separate and is not folded into this candidate. The earlier old-base focused
 checks do not qualify this combined tree. Fresh focused checks, independent
 integration review and full offline qualification are recorded below;
-hosted/package CI, merge, post-merge verification and release remain pending. Windows compilation and
-runtime remain unqualified; the non-Unix controller keeps its documented legacy
+hosted/package CI, merge, post-merge verification and release remain pending.
+Windows compilation and runtime remain unqualified; the non-Unix controller keeps its documented legacy
 blocking transport limitation.
 
 Independent integration source review approved `3906d74a` and the test-only
@@ -61,6 +61,13 @@ This does not qualify skipped opt-ins, native Windows execution or the separate
 attempt-artifact repair. Hosted/package CI, PR merge, post-merge verification and
 release remain pending.
 
+The subsequent signed ancestry merge retains parent delivery head `7472c33a`
+and actual main `1bcc8253`. Relative to qualified `f8139463`, only documentation
+changes: production, tests, Cargo files, scripts and workflows are byte-identical.
+The qualification above remains tied to its actual tested source and executable;
+no redundant full run or native Windows qualification is claimed for this ledger
+and ancestry update.
+
 The [full residual requirement/disposition matrix and ordered plan](CODE_SMELL_REMAINING_AUDIT.md)
 records the read-only 21 October comparison of exact main `4224472f` with
 qualified stack `48609d50`, including misreports, completed versus unmerged
@@ -77,8 +84,33 @@ deadlines retain the shared preparation budget and reject late dequeued requests
 The existing non-Unix compatibility path receives the same settlement semantics,
 but its blocking I/O/Drop remains explicitly unqualified by Unix tests.
 Independent source review approved integration `a5aa6e03`; its only minor finding,
-a duplicate Python `time` import, is removed in this follow-up. No fresh build,
-tests, hosted CI, PR, merge or release is claimed for this tree.
+a duplicate Python `time` import, was removed at `faf22231`. Initial focused
+qualification found one obsolete test accessing a child after correct Unix
+fallback handoff; independently reviewed test-only `8b9a009d` instead requires
+explicit custody uncertainty and the original pre-established worker's exit.
+Focused controller/protocol/remote and actual protocol/repeated-run targets
+passed 112 tests. The first full run then rejected the new generic controller
+directory through the strict layout guard; independently reviewed test-only
+`9e874106` adds exactly that directory and also forbids registered adapter stems
+as generic directories. A fresh full all-target/all-feature offline suite at
+`9e874106` passed **1,217 tests**, zero failures and 21 explicit optional skips
+across 22 targets. Both earlier failure transcripts remain retained.
+Strict Clippy subsequently rejected the test's complex tuple. Independently
+reviewed test-only `4a3b8647` replaces it with a named `CategoryLayout`, retaining
+the same five registry populations, allowlists and assertions without lint
+suppression. Its focused layout regression, strict all-target/all-feature
+Clippy and formatting passed; the full 1,217-test evidence above remains tied
+to `9e874106`, not falsely claimed as a fresh full run at `4a3b8647`.
+Sequential offline build/private Rust docs/pinned AutoUML 0.7.2/flows/interactive
+views/bash and zsh completions passed. The actual executable SHA-256 stayed
+unchanged before/after runtime tests and the final build:
+`26627f73727662096c474899ad97cde664f5236b1eaf1bb8c991345f1c30e1c8`.
+Signed ancestry merge `e8313859` retains typed-controller delivery head
+`940a9d39` and changes only the ledger, not production, tests or Cargo bytes.
+Subsequent signed main merge `4074c87b` retains actual main `1bcc8253` with a
+tree identical to qualified-ledger checkpoint `3b8e5d4c`.
+Hosted exact-head/package CI, PR merge, post-merge verification and release
+remain pending. No optional SDK/host/provider qualification is inferred.
 
 Integrated candidate, staged patch **0.2.30**: independently source-approved
 typed task-controller contracts `ac8c7753` and historical layout correction
@@ -100,7 +132,9 @@ offline build/private Rust docs/pinned AutoUML 0.7.2/flows/interactive views/bas
 and zsh completions passed. The actual executable SHA-256 remained unchanged
 before/after runtime tests and the final build:
 `c489e15faa664c44df3201f8ddeff8738a6d8feecc3cd93b665efb6414115a41`.
-Hosted/package CI, PR merge, post-merge verification and release remain pending.
+Exact-head ordinary/package CI passed in run `39657670241`; PR #296 merged
+as `1bcc8253e563847e8898dd6a4562b6d384220f92`. Both post-merge jobs in run
+`39659641538` and release remain pending.
 Signed merge `889702ed` retains actual main `b12d8488` with a tree identical
 to qualified `64e7c45e`; no production, tests or Cargo bytes changed.
 The older pre-main full suite passed 1,100
@@ -131,8 +165,10 @@ SHA-256 stayed unchanged before/after tests and final build:
 `3acc60d2381d4f6037159d1a7c41fb5f6ae6d0ed2b9acd64183de388934d59a6`.
 Exact-head hosted/package CI passed in runs `39655735876` and `39655737318`;
 PR #295 merged as `b12d84882609aae00d16dabd497126348e9ef1ef` after independent
-main-ancestry publication review. Post-merge run `39657490808` and release
-remain pending. This does not qualify optional skipped host/provider tests,
+main-ancestry publication review. Both post-merge jobs passed in run
+`39657490808`; **0.2.29** is released with GitHub-verified valid annotated SSH
+tag `a71266ce3167f68ba49ca3ea4538813eaa396aaa` at that exact merge.
+This does not qualify optional skipped host/provider tests,
 runtime discovery, or the remaining overall audit.
 The subsequent signed ancestry merge retains actual main
 `46d20e382b7781c3fb3bf48216e6090ca4b37998` with a tree identical to qualified
