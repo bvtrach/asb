@@ -8,6 +8,8 @@ use std::process::Command;
 
 #[cfg(target_os = "linux")]
 mod control;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use control::observation_fault;
 #[cfg(target_os = "linux")]
 mod descendants;
 #[cfg(target_os = "linux")]

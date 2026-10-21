@@ -371,6 +371,7 @@ mod tests {
         let task = crate::workloads::TaskIdentity::local("bug-fix", Some("case"));
         BenchmarkData {
             execution: None,
+            observation: Default::default(),
             id: crate::compare::RowId {
                 configuration: 0,
                 batch: None,

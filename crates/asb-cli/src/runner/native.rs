@@ -237,6 +237,7 @@ impl PreparedNative {
         )?;
         Ok((
             ExecutionEvidence {
+                observation: child.observation,
                 artifact_owner: Some(self.artifact_owner),
                 capture_complete: child.issues.capture_error.is_none(),
                 output: child.output,

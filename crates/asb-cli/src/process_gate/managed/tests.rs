@@ -27,6 +27,102 @@ fn command(gate: &Path, program: &str, args: &[String]) -> (Command, crate::laun
 }
 
 struct ReleaseOnDrop(std::path::PathBuf);
+
+#[test]
+fn actual_observation_distinguishes_codes_from_signals_without_interruption() {
+    use crate::process_termination::ProcessTermination;
+    let binary = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("asb");
+    for (script, exact, carrier) in [
+        ("exit 137", ProcessTermination::Code(137), 137),
+        ("exit 143", ProcessTermination::Code(143), 143),
+        ("kill -KILL $$", ProcessTermination::Signal(9), 1),
+        ("kill -TERM $$", ProcessTermination::Signal(15), 1),
+    ] {
+        let (mut command, route) = command(&binary, "/bin/sh", &["-c".into(), script.into()]);
+        let mut gate =
+            Admission::with_principal_observation(route.validate_gate(&mut command).unwrap())
+                .unwrap()
+                .spawn()
+                .unwrap();
+        gate.wait_stopped().unwrap();
+        assert!(
+            gate.interrupt_principal(Instant::now() + Duration::from_secs(1))
+                .is_err()
+        );
+        gate.resume().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let status = loop {
+            if let Some(status) = gate.try_wait().unwrap() {
+                break status;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(status.code(), Some(carrier));
+        assert_eq!(
+            gate.principal_observation().process_termination,
+            Some(exact)
+        );
+        assert!(
+            gate.principal_observation()
+                .process_termination_diagnostic
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn bad_optional_observations_do_not_hide_matching_base_quiescence() {
+    let root = root();
+    for kind in [
+        "missing",
+        "malformed",
+        "partial",
+        "duplicate",
+        "wrong-owner",
+    ] {
+        let launcher = root.join(kind);
+        let payload = match kind {
+            "missing" => "b''",
+            "malformed" => "b'not-a-control-frame'",
+            "partial" => "f(4,0,7)+b'partial'",
+            "duplicate" => "f(4,0,7)+f(4,0,7)",
+            "wrong-owner" => "f(1,0,123)+f(4,0,7)",
+            _ => unreachable!(),
+        };
+        std::fs::write(&launcher,format!("#!/usr/bin/python3\nimport os,signal,socket,struct\nr=socket.socket(fileno=int(os.environ['ASB_GATE_RECEIPT_FD']))\nc=socket.socket(fileno=int(os.environ['ASB_GATE_CONTROL_FD']))\nf=lambda k,d,v:b'ASBCTRL1'+bytes([k,d,0,0])+struct.pack('<I',v)\nc.sendall(f(1,0,os.getpid()))\nr.sendall(b'ASBGATE2'+bytes([1,0,0,0])+struct.pack('<I',os.getpid()))\nos.kill(os.getpid(),signal.SIGSTOP)\nc.sendall({payload}) if {payload} else None\nr.sendall(b'ASBGATE2'+bytes([2,7,0,0])+struct.pack('<I',os.getpid()))\nos._exit(7)\n")).unwrap();
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let (mut command, route) = command(&launcher, "/bin/true", &[]);
+        let mut gate =
+            Admission::with_principal_observation(route.validate_gate(&mut command).unwrap())
+                .unwrap()
+                .spawn()
+                .unwrap();
+        gate.resume().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(status) = gate.try_wait().unwrap() {
+                assert_eq!(status.code(), Some(7));
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            gate.principal_observation(),
+            crate::process_termination::Observation::malformed(),
+            "{kind}"
+        );
+        assert_eq!(gate.stop().unwrap().code(), Some(7));
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
 impl Drop for ReleaseOnDrop {
     fn drop(&mut self) {
         let _ = std::fs::write(&self.0, "release fixture");

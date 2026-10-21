@@ -17,6 +17,7 @@ pub(crate) struct Admission<'a> {
     control: Option<(super::control::Parent, UnixStream)>,
     keeper: OwnedReaper,
     command: &'a mut Command,
+    observation_only: bool,
 }
 
 impl<'a> Admission<'a> {
@@ -28,6 +29,14 @@ impl<'a> Admission<'a> {
         validated: crate::launch::ValidatedGate<'a>,
     ) -> io::Result<Self> {
         Self::prepare(validated, true)
+    }
+
+    pub(crate) fn with_principal_observation(
+        validated: crate::launch::ValidatedGate<'a>,
+    ) -> io::Result<Self> {
+        let mut admission = Self::prepare(validated, true)?;
+        admission.observation_only = true;
+        Ok(admission)
     }
 
     fn prepare(validated: crate::launch::ValidatedGate<'a>, controlled: bool) -> io::Result<Self> {
@@ -54,6 +63,7 @@ impl<'a> Admission<'a> {
             control,
             keeper,
             command,
+            observation_only: false,
         })
     }
 
@@ -64,6 +74,7 @@ impl<'a> Admission<'a> {
             writer,
             keeper,
             control,
+            observation_only,
             ..
         } = self;
         drop(writer);
@@ -80,6 +91,7 @@ impl<'a> Admission<'a> {
             observed: None,
             startup_deadline: Instant::now() + STARTUP,
             control,
+            observation_only,
         })
     }
 }
@@ -93,6 +105,7 @@ pub(crate) struct ManagedGate {
     observed: Option<ExitStatus>,
     startup_deadline: Instant,
     control: Option<super::control::Parent>,
+    observation_only: bool,
 }
 
 impl ManagedGate {
@@ -170,7 +183,7 @@ impl ManagedGate {
         self.receiver.poll(self.id())?;
         let id = self.id();
         if let Some(control) = self.control.as_mut() {
-            control.poll(id)?;
+            control.observe(id, false);
         }
         let status = match self.observed {
             Some(status) => Some(status),
@@ -184,7 +197,7 @@ impl ManagedGate {
             self.receiver.poll(self.id())?;
             let id = self.id();
             if let Some(control) = self.control.as_mut() {
-                control.poll(id)?;
+                control.observe(id, true);
             }
             let code = self.receiver.quiescent.ok_or_else(|| io::Error::other(
                 "native gate exited without a quiescence receipt; descendant cleanup is unconfirmed"
@@ -234,7 +247,11 @@ impl ManagedGate {
     /// A request acknowledgement is not completion. Callers still need the
     /// existing guardian exit plus quiescence proof before parsing captures.
     pub(crate) fn interrupt_principal(&mut self, deadline: Instant) -> io::Result<()> {
-        if !self.admitted || self.complete.is_some() || self.observed.is_some() {
+        if self.observation_only
+            || !self.admitted
+            || self.complete.is_some()
+            || self.observed.is_some()
+        {
             return Err(io::Error::other(
                 "principal interruption requires a live admitted controlled gate",
             ));
@@ -250,6 +267,13 @@ impl ManagedGate {
 
     pub(crate) fn principal_exit(&self) -> Option<super::control::PrincipalExit> {
         self.control.as_ref().and_then(|control| control.exited)
+    }
+
+    pub(crate) fn principal_observation(&self) -> crate::process_termination::Observation {
+        self.control.as_ref().map_or_else(
+            crate::process_termination::Observation::default,
+            super::control::Parent::observation,
+        )
     }
 
     pub(crate) fn interruption_acknowledged(&self) -> bool {

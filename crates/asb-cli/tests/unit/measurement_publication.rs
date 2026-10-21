@@ -274,6 +274,7 @@ fn fixture_measurement() -> RunMeasurement<'static> {
     RunMeasurement {
         execution: None,
         recording: None,
+        observation: Default::default(),
         execution_plan_fingerprint: None,
         module: None,
         benchmark_outcome: None,

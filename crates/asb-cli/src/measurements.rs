@@ -287,6 +287,8 @@ pub struct RunMeasurement<'a> {
     pub(crate) execution: Option<&'a crate::runner::campaign::ExecutionIdentity>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) recording: Option<&'a crate::runner::recording::Evidence>,
+    #[serde(flatten)]
+    pub(crate) observation: crate::process_termination::Observation,
     pub(crate) execution_plan_fingerprint: Option<&'a str>,
     pub(crate) module: Option<&'a crate::workloads::contracts::ModuleDescriptor>,
     pub(crate) benchmark_outcome: Option<&'a crate::workloads::outcome::BenchmarkOutcome>,
@@ -324,6 +326,8 @@ pub struct RunMeasurement<'a> {
 
 #[derive(Debug, Serialize)]
 struct CollectorResult {
+    #[serde(flatten)]
+    observation: crate::process_termination::Observation,
     schema_version: u32,
     collector: String,
     status: String,
@@ -1118,6 +1122,10 @@ impl Session {
                 data.timestamps.clear();
             }
             let result = CollectorResult {
+                observation: completion
+                    .exit
+                    .map(crate::process_termination::Observation::observed)
+                    .unwrap_or_default(),
                 schema_version: 1,
                 collector: collector.name.clone(),
                 status: data.status,
@@ -1379,6 +1387,7 @@ pub(crate) fn write_unavailable(path: &Path, collector: &str, error: String) -> 
     write_json(
         path,
         &CollectorResult {
+            observation: Default::default(),
             schema_version: 1,
             collector: collector.into(),
             status: "unavailable".into(),
@@ -2100,6 +2109,7 @@ mod tests {
         let run = RunMeasurement {
             execution: None,
             recording: None,
+            observation: Default::default(),
             workload_resource_disposition: None,
             workload_artifacts: &[],
             execution_plan_fingerprint: None,
