@@ -1802,6 +1802,10 @@ fn selected_trials(app: &App, choice: &str) -> Result<TrialSelection, Error> {
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/tui_generation.rs"]
+mod generation_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         App, Availability, Choice, Generated, Pane, default_model, generate_configs,
