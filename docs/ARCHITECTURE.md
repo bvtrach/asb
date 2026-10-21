@@ -1488,7 +1488,15 @@ the exact prepared bytes rather than rebuilding a different archive. Publication
 confirmation is separate from resumable staging cleanup. Missing published
 archives are never silently recreated. Per-track evidence binds immutable
 metadata and selected entry bytes, not staging paths that cleanup removes;
-batch evidence verification reuses one archive index. Sweep and cassette output
+writer-owned batch evidence verification reuses one archive index. Read-only
+report verification instead validates all reference and journal/catalogue
+metadata before selected JSONL, then uses a second bounded catalogue pass with
+the same receipt and metadata-size identity. Only one archive stays open, avoiding
+a descriptor-count cap on valid sweeps. Each receipt length check and decoder
+share one opened regular file. Whole-operation `ProofLimits` bound references,
+metadata, directory/end-record snapshots, compressed input and distinct selected
+bytes separately from per-archive format limits; single proofs retain their
+independent journal and manifest allowances. Sweep and cassette output
 owners share a private persistent-inode lock implementation, with domain-owned
 paths and diagnostics. Finalization requires the caller to stop/join recording
 producers; freezing the journal does not drain a proxy itself. This backend is a

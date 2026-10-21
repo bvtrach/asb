@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 
+#[path = "proof_tests.rs"]
+mod proof;
 #[path = "publication_tests.rs"]
 mod publication;
 

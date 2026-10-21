@@ -26,7 +26,9 @@ pub(super) fn load(path: &str) -> Result<LoadedReport, Error> {
             toml::to_string(configuration).map_err(|error| Error::Input(error.to_string()))?,
         )]),
     };
-    let (rows, previews) = rows(&layout, &request, 0, config, None)?;
+    let mut proofs = Vec::new();
+    let (rows, previews) = rows(&layout, &request, 0, config, None, &mut proofs)?;
+    verify_proofs(&proofs)?;
     Ok(LoadedReport {
         request,
         rows,
@@ -40,6 +42,7 @@ pub(super) fn rows(
     index: usize,
     config: PathBuf,
     selection: Option<&crate::workloads::TaskSelection>,
+    proofs: &mut Vec<crate::cassette::TrackEvidence>,
 ) -> Result<(Vec<BenchmarkData>, BTreeMap<String, String>), Error> {
     let configuration = &layout.plan.configuration;
     let mut rows = Vec::new();
@@ -112,7 +115,7 @@ pub(super) fn rows(
         context.outcomes = recorded
             .map(|record| BTreeMap::from([(slot.replica, record)]))
             .unwrap_or_default();
-        let mut row = load_attempt(request, &context, slot.replica)?;
+        let mut row = load_attempt(request, &context, slot.replica, proofs)?;
         if let Some(outcome) = &outcome {
             verify_recording(&outcome.value)?;
         }
@@ -153,7 +156,7 @@ fn verify_recording(raw: &Value) -> Result<(), Error> {
     if let Some(value) = raw.get("recording_track").filter(|value| !value.is_null()) {
         let evidence: crate::runner::recording::Evidence = serde_json::from_value(value.clone())
             .map_err(|_| Error::Input("malformed campaign recording association".into()))?;
-        evidence.validate_summary(&raw["summary"], &captures)?;
+        evidence.validate_summary_metadata(&raw["summary"], &captures)?;
     } else if !captures.is_empty() && raw["summary"]["execution"]["replay_track"].is_null() {
         return Err(Error::Input(
             "campaign capture has no immutable recording association".into(),
@@ -162,11 +165,20 @@ fn verify_recording(raw: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-pub(super) fn verify_summary_recording(summary: &Value) -> Result<(), Error> {
+pub(super) fn collect_summary_recording(
+    summary: &Value,
+    proofs: &mut Vec<crate::cassette::TrackEvidence>,
+) -> Result<(), Error> {
     if let Some(value) = summary.get("recording").filter(|value| !value.is_null()) {
         let evidence: crate::runner::recording::Evidence = serde_json::from_value(value.clone())
             .map_err(|_| Error::Input("malformed campaign summary recording association".into()))?;
-        evidence.validate_report_summary(summary)?;
+        evidence.validate_report_metadata(summary)?;
+        proofs.push(evidence.track);
     }
     Ok(())
+}
+
+pub(super) fn verify_proofs(proofs: &[crate::cassette::TrackEvidence]) -> Result<(), Error> {
+    crate::cassette::TrackEvidence::verify_batch(proofs, crate::cassette::ProofLimits::default())
+        .map_err(|error| Error::Input(format!("campaign recording proof: {error}")))
 }

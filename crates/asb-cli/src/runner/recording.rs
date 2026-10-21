@@ -32,7 +32,20 @@ impl Evidence {
         summary: &serde_json::Value,
         captures: &[proxy::capture::CaptureEvidence],
     ) -> Result<(), Error> {
-        self.validate_report_summary(summary)?;
+        self.validate_summary_metadata(summary, captures)?;
+        self.track
+            .verify(Limits::default())
+            .map_err(recording_error)
+    }
+
+    /// Validate the association and capture declarations without reading payloads.
+    /// Reports must subsequently verify the collected tracks as one batch.
+    pub fn validate_summary_metadata(
+        &self,
+        summary: &serde_json::Value,
+        captures: &[proxy::capture::CaptureEvidence],
+    ) -> Result<(), Error> {
+        self.validate_report_metadata(summary)?;
         let track = &self.track.track;
         let matching: Vec<_> = captures
             .iter()
@@ -55,10 +68,10 @@ impl Evidence {
         Ok(())
     }
 
-    /// A report-only summary lacks completion capture receipts, but must still
-    /// bind its producer/attempt association and actual selected track bytes.
+    /// A report-only summary lacks completion capture receipts. Validate its
+    /// identity and immutable producer association before grouped payload proof.
     /// This does not establish cleanup or authorize execution continuation.
-    pub fn validate_report_summary(&self, summary: &serde_json::Value) -> Result<(), Error> {
+    pub fn validate_report_metadata(&self, summary: &serde_json::Value) -> Result<(), Error> {
         self.track
             .validate(Limits::default())
             .map_err(recording_error)?;
@@ -108,9 +121,7 @@ impl Evidence {
                 "recording producer/attempt association changed".into(),
             ));
         }
-        self.track
-            .verify(Limits::default())
-            .map_err(recording_error)
+        Ok(())
     }
 }
 

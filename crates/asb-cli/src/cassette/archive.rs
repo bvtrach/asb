@@ -15,7 +15,7 @@ use zip::{
 pub struct Limits {
     /// Maximum compressed archive file length.
     pub max_archive_bytes: u64,
-    /// Maximum central directory bytes, checked before ZIP metadata allocation.
+    /// Maximum central directory plus end-record bytes, checked before allocation.
     pub max_directory_bytes: u64,
     /// Maximum manifest JSON bytes.
     pub max_manifest_bytes: u64,
@@ -65,6 +65,7 @@ pub struct Archive {
     manifest: Manifest,
     entries: BTreeMap<u64, usize>,
     limits: Limits,
+    metadata_bytes: (u64, u64),
 }
 
 impl Archive {
@@ -84,8 +85,18 @@ impl Archive {
         if !file.metadata().map_err(io_error)?.is_file() {
             return Err(Error("cassette archive must be a regular file".into()));
         }
+        Self::from_file(file, limits)
+    }
+
+    /// Consume the exact descriptor already checked by a recording proof.
+    pub(super) fn from_file(file: std::fs::File, limits: Limits) -> Result<Self, Error> {
+        limits.validate()?;
+        if !file.metadata().map_err(io_error)?.is_file() {
+            return Err(Error("cassette archive must be a regular file".into()));
+        }
         let (reader, metadata_phase, expected_entries, directory_start) =
             MetadataReader::new(file, limits)?;
+        let directory_bytes = reader.metadata_bytes();
         let mut archive = ZipArchive::with_config(
             Config {
                 archive_offset: ArchiveOffset::Known(0),
@@ -174,7 +185,12 @@ impl Archive {
             manifest,
             entries,
             limits,
+            metadata_bytes: (directory_bytes, bytes.len() as u64),
         })
+    }
+
+    pub(super) fn metadata_bytes(&self) -> (u64, u64) {
+        self.metadata_bytes
     }
 
     /// Inspect metadata without decoding any track payload.

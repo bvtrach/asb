@@ -3,7 +3,9 @@ mod evidence;
 mod publication;
 use super::{Error, Limits, Manifest, Statistics, Track, digest};
 use crate::output_lock::OutputLock;
-pub use evidence::TrackEvidence;
+pub use evidence::{ProofLimits, TrackEvidence};
+#[cfg(test)]
+pub(super) use evidence::{set_hook, take_observations};
 pub use publication::Publication;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};

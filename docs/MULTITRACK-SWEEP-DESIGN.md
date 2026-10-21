@@ -150,11 +150,50 @@ spool concurrency bounds separate from campaign presentation counts.
 This is not full feature-five readiness: modern continuation/reconciliation
 and grade import explicitly refuse before historical writes instead of falling
 through to legacy receipts. Aggregate input validation before any legacy hash,
-grouped immutable recording-proof verification, campaign input/continuation seals
+deterministic recording-proof budget reservation, campaign input/continuation seals
 and complete source/package/hosted qualification remain required. The preceding
 integrated-head regression gate passed 1312 tests with 21 existing ignored and
 zero failures before this fresh-sweep wiring; that evidence does not qualify the
 new implementation by itself.
+
+## Grouped recording-proof checkpoint
+
+Campaign reports now validate every summary's execution/producer association and
+every actual outcome's capture agreement before one shared payload-proof call.
+Reporting-only summaries still do not manufacture capture receipts or authorize
+continuation. The backend validates all reference metadata, then every selected
+recording's immutable journal/catalogue metadata, before reading JSONL. Identical
+references share one payload read; conflicting IDs/recording identities fail.
+
+Published recordings use two bounded catalogue passes rather than a parse per
+track. Only one archive descriptor is retained at a time, so recording count is
+not capped at 256. The second pass must match the original publication receipt
+and exact directory/manifest sizes. Receipt length checks and archive decoding
+consume the same opened regular file, never different pathname refreshes. A
+staged-to-published transition uses remaining global budgets; that race can read
+a selected track from both sources. Missing published targets never fall back
+to leftover staging, and no writer lock or recovery operation is acquired.
+
+`ProofLimits` distinguishes whole-operation budgets from per-archive `Limits`.
+Defaults permit 65,533 reference occurrences, 256 MiB each of encoded references
+and journal/manifest metadata, 64 MiB of directory/end-record snapshots, and
+2 GiB each of compressed recordings and distinct selected uncompressed bytes.
+Reference encoding is counted without allocating encoded copies. Single proofs
+preserve their previously separate journal, publication-marker and manifest
+allowances. Directory snapshot bounds include the end record/comment and are
+checked before allocating the snapshot. These are bounded local integrity
+checks, not authentication or whole-archive checksum assertions.
+
+Backend regressions cover 257 simultaneous recording references, exact and
+one-byte-short aggregate budgets, duplicate/conflicting identities, late metadata
+failure before earlier payloads, selected/unselected corruption, publication
+cleanup races, disappeared targets, between-pass mutation, descriptor pathname
+replacement, large reference paths and the original single-proof boundary.
+Fresh-sweep revision `4499e6ac` completed its full offline suite with 1322 passed,
+21 existing ignored and zero failures. Subsequent grouped-proof edits require
+their own complete gates. Deterministic whole-sweep metadata reservation before
+paid execution, modern continuation/reconciliation, global pre-hash input
+validation and final delivery qualification remain unfinished.
 
 ## Ownership and shared contracts
 
@@ -227,7 +266,7 @@ well as configured C, so a resumed partial batch cannot masquerade as full C.
 
 Bind outcomes to immutable track/association proofs, not a growing ZIP or raw
 JSONL that confirmed publication can remove. Group proof validation by recording
-and reuse one bounded metadata/index pass. Final bundle publication is separate
+and reuse a bounded constant number of metadata/index passes. Final bundle publication is separate
 from per-slot completion: publication-only recovery must never relaunch clients.
 Preserve interrupted/failed attempts and no-overwrite ownership. Any explicit new
 attempt needs a distinct attempt association; never rewrite a committed track.

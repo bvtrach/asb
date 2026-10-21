@@ -379,6 +379,15 @@ agent/provider/container runs. Fault hooks exist only in test builds and have no
 environment/configuration surface in the installed CLI. `run` integrates the
 backend through its own recording/replay coordinators; sweep/resume/report and
 viewer delivery remain separate steps in MULTITRACK.md.
+The read-only `TrackEvidence::verify_batch` regressions use bounded synthetic
+recordings with no clients: duplicate and conflicting references, 257 recordings,
+aggregate quota boundaries, late metadata errors, selective corruption, active
+writer/publication races, lost targets, between-pass mutation and exact opened
+descriptor identity. Test-only observations count catalogue and payload reads;
+they are not production fault switches. Grouped reports perform two bounded
+catalogue passes per published recording, with one open archive at a time, not
+one pass per row. Per-archive format limits and whole-operation `ProofLimits`
+are separate; single proofs retain independent journal/manifest allowances.
 `cargo test --locked --offline --test repeated_run` additionally records real
 embedded-proxy ZIP captures with a bounded loopback provider and synthetic agent.
 It checks no-overwrite/fresh defaults, ordinary complete failed recordings,

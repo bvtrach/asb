@@ -23,6 +23,10 @@ pub(super) struct MetadataReader {
 }
 
 impl MetadataReader {
+    pub(super) fn metadata_bytes(&self) -> u64 {
+        self.metadata.len() as u64
+    }
+
     pub(super) fn new(
         mut file: File,
         limits: Limits,
@@ -63,10 +67,21 @@ impl MetadataReader {
         {
             return Err(Error("unsupported or excessive cassette ZIP directory (requires bounded single-disk ZIP32)".into()));
         }
+        let snapshot_len = bytes
+            .checked_add(end.len() as u64)
+            .filter(|length| *length <= limits.max_directory_bytes)
+            .and_then(|length| usize::try_from(length).ok())
+            .ok_or_else(|| {
+                Error("cassette ZIP directory and end record exceed metadata limit".into())
+            })?;
         file.seek(SeekFrom::Start(start)).map_err(error)?;
         let count =
             usize::try_from(bytes).map_err(|_| Error("cassette directory size overflow".into()))?;
-        let mut metadata = vec![0; count];
+        let mut metadata = Vec::new();
+        metadata
+            .try_reserve_exact(snapshot_len)
+            .map_err(|_| Error("cannot allocate bounded cassette directory snapshot".into()))?;
+        metadata.resize(count, 0);
         file.read_exact(&mut metadata).map_err(error)?;
         validate_directory(&metadata, entries, start)?;
         metadata.extend_from_slice(end);

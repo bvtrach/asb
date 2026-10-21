@@ -220,10 +220,16 @@ pub(super) fn load(path: &str) -> Result<LoadedReport, Error> {
         return load_campaign_sweep(request);
     }
     let mut rows = Vec::new();
+    let mut proofs = Vec::new();
     for (index, reference) in request.sweep.configs.iter().enumerate() {
         let configuration = load_configuration(&request, index, reference)?;
         for replica in 1..=configuration.concurrency {
-            rows.push(load_attempt(&request, &configuration, replica)?);
+            rows.push(load_attempt(
+                &request,
+                &configuration,
+                replica,
+                &mut proofs,
+            )?);
         }
     }
     let mut previews = BTreeMap::new();
@@ -300,13 +306,21 @@ fn load_campaign_sweep(request: Request) -> Result<LoadedReport, Error> {
     }
     let mut rows = Vec::new();
     let mut previews = BTreeMap::new();
+    let mut proofs = Vec::new();
     for (index, (entry, layout)) in plan.entries.iter().zip(&layouts).enumerate() {
         let config = request.parent.join(&entry.reference);
-        let (mut selected, artifacts) =
-            campaign::rows(layout, &request, index, config, Some(&entry.selection))?;
+        let (mut selected, artifacts) = campaign::rows(
+            layout,
+            &request,
+            index,
+            config,
+            Some(&entry.selection),
+            &mut proofs,
+        )?;
         rows.append(&mut selected);
         previews.extend(artifacts);
     }
+    campaign::verify_proofs(&proofs)?;
     Ok(LoadedReport {
         request,
         rows,
@@ -427,6 +441,7 @@ fn load_attempt(
     request: &Request,
     context: &Configuration,
     replica: usize,
+    proofs: &mut Vec<crate::cassette::TrackEvidence>,
 ) -> Result<BenchmarkData, Error> {
     let index = context.index;
     let config = &context.config;
@@ -584,7 +599,7 @@ fn load_attempt(
         },
     )?;
     if context.expected_execution.is_some() {
-        campaign::verify_summary_recording(&run_value)?;
+        campaign::collect_summary_recording(&run_value, proofs)?;
     }
     let mut metrics = BTreeMap::new();
     let legacy_evaluation_provenance: Option<
