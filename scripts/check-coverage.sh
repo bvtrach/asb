@@ -29,7 +29,7 @@ if [[ ${#profiles[@]} != 1 ]]; then
 fi
 # Only the non-test executable defines the production line denominator. The
 # full report above supplies counts, including coverage gained by unit tests.
-dependency_regex=$(cargo metadata --locked --offline --format-version 1 | python3 -c 'import json, sys; sys.path.insert(0, "scripts"); from check_coverage import dependency_path_regex; print(dependency_path_regex(json.load(sys.stdin)))')
+dependency_regex=$(cargo metadata --locked --offline --filter-platform "$host" --format-version 1 | python3 -c 'import json, sys; sys.path.insert(0, "scripts"); from check_coverage import dependency_path_regex; print(dependency_path_regex(json.load(sys.stdin)))')
 "$llvm_cov" show \
   -instr-profile="${profiles[0]}" \
   target/llvm-cov-target/debug/asb \

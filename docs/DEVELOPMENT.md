@@ -118,7 +118,8 @@ cleaned while dependency compilation caches are retained. This also prevents
 obsolete test-binary maps from distorting totals after version or feature changes.
 No live provider, real agent installation, or privileged collector is necessary.
 The production map excludes only registry/git package directories identified by
-locked offline Cargo metadata (including relocated/symlinked caches). Workspace
+locked offline host-filtered Cargo metadata (including relocated/symlinked caches).
+Unbuilt cross-target packages need not be downloaded for native coverage. Workspace
 and local path-package sources stay in the denominator; no product module is excluded.
 Missing-project capability fixtures test the same private initialized-file guard
 used by production, and ancestor discovery uses an owned fixture parent/child.
