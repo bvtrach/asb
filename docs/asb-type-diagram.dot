@@ -51,6 +51,7 @@ digraph ASB_Rust_UML {
         "asb-cli_src_collectors_adapters_CpuIdentity" [label="{collectors_adapters_CpuIdentity|-model: Option\<String\>\l-vendor: Option\<String\>\l-implementer: Option\<String\>\l-part: Option\<String\>\l}", shape=record];
         "asb-cli_src_collectors_adapters_CpuState" [label="{collectors_adapters_CpuState|-enabled: bool\l}", shape=record];
         "asb-cli_src_collectors_adapters_Drop" [label="{collectors_adapters_Drop||+drop() void\l}", shape=record];
+        "asb-cli_src_collectors_adapters_EventQuality" [label="{collectors_adapters_EventQuality|-observed_value: Option\<f64\>\l-value_unit: &'static str\l-observed_rows: u64\l-unavailable_rows: u64\l-unknown_quality_rows: u64\l-known_event_runtime_ns: f64\l-min_running_pct: Option\<f64\>\l-max_running_pct: Option\<f64\>\l}", shape=record];
         "asb-cli_src_collectors_adapters_ExternalCounter" [label="{collectors_adapters_ExternalCounter|-path: PathBuf\l-initial: (u64, u64)\l-final_delta: Option\<(u64, u64)\>\l|+finish() cassette_Result\<(), String\>\l}", shape=record];
         "asb-cli_src_collectors_adapters_FlamegraphCollector" [label="{collectors_adapters_FlamegraphCollector}", shape=record];
         "asb-cli_src_collectors_adapters_FlamegraphStatus" [label="{collectors_adapters_FlamegraphStatus|-schema_version: u32\l-status: &'a str\l-artifact: Option\<&'a str\>\l-reason: Option\<&'a str\>\l}", shape=record];
@@ -62,7 +63,7 @@ digraph ASB_Rust_UML {
         "asb-cli_src_collectors_adapters_MpstatCollector" [label="{collectors_adapters_MpstatCollector}", shape=record];
         "asb-cli_src_collectors_adapters_NamespaceSample" [label="{collectors_adapters_NamespaceSample|-schema_version: u32\l-identity_available: bool\l-distinct_processes: u64\l-peak_rss_kib: u64\l-samples: u64\l-incomplete: bool\l-sampling_interval_ms: u64\l}", shape=record];
         "asb-cli_src_collectors_adapters_PerfCollector" [label="{collectors_adapters_PerfCollector}", shape=record];
-        "asb-cli_src_collectors_adapters_PerfStat" [label="{collectors_adapters_PerfStat|-metrics: BTreeMap\<String, f64\>\l-series: BTreeMap\<String, Vec\<f64\>\>\l-timestamps: BTreeMap\<String, Vec\<f64\>\>\l}", shape=record];
+        "asb-cli_src_collectors_adapters_PerfStat" [label="{collectors_adapters_PerfStat|-metrics: BTreeMap\<String, f64\>\l-series: BTreeMap\<String, Vec\<f64\>\>\l-timestamps: BTreeMap\<String, Vec\<f64\>\>\l-quality: BTreeMap\<String, collectors_adapters_EventQuality\>\l}", shape=record];
         "asb-cli_src_collectors_adapters_PerfState" [label="{collectors_adapters_PerfState|-enabled: bool\l}", shape=record];
         "asb-cli_src_collectors_adapters_PerfettoCollector" [label="{collectors_adapters_PerfettoCollector}", shape=record];
         "asb-cli_src_collectors_adapters_PerfettoState" [label="{collectors_adapters_PerfettoState|-service: Option\<Arc\<Service\>\>\l-enabled: bool\l-trace: Option\<PathBuf\>\l-pid: Option\<u32\>\l-trace_marker: Option\<PathBuf\>\l-trace_marker_output: Option\<File\>\l-marker_verified: bool\l-marker_warning: Option\<String\>\l-scope_warning: Option\<String\>\l-capture_warning: Option\<String\>\l-capture_complete: bool\l-tracepoint_count: u64\l-metrics: BTreeMap\<String, f64\>\l}", shape=record];
@@ -533,6 +534,7 @@ digraph ASB_Rust_UML {
     "asb-cli_src_collectors_adapters_IostatCollector" -> "asb-cli_src_collectors_adapters_CollectorAdapter" [arrowhead="empty", style="dashed"];
     "asb-cli_src_collectors_adapters_MpstatCollector" -> "asb-cli_src_collectors_adapters_CollectorAdapter" [arrowhead="empty", style="dashed"];
     "asb-cli_src_collectors_adapters_PerfCollector" -> "asb-cli_src_collectors_adapters_CollectorAdapter" [arrowhead="empty", style="dashed"];
+    "asb-cli_src_collectors_adapters_PerfStat" -> "asb-cli_src_collectors_adapters_EventQuality" [arrowhead="vee"];
     "asb-cli_src_collectors_adapters_PerfettoCollector" -> "asb-cli_src_collectors_adapters_CollectorAdapter" [arrowhead="empty", style="dashed"];
     "asb-cli_src_collectors_adapters_RuntimeCollector" -> "asb-cli_src_collectors_adapters_CollectorAdapter" [arrowhead="empty", style="dashed"];
     "asb-cli_src_collectors_adapters_Sampler" -> "asb-cli_src_collectors_adapters_Totals" [arrowhead="vee", style="dashed"];
