@@ -83,11 +83,14 @@ and 21 explicit optional skips across 22 targets. Strict Clippy, formatting and
 sequential build/private docs/pinned AutoUML/flows/interactive views/completions
 passed. For **0.2.26**, exact-head hosted/package CI passed in run
 `39650217102`; PR #291 merged as
-`c3498d273c0793ab21225da8b2117b50b3348ac8`. Post-merge run `39651552412`
-and its release remain pending. For **0.2.27**, exact-head hosted/package CI,
-merge, post-merge checks and release remain pending. That parent **0.2.27**
+`c3498d273c0793ab21225da8b2117b50b3348ac8`. Both post-merge jobs passed in
+run `39651552412`; **0.2.26** is released from that exact commit with
+GitHub-verified valid annotated tag `6643f6676d114c1b143ecb251b4eaf56909f1a67`.
+For **0.2.27**, exact-head hosted/package CI passed in runs `39651772993` and
+`39651776713`; PR #292 merged as `a0be2ed445fddb56231447adc03260607eb76f87`.
+Post-merge run `39653471931` and its release remain pending. The parent sweep candidate's
 current-main ancestry merge changes no production, test or Cargo bytes from
-qualified `6553da9c`.
+qualified `1657ae18`.
 
 Integrated repair, released patch **0.2.21**: the independently reviewed
 launch-descriptor/one-shot admission repair (`b1a54fde`) is combined with the
