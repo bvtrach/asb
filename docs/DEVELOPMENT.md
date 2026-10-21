@@ -55,8 +55,15 @@ populations, catalog-name collisions and provider-scoped model discovery using
 only a bounded loopback HTTP fixture with no real provider credentials.
 `cargo test --locked cassette::` exercises the provider-free multi-track backend:
 manifest and compatibility bounds, stable seeded choices, selector edge cases,
-bounded metadata inspection and selective payload corruption checks. The backend
-does not yet expose new run/sweep flags; integration follows MULTITRACK.md.
+bounded metadata inspection, selective corruption checks and durable publication.
+Journal tests inject failures around atomic metadata writes/syncs/links; finalizer
+tests cover ZIP output bounds, freeze/preparation/final-link/confirmation faults,
+individual cleanup boundaries, exact-candidate recovery and foreign targets.
+An owned test child is actually killed at recording/prepared/linked/published
+stages, checking active-owner exclusion and recovery without new attempts. No
+agent/provider/container runs. Fault hooks exist only in test builds and have no
+environment/configuration surface in the installed CLI. The backend does not yet
+expose new run/sweep flags; integration follows MULTITRACK.md.
 The cli2key concurrency regression uses two mock bridge listeners and mock
 clients, with fixture-only credentials. Both authenticated local requests must
 overlap and reach different owned servers; both servers must be reaped afterward.

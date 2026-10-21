@@ -1,0 +1,682 @@
+//! Immutable recording intent/start/commit records under one output owner.
+mod publication;
+use super::{Error, Limits, Manifest, Statistics, Track, digest};
+use crate::output_lock::OutputLock;
+pub use publication::Publication;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
+const MAX_RECORD_BYTES: u64 = 64 * 1024;
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Intent {
+    manifest: Manifest,
+    repeat: u64,
+    destination_name: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Started {
+    recording_id: String,
+    id: u64,
+    batch: u64,
+    replica: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Committed {
+    recording_id: String,
+    track: Track,
+}
+
+/// A single writer's recoverable partial recording; dropping retains all data.
+///
+/// Started slots and completed records are immutable, atomically published and
+/// synced. Recovering never launches an execution, assigns a grade or makes an
+/// uncommitted trace automatically complete. Final ZIP publication is separate.
+pub struct RecordingJournal {
+    _owner: OutputLock,
+    root: PathBuf,
+    destination: PathBuf,
+    intent: Intent,
+    starts: BTreeMap<u64, Started>,
+    commits: BTreeMap<u64, Track>,
+    limits: Limits,
+    staged_bytes: u64,
+    metadata_bytes: u64,
+    recovery_required: bool,
+    publication_fault: PublicationFault,
+    root_identity: fs::Metadata,
+    finalization: Option<Manifest>,
+    allow_existing_destination: bool,
+}
+
+impl RecordingJournal {
+    /// Reserve a new partial directory and publish immutable recording intent.
+    /// Refuses existing final/partial destinations and validates limits first.
+    pub fn create(
+        destination: &Path,
+        manifest: Manifest,
+        repeat: u64,
+        limits: Limits,
+    ) -> Result<Self, Error> {
+        manifest.validate(limits)?;
+        if !manifest.tracks.is_empty() {
+            return Err(Error(
+                "a new recording journal must start with an empty track catalogue".into(),
+            ));
+        }
+        validate_count(repeat, manifest.concurrency, limits)?;
+        let (destination, root, name, owner) = paths_and_lock(destination)?;
+        if exists(&destination)? {
+            return Err(Error(
+                "recording destination already exists; choose a new cassette name".into(),
+            ));
+        }
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&root).map_err(io_error)?;
+        let root_identity = fs::symlink_metadata(&root).map_err(io_error)?;
+        let intent = Intent {
+            manifest,
+            repeat,
+            destination_name: name,
+        };
+        let encoded = serde_json::to_vec(&intent).map_err(json_error)?;
+        if encoded.len() as u64 > limits.max_manifest_bytes {
+            return Err(Error(
+                "recording intent exceeds manifest limit; partial directory retained".into(),
+            ));
+        }
+        publish_new(&root, "intent.json", &encoded, &PublicationFault::default())?;
+        sync_directory(root.parent().expect("canonical parent"))?;
+        Ok(Self {
+            _owner: owner,
+            root,
+            destination,
+            intent,
+            starts: BTreeMap::new(),
+            commits: BTreeMap::new(),
+            limits,
+            staged_bytes: 0,
+            metadata_bytes: encoded.len() as u64,
+            recovery_required: false,
+            publication_fault: PublicationFault::default(),
+            root_identity,
+            finalization: None,
+            allow_existing_destination: false,
+        })
+    }
+
+    /// Acquire the original owner lock and reconstruct committed/started state.
+    /// Missing or changed committed payloads are errors, not retry permission.
+    pub fn recover(destination: &Path, limits: Limits) -> Result<Self, Error> {
+        limits.validate()?;
+        let (destination, root, name, owner) = paths_and_lock(destination)?;
+        let root_identity = fs::symlink_metadata(&root).map_err(io_error)?;
+        if !root_identity.is_dir() {
+            return Err(Error(
+                "recording partial path must be a directory, not a symlink".into(),
+            ));
+        }
+        let mut metadata_remaining = limits.max_manifest_bytes;
+        let intent: Intent = read_json(
+            &root.join("intent.json"),
+            limits.max_manifest_bytes,
+            &mut metadata_remaining,
+        )?;
+        intent.manifest.validate(limits)?;
+        let count = validate_count(intent.repeat, intent.manifest.concurrency, limits)?;
+        if intent.destination_name != name || !intent.manifest.tracks.is_empty() {
+            return Err(Error(
+                "recording intent does not match this destination".into(),
+            ));
+        }
+        let mut journal = Self {
+            _owner: owner,
+            root,
+            destination,
+            intent,
+            starts: BTreeMap::new(),
+            commits: BTreeMap::new(),
+            limits,
+            staged_bytes: 0,
+            metadata_bytes: 0,
+            recovery_required: false,
+            publication_fault: PublicationFault::default(),
+            root_identity,
+            finalization: None,
+            allow_existing_destination: false,
+        };
+        // Known slots bound enumeration; unknown files remain diagnostic only.
+        for id in 1..=count {
+            let start_path = journal.root.join(format!("started-{id}.json"));
+            let commit_path = journal.root.join(format!("committed-{id}.json"));
+            let start_present = exists(&start_path)?;
+            let commit_present = exists(&commit_path)?;
+            if !start_present {
+                if commit_present {
+                    return Err(Error("committed track has no durable start intent".into()));
+                }
+                continue;
+            }
+            let started: Started =
+                read_json(&start_path, MAX_RECORD_BYTES, &mut metadata_remaining)?;
+            let expected = journal.slot(started.batch, started.replica)?;
+            if expected != id
+                || started.id != id
+                || started.recording_id != journal.intent.manifest.recording_id
+            {
+                return Err(Error(
+                    "recording start identity differs from planned slot".into(),
+                ));
+            }
+            journal.starts.insert(id, started);
+            if commit_present {
+                let committed: Committed =
+                    read_json(&commit_path, MAX_RECORD_BYTES, &mut metadata_remaining)?;
+                if committed.recording_id != journal.intent.manifest.recording_id
+                    || committed.track.id != id
+                {
+                    return Err(Error(
+                        "recording commit belongs to a different recording/slot".into(),
+                    ));
+                }
+                journal.validate_track(&committed.track)?;
+                journal.commits.insert(id, committed.track);
+            }
+        }
+        journal.metadata_bytes = limits.max_manifest_bytes - metadata_remaining;
+        journal.recover_finalization()?;
+        journal.staged_bytes = journal
+            .snapshot()?
+            .tracks
+            .iter()
+            .try_fold(0u64, |total, track| total.checked_add(track.bytes))
+            .ok_or_else(|| Error("recording staged byte count overflow".into()))?;
+        Ok(journal)
+    }
+
+    /// Record an actual execution start before launching its processes.
+    /// A duplicate start is never interpreted as permission to retry.
+    pub fn begin(&mut self, batch: u64, replica: u64) -> Result<u64, Error> {
+        self.check_root()?;
+        self.ensure_recording()?;
+        let id = self.slot(batch, replica)?;
+        if self.starts.contains_key(&id) {
+            return Err(Error(format!(
+                "recording track {id} has already started; refusing implicit retry"
+            )));
+        }
+        let started = Started {
+            recording_id: self.intent.manifest.recording_id.clone(),
+            id,
+            batch,
+            replica,
+        };
+        self.publish_record(
+            &format!("started-{id}.json"),
+            &serde_json::to_vec(&started).map_err(json_error)?,
+        )?;
+        self.starts.insert(id, started);
+        Ok(id)
+    }
+
+    /// Stage exact bounded bytes and publish immutable completion metadata.
+    ///
+    /// The caller must derive completeness from recording finalization evidence,
+    /// never process exit alone. Failed staging retains its uncommitted payload
+    /// for inspection; another commit cannot overwrite it.
+    pub fn commit(&mut self, track: Track, source: &mut dyn Read) -> Result<(), Error> {
+        self.check_root()?;
+        self.ensure_recording()?;
+        self.validate_track(&track)?;
+        if self.commits.contains_key(&track.id) {
+            return Err(Error(format!(
+                "recording track {} is already committed",
+                track.id
+            )));
+        }
+        if self
+            .staged_bytes
+            .checked_add(track.bytes)
+            .is_none_or(|total| total > self.limits.max_total_bytes)
+        {
+            return Err(Error("recording exceeds total staged byte limit".into()));
+        }
+        let path = self.payload_path(track.id);
+        let mut file = create_private(&path)?;
+        let mut hash = Sha256::new();
+        let mut length = 0u64;
+        let mut buffer = [0; 16 * 1024];
+        loop {
+            let read = source.read(&mut buffer).map_err(io_error)?;
+            if read == 0 {
+                break;
+            }
+            length = length
+                .checked_add(read as u64)
+                .ok_or_else(|| Error("recording payload length overflow".into()))?;
+            if length > track.bytes {
+                return Err(Error(
+                    "recording payload exceeds declared length; incomplete payload retained".into(),
+                ));
+            }
+            hash.update(&buffer[..read]);
+            // Count before writing: a short/failed write can leave some bytes.
+            // Conservative accounting prevents later staging from exceeding the
+            // budget; explicit recovery measures the retained actual length.
+            self.staged_bytes += read as u64;
+            file.write_all(&buffer[..read]).map_err(io_error)?;
+        }
+        file.sync_all().map_err(io_error)?;
+        if length != track.bytes || format!("{:x}", hash.finalize()) != track.sha256 {
+            return Err(Error(
+                "recording payload length/checksum mismatch; incomplete payload retained".into(),
+            ));
+        }
+        let committed = Committed {
+            recording_id: self.intent.manifest.recording_id.clone(),
+            track: track.clone(),
+        };
+        self.publish_record(
+            &format!("committed-{}.json", track.id),
+            &serde_json::to_vec(&committed).map_err(json_error)?,
+        )?;
+        self.commits.insert(track.id, track);
+        Ok(())
+    }
+
+    /// Reconstruct metadata in stable slot order. Never-started slots are absent;
+    /// started but uncommitted slots are incomplete with unknown outcomes.
+    pub fn snapshot(&self) -> Result<Manifest, Error> {
+        self.check_root()?;
+        if let Some(manifest) = &self.finalization {
+            self.verify_finalization(manifest)?;
+            return Ok(manifest.clone());
+        }
+        let declared = self
+            .commits
+            .values()
+            .try_fold(0u64, |total, track| total.checked_add(track.bytes))
+            .ok_or_else(|| Error("recording committed length overflow".into()))?;
+        if declared > self.limits.max_total_bytes {
+            return Err(Error(
+                "recording committed payloads exceed aggregate byte limit".into(),
+            ));
+        }
+        // Inspect all lengths before hashing any payload. Actual reads below
+        // also consume a remaining-byte budget, covering files that grow after
+        // this preflight without allowing max_tracks * max_track_bytes reads.
+        let mut total = 0u64;
+        for started in self.starts.values() {
+            let path = self.payload_path(started.id);
+            let length = if exists(&path)? {
+                open_regular(&path, self.limits.max_track_bytes)?
+                    .metadata()
+                    .map_err(io_error)?
+                    .len()
+            } else if self.commits.contains_key(&started.id) {
+                return Err(Error("committed recording payload is missing".into()));
+            } else {
+                0
+            };
+            total = total
+                .checked_add(length)
+                .filter(|total| *total <= self.limits.max_total_bytes)
+                .ok_or_else(|| Error("recording payloads exceed aggregate byte limit".into()))?;
+        }
+        let mut remaining = self.limits.max_total_bytes;
+        let mut manifest = self.intent.manifest.clone();
+        for started in self.starts.values() {
+            let track = if let Some(track) = self.commits.get(&started.id) {
+                let actual = hash_file(&self.payload_path(track.id), track.bytes.min(remaining))?;
+                if actual != (track.bytes, track.sha256.clone()) {
+                    return Err(Error(format!(
+                        "recording track {} payload differs from its commit",
+                        track.id
+                    )));
+                }
+                track.clone()
+            } else {
+                let (bytes, sha256) = if exists(&self.payload_path(started.id))? {
+                    hash_file(
+                        &self.payload_path(started.id),
+                        self.limits.max_track_bytes.min(remaining),
+                    )?
+                } else {
+                    (0, digest(b""))
+                };
+                Track {
+                    id: started.id,
+                    batch: started.batch,
+                    replica: started.replica,
+                    complete: false,
+                    process_success: None,
+                    workload_success: None,
+                    bytes,
+                    sha256,
+                    statistics: Statistics::default(),
+                }
+            };
+            remaining = remaining
+                .checked_sub(track.bytes)
+                .ok_or_else(|| Error("recording aggregate byte limit exceeded".into()))?;
+            manifest.tracks.push(track);
+        }
+        manifest.validate(self.limits)?;
+        Ok(manifest)
+    }
+
+    /// Retained diagnostic directory. No cleanup is performed by dropping it.
+    pub fn partial_directory(&self) -> &Path {
+        &self.root
+    }
+
+    /// Canonical intended final path; journal operations never overwrite it.
+    pub fn destination(&self) -> &Path {
+        &self.destination
+    }
+
+    fn payload_path(&self, id: u64) -> PathBuf {
+        self.root.join(format!("track-{id}.jsonl"))
+    }
+
+    fn slot(&self, batch: u64, replica: u64) -> Result<u64, Error> {
+        if batch == 0
+            || batch > self.intent.repeat
+            || !(1..=self.intent.manifest.concurrency).contains(&replica)
+        {
+            return Err(Error(
+                "recording batch/replica is outside planned slots".into(),
+            ));
+        }
+        (batch - 1)
+            .checked_mul(self.intent.manifest.concurrency)
+            .and_then(|base| base.checked_add(replica))
+            .ok_or_else(|| Error("recording slot overflow".into()))
+    }
+
+    fn validate_track(&self, track: &Track) -> Result<(), Error> {
+        if self.slot(track.batch, track.replica)? != track.id
+            || !self.starts.contains_key(&track.id)
+        {
+            return Err(Error(
+                "recording track has no matching durable start".into(),
+            ));
+        }
+        let mut manifest = self.intent.manifest.clone();
+        manifest.tracks.push(track.clone());
+        manifest.validate(self.limits)
+    }
+
+    fn check_root(&self) -> Result<(), Error> {
+        if self.recovery_required {
+            return Err(Error("recording publication may have succeeded; drop this writer and explicitly recover before continuing".into()));
+        }
+        self.check_root_identity()
+    }
+
+    fn check_root_identity(&self) -> Result<(), Error> {
+        let current = fs::symlink_metadata(&self.root).map_err(io_error)?;
+        if !current.is_dir() {
+            return Err(Error("recording partial directory was replaced".into()));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if current.dev() != self.root_identity.dev()
+                || current.ino() != self.root_identity.ino()
+            {
+                return Err(Error("recording partial directory identity changed".into()));
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_recording(&self) -> Result<(), Error> {
+        if self.finalization.is_some() {
+            return Err(Error(
+                "recording is frozen for final publication; no new starts or commits are allowed"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn publish_record(&mut self, name: &str, bytes: &[u8]) -> Result<(), Error> {
+        let total = self
+            .metadata_bytes
+            .checked_add(bytes.len() as u64)
+            .filter(|total| *total <= self.limits.max_manifest_bytes)
+            .ok_or_else(|| {
+                Error("recording metadata exceeds aggregate manifest byte limit".into())
+            })?;
+        self.recovery_required = true;
+        publish_new(&self.root, name, bytes, &self.publication_fault).map_err(|error| {
+            Error(format!(
+                "{error}; publication state requires explicit recovery"
+            ))
+        })?;
+        self.metadata_bytes = total;
+        self.recovery_required = false;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn inject_publication_failure(&mut self, point: &'static str) {
+        self.publication_fault.point = Some(point);
+    }
+
+    #[cfg(test)]
+    pub(super) fn inject_publication_failure_after(&mut self, point: &'static str, skip: usize) {
+        self.publication_fault.point = Some(point);
+        self.publication_fault.skip.set(skip);
+    }
+}
+
+fn validate_count(repeat: u64, concurrency: u64, limits: Limits) -> Result<u64, Error> {
+    repeat
+        .checked_mul(concurrency)
+        .filter(|count| repeat > 0 && *count <= limits.max_tracks as u64)
+        .ok_or_else(|| {
+            Error("recording repeat/concurrency product is invalid or exceeds track limit".into())
+        })
+}
+
+fn paths_and_lock(destination: &Path) -> Result<(PathBuf, PathBuf, String, OutputLock), Error> {
+    let name = destination
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| Error("cassette destination needs a UTF-8 filename".into()))?
+        .to_owned();
+    let parent = destination
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
+        .canonicalize()
+        .map_err(io_error)?;
+    let owner = OutputLock::acquire(
+        &parent.join(format!(".{name}.recording.lock")),
+        "another writer owns this cassette recording",
+    )
+    .map_err(Error)?;
+    Ok((
+        parent.join(&name),
+        parent.join(format!(".{name}.partial")),
+        name,
+        owner,
+    ))
+}
+
+fn exists(path: &Path) -> Result<bool, Error> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(io_error(error)),
+    }
+}
+
+fn create_private(path: &Path) -> Result<File, Error> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path).map_err(io_error)
+}
+
+fn open_regular(path: &Path, limit: u64) -> Result<File, Error> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(io_error)?;
+    let metadata = file.metadata().map_err(io_error)?;
+    if !metadata.is_file() || metadata.len() > limit {
+        return Err(Error(
+            "recording evidence is not a bounded regular file".into(),
+        ));
+    }
+    Ok(file)
+}
+
+fn read_json<T: DeserializeOwned>(
+    path: &Path,
+    limit: u64,
+    remaining: &mut u64,
+) -> Result<T, Error> {
+    let mut bytes = Vec::new();
+    let limit = limit.min(*remaining);
+    open_regular(path, limit)?
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(io_error)?;
+    if bytes.len() as u64 > limit {
+        return Err(Error("recording metadata exceeds limit".into()));
+    }
+    *remaining -= bytes.len() as u64;
+    serde_json::from_slice(&bytes).map_err(json_error)
+}
+
+fn hash_file(path: &Path, limit: u64) -> Result<(u64, String), Error> {
+    let mut source = open_regular(path, limit)?.take(limit.saturating_add(1));
+    let mut hash = Sha256::new();
+    let mut bytes = 0u64;
+    let mut buffer = [0; 16 * 1024];
+    loop {
+        let read = source.read(&mut buffer).map_err(io_error)?;
+        if read == 0 {
+            break;
+        }
+        bytes += read as u64;
+        if bytes > limit {
+            return Err(Error("recording payload exceeds limit".into()));
+        }
+        hash.update(&buffer[..read]);
+    }
+    Ok((bytes, format!("{:x}", hash.finalize())))
+}
+
+#[derive(Default)]
+struct PublicationFault {
+    #[cfg(test)]
+    point: Option<&'static str>,
+    #[cfg(test)]
+    skip: std::cell::Cell<usize>,
+}
+
+impl PublicationFault {
+    fn check(&self, _point: &str) -> Result<(), Error> {
+        #[cfg(test)]
+        if self.point == Some(_point) {
+            if self.skip.get() > 0 {
+                self.skip.set(self.skip.get() - 1);
+                return Ok(());
+            }
+            return Err(Error(format!("injected publication failure at {_point}")));
+        }
+        Ok(())
+    }
+}
+
+fn publish_new(
+    root: &Path,
+    name: &str,
+    bytes: &[u8],
+    fault: &PublicationFault,
+) -> Result<(), Error> {
+    let check = |point: &str| -> Result<(), Error> {
+        fault.check(point)?;
+        fault.check(&format!("{name}:{point}"))
+    };
+    let mut temporary = None;
+    for _ in 0..256 {
+        let path = root.join(format!(
+            ".pending-{}-{}",
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        match create_private(&path) {
+            Ok(mut file) => {
+                check("before-write")?;
+                file.write_all(bytes).map_err(io_error)?;
+                check("before-file-sync")?;
+                file.sync_all().map_err(io_error)?;
+                check("after-file-sync")?;
+                temporary = Some(path);
+                break;
+            }
+            Err(error) if exists(&path)? => {
+                let _ = error;
+                continue;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    let temporary = temporary
+        .ok_or_else(|| Error("too many private recording publication collisions".into()))?;
+    check("before-link")?;
+    fs::hard_link(&temporary, root.join(name)).map_err(io_error)?;
+    check("after-link")?;
+    check("before-directory-sync")?;
+    sync_directory(root)?;
+    check("after-directory-sync")?;
+    check("before-temporary-removal")?;
+    fs::remove_file(&temporary).map_err(io_error)?;
+    check("after-temporary-removal")?;
+    sync_directory(root)
+}
+
+fn sync_directory(path: &Path) -> Result<(), Error> {
+    File::open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(io_error)
+}
+fn io_error(error: std::io::Error) -> Error {
+    Error(format!(
+        "recording I/O error; partial evidence retained: {error}"
+    ))
+}
+fn json_error(error: serde_json::Error) -> Error {
+    Error(format!("invalid recording metadata: {error}"))
+}

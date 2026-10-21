@@ -1,75 +1,22 @@
-//! OS-owned sweep output exclusion, independent of archived result trees.
+//! Sweep-specific paths and diagnostics over shared output ownership.
 use crate::Error;
-use std::fs::{File, OpenOptions, TryLockError};
 use std::path::Path;
 
-/// The persistent lock file is never removed: unlinking it could split owners
-/// across different inodes. Closing this guard releases the operating-system
-/// lock, including when the process exits unexpectedly.
 pub(super) struct OutputLock {
-    _file: File,
-}
-
-impl Drop for OutputLock {
-    fn drop(&mut self) {
-        // Another thread can fork while this descriptor is open. CLOEXEC
-        // closes the inherited copy at exec, but explicit unlock also releases
-        // ownership during that intervening window instead of waiting for the
-        // last inherited descriptor to close.
-        let _ = self._file.unlock();
-    }
+    _owner: crate::output_lock::OutputLock,
 }
 
 impl OutputLock {
     pub(super) fn acquire(parent: &Path, stem: &str) -> Result<Self, Error> {
         let path = parent.join(format!(".{stem}-asb-sweep.lock"));
-        let failure = |error| {
-            Error::Run(format!(
-                "cannot lock sweep output at {}: {error}",
-                path.display()
-            ))
-        };
-        // Do not truncate an existing file or follow a lock-path symlink.
-        match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if !metadata.is_file() => {
-                return Err(Error::Run(format!(
-                    "sweep output lock {} must be a regular file, not a symlink or directory",
-                    path.display()
-                )));
-            }
-            Ok(_) => (),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-            Err(error) => return Err(failure(error)),
-        }
-        let mut options = OpenOptions::new();
-        options.create(true).read(true).write(true).truncate(false);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            // O_NONBLOCK also avoids hanging if a racing path replacement is
-            // a FIFO. The opened descriptor is checked before taking the lock.
-            options
-                .mode(0o600)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-        }
-        let file = options.open(&path).map_err(failure)?;
-        if !file.metadata().map_err(failure)?.is_file() {
-            return Err(Error::Run(format!(
-                "sweep output lock {} is not a regular file",
-                path.display()
-            )));
-        }
-        match file.try_lock() {
-            Ok(()) => Ok(Self { _file: file }),
-            Err(TryLockError::WouldBlock) => Err(Error::Run(format!(
-                "another sweep owns the output for `{stem}`; wait for it to finish or use a different manifest filename (lock: {})",
-                path.display()
-            ))),
-            Err(TryLockError::Error(error)) => Err(failure(error)),
-        }
+        let busy = format!(
+            "another sweep owns the output for `{stem}`; wait for it to finish or use a different manifest filename"
+        );
+        crate::output_lock::OutputLock::acquire(&path, &busy)
+            .map(|owner| Self { _owner: owner })
+            .map_err(Error::Run)
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,7 +76,7 @@ mod tests {
         let path = root.join(".sweep-asb-sweep.lock");
         std::fs::write(&path, "existing contents must not be truncated").unwrap();
         let owner = OutputLock::acquire(&root, "sweep").unwrap();
-        let inherited_descriptor = owner._file.try_clone().unwrap();
+        let inherited_descriptor = owner._owner.cloned_descriptor();
         let conflict = OutputLock::acquire(&root, "sweep").err().unwrap();
         assert!(conflict.to_string().contains("another sweep owns"));
         let unrelated_stem = OutputLock::acquire(&root, "different").unwrap();

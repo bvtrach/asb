@@ -11,6 +11,7 @@ mod endpoint;
 mod install;
 mod measurements;
 mod models;
+mod output_lock;
 mod parser;
 mod process_gate;
 mod project;
