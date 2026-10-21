@@ -580,7 +580,25 @@ installed SDK interpreter; it never replaces installed SDK helper files that
 another worker may be using. Temporary copies are removed on success/error,
 while retained artifacts remain unchanged. The operation publishes no outcome
 or resume receipt and cannot admit a new attempt. Recovered grading and
-outcome import remain separate work.
+outcome import remain separate work in the standalone inspection command.
+`asb sweep SWEEP.toml --import-grades` explicitly imports completed retained
+official grades into separate `.asb-imported-grades/` reporting records. It
+holds the sweep output lock, loads the saved plan without execution preflight,
+and binds each grade to its original configuration, start intent and workload
+allocation. All selected candidates are validated before any publication.
+Existing outcomes/measurements are never replaced, repeated identical imports
+are unchanged, and conflicting or duplicate actual attempts are errors. This
+operation neither runs clients/evaluators nor creates completion/resume receipts.
+Compare revalidates the original bindings and adapter-owned evidence before
+using an import. Inspection reports include bounded SHA-256/length entries
+for exact artifact bytes read, detecting edits even when parsed grades agree.
+These are current local consistency checks, not historical attestation.
+Reports label the source `imported-official-grade`; process status, time,
+tokens, steps and concurrency cohort stay unknown. False grades stay false.
+SDK metadata inspection currently repeats per imported attempt during compare;
+population-scale presentation/inspection optimization remains delivery work.
+Actual recovered grading and interrupted execution continuation are separate
+from this report-only operation.
 See the full benchmark delivery
 checklist before claiming complete upstream benchmark support.
 Their shared installer also downloads a checksum-pinned original

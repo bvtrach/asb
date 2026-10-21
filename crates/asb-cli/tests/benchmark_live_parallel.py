@@ -284,6 +284,48 @@ class ParallelOriginalTaskQualification(unittest.TestCase):
                     for graph in graphs:
                         self.assertIn("<svg", (comparison / graph).read_text())
                         self.assertIn(graph, html)
+                    # Simulate lost execution summaries without losing the
+                    # qualification evidence. Import only official grades from
+                    # the original starts/allocations, then restore all files.
+                    import_archive = artifacts / "grade-import-qualification"
+                    import_archive.mkdir()
+                    moved = []
+                    comparison.rename(import_archive / "original-comparison")
+                    try:
+                        for name in ["000-swe", "001-terminal"]:
+                            directory = artifacts / "sweep-results" / name
+                            for relative in [".asb-completions", "measurements"]:
+                                source = directory / relative
+                                if source.exists():
+                                    destination = import_archive / (name + "-" + relative)
+                                    source.rename(destination)
+                                    moved.append((source,destination))
+                        imported = subprocess.run([binary,"sweep",manifest,"--import-grades","--json"],
+                            cwd=root,env=environment,capture_output=True,timeout=120)
+                        (import_archive / "import.stdout").write_bytes(imported.stdout)
+                        (import_archive / "import.stderr").write_bytes(imported.stderr)
+                        self.assertEqual(imported.returncode,0,imported.stderr.decode())
+                        self.assertEqual(json.loads(imported.stdout)["imported"],2)
+                        compared = subprocess.run([binary,"compare",manifest],cwd=root,env=environment,capture_output=True,timeout=120)
+                        self.assertEqual(compared.returncode,0,compared.stderr.decode())
+                        grade_report = json.loads((comparison / "comparison.json").read_bytes())
+                        self.assertEqual(grade_report["evaluation_coverage"]["evaluated_attempts"],2)
+                        for row in grade_report["benchmarks"]:
+                            self.assertEqual(row["result_source"],"imported-official-grade")
+                            self.assertFalse(row["reconciled"])
+                            self.assertIsNone(row["execution_cohort"])
+                            self.assertEqual(row["metrics"]["success_rate"],1)
+                            self.assertNotIn("elapsed_ms",row["metrics"])
+                            self.assertNotIn("token_usage.total_tokens",row["metrics"])
+                        self.assertIn("metric-success_rate.svg",(comparison / "report.html").read_text())
+                        self.assertEqual(len(arrivals),original_calls,"grade import/reporting must not rerun clients")
+                    finally:
+                        if comparison.exists():comparison.rename(import_archive / "imported-grade-comparison")
+                        (import_archive / "original-comparison").rename(comparison)
+                        for source,destination in reversed(moved):destination.rename(source)
+                        for name in ["000-swe", "001-terminal"]:
+                            source = artifacts / "sweep-results" / name / ".asb-imported-grades"
+                            if source.exists():source.rename(import_archive / (name + "-imports"))
                     (artifacts / "overlap.json").write_text(json.dumps({"barrier_participants":2,"arrivals":arrivals}))
                 finally:
                     network.remove()

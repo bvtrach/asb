@@ -12,6 +12,7 @@ mod checkpoint;
 mod execution;
 mod lock;
 pub(crate) mod plan;
+pub(crate) mod recovered;
 mod resume;
 pub(crate) mod scheduler;
 mod spool;
@@ -36,6 +37,7 @@ pub(crate) struct Options<'a> {
     pub max_active_attempts: Option<usize>,
     pub resume: bool,
     pub reconcile_completed: bool,
+    pub import_grades: bool,
 }
 
 impl Default for Options<'_> {
@@ -50,6 +52,7 @@ impl Default for Options<'_> {
             max_active_attempts: None,
             resume: false,
             reconcile_completed: false,
+            import_grades: false,
         }
     }
 }
@@ -105,6 +108,23 @@ pub(crate) fn run_with_options(
         .unwrap_or("sweep");
     // Keep ownership through comparison, including moving older output trees.
     let _output_lock = lock::OutputLock::acquire(parent, stem)?;
+    if options.import_grades {
+        if options.resume
+            || options.reconcile_completed
+            || options.show_output
+            || mode.is_some()
+            || options.respect_record_timings
+            || options.cassette_root.is_some()
+            || options.jobs != 1
+            || options.max_active_attempts.is_some()
+        {
+            return Err(Error::Input(
+                "--import-grades is report-only and cannot be combined with execution options"
+                    .into(),
+            ));
+        }
+        return recovered::import(sweep_path, &sweep, parent, stem, json, output);
+    }
     let mut plan = plan::build(parent, &sweep)?;
     plan.execution_mode = match mode {
         None => "live",

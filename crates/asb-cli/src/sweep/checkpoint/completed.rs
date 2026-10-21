@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 const LIMIT: u64 = 1024 * 1024;
 const SCOPE: &str = "outcome-evidence-only-not-complete-input-closure";
-mod allocations;
+pub(in crate::sweep) mod allocations;
 mod reconcile;
 pub(super) mod replicas;
 
@@ -387,7 +387,9 @@ fn invalid(reason: &str) -> Error {
     ))
 }
 
-fn read_private<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Error> {
+pub(in crate::sweep) fn read_private<T: serde::de::DeserializeOwned>(
+    path: &Path,
+) -> Result<T, Error> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -410,7 +412,7 @@ fn read_private<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, Error>
     serde_json::from_slice(&bytes).map_err(|_| invalid("outcome record is malformed"))
 }
 
-fn publish(path: &Path, receipt: &impl Serialize) -> Result<(), Error> {
+pub(in crate::sweep) fn publish(path: &Path, receipt: &impl Serialize) -> Result<(), Error> {
     let directory = path.parent().expect("completion receipt parent");
     if let Ok(metadata) = std::fs::symlink_metadata(directory)
         && !metadata.is_dir()

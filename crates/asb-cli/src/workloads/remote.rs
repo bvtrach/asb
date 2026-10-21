@@ -135,6 +135,32 @@ fn validate_inspected_grade(
         serde_json::from_value(report["task"].clone()).map_err(|_| invalid())?;
     let baseline: BaselineEvidence =
         serde_json::from_value(report["workload_baseline"].clone()).map_err(|_| invalid())?;
+    let evidence = report["evidence"].as_object().ok_or_else(invalid)?;
+    let mut evidence_bytes = 0u64;
+    if evidence.is_empty() || evidence.len() > 256 {
+        return Err(invalid());
+    }
+    for (relative, item) in evidence {
+        if relative.is_empty()
+            || relative.len() > 4096
+            || relative.starts_with('/')
+            || relative.contains('\\')
+            || relative
+                .split('/')
+                .any(|part| part.is_empty() || matches!(part, "." | ".."))
+            || item["sha256"].as_str().is_none_or(|hash| {
+                hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+        {
+            return Err(invalid());
+        }
+        evidence_bytes = evidence_bytes
+            .checked_add(item["bytes"].as_u64().ok_or_else(invalid)?)
+            .ok_or_else(invalid)?;
+        if evidence_bytes > 512 * 1024 * 1024 {
+            return Err(invalid());
+        }
+    }
     if report["schema_version"] != 1
         || report["scope"] != "retained-official-grade-not-execution-recovery"
         || task.workload != reference.workload
@@ -754,8 +780,22 @@ mod tests {
             "task":{"workload":reference.workload,"task_id":reference.task_id,"dataset":reference.dataset,"attempt_id":format!("asb-{}","a".repeat(32))},
             "workload_baseline":{"kind":"upstream-task-definition","base_commit":"b".repeat(40)},
             "workload_evaluation":"upstream-harness","workload_success":false,"recorded_cleanup":"stopped-preserved",
+            "evidence":{"task.json":{"sha256":"d".repeat(64),"bytes":100}},
             "process_success":null,"exit_code":null,"elapsed_ms":null,"token_usage":null,"steps":null});
         validate_inspected_grade(&original, &reference).unwrap();
+        for evidence in [
+            json!(null),
+            json!({}),
+            json!({"../task.json":{"sha256":"d".repeat(64),"bytes":1}}),
+            json!({"/task.json":{"sha256":"d".repeat(64),"bytes":1}}),
+            json!({"task.json":{"sha256":"bad","bytes":1}}),
+            json!({"task.json":{"sha256":"d".repeat(64),"bytes":-1}}),
+            json!({"task.json":{"sha256":"d".repeat(64),"bytes":513 * 1024 * 1024}}),
+        ] {
+            let mut forged = original.clone();
+            forged["evidence"] = evidence;
+            assert!(validate_inspected_grade(&forged, &reference).is_err());
+        }
         for field in [
             "process_success",
             "exit_code",

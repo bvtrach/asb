@@ -1,6 +1,11 @@
 //! Provider-free tests of the upstream workload protocol's pure data layer.
 
 #[test]
+fn retained_grades_import_into_sweep_reports_without_execution_metrics_or_resume_receipts() {
+    python_protocol("benchmark_import.py");
+}
+
+#[test]
 fn retained_original_grades_are_checked_without_executing_agents_or_graders() {
     python_protocol("benchmark_retained.py");
 }

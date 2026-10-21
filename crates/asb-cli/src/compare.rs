@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
 mod coverage;
-mod outcomes;
+pub(crate) mod outcomes;
 mod reconciliation;
 const PLOT_TOP: f64 = 70.0;
 const PLOT_BOTTOM: f64 = 390.0;
@@ -75,7 +75,20 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
         let selection = plan
             .as_ref()
             .map(|plan| plan.entries[index].selection.clone());
-        let outcomes = outcomes::load(&result_dir, concurrency)?;
+        let mut outcomes = outcomes::load(&result_dir, concurrency)?;
+        if let Some(plan) = &plan {
+            let imports = crate::sweep::recovered::load(
+                &sweep_results.join(".checkpoint"),
+                &result_dir,
+                index,
+                &plan.entries[index],
+            )?;
+            outcomes::add_imports(&mut outcomes, imports)?;
+        } else if result_dir.join(".asb-imported-grades").exists() {
+            return Err(Error::Input(
+                "imported grades require their original saved sweep plan".into(),
+            ));
+        }
         for replica in 1..=concurrency {
             let label = if concurrency == 1 {
                 format!("{index:03}-{}", safe_name(&config))
@@ -375,16 +388,22 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 result_source: if measured {
                     "measurements"
                 } else {
-                    "task-outcome"
+                    outcome.expect("recorded outcome").source
                 },
-                reconciled: reconciliation::recorded(
-                    &sweep_results,
-                    &result_dir,
-                    index,
-                    replica,
-                    concurrency,
-                    task.as_ref(),
-                )?,
+                reconciled: if outcome
+                    .is_some_and(|outcome| outcome.source == "imported-official-grade")
+                {
+                    false
+                } else {
+                    reconciliation::recorded(
+                        &sweep_results,
+                        &result_dir,
+                        index,
+                        replica,
+                        concurrency,
+                        task.as_ref(),
+                    )?
+                },
                 replica_index,
                 execution_cohort,
                 label,

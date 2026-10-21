@@ -6,6 +6,7 @@ test runner or reference solution is executed during metadata reconciliation.
 import argparse
 import fcntl
 import importlib
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -28,6 +29,7 @@ def require(condition, message):
 class RetainedOutcome:
     def __init__(self, request, *, inspect=False):
         self.reference, self.inspect = request["reference"], inspect
+        self.evidence = {}
         self.root = Path(self.reference["artifacts"])
         require(self.root.is_absolute() and self.root.is_dir() and not self.root.is_symlink(),
                 "retained attempt artifacts are not a real directory")
@@ -111,6 +113,7 @@ class RetainedOutcome:
                 "task":self.identity, "workload_baseline":self.summary["workload_baseline"],
                 "workload_evaluation":"upstream-harness", "workload_success":self.summary["workload_success"],
                 "recorded_cleanup":self.recorded_cleanup,
+                "evidence":dict(sorted(self.evidence.items())),
                 "process_success":None, "exit_code":None, "elapsed_ms":None, "token_usage":None, "steps":None}
 
     def child(self, relative):
@@ -131,6 +134,13 @@ class RetainedOutcome:
                     "retained artifact is not a bounded regular file")
             value = source.read(maximum+1)
         require(len(value) <= maximum, "retained artifact exceeded its size limit")
+        entry = {"sha256":hashlib.sha256(value).hexdigest(), "bytes":len(value)}
+        key = PurePosixPath(relative).as_posix()
+        require(key not in self.evidence or self.evidence[key] == entry,
+                "retained artifact changed while being inspected")
+        self.evidence[key] = entry
+        require(len(self.evidence) <= 256 and sum(item["bytes"] for item in self.evidence.values()) <= 512*1024**2,
+                "retained evidence exceeds its inspection budget")
         return value
 
     def object(self, relative):

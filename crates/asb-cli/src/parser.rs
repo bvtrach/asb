@@ -100,6 +100,7 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
                     max_active_attempts: options.max_active_attempts.map(usize::from),
                     resume: options.resume,
                     reconcile_completed: options.reconcile_completed,
+                    import_grades: options.import_grades,
                 },
                 stdout,
             )
@@ -271,6 +272,9 @@ struct RunArgs {
 struct SweepArgs {
     #[arg(value_name = "SWEEP")]
     path: String,
+    /// Import existing official grades for reporting only; never run an agent or evaluator.
+    #[arg(long, conflicts_with_all = ["resume", "reconcile_completed", "record", "replay", "show_output", "respect_record_timings", "cassette_root", "max_active_attempts"])]
+    import_grades: bool,
     /// Reuse validated completed groups and run untouched configurations; incomplete groups require recovery.
     #[arg(long)]
     resume: bool,

@@ -2115,3 +2115,55 @@ CLI tests, all sixteen benchmark protocol suites and the remaining guest,
 diagram, parallel/partial/replay/unmeasured regressions, strict Clippy and
 `make build` (including rustdoc, complete diagrams and completions). Package
 and exact-head hosted verification follow this increment.
+
+### Import retained official grades into sweep reporting
+
+Added explicit `asb sweep SWEEP.toml --import-grades [--json]`. Under the sweep
+output lock it loads the original saved plan and binds each retained reference
+to its configuration/replica and original allocation/start intent. It does not
+run execution preflight, rotate results, require the obsolete executable for
+report recovery, or start agents/providers/environments/evaluators. All candidate
+grades are validated before publication. Records use private create-new
+`.asb-imported-grades`, not normal outcomes or resume receipts. Existing grades
+and measurements are never overwritten; identical repeated imports are unchanged.
+Malformed late candidates and duplicate actual attempts prevent publication.
+
+Compare incorporates imported true/false grades with explicit provenance. Lost
+process status, timing, token/step counts and execution cohort remain unknown.
+It revalidates original bindings and adapter evidence each time. Inspection
+includes bounded hashes/lengths of exact artifact bytes, detecting edits even
+when parsed JSON or the grade is unchanged. This is current local consistency,
+not historical execution attestation. Per-attempt SDK metadata reinspection is
+disclosed; population-scale reporting optimization remains necessary.
+
+Provider-free public CLI tests cover all five adapters and both grades/multiple
+replicas, reporting without installed agents or Docker, unchanged retries,
+all-before-any validation, wrong intent/configuration/slot, missing grades,
+measurement/outcome conflicts, active owners, duplicate attempts and edited
+evidence. The mixed real-task qualification archives its own measured/outcome
+files, imports both existing official grades, checks reporting without new
+client requests, then restores the originals. Source/package/hosted results
+are recorded after execution.
+
+Remaining full delivery work is actual grading of unfinished retained submissions,
+complete interrupted sweep-slot reconciliation/continuation, population-scale
+presentation/qualification, full review, PR merge, exact-main CI and minor release.
+
+Source verification passed 445 unit tests, 87 offline CLI tests, seventeen
+benchmark protocol suites, nine guest/lifecycle checks and the remaining
+diagram/parallel/partial/replay/unmeasured integrations, strict Clippy and
+`make build` including rustdoc, complete diagrams and completions. The first
+full-suite run exposed a diagram-extractor name collision: a generic helper
+named `metadata` became a false target for filesystem method calls. Renaming
+it to `original_binding` restored the complete graph test without pruning
+relations or extending its deadline. The final full suite passed.
+
+The mixed original SWE-bench Lite/Terminal-Bench 1.0 real-Pi/synthetic-provider
+qualification passed in 110.397 seconds at the fresh project's
+`parallel-original-tasks-ov6f3n77`. It includes existing resume/reconciliation
+checks plus real official grade import, unknown execution metrics, explicit
+imported provenance and comparison/SVG/HTML generation without any additional
+client requests. Its own archived execution files and reports were restored;
+the import-only report/evidence remains in `grade-import-qualification`.
+These are representative known repairs, not full-population or AI-solving
+qualification. Package and exact-head hosted checks follow this increment.

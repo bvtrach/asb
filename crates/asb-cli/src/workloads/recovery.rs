@@ -184,14 +184,7 @@ fn owning_project(
 
 pub(crate) fn inspect_grade(path: &Path, json: bool, output: &mut dyn Write) -> Result<(), Error> {
     let reference = read_reference(path)?;
-    let (root, project_config) = owning_project(&reference)?;
-    let report = super::adapters::find(&reference.workload)
-        .ok_or_else(|| Error::Input("the attempt's workload adapter is unavailable".into()))?
-        .inspect_grade(&RecoveryContext {
-            project_root: &root,
-            project_config: &project_config,
-            reference: &reference,
-        })?;
+    let report = inspect_reference(&reference)?;
     if json {
         serde_json::to_writer(&mut *output, &report)
             .map_err(|error| Error::Io(error.to_string()))?;
@@ -200,6 +193,18 @@ pub(crate) fn inspect_grade(path: &Path, json: bool, output: &mut dyn Write) -> 
         writeln!(output, "Retained official grade for {} task {:?}: {}. No agent or evaluator ran; execution timing, exit status, tokens and steps remain unknown. No sweep outcome was imported.",
             reference.workload, reference.task_id, if report["workload_success"] == true { "resolved" } else { "unresolved" }).map_err(io_error)
     }
+}
+
+/// Validate existing grading artifacts without executing or installing anything.
+pub(crate) fn inspect_reference(reference: &AttemptReference) -> Result<serde_json::Value, Error> {
+    let (root, project_config) = owning_project(reference)?;
+    super::adapters::find(&reference.workload)
+        .ok_or_else(|| Error::Input("the attempt's workload adapter is unavailable".into()))?
+        .inspect_grade(&RecoveryContext {
+            project_root: &root,
+            project_config: &project_config,
+            reference,
+        })
 }
 
 pub(crate) fn run(path: &Path, json: bool, output: &mut dyn Write) -> Result<(), Error> {

@@ -219,6 +219,16 @@ temporary-copy cleanup. The mixed real-task qualification inspects both
 completed grades before resume, proving that inspection does not invalidate
 the original receipts or start another client.
 
+`benchmark_import.py` exercises public `sweep --import-grades` and comparison
+for all five original adapters using provider-free retained artifacts and SDK
+metadata fixtures. It checks true/false grades, multi-replica mappings, unknown
+execution metrics, unchanged retries, late-candidate failure before publication,
+active owners, conflicting outcomes, duplicate attempts, original intent/config
+mismatch and byte-level evidence edits. Ordinary resume cannot use imports as
+completion evidence. The mixed original-task qualification temporarily archives
+its own outcomes/measurements, imports both real official grades, regenerates
+SVG/HTML without new provider requests, then restores the original evidence.
+
 See
 [evaluation semantics](EVALUATION.md). Perfetto
 post-processing scopes scheduler counts and series to the benchmark process

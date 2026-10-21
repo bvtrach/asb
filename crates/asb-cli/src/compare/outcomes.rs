@@ -8,11 +8,12 @@ use std::io::Read;
 
 const LIMIT: u64 = 1024 * 1024;
 
-pub(super) struct Recorded {
+pub(crate) struct Recorded {
     pub path: PathBuf,
     pub summary: Value,
     workload_cleanup: bool,
     proxy_cleanup: bool,
+    pub source: &'static str,
 }
 
 impl Recorded {
@@ -54,6 +55,19 @@ impl Recorded {
     }
 
     pub fn status(&self) -> String {
+        if self.source == "imported-official-grade" {
+            return format!(
+                "imported official task {}; execution timing, tokens, steps and process status unknown; recorded cleanup: {}; not execution recovery or resume evidence",
+                if self.summary["workload_success"] == true {
+                    "resolved"
+                } else {
+                    "unresolved"
+                },
+                self.summary["recorded_cleanup"]
+                    .as_str()
+                    .unwrap_or("unknown")
+            );
+        }
         let kind = crate::workloads::scored_kind(
             self.summary["workload_evaluation"]
                 .as_str()
@@ -87,7 +101,7 @@ impl Recorded {
     }
 }
 
-pub(super) fn load(directory: &Path, total: usize) -> Result<BTreeMap<usize, Recorded>, Error> {
+pub(crate) fn load(directory: &Path, total: usize) -> Result<BTreeMap<usize, Recorded>, Error> {
     let directory = directory.join(".asb-completions");
     match fs::symlink_metadata(&directory) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
@@ -181,6 +195,7 @@ pub(super) fn load(directory: &Path, total: usize) -> Result<BTreeMap<usize, Rec
                     summary: summary.clone(),
                     workload_cleanup: raw["workload_cleanup_confirmed"] == true,
                     proxy_cleanup: proxy_cleanup == Some(true),
+                    source: "task-outcome",
                 },
             )
             .is_some()
@@ -192,6 +207,31 @@ pub(super) fn load(directory: &Path, total: usize) -> Result<BTreeMap<usize, Rec
         }
     }
     Ok(outcomes)
+}
+
+pub(super) fn add_imports(
+    outcomes: &mut BTreeMap<usize, Recorded>,
+    imports: BTreeMap<usize, (PathBuf, Value)>,
+) -> Result<(), Error> {
+    for (slot, (path, summary)) in imports {
+        if outcomes.contains_key(&slot) {
+            return Err(invalid(
+                &path,
+                "import conflicts with an existing task outcome; preserve both",
+            ));
+        }
+        outcomes.insert(
+            slot,
+            Recorded {
+                path,
+                summary,
+                workload_cleanup: false,
+                proxy_cleanup: false,
+                source: "imported-official-grade",
+            },
+        );
+    }
+    Ok(())
 }
 
 fn legacy_replica(

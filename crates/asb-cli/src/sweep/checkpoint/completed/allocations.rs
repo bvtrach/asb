@@ -125,6 +125,45 @@ pub(super) fn reference(
     Ok(read_private::<Allocation>(&path)?.reference)
 }
 
+/// Report-only recovery binds original selection and start metadata, not the
+/// currently running executable. It cannot create execution resume evidence.
+pub(in crate::sweep) fn reporting_reference(
+    checkpoint: &Path,
+    index: usize,
+    replica: Identity,
+    directory: &Path,
+    entry: &PlannedBenchmark,
+) -> Result<AttemptReference, Error> {
+    let relative = PathBuf::from(format!("{index:06}/{:03}.json", replica.index));
+    let path = checkpoint.join("allocated").join(&relative);
+    let start = checkpoint.join("started").join(relative);
+    if !validate(&path, &start, directory, entry, replica)? {
+        return Err(invalid("grade import has no original workload allocation"));
+    }
+    let allocation: Allocation = read_private(&path)?;
+    let intent: Value = read_private(&start)?;
+    if !replica.valid()
+        || replica.total != entry.configuration.concurrency
+        || allocation.configuration != index
+        || allocation.input_digest.len() != 64
+        || !allocation
+            .input_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        || allocation.intent_id.is_empty()
+        || allocation.intent_id.len() > 128
+        || intent["schema_version"] != 1
+        || intent["scope"] != "replica-execution-intent"
+        || intent["entry"]
+            != serde_json::to_value(entry).map_err(|_| invalid("cannot encode selection"))?
+    {
+        return Err(invalid(
+            "grade import differs from its original configuration or start intent",
+        ));
+    }
+    Ok(allocation.reference)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
