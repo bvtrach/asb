@@ -115,6 +115,62 @@ raw deletion remains conservatively unconfirmed where native identity cannot
 be proven; positional parsing uses Unix read_at or Windows seek_read (source
 qualified only, no Windows runtime claim).
 
+### Publication review limits and separate residuals
+
+Independent source review of exact `1a2980fbdcc11304d52c10c15f5e23f648ef1516`
+covered the complete publication production delta from `48609d50`, the capture
+admission/reader/consumption contracts, independent session finalization,
+adapter reader migrations and the actual fault fixtures. It found a portability
+blocker: unconditional `File::open(parent).sync_all()` after rename is a Unix
+directory-confirmation operation, not a valid universal Windows contract.
+Pinned Rust 1.93 opens ordinary files without Windows directory-opening flags;
+healthy Windows commits would therefore be reported as unconfirmed. A separate
+platform-confirmation repair is required before source approval. No reviewer
+builds/tests or native Windows qualification were performed by this review.
+
+Two additional limits remain separate follow-ups, not fixes claimed by this
+publication class:
+
+- `ProcessTreeSnapshot` still ignores producer-side `writeln!`/`write_all`
+  errors. Pinning its capture file prevents pathname substitution but cannot
+  establish completeness after a producer write failure. A future sticky
+  producer-error observation must suppress partial metrics while preserving
+  the independent task grade and cleanup.
+- JSONL append streams and validates the complete historical file into a new
+  private stage on every append. Memory is bounded per record, but total
+  history length, staging space and owner I/O time are not bounded by the
+  five-second lock-contention observation. Work and peak storage grow with
+  history. Safe rotation/indexing or another explicitly bounded history policy
+  remains future work; silently truncating history is not an acceptable repair.
+
+### Partial new-main audit after the repeated-execution feature
+
+The later read-only check uses exact main
+`f48953476265e1f77373bb8623f65224c32cb047` versus `bb33f400`, not this
+old-base publication branch. It read the revised execution design and reviewed
+the repeat/batch rendezvous, admission bounds, frozen replay input handling,
+resource-disposition continuation and cancellation/peer-abort checks. No
+additional actionable defect was established in those checked gate/resource
+contracts. This is not review or qualification of the complete 119-file delta,
+all material/census/network/SDK code, installed clients or actual task runtimes.
+
+The inspected remote dispatch sends `preparation_seconds` through the existing
+blocking `Controller::send` before the receive deadline is constructed. The new
+field does not bound a blocked protocol write; this remains the separate
+controller-transport repair scope (class 31), not a newly fixed preparation
+deadline claim. `asb_material_exec.py` bounds caller polling and direct-child
+waits but still uses daemon buffered-pipe pumps, created after process spawn,
+and only bounded joins; inherited endpoints can retain those workers after
+return. Its daemon-pump/descendant/custody lifetime is not fully repaired by
+the separate Rust runner capture or publication classes.
+
+Integration still needs explicit repeated native/guest entry coverage for the
+queued capture, controller, publication and attempt-artifact repairs, retaining
+fresh HOME/executable precedence, inherited guest cwd/staging, material and
+launch gates, typed resource disposition, official grades and conservative
+continuation. No whole-stack or whole-delta clearance follows from these
+component source reviews.
+
 Offline tests: short writes, EINTR, WriteZero, ENOSPC, serialization, rename and
 sync faults; good-old-file sentinels; malformed historical summary; two real
 process writers; symlink/FIFO refusal; one successful publication followed by

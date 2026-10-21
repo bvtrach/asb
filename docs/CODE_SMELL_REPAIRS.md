@@ -164,6 +164,13 @@ Independent source review, full qualification and all hosted delivery remain
 pending. This does not close
 the separate adapter-artifact, transport, installer or broader residual classes
 listed in the linked complete audit matrix.
+The subsequent independent review of `1a2980fb` found the unconditional
+Unix-style directory confirmation invalid on Windows; platform-specific
+confirmation is required before source clearance. The linked audit now also
+records producer-write-error propagation and whole-history JSONL staging cost
+as separate residual limits, plus explicitly partial `f4895347` repeat/batch/
+remote/material-exec coverage. It does not claim the entire new-main delta or
+the material helper's daemon-pump lifetime has been reviewed/repaired.
 
 Completion-observer and checkpoint errors must not erase an already determined
 task grade or implicitly repeat a client. Their current fail-open treatment
