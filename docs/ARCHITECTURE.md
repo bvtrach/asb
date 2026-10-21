@@ -355,6 +355,12 @@ paths. Per-configuration evidence publication is serialized without serializing
 agent execution, and metadata publication failure never changes a fresh grade.
 Schema-2 private outcomes declare the slot and execution-output paths; old
 schema-1 whole-group outcomes retain their previous read compatibility.
+Group sealing, replica continuation and reconciliation consume one private
+validated outcome representation. Its constructor checks named protocol/cleanup,
+cohort, selection/configuration identity, grade/baseline and evidence-path
+invariants before exposing task summaries or evidence roots. Unknown process
+or grade observations remain invalid for ordinary execution reuse; false
+observations are retained as completed outcomes.
 After a configuration's
 replicas finish, the checkpoint binds its complete result tree and all declared
 evaluator roots into `.checkpoint/completed/<index>.json`. Every replica must

@@ -126,6 +126,17 @@ Simplify checkpoint validation into named invariants without losing checks.
 Review broad parameter lists, result structs, visibility, dead API surface and
 module names in those owning boundaries. Pending.
 
+Checkpoint candidate: completion group/replica sealing, partial continuation
+and retained-outcome reconciliation now consume a private validated outcome
+instead of passing an unchecked wire record after a long Boolean expression.
+Named protocol/cleanup, cohort, identity, grade/baseline and evidence-path
+invariants retain schema-1 group compatibility, schema-2 slot requirements,
+dataset/evaluator bindings and false grades. Independent mutation fixtures
+exercise every invariant through sealing, continuation and reconciliation,
+requiring no receipt publication; actual replay-only CLI rejection checks keep
+client-launch counts and historical receipt bytes unchanged. Independent review
+and hosted delivery remain pending. This does not close other structural items.
+
 Runner candidate, staged patch **0.2.10** (not yet merged/released): private consuming admission,
 preparation, execution-evidence, proxy-settlement, evaluation and finalization
 states now separate owned resources and independent outcomes. It repairs the

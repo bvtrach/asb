@@ -34,6 +34,19 @@ struct Outcome {
     outputs: Vec<PathBuf>,
 }
 
+/// Only this representation may enter completion sealing or continuation.
+/// Raw wire records keep compatibility defaults; construction discharges the
+/// protocol, identity, grade, cleanup and evidence obligations together.
+struct ValidatedOutcome {
+    schema_version: u32,
+    task: TaskIdentity,
+    summary: Value,
+    replica: Option<crate::runner::replica::Identity>,
+    workload_evidence: Vec<PathBuf>,
+    proxy_evidence: Vec<PathBuf>,
+    outputs: Vec<PathBuf>,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(in crate::sweep) struct Completion {
@@ -223,8 +236,8 @@ fn outcome_state(
     let mut proxy_outputs = BTreeSet::new();
     let mut replica_attempts = BTreeMap::new();
     for file in files {
-        let record: Outcome = read_private(&file)?;
-        let task = validate_outcome(&record, entry)?;
+        let record = ValidatedOutcome::read(&file, entry)?;
+        let task = record.task;
         if !attempts.insert(task.attempt_id.clone()) {
             return Err(invalid("outcome contains duplicate attempt identities"));
         }
@@ -287,76 +300,146 @@ fn outcome_state(
     Ok((roots, summaries.into_values().collect()))
 }
 
-fn validate_outcome(record: &Outcome, entry: &PlannedBenchmark) -> Result<TaskIdentity, Error> {
-    let summary = &record.summary;
-    let config = &entry.configuration;
-    if !summary["execution_cohort"].is_null() {
-        let cohort: crate::measurements::ExecutionCohort =
-            serde_json::from_value(summary["execution_cohort"].clone())
-                .map_err(|_| invalid("outcome execution cohort is malformed"))?;
-        let replica = record
-            .replica
-            .ok_or_else(|| invalid("outcome cohort has no replica identity"))?;
-        if summary["replica_index"].as_u64() != Some(replica.index as u64)
-            || !cohort.admits(replica.index, replica.total)
+impl ValidatedOutcome {
+    fn read(path: &Path, entry: &PlannedBenchmark) -> Result<Self, Error> {
+        let record: Outcome = read_private(path)?;
+        Self::validate(record, entry)
+    }
+
+    fn validate(record: Outcome, entry: &PlannedBenchmark) -> Result<Self, Error> {
+        record.validate_protocol(entry)?;
+        record.validate_cohort()?;
+        let task = record.validate_identity(entry)?;
+        record.validate_grade(entry)?;
+        record.validate_evidence(entry)?;
+        Ok(Self {
+            schema_version: record.schema_version,
+            task,
+            summary: record.summary,
+            replica: record.replica,
+            workload_evidence: record.workload_evidence,
+            proxy_evidence: record.proxy_evidence,
+            outputs: record.outputs,
+        })
+    }
+}
+
+impl Outcome {
+    fn validate_protocol(&self, entry: &PlannedBenchmark) -> Result<(), Error> {
+        if !matches!(self.schema_version, 1 | 2)
+            || self.scope != "task-outcome-not-yet-a-resume-receipt"
+            || self.summary["schema_version"] != 2
+        {
+            return Err(invalid("outcome protocol or summary schema is unsupported"));
+        }
+        // Schema 1 predates stable replica slots and remains group-readable.
+        if self.schema_version == 2
+            && self.replica.is_none_or(|replica| {
+                !replica.valid() || replica.total != entry.configuration.concurrency
+            })
         {
             return Err(invalid(
-                "outcome cohort does not match its selected replica",
+                "outcome replica does not match the selected population",
             ));
         }
-    } else if !summary["replica_index"].is_null() {
-        return Err(invalid("outcome replica has no execution cohort"));
+        if !self.workload_cleanup_confirmed || !self.proxy_cleanup_confirmed {
+            return Err(invalid("outcome workload or proxy cleanup is unconfirmed"));
+        }
+        Ok(())
     }
-    let task: TaskIdentity = serde_json::from_value(summary["task"].clone())
-        .map_err(|_| invalid("outcome task identity is missing or malformed"))?;
-    let baseline: BaselineEvidence =
-        serde_json::from_value(summary["workload_baseline"].clone())
-            .map_err(|_| invalid("outcome baseline evidence is missing or malformed"))?;
-    if !matches!(record.schema_version, 1 | 2)
-        || (record.schema_version == 2
-            && record
+
+    fn validate_cohort(&self) -> Result<(), Error> {
+        let summary = &self.summary;
+        if !summary["execution_cohort"].is_null() {
+            let cohort: crate::measurements::ExecutionCohort =
+                serde_json::from_value(summary["execution_cohort"].clone())
+                    .map_err(|_| invalid("outcome execution cohort is malformed"))?;
+            let replica = self
                 .replica
-                .is_none_or(|replica| !replica.valid() || replica.total != config.concurrency))
-        || record.scope != "task-outcome-not-yet-a-resume-receipt"
-        || !record.workload_cleanup_confirmed
-        || !record.proxy_cleanup_confirmed
-        || summary["schema_version"] != 2
-        || !entry.selection.matches(&task)
-        || task.attempt_id.is_empty()
-        || task.attempt_id.len() > 256
-        || summary["agent"] != config.agent
-        || summary["workload"] != config.workload
-        || summary["provider"] != config.provider
-        || summary["model"] != config.model
-        || summary["workload_success"].as_bool().is_none()
-        || summary["process_success"].as_bool().is_none()
-        || summary["workload_evaluation"] != entry.selection.evaluation_kind
-        || !baseline.supports(&entry.selection.evaluation_kind)
-        || record.workload_evidence.len() > 64
-        || record.proxy_evidence.len() > 64
-        || record.outputs.len() > 64
-        || record.outputs.iter().any(|path| !path.is_absolute())
-        || (entry.selection.dataset.is_some() && record.workload_evidence.is_empty())
-    {
-        return Err(invalid(
-            "outcome identity, grade, baseline or cleanup is incomplete",
-        ));
+                .ok_or_else(|| invalid("outcome cohort has no replica identity"))?;
+            if summary["replica_index"].as_u64() != Some(replica.index as u64)
+                || !cohort.admits(replica.index, replica.total)
+            {
+                return Err(invalid(
+                    "outcome cohort does not match its selected replica",
+                ));
+            }
+        } else if !summary["replica_index"].is_null() {
+            return Err(invalid("outcome replica has no execution cohort"));
+        }
+        Ok(())
     }
-    for path in &record.workload_evidence {
-        if !path.is_absolute() || !path.exists() {
+
+    fn validate_identity(&self, entry: &PlannedBenchmark) -> Result<TaskIdentity, Error> {
+        let summary = &self.summary;
+        let config = &entry.configuration;
+        let task: TaskIdentity = serde_json::from_value(summary["task"].clone())
+            .map_err(|_| invalid("outcome task identity is missing or malformed"))?;
+        if !entry.selection.matches(&task)
+            || task.attempt_id.is_empty()
+            || task.attempt_id.len() > 256
+        {
             return Err(invalid(
-                "declared evaluator evidence is missing or relative",
+                "outcome task, dataset or attempt differs from its selection",
             ));
         }
-    }
-    for path in &record.proxy_evidence {
-        if !path.is_absolute() {
-            return Err(invalid("declared proxy output path is relative"));
+        if summary["agent"] != config.agent
+            || summary["workload"] != config.workload
+            || summary["provider"] != config.provider
+            || summary["model"] != config.model
+        {
+            return Err(invalid("outcome configuration identity does not match"));
         }
-        // A failed agent may have made no calls and produced no recording.
-        // Bind that absence too, rather than retrying a graded false task.
+        Ok(task)
     }
-    Ok(task)
+
+    fn validate_grade(&self, entry: &PlannedBenchmark) -> Result<(), Error> {
+        let summary = &self.summary;
+        let baseline: BaselineEvidence =
+            serde_json::from_value(summary["workload_baseline"].clone())
+                .map_err(|_| invalid("outcome baseline evidence is missing or malformed"))?;
+        // False is a completed grade. Unknown observations cannot authorize reuse.
+        if summary["workload_success"].as_bool().is_none()
+            || summary["process_success"].as_bool().is_none()
+            || summary["workload_evaluation"] != entry.selection.evaluation_kind
+            || !baseline.supports(&entry.selection.evaluation_kind)
+        {
+            return Err(invalid(
+                "outcome grade, evaluator or baseline is incomplete",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_evidence(&self, entry: &PlannedBenchmark) -> Result<(), Error> {
+        if self.workload_evidence.len() > 64
+            || self.proxy_evidence.len() > 64
+            || self.outputs.len() > 64
+        {
+            return Err(invalid("outcome evidence population exceeds its bound"));
+        }
+        if entry.selection.dataset.is_some() && self.workload_evidence.is_empty() {
+            return Err(invalid("outcome dataset has no evaluator evidence"));
+        }
+        if self.outputs.iter().any(|path| !path.is_absolute()) {
+            return Err(invalid("declared execution output path is relative"));
+        }
+        for path in &self.workload_evidence {
+            if !path.is_absolute() || !path.exists() {
+                return Err(invalid(
+                    "declared evaluator evidence is missing or relative",
+                ));
+            }
+        }
+        for path in &self.proxy_evidence {
+            if !path.is_absolute() {
+                return Err(invalid("declared proxy output path is relative"));
+            }
+            // A failed agent may have made no calls and produced no recording.
+            // Bind that absence too, rather than retrying a graded false task.
+        }
+        Ok(())
+    }
 }
 
 fn measurement_matches(measured: &Value, summary: &Value) -> bool {
@@ -586,17 +669,17 @@ mod tests {
                 .join(".asb-completions")
                 .join(format!("{index}.json"))
         }
-        fn read(&self, index: usize) -> Value {
+        pub(super) fn read(&self, index: usize) -> Value {
             read_private(&self.outcome_path(index)).unwrap()
         }
-        fn write(&self, index: usize, record: &Value) {
+        pub(super) fn write(&self, index: usize, record: &Value) {
             std::fs::write(
                 self.outcome_path(index),
                 serde_json::to_vec(record).unwrap(),
             )
             .unwrap();
         }
-        fn seal(&self) -> Result<(), Error> {
+        pub(super) fn seal(&self) -> Result<(), Error> {
             self.inputs.completed(0, &self.directory, &self.entry)
         }
         fn verify(&self) -> Result<(Completion, Vec<Value>), Error> {
@@ -642,6 +725,69 @@ mod tests {
                         & 0o777,
                     0o700
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn wire_compatibility_keeps_legacy_groups_and_rejects_unknown_or_incomplete_records() {
+        for case in [
+            "legacy",
+            "process-false",
+            "unknown-field",
+            "unknown-task-field",
+            "unknown-baseline-field",
+            "missing-proxy-cleanup",
+            "legacy-grade-only",
+            "missing-process",
+            "malformed-json",
+            "cohort-without-slot",
+        ] {
+            let fixture = Fixture::new(false);
+            let mut record = fixture.read(0);
+            match case {
+                "legacy" => (),
+                "process-false" => record["summary"]["process_success"] = json!(false),
+                "unknown-field" => record["unknown"] = json!(true),
+                "unknown-task-field" => record["summary"]["task"]["unknown"] = json!(true),
+                "unknown-baseline-field" => {
+                    record["summary"]["workload_baseline"]["unknown"] = json!(true)
+                }
+                "missing-proxy-cleanup" => {
+                    record
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("proxy_cleanup_confirmed");
+                }
+                "legacy-grade-only" => {
+                    record["summary"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("workload_baseline");
+                    record["summary"]["workload_baseline_passed"] = json!(false);
+                }
+                "missing-process" => {
+                    record["summary"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("process_success");
+                }
+                "malformed-json" => (),
+                "cohort-without-slot" => {
+                    record["summary"]["execution_cohort"] =
+                        json!({"id":"abc-123","selected_replicas":2,"admitted_slots":[1,2]})
+                }
+                _ => unreachable!(),
+            }
+            fixture.write(0, &record);
+            if case == "malformed-json" {
+                std::fs::write(fixture.outcome_path(0), b"{unfinished").unwrap();
+            }
+            let valid = matches!(case, "legacy" | "process-false");
+            assert_eq!(fixture.seal().is_ok(), valid, "{case}");
+            assert_eq!(fixture.inputs.completion_path(0).exists(), valid, "{case}");
+            if valid {
+                fixture.verify().unwrap();
             }
         }
     }

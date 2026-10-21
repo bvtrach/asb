@@ -184,6 +184,68 @@ fetch(base+'/responses',{method:'POST',headers:{'content-type':'application/json
         2
     );
     assert_eq!(std::fs::read(root.join("launches")).unwrap(), launches);
+    // Exercise actual continuation admission against invalid completed groups.
+    // A valid earlier group cannot cause scheduling or receipt publication
+    // before a later malformed member has been checked.
+    let outcomes = root.join("sweep-results/001-disabled/.asb-completions");
+    let outcome = std::fs::read_dir(&outcomes)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let original = std::fs::read(&outcome).unwrap();
+    let checkpoint = root.join("sweep-results/.checkpoint");
+    let receipt_files: Vec<_> = [
+        "completed/000000.json",
+        "completed/000001.json",
+        "replicas/000000/001.json",
+        "replicas/000000/002.json",
+        "replicas/000001/001.json",
+        "replicas/000001/002.json",
+    ]
+    .into_iter()
+    .map(|path| {
+        let path = checkpoint.join(path);
+        let bytes = std::fs::read(&path).unwrap();
+        (path, bytes)
+    })
+    .collect();
+    for (pointer, replacement) in [
+        ("/summary/workload_success", Value::Null),
+        ("/summary/process_success", json!("unknown")),
+        ("/workload_cleanup_confirmed", json!(false)),
+        ("/replica/total", json!(3)),
+        ("/outputs/0", json!("relative")),
+    ] {
+        let mut changed: Value = serde_json::from_slice(&original).unwrap();
+        *changed.pointer_mut(pointer).unwrap() = replacement;
+        let changed = serde_json::to_vec(&changed).unwrap();
+        std::fs::write(&outcome, &changed).unwrap();
+        for reconcile in [false, true] {
+            let mut invalid_args = resume.clone();
+            if reconcile {
+                invalid_args.push("--reconcile-completed");
+            }
+            let rejected = asb(root, &invalid_args);
+            assert!(
+                !rejected.status.success(),
+                "{pointer}, reconciliation={reconcile}"
+            );
+            assert!(
+                String::from_utf8_lossy(&rejected.stderr)
+                    .contains("completed task cannot be reused"),
+                "{}",
+                String::from_utf8_lossy(&rejected.stderr)
+            );
+            assert_eq!(std::fs::read(root.join("launches")).unwrap(), launches);
+            assert_eq!(std::fs::read(&outcome).unwrap(), changed);
+            for (path, bytes) in &receipt_files {
+                assert_eq!(&std::fs::read(path).unwrap(), bytes);
+            }
+        }
+    }
+    std::fs::write(&outcome, original).unwrap();
     let html = std::fs::read_to_string(root.join("results/sweep-comparison/report.html")).unwrap();
     assert!(html.contains("optional measurements unavailable"));
     assert!(html.contains("metric-success_rate.svg"));

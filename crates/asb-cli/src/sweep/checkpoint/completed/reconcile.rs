@@ -90,8 +90,7 @@ impl Inputs {
                         "retained outcome population is excessive or unfinished",
                     ));
                 }
-                let record: Outcome = read_private(&file.path())?;
-                validate_outcome(&record, entry)?;
+                let record = ValidatedOutcome::read(&file.path(), entry)?;
                 let replica = record.replica.ok_or_else(|| {
                     invalid("receipt reconciliation requires explicit replica identity")
                 })?;
@@ -333,5 +332,147 @@ pub(super) mod tests {
         assert!(!fixture.inputs.has_replica(0, 1).unwrap());
         assert!(!fixture.inputs.has_replica(0, 2).unwrap());
         assert!(!fixture.inputs.completion_path(0).exists());
+    }
+
+    #[test]
+    fn each_outcome_obligation_blocks_sealing_continuation_and_reconciliation() {
+        // Each mutation starts from the complete current schema-2 fixture,
+        // including original reservations, start intents and allocations.
+        let mutations = [
+            ("schema", "/schema_version", json!(3)),
+            ("scope", "/scope", json!("unknown")),
+            ("summary schema", "/summary/schema_version", json!(1)),
+            ("missing slot", "/replica", Value::Null),
+            ("zero slot", "/replica/index", json!(0)),
+            ("large slot", "/replica/index", json!(3)),
+            ("population", "/replica/total", json!(3)),
+            (
+                "workload cleanup",
+                "/workload_cleanup_confirmed",
+                json!(false),
+            ),
+            ("proxy cleanup", "/proxy_cleanup_confirmed", json!(false)),
+            ("cohort malformed", "/summary/execution_cohort", json!({})),
+            ("cohort absent", "/summary/execution_cohort", Value::Null),
+            ("cohort slot", "/summary/replica_index", json!(1)),
+            (
+                "cohort population",
+                "/summary/execution_cohort/selected_replicas",
+                json!(3),
+            ),
+            (
+                "cohort admission",
+                "/summary/execution_cohort/admitted_slots",
+                json!([1]),
+            ),
+            ("task malformed", "/summary/task", Value::Null),
+            ("task workload", "/summary/task/workload", json!("other")),
+            ("task selection", "/summary/task/task_id", json!("other")),
+            ("dataset absent", "/summary/task/dataset", Value::Null),
+            (
+                "dataset source",
+                "/summary/task/dataset/source",
+                json!("other"),
+            ),
+            (
+                "dataset revision",
+                "/summary/task/dataset/revision",
+                json!("other"),
+            ),
+            (
+                "dataset split",
+                "/summary/task/dataset/split",
+                json!("other"),
+            ),
+            ("attempt empty", "/summary/task/attempt_id", json!("")),
+            (
+                "attempt bound",
+                "/summary/task/attempt_id",
+                json!("a".repeat(257)),
+            ),
+            ("agent", "/summary/agent", json!("other")),
+            ("workload", "/summary/workload", json!("other")),
+            ("provider", "/summary/provider", json!("other")),
+            ("model", "/summary/model", json!("other")),
+            ("unknown grade", "/summary/workload_success", Value::Null),
+            ("string grade", "/summary/workload_success", json!("false")),
+            ("unknown process", "/summary/process_success", Value::Null),
+            ("string process", "/summary/process_success", json!("true")),
+            (
+                "evaluator",
+                "/summary/workload_evaluation",
+                json!("unknown"),
+            ),
+            (
+                "baseline malformed",
+                "/summary/workload_baseline",
+                Value::Null,
+            ),
+            (
+                "baseline unsupported",
+                "/summary/workload_baseline",
+                json!({"kind":"unavailable"}),
+            ),
+            (
+                "baseline commit",
+                "/summary/workload_baseline/base_commit",
+                json!("not-a-commit"),
+            ),
+            (
+                "evidence bound",
+                "/workload_evidence",
+                json!(vec!["/missing"; 65]),
+            ),
+            (
+                "proxy bound",
+                "/proxy_evidence",
+                json!(vec!["/missing"; 65]),
+            ),
+            ("output bound", "/outputs", json!(vec!["/missing"; 65])),
+            ("output relative", "/outputs/0", json!("relative")),
+            ("dataset evidence absent", "/workload_evidence", json!([])),
+            (
+                "evidence relative",
+                "/workload_evidence/0",
+                json!("relative"),
+            ),
+            (
+                "evidence missing",
+                "/workload_evidence/0",
+                json!("/asb-fixture-absent-evidence"),
+            ),
+            ("proxy relative", "/proxy_evidence", json!(["relative"])),
+        ];
+        for (name, pointer, replacement) in mutations {
+            let (fixture, results, plan) = retained_fixture();
+            // A late invalid member must also prevent publishing an earlier
+            // valid reconciliation candidate, regardless of directory order.
+            let mut record = fixture.read(1);
+            *record.pointer_mut(pointer).unwrap() = replacement;
+            fixture.write(1, &record);
+            assert!(fixture.seal().is_err(), "seal: {name}");
+            assert!(
+                fixture
+                    .inputs
+                    .resume_outcomes(&fixture.root, &results, &plan)
+                    .is_err(),
+                "resume: {name}"
+            );
+            assert!(
+                fixture
+                    .inputs
+                    .reconcile_completed_with(&fixture.root, &results, &plan, |_| Ok(()))
+                    .is_err(),
+                "reconcile: {name}"
+            );
+            assert!(!fixture.inputs.completion_path(0).exists(), "group: {name}");
+            for slot in 1..=2 {
+                assert!(
+                    !fixture.inputs.has_replica(0, slot).unwrap(),
+                    "slot {slot}: {name}"
+                );
+            }
+            assert_eq!(fixture.read(1), record, "unchanged outcome: {name}");
+        }
     }
 }
