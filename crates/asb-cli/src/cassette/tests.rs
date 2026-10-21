@@ -8,6 +8,126 @@ use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
 #[path = "publication_tests.rs"]
 mod publication;
 
+#[test]
+fn source_detection_uses_content_and_preserves_unknown_legacy_metadata() {
+    let fixture = Fixture::new();
+    let archive = fixture.zip(&manifest(1), &[("tracks/1.jsonl", b"{}\n")]);
+    let renamed = fixture.0.join("actually-a-bundle.jsonl");
+    fs::rename(archive, &renamed).unwrap();
+    let mut source = Source::open(&renamed, Limits::default()).unwrap();
+    assert!(source.manifest().is_some());
+    assert!(source.legacy_tracks().is_empty());
+    assert_eq!(source.read_track(1).unwrap(), b"{}\n");
+    let legacy = fixture.0.join("actually-jsonl.zip");
+    fs::write(&legacy, b"{}\n").unwrap();
+    let mut source = Source::open(&legacy, Limits::default()).unwrap();
+    assert!(source.manifest().is_none());
+    assert_eq!(source.legacy_tracks()[0].id, 1);
+    assert_eq!(source.read_track(1).unwrap(), b"{}\n");
+    assert!(source.read_track(2).is_err());
+    fs::write(fixture.0.join("corrupt.jsonl"), b"PKbad archive").unwrap();
+    assert!(Source::open(&fixture.0.join("corrupt.jsonl"), Limits::default()).is_err());
+}
+
+#[test]
+fn sparse_legacy_sources_include_replica_64_and_single_base_takes_precedence() {
+    let fixture = Fixture::new();
+    let base = fixture.0.join("input.jsonl");
+    for id in [2, 64] {
+        fs::write(
+            crate::benchmark_paths::replica_path(&base, id),
+            format!("{{\"id\":{id}}}\n"),
+        )
+        .unwrap();
+    }
+    let mut source = Source::open(&base, Limits::default()).unwrap();
+    assert_eq!(
+        source
+            .legacy_tracks()
+            .iter()
+            .map(|track| track.id)
+            .collect::<Vec<_>>(),
+        [2, 64]
+    );
+    assert!(source.read_track(1).is_err());
+    assert_eq!(source.read_track(64).unwrap(), b"{\"id\":64}\n");
+    fs::write(&base, b"{}\n").unwrap();
+    let mut single = Source::open(&base, Limits::default()).unwrap();
+    assert_eq!(single.legacy_tracks().len(), 1);
+    assert_eq!(single.read_track(1).unwrap(), b"{}\n");
+    assert!(single.read_track(64).is_err());
+}
+
+#[test]
+fn legacy_source_limits_and_frozen_checksums_are_enforced() {
+    super::source::take_observation_count();
+    let fixture = Fixture::new();
+    let base = fixture.0.join("input.jsonl");
+    for id in [2, 64] {
+        fs::write(crate::benchmark_paths::replica_path(&base, id), b"{}\n").unwrap();
+    }
+    for limits in [
+        Limits {
+            max_tracks: 1,
+            ..Limits::default()
+        },
+        Limits {
+            max_track_bytes: 2,
+            ..Limits::default()
+        },
+        Limits {
+            max_total_bytes: 5,
+            ..Limits::default()
+        },
+    ] {
+        assert!(Source::open(&base, limits).is_err());
+        assert_eq!(
+            super::source::take_observation_count(),
+            0,
+            "over-budget layouts must not hash payloads"
+        );
+    }
+    let mut source = Source::open(&base, Limits::default()).unwrap();
+    assert_eq!(super::source::take_observation_count(), 2);
+    fs::write(crate::benchmark_paths::replica_path(&base, 2), b"[]\n").unwrap();
+    assert!(
+        source
+            .read_track(2)
+            .unwrap_err()
+            .to_string()
+            .contains("changed")
+    );
+    assert_eq!(source.read_track(64).unwrap(), b"{}\n");
+    fs::write(
+        crate::benchmark_paths::replica_path(&base, 64),
+        b"{}\nextra",
+    )
+    .unwrap();
+    assert!(source.read_track(64).is_err());
+    assert!(Source::open(&fixture.0.join("missing"), Limits::default()).is_err());
+    assert!(Source::open(&fixture.0, Limits::default()).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn legacy_source_rejects_fifo_and_dangling_symlinks_without_falling_back() {
+    use std::os::unix::fs::symlink;
+    let fixture = Fixture::new();
+    let base = fixture.0.join("input.jsonl");
+    fs::write(crate::benchmark_paths::replica_path(&base, 64), b"{}\n").unwrap();
+    symlink(fixture.0.join("missing"), &base).unwrap();
+    assert!(Source::open(&base, Limits::default()).is_err());
+    let fifo = fixture.0.join("pipe.jsonl");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(Source::open(&fifo, Limits::default()).is_err());
+}
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture(PathBuf);
@@ -71,6 +191,7 @@ fn manifest(count: u64) -> Manifest {
             dataset_sha256: None,
             prompt_sha256: digest(b"prompt"),
             material_sha256: digest(b"initial material"),
+            protocol_sha256: None,
         },
         concurrency: 1,
         tracks: (1..=count)
@@ -92,6 +213,34 @@ fn manifest(count: u64) -> Manifest {
             })
             .collect(),
     }
+}
+
+#[test]
+fn probe_only_capture_is_inspectable_but_not_automatically_selected() {
+    let mut catalogue = manifest(2);
+    catalogue.tracks[0].statistics.requests = Some(0);
+    catalogue.tracks[1].process_success = Some(false);
+    catalogue.tracks[1].workload_success = Some(false);
+    let plan = SelectionPlan::build(&catalogue, 5, 2, 42, None, 20).unwrap();
+    assert_eq!(plan.tracks, vec![2; 10]);
+    assert_eq!(Selector::Id(1).resolve(&catalogue).unwrap(), 1);
+    assert_eq!(
+        "min:requests"
+            .parse::<Selector>()
+            .unwrap()
+            .resolve(&catalogue)
+            .unwrap(),
+        2
+    );
+    catalogue.tracks[1].statistics.requests = Some(0);
+    assert!(SelectionPlan::build(&catalogue, 1, 1, 42, None, 20).is_err());
+    catalogue.tracks[0].statistics.requests = None;
+    assert_eq!(
+        SelectionPlan::build(&catalogue, 1, 1, 42, None, 20)
+            .unwrap()
+            .tracks,
+        vec![1]
+    );
 }
 
 #[test]
@@ -166,6 +315,7 @@ fn compatibility_covers_every_declared_identity_but_not_runtime_settings() {
         "dataset_sha256",
         "prompt_sha256",
         "material_sha256",
+        "protocol_sha256",
     ] {
         let original = json[field].clone();
         json[field] = serde_json::Value::String(if field.ends_with("sha256") {
@@ -177,6 +327,24 @@ fn compatibility_covers_every_declared_identity_but_not_runtime_settings() {
         assert!(identity.require_match(&changed).is_err(), "missed {field}");
         json[field] = original;
     }
+}
+
+#[test]
+fn protocol_identity_preserves_old_manifest_encoding_but_rejects_semantic_drift() {
+    let old = manifest(1).compatibility;
+    let encoded = serde_json::to_vec(&old).unwrap();
+    assert!(!String::from_utf8_lossy(&encoded).contains("protocol_sha256"));
+    let decoded: Compatibility = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(serde_json::to_vec(&decoded).unwrap(), encoded);
+    let mut current = old.clone();
+    current.protocol_sha256 = Some(digest(b"harness/protocol-v1"));
+    current.validate().unwrap();
+    assert!(current.require_match(&old).is_err());
+    let mut changed = current.clone();
+    changed.protocol_sha256 = Some(digest(b"harness/protocol-v2"));
+    assert!(current.require_match(&changed).is_err());
+    changed.protocol_sha256 = Some("invalid".into());
+    assert!(changed.validate().is_err());
 }
 
 #[test]
@@ -646,6 +814,202 @@ fn journal_publishes_out_of_order_and_recovers_failed_complete_attempts() {
         !destination.exists(),
         "journal must not pretend to publish a ZIP"
     );
+}
+
+#[test]
+fn immutable_track_evidence_verifies_under_active_writer_and_after_payload_cleanup() {
+    let fixture = Fixture::new();
+    let destination = fixture.0.join("evidence.asb.zip");
+    let mut journal =
+        RecordingJournal::create(&destination, manifest(0), 2, Limits::default()).unwrap();
+    let tracks = manifest(2).tracks;
+    journal.begin(1, 1).unwrap();
+    assert!(journal.track_evidence(&tracks[0]).is_err());
+    journal
+        .commit(tracks[0].clone(), &mut &b"{}\n"[..])
+        .unwrap();
+    let evidence = journal.track_evidence(&tracks[0]).unwrap();
+    evidence.verify(Limits::default()).unwrap();
+    assert!(RecordingJournal::recover(&destination, Limits::default()).is_err());
+    journal.begin(2, 1).unwrap();
+    journal
+        .commit(tracks[1].clone(), &mut &b"{}\n"[..])
+        .unwrap();
+    evidence.verify(Limits::default()).unwrap();
+    let published = journal.finalize().unwrap();
+    assert!(published.cleanup_complete);
+    assert!(!journal.partial_directory().join("track-1.jsonl").exists());
+    evidence.verify(Limits::default()).unwrap();
+    let mut altered = evidence.clone();
+    altered.track.process_success = Some(false);
+    assert!(altered.verify(Limits::default()).is_err());
+    altered = evidence.clone();
+    altered.compatibility.model = "different".into();
+    assert!(altered.verify(Limits::default()).is_err());
+    // A stale copy cannot make loss of the published target look recoverable.
+    fs::write(journal.partial_directory().join("track-1.jsonl"), b"{}\n").unwrap();
+    fs::remove_file(&destination).unwrap();
+    assert!(evidence.verify(Limits::default()).is_err());
+}
+
+#[test]
+fn immutable_track_evidence_survives_publication_faults_but_not_commit_tampering() {
+    for fault in [
+        "after-freeze",
+        "after-final-link",
+        "before-published",
+        "after-published",
+        "after-payload-cleanup",
+    ] {
+        let fixture = Fixture::new();
+        let destination = fixture.0.join("fault.asb.zip");
+        let mut journal =
+            RecordingJournal::create(&destination, manifest(0), 1, Limits::default()).unwrap();
+        let track = manifest(1).tracks.remove(0);
+        journal.begin(1, 1).unwrap();
+        journal.commit(track.clone(), &mut &b"{}\n"[..]).unwrap();
+        let evidence = journal.track_evidence(&track).unwrap();
+        journal.inject_publication_failure(fault);
+        let _publication = journal.finalize();
+        evidence.verify(Limits::default()).unwrap();
+        let path = journal.partial_directory().join("committed-1.json");
+        let original = fs::read(&path).unwrap();
+        let mut bad: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        bad["track"]["complete"] = serde_json::json!(false);
+        fs::write(&path, serde_json::to_vec(&bad).unwrap()).unwrap();
+        assert!(evidence.verify(Limits::default()).is_err(), "{fault}");
+        fs::write(path, original).unwrap();
+        evidence.verify(Limits::default()).unwrap();
+    }
+}
+
+#[test]
+fn journal_rejects_predictable_metadata_exhaustion_without_creating_outputs() {
+    for (repeat, concurrency, limit) in [(65_533, 1, 16 * 1024 * 1024), (2, 2, 1024), (1, 1, 1)] {
+        let fixture = Fixture::new();
+        let destination = fixture.0.join("budget.asb.zip");
+        let mut initial = manifest(0);
+        initial.concurrency = concurrency;
+        let error = RecordingJournal::create(
+            &destination,
+            initial,
+            repeat,
+            Limits {
+                max_manifest_bytes: limit,
+                ..Limits::default()
+            },
+        )
+        .err()
+        .expect("known impossible population must fail before reservation");
+        assert!(error.to_string().contains("metadata"), "{error}");
+        assert_eq!(
+            fs::read_dir(&fixture.0).unwrap().count(),
+            0,
+            "preflight must not create a lock, partial directory or final destination"
+        );
+    }
+}
+
+#[test]
+fn journal_metadata_reservation_covers_full_width_statistics_and_outcomes() {
+    let fixture = Fixture::new();
+    let destination = fixture.0.join("budget.asb.zip");
+    let mut initial = manifest(0);
+    initial.recording_id = "r".repeat(128);
+    initial.concurrency = 2;
+    // Discover the exact public admission boundary without duplicating the
+    // private record schemas or maintaining a separate JSON-size constant.
+    let mut low = 1;
+    let mut high = 8192;
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let probe = Fixture::new();
+        let admitted = RecordingJournal::create(
+            &probe.0.join("budget.asb.zip"),
+            initial.clone(),
+            2,
+            Limits {
+                max_manifest_bytes: mid,
+                ..Limits::default()
+            },
+        )
+        .is_ok();
+        if admitted {
+            high = mid;
+        } else {
+            low = mid + 1;
+        }
+    }
+    assert!(low > 1 && low < 8192);
+    let too_small = Limits {
+        max_manifest_bytes: low - 1,
+        ..Limits::default()
+    };
+    assert!(RecordingJournal::create(&destination, initial.clone(), 2, too_small).is_err());
+    assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 0);
+    let limits = Limits {
+        max_manifest_bytes: low,
+        ..Limits::default()
+    };
+    let mut journal = RecordingJournal::create(&destination, initial, 2, limits).unwrap();
+    for id in 1..=4 {
+        let mut track = manifest(1).tracks.remove(0);
+        track.id = id;
+        track.batch = (id - 1) / 2 + 1;
+        track.replica = (id - 1) % 2 + 1;
+        track.complete = false;
+        track.process_success = Some(false);
+        track.workload_success = Some(false);
+        track.statistics = Statistics {
+            tokens: Some(u64::MAX),
+            duration_ms: Some(u64::MAX),
+            requests: Some(u64::MAX),
+            steps: Some(u64::MAX),
+        };
+        journal.begin(track.batch, track.replica).unwrap();
+        journal.commit(track, &mut &b"{}\n"[..]).unwrap();
+    }
+    drop(journal);
+    let mut journal = RecordingJournal::recover(&destination, limits).unwrap();
+    let published = journal.finalize().unwrap();
+    assert!(published.cleanup_complete);
+    assert_eq!(
+        Archive::open(&destination, Limits::default())
+            .unwrap()
+            .manifest()
+            .tracks
+            .len(),
+        4
+    );
+}
+
+#[test]
+fn journal_recovery_preserves_pre_reservation_sparse_population() {
+    let fixture = Fixture::new();
+    let destination = fixture.0.join("legacy-partial.asb.zip");
+    let mut journal =
+        RecordingJournal::create(&destination, manifest(0), 1, Limits::default()).unwrap();
+    journal.begin(1, 1).unwrap();
+    journal
+        .commit(manifest(1).tracks.remove(0), &mut &b"{}\n"[..])
+        .unwrap();
+    let intent_path = journal.partial_directory().join("intent.json");
+    drop(journal);
+    // Model an older writer's large intent with a small actual committed prefix.
+    let mut intent: serde_json::Value =
+        serde_json::from_slice(&fs::read(&intent_path).unwrap()).unwrap();
+    intent["repeat"] = serde_json::json!(40);
+    fs::write(intent_path, serde_json::to_vec(&intent).unwrap()).unwrap();
+    let limits = Limits {
+        max_manifest_bytes: 2000,
+        ..Limits::default()
+    };
+    assert!(
+        RecordingJournal::create(&fixture.0.join("new.asb.zip"), manifest(0), 40, limits).is_err()
+    );
+    let mut recovered = RecordingJournal::recover(&destination, limits).unwrap();
+    assert_eq!(recovered.snapshot().unwrap().tracks.len(), 1);
+    assert!(recovered.finalize().unwrap().cleanup_complete);
 }
 
 #[test]

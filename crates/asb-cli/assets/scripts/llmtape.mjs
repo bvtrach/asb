@@ -6,7 +6,10 @@
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { performance } from "node:perf_hooks";
+import { isAbsolute } from "node:path";
 import { quiesceNetworkRequests, networkFetch } from "./network-fetch.mjs";
+import { CaptureSession, responseDelivery } from "./capture-session.mjs";
+import { normalizeWorkspacePaths } from "./tape-normalization.mjs";
 
 const MAX_BODY = 16 * 1024 * 1024;
 const MAX_DELAY_MS = 60 * 60 * 1000;
@@ -39,6 +42,18 @@ if (!Number.isInteger(port) || port < (readyFile ? 0 : 1) || port > 65535) usage
 const cassette = mode === "record" ? option(args, "--out") : option(args, "--cassette");
 const upstream = mode === "record" ? option(args, "--upstream") : undefined;
 const respectRecordTimings = args.includes("--respect-record-timings");
+const captureReceipt = process.env.ASB_TAPE_CAPTURE_RECEIPT;
+const captureNonce = process.env.ASB_TAPE_CAPTURE_NONCE;
+delete process.env.ASB_TAPE_CAPTURE_RECEIPT;
+delete process.env.ASB_TAPE_CAPTURE_NONCE;
+if (Boolean(captureReceipt) !== Boolean(captureNonce)
+  || (captureReceipt && (mode !== "record" || captureNonce.length > 128 || !isAbsolute(cassette)))) {
+  usage("invalid private capture invocation");
+}
+const capture = captureReceipt
+  ? new CaptureSession(cassette, { pid: process.pid, nonce: captureNonce })
+  : null;
+const activeCaptures = new Set();
 if (respectRecordTimings && mode !== "replay") {
   usage("--respect-record-timings is only valid with replay");
 }
@@ -181,15 +196,8 @@ function normalizeCassetteBody(body) {
   if (!body) return body;
   if (typeof body !== "string") body = JSON.stringify(body);
   const workspace = process.env.ASB_TAPE_WORKSPACE;
-  const normalized = normalizeSseWorkspaceFragments(body, workspace)
-    .replaceAll(workspace || "\u0000", "<asb-workspace>")
-    // Sweep isolation may serialize either an absolute or a relative result
-    // path. Normalize the whole path so the result-root prefix cannot leak
-    // into replay keys (for example replay-sweep-results/.../workspace-*).
-    .replace(/\/?(?:[A-Za-z0-9_.-]+\/)+workspace-concurrency-\d+(?:\.asb-agent-runtime)?/g, "<asb-workspace>")
-    // Older recordings may contain an absolute result-root/workspace path
-    // rather than the normalized marker. Canonicalize that form as well.
-    .replace(/\/?(?:[A-Za-z0-9_.-]+\/)+workspace(?=\/|["\\])/g, "<asb-workspace>")
+  const normalized = normalizeWorkspacePaths(normalizeSseWorkspaceFragments(body, workspace)
+    .replaceAll(workspace || "\u0000", "<asb-workspace>"))
     // Agent SDKs generate fresh message/session IDs for every invocation;
     // those identifiers are not provider semantics and must not prevent a
     // cassette recorded in one process from replaying in another.
@@ -443,7 +451,7 @@ function isReplayProbe(request) {
 }
 writeProgress();
 
-async function handle(request, response) {
+async function handle(request, response, recording) {
   const startedAt = performance.now();
   const chunks = [];
   let bodySize = 0;
@@ -573,6 +581,7 @@ async function handle(request, response) {
     method: recordedRequest.method,
     headers: forwardedHeaders,
     body: body.length ? Buffer.from(normalizedBody) : undefined,
+    signal: recording?.controller.signal,
   });
   const responseChunks = [];
   let responseSize = 0;
@@ -590,28 +599,90 @@ async function handle(request, response) {
     body: normalizeCassetteBody(responseBody),
   };
   const delayMs = Math.min(Math.max(0, Math.round(performance.now() - startedAt)), MAX_DELAY_MS);
-  if (stopping) return;
-  appendFileSync(cassette, `${JSON.stringify({ request: recordedRequest, response: recordedResponse, delay_ms: delayMs })}\n`);
+  const interaction = { request: recordedRequest, response: recordedResponse, delay_ms: delayMs };
+  if (capture) capture.append(recording.token, interaction, !isReplayProbe(recordedRequest));
+  else {
+    if (stopping) return;
+    appendFileSync(cassette, `${JSON.stringify(interaction)}\n`);
+  }
   response.writeHead(recordedResponse.status, recordedResponse.headers);
   response.end(responseBody);
 }
 
 const server = http.createServer((request, response) => {
-  handle(request, response).catch((error) => {
-    response.writeHead(502, { "content-type": "application/json" });
-    response.end(JSON.stringify({ error: String(error.message || error) }));
-  });
+  const fail = (error) => {
+    if (!response.destroyed) {
+      if (!response.headersSent) response.writeHead(502, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: String(error.message || error) }));
+    }
+  };
+  if (!capture) {
+    handle(request, response).catch(fail);
+    return;
+  }
+  let token;
+  try { token = capture.begin(); }
+  catch (error) { fail(error); return; }
+  if (!token) {
+    response.writeHead(503, { connection: "close" });
+    response.end("recording is draining");
+    return;
+  }
+  const recording = { token, request, response, controller: new AbortController() };
+  // Subscribe before handle can finish or close a response. Completion requires
+  // both full capture and positive delivery, not merely an upstream EOF.
+  const delivered = responseDelivery(response);
+  activeCaptures.add(recording);
+  recording.done = (async () => {
+    let success = false;
+    try {
+      await handle(request, response, recording);
+      success = await delivered;
+    } catch (error) {
+      fail(error);
+    } finally {
+      capture.end(token, success);
+      activeCaptures.delete(recording);
+    }
+  })();
 });
+
+async function waitCaptures(milliseconds) {
+  let timer;
+  try {
+    await Promise.race([
+      Promise.all([...activeCaptures].map((recording) => recording.done)),
+      new Promise((resolve) => { timer = setTimeout(resolve, milliseconds); }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
 
 async function shutdown() {
   if (stopping) return;
   stopping = true;
+  capture?.drain();
   server.close();
-  server.closeAllConnections();
   try {
-    await quiesceNetworkRequests();
+    if (capture) {
+      server.closeIdleConnections();
+      await waitCaptures(300);
+      for (const recording of activeCaptures) {
+        recording.controller.abort();
+        recording.request.destroy();
+        recording.response.destroy();
+      }
+      server.closeAllConnections();
+      await Promise.all([quiesceNetworkRequests(), waitCaptures(300)]);
+      if (activeCaptures.size !== 0) throw new Error("recording handlers did not quiesce");
+      capture.finalize(captureReceipt);
+      if (!capture.publicationCleanupConfirmed) throw new Error("capture receipt cleanup unconfirmed");
+    } else {
+      server.closeAllConnections();
+      await quiesceNetworkRequests();
+    }
     process.exit(0);
   } catch {
+    try { capture?.close(); } catch { /* sticky uncertainty: never report cleanup success */ }
     process.exit(2);
   }
 }
@@ -626,7 +697,7 @@ if (process.env.ASB_TAPE_OWNER_PIPE === "1") {
   process.stdin.resume();
 }
 
-if (mode === "record") {
+if (mode === "record" && !capture) {
   if (existsSync(cassette)) writeFileSync(cassette, "");
 }
 server.listen(port, "127.0.0.1", () => {

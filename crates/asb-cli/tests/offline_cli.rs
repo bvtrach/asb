@@ -40,6 +40,12 @@ impl Project {
         args: &[&str],
         extra: &[(&str, &str)],
     ) -> Output {
+        self.invocation(dir, args, extra)
+            .output()
+            .expect("ASB starts")
+    }
+
+    fn invocation(&self, dir: &std::path::Path, args: &[&str], extra: &[(&str, &str)]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_asb"));
         command
             .current_dir(dir)
@@ -49,7 +55,50 @@ impl Project {
             .env("PATH", std::env::var_os("PATH").unwrap_or_default());
         // Preserve instrumentation for coverage runs, without inheriting keys.
         command.envs(extra.iter().copied());
-        command.output().expect("ASB starts")
+        command
+    }
+
+    #[cfg(target_os = "linux")]
+    #[allow(unsafe_code)]
+    fn command_with_reserved_bridge(
+        &self,
+        args: &[&str],
+        extra: &[(&str, &str)],
+        listener: std::net::TcpListener,
+    ) -> Output {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+        let fd = listener.as_raw_fd();
+        // SAFETY: this fixture exclusively owns this live listener descriptor.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        assert!(flags >= 0 && flags & libc::FD_CLOEXEC != 0);
+        let mut command = self.invocation(&self.0, args, extra);
+        command
+            .env("ASB_TEST_LISTENER_FD", fd.to_string())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        // SAFETY: only async-signal-safe fcntl calls and errno retrieval occur
+        // after fork. CLOEXEC belongs to the child's descriptor table, not the
+        // shared socket description; parent/unrelated-child flags never change.
+        unsafe {
+            command.pre_exec(move || {
+                let owned = listener.as_raw_fd();
+                let flags = libc::fcntl(owned, libc::F_GETFD);
+                if flags < 0 || libc::fcntl(owned, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let child = command
+            .spawn()
+            .expect("ASB starts with its reserved listener");
+        // Capture the parent-flag check, but assert only after owned teardown.
+        let parent_flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        drop(command); // Closes the parent's listener before waiting for ASB.
+        let output = child.wait_with_output().expect("ASB finishes");
+        assert_eq!(parent_flags, flags, "parent listener flags changed");
+        output
     }
 
     fn write(&self, name: &str, contents: &str) {
@@ -960,6 +1009,7 @@ const fs = require('fs');
 const cfg = fs.readFileSync(process.env.CODEX_HOME + '/config.toml', 'utf8');
 const endpoint = cfg.match(/base_url = "([^"]+)"/)[1];
 if (!cfg.includes('model_provider = "asb_provider"') || !cfg.includes('web_search = "disabled"')) process.exit(11);
+fs.writeFileSync('src/parser.py', "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n");
 const body = JSON.stringify({model:'qwen3:0.6b',input:'offline test',tools:[{type:'function',name:'read_file'}]});
 fetch(endpoint + '/responses', {method:'POST',headers:{'content-type':'application/json'},body}).then(r => { if (!r.ok) process.exit(12); console.log('local-ollama-agent'); }).catch(() => process.exit(13));
 "##);
@@ -1084,6 +1134,7 @@ const endpoint = cfg.match(/base_url = "([^"]+)"/)[1];
 if (!cfg.includes('model_provider = "asb_provider"') || !cfg.includes('wire_api = "responses"') || !cfg.includes('env_key = "ASB_AGENT_API_KEY"')) process.exit(11);
 if (process.env.OPENROUTER_API_KEY === 'live-secret' && process.env.ASB_AGENT_API_KEY !== 'live-secret') process.exit(12);
 if (process.env.OPENROUTER_API_KEY === 'asb-replay' && process.env.ASB_AGENT_API_KEY !== 'asb-replay') process.exit(13);
+fs.writeFileSync('src/parser.py', "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n");
 const body = JSON.stringify({model:'fixture/model',input:'offline test',tools:[{type:'function',name:'read_file'}]});
 fetch(endpoint + '/responses', {method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+process.env.ASB_AGENT_API_KEY},body}).then(r => {if (!r.ok) process.exit(14); console.log('provider-neutral-agent');}).catch(() => process.exit(15));
 "##);
@@ -3435,8 +3486,137 @@ fn reset_rejects_symlinked_default_directories_before_changing_state() {
 fn install_fake_bridge(project: &Project, source: &str) {
     use std::os::unix::fs::PermissionsExt;
     let name = ".asb-tools/cli2key/node_modules/.bin/codex-bridge";
-    project.write(name, source);
+    let body = source.strip_prefix("#!/usr/bin/env node\n").unwrap();
+    // Only these inert fixture scripts retain stderr. Production intentionally
+    // does not print bridge output, which may contain provider credentials.
+    let diagnostic = serde_json::to_string(&project.0.join("bridge.stderr")).unwrap();
+    let prelude = format!(
+        r#"#!/usr/bin/env node
+const __asbFixtureFs = require('fs');
+const __asbFixtureErrorFd = __asbFixtureFs.openSync({diagnostic}, 'w', 0o600);
+let __asbFixtureErrorRemaining = 8192;
+function __asbFixtureRetain(chunk) {{
+  if (__asbFixtureErrorRemaining <= 0) return;
+  const bytes = (Buffer.isBuffer(chunk) ? chunk.subarray(0, __asbFixtureErrorRemaining)
+    : Buffer.from(String(chunk).slice(0, __asbFixtureErrorRemaining)))
+    .subarray(0, __asbFixtureErrorRemaining);
+  __asbFixtureFs.writeSync(__asbFixtureErrorFd, bytes);
+  __asbFixtureErrorRemaining -= bytes.length;
+}}
+const __asbFixtureStderrWrite = process.stderr.write.bind(process.stderr);
+process.stderr.write = (...args) => {{ __asbFixtureRetain(args[0]); return __asbFixtureStderrWrite(...args); }};
+process.on('uncaughtExceptionMonitor', error => {{
+  __asbFixtureRetain('uncaught ' + String(error.code).slice(0,128) + ': ' + String(error.message).slice(0,2048) + '\n');
+}});
+"#
+    );
+    project.write(name, &format!("{prelude}{body}"));
     std::fs::set_permissions(project.0.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+fn fixture_stderr(project: &Project) -> String {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    if let Ok(file) = std::fs::File::open(project.0.join("bridge.stderr")) {
+        file.take(8192).read_to_end(&mut bytes).unwrap();
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+#[cfg(target_os = "linux")]
+fn assert_fixture_listener_closed(port: &str) {
+    let address = format!("127.0.0.1:{port}").parse().unwrap();
+    let error =
+        std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(100))
+            .expect_err("fixture teardown left a listening endpoint");
+    assert_eq!(error.kind(), std::io::ErrorKind::ConnectionRefused);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cli2key_mock_keeps_selected_listener_reserved_through_startup() {
+    let project = Project::new();
+    project.init();
+    install_fake_bridge(
+        &project,
+        r##"#!/usr/bin/env node
+const http = require('http'), fs = require('fs');
+fs.writeFileSync(process.env.ASB_TEST_PIDFILE, String(process.pid));
+http.createServer((req,res) => {
+  res.writeHead(200, {'content-type':'application/json'});
+  res.end(JSON.stringify({data:[{id:'fixture-model'}]}));
+}).listen(process.env.ASB_TEST_LISTENER_FD ? {fd:Number(process.env.ASB_TEST_LISTENER_FD)}
+  : {port:Number(process.env.CODEX_BRIDGE_PORT),host:'127.0.0.1'}, () => console.log('Codex Bridge API key: fixture-key'));
+"##,
+    );
+    let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reserved.local_addr().unwrap().port().to_string();
+    let pidfile = project.0.join("bridge.pid");
+    let result = project.command_with_env(
+        &["provider", "models", "cli2key"],
+        &[
+            ("CODEX_BRIDGE_PORT", &port),
+            ("ASB_TEST_PIDFILE", pidfile.to_str().unwrap()),
+        ],
+    );
+    assert_eq!(reserved.local_addr().unwrap().port().to_string(), port);
+    let pid: u32 = std::fs::read_to_string(&pidfile).unwrap().parse().unwrap();
+    let _wait = wait_for_fixture(&project, pid);
+    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    // stdout EOF can be observed just before Node's exit status is collectable.
+    expect_failure(&result, "closed its startup output");
+    assert!(fixture_stderr(&project).contains("EADDRINUSE"));
+    let result = project.command_with_reserved_bridge(
+        &["provider", "models", "cli2key"],
+        &[
+            ("CODEX_BRIDGE_PORT", &port),
+            ("ASB_TEST_PIDFILE", pidfile.to_str().unwrap()),
+        ],
+        reserved,
+    );
+    let pid: u32 = std::fs::read_to_string(pidfile).unwrap().parse().unwrap();
+    let _wait = wait_for_fixture(&project, pid);
+    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    assert_fixture_listener_closed(&port);
+    assert!(
+        result.status.success(),
+        "stderr={} fixture_stderr={}",
+        stderr(&result),
+        fixture_stderr(&project)
+    );
+    assert!(stdout(&result).contains("fixture-model"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cli2key_fixture_stderr_is_bounded_without_swallowing_failure() {
+    let project = Project::new();
+    project.init();
+    install_fake_bridge(
+        &project,
+        r##"#!/usr/bin/env node
+require('fs').writeFileSync(process.env.ASB_TEST_PIDFILE, String(process.pid));
+process.stderr.write('x'.repeat(16384));
+throw Object.assign(new Error('fixture failure'), {code:'FIXTURE_FAILURE'});
+"##,
+    );
+    let pidfile = project.0.join("bridge.pid");
+    let result = project.command_with_env(
+        &["provider", "models", "cli2key"],
+        &[("ASB_TEST_PIDFILE", pidfile.to_str().unwrap())],
+    );
+    let pid: u32 = std::fs::read_to_string(pidfile).unwrap().parse().unwrap();
+    let _wait = wait_for_fixture(&project, pid);
+    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    expect_failure(&result, "closed its startup output");
+    assert_eq!(
+        std::fs::metadata(project.0.join("bridge.stderr"))
+            .unwrap()
+            .len(),
+        8192
+    );
+    assert_eq!(fixture_stderr(&project), "x".repeat(8192));
 }
 
 #[cfg(target_os = "linux")]
@@ -3894,29 +4074,31 @@ http.createServer((req,res) => {
   fs.writeFileSync(process.env.ASB_TEST_OBSERVED, req.url + ' ' + req.headers.authorization);
   res.writeHead(200, {'content-type':'application/json'});
   res.end(JSON.stringify({data:[{id:'current-model'}]}));
-}).listen(Number(process.env.CODEX_BRIDGE_PORT), '127.0.0.1', () => console.log('Codex Bridge API key: fixture-key'));
+}).listen({fd:Number(process.env.ASB_TEST_LISTENER_FD)}, () => console.log('Codex Bridge API key: fixture-key'));
 "##,
         );
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port()
-            .to_string();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port().to_string();
         let pidfile = project.0.join("bridge.pid");
         let observed = project.0.join("observed");
-        let result = project.command_with_env(
+        let result = project.command_with_reserved_bridge(
             &["run", "benchmark.toml"],
             &[
                 ("CODEX_BRIDGE_PORT", &port),
                 ("ASB_TEST_PIDFILE", pidfile.to_str().unwrap()),
                 ("ASB_TEST_OBSERVED", observed.to_str().unwrap()),
             ],
+            listener,
         );
         let pid: u32 = std::fs::read_to_string(pidfile).unwrap().parse().unwrap();
         let _wait = wait_for_fixture(&project, pid);
         if expect_ok {
-            expect_success(&result);
+            assert!(
+                result.status.success(),
+                "stderr={} fixture_stderr={}",
+                stderr(&result),
+                fixture_stderr(&project)
+            );
         } else {
             expect_failure(&result, "was not returned by provider");
         }
@@ -3928,6 +4110,7 @@ http.createServer((req,res) => {
             !std::path::Path::new(&format!("/proc/{pid}")).exists(),
             "bridge was not reaped"
         );
+        assert_fixture_listener_closed(&port);
     }
 }
 
@@ -3945,41 +4128,47 @@ fs.writeFileSync(process.env.ASB_TEST_PIDFILE, String(process.pid));
 // five-second readiness budget under parallel test load; otherwise this fixture
 // can exit before a healthy ASB reaches it. The assertions below still require
 // ASB to reap the bridge before this timer fires.
+process.stderr.write('fixture diagnostic\n');
 setTimeout(() => { fs.writeFileSync(process.env.ASB_TEST_EXPIRED, 'expired'); process.exit(0); }, 10000).unref();
 http.createServer((req,res) => {
   if (req.url !== '/v1/models') { res.writeHead(404); return res.end(); }
   res.writeHead(200, {'content-type':'application/json'});
   res.end(JSON.stringify({data:[{id:'fixture-model'}]}));
-}).listen(Number(process.env.CODEX_BRIDGE_PORT), '127.0.0.1', () => {
+}).listen({fd:Number(process.env.ASB_TEST_LISTENER_FD)}, () => {
   console.log('Codex Bridge API key: fixture-key');
 });
 "##,
     );
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
-        .to_string();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port().to_string();
     let pidfile = project.0.join("bridge.pid");
     let expired = project.0.join("expired");
-    let result = project.command_with_env(
+    let result = project.command_with_reserved_bridge(
         &["provider", "models", "cli2key"],
         &[
             ("CODEX_BRIDGE_PORT", &port),
             ("ASB_TEST_PIDFILE", pidfile.to_str().unwrap()),
             ("ASB_TEST_EXPIRED", expired.to_str().unwrap()),
         ],
+        listener,
     );
     let pid: u32 = std::fs::read_to_string(pidfile).unwrap().parse().unwrap();
     let _wait = wait_for_fixture(&project, pid);
-    expect_success(&result);
+    assert!(
+        result.status.success(),
+        "stdout={} stderr={} fixture_stderr={}",
+        stdout(&result),
+        stderr(&result),
+        fixture_stderr(&project)
+    );
     assert!(!expired.exists(), "mock timed out before ASB completed");
+    assert_eq!(fixture_stderr(&project), "fixture diagnostic\n");
     assert!(stdout(&result).contains("fixture-model"));
     assert!(
         !std::path::Path::new(&format!("/proc/{pid}")).exists(),
         "bridge was not reaped"
     );
+    assert_fixture_listener_closed(&port);
 }
 
 #[cfg(target_os = "linux")]
@@ -4373,6 +4562,7 @@ fn record_uses_benchmark_project_proxy_even_when_invoked_elsewhere() {
         project.write(agent, r##"#!/usr/bin/env node
 const fs = require('fs');
 if (!(process.env.http_proxy || process.env.all_proxy) || !process.env.no_proxy.includes('127.0.0.1')) process.exit(16);
+fs.writeFileSync('src/parser.py', "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n");
 const cfg = fs.readFileSync(process.env.CODEX_HOME + '/config.toml', 'utf8');
 const endpoint = cfg.match(/base_url = "([^"]+)"/)[1];
 const body = JSON.stringify({model:'fixture/model',input:'offline test',tools:[{type:'function',name:'read_file'}]});
@@ -4485,7 +4675,12 @@ fetch(endpoint + '/responses', {method:'POST',headers:{'content-type':'applicati
             2,
             "model discovery and recorded request must both use the proxy"
         );
-        let tape = std::fs::read_to_string(cassette).unwrap();
+        let mut archive =
+            asb_cli::cassette::Archive::open(&cassette, asb_cli::cassette::Limits::default())
+                .unwrap();
+        assert_eq!(archive.manifest().tracks.len(), 1);
+        assert!(archive.manifest().tracks[0].complete);
+        let tape = String::from_utf8(archive.read_track(1).unwrap()).unwrap();
         assert!(tape.contains("resp_fixture"));
         assert!(!tape.contains("fixture-secret"));
     }

@@ -51,6 +51,9 @@ pub(super) fn persist(
     render_json(result, &mut summary)?;
     let summary: serde_json::Value = serde_json::from_slice(&summary)
         .map_err(|_| Error::Io("cannot encode task completion summary".into()))?;
+    if let Some(recording) = &result.recording {
+        recording.validate_summary(&summary, &proxy.captures)?;
+    }
     if !crate::workloads::ResourceDisposition::matches_record(
         Some(&serde_json::json!(result.workload_resource_disposition)),
         workload_cleanup_confirmed,
@@ -63,6 +66,12 @@ pub(super) fn persist(
     let proxy_outputs = proxy
         .output_files
         .iter()
+        .filter(|path| {
+            result
+                .recording
+                .as_ref()
+                .is_none_or(|recording| **path != recording.producer)
+        })
         .map(std::path::absolute)
         .collect::<Result<Vec<_>, _>>()
         .map_err(crate::io_error)?;
@@ -84,6 +93,8 @@ pub(super) fn persist(
         "workload_resource_disposition":result.workload_resource_disposition,
         "proxy_cleanup_confirmed":proxy.cleanup_confirmed,
         "proxy_evidence":proxy_outputs,
+        "capture_evidence":proxy.captures,
+        "recording_track":result.recording,
         "summary":summary,"workload_evidence":evidence}))
     .map_err(|_| Error::Io("cannot encode private task completion evidence".into()))?;
     let id = crate::workloads::TaskIdentity::local("completion-file", None).attempt_id;

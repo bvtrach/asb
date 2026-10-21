@@ -7,6 +7,20 @@
 use crate::Error;
 use std::path::{Component, Path, PathBuf};
 
+/// Legacy per-replica cassette/result naming; shared by discovery and execution.
+pub(crate) fn replica_path(path: &Path, index: usize) -> PathBuf {
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("benchmark");
+    let name = match path.extension().and_then(|value| value.to_str()) {
+        Some(extension) => format!("{stem}-concurrency-{index}.{extension}"),
+        None => format!("{stem}-concurrency-{index}"),
+    };
+    path.parent()
+        .map_or_else(|| PathBuf::from(&name), |parent| parent.join(&name))
+}
+
 /// Normalize a label embedded in an existing prefixed artifact filename.
 pub(crate) fn component(value: &str) -> String {
     value
