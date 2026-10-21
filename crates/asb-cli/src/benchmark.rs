@@ -7,6 +7,8 @@ pub(crate) const MAX_CONCURRENCY: usize = 64;
 /// Small, extensible benchmark configuration written by `asb setup`.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct BenchmarkConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) planning: Option<crate::planning::PlanningConfig>,
     pub agent: String,
     pub workload: String,
     pub provider: String,
