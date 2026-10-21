@@ -357,6 +357,15 @@ positive reservations/admission, original starts/allocations, strict outcomes,
 cohorts and immutable recording associations. No production authentication or
 signing prerequisite is introduced.
 
+Bundled replay plans also retain the original source `Compatibility`, copied
+from the same inspected manifest as their frozen selection. This is expected
+identity, not evidence that any workload was prepared. Batch material gates use
+that saved identity. A publication regression drops the source owner and moves
+the original archive before the first batch, then reloads the expected identity
+and private inputs from disk. Historical plans without this optional field
+remain inspectable; absence must never authorize pending bundled continuation.
+Continuation still needs the input and slot checks above before using it.
+
 The first current-main integrated suite retained one library failure: Linux
 returned `ETXTBSY` when the native-gate argument/environment fixture executed its
 new mock script; all other library and integration targets completed normally.

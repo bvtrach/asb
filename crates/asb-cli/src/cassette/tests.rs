@@ -61,8 +61,38 @@ fn campaign_inspection_can_select_more_than_256_tracks_from_one_descriptor() {
             .is_ok()
     );
     inspection.validate_sources().unwrap();
-    let _prepared = inspection.observe().unwrap();
+    let prepared = inspection.observe().unwrap();
     assert!(!fixture.0.join("results").exists());
+    let expected = manifest(257).compatibility;
+    let published = crate::runner::repeated::publish_campaign(prepared).unwrap();
+    drop(published);
+    // Publication starts no material gate/client. Move away the original ZIP
+    // before a first batch could observe material: its complete expected
+    // identity must already survive in the checksummed plan/private inputs.
+    fs::rename(&bundle, fixture.0.join("original-bundle-moved-away.zip")).unwrap();
+    let campaigns = fixture.0.join("results/asb-executions");
+    let root = fs::read_dir(campaigns)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let restored = crate::runner::campaign::reading::Layout::read(&root.join("plan.json")).unwrap();
+    restored
+        .plan
+        .replay_compatibility
+        .as_ref()
+        .unwrap()
+        .require_match(&expected)
+        .unwrap();
+    assert!(!root.join("batch-1").exists());
+    assert!(
+        restored
+            .plan
+            .replay_inputs
+            .iter()
+            .all(|input| root.join(&input.private).is_file())
+    );
 }
 
 #[cfg(unix)]

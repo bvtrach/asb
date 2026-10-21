@@ -86,6 +86,9 @@ pub(crate) enum MeasurementStorage {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Plan {
+    /// Expected source identity, not adapter-observed prepared material.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_compatibility: Option<crate::cassette::Compatibility>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording_selection: Option<crate::workloads::TaskSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

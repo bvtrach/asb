@@ -303,6 +303,10 @@ impl Inspection {
             None
         };
         let mut plan = Plan {
+            replay_compatibility: replay.as_ref().and_then(|replay| match replay {
+                InspectedReplay::Selected(selected) => selected.compatibility.clone(),
+                InspectedReplay::Legacy(_) => None,
+            }),
             recording_selection,
             recording_reservation: None,
             replay_source,
@@ -601,9 +605,7 @@ pub(crate) fn execute(
         }
     }
     replay::disclose_incomplete(&plan.replay_inputs, options.json, output)?;
-    let mut reference: Option<Compatibility> = replay
-        .as_ref()
-        .and_then(|replay| replay.compatibility.clone());
+    let mut reference: Option<Compatibility> = plan.replay_compatibility.clone();
     let mut failures = 0u64;
     let mut completed_batches = 0u64;
     let mut stopped = false;

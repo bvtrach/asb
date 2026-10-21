@@ -3,6 +3,68 @@ use crate::runner::campaign::ReplayInput;
 use serde_json::{Value, json};
 
 #[test]
+fn source_replay_identity_is_optional_historical_data_not_observed_material() {
+    let mut value = selected(plan(ExecutionMode::Replay, 2, 2, false), true);
+    let expected = crate::cassette::Compatibility {
+        agent: "source-agent".into(),
+        provider: "source-provider".into(),
+        model: "source-model".into(),
+        workload: "source-workload".into(),
+        task: "source-task".into(),
+        dataset_sha256: Some(crate::cassette::digest(b"source dataset")),
+        prompt_sha256: crate::cassette::digest(b"source prompt"),
+        material_sha256: crate::cassette::digest(b"source material"),
+        protocol_sha256: Some(crate::cassette::digest(b"source protocol")),
+    };
+    value.replay_compatibility = Some(expected.clone());
+    // A valid source can deliberately differ from the requested configuration:
+    // this is inspectable intent, and genuine material admission must refuse it.
+    value.validate_layout().unwrap();
+    let wire = serde_json::to_value(&value).unwrap();
+    assert_eq!(
+        wire["replay_compatibility"],
+        serde_json::to_value(&expected).unwrap()
+    );
+    for field in [
+        "agent",
+        "provider",
+        "model",
+        "workload",
+        "task",
+        "dataset_sha256",
+        "prompt_sha256",
+        "material_sha256",
+        "protocol_sha256",
+    ] {
+        let mut invalid = wire.clone();
+        invalid["replay_compatibility"][field] = json!("");
+        assert!(
+            serde_json::from_value::<Plan>(invalid)
+                .unwrap()
+                .validate_layout()
+                .is_err(),
+            "{field}"
+        );
+    }
+    let mut historical = wire;
+    historical
+        .as_object_mut()
+        .unwrap()
+        .remove("replay_compatibility");
+    let historical: Plan = serde_json::from_value(historical).unwrap();
+    historical.validate_layout().unwrap();
+    assert!(historical.replay_compatibility.is_none());
+    let mut legacy = plan(ExecutionMode::Replay, 1, 1, false);
+    legacy.replay_compatibility = Some(expected.clone());
+    assert!(legacy.validate_layout().is_err());
+    for mode in [ExecutionMode::Live, ExecutionMode::Record] {
+        let mut other = plan(mode, 1, 1, false);
+        other.replay_compatibility = Some(expected.clone());
+        assert!(other.validate_layout().is_err());
+    }
+}
+
+#[test]
 fn recording_capacity_is_recomputed_and_historical_absence_stays_unknown() {
     let mut value = plan(ExecutionMode::Record, 2, 3, false);
     assert!(value.validate_layout().is_ok());
@@ -73,6 +135,7 @@ fn plan(mode: ExecutionMode, concurrency: usize, repeat: u64, measured: bool) ->
         "agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='bug-fix'\nconcurrency={concurrency}"
     )).unwrap();
     let mut plan = Plan {
+        replay_compatibility: None,
         recording_selection: None,
         recording_reservation: None,
         replay_source: None,

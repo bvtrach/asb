@@ -22,7 +22,6 @@ pub(super) struct Prepared {
     path: PathBuf,
     chosen: Vec<u64>,
     pub selection: Option<SelectionPlan>,
-    pub compatibility: Option<Compatibility>,
 }
 
 pub(super) struct Inspection {
@@ -137,7 +136,6 @@ impl Inspection {
             path: self.path,
             chosen: self.chosen,
             selection: self.selection,
-            compatibility: self.compatibility,
         })
     }
 }

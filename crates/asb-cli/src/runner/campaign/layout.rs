@@ -91,6 +91,16 @@ impl Plan {
                 "schema, identity, mode, admission or population differs",
             ));
         }
+        if let Some(expected) = &self.replay_compatibility {
+            if self.mode != ExecutionMode::Replay || self.replay_selection.is_none() {
+                return Err(invalid(
+                    "source replay compatibility requires bundled replay",
+                ));
+            }
+            expected
+                .validate()
+                .map_err(|error| invalid(&error.to_string()))?;
+        }
         let configuration =
             serde_json::to_vec(&self.configuration).map_err(|error| invalid(&error.to_string()))?;
         if crate::cassette::digest(&configuration) != self.configuration_sha256 {
