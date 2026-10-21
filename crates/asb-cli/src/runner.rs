@@ -15,6 +15,7 @@ pub(crate) mod workload_process;
 use super::{Error, io_error, read_config};
 use crate::agents;
 use crate::benchmark::BenchmarkConfig;
+use crate::benchmark_paths::component;
 use crate::collectors::{LifecycleEvent, LifecyclePhase};
 use crate::measurements;
 use crate::models;
@@ -1194,23 +1195,10 @@ fn default_cassette(config_path: &Path, config: &BenchmarkConfig) -> std::path::
         .join("cassettes")
         .join(format!(
             "{stem}-{}-{}-{}.jsonl",
-            safe_name(&config.agent),
-            safe_name(&config.workload),
-            safe_name(&config.model)
+            component(&config.agent),
+            component(&config.workload),
+            component(&config.model)
         ))
-}
-
-fn safe_name(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect()
 }
 
 fn write_log(
