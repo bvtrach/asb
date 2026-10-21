@@ -953,6 +953,18 @@ and neither case changes project-local installed status. Only explicitly
 host-backed tool recipes retain their separate host-availability fallback;
 host agents and external overrides are not project installations.
 
+Installer recipes prepare typed local-path/URL and project/runtime inputs before
+dispatch. Ordinary Host and pinned Goose binaries share bounded staged-file
+publication, while automatic dependencies retain no-clobber semantics and
+package managers keep their existing installation authority. A probe-visible
+file is identity/content/mode/bounds checked, detached into private custody,
+then copied from its admitted handle into an unexposed commit stage. Cleanup
+also detaches exposed entries before deleting only positively owned files or
+empty directories; foreign arrivals and failed explicit settlements remain
+reported evidence, without a Drop retry. This is ordinary private quiet custody,
+not a hostile same-UID sandbox or package-manager rollback. Details and current
+qualification limits are in [the recipe repair contract](INSTALLER_RECIPE_REPAIR.md).
+
 All three TUI installation flows share one owned process operation. A private
 versioned helper runs synchronous tool, workload or collector-dependency
 installation under the same `ProcessLaunch`/`ManagedGate` native supervisor as

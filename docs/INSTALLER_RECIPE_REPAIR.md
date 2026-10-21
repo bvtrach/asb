@@ -3,7 +3,7 @@
 Source baseline: qualified publication stack `5516c4e9`, version 0.2.32.
 The initial test checkpoint is `cce58fa4`. Its three regressions were actually
 executed and failed as described below. No production fix, full qualification,
-PR or release is claimed yet.
+PR or release is claimed by that checkpoint.
 
 ## Source-confirmed gaps and first regressions
 
@@ -90,3 +90,80 @@ required coverage and design constraints:
 - Include a real local successful version probe that mutates its own file,
   plus healthy probe and multicall-basename tests. Keep pre-spawn cleanup
   custody, existing bounded child waits and adapter-owned progress ordering.
+
+## Implemented source contract (independent final review pending)
+
+Prepared recipe inputs separate Host, pinned Goose, package-manager and custom
+installation paths. Resolved workloads retain their project configuration and
+typed internal URL-or-local-path source. Existing public `source: String`
+interfaces stay unchanged; already-typed local paths, `--dir`, project/runtime
+paths and checksum argv preserve their raw OS spelling. NPM/Python authority
+and package-manager behavior are unchanged; no package rollback is promised.
+
+Host and Goose use shared bounded staged-file publication. The admitted file
+handle survives the optional probe. Identity, content digest, regular type,
+size, mode and any supplied checksum are validated afterward. Unix sync uses
+the admitted read-only descriptor, preserving readonly non-executable inputs.
+Actual executable probes retain their basename and have no writable description
+held open across exec. Existing source/archive limits remain 1 GiB / 256 MiB.
+
+The probe/download-visible pathname is not the commit source. After its final
+check, that entry is atomically detached into a fresh 0700 private quarantine
+and compared to the admitted handle. A foreign arrival is restored with a
+no-clobber hard link where possible; its quarantine entry remains evidence even
+when recovery succeeds. Another creator at the original name is never replaced.
+Only the admitted handle is copied, with bounded memory and byte count, into a
+second private commit stage never supplied to a subprocess or validation
+callback. The copy is checked and synced before atomic replacement or the
+automatic-dependency no-clobber hard-link operation. This costs an additional
+bounded disk copy, not a larger in-memory capture.
+
+Explicit cleanup uses the same atomic detachment and identity check before
+unlinking, including Goose extraction. Empty directory settlement also detaches
+the exposed directory before verifying/removing it. Unknown entries are never
+recursively removed. A foreign detached directory is retained with its exact
+path and automatic recovery refused: ordinary rename could overwrite a second
+arrival and directories cannot be restored with a no-clobber hard link. A failed
+explicit settlement is not retried by Drop. Errors distinguish failure before
+publication from successful publication with unconfirmed scratch cleanup, and
+retain the primary failure. Unwinding may retain private quarantine evidence.
+
+These are private quiet-custody rules under ordinary concurrency: only the
+original exposed names are given to children/callbacks. They do not confine a
+hostile same-UID process that searches private namespaces, override arbitrary
+parent-directory mutation, or sandbox package managers. Windows uses complete
+native file IDs rather than timestamp identity, but this work has no Windows
+runtime qualification claim. Goose extraction errors, partial archives and
+unexpected entries retain the extraction directory for inspection.
+
+The independent review caught a final-check-to-rename/unlink gap in the first
+implementation. Its deterministic regression actually published foreign bytes
+(exit 101), retained in `target/installer36-final-check-red.log`; the quarantine
+and quiet-copy path closes it. An implementation-audit regression also exposed
+a readonly-file sync reopen incompatibility (exit 101), retained separately in
+`target/installer36-readonly-red.log`; syncing the admitted Unix descriptor
+preserves that previously supported input. These are implementation evidence,
+not retrospective claims about an observed production incident.
+
+## Focused source qualification
+
+Built the actual ASB binary offline from the final source, then ran 57 installer
+library tests and 10 actual `offline_cli` install-filter cases: 67 passed,
+zero failed, zero skipped. The matrix includes the original three red cases,
+identical-content/checksummed replacement, actual self-mutating successful
+version probes, raw OS paths, real concurrent dependency creation, local pinned
+Goose archives, partial/unknown extraction entries, final-check file/directory
+arrivals, no-clobber recovery collision and quiet-commit copy/sync/rename faults.
+Strict all-target/all-feature Clippy and formatting checks also passed.
+
+Actual binary SHA-256 was unchanged before/after the runtime tests:
+`312e975b436f8a5e7878a4f920faee0e33bd0d765d47fd8e33ec3ebdac55f9e0`.
+Local evidence is retained in `target/installer36-qualified-build.log`,
+`target/installer36-qualified-install.log`,
+`target/installer36-qualified-actual-install.log`,
+`target/installer36-qualified-clippy.log`,
+`target/installer36-qualified-fmt.log` and matching before/after hash records.
+The original red checkpoint and logs remain unchanged. This is focused Linux
+source qualification on the historical 0.2.32 base, not a delivery slot or
+whole-crate/full-stack qualification. Final independent source review, current
+main integration, full qualification and all hosted/release gates remain pending.

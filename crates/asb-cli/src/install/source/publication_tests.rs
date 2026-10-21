@@ -262,6 +262,10 @@ fn publication_fixture_child() {
     };
     let root = PathBuf::from(std::env::var_os("ASB_FIXTURE_ROOT").unwrap());
     let destination = root.join("tools/perf/bin/perf");
+    if case.starts_with("repair-") {
+        super::repair_tests::child(&case, &root);
+        return;
+    }
     #[cfg(target_os = "linux")]
     if case.starts_with("lifecycle-") {
         super::lifecycle_tests::run_case(&root, &destination, &case);
@@ -330,7 +334,21 @@ fn publication_fixture_child() {
             assert!(error.to_string().contains("not a regular file"), "{error}");
             assert_eq!(fs::read(&foreign).unwrap(), b"do not change");
             assert_old_ready(&root, &destination);
-            no_scratch(&destination);
+            // The downloader replaced our owned file with a foreign symlink.
+            // Explicit settlement must retain that entry, not silently unlink
+            // it as the old best-effort Drop implementation did.
+            assert!(error.to_string().contains("retained staging"));
+            let retained = fs::read_dir(destination.parent().unwrap())
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(".asb-install-")
+                })
+                .unwrap();
+            assert_eq!(fs::read_link(retained.join("perf")).unwrap(), foreign);
             fs::remove_file(&destination).unwrap();
             symlink(&foreign, &destination).unwrap();
             let error = install(

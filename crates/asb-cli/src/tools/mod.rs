@@ -240,6 +240,13 @@ pub(crate) fn apply_runtime_path(
     tools_dir: &str,
 ) -> Result<(), crate::Error> {
     let tools = project::resolve(root, tools_dir);
+    apply_runtime_path_at(command, &tools)
+}
+
+pub(crate) fn apply_runtime_path_at(
+    command: &mut std::process::Command,
+    tools: &Path,
+) -> Result<(), crate::Error> {
     let mut paths = REGISTRY
         .iter()
         .filter_map(|tool| tool.runtime_path(&tools.join(tool.id())))
