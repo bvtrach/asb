@@ -243,3 +243,50 @@ publication faults, broken presentation and grade/identity/receipt checks.
 
 Usage sharing remains conservative and lower priority than evidence integrity.
 Delivery of earlier queued classes does not close these residual obligations.
+
+## Independent matrix and official-engine follow-up
+
+A separate agent reviewed exact main `1bcc8253`, the original report, setup
+callers and downstream readers. The later peer main `cabaa576` leaves
+`config/matrix.rs` unchanged. No reachable empty-index panic was found: required
+selections, nonempty expansions/models/trials and publication checks precede it.
+
+Concrete source gaps remain: scalar `fs::write` can truncate the old ready
+configuration before a failed write; sweep configuration files and the final
+create-new manifest become visible incrementally, so failed writes/sync can
+leave partial final files and an unlocatable partial configuration directory.
+Setup checks population count but not the downstream 64 KiB/configuration,
+32 MiB aggregate-configuration and 16 MiB manifest serialized-byte budgets.
+
+Root then reproduced the per-configuration mismatch using the unchanged actual
+patch-32 CLI (production matches `cabaa576`) and a new private fixture project,
+an empty environment, an explicit model and a 70,000-character workspace option.
+`asb setup` returned **0**, wrote a **70,443-byte** TOML and instructed the user
+to run it. `asb run` immediately returned **2** with "benchmark configuration is
+larger than 64 KiB", before preparing tools, clients or providers. This proves
+inconsistent producer/consumer bounds, not validity of that oversized filesystem
+pathname or any agent execution. The actual binary SHA-256 stayed
+`4bad6979166c39b8c00f9dc38b5820def40239fb8bf5312ae30ff195f9bfd243`.
+Fixture/configuration and command logs are retained under
+`target/matrix-budget-repros/candidate.sm7k6X/`. No host setting, credentials,
+package installation, network provider or benchmark execution was used.
+
+The coherent follow-up needs prepared selection/population proof and bounded
+serialization of all outputs before final-path mutation. Preserve intentional
+scalar replacement versus sweep no-clobber, publish a complete manifest last,
+track exact created entries and report post-commit presentation failures honestly.
+Required offline tests include exact/+1 escaped/aggregate byte limits,
+short/Interrupted/WriteZero/ENOSPC/sync/rename faults, competing manifest creators,
+old scalar bytes/mode preservation, late-invalid selections and foreign arrivals
+in cleanup windows. No multi-file atomicity or rollback of committed files is
+claimed; these source/reproduction observations are not an implemented repair.
+
+The same independent review found no new functional defect from official-engine
+duplication alone. SWE Patch/FreshEnvironment and Terminal
+EnvironmentState/InPlace/ThroughEvaluation, SDK/helper selection, catalog and
+dataset identity, resource requirements and verifier retry rules are different
+contracts. A narrow immutable engine binding can share inspect/verify/recover/
+preflight envelopes, with catalog validation and preparation staying in owners.
+Any refactor must retain all five golden descriptors/fingerprints, both official
+grade outcomes, unknown/pending semantics, exact SDK/tool/dataset mismatch
+refusal and existing retained/import/grading/reconstruction fixtures.
