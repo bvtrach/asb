@@ -18,7 +18,12 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
 .with_replay_credential_vars(&["OPENJIUWEN_API_KEY"])
 .with_output_usage(output_usage)
 .with_final_response(final_response)
+.with_final_response_failure(final_response_failure)
 .with_process(process);
+
+fn final_response_failure(response: Option<&str>) -> Option<String> {
+    response.is_none().then(|| "OpenJiuwen exited without a final response; the last event appears to be an unexecuted tool call. Retry with a compatible OpenJiuwen client or inspect the benchmark log.".into())
+}
 
 /// Launch the installed Python entry point with a narrow, in-process fix for
 /// upstream's loss of initial usage when a streaming delta carries a partial
@@ -189,6 +194,28 @@ mod tests {
     use super::command;
     use crate::agents::CommandContext;
     use crate::benchmark::BenchmarkConfig;
+
+    #[test]
+    fn missing_terminal_answer_is_an_adapter_policy_for_native_and_guest_results() {
+        use crate::agents::AgentAdapter;
+        assert!(
+            super::ADAPTER
+                .final_response_failure(None)
+                .unwrap()
+                .contains("exited without a final response")
+        );
+        assert!(
+            super::ADAPTER
+                .final_response_failure(Some("completed"))
+                .is_none()
+        );
+        assert!(
+            crate::agents::find("codex")
+                .unwrap()
+                .final_response_failure(None)
+                .is_none()
+        );
+    }
 
     #[test]
     fn installer_pins_a_tested_compatible_filelock() {

@@ -89,6 +89,21 @@ candidate stages patch **0.2.9**, after the shell-completion repair; fresh
 release-head qualification and delivery remain pending. Other subprocess/publication cleanup
 items in this class are not claimed complete.
 
+Model-catalog transport candidate, staged patch **0.2.11**: replace blocking curl stdin/stdout operations,
+stderr-reader joins and caller-side waits with fair nonblocking Unix polling
+under one operation/cleanup deadline. Preserve proxy settings, response limits
+and sanitized protocol diagnostics. Direct-child ownership uses the shared
+pre-established reaper on uncertain cleanup; no successful catalog can bypass
+exit/EOF checks. Actual offline process fixtures cover pressure, inherited pipes,
+timeouts, custody and reaping. The body limit and I/O timeout are shared with
+curl's actual arguments; exact-limit success and one-byte-over rejection have
+real subprocess regressions. Independent source review and a separate execution
+of all 36 focused model tests passed. Non-Unix discovery fails before spawn;
+cancellable non-Unix transport remains a separate portability contract. Full
+release-head qualification and delivery remain pending. Main `398c36cc` removed
+the hosted coverage gate and the user explicitly confirmed keeping that removal;
+local measurements are optional diagnostics, not a required hosted check.
+
 ## 4. Typed domain and wire contracts
 
 Review run status/evaluation/failure categories, execution mode, result source,
@@ -110,6 +125,24 @@ partial failures and cleanup with provider-free lifecycle integration tests.
 Simplify checkpoint validation into named invariants without losing checks.
 Review broad parameter lists, result structs, visibility, dead API surface and
 module names in those owning boundaries. Pending.
+
+Runner candidate, staged patch **0.2.10** (not yet merged/released): private consuming admission,
+preparation, execution-evidence, proxy-settlement, evaluation and finalization
+states now separate owned resources and independent outcomes. It repairs the
+verified path where collector lifecycle errors discarded client output or an
+official grade and skipped explicit workload cleanup. Native supervised-exit
+time excludes collector/proxy teardown, and terminal-answer validation belongs
+to the owning agent adapter. Broken human presentation retains admitted work
+and its grade; broken owner transport remains cancellation. Log-publication
+failure still attempts measurements and presentation. Both log and measurement
+publication must be confirmed before a completion receipt can be emitted.
+Independent review and seven isolated full-entry fault cases verify that
+original grades, primary errors, secondary publication/output diagnostics,
+observer redaction and exact-once execution/evaluation/cleanup survive the
+combined failure paths. The larger phase matrix uses synthetic execution
+evidence, not full benchmark runs. This does not close the remaining comparison/sweep/driver structural
+work, stream-memory limits, blocking child-wait class or exact inner-principal
+native timing. Hosted and full final verification remain required.
 
 Audit correction: current `perfetto_instance_config` is seven lines, not the
 reported 630. Comparison's filter JavaScript is already a separate asset.

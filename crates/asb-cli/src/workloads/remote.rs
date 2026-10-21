@@ -672,18 +672,26 @@ impl Session {
         output: &mut dyn std::io::Write,
         deadline: Instant,
     ) -> Result<ExecutionResult, String> {
+        let mut collector_errors = Vec::new();
+        let mut output_error = None;
         loop {
-            let event = self.controller.receive(deadline)?;
+            let event = self.controller.receive(deadline).map_err(|error| {
+                output_error.as_ref().map_or_else(
+                    || error.clone(),
+                    |presentation| format!("{error}; {presentation}"),
+                )
+            })?;
             match event["event"].as_str() {
                 Some("paused") => {
                     self.resume_measured_target(context, &event)?;
                 }
                 Some("output") => {
                     let bytes = decode_base64(&event["data"])?;
-                    if context.show_output {
-                        output
-                            .write_all(&bytes)
-                            .map_err(|_| "cannot write agent output")?;
+                    if context.show_output
+                        && output_error.is_none()
+                        && let Err(error) = output.write_all(&bytes).and_then(|()| output.flush())
+                    {
+                        output_error = Some(format!("cannot write agent output: {error}"));
                     }
                 }
                 Some("execution_ended") => {
@@ -693,13 +701,22 @@ impl Session {
                                 "isolated execution ended without an active measured target".into(),
                             );
                         }
-                        session.event(crate::collectors::LifecycleEvent::AgentExecuteEnd)?;
-                        session.event(crate::collectors::LifecycleEvent::AgentExited)?;
+                        for event in [
+                            crate::collectors::LifecycleEvent::AgentExecuteEnd,
+                            crate::collectors::LifecycleEvent::AgentExited,
+                        ] {
+                            if let Err(error) = session.event(event) {
+                                collector_errors.push(error);
+                            }
+                        }
                         self.measurement_active = false;
                     }
                 }
                 Some("completed") => {
-                    return self.completed_execution(context, &event);
+                    let mut result = self.completed_execution(context, &event)?;
+                    result.collector_errors.extend(collector_errors);
+                    result.output_error = output_error;
+                    return Ok(result);
                 }
                 _ => return Err("unexpected isolated execution event".into()),
             }
@@ -770,9 +787,16 @@ impl Session {
                 "isolated agent process tree was not confirmed stopped before evaluation".into(),
             );
         }
-        if let Some(session) = context.measurements.as_deref_mut() {
-            session.import_execution_namespace_state(&metadata.namespace_collectors)?;
-        }
+        let collector_errors = context
+            .measurements
+            .as_deref_mut()
+            .and_then(|session| {
+                session
+                    .import_execution_namespace_state(&metadata.namespace_collectors)
+                    .err()
+            })
+            .into_iter()
+            .collect();
         let code = result["exit_code"].as_i64().unwrap_or(1).clamp(0, 255) as i32;
         #[cfg(unix)]
         let status = {
@@ -782,6 +806,8 @@ impl Session {
         #[cfg(not(unix))]
         return Err("isolated execution requires Unix".into());
         Ok(ExecutionResult {
+            collector_errors,
+            output_error: None,
             output: std::process::Output {
                 status,
                 stdout: decode_base64(&result["stdout"])?,
