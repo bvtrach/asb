@@ -1,6 +1,253 @@
 use super::*;
 use serde::ser::{Error as _, SerializeMap};
 
+#[cfg(unix)]
+#[test]
+fn capture_changed_between_identity_check_and_move_is_restored_not_deleted() {
+    let root = std::env::temp_dir().join(format!(
+        "asb-raw-race-{}",
+        crate::tools::runtime::unique_id()
+    ));
+    let mut session = Session::start_with_collectors(&root, &[], None).unwrap();
+    stopped_fixture(&mut session, "racing");
+    let scope = crate::evidence::tests::Scope::replace_on_capture_move(root.join("racing.stdout"));
+    let error = session.finish(fixture_measurement()).unwrap_err();
+    assert_eq!(scope.hits(), 1);
+    assert!(
+        error.contains("foreign entry restored and retained"),
+        "{error}"
+    );
+    assert_eq!(
+        fs::read(root.join("racing.stdout")).unwrap(),
+        b"racing foreign capture"
+    );
+    assert_eq!(
+        fs::read(root.join("racing.original")).unwrap(),
+        b"complete raw stdout"
+    );
+    let stage = fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".asb-evidence-stage-")
+        })
+        .unwrap();
+    assert_eq!(
+        fs::read(stage.join("content")).unwrap(),
+        b"racing foreign capture"
+    );
+    assert!(error.contains(stage.to_str().unwrap()));
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn raw_cleanup_refuses_foreign_replacement_and_discloses_owned_removal_failure() {
+    for foreign in [true, false] {
+        let root = std::env::temp_dir().join(format!(
+            "asb-raw-cleanup-{}",
+            crate::tools::runtime::unique_id()
+        ));
+        let mut session = Session::start_with_collectors(&root, &[], None).unwrap();
+        session
+            .event(collectors::LifecycleEvent::RunStarted)
+            .unwrap();
+        let name = if foreign { "foreign" } else { "owned" };
+        stopped_fixture(&mut session, name);
+        let _scope = (!foreign).then(|| {
+            crate::evidence::tests::Scope::new(
+                root.join("owned.stdout"),
+                Some(crate::evidence::FaultPoint::Cleanup),
+                vec![],
+            )
+        });
+        let error = session.finish(fixture_measurement()).unwrap_err();
+        assert!(root.join(format!("{name}.json")).is_file());
+        if foreign {
+            assert!(error.contains("raw path changed"), "{error}");
+            assert_eq!(
+                fs::read(root.join("foreign.stdout")).unwrap(),
+                b"foreign replacement sentinel"
+            );
+            assert_eq!(
+                fs::read(root.join("foreign.saved")).unwrap(),
+                b"complete raw stdout"
+            );
+        } else {
+            assert!(error.contains("owned raw cleanup incomplete"), "{error}");
+            let stage = fs::read_dir(&root)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(".asb-evidence-stage-")
+                })
+                .unwrap();
+            assert!(error.contains(stage.to_str().unwrap()), "{error}");
+            assert_eq!(
+                fs::read(stage.join("content")).unwrap(),
+                b"complete raw stdout"
+            );
+        }
+        assert!(!root.join(format!("{name}.stderr")).exists());
+        assert!(root.join("run.json").is_file());
+        assert!(root.join("summary.json").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(unix)]
+fn fixture_measurement() -> RunMeasurement<'static> {
+    RunMeasurement {
+        execution_plan_fingerprint: None,
+        module: None,
+        benchmark_outcome: None,
+        replica_index: Some(1),
+        execution_cohort: None,
+        schema_version: 2,
+        run_id: "immutable-grade".into(),
+        status: crate::runner::disposition::RunStatus::Completed,
+        success: false,
+        process_success: true,
+        workload_success: Some(false),
+        failure_kind: None,
+        failure_reason: None,
+        success_rate: Some(0.0),
+        adapter_smoke_success: None,
+        agent: "fixture",
+        workload: "fixture",
+        task: None,
+        workload_evaluation: "bundled-fixture",
+        workload_baseline_passed: Some(false),
+        workload_baseline: None,
+        workload_failure: None,
+        provider: "fixture",
+        model: "fixture",
+        elapsed_ms: 17,
+        exit_code: Some(0),
+        token_usage: TokenUsage::default(),
+        steps: Some(1),
+        started_unix_ms: 0,
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn stopped_fixture(session: &mut Session, name: &str) {
+    struct Adapter;
+    impl collectors::CollectorAdapter for Adapter {
+        fn id(&self) -> &'static str {
+            "capture-fixture"
+        }
+        fn process(
+            &self,
+            _: &mut Session,
+            context: &collectors::ProcessContext<'_>,
+        ) -> Result<collectors::ProcessData, String> {
+            if context.name == "foreign" {
+                fs::rename(
+                    context.stdout_path,
+                    context.stdout_path.with_extension("saved"),
+                )
+                .unwrap();
+                fs::write(context.stdout_path, b"foreign replacement sentinel").unwrap();
+            }
+            Ok(collectors::ProcessData::from_output(context))
+        }
+    }
+    static ADAPTER: Adapter = Adapter;
+    let stdout_path = session.dir.join(format!("{name}.stdout"));
+    let stderr_path = session.dir.join(format!("{name}.stderr"));
+    let mut child = Command::new("sh")
+        .args([
+            "-c",
+            "printf 'complete raw stdout'; printf 'complete raw stderr' >&2",
+        ])
+        .stdout(std::process::Stdio::from(
+            File::create(&stdout_path).unwrap(),
+        ))
+        .stderr(std::process::Stdio::from(
+            File::create(&stderr_path).unwrap(),
+        ))
+        .spawn()
+        .unwrap();
+    let status = child.wait().unwrap();
+    session.stopped_collectors.push(StoppedCollector {
+        collector: Collector {
+            name: name.into(),
+            adapter: &ADAPTER,
+            child,
+            started: Instant::now(),
+            stdout_path,
+            stderr_path,
+        },
+        status,
+        elapsed_ms: 1,
+    });
+}
+
+#[cfg(unix)]
+fn collector_raw_case(point: crate::evidence::FaultPoint) {
+    let root = std::env::temp_dir().join(format!(
+        "asb-raw-publication-{}",
+        crate::tools::runtime::unique_id()
+    ));
+    let mut session = Session::start_with_collectors(&root, &[], None).unwrap();
+    session
+        .event(collectors::LifecycleEvent::RunStarted)
+        .unwrap();
+    stopped_fixture(&mut session, "first");
+    stopped_fixture(&mut session, "sibling");
+    let scope = crate::evidence::tests::Scope::new(root.join("first.json"), Some(point), vec![]);
+    let error = session.finish(fixture_measurement()).unwrap_err();
+    assert!(scope.hits() > 0);
+    assert_eq!(
+        fs::read(root.join("first.stdout")).unwrap(),
+        b"complete raw stdout",
+        "failed publication consumed raw stdout"
+    );
+    assert_eq!(
+        fs::read(root.join("first.stderr")).unwrap(),
+        b"complete raw stderr"
+    );
+    assert!(
+        error.contains(root.join("first.stdout").to_str().unwrap()),
+        "{error}"
+    );
+    assert!(root.join("sibling.json").is_file());
+    assert!(!root.join("sibling.stdout").exists());
+    assert!(!root.join("sibling.stderr").exists());
+    for file in [
+        "run.json",
+        "lifecycle.json",
+        "components.json",
+        "summary.json",
+    ] {
+        let _: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join(file)).unwrap()).unwrap();
+    }
+    let run: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("run.json")).unwrap()).unwrap();
+    assert_eq!(run["workload_success"], false);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_collector_result_keeps_raw_sources_and_finishes_siblings() {
+    collector_raw_case(crate::evidence::FaultPoint::Rename);
+}
+
+#[cfg(unix)]
+#[test]
+fn unconfirmed_collector_result_keeps_raw_sources_and_finishes_siblings() {
+    collector_raw_case(crate::evidence::FaultPoint::DirectorySync);
+}
+
 #[test]
 fn partial_measurement_serialization_does_not_clobber_previous_file() {
     struct Broken;

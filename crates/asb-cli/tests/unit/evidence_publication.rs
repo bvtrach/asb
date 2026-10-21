@@ -18,6 +18,7 @@ struct Injection {
     point: Option<FaultPoint>,
     writes: VecDeque<WriteAction>,
     hits: usize,
+    replace_capture: bool,
 }
 thread_local! {
     static FAULT: RefCell<Option<Injection>> = const { RefCell::new(None) };
@@ -33,12 +34,18 @@ impl Scope {
                 point,
                 writes: writes.into(),
                 hits: 0,
+                replace_capture: false,
             });
         });
         Self
     }
     pub(crate) fn hits(&self) -> usize {
         FAULT.with(|fault| fault.borrow().as_ref().unwrap().hits)
+    }
+    pub(crate) fn replace_on_capture_move(path: PathBuf) -> Self {
+        let scope = Self::new(path, None, vec![]);
+        FAULT.with(|fault| fault.borrow_mut().as_mut().unwrap().replace_capture = true);
+        scope
     }
 }
 impl Drop for Scope {
@@ -71,6 +78,18 @@ fn inject<T>(action: impl FnOnce(&mut Injection) -> Option<T>) -> Option<T> {
     })
 }
 pub(super) fn checkpoint(point: FaultPoint) -> io::Result<()> {
+    if point == FaultPoint::CaptureMove
+        && let Some(path) = inject(|fault| {
+            fault.replace_capture.then(|| {
+                fault.replace_capture = false;
+                fault.hits += 1;
+                fault.path.clone()
+            })
+        })
+    {
+        fs::rename(&path, path.with_extension("original")).unwrap();
+        fs::write(&path, b"racing foreign capture").unwrap();
+    }
     if point == FaultPoint::Prepared && std::env::var_os("ASB_EVIDENCE_HOLD_COMMIT").is_some() {
         ACTIVE.with(|active| {
             let root = active
@@ -383,6 +402,20 @@ fn accepted_exact_record_limit_is_still_appendable() {
     append_json(&path, &"x".repeat(MAX_RECORD - 3)).unwrap();
     append_json(&path, &false).unwrap();
     assert_eq!(fs::metadata(path).unwrap().len(), (MAX_RECORD + 6) as u64);
+}
+
+#[test]
+fn unterminated_historical_record_cannot_grow_beyond_consumer_window() {
+    let fixture = Fixture::new();
+    let path = fixture.0.join("run.jsonl");
+    let old = serde_json::to_vec(&"x".repeat(MAX_RECORD - 2)).unwrap();
+    assert_eq!(old.len(), MAX_RECORD);
+    fs::write(&path, &old).unwrap();
+    assert!(
+        append_json(&path, &false).is_err(),
+        "adding newline would make historical record unreadable"
+    );
+    assert_eq!(fs::read(&path).unwrap(), old);
 }
 
 #[test]

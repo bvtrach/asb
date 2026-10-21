@@ -12,6 +12,7 @@ struct Hook {
     pending: bool,
     grader_error: bool,
     cleanup_error: bool,
+    capture_publication: bool,
 }
 thread_local! { static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) }; }
 
@@ -29,6 +30,7 @@ impl Scope {
                 pending: false,
                 grader_error: false,
                 cleanup_error: false,
+                capture_publication: false,
             });
         });
         Self
@@ -51,6 +53,7 @@ impl Scope {
                 pending: false,
                 grader_error: false,
                 cleanup_error: false,
+                capture_publication: false,
             });
         });
         Self
@@ -70,6 +73,7 @@ impl Scope {
                 pending: case.contains("pending"),
                 grader_error: case.contains("grader"),
                 cleanup_error: case.contains("cleanup"),
+                capture_publication: case.contains("capture"),
             });
         });
         Self
@@ -88,6 +92,10 @@ pub(crate) fn configure_measurements(root: &Path, session: Option<&mut measureme
             && let Some(session) = session
         {
             session.test_event_failure = hook.event;
+            if hook.capture_publication {
+                crate::measurements::publication_tests::stopped_fixture(session, "capture-fixture");
+                crate::measurements::publication_tests::stopped_fixture(session, "capture-sibling");
+            }
         }
     });
 }

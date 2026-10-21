@@ -31,6 +31,7 @@ itself ran no builds, tests, containers, providers or host mutations.
 | Observer/checkpoint error loss | M redacted deduplicated typed diagnostics retain grades and conservative continuation; actual filesystem and broken-writer tests. |
 | Model kill/wait error loss | M bounded cleanup and pre-established `OwnedReaper`; do not repeat the repaired class. |
 | All ignored cleanup | Not equivalent operations. Consumed artifacts are actionable; unique scratch retention needs honest diagnostics, not necessarily failed grades. Preserved cache/source/evaluator evidence must not be indiscriminately removed. |
+| Collector raw consumption before result publication | Extended review confirmed `process_stopped_collectors` deletes stdout/stderr before result JSON publication, losing its complete source on staging or confirmation failure. This class now retains raw captures until confirmed commit and uses opened-file/private-move identity checks. Replacements/removal failures remain inspectable; unrelated adapter-artifact ownership stays separate. |
 | Run status/failure strings | Q serialized `RunStatus`, `FailureKind`, `RunFailure` and private `RunDisposition::from_facts`; M independently derives status/success/failure. Twelve actual cases retain pending/native/Boolean semantics. |
 | Workload evaluation-kind strings | Adapter extension/historical boundary, not a closed enum. `scored_kind` plus baseline evidence keeps unknown categories display-only/unscored. |
 | Saved sweep mode | Q `SavedExecutionMode`: four unchanged strings, missing historical Unknown, null/bad spelling rejected, replay-only timing; wire/fingerprint unchanged. |
@@ -88,6 +89,15 @@ than resetting it. Retain complete original bytes, unknown metadata, task and
 cohort identity, planning and native/Boolean grades. Independent finalization
 must continue; receipt confirmation is separate. Never retry a client to repair
 reporting. No multi-file transaction or universal crash-recovery claim.
+
+Extended review also reproduced an unterminated historical record exactly at
+the 16 MiB window: adding its missing newline creates an unreadable record.
+That case must fail before commit with all historical bytes unchanged. Collector
+raw sources must outlive failed/unconfirmed result publication, while sibling
+exports and run/lifecycle/summary finalization continue. Opened capture identity
+is rechecked after moving a candidate into private custody, before deletion;
+a racing foreign entry is restored without replacement or retained with its
+exact inspection path. Missing native identity retains scratch explicitly.
 
 Offline tests: short writes, EINTR, WriteZero, ENOSPC, serialization, rename and
 sync faults; good-old-file sentinels; malformed historical summary; two real

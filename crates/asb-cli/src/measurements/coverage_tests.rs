@@ -255,11 +255,18 @@ fn unavailable_artifacts_and_bounded_read_failures_never_fabricate_metrics() {
     assert_eq!(record["stderr"], "permission denied by fixture");
     assert_eq!(record["metrics"], json!({}));
     assert!(record["exit_code"].is_null());
-    assert!(read_bounded(&fixture.0.join("absent")).is_empty());
+    assert!(crate::evidence::Capture::open(&fixture.0.join("absent")).is_err());
     let file = fixture.0.join("oversized");
     fs::write(&file, vec![b'x'; MAX_CAPTURE + 1]).unwrap();
-    assert_eq!(read_bounded(&file).len(), MAX_CAPTURE);
-    assert!(read_bounded(&fixture.0).is_empty());
+    assert_eq!(
+        crate::evidence::Capture::open(&file)
+            .unwrap()
+            .diagnostic(MAX_CAPTURE)
+            .unwrap()
+            .len(),
+        MAX_CAPTURE
+    );
+    assert!(crate::evidence::Capture::open(&fixture.0).is_err());
     assert!(
         check_measurement_directory(&fixture.0.join("missing"))
             .unwrap_err()

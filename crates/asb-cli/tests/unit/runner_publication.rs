@@ -17,6 +17,8 @@ fn actual_entry_publication_faults_preserve_grades_identity_and_independent_fina
         "disposition-pending-publication-run-short-output",
         "disposition-false-publication-summary-sync",
         "disposition-false-publication-log-scratch-client-output",
+        "disposition-native-publication-capture-rename",
+        "disposition-pending-publication-capture-sync-output",
     ]);
 }
 
@@ -43,6 +45,16 @@ pub(super) fn prepare(case: &str, root: &Path) -> Scope {
             } else {
                 Vec::new()
             },
+        )
+    } else if case.contains("capture") {
+        (
+            root.join("measurements/capture-fixture.json"),
+            Some(if case.contains("sync") {
+                FaultPoint::DirectorySync
+            } else {
+                FaultPoint::Rename
+            }),
+            Vec::new(),
         )
     } else if case.contains("run-short") {
         let path = root.join("measurements/run.json");
@@ -107,6 +119,22 @@ pub(super) fn check(
     );
     assert_eq!(completions, 0);
     assert!(!root.join(".asb-completions").exists());
+    if case.contains("capture") {
+        for (name, expected) in [
+            ("stdout", b"complete raw stdout".as_slice()),
+            ("stderr", b"complete raw stderr".as_slice()),
+        ] {
+            let path = root.join(format!("measurements/capture-fixture.{name}"));
+            assert_eq!(std::fs::read(&path).unwrap(), expected);
+            assert!(error.contains(path.to_str().unwrap()), "{error}");
+            assert!(
+                !root
+                    .join(format!("measurements/capture-sibling.{name}"))
+                    .exists()
+            );
+        }
+        assert!(root.join("measurements/capture-sibling.json").is_file());
+    }
     // A failed run.json must not skip summary, components or lifecycle; a failed
     // log must not skip any measurement. No Drop rewrite retries publication.
     for file in ["components.json", "lifecycle.json"] {

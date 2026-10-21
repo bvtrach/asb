@@ -134,9 +134,14 @@ sync failure reports published-but-unconfirmed rather than implying rollback.
 Historical log bytes, unknown summary metadata and independent grade/identity/
 planning/native evidence remain intact. Independent measurement finalization is
 attempted despite earlier publication failure, and no silent Drop retry can
-rewrite an explicitly settled lifecycle artifact. Offline low-level and nine
-actual replay-entry cases cover these obligations. Focused checks passed eleven
-publication tests, 65 measurement tests, 73 runner tests, 73 sweep tests,
+rewrite an explicitly settled lifecycle artifact. Extended independent review
+also reproduced an unterminated exact-limit log and raw collector-source loss
+before failed/unconfirmed result publication. Raw cleanup now follows confirmed
+publication and opened-file/private-move identity checks; foreign replacements
+and cleanup failures retain safe diagnostics/inspection paths. Sibling exports
+and independent run records still finalize once. Offline low-level and eleven
+actual replay-entry cases cover these obligations. Focused checks passed twelve
+publication tests, 69 measurement tests, 73 runner tests, 73 sweep tests,
 67 comparison tests and ten tests across three actual CLI targets (five
 optional skips), with strict Clippy/formatting and an unchanged actual binary
 hash. Intermediate fixture setup/report expectations and a test-only Clippy

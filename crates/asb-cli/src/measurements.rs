@@ -1050,8 +1050,24 @@ impl Session {
             elapsed_ms,
         } in std::mem::take(&mut self.stopped_collectors)
         {
-            let stdout = read_bounded(&collector.stdout_path);
-            let mut stderr = read_bounded(&collector.stderr_path);
+            // Pin sources before adapter processing. A pathname alone is not
+            // permission to delete a later replacement after publication.
+            let captures = [&collector.stdout_path, &collector.stderr_path]
+                .map(|path| crate::evidence::Capture::open(path));
+            let mut read_failed = false;
+            let mut diagnostic = |capture: Result<&crate::evidence::Capture, &String>| match capture
+                .map_err(Clone::clone)
+                .and_then(|capture| capture.diagnostic(MAX_CAPTURE))
+            {
+                Ok(text) => text,
+                Err(error) => {
+                    read_failed = true;
+                    errors.push(error);
+                    String::new()
+                }
+            };
+            let stdout = diagnostic(captures[0].as_ref());
+            let mut stderr = diagnostic(captures[1].as_ref());
             let context = collectors::ProcessContext {
                 name: &collector.name,
                 status: &status,
@@ -1060,7 +1076,7 @@ impl Session {
                 stdout_path: &collector.stdout_path,
                 stderr_path: &collector.stderr_path,
             };
-            let data = match collector.adapter.process(self, &context) {
+            let mut data = match collector.adapter.process(self, &context) {
                 Ok(data) => data,
                 Err(error) => {
                     let mut data = collectors::ProcessData::from_output(&context);
@@ -1071,8 +1087,12 @@ impl Session {
                     data
                 }
             };
-            let _ = fs::remove_file(&collector.stdout_path);
-            let _ = fs::remove_file(&collector.stderr_path);
+            if read_failed {
+                data.status = "failed".into();
+                data.metrics.clear();
+                data.series.clear();
+                data.timestamps.clear();
+            }
             let result = CollectorResult {
                 schema_version: 1,
                 collector: collector.name.clone(),
@@ -1089,7 +1109,18 @@ impl Session {
             if let Err(error) =
                 write_json(&self.dir.join(format!("{}.json", collector.name)), &result)
             {
-                errors.push(error);
+                errors.push(format!("{error}; raw capture cleanup skipped; inspect {} and {}; do not repeat execution to repair reporting",collector.stdout_path.display(),collector.stderr_path.display()));
+            } else if !read_failed {
+                for capture in captures {
+                    match capture {
+                        Ok(capture) => {
+                            if let Err(error) = capture.consume() {
+                                errors.push(error);
+                            }
+                        }
+                        Err(error) => errors.push(error),
+                    }
+                }
             }
         }
         if errors.is_empty() {
@@ -1308,7 +1339,7 @@ pub(crate) fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), Str
 
 #[cfg(test)]
 #[path = "../tests/unit/measurement_publication.rs"]
-mod publication_tests;
+pub(crate) mod publication_tests;
 pub(crate) fn write_unavailable(path: &Path, collector: &str, error: String) -> Result<(), String> {
     write_json(
         path,
@@ -1417,17 +1448,6 @@ pub(crate) fn pidstat_interval_seconds() -> String {
 
 pub(crate) fn bounded(bytes: &[u8]) -> String {
     String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_CAPTURE)]).into_owned()
-}
-fn read_bounded(path: &Path) -> String {
-    let Ok(mut file) = File::open(path) else {
-        return String::new();
-    };
-    let mut bytes = Vec::new();
-    let mut limited = (&mut file).take(MAX_CAPTURE as u64);
-    if limited.read_to_end(&mut bytes).is_err() {
-        return String::new();
-    }
-    bounded(&bytes)
 }
 pub(crate) fn env_true(name: &str) -> bool {
     matches!(

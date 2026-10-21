@@ -8,6 +8,9 @@ use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod capture;
+pub(crate) use capture::Capture;
+
 const MAX_RECORD: usize = 16 * 1024 * 1024;
 const LOCK_WAIT: Duration = Duration::from_secs(5);
 
@@ -90,7 +93,7 @@ pub(crate) fn append_json<T: Serialize>(path: &Path, value: &T) -> Result<(), St
                 if count == 0 {
                     break;
                 }
-                if count > MAX_RECORD {
+                if count > MAX_RECORD || (count == MAX_RECORD && !line.ends_with(b"\n")) {
                     return Err(io::Error::other(
                         "historical log record exceeds 16 MiB; preserve it before repair",
                     ));
@@ -360,6 +363,7 @@ fn publish(
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum FaultPoint {
     Cleanup,
+    CaptureMove,
     CreateFile,
     Prepared,
     FileSync,

@@ -397,6 +397,19 @@ others. Explicit finish suppresses silent lifecycle-publication retries in Drop.
 This is per-file cooperating-writer ownership, not a multi-file transaction,
 hostile filesystem confinement or arbitrary crash-recovery protocol.
 
+Stopped collectors pin opened regular stdout/stderr captures before processing.
+Result publication failure or durability uncertainty skips raw consumption and
+reports the source paths, without skipping sibling exports or final run records.
+Only confirmed collector-result publication permits raw cleanup. Unix device/
+inode binding and a second check after atomic movement into private custody
+prevent deleting a replacement between a pathname check and unlink. A moved
+foreign regular entry is restored without clobbering a new arrival, or retained
+with an exact inspection path when restore is unsafe. Cleanup failures retain
+their source/staging diagnostics and cannot erase the task grade. Platforms
+without native capture identity retain scratch conservatively; no Windows
+cleanup runtime qualification is claimed. Unterminated historical log records
+must also leave room for their required newline inside the consumer window.
+
 `WorkloadAdapter` creates a distinct mutable `WorkloadSession` for each
 attempt. The session owns its task invocation, prepared workspace, initial
 baseline evidence and evaluator. The generic runner consumes those values
