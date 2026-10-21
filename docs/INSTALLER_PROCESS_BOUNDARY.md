@@ -1,7 +1,8 @@
 # Installer subprocess boundary: design and observed-red plan
 
 Design/test-only stage 44, based on independently approved official-engine source
-`31070b9a7c61c1e0a3c15180496c153ed4a9030a`. Manifest version stays 0.2.41.
+`31070b9a7c61c1e0a3c15180496c153ed4a9030a`. The design/red manifest stayed
+0.2.41; the authorized partial implementation below stages 0.2.44.
 No production process repair, full qualification, PR, merge or release is claimed.
 Root must review this design and actual red evidence before implementation.
 
@@ -398,3 +399,73 @@ This is configuration-only partial proof: operation deadline freezing,
 supervision/leases, typed all-caller propagation and the approved fault matrix
 remain implementation work. The old process APIs remain unchanged and the four
 observed-red tests have not been weakened or declared repaired. No full/PR/push.
+
+## Intermediate worker-core checkpoint: TEST-SCOPED, not caller migration
+
+Root explicitly authorized a Linux cfg(test)-only worker proof before broad
+callback migration. The new `install/process.rs` and `process/native.rs` are
+included only under `cfg(all(test, target_os = "linux"))`. Actual production
+LoggedStatus, command_output, DownloadChild, source/custom callbacks and fallback
+behavior remain unchanged; the original four observed-red fixtures are intact.
+This is not a usable repaired installer or full class-44 source qualification.
+
+The prototype provides typed `InstallFailure::{Ordinary(crate::Error), Abort}`,
+with From only in the ordinary-to-install direction and an explicit outer render
+method, not a general conversion erasing Abort. Immutable OperationContext clones
+freeze project budgets and the shared absolute deadline. PreparedStep materializes
+intent before original-Command configuration. The pre-established supervisor
+retains the actual generic dependency Arc, exact gate and nonblocking pipe pumps
+across bounded parent return. Ancillary logging uses a separate bounded queue
+and private file-owning writer, never the supervisor's cancellation authority.
+Accepted queue bytes are not claimed as written: actual positive writes advance
+retained bytes; loss, pending settlement and write/flush faults remain separate.
+
+Actual owner build ran first, `target/installer44-core-build.log`, exit0,14.70s.
+Actual guardian ASB SHA256 before/final focused/lint checks:
+`558cf2b6d44c892791af1a6e9f04346cfa82b7bb558c6df45b05830d94729ff0`.
+The actual new supervisor itself executes in the libtest; the separately built
+actual ASB supplies its real native guardian. No claim is made that the user CLI
+already invokes this new test-scoped supervisor.
+
+| Evidence | Actual result |
+| --- | --- |
+| `target/installer44-core-focus.log` | Initial4/0,0.10s |
+| `target/installer44-core-focus-v2.log` | Expanded10/0/0ignored,6.48s |
+| `target/installer44-core-clippy.log` | Failed4 style findings; preserved |
+| `target/installer44-core-clippy-v2.log` | Strict workspace/all-targets/all-features `-D warnings` PASS,8.77s |
+| `target/installer44-core-focus-v3.log` | Fresh final10/0/0ignored,23.99s compile,6.48s runtime |
+
+The style-only corrections extracted the native test module to its own file,
+removed two needless borrows and replaced checked unwrap with equivalent if-let;
+no lint suppressions or weakened assertions were added. Final10 includes the
+three native log tests; the initial4 are overlapping, not14 distinct cases.
+The nested isolated umask child is part of its owning test, not an extra outer
+success count. Final libtest post-run SHA256:
+`a2fe90b32d7122be17074110933927e486d84f4cd387ff5dd9b3e40f3ed1c824`.
+There is no claimed pre-run final libtest hash. Exact actual and libtest copies
+are preserved in `target/qualification/installer44-core-{asb,libtests}`.
+
+The held-writer fixture pins the real helper and grandchild using read-only
+pidfds. It confirms their exits and matching base guardian quiescence, verifies
+the separately owned sentinel is still live, and only then releases the writer.
+Another fixture withholds observation (not cancellation authority), observes
+bounded unknown-cleanup return while the real dependency remains held, then
+allows matching settlement and verifies that dependency is finally released.
+These are generic dependency-dropcounter tests, not yet proof of real source
+Staging integration. Further actual cases cover deadline cancellation, writer
+refusal after principal success, capture overflow rejection, original argv[0]/
+cwd/env preservation, isolated-process umask022/private0600+0700 modes,
+foreign-file/symlink preservation, and honest WriteZero/ENOSPC log-byte accounting.
+
+Remaining before production integration/source approval: carry explicit context,
+typed Abort and actual Staging leases through every source/custom/adapter hook;
+bind and consume a settled publication permission to the SAME actual stage/lease
+(the generic SettledStep currently is NOT that final stage-specific receipt);
+render elapsed/selected numeric budget and deduplicated ancillary warnings at
+the correct outer boundary; and complete required-read-error, pump-panic,
+pre-admission/worker-start failure, inherited-pipe/aggregate-pressure, binary
+stdin/pre-exec preservation, and actual no-fallback/no-publication fault cases.
+Class45 must not treat this intermediate outcome as its final publication
+permission. No additional full suite, live installation, push or PR was run.
+All runtime handles are terminal at this checkpoint. Root requested a pause
+before broad migration for independent review of this narrow core and evidence.

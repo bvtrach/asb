@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
 pub(crate) mod operation;
+#[cfg(all(test, target_os = "linux"))] // Worker proof first, not production wiring.
+pub(crate) mod process;
 mod progress;
 pub(crate) use progress::ProgressStage;
 mod goose;
