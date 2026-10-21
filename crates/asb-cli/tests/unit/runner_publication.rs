@@ -215,6 +215,13 @@ pub(super) fn check(
             record["execution_plan_fingerprint"]
         );
         assert_eq!(aggregate["execution_cohort"], record["execution_cohort"]);
+        for field in ["workload_resource_disposition", "workload_artifacts"] {
+            assert!(
+                record.get(field).is_some(),
+                "missing current run field {field}"
+            );
+            assert_eq!(aggregate[field], record[field]);
+        }
     }
     assert_eq!(record["execution_cohort"]["selected_replicas"], 1);
     assert!(

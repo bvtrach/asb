@@ -193,6 +193,8 @@ fn fixture_measurement() -> RunMeasurement<'static> {
         success: false,
         process_success: true,
         workload_success: Some(false),
+        workload_resource_disposition: None,
+        workload_artifacts: &[],
         failure_kind: None,
         failure_reason: None,
         success_rate: Some(0.0),
