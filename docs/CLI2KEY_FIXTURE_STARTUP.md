@@ -71,3 +71,18 @@ evidence. Actual main-30 ASB was built first; its SHA-256 remained unchanged:
 All production source, Cargo files and version 0.2.30 are unchanged. Entire
 offline target and strict lint verification follow independent source review;
 hosted CI, main repair and release remain pending.
+
+## Reviewed offline-target qualification
+
+Root independently approved source `7b723b0a` and the terminal focused/broad
+evidence. The entire `offline_cli` target passed 94 tests, failed zero and kept
+5 existing optional tests ignored; those opt-ins are not qualified. Strict
+offline all-target/all-feature Clippy and formatting passed. Logs are
+`target/cli2key-fixture-offline-cli.log`, `target/cli2key-fixture-clippy.log`
+and `target/cli2key-fixture-fmt.log`. The before/after actual CLI hash files
+`target/cli2key-fixture-qualified-{before,after}.sha256` match the hash above.
+
+The source checkpoint is unchanged; this qualification addition is docs-only.
+No local full-crate suite, hosted/package CI, PR publication, merge or release
+is claimed here. Root owns the separate main-30 repair and release decision;
+queued patch versions are not changed by this fixture-only repair.
