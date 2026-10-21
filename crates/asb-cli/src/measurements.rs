@@ -534,6 +534,7 @@ impl Session {
     }
 
     /// Start collectors with an optional project-initialized delegated cgroup.
+    #[cfg(test)]
     pub fn start_with_collectors_and_parent(
         dir: &Path,
         selected: &[String],
@@ -548,6 +549,24 @@ impl Session {
             collectors::all().to_vec(),
             false,
         )
+    }
+
+    /// Use exactly the negotiated adapter set. Later environment changes cannot
+    /// activate an adapter omitted from the saved plan.
+    pub(crate) fn start_with_resolved_collectors_and_parent(
+        dir: &Path,
+        selected: &[String],
+        active: &[String],
+        tool_dir: Option<&Path>,
+        cgroup_parent: Option<&Path>,
+    ) -> Result<Self, String> {
+        let adapters = active
+            .iter()
+            .map(|name| {
+                collectors::find(name).ok_or_else(|| format!("unknown resolved collector {name}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::start_with_adapters(dir, selected, tool_dir, cgroup_parent, adapters, false)
     }
 
     pub(crate) fn start_in_execution_namespace(

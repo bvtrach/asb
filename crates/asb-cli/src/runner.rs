@@ -28,7 +28,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 const MAX_OUTPUT: usize = 1024 * 1024;
-const MAX_AGENT_RUNTIME: Duration = Duration::from_secs(15 * 60);
+const MAX_AGENT_RUNTIME: Duration =
+    Duration::from_secs(crate::planning::DEFAULT_NATIVE_EXECUTION_SECONDS);
 
 fn emit_warning(
     warnings: &Mutex<BTreeSet<String>>,
@@ -47,7 +48,10 @@ fn emit_warning(
 
 #[derive(Serialize)]
 struct RunResult<'a> {
-    execution_plan_fingerprint: Option<&'a str>,
+    planning: crate::planning::ResolvedPlan,
+    effective_budgets: crate::planning::EffectiveBudgets,
+    execution_plan: Option<PathBuf>,
+    execution_plan_fingerprint: Option<crate::planning::ExecutionPlanFingerprint>,
     module: Option<workloads::contracts::ModuleDescriptor>,
     benchmark_outcome: Option<workloads::outcome::BenchmarkOutcome>,
     replica_index: Option<usize>,
@@ -85,7 +89,7 @@ struct RunResult<'a> {
 /// Execution choices shared by single runs, replicas, and sweeps.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RunOptions<'a> {
-    pub execution_plan_fingerprint: Option<&'a str>,
+    pub policy: Option<&'a crate::planning::ResolvedPlan>,
     pub execution_cohort: Option<&'a measurements::ExecutionCohort>,
     pub json: bool,
     pub show_output: bool,
@@ -117,6 +121,12 @@ pub(crate) fn run_with_diagnostics(
     let text = read_config(config_path)?;
     let config: BenchmarkConfig = toml::from_str(&text)
         .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
+    // Resolve before tool installation, output directories or provider startup.
+    let _policy = crate::planning::resolve_snapshot(
+        &config,
+        options.measurement_dir.is_some(),
+        options.policy,
+    )?;
     if !options.replica.valid() {
         return Err(Error::Input("invalid benchmark replica identity".into()));
     }
@@ -360,6 +370,8 @@ fn run_mode(
         respect_record_timings,
         ..
     } = options;
+    let policy =
+        crate::planning::resolve_snapshot(&config, measurement_dir.is_some(), options.policy)?;
     if options
         .execution_cohort
         .is_some_and(|cohort| !cohort.admits(options.replica.index, options.replica.total))
@@ -387,6 +399,7 @@ fn run_mode(
         ))
     })?;
     let _network_project = project::network_project(&project_root);
+    let _initial_policy = crate::planning::persist(&project_root, &policy, None, None)?;
     let configured_measurements = config
         .measurements
         .as_ref()
@@ -395,17 +408,24 @@ fn run_mode(
     let measurement_path = measurement_dir
         .map(std::path::PathBuf::from)
         .or(configured_measurements);
-    let measurement_collectors = config
-        .measurements
-        .as_ref()
-        .filter(|value| value.enabled)
-        .map_or(&[][..], |value| value.collectors.as_slice());
+    let measurement_collectors: Vec<_> = policy
+        .collectors
+        .iter()
+        .filter(|collector| collector.selected)
+        .map(|collector| collector.id.clone())
+        .collect();
+    let active_collectors: Vec<_> = policy
+        .collectors
+        .iter()
+        .map(|collector| collector.id.clone())
+        .collect();
     let mut measurement_session = measurement_path
         .as_deref()
         .map(|dir| {
-            measurements::Session::start_with_collectors_and_parent(
+            measurements::Session::start_with_resolved_collectors_and_parent(
                 dir,
-                measurement_collectors,
+                &measurement_collectors,
+                &active_collectors,
                 Some(&project::resolve(&project_root, &project_config.tools_dir)),
                 std::env::var_os("ASB_CGROUP_PARENT")
                     .is_none()
@@ -530,6 +550,7 @@ fn run_mode(
                 ))
             })?;
             workloads::prepare_task(&workloads::PreparationContext {
+                budgets: policy.budgets,
                 on_allocation: Some(&allocation),
                 workload: &config.workload,
                 trial: config.trial.as_deref(),
@@ -542,16 +563,42 @@ fn run_mode(
             .map_err(Error::Run)
         },
     )?;
-    let prompt = workload_session.invocation().prompt.clone();
+    workload_session
+        .invocation()
+        .input
+        .validate_for_agent(&config.agent)
+        .map_err(Error::Input)?;
+    let prompt = workload_session.invocation().input.instructions.clone();
+    let mut effective_budgets = workload_session.effective_budgets();
+    if policy.backend == "native" {
+        effective_budgets.execution_seconds = Some(
+            policy
+                .budgets
+                .execution_seconds
+                .unwrap_or(MAX_AGENT_RUNTIME.as_secs()) as f64,
+        );
+    }
+    let execution_plan = crate::planning::persist(
+        &project_root,
+        &policy,
+        Some(effective_budgets),
+        Some(&workload_session.invocation().identity),
+    )?;
+    let execution_plan_fingerprint = crate::planning::protocol_fingerprint(
+        &config,
+        &policy,
+        effective_budgets,
+        options.replica.total,
+    )?;
     // Capture provenance at execution time; report rendering never consults
     // today's adapter registry to label a historical record.
     let module = workload_session.module_descriptor();
-    let policy = workload_session.metric_policy();
-    if !policy.valid()
-        || (module.is_none() && policy != workloads::outcome::MetricPolicy::default())
+    let metric_policy = workload_session.metric_policy();
+    if !metric_policy.valid()
+        || (module.is_none() && metric_policy != workloads::outcome::MetricPolicy::default())
         || module
             .as_ref()
-            .is_some_and(|m| !m.valid() || !policy.matches_module(m))
+            .is_some_and(|m| !m.valid() || !metric_policy.matches_module(m))
     {
         return Err(Error::Run(
             "module metric policy differs from its declared scoring protocol".into(),
@@ -764,6 +811,12 @@ fn run_mode(
             measurement_session.as_mut(),
             show_output,
             output,
+            Duration::from_secs(
+                policy
+                    .budgets
+                    .execution_seconds
+                    .unwrap_or(MAX_AGENT_RUNTIME.as_secs()),
+            ),
         )?;
         (child, run_dir, None, None, Some(runtime_path))
     };
@@ -842,11 +895,11 @@ fn run_mode(
         || Ok(workload_session.evaluate_outcome(final_response.as_deref().unwrap_or_default())),
     )?
     .map_err(Error::Run)?;
-    if let Err(reason) = policy.validate_evaluation(&evaluation) {
+    if let Err(reason) = metric_policy.validate_evaluation(&evaluation) {
         evaluation = workloads::outcome::EvaluationOutcome::Error { reason };
     }
     let evaluator_evidence = workload_session.checkpoint_evidence();
-    if policy != workloads::outcome::MetricPolicy::default()
+    if metric_policy != workloads::outcome::MetricPolicy::default()
         && evaluation.completed()
         && evaluator_evidence.is_empty()
     {
@@ -1007,7 +1060,10 @@ fn run_mode(
         workloads::outcome::EvaluationOutcome::Pending { .. }
     );
     let result = RunResult {
-        execution_plan_fingerprint: options.execution_plan_fingerprint,
+        planning: policy,
+        effective_budgets,
+        execution_plan: Some(execution_plan),
+        execution_plan_fingerprint: Some(execution_plan_fingerprint),
         module,
         benchmark_outcome: Some(workloads::outcome::BenchmarkOutcome {
             schema_version: 1,
@@ -1015,7 +1071,7 @@ fn run_mode(
             evaluation,
             cleanup_confirmed: Some(workload_cleanup_confirmed && proxy_evidence.cleanup_confirmed),
             evidence: evaluator_evidence,
-            policy,
+            policy: metric_policy,
             lineage: workloads::outcome::EvaluationLineage {
                 execution_attempt: workload_session.invocation().identity.attempt_id.clone(),
                 evaluation_id: workloads::TaskIdentity::local("evaluation", None).attempt_id,
@@ -1081,7 +1137,10 @@ fn run_mode(
             .event(LifecycleEvent::RunFinishing)
             .map_err(Error::Run)?;
         let measured = measurements::RunMeasurement {
-            execution_plan_fingerprint: result.execution_plan_fingerprint,
+            execution_plan_fingerprint: result
+                .execution_plan_fingerprint
+                .as_ref()
+                .map(|fingerprint| fingerprint.as_str()),
             module: result.module.as_ref(),
             benchmark_outcome: result.benchmark_outcome.as_ref(),
             replica_index: result.replica_index,
@@ -1246,6 +1305,7 @@ fn run_measured_agent(
     mut session: Option<&mut measurements::Session>,
     show_output: bool,
     output: &mut dyn Write,
+    runtime: Duration,
 ) -> Result<Output, Error> {
     if let Some(session) = session.as_deref_mut() {
         session.agent_launch_prepared(command);
@@ -1299,7 +1359,8 @@ fn run_measured_agent(
             Error::Run(format!("could not resume measured agent process: {error}"))
         })?;
     }
-    let result = wait_with_output(child, show_output, output);
+    let result =
+        wait_with_output_streams(child, show_output, output, None, runtime, &mut || Ok(()));
     if let Some(session) = session {
         session
             .event(LifecycleEvent::AgentExecuteEnd)
@@ -1412,6 +1473,9 @@ pub(crate) fn resolve_log_path(config_path: &Path, configured_path: &str) -> Pat
 
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
     let summary = serde_json::json!({
+        "planning": result.planning,
+        "effective_budgets": result.effective_budgets,
+        "execution_plan": result.execution_plan,
         "execution_plan_fingerprint": result.execution_plan_fingerprint,
         "module": result.module,
         "benchmark_outcome": result.benchmark_outcome,
@@ -1619,6 +1683,7 @@ impl Drop for OwnedChild {
 /// Readers run independently so a verbose agent cannot deadlock on a full
 /// stdout or stderr pipe. The complete bounded-by-the-existing-runner capture
 /// is still returned for logging and token parsing.
+#[cfg(test)]
 fn wait_with_output(
     child: OwnedChild,
     show_output: bool,
@@ -1973,6 +2038,7 @@ mod tests {
             Some(&mut session),
             false,
             &mut Vec::new(),
+            super::MAX_AGENT_RUNTIME,
         );
         let actual = std::fs::read_to_string(&marker).unwrap();
         let pid = std::process::id();
@@ -2203,6 +2269,7 @@ mod tests {
             Some(&mut session),
             false,
             &mut Vec::new(),
+            super::MAX_AGENT_RUNTIME,
         )
         .expect("run fixture");
         let agent_ended = std::time::Instant::now();
@@ -2511,6 +2578,15 @@ mod tests {
 
     fn result<'a>() -> RunResult<'a> {
         RunResult {
+            planning: crate::planning::resolve(
+                &toml::from_str(
+                    "agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='bug-fix'",
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+            effective_budgets: Default::default(),
+            execution_plan: None,
             execution_plan_fingerprint: None,
             module: None,
             benchmark_outcome: None,
@@ -2616,6 +2692,7 @@ mod tests {
     #[test]
     fn cli2key_command_mappings_place_workload_once() {
         let config = BenchmarkConfig {
+            planning: None,
             agent: "openhands".into(),
             workload: "bug-fix".into(),
             provider: "cli2key".into(),
@@ -2638,6 +2715,7 @@ mod tests {
     #[test]
     fn token_reporting_commands_request_machine_readable_agent_output() {
         let base = BenchmarkConfig {
+            planning: None,
             agent: "mini-swe".into(),
             workload: "bug-fix".into(),
             provider: "cli2key".into(),
@@ -2676,6 +2754,7 @@ mod tests {
             ("continue", "cn", "--auto"),
         ] {
             let config = BenchmarkConfig {
+                planning: None,
                 agent: agent.into(),
                 workload: "bug-fix".into(),
                 provider: "cli2key".into(),
@@ -2701,6 +2780,7 @@ mod tests {
     #[test]
     fn pi_cli2key_uses_openai_bridge_and_print_mode() {
         let config = BenchmarkConfig {
+            planning: None,
             agent: "pi".into(),
             workload: "bug-fix".into(),
             provider: "cli2key".into(),
@@ -2847,6 +2927,7 @@ mod tests {
     #[test]
     fn opencode_command_uses_generic_provider_model_namespace() {
         let config = BenchmarkConfig {
+            planning: None,
             agent: "opencode".into(),
             workload: "bug-fix".into(),
             provider: "opencode-zen".into(),
@@ -2875,6 +2956,7 @@ mod tests {
     #[test]
     fn unknown_agent_suggests_a_close_match() {
         let config = BenchmarkConfig {
+            planning: None,
             agent: "opencod".into(),
             workload: "bug-fix".into(),
             provider: "local".into(),

@@ -33,6 +33,8 @@ pub(crate) const MAX_CONFIGS: usize = 65536;
 #[serde(deny_unknown_fields)]
 pub(crate) struct SweepFile {
     pub configs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<crate::planning::Resources>,
 }
 
 #[derive(Clone, Copy)]
@@ -150,6 +152,8 @@ pub(crate) fn run_with_options(
     let scheduling =
         scheduler::Scheduling::new(options.jobs, options.max_active_attempts, &weights)?;
     plan.scheduling = Some(scheduling);
+    let reservations = plan.resource_costs(sweep.resources)?;
+    plan.resources = sweep.resources;
     if options.resume {
         let results = parent.join(format!("{stem}-results"));
         if !std::fs::symlink_metadata(&results).is_ok_and(|metadata| metadata.is_dir()) {
@@ -161,11 +165,14 @@ pub(crate) fn run_with_options(
         if saved.execution_mode != plan.execution_mode
             || saved.respect_record_timings != plan.respect_record_timings
             || saved.scheduling != plan.scheduling
+            || saved.resources != plan.resources
             || saved
                 .entries
                 .iter()
                 .zip(&plan.entries)
-                .any(|(old, current)| old.selection != current.selection)
+                .any(|(old, current)| {
+                    old.selection != current.selection || old.policy != current.policy
+                })
         {
             return Err(Error::Input("cannot resume: dataset selection, execution mode, replay timing or scheduling differs from the original sweep; use the original options or start a fresh sweep".into()));
         }
@@ -311,9 +318,11 @@ pub(crate) fn run_with_options(
         failure
     } else {
         let mut presentation_failed = false;
-        scheduler::run(
+        scheduler::run_with_resources(
             scheduling,
             &weights,
+            sweep.resources,
+            &reservations,
             |index| execution.run(index),
             |event| {
                 match event {
@@ -693,7 +702,11 @@ mod tests {
         for count in [300, 500, 2294, (2294 + 300 + 500 + 80 + 89) * 8] {
             let reference = "original-instance-selection-agent-provider-model-configuration.toml";
             let configs = vec![reference.to_owned(); count];
-            let text = toml::to_string(&super::SweepFile { configs }).unwrap();
+            let text = toml::to_string(&super::SweepFile {
+                resources: None,
+                configs,
+            })
+            .unwrap();
             if count >= 2294 {
                 assert!(text.len() > 64 * 1024);
             }
@@ -719,7 +732,11 @@ mod tests {
         let configs = vec!["benchmark.toml".to_owned(); super::MAX_CONFIGS + 1];
         std::fs::write(
             &path,
-            toml::to_string(&super::SweepFile { configs }).unwrap(),
+            toml::to_string(&super::SweepFile {
+                resources: None,
+                configs,
+            })
+            .unwrap(),
         )
         .unwrap();
         assert!(
