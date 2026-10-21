@@ -1,5 +1,12 @@
 # Architecture
 
+Benchmark cassette/result labels and manifest references share the private
+`benchmark_paths` policy. Its legacy component normalization is lossy and keeps
+existing artifact names stable; it must not be used as a uniqueness allocator
+or standalone path sandbox. Comparison retains its collision-free graph-name
+allocator. Sweep execution and comparison share the relative-TOML reference
+checks, including existing symlink behavior and actionable path diagnostics.
+
 The maintained overview below explains ASB's runtime boundaries. It can be
 supplemented—not replaced—by generated Rust type, dataflow, and control-flow
 diagrams. Generate them locally with `make uml`, `make flows`, or
@@ -274,6 +281,36 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   files are stored under `.asb/fixtures/<name>/` and materialized into the run
   workspace without overwriting existing edits.
 
+The runner uses private consuming attempt states rather than one shared mutable
+orchestration context. `AdmittedAttempt` publishes start intent before resolving
+the project; `PreparedAttempt` owns the workload, optional proxy and measurement
+sessions through execution. Native command intent becomes an owned
+`PreparedNative` only after adapter, endpoint, Python, runtime and replay
+preparation, so the gate executes that exact command. `ExecutionEvidence` owns
+captured output, guest observations and the frozen execution clock.
+Proxy settlement consumes execution into `SettledAttempt`; evaluation consumes
+that into `EvaluatedAttempt`, retaining an independent `EvaluationOutcome`.
+Explicit cleanup then yields `FinalizedAttempt`. Existing adapter cancellation
+on aborted transitions preserves unfinished resources rather than calling
+destructive normal-close from Drop. Provider bridge ownership remains outside
+these transitions until proxy settlement and evaluation have finished.
+
+Post-execution lifecycle failures are ancillary `AttemptIssues`, not missing
+submissions or replacement grades. Dispatch attempts every collector hook and
+execution-scoped shutdown even after a hook fails. Before execution/resume,
+required instrumentation errors still fail closed. After output exists, official
+evaluation and explicit cleanup run despite client/proxy/collector failures.
+Human presentation and guest-owner transport have distinct failure policies:
+broken presentation stops writes while already-admitted work completes; losing
+the owner transport still cancels/preserves. A final measurement-publication
+error leaves the immutable task outcome available and prevents a completion
+receipt, so an incomplete measurement cannot silently authorize continuation.
+Run-log publication is a separate typed obligation: a failed log write never
+skips final measurement publication or hides the grade from terminal rendering.
+Both log and measurement publication must be confirmed before a completion
+record/observer receipt is permitted. Original run failures precede ancillary
+log/measurement diagnostics; repairing reporting does not repeat the agent.
+
 `WorkloadAdapter` creates a distinct mutable `WorkloadSession` for each
 attempt. The session owns its task invocation, prepared workspace, initial
 baseline evidence and evaluator. The generic runner consumes those values
@@ -420,6 +457,29 @@ The native resume path confirms the stopped state before sending CONT, and
 cancellation uses TERM plus CONT with a bounded cleanup wait instead of
 immediately killing the supervisor. All watchers and signals are scoped to
 the attempt; no shared runner signal handler or process-group kill is used.
+Native runner custody is represented by `ManagedGate`, not a raw `Child`
+whose exit could be mistaken for descendant quiescence. Before spawn,
+`Admission` fallibly establishes a wait-only fallback owner and a private,
+nonblocking, versioned socket. The gate emits its PID-bound `Hello` only after
+the owner watcher exists; the runner validates both that receipt and stopped
+readiness before admitting execution with CONT. A stale launcher without this
+ABI is never resumed: startup cleanup uses KILL only, without TERM that could
+indirectly wake an old launcher's watcher. The diagnostic asks the user to
+rebuild/use the current ASB runtime; this is compatibility, not authorization.
+The socket is immediately CLOEXEC in the gate and explicitly closed in its
+forked wake-only child. The client cannot inherit the gate's proof writer.
+Normal completion requires both direct-child exit and a matching, ordered
+`Quiescent` frame, emitted only after owned descendants are stopped and reaped;
+EOF, principal exit and a helper result are not equivalent proofs. Receipt
+reads and writes are bounded and do not wait for EOF from duplicate writers.
+If a teardown sweep cannot establish quiescence, the gate retains supervision
+and retries rather than exiting and orphaning its tree. Caller cancellation
+waits at most six seconds before reporting explicit uncertainty and handing
+the still-owned gate to the precreated wait-only reaper. That reaper never
+kills an admitted guardian. Parent exit still wakes the independently owned
+gate through its existing pinned watcher. This is not a promise that an
+unkillable kernel task disappears within the caller deadline, nor a repair of
+the separate pre-exec allocation and output-reader resource-limit classes.
 The native supervisor and its idle watcher are part of the measured process
 tree; process-tree totals include that instrumentation overhead. The watcher
 is created before cgroup attachment, so it remains outside the new accounting
@@ -525,6 +585,16 @@ Model discovery reads the selected credential only long enough to send a catalog
 request; it sends it through curl's stdin configuration, never includes it in
 arguments or output, and never stores it. Authenticated requests do not follow
 redirects, which prevents a catalog redirect from forwarding a provider key.
+The generic catalog transport polls all three Unix pipes concurrently rather
+than blocking on request writes or stream-reader joins. Its absolute budget is
+35 seconds, with I/O ending by 30 seconds and cleanup consuming only the reserved
+remainder. The 16 MiB body and 8 KiB diagnostic-tail limits apply independently
+of curl's own limits. A privately owned direct child is stopped/reaped on errors;
+uncertain exit transfers to pre-established reaper custody and cannot produce a
+successful catalog. Inherited descendant pipe handles do not prolong the caller.
+This is not descendant supervision or a guarantee about uninterruptible kernel
+operations. Non-Unix discovery explicitly fails before spawn until a cancellable
+transport is implemented; no blocking compatibility fallback remains.
 For replay, ASB removes known provider and registered agent credential
 environment variables and supplies dummy values where needed before launching
 the agent. Replay is not a security sandbox:
