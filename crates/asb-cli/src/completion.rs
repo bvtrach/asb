@@ -159,3 +159,52 @@ mod tests {
         visit(&command, vec!["asb".into()], &script);
     }
 }
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn both_shells_publish_core_commands_registry_tools_and_stable_output() {
+        for generator in [bash, zsh] {
+            let mut output = Vec::new();
+            generator(&mut output).unwrap();
+            let text = String::from_utf8(output.clone()).unwrap();
+            for command in [
+                "init", "setup", "run", "sweep", "compare", "provider", "tool", "workload",
+            ] {
+                assert!(text.contains(command), "missing {command}");
+            }
+            for tool in install::tool_names() {
+                assert!(text.contains(tool), "missing installable tool {tool}");
+            }
+            for flag in ["--record", "--replay", "--report", "--source", "--dry-run"] {
+                assert!(text.contains(flag), "missing {flag}");
+            }
+            let mut repeated = Vec::new();
+            generator(&mut repeated).unwrap();
+            assert_eq!(repeated, output, "completion output must be reproducible");
+        }
+    }
+
+    #[test]
+    fn both_shells_report_output_failures_without_panicking() {
+        struct BrokenWriter;
+        impl Write for BrokenWriter {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("fixture completion output failure"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        for generator in [bash, zsh] {
+            assert!(
+                generator(&mut BrokenWriter)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("fixture completion output failure")
+            );
+        }
+    }
+}

@@ -8,8 +8,9 @@ import signal
 import subprocess
 import sys
 import time
+from test_environment import coverage_env
 
-from native_gate_owner import cleanup_children, signal_pinned, until
+from native_gate_owner import cleanup_children, publish_pid, signal_pinned, until
 
 
 def owner(scripts, root, phase):
@@ -23,7 +24,7 @@ def owner(scripts, root, phase):
            "http_proxy": "http://127.0.0.1:1", "PYTHONDONTWRITEBYTECODE": "1"}
     proxy = subprocess.Popen(args, env=env, stdin=subprocess.PIPE,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    (root / "proxy").write_text(str(proxy.pid))
+    publish_pid(root / "proxy", proxy.pid)
     if phase == "closed-before-ready":
         proxy.stdin.close()
     time.sleep(30)
@@ -33,7 +34,7 @@ def public_cli(binary, root, sibling):
     for measured in (False, True):
         case = root / ("cli-measured" if measured else "cli-unmeasured")
         case.mkdir()
-        env = {"PATH": os.environ["PATH"], "HOME": str(case), "PYTHONDONTWRITEBYTECODE": "1"}
+        env = coverage_env({"PATH": os.environ["PATH"], "HOME": str(case), "PYTHONDONTWRITEBYTECODE": "1"})
         initialized = subprocess.run([binary, "init"], cwd=case, env=env, input=b"",
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
         assert initialized.returncode == 0, initialized.stderr.decode()

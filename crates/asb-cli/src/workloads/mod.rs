@@ -1131,6 +1131,10 @@ fn missing(name: &str, directory: &Path) -> String {
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/workload_boundaries.rs"]
+mod boundary_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         copy_plan, copy_tree, load, load_trial, materialize_external_adapter, populate,

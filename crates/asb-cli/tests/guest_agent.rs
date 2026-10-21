@@ -1,10 +1,12 @@
 //! Offline guest-driver checks using a registered adapter and fixture executable.
 #![cfg(unix)]
+mod support;
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use support::IsolatedEnvironment;
 
 struct Process(Child);
 impl Drop for Process {
@@ -81,7 +83,7 @@ fn guest_refuses_unowned_or_controller_namespace_service_lifetimes_before_prepar
         request["workload_owner"] = owner;
         let result = Command::new(env!("CARGO_BIN_EXE_asb"))
             .arg("__asb-agent")
-            .env_clear()
+            .isolated_env()
             .env("ASB_GUEST_AGENT_REQUEST", request.to_string())
             .output()
             .unwrap();
@@ -100,7 +102,7 @@ fn guest_uses_registered_adapter_prepares_before_gate_and_preserves_output_usage
     let mut process = Process(
         Command::new(env!("CARGO_BIN_EXE_asb"))
             .arg("__asb-agent")
-            .env_clear()
+            .isolated_env()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", &project.0)
             .env("ASB_GUEST_AGENT_REQUEST", request.to_string())
@@ -188,7 +190,7 @@ exit 93
     let mut process = Process(
         Command::new(env!("CARGO_BIN_EXE_asb"))
             .arg("__asb-agent")
-            .env_clear()
+            .isolated_env()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", &project.0)
             .env("ASB_GUEST_AGENT_REQUEST", request.to_string())
@@ -237,7 +239,7 @@ fn invalid_task_budgets_fail_before_preparing_or_starting_a_client() {
         request["timeout_seconds"] = serde_json::json!(invalid);
         let output = Command::new(env!("CARGO_BIN_EXE_asb"))
             .arg("__asb-agent")
-            .env_clear()
+            .isolated_env()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("ASB_GUEST_AGENT_REQUEST", request.to_string())
             .output()
@@ -254,7 +256,7 @@ fn invalid_task_budgets_fail_before_preparing_or_starting_a_client() {
 fn malformed_guest_request_fails_without_echoing_input_or_starting_an_agent() {
     let output = Command::new(env!("CARGO_BIN_EXE_asb"))
         .arg("__asb-agent")
-        .env_clear()
+        .isolated_env()
         .env("ASB_GUEST_AGENT_REQUEST", "not-json-sensitive-fixture")
         .output()
         .unwrap();
@@ -346,7 +348,7 @@ fn guest_quiesces_double_forked_helpers_before_returning_any_client_result() {
         let mut process = Process(
             Command::new(env!("CARGO_BIN_EXE_asb"))
                 .arg("__asb-agent")
-                .env_clear()
+                .isolated_env()
                 .env("PATH", std::env::var_os("PATH").unwrap_or_default())
                 .env("HOME", &project.0)
                 .env("ASB_GUEST_AGENT_REQUEST", project.request().to_string())
@@ -386,7 +388,7 @@ fn native_gate_stops_and_reaps_adopted_helpers_without_changing_client_failure()
             .arg("__asb-gate")
             .arg(program)
             .current_dir(project.0.join("workspace"))
-            .env_clear()
+            .isolated_env()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -453,7 +455,7 @@ fn guest_output_failure_still_quiesces_owned_helpers_without_publishing_a_result
     let mut process = Process(
         Command::new(env!("CARGO_BIN_EXE_asb"))
             .arg("__asb-agent")
-            .env_clear()
+            .isolated_env()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", &project.0)
             .env("ASB_GUEST_AGENT_REQUEST", project.request().to_string())

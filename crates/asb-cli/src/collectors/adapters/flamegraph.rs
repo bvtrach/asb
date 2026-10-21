@@ -2,6 +2,10 @@ use super::super::{ArtifactDisplay, CollectorAdapter};
 pub(super) struct FlamegraphCollector;
 pub(super) static ADAPTER: FlamegraphCollector = FlamegraphCollector;
 
+#[cfg(test)]
+#[path = "../../../tests/unit/flamegraph.rs"]
+mod coverage_tests;
+
 impl CollectorAdapter for FlamegraphCollector {
     fn id(&self) -> &'static str {
         "flamegraph"

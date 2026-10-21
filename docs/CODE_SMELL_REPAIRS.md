@@ -6,7 +6,12 @@ tracks work, not a claim that the whole audit is complete. Each repair class
 needs an independently reviewed PR, ordinary and packaged offline CI tests,
 post-merge verification, and a patch release. Coverage additionally needs a
 required 90% production-code gate; excluded production files or lowered
-thresholds are not acceptable substitutes for tests.
+thresholds are not acceptable substitutes for tests. That coverage prerequisite
+is now delivered by PR #264, merged as
+`cbfaa4c1ebc2ea3880916f7767ed08bd64b6c2f7`: the required
+`coverage-90-percent` check independently gates both aggregate and production
+coverage, without production-file exclusions or reduced thresholds. Individual
+repair classes still need their own exact-head validation and release.
 
 ## 1. Endpoint preparation invariants
 
@@ -23,7 +28,11 @@ replace production panic fallbacks with errors containing protocol metadata
 only, never URLs or credentials. Registry-wide tests exercise every rejected
 interface/authentication pair and all advertised pairs without executing a
 client or contacting a provider. Independent review found no blocking issue.
-Delivery (PR/main CI/release): pending.
+Delivery: independently reviewed PR #256 merged as
+`bc0b1ae662b4e854082e3e25e5fef86aed8e0e59`, patch version **0.2.4**.
+Exact-head PR CI passed both ordinary checks and the mandatory coverage gate.
+Post-merge CI and release remain tracked on that PR; this entry does not mark
+the broader audit complete.
 
 ## 2. Report identities and shared path handling
 
@@ -45,6 +54,10 @@ Tests verify real summary values, distinct SVG titles/data and HTML references,
 repeat generation and repeated configuration stems. Existing safe unique
 artifact names stay unchanged; unusual keys use escaped path notation and
 consumers should obtain graph filenames from `comparison.json`.
+Delivery candidate: PR #257, patch version **0.2.5**, updated to main after
+the endpoint repair. Exact-head tests, mandatory coverage, hosted checks,
+merge, post-merge checks and release are required independently of earlier
+candidate verification.
 
 ## 3. Completion persistence, subprocess and cleanup failures
 

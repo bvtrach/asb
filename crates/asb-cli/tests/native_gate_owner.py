@@ -20,6 +20,13 @@ def until(predicate, description, seconds=8):
         time.sleep(0.005)
 
 
+def publish_pid(path, pid):
+    """A pathname becomes ready only after the complete PID is visible."""
+    temporary = path.with_name(f"{path.name}.{pid}.tmp")
+    temporary.write_text(str(pid))
+    temporary.replace(path)
+
+
 def client(root):
     assert "ASB_GATE_OWNER_PID" not in os.environ
     first = os.fork()
@@ -28,13 +35,13 @@ def client(root):
         if os.fork() != 0:
             os._exit(0)
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        (root / "helper").write_text(str(os.getpid()))
+        publish_pid(root / "helper", os.getpid())
         time.sleep(2)
         (root / "late-write").write_text("candidate mutated after owner loss")
         time.sleep(30)
         os._exit(0)
     os.waitpid(first, 0)
-    (root / "principal").write_text(str(os.getpid()))
+    publish_pid(root / "principal", os.getpid())
     time.sleep(30)
 
 
@@ -47,7 +54,7 @@ def owner(binary, root, threaded):
             env={**os.environ, "ASB_GATE_OWNER_PID": str(os.getpid())},
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        (root / "gate").write_text(str(gate.pid))
+        publish_pid(root / "gate", gate.pid)
         # Keep Popen alive without making a shared fixture process its owner.
         children.append(gate)
     children = []

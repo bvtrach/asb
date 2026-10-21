@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 
 const SCOPE: &str = "imported-official-grade-not-execution-not-resume";
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Imported {

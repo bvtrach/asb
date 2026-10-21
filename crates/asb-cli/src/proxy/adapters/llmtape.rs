@@ -480,6 +480,10 @@ fn free_port() -> Result<u16, Error> {
         .map_err(|error| Error::Run(format!("cannot inspect local llmtape port: {error}")))
 }
 
+#[cfg(all(test, unix))]
+#[path = "../../../tests/unit/llmtape_boundaries.rs"]
+mod boundary_tests;
+
 #[cfg(test)]
 mod tests {
     use super::{

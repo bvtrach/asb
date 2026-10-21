@@ -695,6 +695,14 @@ pub(crate) fn parse_bpftrace_series(profile: &str, output: &str) -> BTreeMap<Str
 }
 
 #[cfg(test)]
+#[path = "../../../tests/unit/bpftrace_capture.rs"]
+mod capture_tests;
+
+#[cfg(test)]
+#[path = "bpftrace/tests.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{BPFTRACE_PROFILES, profile_probe_program, validate_custom_program_scope};
 
