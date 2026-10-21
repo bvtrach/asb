@@ -22,10 +22,22 @@ struct Hook {
 enum PhaseFault {
     StoppedPreserved,
     RemoveCwd(PathBuf),
+    ObserveLifetime,
+    RuntimeError,
 }
 thread_local! { static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) }; }
 
 pub(crate) struct Scope;
+
+pub(crate) fn assert_workload_owner_live(root: &Path) {
+    HOOK.with_borrow(|slot| {
+        let hook = slot.as_ref().filter(|hook| hook.root == root).unwrap();
+        assert!(
+            !hook.calls.borrow().contains(&"workload-drop"),
+            "workload owner must survive publication and completion observer"
+        );
+    });
+}
 
 pub(crate) fn module_descriptor(
     name: &str,
@@ -138,9 +150,27 @@ impl Scope {
         scope
     }
     pub fn phase(root: &Path, calls: Rc<RefCell<Vec<&'static str>>>, case: &str) -> Self {
-        let scope = Self::provider(root, calls, false, case.contains("native"));
+        let scope = Self::provider(
+            root,
+            calls,
+            case.contains("provider"),
+            case.contains("native"),
+        );
         HOOK.with_borrow_mut(|slot| {
-            slot.as_mut().unwrap().phase_fault = Some(if case.ends_with("removed-cwd") {
+            let hook = slot.as_mut().unwrap();
+            hook.event = if case.contains("prepare-workload-end") {
+                Some(LifecycleEvent::PhaseEnd(
+                    LifecyclePhase::WorkloadPreparation,
+                ))
+            } else {
+                case.contains("measurements")
+                    .then_some(LifecycleEvent::RunFinishing)
+            };
+            hook.phase_fault = Some(if case.contains("owner-lifetime") {
+                PhaseFault::ObserveLifetime
+            } else if case.contains("runtime-error") {
+                PhaseFault::RuntimeError
+            } else if case.ends_with("removed-cwd") {
                 PhaseFault::RemoveCwd(root.join("empty-cwd"))
             } else {
                 PhaseFault::StoppedPreserved
@@ -347,6 +377,10 @@ struct Observed {
     phase_fault: Option<PhaseFault>,
 }
 impl workloads::WorkloadSession for Observed {
+    fn cancel_prepared(&mut self) -> Result<(), String> {
+        self.calls.borrow_mut().push("cancel-prepared");
+        self.inner.cancel_prepared()
+    }
     fn initial_material_sha256(&self) -> Result<String, String> {
         self.inner.initial_material_sha256()
     }
@@ -468,6 +502,7 @@ impl workloads::WorkloadSession for Observed {
                     // live in its sibling; no recursive deletion or host cwd.
                     std::fs::remove_dir(path).unwrap();
                 }
+                PhaseFault::ObserveLifetime | PhaseFault::RuntimeError => {}
             }
             return Ok(settled);
         }
@@ -490,6 +525,21 @@ impl workloads::WorkloadSession for Observed {
         context: &mut workloads::ExecutionContext<'_>,
         output: &mut dyn Write,
     ) -> Option<Result<workloads::session::ExecutionResult, String>> {
+        if matches!(self.phase_fault, Some(PhaseFault::RuntimeError)) {
+            self.calls.borrow_mut().push("execute-entered");
+            return Some(Err("fixture started execution failed".into()));
+        }
         self.inner.execute(context, output)
+    }
+}
+
+impl Drop for Observed {
+    fn drop(&mut self) {
+        if matches!(
+            self.phase_fault,
+            Some(PhaseFault::ObserveLifetime | PhaseFault::RuntimeError)
+        ) {
+            self.calls.borrow_mut().push("workload-drop");
+        }
     }
 }

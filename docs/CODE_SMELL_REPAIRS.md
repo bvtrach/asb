@@ -14,6 +14,20 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+Runner phase completion, coordinated staged patch **0.2.43**, focused source checkpoint:
+immutable red `dcd2467d` proves stopped-warning and late-cwd errors bypassed result
+publication after grading. Consuming configured/provider/workload/runtime/result/
+publication states preserve custody and independent finalization; stopped-warning
+I/O is sticky before sealing, while early physical anchors retain logical wire
+spelling. Finished workload ownership lasts through publication/observer/output;
+started execution errors never call prepared-only cancellation. Existing validated
+reuse semantics are unchanged. Fresh focused qualification passed 745 tests,
+zero failed, 13 optional skips across 12 deduplicated groups, plus strict Clippy/fmt;
+actual binary `b318ba43…` remained unchanged. Independent source/evidence review,
+current-stack integration (including separate termination diagnostics), full tests
+and all hosted/merge/release gates remain pending. See
+[phase repair](RUNNER_PHASE_COMPLETION_REPAIR.md) for exact tests and limitations.
+
 Setup publication integration, coordinated staged patch **0.2.40**, locally qualified:
 reviewed collector39 `1d409705` is combined with independently approved setup
 `0caafe3d`, plus reviewed fixture-only permission restoration `e284b2b7`.

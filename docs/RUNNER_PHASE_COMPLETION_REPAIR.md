@@ -101,3 +101,109 @@ review and fresh focused proof. The inherited full-entry subprocess helper uses
 standard output collection; this checkpoint does not repair or qualify generic
 test-harness cancellation/collection custody. No other original-report class is
 claimed complete.
+
+## Implementation checkpoint (coordinated staged 0.2.43)
+
+The immutable red checkpoint is `dcd2467d`; all red logs and retained fixtures
+remain available. The production implementation keeps `run_mode` as admission
+and pipeline coordination. `runner/attempt.rs` has consuming configured,
+provider-owned, workload-ready, completed, finalized-result and publication
+states. Its context owns immutable configuration/provenance and the execution
+path anchors; workload metadata is produced once before dispatch. Provider
+custody and the project network scope surround every transition, including
+early-error teardown. There is no new provider/agent dispatch branch or public
+wire schema.
+
+Relative measurement overrides are anchored with `std::path::absolute` before
+measurement/provider/workload resource allocation, without requiring an existing
+destination. Configuration publication has a separate physical anchor. Logical
+configuration/cassette spelling and fingerprint/configuration inputs remain
+unchanged; recording/reporting still consume the same wire contracts. This does
+not claim that earlier shared dependency preflight is mutation-free.
+
+The stopped warning's returned error becomes sticky output failure before
+result sealing. Grading, workload finish, provider finish, frozen artifact handoff
+and both publishers still run independently. I/O command classification stops
+current repeated execution; a higher-priority official false grade stays first,
+with the presentation diagnostic retained secondarily rather than discarded.
+An output error already serving as the primary failure is not duplicated.
+
+Independent draft review identified two custody hazards in the initial
+extraction. Both were corrected before final qualification:
+
+- The finished workload box now remains an explicit publication resource until
+  both publishers, private outcome/observer and final presentation have returned.
+  A private Drop trace and live-owner assertions cover the observer and writer.
+- Prepared-only cancellation is used only before dispatch. After entering a
+  workload execution method, failure notifies material peers and retains the
+  backend's existing running-owner Drop/cancellation contract; it does not grant
+  prepared-only teardown authority to a started execution. A fake backend
+  dispatch failure asserts no grading, no normal finish and no prepared cancel.
+  The real-child capture/guest/gate matrices separately preserve actual process
+  custody; the fake backend is not a new descendant-cleanup qualification.
+
+A channel-driven preparation test requires a waiting material peer to observe
+abort before owned workload cancellation can return, preserves Input/Io/Run
+primary variants when cancellation also fails, and forbids normal destructive
+finish. Actual workload-preparation end-marker failures retain the prepared owner
+for explicit cancellation, with provider finish once and no client/evaluator.
+
+Ten phase tests cover 18 isolated actual-entry scenarios and three channel
+primary-error variants. The four original red regressions pass, along with
+true/false/native combinations of stopped-warning, provider, log and measurement
+failure. Numeric rewards retain null resolution. Actual repeated runs stop before
+batch two after output I/O. Actual sweeps separately prove the existing policy:
+a completed, cleanup-confirmed grade can be validated/sealed and reused on resume
+without another client, even though its presentation failed. Reporting-only
+outcomes are not themselves resume receipts. No blanket status/failure-kind
+rejection was added. Capture, publication or cleanup uncertainty still uses the
+existing independent validation requirements.
+
+The continuation fixtures use the existing Pi/Node recipe before normal planning
+and runtime-input sealing. The MiniSWE artifact-handoff fixtures remain separate:
+their fake Node executable is sufficient for the native artifact contract, not
+qualification of an installed MiniSWE Python environment. An initial continuation
+fixture incorrectly reused that recipe and could not claim an input seal; it was
+corrected before planning, never by changing saved evidence or validation policy.
+Initial compile/lint and focused failure logs remain preserved. A false-grade
+test expectation was also corrected to include the existing `workload check
+failed:` primary prefix; no production grade assertion was weakened.
+
+## Fresh focused qualification, full held
+
+The actual 0.2.43 executable was built first on the exclusive dedicated cache
+`/home/martin/projects/asb-build-cache-runner43/target`, offline/locked, one job,
+incremental compilation disabled. The final deduplicated matrix passed **745
+tests, zero failures and 13 optional skips** across 12 groups: one library OR-filter
+union (549 passed/eight skips, including the ten phase tests) and repeated run
+(30), benchmark protocol (35), guest agent (14), artifact ownership (2), capture
+session (2), completion diagnostics (6), offline CLI (94/five skips), parallel
+sweep (2), partial sweep (2), replay sweep (2), and planning admission (7).
+The library union also covers recording/publication, generic bounded capture,
+collector/measurement lifecycle, workload/controller/lifetime and layout seams.
+Earlier overlapping phase runs are not added to these totals. Strict workspace/
+all-target/all-feature Clippy and formatting passed on this same source.
+
+Actual executable SHA-256 stayed
+`b318ba434f7b8d679a2c71f534fa8e1ebe2b3e224e744ce87962398f218697a3`
+before/after the final library and integration tests. Logs are
+`target/runner43-{build-final,clippy-final,fmt-final,library-preservation}.log`
+and the eleven named integration logs. Hash records are
+`target/runner43-before-preservation.sha256`,
+`target/runner43-after-library-preservation.sha256` and
+`target/runner43-after-integration-focus.sha256`. A frozen actual copy is retained
+at `target/qualification/runner43-b318ba43-asb`; the red actual is separately
+preserved at `target/qualification/runner43-red-dcd2467d-asb`. Compilation admission
+checked at least 3 GiB available on the assigned cache filesystem. No source
+changes occurred during runtime; all handles are terminal.
+
+This is focused Linux/offline evidence, not full-stack qualification. The separate
+optional process-termination diagnostics class is not merged or overwritten here.
+Normal returned-error paths are repaired; arbitrary panics/OOM and a blocking
+borrowed `Write` are not contained or hard-cancelled by this pipeline. Existing
+bounded adapter Drop/reaper, platform and ThroughEvaluation contracts remain;
+no new Windows runtime, live SDK/provider, crash-persistent cleanup or whole-audit
+claim is made. Independent source/evidence review, coordinated current-stack
+integration, fresh full qualification, hosted/package CI, merge, post-merge jobs
+and release remain pending. The removed coverage gate stays removed. No push or
+PR accompanies this source checkpoint.
