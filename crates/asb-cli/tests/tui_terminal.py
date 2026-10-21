@@ -117,6 +117,23 @@ def main():
         assert not (root / "workloads/custom.txt").exists(), "failed source install must not fabricate workload"
         assert not (root / "invoked-agent").exists()
 
+        # A configured/discovered provider cannot be installed, and selecting
+        # an installed collector must still prepare its missing dependency.
+        agent.write_text("#!/bin/sh\nexit 99\n")
+        agent.chmod(0o755)
+        code, transcript = session(binary, root, ["setup", "tui"],
+            b"pi \t\x1b[105;5u\x03", str(fixture_bin))
+        assert code != 0, transcript
+        flamegraph = root / ".asb-tools/flamegraph/bin/flamegraph"
+        flamegraph.parent.mkdir(parents=True)
+        flamegraph.write_text("#!/bin/sh\nexit 99\n")
+        flamegraph.chmod(0o755)
+        code, transcript = session(binary, root, ["setup", "tui"],
+            b"pi \tlocal \t \tbug-fix \tflamegraph \x03", str(fixture_bin))
+        assert code != 0, transcript
+        assert not (root / ".asb-tools/perf/bin/perf").exists(), "failed dependency must not be marked installed"
+        assert len(list(root.glob("asb-sweep-*.toml"))) == 1
+
 
 if __name__ == "__main__":
     main()

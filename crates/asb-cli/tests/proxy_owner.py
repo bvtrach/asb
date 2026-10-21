@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+from test_environment import coverage_env
 
 from native_gate_owner import cleanup_children, signal_pinned, until
 
@@ -33,7 +34,7 @@ def public_cli(binary, root, sibling):
     for measured in (False, True):
         case = root / ("cli-measured" if measured else "cli-unmeasured")
         case.mkdir()
-        env = {"PATH": os.environ["PATH"], "HOME": str(case), "PYTHONDONTWRITEBYTECODE": "1"}
+        env = coverage_env({"PATH": os.environ["PATH"], "HOME": str(case), "PYTHONDONTWRITEBYTECODE": "1"})
         initialized = subprocess.run([binary, "init"], cwd=case, env=env, input=b"",
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
         assert initialized.returncode == 0, initialized.stderr.decode()

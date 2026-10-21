@@ -4,6 +4,11 @@ mod support;
 use support::IsolatedEnvironment;
 
 #[test]
+fn python_subprocess_isolation_retains_only_coverage_instrumentation() {
+    python_protocol("test_environment.py");
+}
+
+#[test]
 fn terminal_sdk_return_reconstruction_never_repeats_verifiers_or_invents_lost_metrics() {
     python_protocol("benchmark_verifier_reconstruction.py");
 }

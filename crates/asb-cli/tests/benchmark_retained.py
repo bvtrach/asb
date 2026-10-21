@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from test_environment import coverage_env
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
@@ -140,8 +141,8 @@ class RetainedTests(unittest.TestCase):
                     path = Path(directory) / "external-reference.json"
                     path.write_text(json.dumps(reference))
                     path.chmod(0o600)
-                    environment={"PATH":os.environ.get("PATH",""),"HOME":directory,
-                                 "PYTHONPATH":str(metadata.parent),"PYTHONDONTWRITEBYTECODE":"1"}
+                    environment=coverage_env({"PATH":os.environ.get("PATH",""),"HOME":directory,
+                                 "PYTHONPATH":str(metadata.parent),"PYTHONDONTWRITEBYTECODE":"1"})
                     before={str(item.relative_to(artifacts)):item.read_bytes() for item in artifacts.rglob("*") if item.is_file()}
                     command=[binary,"workload","recover",str(path),"--inspect-grade"]
                     output=subprocess.run(command+["--json"],env=environment,cwd=directory,capture_output=True,timeout=15)
