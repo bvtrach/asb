@@ -17,6 +17,7 @@ fn isolated_bpftrace_build_and_install_contracts() {
         );
         for case in [
             "build",
+            "held",
             "cached",
             "curl-fails",
             "tar-fails",
@@ -37,6 +38,65 @@ fn isolated_bpftrace_build_and_install_contracts() {
         ] {
             let path = root.join(case);
             fs::create_dir_all(path.join("commands")).unwrap();
+            if case == "held" && !cfg!(target_os = "linux") {
+                continue;
+            }
+            #[cfg(target_os = "linux")]
+            if case == "held" {
+                // Execute the private builder entry through the real native
+                // gate. The public installer legitimately prefers a host
+                // bpftrace, so it cannot force this source-only fixture route.
+                let current = std::env::current_exe().unwrap();
+                let binary = current.parent().unwrap().parent().unwrap().join("asb");
+                let mut launch = crate::launch::ProcessLaunch::new(current);
+                launch.arg("--exact").arg(&name).arg("--nocapture");
+                let (mut command, route) = launch.native(Some(&binary));
+                command
+                    .current_dir(&path)
+                    .env(CASE, case)
+                    .env("ASB_INSTALL_FIXTURE_ROOT", &path)
+                    .env("PATH", path.join("commands"))
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+                let admission =
+                    crate::process_gate::Admission::new(route.validate_gate(&mut command).unwrap())
+                        .unwrap();
+                let mut gate = admission.spawn().unwrap();
+                gate.resume().unwrap();
+                for (phase, expected) in [("download", "10 downloading"), ("build", "60 building")]
+                {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    while !path.join(format!("{phase}-held")).exists() {
+                        assert!(
+                            gate.try_wait().unwrap().is_none(),
+                            "fixture exited before {phase}"
+                        );
+                        assert!(std::time::Instant::now() < deadline, "{phase} never held");
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    assert_eq!(fs::read_to_string(path.join("phase")).unwrap(), expected);
+                    assert!(
+                        gate.try_wait().unwrap().is_none(),
+                        "stage must be visible before the command finishes"
+                    );
+                    fs::write(
+                        path.join(format!("{phase}-release")),
+                        "release after observing phase",
+                    )
+                    .unwrap();
+                }
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    if let Some(status) = gate.try_wait().unwrap() {
+                        assert!(status.success());
+                        break;
+                    }
+                    assert!(std::time::Instant::now() < deadline);
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                continue;
+            }
             let result = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", &name, "--nocapture"])
                 .current_dir(&path)
@@ -67,6 +127,10 @@ fn isolated_bpftrace_build_and_install_contracts() {
     executable(
         "curl",
         r#"printf 'curl %s\n' "$*" >> "$ASB_INSTALL_FIXTURE_ROOT/calls"
+if [ "$ASB_BPFTRACE_INSTALL_CASE" = held ]; then
+ printf ready > "$ASB_INSTALL_FIXTURE_ROOT/download-held"
+ while [ ! -f "$ASB_INSTALL_FIXTURE_ROOT/download-release" ]; do /bin/sleep .005; done
+fi
 [ "$ASB_BPFTRACE_INSTALL_CASE" != curl-fails ] || exit 2
 while [ "$#" -gt 0 ]; do
  if [ "$1" = --output ]; then shift; printf 'archive fixture' > "$1"; fi
@@ -82,6 +146,10 @@ done"#,
         "cmake",
         r#"printf 'cmake %s\n' "$*" >> "$ASB_INSTALL_FIXTURE_ROOT/calls"
 if [ "$1" = --build ]; then
+ if [ "$ASB_BPFTRACE_INSTALL_CASE" = held ]; then
+  printf ready > "$ASB_INSTALL_FIXTURE_ROOT/build-held"
+  while [ ! -f "$ASB_INSTALL_FIXTURE_ROOT/build-release" ]; do /bin/sleep .005; done
+ fi
  [ "$ASB_BPFTRACE_INSTALL_CASE" != compile-fails ] || exit 2
  [ "$ASB_BPFTRACE_INSTALL_CASE" != no-output ] || exit 0
  /bin/mkdir -p "$2/src"
@@ -178,21 +246,26 @@ esac"#,
             fs::remove_file(commands.join(command)).unwrap();
         }
     }
-    let result = build_bpftrace(&tool, &mut |percent, _| progress.push(percent));
-    if case == "build" || case == "cached" {
+    let result = build_bpftrace(&tool, &mut |percent, stage| {
+        progress.push(percent);
+        if case == "held" {
+            fs::write(root.join("phase"), format!("{percent} {}", stage.label())).unwrap();
+        }
+    });
+    if case == "build" || case == "cached" || case == "held" {
         assert_eq!(result.unwrap(), tool.join("build/src/bpftrace"));
         assert_eq!(
             progress,
-            if case == "build" {
-                vec![25, 40, 60, 90]
+            if case != "cached" {
+                vec![10, 25, 40, 60, 90]
             } else {
-                vec![60, 90]
+                vec![40, 60, 90]
             }
         );
         let log = fs::read_to_string(root.join("calls")).unwrap();
         assert!(log.contains("-DBUILD_TESTING=OFF -DBPFTRACE_BUILD_TESTING=OFF"));
         assert!(log.contains("--target bpftrace --parallel"));
-        if case == "build" {
+        if case != "cached" {
             assert!(log.contains(BPFTRACE_SOURCE));
             assert!(log.contains("--strip-components=1"));
         } else {

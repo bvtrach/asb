@@ -830,6 +830,53 @@ and neither case changes project-local installed status. Only explicitly
 host-backed tool recipes retain their separate host-availability fallback;
 host agents and external overrides are not project installations.
 
+All three TUI installation flows share one owned process operation. A private
+versioned helper runs synchronous tool, workload or collector-dependency
+installation under the same `ProcessLaunch`/`ManagedGate` native supervisor as
+benchmark execution. Blocking package managers and their double-forked helpers
+remain owned descendants; no detached installer thread outlives the wizard.
+The invoking runtime's existing executable-identity policy also selects this
+recursive helper, retaining the Linux running image across pathname replacement.
+Linux native custody is required before starting TUI installation; unsupported
+hosts fail explicitly rather than using an unsupervised fallback.
+
+An inherited private nonblocking Unix datagram channel carries eight-byte
+versioned progress/final frames. Identifiers are bounded to 128 entries of
+128 bytes. Progress contains a percentage and a bounded semantic `ProgressStage`
+selected at the actual owning installer phase. Its UI label is static; raw stage
+strings, installer output, provider credentials and arbitrary errors never cross
+this channel. Full queues drop transient progress; the parent coalesces each
+bounded polling batch into its latest phase/percentage. Unknown phases, reserved
+bits and a progress stage on a final frame are rejected. Final status
+has a one-second send budget, with fixed input/I/O/execution/request failure
+categories and a project install-log hint. Original failures are appended to
+the existing project install log when possible, using its existing append and
+permissions policy. That log can contain sensitive details and should not be
+shared without inspection; the fixed protocol does not make the log private.
+The helper marks its protocol descriptor
+CLOEXEC before invoking installers. EOF and helper success alone cannot grant
+success: the parent also requires matching successful gate exit and its
+descendant-quiescence receipt, then each selection flow refreshes readiness.
+Collector dependencies are rechecked with the same generic project-executable
+predicate after that refresh; a zero installer exit cannot select a collector
+whose dependency remains missing or non-executable. Phase-begin callbacks precede
+long source/build commands, including each bpftrace download/extract/configure/
+build step. Percentages at those boundaries describe previously completed work.
+
+Drawing/input errors, Esc and Ctrl-C explicitly stop the owned gate and retain
+both the primary error and any unconfirmed-cleanup diagnostic. Unwinding uses
+the same bounded stop and pre-established wait-only keeper; no Drop worker or
+unbounded join is introduced. Best-effort Drop diagnostics do not panic if
+stderr fails, allowing the terminal guard to restore mode during unwinding.
+The existing gate watcher retains supervision
+after abrupt owner loss. Cleanup uncertainty is a failure, not proof that a
+kernel-stuck task stopped within the caller's six-second observation bound.
+Completed installation writes are not rolled back. Selection changes still
+require success/readiness, and cancellation publishes no setup or trial-set
+selection. A terminal guard attempts raw-mode, keyboard, alternate-screen and
+cursor restoration independently on normal/error/unwind and partial startup;
+one failed output operation cannot suppress raw-mode restoration.
+
 Source-file installation stages bytes in a private sibling directory before
 atomically replacing its destination. HTTP downloads ignore user curlrc files,
 use a ten-second connection limit and a five-minute total deadline, and are

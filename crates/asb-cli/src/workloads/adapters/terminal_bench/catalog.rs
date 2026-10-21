@@ -224,7 +224,7 @@ pub(super) fn install(
     adapter: &TerminalBenchAdapter,
     context: &InstallationContext<'_>,
     output: &mut dyn Write,
-    progress: &mut dyn FnMut(u8, &str),
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
 ) -> Result<(), Error> {
     let _network = project::network_project(context.project_root);
     if !install::tool_installed_locally(adapter.tool, context.tools_root) {
@@ -243,7 +243,7 @@ pub(super) fn install(
     let helper = tool.join("asb_terminal_catalog.py");
     ensure_helpers(&tool)?;
     if !runtime_available(adapter, &tool)? {
-        progress(10, "repairing official evaluator runtime dependencies");
+        progress(10, crate::install::ProgressStage::Dependencies);
         install::tool_with_progress(
             install::ToolInstallOptions {
                 name: adapter.tool.into(),
@@ -298,7 +298,7 @@ pub(super) fn install(
             .map_err(crate::io_error)?;
         }
         if !archive.is_file() {
-            progress(20, "downloading pinned official task source");
+            progress(20, crate::install::ProgressStage::Downloading);
             let temporary = archive.with_extension(format!(
                 "part-{}",
                 TaskIdentity::local(adapter.id, None).attempt_id
@@ -330,7 +330,7 @@ pub(super) fn install(
             }
             fs::rename(&temporary, &archive).map_err(|error| Error::Io(error.to_string()))?;
         }
-        progress(50, "validating original task definitions with official SDK");
+        progress(50, crate::install::ProgressStage::Validating);
         if !run("install", Some(&archive))? {
             return Err(Error::Input(format!(
                 "{} dataset validation failed; inspect .asb/install.log; reinstall `{}` with `asb tool install {}` if its SDK is incompatible",
@@ -348,7 +348,7 @@ pub(super) fn install(
     )
     .map_err(|error| Error::Io(error.to_string()))?;
     selection(adapter.id, &catalog.tasks, context.workloads_root, output)?;
-    progress(100, "official task catalog installed");
+    progress(100, crate::install::ProgressStage::Ready);
     writeln!(
         output,
         "Installed {}: {} official tasks.",

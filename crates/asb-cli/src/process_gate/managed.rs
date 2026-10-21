@@ -66,6 +66,10 @@ pub(crate) struct ManagedGate {
 }
 
 impl ManagedGate {
+    #[cfg(test)]
+    pub(crate) fn lose_receipt_for_test(&self) {
+        self.receiver.shut_read_for_test();
+    }
     pub(crate) fn id(&self) -> u32 {
         self.child.as_ref().expect("owned gate").id()
     }

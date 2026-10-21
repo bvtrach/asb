@@ -76,10 +76,10 @@ fn default_and_static_adapter_hooks_have_explicit_nonexecuting_contracts() {
     }
     fn hook(
         _: &Path,
-        progress: &mut dyn FnMut(u8, &str),
+        progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
         output: &mut dyn std::io::Write,
     ) -> Result<(), crate::Error> {
-        progress(17, "fixture hook");
+        progress(17, crate::install::ProgressStage::Finalizing);
         writeln!(output, "fixture postinstall").unwrap();
         Ok(())
     }

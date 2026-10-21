@@ -39,7 +39,7 @@ pub(crate) fn cached_archive(
     destination: &Path,
     url: &str,
     checksum: &str,
-    progress: &mut dyn FnMut(u8, &str),
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
 ) -> Result<PathBuf, Error> {
     let cache = destination.parent().expect("archive parent");
     fs::create_dir_all(cache).map_err(|error| Error::Io(error.to_string()))?;
@@ -65,7 +65,7 @@ pub(crate) fn cached_archive(
         )
         .map_err(|error| Error::Io(format!("cannot preserve damaged runtime archive: {error}")))?;
     }
-    progress(15, "downloading pinned runtime");
+    progress(15, crate::install::ProgressStage::Downloading);
     let temporary = destination.with_extension(format!("part-{}", unique_id()));
     install_runtime_source(url, &temporary)?;
     verify_sha256(&temporary, checksum, "runtime archive")?;
@@ -78,7 +78,7 @@ pub(super) fn archive(
     url: &str,
     checksum: &str,
     programs: &[(&str, &str)],
-    progress: &mut dyn FnMut(u8, &str),
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
 ) -> Result<PathBuf, Error> {
     if !cfg!(target_os = "linux") {
         return Err(Error::Input(
@@ -96,7 +96,7 @@ pub(super) fn archive(
     {
         let stage = root.join(format!(".runtime-{}", unique_id()));
         fs::create_dir(&stage).map_err(|error| Error::Io(error.to_string()))?;
-        progress(50, "extracting project runtime");
+        progress(50, crate::install::ProgressStage::Extracting);
         let status = Command::new("tar")
             .args(["--extract", "--file"])
             .arg(&download)
@@ -143,7 +143,7 @@ pub(super) fn archive(
             ))
         })?;
     }
-    progress(100, "runtime ready");
+    progress(100, crate::install::ProgressStage::Ready);
     Ok(bin.join(programs[0].0))
 }
 
@@ -201,14 +201,23 @@ mod tests {
         let root = fixture.0.join("project-tool");
         let (first, hash) = package(&fixture, "#!/bin/sh\nprintf first\\n", "first.tar.gz");
         let programs = &[("runtime", "bin/runtime")];
+        let mut stages = Vec::new();
         let executable = archive(
             &root,
             first.to_str().unwrap(),
             &hash,
             programs,
-            &mut |_, _| {},
+            &mut |_, stage| stages.push(stage),
         )
         .unwrap();
+        assert_eq!(
+            stages,
+            [
+                crate::install::ProgressStage::Downloading,
+                crate::install::ProgressStage::Extracting,
+                crate::install::ProgressStage::Ready
+            ]
+        );
         assert_eq!(
             fs::read_to_string(&executable).unwrap(),
             "#!/bin/sh\nprintf first\\n"

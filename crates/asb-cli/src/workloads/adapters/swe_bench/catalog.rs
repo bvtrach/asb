@@ -130,7 +130,7 @@ pub(super) fn install(
     adapter: &SweBenchAdapter,
     context: &InstallationContext<'_>,
     output: &mut dyn std::io::Write,
-    progress: &mut dyn FnMut(u8, &str),
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
 ) -> Result<(), Error> {
     let _network_project = project::network_project(context.project_root);
     if !install::tool_installed_locally("swebench", context.tools_root) {
@@ -197,7 +197,7 @@ pub(super) fn install(
             )
             .map_err(crate::io_error)?;
         }
-        progress(25, "downloading and validating official task population");
+        progress(25, crate::install::ProgressStage::DownloadingAndValidating);
         let mut command = Command::new(&python);
         command
             .arg(&helper)
@@ -245,7 +245,7 @@ pub(super) fn install(
     )
     .map_err(|error| Error::Io(format!("cannot write workload catalog label: {error}")))?;
     publish_selection(adapter, &catalog, context.workloads_root, output)?;
-    progress(100, "official task population installed");
+    progress(100, crate::install::ProgressStage::Ready);
     writeln!(
         output,
         "Installed {}: {} official test instances.",

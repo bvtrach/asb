@@ -26,7 +26,10 @@ pub(super) static ADAPTER: StaticTool = StaticTool::new(
     ToolKind::Collector,
 );
 
-fn install_perf(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
+fn install_perf(
+    root: &Path,
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
+) -> Result<PathBuf, Error> {
     if !cfg!(target_os = "linux") {
         return Err(Error::Input("perf requires Linux".into()));
     }
@@ -43,11 +46,11 @@ fn install_perf(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathB
     fs::create_dir(&stage)
         .map_err(|e| Error::Io(format!("cannot create {}: {e}", stage.display())))?;
     let result = (|| {
-        progress(20, "obtaining distribution perf");
+        progress(20, crate::install::ProgressStage::Downloading);
         let source = match distribution_perf(&stage) {
             Ok(path) => path,
             Err(package_error) => {
-                progress(35, "building upstream perf");
+                progress(35, crate::install::ProgressStage::Building);
                 build_perf(&stage, progress).map_err(|build_error| Error::Io(format!("could not obtain a working distribution perf: {package_error}\nCould not build upstream perf: {build_error}\nInstall the compiler, make, flex, bison, libelf and libssl development packages, curl, tar and sha256sum, then retry `asb tool install perf`. See .asb/install.log for build details.")))?
             }
         };
@@ -177,7 +180,10 @@ fn find_perf(dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn build_perf(stage: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
+fn build_perf(
+    stage: &Path,
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
+) -> Result<PathBuf, Error> {
     let archive = stage.join("perf.tar.gz");
     install_verified_source(
         SOURCE,
@@ -201,7 +207,7 @@ fn build_perf(stage: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBu
     if !status.success() {
         return Err(Error::Io("could not extract perf source".into()));
     }
-    progress(50, "compiling Linux perf");
+    progress(50, crate::install::ProgressStage::Building);
     let mut make = Command::new("make");
     make.arg("-C")
         .arg(source.join("tools/perf"))

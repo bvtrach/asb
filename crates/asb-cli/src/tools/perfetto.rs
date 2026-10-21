@@ -35,7 +35,10 @@ pub(super) static ADAPTER: StaticTool = StaticTool::new(
 /// Download a pinned official Perfetto Tracebox binary into the benchmark
 /// project. Tracebox is the Linux Perfetto collector used by the optional
 /// scheduler and userspace tracepoint measurement adapter.
-fn install_perfetto(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
+fn install_perfetto(
+    root: &Path,
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
+) -> Result<PathBuf, Error> {
     let ((tracebox_url, tracebox_hash), (processor_url, processor_hash)) =
         match std::env::consts::ARCH {
             "x86_64" => (
@@ -62,7 +65,7 @@ fn install_perfetto(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<P
     fs::create_dir_all(&bin)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", bin.display())))?;
     let destination = bin.join("tracebox");
-    progress(20, "downloading pinned Perfetto Tracebox");
+    progress(20, crate::install::ProgressStage::DownloadingAndValidating);
     install_verified_source(
         tracebox_url,
         &destination,
@@ -71,9 +74,9 @@ fn install_perfetto(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<P
         true,
         |path| check_executable_version(path, "Perfetto Tracebox"),
     )?;
-    progress(45, "verified Perfetto Tracebox checksum and executable");
+    progress(45, crate::install::ProgressStage::Validating);
     let processor = bin.join("trace_processor_shell");
-    progress(60, "downloading pinned Perfetto trace processor");
+    progress(60, crate::install::ProgressStage::DownloadingAndValidating);
     install_verified_source(
         processor_url,
         &processor,
@@ -82,7 +85,7 @@ fn install_perfetto(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<P
         true,
         |path| check_executable_version(path, "Perfetto trace processor"),
     )?;
-    progress(90, "verified project-local Perfetto tools");
+    progress(90, crate::install::ProgressStage::Validating);
     Ok(destination)
 }
 

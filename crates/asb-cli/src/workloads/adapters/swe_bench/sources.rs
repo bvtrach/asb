@@ -15,7 +15,7 @@ pub(super) fn install(
     adapter: &SweBenchAdapter,
     context: &InstallationContext<'_>,
     output: &mut dyn Write,
-    progress: &mut dyn FnMut(u8, &str),
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
 ) -> Result<(), Error> {
     let tool = context.tools_root.join("swebench");
     let catalog = context.workloads_root.join(adapter.id).join("catalog.json");
@@ -49,7 +49,7 @@ pub(super) fn install(
         preserve(&archive, output)?;
     }
     if !archive.is_file() {
-        progress(80, "downloading pinned original SWE-bench Dockerfiles");
+        progress(80, crate::install::ProgressStage::Downloading);
         let temporary = archive.with_extension(format!(
             "part-{}",
             TaskIdentity::local(adapter.id, None).attempt_id
@@ -85,10 +85,7 @@ pub(super) fn install(
         }
         fs::rename(&temporary, &archive).map_err(crate::io_error)?;
     }
-    progress(
-        90,
-        "matching original Dockerfiles to every installed dataset instance",
-    );
+    progress(90, crate::install::ProgressStage::Validating);
     if !verify(&archive, Some(&catalog))? {
         return Err(Error::Input("original SWE-bench source definitions do not match the installed dataset; reinstall the pinned workload and inspect .asb/install.log".into()));
     }
