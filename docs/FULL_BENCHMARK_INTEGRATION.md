@@ -2343,3 +2343,53 @@ partial/replay/unmeasured integrations. Strict Clippy, formatting and `make buil
 (rustdoc, complete diagrams, interactive views and completions) passed. The
 retained Harbor grading/reconstruction/continuation and final full-goal delivery
 requirements remain unfinished; package and exact-head hosted checks follow.
+
+### Retained original Harbor 2.1 first-verifier grading
+
+Original 2.1 retained grading now invokes Harbor's official verifier against the
+preserved original environment instead of an unimplemented stub. Installed
+dataset/SDK/definition and captured container/image/network identity must match.
+The shared original-owner lock and resource verifier cover all declared services
+before any restart; no environment, volume, agent or provider is created. A
+Harbor environment adapter translates only SDK execution/copy operations to
+those verified immutable container IDs, never Compose project discovery or
+up/build/down. Official test upload, shell construction and binary reward
+parsing remain in the SDK. Existing log mounts are not replaced: current
+verifier outputs are downloaded to the fresh recovered-evaluation directory.
+Transport output is bounded; error/cancellation kills and drains its own CLI
+child so a full asyncio pipe cannot strand teardown. SDK success/failure and
+owner cancellation stop and preserve the original containers, and completed
+grades are selected only after cleanup confirmation.
+
+Normal Harbor grading also publishes a durable pre-verifier start record.
+Pre-verifier captures are explicit; an already-started verifier or raw reward
+requires reconstruction rather than another side-effecting test invocation.
+Completed true/false grades are reused unchanged. Inspection and grade imports
+follow the explicit selected evaluator and validate its preserved cleanup.
+Execution success/time/tokens remain unknown for retained-only outcomes.
+
+Provider-free fixtures cover both grades, legacy/completed preservation,
+catalog/definition/capture mismatch, pre- and mid-grading cancellation, SDK
+failure, non-retry markers, immutable transport commands, forbidden resource
+creation, output bounds, full-pipe teardown and both original versions' imports.
+Real public CLI qualification passed in 47.028 seconds at
+`retained-harbor-grading-vgdcu26k`: original `cancel-async-tasks` incorrect and
+known-reference states received their official false/true grades; original
+submissions, repeated grading and inspection stayed unchanged, resources were
+stopped, and only positively-owned fixture resources were subsequently removed.
+No agent or live provider was used, and no full-population AI score is claimed.
+The preceding service-lifetime commit's hosted CI run 39538101517 passed.
+Final current-source/package/hosted verification follows. Raw-outcome recovery,
+already-started verifier reconstruction, interrupted-slot continuation,
+population-scale presentation/qualification, final review, merge/main CI and
+the new minor release remain in the unchanged full goal.
+
+Final-source retained Harbor public CLI qualification passed again in 44.793
+seconds at `retained-harbor-grading-cy0fiayd`; normal Harbor false/true SDK grading
+passed in 40.950 seconds. The full source suite passed 447 unit tests, 87 offline
+CLI tests, twenty benchmark protocol suites, ten guest/lifecycle checks and the
+remaining integrations. Eight Harbor retained/transport cases and nine public
+import/compare cases are included. Strict Clippy, formatting and `make build`
+with rustdoc, diagrams, interactive views and completions passed. Packaged-crate
+and exact-head hosted verification follow; the full delivery checklist remains
+open.

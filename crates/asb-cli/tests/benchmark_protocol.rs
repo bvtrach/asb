@@ -1,6 +1,11 @@
 //! Provider-free tests of the upstream workload protocol's pure data layer.
 
 #[test]
+fn retained_harbor_grading_uses_original_verifier_without_recreating_environments() {
+    python_protocol("benchmark_harbor_grading.py");
+}
+
+#[test]
 fn original_terminal_grading_preserves_resources_and_never_repeats_lost_shell_tests() {
     python_protocol("benchmark_terminal_grading.py");
 }

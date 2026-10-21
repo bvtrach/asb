@@ -650,10 +650,21 @@ Missing results after that marker require outcome reconstruction, not an implici
 test retry against already-mutated state. Original tasks requiring the lost
 agent shell cannot be truthfully graded in a new shell and are refused before
 restart. The new operation therefore does not reconstruct lost process/shell
-state or recover an already-started verifier. Retained Harbor environment
-grading, raw-outcome reconstruction and complete interrupted-slot continuation
-remain unfinished; existing completed Harbor grades are still read/reused
-without restarting anything.
+state or recover an already-started verifier.
+Original Harbor now also supports first-verifier grading of a captured,
+stopped-preserved environment. It validates the installed original task/SDK,
+definition, image, resource ownership and network topology before resuming
+only those exact containers. Its SDK environment delegates execution/copy to
+verified immutable container IDs, never Compose up/build/discovery or a new
+agent. The official verifier still owns test upload, command construction and
+binary reward parsing. Original log mounts remain unchanged; current verifier
+outputs are downloaded into the new private recovered evaluation directory.
+Transport output and child shutdown are bounded, including full-pipe failure.
+Normal Harbor grading now publishes the same durable verifier-start record.
+Completed false/true grades are preserved and reused, recovered cleanup must
+confirm stopped preservation before selection, and inspection/import/compare
+follow the explicit selected evaluator. Raw-outcome reconstruction and complete
+interrupted-slot continuation remain unfinished.
 See the full benchmark delivery
 checklist before claiming complete upstream benchmark support.
 Their shared installer also downloads a checksum-pinned original

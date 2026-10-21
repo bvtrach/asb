@@ -267,6 +267,20 @@ is used. Representative cases do not establish full-population AI performance or
 reconstruct lost shell state. Normal mixed-sweep and Harbor SDK qualifications
 remain regression gates when changing shared network/metadata behavior.
 
+`benchmark_harbor_grading.py` covers original 2.1 first-verifier retained grading
+through provider-free SDK seams, true/false grade preservation, cancellation,
+changed catalog/definition/capture, non-retry markers, immutable service IDs,
+bounded output and full-pipe subprocess teardown. Both original Terminal
+versions are covered by recovered-grade import/compare checks.
+The opt-in `benchmark_live_harbor_grading.py` uses the same ASB/project variables
+and the project's Harbor SDK interpreter. It captures incorrect and known-correct
+`cancel-async-tasks` states without grading, preserves the original containers,
+calls public `workload recover --grade`, and checks official rewards, unchanged
+submissions/repeat calls/inspection, stopped resources and unknown execution
+metrics. Only positively-owned fixture resources are removed afterward. It
+never calls an agent or live provider and does not prove full-population AI
+performance or reconstruction of a verifier that already started.
+
 See
 [evaluation semantics](EVALUATION.md). Perfetto
 post-processing scopes scheduler counts and series to the benchmark process

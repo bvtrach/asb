@@ -23,7 +23,8 @@ from asb_docker import DockerSession, docker_command
 from asb_execution import ExecutionError, ManagedDockerWorkspace
 from asb_resources import ResourceJournal, build_image_tag
 from asb_terminal_catalog import verify, tree_manifest
-from asb_terminal_bench_1 import quiet_sdk, restore_task_networks, original_networks, write_json
+from asb_terminal_bench_1 import (quiet_sdk, restore_task_networks, original_networks,
+                                write_json, record_grading_start, network_options)
 
 
 class ImageUnavailable(ExecutionError):
@@ -153,24 +154,226 @@ def environment_class(command, attempt, artifacts, journal=None):
 
 
 def inspect_retained(retained):
-    retained.select_grade(retained.object("evaluation.json"))
+    prefix = retained.selected_evaluation() or ""
+    retained.select_grade(retained.object(prefix+"evaluation.json"))
     verify_retained(retained)
 
 
-def grade_retained(retained, _catalog_path, _cancelled):
+def retained_command(arguments, containers):
+    """Translate SDK transport operations to immutable, verified container IDs.
+
+    No Compose discovery/start/build/down is allowed during retained grading.
+    The SDK still owns test upload, shell construction and reward parsing.
+    """
+    if not isinstance(arguments,list) or not arguments or any(not isinstance(arg,str) or "\x00" in arg for arg in arguments):
+        raise ExecutionError("invalid retained Harbor transport arguments")
+    if arguments[0] == "exec":
+        options, index = [], 1
+        while index < len(arguments) and arguments[index].startswith("-"):
+            flag = arguments[index]
+            index += 1
+            if flag in ["-T", "--no-TTY"]:continue
+            if flag not in ["-w", "--workdir", "-e", "--env", "-u", "--user"] or index >= len(arguments):
+                raise ExecutionError("unsupported retained Harbor exec option")
+            options.extend([flag,arguments[index]])
+            index += 1
+        if index >= len(arguments)-1 or arguments[index] not in containers:
+            raise ExecutionError("retained Harbor exec does not target a verified service")
+        return ["exec", "-i", *options, containers[arguments[index]], *arguments[index+1:]]
+    if arguments[0] == "cp" and len(arguments) == 3:
+        endpoints = []
+        remote = 0
+        for endpoint in arguments[1:]:
+            service, separator, path = endpoint.partition(":")
+            if separator:
+                if service not in containers or not path.startswith("/"):
+                    raise ExecutionError("retained Harbor copy does not target a verified service")
+                endpoints.append(containers[service]+":"+path)
+                remote += 1
+            else:
+                if not Path(endpoint).is_absolute():
+                    raise ExecutionError("retained Harbor copy needs an explicit SDK path")
+                endpoints.append(endpoint)
+        if remote == 1:return ["cp",*endpoints]
+    raise ExecutionError("retained Harbor transport cannot create, replace or remove environments")
+
+
+async def retained_output(process, stdin_data):
+    async def read(stream):
+        chunks, size = [],0
+        while chunk := await stream.read(65536):
+            size += len(chunk)
+            if size > 1024 * 1024:
+                raise ExecutionError("retained Harbor transport output exceeds 1 MiB")
+            chunks.append(chunk)
+        return b"".join(chunks)
+    async def write():
+        if stdin_data:process.stdin.write(stdin_data)
+        try:
+            await process.stdin.drain()
+        except (BrokenPipeError,ConnectionResetError):
+            pass  # The SDK command's exit status remains authoritative.
+        finally:
+            process.stdin.close()
+    pending = [asyncio.create_task(operation) for operation in [write(),read(process.stdout),read(process.stderr),process.wait()]]
+    try:
+        _,stdout,stderr,_ = await asyncio.gather(*pending)
+        return stdout,stderr
+    finally:
+        for task in pending:
+            if not task.done():task.cancel()
+        await asyncio.gather(*pending,return_exceptions=True)
+
+
+def retained_environment_class(command, resumed):
+    from harbor.environments.base import ExecResult
+    from harbor.environments.docker.docker import DockerEnvironment
+    from harbor.environments.docker.runtime import ContainerRuntime
+    containers = {"main":resumed.main.id}
+    for container in resumed.containers:
+        service = (container.attrs.get("Config",{}).get("Labels",{}) or {}).get("com.docker.compose.service")
+        if service and container.id != resumed.main.id:
+            if service in containers:raise ExecutionError("retained Harbor service identity is ambiguous")
+            containers[service] = container.id
+
+    class RetainedHarborEnvironment(DockerEnvironment):
+        @classmethod
+        def runtime(cls):
+            return ContainerRuntime(engine=tuple(command), compose=tuple(command+["compose"]))
+
+        @property
+        def capabilities(self):
+            # The original log mounts point at the *old* attempt directory.
+            # Download current verifier outputs to the new evaluation directory
+            # instead of pretending it was mounted into the existing container.
+            return super().capabilities.model_copy(update={"mounted":False,"stream":False})
+
+        async def start(self,*_args,**_kwargs):
+            raise ExecutionError("retained Harbor environments must not be recreated")
+
+        async def stop(self,*_args,**_kwargs):
+            raise ExecutionError("retained Harbor resources are preserved by their original owner")
+
+        async def _run_docker_compose_command(self, arguments, check=True, timeout_sec=None,
+                                             stdin_data=None, on_output=None):
+            argv = retained_command(arguments,containers)
+            process = await asyncio.create_subprocess_exec(*command,*argv,stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
+            try:
+                stdout,stderr = await asyncio.wait_for(retained_output(process,stdin_data),timeout=min(timeout_sec or 1800,1800))
+            except BaseException:
+                if process.returncode is None:
+                    with contextlib.suppress(ProcessLookupError):process.kill()
+                # Drain the killed process's remaining pipe buffers: wait()
+                # alone can deadlock while asyncio has paused a full pipe.
+                await asyncio.wait_for(process.communicate(),timeout=10)
+                raise
+            stdout,stderr = stdout.decode(errors="replace"),stderr.decode(errors="replace")
+            if check and process.returncode:
+                raise ExecutionError("retained original Harbor verifier transport failed")
+            if on_output is not None:
+                if stdout:await on_output(stdout,"stdout")
+                if stderr:await on_output(stderr,"stderr")
+            return ExecResult(stdout=stdout,stderr=stderr,return_code=process.returncode)
+
+        async def download_dir(self,source_dir,target_dir):
+            # Reuse the SDK's transfer format, but do not fall back to its
+            # project-wide container-name discovery if Docker cp fails.
+            Path(target_dir).mkdir(parents=True,exist_ok=True)
+            await self._run_docker_compose_command(["cp","main:"+source_dir+"/.",str(target_dir)])
+
+    return RetainedHarborEnvironment
+
+
+@quiet_sdk
+def grade_retained(retained, catalog_path, cancelled):
     from asb_retained import require
+    catalog_path = Path(catalog_path)
+    if retained.selected_evaluation() is not None:
+        inspect_retained(retained)
+        return
     if retained.child("evaluation.json").exists():
         result = retained.object("evaluation.json")
         if result.get("outcome") in ["resolved","unresolved"]:
             inspect_retained(retained)
             return
-    require(False,"retained Harbor environment grading is not implemented yet; preserved work was not changed")
+        require(False,"the retained Harbor verifier already started; reconstruct its original outcome instead of rerunning tests")
+    completed,started = [],False
+    for index,path in enumerate(retained.root.iterdir()):
+        require(index < 256,"retained attempt has excessive top-level artifacts")
+        if path.name.startswith("recovered-evaluation-"):
+            import re
+            require(re.fullmatch(r"recovered-evaluation-[a-f0-9]{32}",path.name)
+                    and not path.is_symlink() and path.is_dir(),"retained evaluator directory is malformed")
+            prefix = path.name+"/"
+            if retained.child(prefix+"evaluation.json").exists():
+                result = retained.object(prefix+"evaluation.json")
+                if result.get("outcome") in ["resolved","unresolved"]:completed.append(path.name)
+            started = started or retained.child(prefix+"evaluation-started.json").exists()
+    require(len(completed) <= 1,"multiple completed retained Harbor grades cannot be guessed")
+    if completed:
+        prefix = completed[0]+"/"
+        retained.select_grade(retained.object(prefix+"evaluation.json"))
+        verify_retained(retained,prefix)
+        retained.publish_selection(completed[0])
+        return
+    require(not started and not retained.child("evaluation-started.json").exists()
+            and not any(retained.child("official/verifier/"+name).exists() for name in ["reward.json","reward.txt","test-stdout.txt"]),
+            "the retained Harbor verifier already started; reconstruct its original outcome instead of rerunning side-effecting tests")
+    require(retained.submission.get("grading_state") == "captured-before-verifier"
+            and retained.recorded_cleanup == "stopped-preserved","retained Harbor submission has no preserved pre-verifier capture")
+    require(isinstance(retained.task.get("original_networks"),dict),"retained Harbor task has no original network topology")
+    networks = network_options(retained.task["original_networks"])
+    catalog = verify(catalog_path,"terminal-bench-2.1")
+    selected = next((item for item in catalog["tasks"] if item["id"] == retained.identity["task_id"]),None)
+    require(selected is not None and catalog["dataset"] == retained.identity["dataset"]
+            and catalog["sdk"] == retained.task.get("sdk"),"retained Harbor task differs from its installed grading catalog")
+    definition = catalog_path.parent/selected["definition"]
+    digest = hashlib.sha256(json.dumps(tree_manifest(definition),sort_keys=True).encode()).hexdigest()
+    require(retained.task["baseline"] == {"kind":"upstream-environment-definition",
+        "source_revision":catalog["dataset"]["revision"],"definition_sha256":digest},"retained Harbor task definition changed")
+    from asb_terminal_catalog import runtime_identity
+    from asb_resources import RetainedEnvironment
+    from harbor.models.task.task import Task
+    from harbor.models.task.config import TaskOS
+    from harbor.models.trial.paths import TrialPaths
+    runtime_identity("terminal-bench-2.1")
+    task = Task(definition)
+    require(not task.has_steps and task.config.environment.os == TaskOS.LINUX,"retained original Harbor task requires its single-step Linux definition")
+    require(not cancelled.is_set(),"retained Harbor grading cancelled before environment restart")
+    directory = "recovered-evaluation-"+uuid.uuid4().hex
+    artifacts = retained.child(directory)
+    artifacts.mkdir(mode=0o700)
+    paths = TrialPaths(artifacts/"official")
+    paths.mkdir()
+    paths.chmod_dir()
+    loop = asyncio.new_event_loop()
+    try:
+        with DockerSession() as client, RetainedEnvironment(client,retained,artifacts,cancelled,
+                before_start=lambda main:restore_task_networks(client,main,networks)) as resumed:
+            environment = retained_environment_class(docker_command(),resumed)(
+                environment_dir=definition/"environment",environment_name=task.short_name,
+                session_id=retained.identity["attempt_id"],trial_paths=paths,task_env_config=task.config.environment,
+                logger=logging.getLogger("asb.retained-harbor"))
+            grader = HarborTask.__new__(HarborTask)
+            grader.artifacts,grader.task_id,grader.attempt = artifacts,retained.identity["task_id"],retained.identity["attempt_id"]
+            grader.invocation,grader.catalog = {"identity":retained.identity},catalog
+            grader.task,grader.paths,grader.environment,grader.loop = task,paths,environment,loop
+            require(not cancelled.is_set(),"retained Harbor grading cancelled before verifier launch")
+            result = grader.grade_environment()
+            require(not cancelled.is_set(),"retained Harbor grading cancelled; no outcome was selected")
+    finally:
+        loop.close()
+    retained.select_grade(result)
+    verify_retained(retained,directory+"/")
+    retained.publish_selection(directory)
 
 
-def verify_retained(retained):
+def verify_retained(retained, prefix=None):
     from asb_retained import require
     retained.verify_environment_baseline()
-    result = retained.object("evaluation.json")
+    prefix = (retained.selected_evaluation() or "") if prefix is None else prefix
+    result = retained.object(prefix+"evaluation.json")
     retained.grade(result)
     require(retained.task.get("sdk") == {"package":"harbor","version":"0.24.0"},
             "retained original Harbor SDK differs")
@@ -178,10 +381,11 @@ def verify_retained(retained):
     require(isinstance(rewards,dict) and set(rewards) == {"reward"}
             and type(rewards["reward"]) in [int,float] and rewards["reward"] in [0,1]
             and result["resolved"] == (rewards["reward"] == 1), "retained original Harbor reward disagrees")
-    encoded = retained.child("official/verifier/reward.json")
+    encoded = retained.child(prefix+"official/verifier/reward.json")
     # Match the pinned SDK: JSON takes precedence when both outputs exist.
-    reward = retained.object("official/verifier/reward.json").get("reward") if encoded.is_file() else float(retained.bytes("official/verifier/reward.txt").decode().strip())
+    reward = retained.object(prefix+"official/verifier/reward.json").get("reward") if encoded.is_file() else float(retained.bytes(prefix+"official/verifier/reward.txt").decode().strip())
     require(type(reward) in [int,float] and reward == rewards["reward"], "retained reward file differs from its report")
+    if prefix:retained.verify_grading_cleanup(prefix)
 
 
 class HarborTask:
@@ -279,15 +483,22 @@ class HarborTask:
 
     def capture_submission(self):
         result = {"task":self.invocation["identity"], "kind":"in-place-environment",
+                  "grading_state":"captured-before-verifier",
                   "container_id":self.workspace.container.id,"image":self.workspace.image_identity}
         write_json(self.artifacts / "submission.json", result)
         return result
 
     @quiet_sdk
     def evaluate(self, timeout=1800):
-        from harbor.verifier.verifier import Verifier
         self.capture_submission()
         restore_task_networks(self.client, self.workspace.container, self.original_networks)
+        return self.grade_environment(timeout)
+
+    @quiet_sdk
+    def grade_environment(self, timeout=1800):
+        from harbor.verifier.verifier import Verifier
+        record_grading_start(self.artifacts,self.invocation["identity"] if self.invocation else {
+            "workload":"terminal-bench-2.1","task_id":self.task_id,"attempt_id":self.attempt,"dataset":self.catalog["dataset"]})
         # Reward files are outputs of this verifier invocation, not a cache or
         # something left by a client before the official test script ran.
         for path in [self.paths.reward_text_path, self.paths.reward_json_path]:

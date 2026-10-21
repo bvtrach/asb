@@ -148,6 +148,9 @@ class HarborTests(unittest.TestCase):
             for rewards, expected in [({"reward":1},"resolved"), ({"reward":0},"unresolved"), ({},"evaluation_error"),
                 ({"reward":float("nan")},"evaluation_error"), ({"reward":0.5},"evaluation_error"),
                 ({"reward":True},"evaluation_error"), ({"other":1},"evaluation_error")]:
+                # These SDK seams represent separate first-verifier attempts,
+                # not permission to repeat tests against one mutated task.
+                (root/"evaluation-started.json").unlink(missing_ok=True)
                 with self.subTest(rewards=rewards), patch.object(subject,"restore_task_networks") as restore:
                     task.paths.reward_text_path.write_text("stale reward")
                     task.paths.reward_json_path.write_text('{"reward":1}')
