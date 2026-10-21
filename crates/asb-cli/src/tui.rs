@@ -1230,7 +1230,8 @@ fn install_setup_dependencies(
 ) -> Result<bool, Error> {
     let selected = crate::collectors::expand_dependencies(selected);
     let tools_root = project::resolve(&app.root, &app.project.tools_dir);
-    if crate::collectors::dependency_tools(&selected)
+    let required = crate::collectors::dependency_tools(&selected);
+    if required
         .iter()
         .all(|id| install::tool_installed_locally(id, &tools_root))
     {
@@ -1240,7 +1241,7 @@ fn install_setup_dependencies(
         app.root.clone(),
         install::operation::Request::Dependencies {
             selected,
-            directory: tools_root,
+            directory: tools_root.clone(),
         },
         |status| {
             set_message(
@@ -1258,8 +1259,21 @@ fn install_setup_dependencies(
         },
     )?;
     app.refresh_availability();
+    finish_dependency_install(app, result, &required, &tools_root)
+}
+
+fn finish_dependency_install(
+    app: &mut App,
+    result: Result<(), Error>,
+    required: &[&str],
+    tools_root: &Path,
+) -> Result<bool, Error> {
     match result {
-        Ok(()) => {
+        Ok(())
+            if required
+                .iter()
+                .all(|id| install::tool_installed_locally(id, tools_root)) =>
+        {
             set_message(
                 &mut app.message,
                 &mut app.message_color,
@@ -1269,6 +1283,17 @@ fn install_setup_dependencies(
                 true,
             );
             Ok(true)
+        }
+        Ok(()) => {
+            set_message(
+                &mut app.message,
+                &mut app.message_color,
+                &mut app.message_until,
+                "Required collector installation finished but a dependency is not ready; check .asb/install.log.",
+                Color::Red,
+                false,
+            );
+            Ok(false)
         }
         Err(error) => {
             set_message(
@@ -2336,6 +2361,60 @@ mod tests {
             super::toggle_setup_choice(&mut app, |_, _| panic!("deselection must not install"))
                 .unwrap();
             assert!(!app.panes[step].selected[0]);
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn successful_dependency_process_requires_ready_files_before_selection() {
+        use std::os::unix::fs::PermissionsExt;
+        for state in ["missing", "nonexec", "ready"] {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/tui-dependency-fixtures")
+                .join(crate::workloads::TaskIdentity::local("dependency", None).attempt_id);
+            std::fs::create_dir_all(&root).unwrap();
+            let mut app = App::new(root.clone(), ProjectConfig::default());
+            let tools_root = crate::project::resolve(&root, &app.project.tools_dir);
+            let perf = tools_root.join("perf/bin/perf");
+            std::fs::create_dir_all(perf.parent().unwrap()).unwrap();
+            let flamegraph = tools_root.join("flamegraph/bin/flamegraph");
+            std::fs::create_dir_all(flamegraph.parent().unwrap()).unwrap();
+            std::fs::write(&flamegraph, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(&flamegraph, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let installer = root.join("fake-install");
+            std::fs::write(&installer, "#!/bin/sh\nif [ \"$1\" != missing ]; then\n printf '#!/bin/sh\\nexit 0\\n' > \"$2\"\n /bin/chmod \"$3\" \"$2\"\nfi\nexit 0\n").unwrap();
+            std::fs::set_permissions(&installer, std::fs::Permissions::from_mode(0o700)).unwrap();
+            assert!(
+                std::process::Command::new(&installer)
+                    .arg(state)
+                    .arg(&perf)
+                    .arg(if state == "ready" { "700" } else { "600" })
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            app.step = 4;
+            let index = app.panes[4]
+                .choices
+                .iter()
+                .position(|choice| choice.label == "flamegraph")
+                .unwrap();
+            app.panes[4].cursor = index;
+            app.panes[4].selected.fill(false);
+            app.panes[4].choices[index].availability = Availability::Available;
+            let selected_step = app.step;
+            super::toggle_setup_choice(&mut app, |app, dependencies| {
+                assert!(dependencies.is_some());
+                app.refresh_availability();
+                super::finish_dependency_install(app, Ok(()), &["perf"], &tools_root)
+            })
+            .unwrap();
+            assert_eq!(app.panes[4].selected[index], state == "ready");
+            assert_eq!(app.step, selected_step);
+            if state != "ready" {
+                assert!(app.message.contains("dependency is not ready"));
+            }
+            std::fs::remove_dir_all(root).unwrap();
         }
     }
 

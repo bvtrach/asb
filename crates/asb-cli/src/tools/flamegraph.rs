@@ -34,6 +34,10 @@ fn install(
         ),
     ] {
         let destination = bin.join(name);
+        progress(
+            if name == "flamegraph" { 60 } else { 25 },
+            crate::install::ProgressStage::DownloadingAndValidating,
+        );
         install_executable_source(url, &destination, "flamegraph tool")?;
         progress(
             if name == "flamegraph" { 90 } else { 60 },

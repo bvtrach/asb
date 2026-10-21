@@ -65,7 +65,7 @@ fn install_perfetto(
     fs::create_dir_all(&bin)
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", bin.display())))?;
     let destination = bin.join("tracebox");
-    progress(20, crate::install::ProgressStage::Downloading);
+    progress(20, crate::install::ProgressStage::DownloadingAndValidating);
     install_verified_source(
         tracebox_url,
         &destination,
@@ -76,7 +76,7 @@ fn install_perfetto(
     )?;
     progress(45, crate::install::ProgressStage::Validating);
     let processor = bin.join("trace_processor_shell");
-    progress(60, crate::install::ProgressStage::Downloading);
+    progress(60, crate::install::ProgressStage::DownloadingAndValidating);
     install_verified_source(
         processor_url,
         &processor,

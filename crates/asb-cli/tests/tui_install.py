@@ -172,16 +172,47 @@ def assert_quiescent(root):
     assert (root / "writes").read_bytes() == before, "writes continued after confirmed exit"
 
 
-def helper_protocol(binary, root, mode="tool", name="pi", expected_stages=(1, 8), expected_final=1):
+def start_helper(binary, root, mode, name):
     receiver, sender = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+    receipts, proof = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
     env = environment(root)
     env["ASB_INSTALL_PROGRESS_FD"] = str(sender.fileno())
+    env["ASB_GATE_RECEIPT_FD"] = str(proof.fileno())
+    env["ASB_GATE_OWNER_PID"] = str(os.getpid())
     directory = root / ("workloads" if mode == "workload" else ".asb-tools")
-    arguments = [binary, "__asb-install", "ASBINSTALL1", mode, str(root), str(directory), name]
-    child = subprocess.Popen(arguments, cwd=root, env=env, pass_fds=(sender.fileno(),),
+    arguments = [binary, "__asb-gate", "--asb-launch-v1", "0", binary,
+                 "__asb-install", "ASBINSTALL1", mode, str(root), str(directory), name]
+    child = subprocess.Popen(arguments, cwd=root, env=env, pass_fds=(sender.fileno(), proof.fileno()),
                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     sender.close()
+    proof.close()
+    receipts.settimeout(5)
+    hello = receipt(receipts)
+    assert hello == b"ASBGATE2" + bytes([1, 0, 0, 0]) + struct.pack("<I", child.pid), hello
+    wait_until(lambda: "State:\tT" in Path(f"/proc/{child.pid}/status").read_text(), "gate did not stop")
+    os.kill(child.pid, signal.SIGCONT)
     receiver.settimeout(5)
+    return child, receiver, receipts
+
+
+def receipt(channel):
+    data = b""
+    while len(data) < 16:
+        chunk = channel.recv(16 - len(data))
+        assert chunk, "EOF is not a quiescence receipt"
+        data += chunk
+    return data
+
+
+def finish_helper(child, receipts, expected_final):
+    stdout, stderr = child.communicate(timeout=5)
+    assert (child.returncode == 0) == (expected_final == 1) and stdout == stderr == b"", (stdout, stderr)
+    assert receipt(receipts) == b"ASBGATE2" + bytes([2, child.returncode, 0, 0]) + struct.pack("<I", child.pid)
+    receipts.close()
+
+
+def helper_protocol(binary, root, mode="tool", name="pi", expected_stages=(1, 8), expected_final=1):
+    child, receiver, receipts = start_helper(binary, root, mode, name)
     final = None
     stages = set()
     while final is None:
@@ -193,8 +224,8 @@ def helper_protocol(binary, root, mode="tool", name="pi", expected_stages=(1, 8)
         else:
             assert 1 <= frame[6] <= 13, frame
             stages.add(frame[6])
-    stdout, stderr = child.communicate(timeout=5)
-    assert final == expected_final and (child.returncode == 0) == (final == 1) and stdout == stderr == b""
+    assert final == expected_final
+    finish_helper(child, receipts, expected_final)
     assert set(expected_stages).issubset(stages), (expected_stages, stages)
     receiver.close()
     invalid = subprocess.run([binary, "__asb-install", "old"], cwd=root,

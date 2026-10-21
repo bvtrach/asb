@@ -85,6 +85,7 @@ fn build_bpftrace(
     if !source_dir.is_dir() {
         fs::create_dir_all(root)
             .map_err(|error| Error::Io(format!("cannot create {}: {error}", root.display())))?;
+        progress(10, crate::install::ProgressStage::Downloading);
         let status = Command::new("curl")
             .args([
                 "--fail",
@@ -103,7 +104,7 @@ fn build_bpftrace(
                 bpftrace_source_commands()
             )));
         }
-        progress(25, crate::install::ProgressStage::Downloading);
+        progress(25, crate::install::ProgressStage::Extracting);
         fs::create_dir_all(&source_dir).map_err(|error| {
             Error::Io(format!("cannot create bpftrace source directory: {error}"))
         })?;
@@ -121,8 +122,8 @@ fn build_bpftrace(
                 bpftrace_dependency_commands("tar")
             )));
         }
-        progress(40, crate::install::ProgressStage::Extracting);
     }
+    progress(40, crate::install::ProgressStage::Configuring);
     let status = Command::new("cmake")
         .args(["-S"])
         .arg(&source_dir)
@@ -137,7 +138,7 @@ fn build_bpftrace(
             bpftrace_source_commands()
         )));
     }
-    progress(60, crate::install::ProgressStage::Configuring);
+    progress(60, crate::install::ProgressStage::Building);
     let status = Command::new("cmake")
         .args(["--build"])
         .arg(&build_dir)
@@ -150,7 +151,7 @@ fn build_bpftrace(
             bpftrace_source_commands()
         )));
     }
-    progress(90, crate::install::ProgressStage::Building);
+    progress(90, crate::install::ProgressStage::Validating);
     find_built_bpftrace(&build_dir).ok_or_else(|| {
         Error::Io(format!(
             "bpftrace built without a discoverable executable under {}",

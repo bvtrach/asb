@@ -391,7 +391,8 @@ fn helper(args: &[OsString]) -> Result<(), ()> {
         ),
     };
     if let Err(error) = &result {
-        // Keep the original private diagnostic, never its contents in frames.
+        // Retain the original error using the existing project install-log
+        // policy, never its contents in frames. This is not a privacy guarantee.
         if let Ok(mut log) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -425,6 +426,123 @@ fn helper(args: &[OsString]) -> Result<(), ()> {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    /// Receiver/custody qualification, separate from the real helper/PTY matrix:
+    /// a real native guardian supervises a local program, while this fixture
+    /// owns the only status sender and deliberately violates its wire contract.
+    fn receiver_fixture(script: &str) -> (Operation, UnixDatagram) {
+        let binary = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("asb");
+        let mut launch = ProcessLaunch::new("/bin/sh");
+        launch.arg("-c").arg(script);
+        let (mut command, route) = launch.native(Some(&binary));
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let admission =
+            process_gate::Admission::new(route.validate_gate(&mut command).unwrap()).unwrap();
+        let mut gate = admission.spawn().unwrap();
+        gate.resume().unwrap();
+        let (socket, writer) = UnixDatagram::pair().unwrap();
+        socket.set_nonblocking(true).unwrap();
+        writer.set_nonblocking(true).unwrap();
+        (
+            Operation {
+                gate,
+                socket,
+                percent: 0,
+                stage: ProgressStage::Preparing,
+                result: None,
+                finished: false,
+            },
+            writer,
+        )
+    }
+
+    #[test]
+    fn actual_receiver_rejects_bad_order_frames_and_completion_disagreement() {
+        let scope = crate::process_cleanup::test_support::Scope::new();
+        for frames in [
+            vec![frame(SUCCESS, 0).to_vec(), frame(SUCCESS, 0).to_vec()],
+            vec![
+                frame(SUCCESS, 0).to_vec(),
+                progress_frame(40, ProgressStage::Building).to_vec(),
+            ],
+            vec![vec![0; FRAME]],
+            vec![vec![0; FRAME + 1]],
+        ] {
+            let (mut operation, writer) = receiver_fixture("exit 0");
+            for frame in frames {
+                writer.send(&frame).unwrap();
+            }
+            assert!(
+                operation.poll().is_err(),
+                "malformed/order-violating frames must fail at the actual receiver"
+            );
+            operation.cancel().unwrap();
+        }
+        for (script, send_success) in [("exit 0", false), ("exit 7", true)] {
+            let (mut operation, writer) = receiver_fixture(script);
+            if send_success {
+                writer.send(&frame(SUCCESS, 0)).unwrap();
+            }
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let error = loop {
+                if let Some(result) = operation.poll().unwrap() {
+                    break result.unwrap_err();
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            assert!(
+                error
+                    .to_string()
+                    .contains("missing final status or unsuccessful gate exit")
+            );
+            assert_eq!(
+                operation.gate.try_wait().unwrap().unwrap().success(),
+                !send_success
+            );
+        }
+        scope.wait_finished();
+    }
+
+    #[test]
+    fn actual_receiver_caps_a_flooded_tick_while_guardian_is_live() {
+        let scope = crate::process_cleanup::test_support::Scope::new();
+        let (mut operation, writer) = receiver_fixture("exec /bin/sleep 30");
+        let mut sent = 0;
+        loop {
+            match writer.send(&progress_frame(
+                (sent % 100) as u8,
+                ProgressStage::Downloading,
+            )) {
+                Ok(FRAME) => sent += 1,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                result => panic!("unexpected send {result:?}"),
+            }
+            assert!(sent < 10000);
+        }
+        assert!(sent > 64);
+        let started = Instant::now();
+        assert!(operation.poll().unwrap().is_none());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(
+            operation.percent(),
+            63,
+            "one tick must consume only its 64-frame budget"
+        );
+        assert_eq!(operation.stage(), ProgressStage::Downloading);
+        operation.cancel().unwrap();
+        drop(operation);
+        scope.wait_finished();
+    }
     #[test]
     fn protocol_is_fixed_and_rejects_untrusted_messages() {
         for code in 1..=13 {

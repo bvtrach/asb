@@ -762,10 +762,18 @@ bounded polling batch into its latest phase/percentage. Unknown phases, reserved
 bits and a progress stage on a final frame are rejected. Final status
 has a one-second send budget, with fixed input/I/O/execution/request failure
 categories and a project install-log hint. Original failures are appended to
-the existing install log when possible. The helper marks its protocol descriptor
+the existing project install log when possible, using its existing append and
+permissions policy. That log can contain sensitive details and should not be
+shared without inspection; the fixed protocol does not make the log private.
+The helper marks its protocol descriptor
 CLOEXEC before invoking installers. EOF and helper success alone cannot grant
 success: the parent also requires matching successful gate exit and its
 descendant-quiescence receipt, then each selection flow refreshes readiness.
+Collector dependencies are rechecked with the same generic project-executable
+predicate after that refresh; a zero installer exit cannot select a collector
+whose dependency remains missing or non-executable. Phase-begin callbacks precede
+long source/build commands, including each bpftrace download/extract/configure/
+build step. Percentages at those boundaries describe previously completed work.
 
 Drawing/input errors, Esc and Ctrl-C explicitly stop the owned gate and retain
 both the primary error and any unconfirmed-cleanup diagnostic. Unwinding uses
