@@ -1,8 +1,9 @@
 # Architecture
 
-The maintained overview below explains ASB's runtime boundaries. It is
-supplemented—not replaced—by the generated [Rust type diagram](asb-type-diagram.mmd)
-and its [SVG rendering](asb-type-diagram.svg). Regenerate both with `make uml`.
+The maintained overview below explains ASB's runtime boundaries. It can be
+supplemented—not replaced—by generated Rust type, dataflow, and control-flow
+diagrams. Generate them locally with `make uml`, `make flows`, or
+`make interactive`; the derived files are intentionally not tracked.
 Private implementation items are documented by `make rust-doc` under `target/doc/`.
 
 ASB is deliberately split into a small CLI and a file-backed workload directory:
@@ -83,6 +84,14 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   under a machine-readable `metrics` object plus bounded `series` arrays.
   Process rows in the same observation are summed, not plotted as extra time
   points. `series_timestamps` uses monotonic observation-completion offsets;
+  CPU/I/O and BPF processing reads complete stopped stdout files, not their
+  256 KiB diagnostic prefix. Input is bounded to 16 MiB; truncated final lines,
+  invalid UTF-8, nonfinite parsed values or processed data above a 12 MiB
+  serialized budget fail the collector without prefix measurements. The
+  processed budget reserves worst-case sixfold JSON diagnostic escaping and
+  outer fields beneath comparison's 16 MiB
+  result limit. Temporary full output is removed after processing on either
+  success or failure; an optional collector error never erases an official grade.
   historical files fall back to pidstat clock offsets with midnight handling.
   Average and child-summary rows are excluded. CPU/I/O observations use the
   millisecond series timestamp contract (both monotonic pidstat markers and
@@ -114,7 +123,10 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   series with at least two points and expose the same hover, zoom, pan, reset,
   and enlarge controls as bar charts. Built-in BPFTrace profiles remain
   bounded cumulative one-second snapshots and final aggregates (custom
-  interval programs may add series), while Perfetto retains its timestamped
+  interval programs may add series). Their legacy arrays have no measured
+  timestamps and are sample-indexed, not qualified aligned clock series;
+  sparse per-CPU maps must not be assumed synchronized by array index.
+  Perfetto retains its timestamped
   trace. Process-attached collector processes stop at the agent-execution
   boundary (also on run failure), before grading. Report processing/export
   stays after workload evaluation; an optional processor failure becomes a

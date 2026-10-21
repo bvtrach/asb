@@ -141,10 +141,13 @@ fn process_hook_exports_profile_results_without_attaching_a_collector() {
         measurements::Session::start_in_execution_namespace(&fixture.0, &["agent-memory".into()])
             .unwrap();
     let status = std::process::ExitStatus::from_raw(0);
+    let stdout_path = fixture.0.join("bpftrace-custom.stdout");
+    fs::write(&stdout_path, "@asb_events: 2\n@asb_events: 7\n").unwrap();
     let context = ProcessContext {
         name: "bpftrace-custom",
         status: &status,
         stdout: "@asb_events: 2\n@asb_events: 7\n",
+        stdout_path: &stdout_path,
         stderr: "",
         stderr_path: &fixture.0.join("bpftrace-custom.stderr"),
     };
@@ -158,6 +161,7 @@ fn process_hook_exports_profile_results_without_attaching_a_collector() {
         name: "unrelated",
         status: &failed,
         stdout: "@asb_events: 9",
+        stdout_path: &fixture.0.join("unrelated.stdout"),
         stderr: "error",
         stderr_path: &fixture.0.join("unrelated.stderr"),
     };

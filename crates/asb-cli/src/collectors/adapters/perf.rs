@@ -519,6 +519,7 @@ mod tests {
                 name: "perf-stat",
                 status: &status,
                 stdout: "",
+                stdout_path: &path,
                 stderr: "diagnostic prefix only",
                 stderr_path: &path,
             },
@@ -540,6 +541,7 @@ mod tests {
                     name: "perf-stat",
                     status: &status,
                     stdout: "",
+                    stdout_path: &path,
                     stderr: "1,,cycles,1,",
                     stderr_path: &path,
                 }
