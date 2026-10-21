@@ -1,5 +1,10 @@
 # Owned compatibility listener: delivery43 design and focused source proof
 
+Current status: revised same-PID sanitation source and focused proof below are
+green; the first full FAILED and remains invalid. A new full is held for root
+review/current-main integration and final delivery-slot coordination. Staged43
+is not an allocated public release or permission to publish a partial repair.
+
 Actual main42 base `32329d76` (PR307), not runner-phase43. Version staged43.
 The initial design checkpoint `e4e82879` contained only signed diagnostic
 cherry-pick `09a9a321fbeb89a63a882b1a8a3ca31e37e85ee0` and Cargo version.
@@ -320,3 +325,76 @@ Replace only ambiguous immediate numeric rebind assertions with exact original
 socket-inode disappearance/custody proof plus sentinel survival. Do NOT weaken
 the actual curl FD-table inheritance assertion. Any future full requires fresh
 source review and actual build/freeze/focused evidence first.
+
+## Revised source and renewed focused proof (no fresh full yet)
+
+Root approved the above revised design before production code. Signed
+`2c100624c730ec216aea00f6d61045b79ca771fb` implements the generic same-PID
+owned-FD exec utility, pinned normal Linux image, explicit launcher contract and
+optional shared HTTP launch prefix with redirect carry. Source
+`ce61f21ff3840dce4c684c1fadcf24911cce4ecd` is the final focused checkpoint.
+Only generic early internal dispatch/helper plus cli2key/shared HTTP boundary
+and owning tests changed. No provider branch was added to the generic helper or
+runner. No grade/status/report schema/authorization/continuation policy changed.
+
+The exact original listener dev/inode is captured before settlement. Tests now
+assert no parent FD retains that object and its ORIGINAL TCP inode disappears,
+allowing bounded normal fork/exec CLOEXEC transients. This does not equate another
+actor's reuse of its numeric port or TIME_WAIT with an owned-handle leak.
+Sentinels and the actual curl socket-FD assertion remain; the latter now executes
+after owned cleanup. Source/helper FD lifetimes are real Arc/File/TcpListener
+owners, not numbers reconstructed from a free-port suggestion.
+
+Failure history stays explicit: the first revised generic-helper focus passed
+3/0, but cli2key focus at2c100624 passed27/failed1 because the NEW launcher test
+assumed >=3 launcher invocations. The actual marker contained2; incomplete-body
+abort/unfinished paths do not reach outbound spawn. This was an owning proof
+error, not observed launcher bypass. `target/cli2key43-owned-exec-lib-focus.log`
+is retained. The separate first strict Clippy log reported two same-type stat
+casts on Linux; no lint suppression was added. Explicit u64 result bindings
+with inferred native casts preserve portable Unix conversion semantics.
+
+The corrected launcher proof does NOT just lower an arbitrary count. Test-only
+Node preload records each actual child spawn's program/mode/PID using the
+documented builtin-export synchronization API; the selected launcher journals
+its own PID and first argument before exec. After all owned cleanup, exact
+sorted equality proves EVERY observed child used the configured launcher in
+the SAME PID. Current retained
+`target/cli2key-launcher/18e0b074c0e5d2cd-14c673-2/launcher-used.spawn-proof.jsonl`
+contains two matching executions. Incomplete-body requests cannot fabricate
+an extra observed execution. This is an ordinary local launcher fixture, not
+native guest SDK/bundled-library runtime qualification.
+
+Actual changed-production build ran FIRST,13.18s, then final ce61 build14.08s;
+`target/cli2key43-owned-exec-build{,-v2}.log` retain them. Frozen actual
+`target/qualification/cli2key43-ce61f21f-asb` and executable SHA256:
+`91096536c418d9501d05e2532426c6a63ad133c506f46eea30824577420ef1a0`.
+Before/after/final hash records agree; source and executable were not modified
+during runtime. Previous failed-full actual63c8 and deterministic high-FD RED
+libtest0fa544b9 are preserved as actual copies, not only hash logs.
+
+| Final retained target log | Result |
+| --- | --- |
+| cli2key43-owned-exec-lib-focus-v2.log | 28/0/0ignored;12.00s; includes real high-FD and explicit launcher |
+| cli2key43-owned-exec-helper-focus-v2.log | 3/0/0;0.13s |
+| cli2key43-owned-exec-layout.log | 1/0/0 |
+| cli2key43-owned-exec-offline-all.log | Entire offline_cli95/0/5ignored;5.00s |
+| cli2key43-owned-exec-tape-owner.log | 1/0/0;2.76s |
+| cli2key43-owned-exec-replay-sweep.log | 2/0/0;21.10s (support isolation plus eight-replay sweep) |
+| cli2key43-owned-exec-clippy-v2.log | Strict workspace/all-target/all-feature -Dwarnings exit0,15.06s |
+| cli2key43-owned-exec-fmt.log / diffcheck.log | exit0 / exit0 |
+
+Final130 focused outer passes,0 failures,5 existing ignored; earlier overlapping
+runs are NOT added. No selected final target ran zero tests. Whole offline_cli
+includes existing shared HTTP/SOCKS/HTTPS proxy, same-origin redirect/cross-origin
+credential refusal, record/replay/publication and original failed-CI success
+case. Tape owner-loss and replay-sweep exercise existing shared-script consumers
+with the optional prefix absent. Only the owned cli2key curl path opts into it.
+
+The actual high-FD260 Node→helper→curl case now observes curl_inherited=false.
+Generic helper tests prove raw nonUTF8 argv, binary stdin, cwd/env and PID
+preservation; matching socket/regular-file sanitation; already-CLOEXEC/missing/
+reused/kind-mismatched descriptors; sentinel survival; exact >2^53/u64max parsing
+and fixed redacted malformed-control failure. Unrelated objects are not closed.
+All handles are terminal, only own HOME cache used. No live provider/SDK/host
+configuration/privilege change, no full retry, PR/push or release is claimed.
