@@ -76,15 +76,20 @@ bounded teardown and actionable errors. Best-effort cleanup in destructors
 is not automatically equivalent to an incorrectly ignored required write.
 Pending.
 
-Model-catalog transport candidate: replace blocking curl stdin/stdout operations,
+Model-catalog transport candidate, staged patch **0.2.11**: replace blocking curl stdin/stdout operations,
 stderr-reader joins and caller-side waits with fair nonblocking Unix polling
 under one operation/cleanup deadline. Preserve proxy settings, response limits
 and sanitized protocol diagnostics. Direct-child ownership uses the shared
 pre-established reaper on uncertain cleanup; no successful catalog can bypass
 exit/EOF checks. Actual offline process fixtures cover pressure, inherited pipes,
-timeouts, custody and reaping. Non-Unix discovery fails before spawn; cancellable
-non-Unix transport remains a separate portability contract. Independent review,
-full release-head qualification and delivery remain pending.
+timeouts, custody and reaping. The body limit and I/O timeout are shared with
+curl's actual arguments; exact-limit success and one-byte-over rejection have
+real subprocess regressions. Independent source review and a separate execution
+of all 36 focused model tests passed. Non-Unix discovery fails before spawn;
+cancellable non-Unix transport remains a separate portability contract. Full
+release-head qualification and delivery remain pending. Main `398c36cc` removed
+the hosted coverage gate; the requested policy clarification is still pending,
+so local measurements must not be described as a required hosted check.
 
 ## 4. Typed domain and wire contracts
 
