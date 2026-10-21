@@ -45,6 +45,22 @@ The catalog includes only models whose provider metadata advertises tool
 calling. ASB repeats this check before live execution, while replay requires a
 matching tool-calling request in the cassette.
 
+To record real responses once and replay them without contacting the provider:
+
+```sh
+asb run benchmark.toml --record --repeat 3 --cassette trials.asb.zip
+asb run benchmark.toml --replay --repeat 5 --cassette trials.asb.zip --seed 42
+asb run benchmark.toml --replay --cassette trials.asb.zip --track max:tokens
+```
+
+Repeat counts batches at the configuration's concurrency. Each bundle execution
+starts with fresh workload and agent-session state, preserving your existing
+workspace. Replay still runs the agent and its tools, requires matching installed
+workload material, and is not a filesystem snapshot. Use `--respect-record-timings`
+when the recorded provider delays should be reproduced. Cassettes contain provider
+responses; keep them private. The offline track viewer and sweep bundle support
+are separate pending integration steps.
+
 For cli2key model discovery, install the bridge once and query it directly:
 
 ```sh

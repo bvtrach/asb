@@ -181,6 +181,8 @@ mod coverage_tests {
             }
             for flag in [
                 "--repeat",
+                "--track",
+                "--seed",
                 "--record",
                 "--replay",
                 "--report",

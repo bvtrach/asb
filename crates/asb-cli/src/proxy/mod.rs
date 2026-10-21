@@ -1,6 +1,7 @@
 //! Provider-neutral proxy adapters and ordered chain lifecycle.
 
 pub(crate) mod adapters;
+pub(crate) mod capture;
 
 use crate::Error;
 use std::any::Any;
@@ -73,6 +74,9 @@ pub(crate) trait ProxySession {
     fn cleanup_confirmed(&self) -> bool {
         false
     }
+    fn capture_evidence(&self) -> Option<capture::CaptureEvidence> {
+        None
+    }
     /// Stop and validate the completed session, if the adapter requires it.
     fn finish(&mut self) -> Result<(), Error>;
     /// Stop without completion validation, including on partial startup.
@@ -85,6 +89,7 @@ pub(crate) struct Completion {
 }
 
 pub(crate) struct Evidence {
+    pub captures: Vec<capture::CaptureEvidence>,
     pub output_files: Vec<std::path::PathBuf>,
     pub cleanup_confirmed: bool,
 }
@@ -187,6 +192,11 @@ impl Chain {
         Completion {
             result: failure.map_or(Ok(()), Err),
             evidence: Evidence {
+                captures: self
+                    .hops
+                    .iter()
+                    .filter_map(|hop| hop.capture_evidence())
+                    .collect(),
                 output_files,
                 cleanup_confirmed: self.hops.iter().all(|hop| hop.cleanup_confirmed()),
             },

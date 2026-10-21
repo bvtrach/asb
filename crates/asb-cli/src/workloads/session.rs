@@ -12,6 +12,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static NEXT_ATTEMPT: AtomicU64 = AtomicU64::new(0);
 
+/// Scope of adapter-owned canonical initial material, excluding attempt paths.
+pub(crate) const REPLAY_MATERIAL_CONTRACT: &str = "asb-initial-workload-material-v1";
+
 /// Confirmed disposition of adapter-owned execution resources, not a grade.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
