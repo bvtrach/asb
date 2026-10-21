@@ -19,8 +19,14 @@ main feature PR #250 consumed version 0.2.25 at
 `f48953476265e1f77373bb8623f65224c32cb047`. Its source merge was conflict-free;
 the TUI choice-key, named-pane and concurrency changes remain the repair scope.
 Earlier 1,066-test evidence predates that feature and does not qualify this new
-combined tree. Fresh independent integration review and full offline checks,
-exact-head hosted/package CI, merge, post-merge checks and release are pending.
+combined tree. Independent integration review approved `381a653e`; its fresh
+all-target/all-feature offline suite passed 1,167 tests with no failures and
+21 explicit optional skips across 22 targets. Strict Clippy, formatting and
+sequential build/private Rust docs/pinned AutoUML 0.7.2/flows/interactive views
+and completions passed. Executable SHA-256 remained
+`1267b651841334b513585b948e3759ca50625345dded2f10c71a90b866c3ba30`
+before/after tests and final build. Exact-head hosted/package CI, merge,
+post-merge checks and release remain pending.
 
 Integrated repair, released patch **0.2.21**: the independently reviewed
 launch-descriptor/one-shot admission repair (`b1a54fde`) is combined with the
@@ -501,8 +507,9 @@ suite passed 1,062 tests with 21 optional skips, followed by strict Clippy,
 formatting and sequential build/private docs/diagrams/completions. Current main
 ancestry changes only this ledger, not that qualified production/test tree.
 Exact-head hosted/package CI passed in run `39646000398`; PR #290 merged as
-`bb33f4007a6309c248239c6ee0080c1baeeddd3b`. Both post-merge jobs in run
-`39647416921` and the **0.2.24** release remain pending.
+`bb33f4007a6309c248239c6ee0080c1baeeddd3b`. Both post-merge jobs passed in run
+`39647416921`. Patch **0.2.24** is released at that exact commit; GitHub verifies
+annotated tag `effaad57f913077dc017eb5115e97606356a5c7c` as valid.
 
 ## 7. Limits, diagnostics and CLI consistency
 
