@@ -1,5 +1,5 @@
 //! SWE-bench-owned SDK selection; shared execution has no benchmark branches.
-use super::{SweBenchAdapter, catalog};
+use super::{ENGINE, SweBenchAdapter, catalog};
 use crate::workloads::{PreparationContext, WorkloadSession};
 
 pub(super) fn prepare(
@@ -13,11 +13,11 @@ pub(super) fn prepare(
     if !installed.tasks.iter().any(|item| item.id == task) {
         return Err("selected instance is absent from the installed dataset".into());
     }
-    let tool = context.tool_root("swebench");
-    catalog::ensure_helpers(&tool).map_err(|error| error.to_string())?;
+    let tool = context.tool_root(ENGINE.tool());
+    ENGINE.publish(&tool).map_err(|error| error.to_string())?;
     crate::workloads::remote::launch(
-        "swebench",
-        "asb_swebench.py",
+        ENGINE.tool(),
+        &ENGINE.script(),
         Some("session"),
         adapter.id,
         installed.dataset,

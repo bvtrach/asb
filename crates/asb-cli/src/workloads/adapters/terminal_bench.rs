@@ -1,6 +1,15 @@
 use super::StaticExternalAdapter;
 mod catalog;
 
+pub(super) const ORIGINAL_ENGINE: super::official_engine::EngineBinding =
+    super::official_engine::EngineBinding::new(
+        "terminal-bench",
+        "asb_terminal_bench_1",
+        catalog::ensure_helpers,
+    );
+pub(super) const HARBOR_ENGINE: super::official_engine::EngineBinding =
+    super::official_engine::EngineBinding::new("harbor", "asb_harbor", catalog::ensure_helpers);
+
 #[cfg(test)]
 #[path = "terminal_bench/adapter_tests.rs"]
 mod adapter_tests;
@@ -11,10 +20,9 @@ pub(super) struct TerminalBenchAdapter {
     pub revision: &'static str,
     pub split: &'static str,
     pub archive: &'static str,
-    pub tool: &'static str,
+    pub engine: super::official_engine::EngineBinding,
     pub version: &'static str,
     pub expected_tasks: usize,
-    pub runtime: &'static str,
 }
 
 impl super::WorkloadAdapter for TerminalBenchAdapter {
@@ -29,7 +37,7 @@ impl super::WorkloadAdapter for TerminalBenchAdapter {
                 revision: self.revision.into(),
                 split: self.split.into(),
             },
-            self.tool,
+            self.engine.tool(),
             SubmissionKind::EnvironmentState,
             EvaluationMode::InPlace,
         )
@@ -49,48 +57,26 @@ impl super::WorkloadAdapter for TerminalBenchAdapter {
                 "retained task dataset differs from its installed grading catalog".into(),
             ));
         }
-        let runtime = crate::workloads::remote::InspectionRuntime::new(context.project_root)?;
-        catalog::ensure_helpers(&runtime.0)?;
-        crate::workloads::remote::grade_retained(
-            self.tool,
-            self.runtime.trim_end_matches(".py"),
-            context,
-            &runtime.0,
-            &workloads.join(self.id).join("catalog.json"),
-        )
+        self.engine
+            .grade_retained(context, &workloads.join(self.id).join("catalog.json"))
     }
     fn inspect_grade(
         &self,
         context: &crate::workloads::recovery::RecoveryContext<'_>,
     ) -> Result<serde_json::Value, crate::Error> {
-        let tool = crate::project::resolve(context.project_root, &context.project_config.tools_dir)
-            .join(self.tool);
-        context.reference.validate_location(context.project_root)?;
-        crate::workloads::remote::require_sdk(&tool, self.id)?;
-        let runtime = crate::workloads::remote::InspectionRuntime::new(context.project_root)?;
-        catalog::ensure_helpers(&runtime.0)?;
-        crate::workloads::remote::inspect_grade(
-            self.tool,
-            self.runtime.trim_end_matches(".py"),
-            context,
-            &runtime.0,
-        )
+        self.engine.inspect_grade(self.id, context)
     }
     fn verify_retained(
         &self,
         context: &crate::workloads::recovery::RetainedOutcomeContext<'_>,
     ) -> Result<(), crate::Error> {
-        crate::workloads::remote::verify_retained(
-            self.tool,
-            self.runtime.trim_end_matches(".py"),
-            context,
-        )
+        self.engine.verify_retained(context)
     }
     fn recover(
         &self,
         context: &crate::workloads::recovery::RecoveryContext<'_>,
     ) -> Result<serde_json::Value, crate::Error> {
-        crate::workloads::remote::recover(self.tool, context)
+        self.engine.recover(context)
     }
     fn id(&self) -> &'static str {
         self.id
@@ -99,15 +85,13 @@ impl super::WorkloadAdapter for TerminalBenchAdapter {
         &self,
         context: &crate::workloads::PreflightContext<'_>,
     ) -> Result<(), crate::Error> {
-        crate::workloads::remote::require_sdk(&context.tool_root(self.tool), self.id)?;
-        catalog::ensure_helpers(&context.tool_root(self.tool))?;
-        crate::workloads::remote::prefetch(context)
+        self.engine.preflight(self.id, context)
     }
     fn runtime_inputs(
         &self,
         context: &crate::runtime_inputs::Context<'_>,
     ) -> Result<Vec<crate::runtime_inputs::Dependency>, crate::Error> {
-        crate::workloads::remote::runtime_inputs(self.tool, context)
+        self.engine.runtime_inputs(context)
     }
     fn source(&self) -> Option<&'static str> {
         Some(self.archive)
@@ -163,17 +147,19 @@ impl super::WorkloadAdapter for TerminalBenchAdapter {
         if !installed.tasks.iter().any(|item| item.id == task) {
             return Err("selected instance is absent from the installed dataset".into());
         }
-        let tool = context.tool_root(self.tool);
-        catalog::ensure_helpers(&tool).map_err(|error| error.to_string())?;
+        let tool = context.tool_root(self.engine.tool());
+        self.engine
+            .publish(&tool)
+            .map_err(|error| error.to_string())?;
         if !catalog::runtime_available(self, &tool).map_err(|error| error.to_string())? {
             return Err(format!(
                 "installed evaluator runtime is incomplete; run `asb tool install {}` before starting the benchmark (details in .asb/install.log)",
-                self.tool
+                self.engine.tool()
             ));
         }
         crate::workloads::remote::launch(
-            self.tool,
-            self.runtime,
+            self.engine.tool(),
+            &self.engine.script(),
             None,
             self.id,
             installed.dataset,
@@ -232,7 +218,7 @@ mod tests {
             std::fs::write(installed.join("catalog.json"), serde_json::to_vec(&json!({
                 "schema_version":1,"workload":adapter.id,
                 "dataset":{"source":adapter.source,"revision":adapter.revision,"split":adapter.split},
-                "sdk":{"package":adapter.tool,"version":adapter.version},
+                "sdk":{"package":adapter.engine.tool(),"version":adapter.version},
                 "source_sha256":"a".repeat(64),"archive_sha256":"b".repeat(64),"tasks":tasks,
             })).unwrap()).unwrap();
             let planning = adapter.planning_catalog(&root).unwrap().unwrap();
