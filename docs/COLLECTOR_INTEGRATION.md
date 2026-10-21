@@ -49,3 +49,51 @@ all one-shot preflight/postprocessor process lifetimes, a hard kernel-file-I/O
 deadline or a hostile same-UID filesystem sandbox. Future proof must preserve
 the service lease until matching guardian quiescence, not merely principal exit,
 acknowledgement, caller timeout or generic reaper handoff.
+
+## Fresh integrated focused qualification
+
+At signed source `ec8015e3`, the reviewed permission-teardown fixture head is
+folded and version remains 0.2.39. Before any build, the diagnostics cache was
+confirmed idle and the old qualified collector executable was preserved as
+`asb-collector-custody/target/qualification/collector-07084a9a-asb`, with its
+original `e4c4072dd221e49c38da1c222f97f451729eae971c2644124546fbcf767e41a1`
+SHA-256 verified. The new actual ASB executable was built first, then remained
+unchanged throughout the focused runtime and lint gates at SHA-256
+`d916dafa3c619940177308dad57094a30143218f90a72e2e9caac5acbfc15c10`.
+
+All requested focused families passed: measurements 88, exact collector namespace
+126, guardian protocol 23, runtime discovery eight, recording/raw 12, bundle
+publication two, actual artifact integration two and repeated-run integration 30.
+Five existing collector opt-in cases stay skipped. The shell batch accidentally
+used the broader `collectors` substring instead of `collectors::`, so its outer
+result is 131 passed: the 126 intended tests, two measurement tests already in
+the 88-test family, and three additional planning/TUI/comparison regressions.
+Thus the eight outer summaries total 296 passing executions but **294 distinct
+target/test cases**, not 296 distinct tests. The common support test in the two
+integration targets is counted once per actual Cargo target, as usual. There
+were zero failures; no failed runtime test was retried. The two owning bundle
+tests cover all their isolated record/replay/artifact/publication cases without
+counting those child scenarios as extra outer tests.
+
+Strict locked/offline workspace/all-target/all-feature Clippy (`-D warnings`),
+formatting, whitespace checks and before/after actual executable hash comparison
+passed. Only the exclusive diagnostics cache was used; incremental compilation
+was disabled, subsequent compilation used one job after the already-admitted
+two-job initial build finished. Disk headroom was checked before new stages and
+stayed above the parent's 3-GiB admission floor. No other cache was cleaned or
+relinked, and no live provider, privileged collector, host permission or SDK was
+used. The owning `target/debug` symlink was created only in this new worktree.
+
+Transcripts are `target/collector39-{build,measurements,collectors,process_gate,
+runtime_inputs,runner-recording,runner-phases-tests-bundle_publication,
+agent_artifact_ownership,repeated_run,clippy,fmt}.log`. The generated
+`collector39-focused-summary.log` retains the eight actual outer summaries;
+`collector39-{before,after}.sha256` retain matching executable hashes. All tool
+handles are terminal. The packaged-layout fixture's generated untracked
+`crates/asb-cli/target/` evidence is intentionally preserved, not committed.
+
+This checkpoint changes documentation only. Fresh full execution remains held
+for root review/clearance; build/docs/package gates, exact-head hosted CI,
+merge/post-merge validation and release remain separate obligations. Earlier
+collector, raw, installer and runtime qualifications are not substituted for
+this new combined tree's remaining gates.
