@@ -9,10 +9,33 @@ import base64
 import json
 import queue
 import threading
+from enum import Enum
 
 from asb_execution import ExecutionError
 
 MAX_REQUEST = 1024 * 1024
+
+
+class Operation(str, Enum):
+    EXECUTE = "execute"
+    AGENT = "agent"
+    RESUME = "resume"
+    CAPTURE = "capture"
+    EVALUATE = "evaluate"
+    CLOSE = "close"
+    CANCEL = "cancel"
+
+
+class Event(str, Enum):
+    READY = "ready"
+    PAUSED = "paused"
+    OUTPUT = "output"
+    EXECUTION_ENDED = "execution_ended"
+    COMPLETED = "completed"
+    SUBMISSION = "submission"
+    EVALUATED = "evaluated"
+    ERROR = "error"
+    CLOSED = "closed"
 
 
 def serve(task, source, destination, idle_timeout=900):
@@ -25,7 +48,7 @@ def serve(task, source, destination, idle_timeout=900):
     task.interrupted = True
 
     def emit(event, **fields):
-        destination.write(json.dumps({"event": event, **fields}) + "\n")
+        destination.write(json.dumps({"event": event.value, **fields}) + "\n")
         destination.flush()
 
     def reader():
@@ -41,7 +64,7 @@ def serve(task, source, destination, idle_timeout=900):
                 request = json.loads(line)
                 if not isinstance(request, dict):
                     raise ValueError("request must be an object")
-                if request.get("op") == "cancel":
+                if request.get("op") == Operation.CANCEL:
                     peer_closed.set()
                     return
                 requests.put(request, timeout=1)
@@ -63,32 +86,36 @@ def serve(task, source, destination, idle_timeout=900):
         raise ExecutionError("ASB controller did not respond before the protocol deadline")
 
     def attach(target):
-        emit("paused", target=target)
+        emit(Event.PAUSED, target=target)
         response = receive(timeout=60)
-        if response.get("op") != "resume" or response.get("exec_id") != target["exec_id"]:
+        if response.get("op") != Operation.RESUME or response.get("exec_id") != target["exec_id"]:
             raise ExecutionError("execution was cancelled before collector attachment completed")
 
     def output(name, chunk):
-        emit("output", stream=name, data=base64.b64encode(chunk).decode("ascii"))
+        emit(Event.OUTPUT, stream=name, data=base64.b64encode(chunk).decode("ascii"))
 
     reader_thread = threading.Thread(target=reader, daemon=True)
     reader_thread.start()
     status = 0
     try:
         with task:
-            emit("ready", invocation=task.invocation)
+            emit(Event.READY, invocation=task.invocation)
             while True:
                 request = receive()
                 operation = request.get("op")
-                if operation == "close":
+                if operation == Operation.CLOSE:
                     task.interrupted = False
                     break
                 try:
-                    if operation in ["execute", "agent"]:
-                        if operation == "agent":
+                    try:
+                        operation = Operation(operation)
+                    except (ValueError, TypeError):
+                        raise ExecutionError("unknown task protocol operation") from None
+                    if operation in [Operation.EXECUTE, Operation.AGENT]:
+                        if operation == Operation.AGENT:
                             from asb_guest import execute_agent
                             result = execute_agent(task, request, attach, output, peer_closed,
-                                on_ended=lambda result: emit("execution_ended", elapsed_seconds=result["elapsed_seconds"], exit_code=result["exit_code"]))
+                                on_ended=lambda result: emit(Event.EXECUTION_ENDED, elapsed_seconds=result["elapsed_seconds"], exit_code=result["exit_code"]))
                         else:
                             result = task.workspace.execute(
                                 request.get("argv"), request.get("environment"),
@@ -99,15 +126,15 @@ def serve(task, source, destination, idle_timeout=900):
                         result = dict(result)
                         for stream in ["stdout", "stderr"]:
                             result[stream] = base64.b64encode(result[stream]).decode("ascii")
-                        emit("completed", result=result)
-                    elif operation == "capture":
-                        emit("submission", submission=task.capture_submission())
-                    elif operation == "evaluate":
-                        emit("evaluated", result=task.evaluate(timeout=request.get("timeout", 1800)))
+                        emit(Event.COMPLETED, result=result)
+                    elif operation == Operation.CAPTURE:
+                        emit(Event.SUBMISSION, submission=task.capture_submission())
+                    elif operation == Operation.EVALUATE:
+                        emit(Event.EVALUATED, result=task.evaluate(timeout=request.get("timeout", 1800)))
                     else:
                         raise ExecutionError("unknown task protocol operation")
                 except ExecutionError as error:
-                    emit("error", error_class=type(error).__name__, reason=str(error))
+                    emit(Event.ERROR, error_class=type(error).__name__, reason=str(error))
                     if peer_closed.is_set():
                         break
     except Exception as error:
@@ -118,14 +145,14 @@ def serve(task, source, destination, idle_timeout=900):
             fields = {"error_class": type(error).__name__}
             if isinstance(error, ExecutionError):
                 fields["reason"] = str(error)
-            emit("error", **fields)
+            emit(Event.ERROR, **fields)
         except (BrokenPipeError, OSError):
             pass
     finally:
         stop_reader.set()
         try:
             workspace = getattr(task, "workspace", None)
-            emit("closed", cleanup=getattr(task, "cleanup_status", getattr(workspace, "cleanup_status", "not_created")))
+            emit(Event.CLOSED, cleanup=getattr(task, "cleanup_status", getattr(workspace, "cleanup_status", "not_created")))
         except (BrokenPipeError, OSError):
             pass
     return status

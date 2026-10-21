@@ -10,7 +10,7 @@ import unittest
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).parents[1] / "assets/benchmarks"))
-from asb_task_server import serve
+from asb_task_server import Event, Operation, serve
 
 
 class Task:
@@ -35,6 +35,22 @@ class Task:
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_typed_identifiers_preserve_wire_and_reject_unknown_operation_types(self):
+        self.assertEqual([item.value for item in Operation],
+                         ["execute", "agent", "resume", "capture", "evaluate", "close", "cancel"])
+        self.assertEqual(json.loads(json.dumps(list(Event))),
+                         ["ready", "paused", "output", "execution_ended", "completed",
+                          "submission", "evaluated", "error", "closed"])
+        for unknown in [None, 1, [], {}, "private-unknown-operation"]:
+            with self.subTest(operation=unknown):
+                status, events, task = self.run_protocol([{"op": unknown}, {"op": "close"}])
+                self.assertEqual(status, 0)
+                self.assertEqual(task.commands, [])
+                self.assertEqual([event["event"] for event in events], ["ready", "error", "closed"])
+                self.assertEqual(events[1], {"event": "error", "error_class": "ExecutionError",
+                                            "reason": "unknown task protocol operation"})
+                self.assertNotIn("private-unknown-operation", json.dumps(events))
+
     def run_protocol(self, requests, task=None):
         task = task or Task()
         output = io.StringIO()

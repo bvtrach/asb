@@ -305,6 +305,23 @@ and repair before claiming all chart families faithfully display negatives.
 The custom BPF scope validator is also a small function (about sixty lines),
 not the reported 533; its confirmed correctness defect is tracked below.
 
+Private task-controller contract candidate: typed Rust requests and event kinds
+and Python operation/event identifiers preserve the existing JSON wire. Validated
+ready and completed-execution views retain selected-instance/baseline/budget,
+guest metadata, output and quiescence/delegated-owner obligations. A private
+matching-completed-grade token replaces the official session's writable close
+flag: every evaluator request clears it first, and normal close consumes it.
+False grades remain completed grades. Separate normal-close/cancellation ack
+validators preserve stopped-preservation versus destructive removal, while
+cancellation still drains unknown/in-flight events. Generic untagged inspection,
+extension evaluation kinds and structured/native outcome APIs stay unchanged.
+Constructor matrices and actual Python-task-loop/Rust-session fixtures require
+no Docker, installed SDK, real agent or provider. Independent source review,
+full qualification and delivery remain pending. Saved sweep modes and internal
+command identifiers remain separate work. Blocking controller request writes,
+Python nominal-interval deadline accounting and controller Drop custody are not
+repaired by these typed contracts and must not be claimed bounded here.
+
 cli2key startup/session candidate, staged patch **0.2.23** after checkpoint
 **0.2.22**: explicit external versus local ownership
 keeps the shared fallibly pre-established `OwnedReaper` through successful

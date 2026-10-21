@@ -541,6 +541,18 @@ preserving cancellation independently of installation. This fixture does not
 qualify an installed runtime, SDK or workload container. Production execution
 always validates the runtime and performs checksum-pinned bootstrap preparation;
 there is no CLI, configuration or environment switch to bypass that phase.
+`cargo test --locked --offline --lib workloads::task_protocol` covers private
+ready/completion/grade constructors, delegated namespace-owner mutations,
+normal versus preserving cleanup acknowledgements and exact Rust/Python wire
+identifiers. Remote execution fixtures additionally pair the actual Python
+task-server loop with the actual Rust controller/session; only SDK/agent work
+is replaced by an inert process-local fixture. Both grades retain a nonzero
+client exit and binary output, then consume normal-close permission. A second
+bad grade or evaluator exception revokes the first grade's permission and
+requires stopped preservation without normal close. Generic controller tests
+retain untagged inspection, sanitized errors, framing limits and cancellation
+draining, including unknown in-flight events. These are offline protocol tests,
+not original SDK/container qualification or a repair of blocking request I/O.
 `benchmark_live_resources.py` additionally checks actual abrupt controller
 SIGKILL with an installed SWE-bench task image: the durable ownership journal
 quiesces only its recorded container, retains a partial output file and an

@@ -58,12 +58,15 @@ closed()
             .arg(serde_json::to_string(events).unwrap())
             .arg(self.0.join("operations"))
             .arg(cleanup);
+        self.with_controller(Controller::spawn(&mut command).unwrap())
+    }
+    fn with_controller(&self, controller: Controller) -> Session {
         Session {
             evaluation_seconds: EVALUATION_TIMEOUT_SECONDS,
             preparation_seconds: WORKLOAD_READY_TIMEOUT.as_secs(),
             task_default_execution_seconds: 1.0,
             process_lifetime: super::super::session::ProcessLifetime::Quiesce,
-            controller: Controller::spawn(&mut command).unwrap(),
+            controller,
             invocation: TaskInvocation {
                 identity: TaskIdentity::local("fixture", Some("task")),
                 input: "fixture task".into(),
@@ -75,9 +78,59 @@ closed()
             measurement_active: false,
             preparation_active: false,
             cleanup_attempted: false,
-            evaluation_completed: false,
+            completed_grade: None,
             artifacts: self.0.join("attempt"),
         }
+    }
+    fn actual_task_server(&self, grades: &[Value]) -> Session {
+        // Actual Python task-loop producer paired with the actual Rust transport.
+        // Only the SDK/agent implementation is an inert, process-local fixture.
+        let script = r#"
+import json,sys,types
+from pathlib import Path
+sys.path.insert(0,sys.argv[1])
+from asb_task_server import serve
+from asb_execution import ExecutionError
+log=Path(sys.argv[2]);grades=json.loads(sys.argv[3])
+def record(op):
+ with log.open('a') as output: output.write(op+'\n')
+def execute_agent(task,request,attach,output,cancelled,on_ended):
+ record('agent')
+ assert request['op']=='agent' and request['timeout']==1
+ assert request['request']['config']['workspace']=='/fixture-task'
+ attach(dict(exec_id='owned-execution'));record('resume')
+ output('stdout',b'live\x00output')
+ result=dict(exit_code=7,stdout=b'complete\x00output',stderr=b'diagnostic',elapsed_seconds=.125,
+  metadata=dict(schema_version=1,exit_code=7,final_response='fixture',token_usage={},steps=2,tree_quiesced=True))
+ on_ended(result)
+ return result
+guest=types.ModuleType('asb_guest');guest.execute_agent=execute_agent;sys.modules['asb_guest']=guest
+class Task:
+ invocation=dict(identity=dict(workload='fixture',task_id='task',attempt_id='owned-attempt',dataset=None),prompt='fixture issue',workspace='/fixture-task')
+ cleanup_status='pending'
+ def __enter__(self): return self
+ def __exit__(self,*args):
+  record('preserve' if self.interrupted else 'normal-close')
+  self.cleanup_status='stopped-preserved' if self.interrupted else 'removed'
+ def evaluate(self,timeout):
+  record('evaluate');assert timeout==1800
+  result=grades.pop(0)
+  if result.get('raise_error'): raise ExecutionError('fixture evaluator failed')
+  return result
+raise SystemExit(serve(Task(),sys.stdin,sys.stdout))
+"#;
+        let mut command = Command::new("python3");
+        command
+            .args(["-I", "-S", "-B", "-u", "-c", script])
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/benchmarks"))
+            .arg(self.0.join("operations"))
+            .arg(serde_json::to_string(grades).unwrap());
+        let mut controller = Controller::spawn(&mut command).unwrap();
+        let ready = controller
+            .receive(Instant::now() + Duration::from_secs(3))
+            .unwrap();
+        assert_eq!(EventKind::of(&ready), Some(EventKind::Ready));
+        self.with_controller(controller)
     }
     fn operations(&self) -> Vec<String> {
         fs::read_to_string(self.0.join("operations"))
@@ -108,6 +161,90 @@ fn completed() -> Value {
     json!({"event":"completed","result":{"exit_code":7,"stdout":"b2s=","stderr":"ZGlhZw==",
         "elapsed_seconds":0.125,"metadata":{"schema_version":1,"exit_code":7,"final_response":"fixture",
             "token_usage":{},"steps":2,"execution_failure":null,"tree_quiesced":true}}})
+}
+
+#[test]
+fn actual_python_producer_and_rust_session_keep_both_grades_and_consume_close_permission() {
+    for resolved in [true, false] {
+        let fixture = Fixture::new();
+        let grade = json!({"workload":"fixture","task_id":"task","dataset":null,
+            "outcome":if resolved {"resolved"} else {"unresolved"},"resolved":resolved});
+        let mut session = fixture.actual_task_server(&[grade]);
+        let config = configuration();
+        let project = crate::project::ProjectConfig::default();
+        let connection = connection();
+        let mut context = ExecutionContext {
+            config: &config,
+            connection: Some(&connection),
+            project_root: &fixture.0,
+            project_config: &project,
+            replay: true,
+            measurements: None,
+            show_output: true,
+        };
+        let mut output = Vec::new();
+        let result =
+            session.run_prepared(&mut context, &mut output, &connection, fixture.prepared());
+        let result = session.settle_execution(&mut context, result).unwrap();
+        assert_eq!(output, b"live\x00output");
+        assert_eq!(result.output.stdout, b"complete\x00output");
+        assert_eq!(result.output.status.code(), Some(7));
+        assert_eq!(result.elapsed_ms, Some(125));
+        assert_eq!(
+            matches!(session.evaluate("").unwrap(), Evaluation::Passed),
+            resolved
+        );
+        assert!(session.completed_grade.is_some());
+        session.finish().unwrap();
+        assert!(session.completed_grade.is_none());
+        assert_eq!(
+            fixture.operations(),
+            ["agent", "resume", "evaluate", "normal-close"]
+        );
+    }
+}
+
+#[test]
+fn actual_python_late_bad_grade_or_error_revokes_close_and_preserves_instead() {
+    let good = json!({"workload":"fixture","task_id":"task","dataset":null,"outcome":"unresolved","resolved":false});
+    let mut bad_task = good.clone();
+    bad_task["task_id"] = json!("other");
+    let mut bad_dataset = good.clone();
+    bad_dataset["dataset"] = json!({"source":"other","revision":"other","split":"other"});
+    let mut contradiction = good.clone();
+    contradiction["resolved"] = json!(true);
+    let mut unknown = good.clone();
+    unknown["outcome"] = json!("future");
+    let mut pending = good.clone();
+    pending["outcome"] = json!("pending");
+    let mut absent = good.clone();
+    absent.as_object_mut().unwrap().remove("resolved");
+    for bad in [
+        bad_task,
+        bad_dataset,
+        contradiction,
+        unknown,
+        pending,
+        absent,
+        json!({"raise_error":true}),
+    ] {
+        let fixture = Fixture::new();
+        let mut session = fixture.actual_task_server(&[good.clone(), bad]);
+        assert!(matches!(
+            session.evaluate("").unwrap(),
+            Evaluation::Failed(_)
+        ));
+        assert!(session.completed_grade.is_some());
+        assert!(session.evaluate("").is_err());
+        assert!(session.completed_grade.is_none());
+        assert!(
+            session
+                .finish()
+                .unwrap_err()
+                .contains("stopped and preserved")
+        );
+        assert_eq!(fixture.operations(), ["evaluate", "evaluate", "preserve"]);
+    }
 }
 
 #[test]
@@ -262,7 +399,7 @@ fn protocol_errors_preserve_original_reason_and_cancel_instead_of_grading() {
         };
         assert!(error.contains(reason), "{error}");
         assert_eq!(fixture.operations(), ["agent", "cancel"]);
-        assert!(!session.evaluation_completed);
+        assert!(session.completed_grade.is_none());
     }
 }
 

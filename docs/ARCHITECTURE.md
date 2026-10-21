@@ -923,6 +923,14 @@ through runtime validation and checksum-pinned prefetch; protocol-only unit
 fixtures cannot enable a production preparation bypass. Dispatch, bounded event
 receipt, measured-target resume and completion decoding remain separate phases
 inside the same failure/cancellation envelope.
+The private task protocol uses typed request/event identifiers and validated
+ready/completed views above the generic JSON-lines transport. Ready validation
+binds the selected dataset instance, baseline, public input and effective task
+budget; completion validates guest metadata, output encoding and quiescence or
+the declared namespace-owned service handoff. Measured attachment and end-boundary
+proofs remain in the measured phase; unmeasured completion gains no invented
+collector requirement. Untagged one-shot retained-inspection responses remain
+supported by the generic transport.
 Failed preparation/execution cancels the controller through EOF and drains its
 bounded protocol until cleanup acknowledgement and child exit, retaining the
 original error and any cleanup failure. Normal completion still requires a
@@ -949,8 +957,21 @@ and mismatched identities cannot take the normal close/removal path. Session
 finish cancels into stopped preservation and reports the artifact location
 instead. Valid unresolved and empty-submission outcomes are completed grades,
 not permission to repeat the client. A later evaluator failure invalidates
-the previous completion flag rather than allowing old evidence to delete
+the previous completion permission rather than allowing old evidence to delete
 new or ungraded work.
+That permission is a private matching-completed-grade token, cleared before
+each evaluator request and consumed by normal close, rather than a writable
+Boolean. True and false official binary grades can construct it; evaluator
+errors, pending/unknown outcomes and mismatched identities cannot. Distinct
+normal-close and cancellation acknowledgement validators retain their different
+cleanup and child-exit requirements. Cancellation deliberately drains in-flight
+and unknown events without printing their payloads. The wire spellings, adapter
+evaluation-kind extension strings and structured/native outcome APIs do not
+change. Existing official Python task sessions still supply binary grades;
+this refactoring does not add native-reward transport to those SDK sessions.
+The controller's blocking request write and Python nominal-interval deadline
+accounting remain separate pending bounded-I/O repairs; typed contracts do not
+make those waits wall-clock bounded or repair controller Drop custody.
 Task controllers now persist a private `resources.json` before creating their
 declared containers, Compose networks and volumes. The journal binds the exact
 names to one attempt, a random ownership label and the Docker daemon identity;

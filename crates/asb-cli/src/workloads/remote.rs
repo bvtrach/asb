@@ -1,4 +1,7 @@
 //! Common execution/evaluation protocol for workload-owned official engines.
+use super::task_protocol::{
+    AgentRequest, CompletedExecution, CompletedGrade, EventKind, ReadyTask, Request,
+};
 use crate::workloads::controller::{Controller, decode_base64};
 use crate::workloads::session::{
     BaselineEvidence, ExecutionContext, ExecutionResult, PreparationContext, TaskInvocation,
@@ -18,7 +21,6 @@ const RETAINED_GRADING_TIMEOUT: Duration = Duration::from_secs(1980);
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(180);
 const WORKLOAD_READY_TIMEOUT: Duration =
     Duration::from_secs(crate::planning::DEFAULT_ENVIRONMENT_PREPARATION_SECONDS);
-const DEFAULT_AGENT_TIMEOUT_SECONDS: f64 = 900.0;
 
 /// Project paths/proxies cross the workload boundary, host capabilities do not.
 fn guest_project_configuration(project: &crate::project::ProjectConfig) -> Result<String, String> {
@@ -323,7 +325,7 @@ struct Session {
     measurement_active: bool,
     preparation_active: bool,
     cleanup_attempted: bool,
-    evaluation_completed: bool,
+    completed_grade: Option<CompletedGrade>,
     artifacts: PathBuf,
 }
 
@@ -495,43 +497,15 @@ pub(crate) fn launch(
                     .map(Duration::from_secs)
                     .unwrap_or(WORKLOAD_READY_TIMEOUT),
         )?;
-        if ready["event"] != "ready" {
-            return Err("official task did not become ready".into());
-        }
-        let invocation = &ready["invocation"];
-        let identity: TaskIdentity = serde_json::from_value(invocation["identity"].clone())
-            .map_err(|_| "official task returned invalid identity")?;
-        if identity.workload != workload
-            || identity.task_id != task
-            || identity.dataset.as_ref() != Some(&dataset)
-        {
-            return Err("prepared task does not match the selected dataset instance".into());
-        }
-        let prompt = invocation["prompt"]
-            .as_str()
-            .filter(|text| !text.is_empty() && text.len() <= 64 * 1024)
-            .ok_or("official task returned invalid public instructions")?
-            .to_owned();
-        let guest_workspace = invocation["workspace"]
-            .as_str()
-            .filter(|path| path.starts_with('/') && !path.contains(".."))
-            .ok_or("official task returned invalid environment workspace")?
-            .to_owned();
-        let baseline: BaselineEvidence = serde_json::from_value(invocation["baseline"].clone())
-            .map_err(|_| "official baseline evidence is invalid")?;
-        if !baseline.supports("upstream-harness") {
-            return Err("official task definition does not establish baseline identity".into());
-        }
-        let agent_timeout = invocation
-            .get("agent_timeout_seconds")
-            .and_then(Value::as_f64)
-            .unwrap_or(DEFAULT_AGENT_TIMEOUT_SECONDS);
-        if !agent_timeout.is_finite() || !(0.001..=86400.0).contains(&agent_timeout) {
-            return Err("official task returned an invalid agent time budget".into());
-        }
-        Ok((identity, prompt, guest_workspace, baseline, agent_timeout))
+        ReadyTask::decode(&ready, workload, task, &dataset)
     })();
-    let (identity, prompt, guest_workspace, baseline, agent_timeout) = match prepared {
+    let ReadyTask {
+        identity,
+        prompt,
+        guest_workspace,
+        baseline,
+        agent_timeout,
+    } = match prepared {
         Ok(prepared) => prepared,
         Err(error) => {
             return Err(match controller.cancel(CANCELLATION_TIMEOUT) {
@@ -569,7 +543,7 @@ pub(crate) fn launch(
         measurement_active: false,
         preparation_active: false,
         cleanup_attempted: false,
-        evaluation_completed: false,
+        completed_grade: None,
         artifacts,
     }))
 }
@@ -656,14 +630,21 @@ impl Session {
                 environment.insert(name.into(), Value::String(value));
             }
         }
-        self.controller.send(&json!({"op":"agent", "binary":binary, "project_root":context.project_root,
-            "timeout":self.agent_timeout.as_secs_f64(),
-            "tools_root":tools_root, "bootstrap":bootstrap, "measure_target":context.measurements.is_some(),
-            "project_configuration":guest_project_configuration(context.project_config)?,
-            "environment":environment, "network":std::env::var("ASB_BENCHMARK_NETWORK").ok(),
-            "request":{"process_lifetime":self.process_lifetime,"config":config,"connection":connection,"prompt":self.invocation.input.instructions,"timeout_seconds":self.agent_timeout.as_secs_f64(),
+        let payload = AgentRequest {
+            binary: &binary,
+            project_root: context.project_root,
+            timeout: self.agent_timeout.as_secs_f64(),
+            tools_root: &tools_root,
+            bootstrap: &bootstrap,
+            measure_target: context.measurements.is_some(),
+            project_configuration: guest_project_configuration(context.project_config)?,
+            environment,
+            network: std::env::var("ASB_BENCHMARK_NETWORK").ok(),
+            request: json!({"process_lifetime":self.process_lifetime,"config":config,"connection":connection,"prompt":self.invocation.input.instructions,"timeout_seconds":self.agent_timeout.as_secs_f64(),
                 "project_root":"/opt/asb-project","runtime_dir":"/opt/asb-private","run_dir":"/opt/asb-private/attempt","replay":context.replay,
-                "namespace_collectors":namespace_collectors}}))
+                "namespace_collectors":namespace_collectors}),
+        };
+        self.controller.send(&Request::Agent { payload }.value()?)
     }
 
     fn receive_execution(
@@ -681,11 +662,11 @@ impl Session {
                     |presentation| format!("{error}; {presentation}"),
                 )
             })?;
-            match event["event"].as_str() {
-                Some("paused") => {
+            match EventKind::of(&event) {
+                Some(EventKind::Paused) => {
                     self.resume_measured_target(context, &event)?;
                 }
-                Some("output") => {
+                Some(EventKind::Output) => {
                     let bytes = decode_base64(&event["data"])?;
                     if context.show_output
                         && output_error.is_none()
@@ -694,7 +675,7 @@ impl Session {
                         output_error = Some(format!("cannot write agent output: {error}"));
                     }
                 }
-                Some("execution_ended") => {
+                Some(EventKind::ExecutionEnded) => {
                     if let Some(session) = context.measurements.as_deref_mut() {
                         if !self.measurement_active {
                             return Err(
@@ -712,7 +693,7 @@ impl Session {
                         self.measurement_active = false;
                     }
                 }
-                Some("completed") => {
+                Some(EventKind::Completed) => {
                     let mut result = self.completed_execution(context, &event)?;
                     result.collector_errors.extend(collector_errors);
                     result.output_error = output_error;
@@ -757,8 +738,12 @@ impl Session {
             self.measurement_active = true;
             session.event(Event::AgentStarted)?;
         }
-        self.controller
-            .send(&json!({"op":"resume","exec_id":event["target"]["exec_id"]}))
+        self.controller.send(
+            &Request::Resume {
+                exec_id: &event["target"]["exec_id"],
+            }
+            .value()?,
+        )
     }
 
     fn completed_execution(
@@ -769,56 +754,20 @@ impl Session {
         if self.measurement_active {
             return Err("isolated execution omitted its completion boundary".into());
         }
-        let result = &event["result"];
-        let metadata: crate::agents::driver::GuestResult =
-            serde_json::from_value(result["metadata"].clone())
-                .map_err(|_| "guest returned invalid agent result metadata")?;
-        let delegated = self.process_lifetime == super::session::ProcessLifetime::ThroughEvaluation
-            && result["workload_processes_retained"].as_bool() == Some(true)
-            && metadata.workload_owner.as_ref().is_some_and(|owner| {
-                owner.controller_namespace > 1
-                    && owner.guest_namespace > 1
-                    && owner.controller_namespace != owner.guest_namespace
-                    && owner.token.len() == 32
-                    && owner.token.bytes().all(|byte| byte.is_ascii_hexdigit())
-            });
-        if !metadata.tree_quiesced && !delegated {
-            return Err(
-                "isolated agent process tree was not confirmed stopped before evaluation".into(),
-            );
-        }
+        let completed = CompletedExecution::decode(event, self.process_lifetime)?;
         let collector_errors = context
             .measurements
             .as_deref_mut()
             .and_then(|session| {
                 session
-                    .import_execution_namespace_state(&metadata.namespace_collectors)
+                    .import_execution_namespace_state(&completed.metadata().namespace_collectors)
                     .err()
             })
             .into_iter()
             .collect();
-        let code = result["exit_code"].as_i64().unwrap_or(1).clamp(0, 255) as i32;
-        #[cfg(unix)]
-        let status = {
-            use std::os::unix::process::ExitStatusExt;
-            std::process::ExitStatus::from_raw(code << 8)
-        };
-        #[cfg(not(unix))]
-        return Err("isolated execution requires Unix".into());
-        Ok(ExecutionResult {
-            collector_errors,
-            output_error: None,
-            output: std::process::Output {
-                status,
-                stdout: decode_base64(&result["stdout"])?,
-                stderr: decode_base64(&result["stderr"])?,
-            },
-            metadata,
-            elapsed_ms: result["elapsed_seconds"]
-                .as_f64()
-                .filter(|seconds| seconds.is_finite() && (0.0..=86410.0).contains(seconds))
-                .map(|seconds| (seconds * 1000.0).round() as u128),
-        })
+        let mut result = completed.into_execution()?;
+        result.collector_errors = collector_errors;
+        Ok(result)
     }
 
     fn settle_execution(
@@ -908,15 +857,15 @@ impl WorkloadSession for Session {
         vec![self.artifacts.clone()]
     }
     fn finish(&mut self) -> Result<(), String> {
-        if !self.evaluation_completed {
+        let Some(grade) = self.completed_grade.take() else {
             self.cancel()?;
             return Err(format!(
                 "official evaluation is incomplete; task resources and partial work were stopped and preserved at {}; do not repeat the agent as the same attempt",
                 self.artifacts.display()
             ));
-        }
+        };
         self.cleanup_attempted = true;
-        match self.controller.finish(CANCELLATION_TIMEOUT) {
+        match self.controller.finish(grade, CANCELLATION_TIMEOUT) {
             Ok(()) => Ok(()),
             Err(error) => Err(match self.cancel() {
                 Ok(()) => error,
@@ -945,32 +894,19 @@ impl WorkloadSession for Session {
         Some(self.settle_execution(context, result))
     }
     fn evaluate(&mut self, _response: &str) -> Result<Evaluation, String> {
-        self.evaluation_completed = false;
+        self.completed_grade = None;
         let event = self.controller.request(
-            json!({"op":"evaluate","timeout":self.evaluation_seconds}),
-            "evaluated",
+            Request::Evaluate {
+                timeout: self.evaluation_seconds,
+            }
+            .value()?,
+            EventKind::Evaluated,
             Duration::from_secs(self.evaluation_seconds) + EVALUATION_PROTOCOL_ALLOWANCE,
         )?;
-        let result = &event["result"];
-        if result["workload"] != self.invocation.identity.workload
-            || result["task_id"] != self.invocation.identity.task_id
-            || result["dataset"]
-                != serde_json::to_value(&self.invocation.identity.dataset)
-                    .map_err(|_| "cannot compare evaluation dataset identity")?
-        {
-            return Err("official evaluation does not match this dataset instance".into());
-        }
-        match (result["outcome"].as_str(), result["resolved"].as_bool()) {
-            (Some("resolved"), Some(true)) => {
-                self.evaluation_completed = true;
-                Ok(Evaluation::Passed)
-            }
-            (Some("unresolved" | "empty_submission"), Some(false)) => {
-                self.evaluation_completed = true;
-                Ok(Evaluation::Failed("official evaluator did not resolve the selected instance".into()))
-            }
-            _ => Err("official evaluator did not return a completed task-specific grade; inspect task artifacts".into()),
-        }
+        let grade = CompletedGrade::decode(&event, &self.invocation.identity)?;
+        let evaluation = grade.evaluation();
+        self.completed_grade = Some(grade);
+        Ok(evaluation)
     }
 }
 
@@ -1183,7 +1119,7 @@ sys.stdout.write(result['project_configuration'])
             measurement_active: false,
             preparation_active: false,
             cleanup_attempted: false,
-            evaluation_completed: false,
+            completed_grade: None,
             artifacts: "retained-attempt".into(),
         }
     }
@@ -1202,8 +1138,9 @@ sys.stdout.write(result['project_configuration'])
         ] {
             let mut task = session(&[result(outcome, json!(resolved))], true);
             assert!(task.evaluate("").is_ok());
-            assert!(task.evaluation_completed);
+            assert!(task.completed_grade.is_some());
             task.finish().unwrap();
+            assert!(task.completed_grade.is_none());
         }
         let mut wrong_task = result("resolved", json!(true));
         wrong_task["task_id"] = json!("another-task");
@@ -1216,7 +1153,7 @@ sys.stdout.write(result['project_configuration'])
         ] {
             let mut task = session(&[invalid], false);
             assert!(task.evaluate("").is_err());
-            assert!(!task.evaluation_completed);
+            assert!(task.completed_grade.is_none());
             let error = task.finish().unwrap_err();
             assert!(error.contains("stopped and preserved at retained-attempt"));
             assert!(task.cleanup_attempted);
@@ -1233,9 +1170,9 @@ sys.stdout.write(result['project_configuration'])
             false,
         );
         assert!(task.evaluate("").is_ok());
-        assert!(task.evaluation_completed);
+        assert!(task.completed_grade.is_some());
         assert!(task.evaluate("").is_err());
-        assert!(!task.evaluation_completed);
+        assert!(task.completed_grade.is_none());
         assert!(task.finish().unwrap_err().contains("preserved"));
     }
 }
