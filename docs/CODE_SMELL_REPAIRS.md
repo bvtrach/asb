@@ -189,6 +189,15 @@ their adapters. Audit mutable globals for necessary scope: atomics for unique
 names and synchronized process ownership are not intrinsically defects.
 Avoid removing synchronization without an ownership replacement. Pending.
 
+Host prerequisite consent/probes now have a separate candidate repair: private
+typed requests, consumed approvals, one capability probe per sysctl/cgroup setup,
+and explicit independent-versus-dependent failure policies. Sysctls retain
+approved interactive fallback; cgroup delegation remains passwordless-only and
+requires separate consent. Offline fake-executor tests and the existing isolated
+fake-sudo fixtures cover both routes. This candidate does not repair wizard
+worker ownership or change tracefs lease/installation semantics; independent
+review and delivery are still pending.
+
 Process-gate inspection found an additional launch-contract problem: its
 `pre_exec` closure allocates buffers and enumerates the environment after fork
 in a multithreaded process. That needs async-signal-safety review and a launch
