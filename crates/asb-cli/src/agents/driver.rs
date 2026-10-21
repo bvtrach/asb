@@ -11,6 +11,10 @@ use std::process::{Command, Stdio};
 
 const REQUEST: &str = "ASB_GUEST_AGENT_REQUEST";
 
+#[cfg(test)]
+#[path = "../../tests/unit/driver_validation.rs"]
+mod validation_tests;
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct WorkloadOwner {
