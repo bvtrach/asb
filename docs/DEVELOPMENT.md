@@ -776,6 +776,22 @@ file-sync, postcommit confirmation and cleanup tests remain required. Windows
 API declarations/semantics are source-reviewed only: no Windows target compile
 or runtime was performed, and Linux policy tests do not qualify native Windows
 rename behavior or portable directory durability.
+`cargo test --locked --offline --lib runner::phases::tests::bundle_publication`
+combines actual bundled recording/replay with private publication faults. Nine
+isolated cases (eleven actual attempts including clean recording baselines) use
+the same bounded synthetic loopback provider as `repeated_run`, fake Pi clients
+and fixture-only keys. True/false and nullable native grades survive committed
+recordings followed by short/precommit or postcommit log/measurement failures.
+Combined recorder commit/publication failures retain primary client/grade facts,
+failed recording disposition and raw bytes, and stop before another batch.
+Selected seeded replay preserves track/algorithm/usage after source replacement
+despite publication failure. Assertions check exact-once client/evaluate/workload/
+provider-observer finish, independent final outputs, immutable association/raw
+digests and absent completion receipts. Measurement schemas do not carry the
+repeated `execution` selection object: their task/cohort/fingerprint/usage are
+checked against plan/log/streamed selection identity without inventing fields.
+No production fault switch, SDK, container, privileged collector or live LLM is
+used. Build the current ASB executable first and keep it unchanged while testing.
 The independent-offset fixture keeps its producer at offset five while full,
 prefix and interleaved frozen readers run; this assertion also remains enabled
 on Windows. An additional cross-platform source-replacement fixture must read

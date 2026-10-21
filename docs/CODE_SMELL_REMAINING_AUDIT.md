@@ -246,6 +246,28 @@ Delivery of earlier queued classes does not close these residual obligations.
 
 ## Independent matrix and official-engine follow-up
 
+### Source-only recording raw-cleanup replacement window
+
+Independent review of peer recording main
+`cabaa57668d3a03c2ef922d24edf420446c613d7` / recording source
+`06c47a9e7237da0637ab491bb5ff93003b14355f` identified a separate residual in
+`runner/recording.rs::cleanup_raw`:
+after the final pathname metadata verification (line 467 in that baseline),
+`remove_file` at line 468 re-resolves the pathname. A replacement in that window
+could therefore remove a foreign entry. Existing `raw_cleanup` tests replace
+the entry before function admission, not after the last verification. This is a
+source finding, not an observed red reproduction or hostile-same-UID sandbox claim.
+
+A separate follow-up must first add a deterministic private after-final-check
+fault and actually reproduce regular-file, symlink and parent replacements.
+Proposed repair: pin the parent, move the relative entry into a private owned
+stage, recheck the moved identity, then delete only the matched entry; restore
+or retain/report a foreign entry without overwrite. Preserve archive commit,
+immutable producer/attempt association and confirmed producer-cleanup
+prerequisites. Keep a post-unlink directory-sync failure distinct from an
+unchanged pre-unlink failure. No recording production change is included in
+the publication34 cross-feature test checkpoint.
+
 A separate agent reviewed exact main `1bcc8253`, the original report, setup
 callers and downstream readers. The later peer main `cabaa576` leaves
 `config/matrix.rs` unchanged. No reachable empty-index panic was found: required

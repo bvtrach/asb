@@ -27,6 +27,38 @@ Independent semantic review, added cross-feature offline regressions, fresh
 focused/full qualification, hosted/package CI, merge, post-merge checks and
 release remain pending. No artifact/runtime/collector repair is folded in.
 
+Cross-feature tests-only follow-up to frozen `3359bfb2`: the actual bundled
+record/replay plus publication-fault matrix now covers nine combined cases
+(eleven actual attempts). True/false/native-null grades survive recording commit
+success followed by log short/precommit, log confirmation, run-JSON short write
+and summary confirmation faults. Recorder commit plus publication failures
+preserve primary client/grade facts and typed failed recording disposition;
+selected seeded replay survives source replacement with unchanged track/seed/
+algorithm/usage. Exact-once client/evaluation/workload/provider-observer finish,
+independent outputs, association/raw identity and withheld receipts are checked,
+with no admission of batch two. The existing bounded loopback provider fixture
+is shared with repeated CLI tests; its body is unchanged. The private workload
+observer now forwards the real adapter's initial material identity instead of
+falling back to an unsupported default. No production Rust/configuration,
+version or workflow behavior changes are included.
+
+Focused runtime evidence: 30 runner-phase tests passed (including the matrix);
+the final strengthened matrix rerun passed, and all 29 repeated CLI tests passed.
+The actual ASB binary, built first in the exclusive REPORT cache, remained
+`1b8252f5115c966709c069d443a0e459d80507db3b7dcd2f4838833259c3f9fc`
+before/after runtime checks. Logs are `target/publication34-cross-build.log`,
+`target/publication34-cross-phases-final-second.log`,
+`target/publication34-cross-final.log`, `target/publication34-cross-repeated.log`
+and `target/publication34-cross-{binary-before,binary-after,final-binary}.sha256`.
+Earlier failed fixture compilation/schema assumptions remain in separate logs;
+they were not overwritten or represented as passing production qualification.
+Strict offline locked all-target/all-feature Clippy (`-D warnings`), formatting
+and diff whitespace checks passed; Clippy transcript is
+`target/publication34-cross-clippy.log`. Independent review, fresh full offline
+qualification and hosted/package/post-merge delivery remain separate gates. The requested
+recording raw-cleanup replacement-window finding is source-only in the residual
+audit; its separate repair/reproduction is not implemented by these tests.
+
 Historical publication integration:
 
 Integrated candidate, staged patch **0.2.32**: source-reviewed publication
