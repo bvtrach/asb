@@ -21,12 +21,13 @@ make uml
 
 `make rust-doc` runs `cargo doc --locked --no-deps --document-private-items`,
 because the CLI implementation modules are intentionally private. `make uml`
-installs the pinned AutoUML release under `target/tools/`, regenerates
-`docs/asb-type-diagram.mmd`, normalizes AutoUML's source-path identifiers into
-stable logical names, and renders `docs/asb-type-diagram.svg`. The normalized
-diagram explicitly shows trait implementation edges and never publishes local
-paths or branch names. It supplements the maintained architecture overview;
-review both when changing public or private type relationships.
+installs the pinned AutoUML release under `target/tools/`, generates the local
+type-diagram sources and renderings, and leaves those derived files ignored.
+`make flows` generates local dataflow and control-flow diagrams; `make
+interactive` adds the local HTML renderings. These diagrams explicitly show
+source relationships but never publish local paths or branch names. They
+supplement the maintained architecture overview and should be regenerated when
+reviewing public or private type relationships.
 
 Function-level dataflow/control diagrams use Graphviz's packed `osage` layout.
 This keeps module boxes and every directed call/label, including cross-module
@@ -70,6 +71,12 @@ Perf-stat regression fixtures process a complete synthetic file larger than
 the diagnostic cap, retain missing-interval timestamps and hybrid CPU counter
 totals, and reject invalid or excessive input without publishing partial totals.
 They need neither perf permissions nor a live agent/provider.
+CPU/I/O and BPF adapter fixtures likewise place final samples/cumulative maps
+beyond 256 KiB, pass unrelated diagnostic strings and require full-file means,
+series and final values. Shared output tests reject incomplete, oversized,
+invalid-UTF-8 and nonfinite data and enforce the processed JSON budget without
+allocating a second serialized buffer. These are offline fixtures, not native
+BPF clock-series qualification.
 `cargo test --locked --offline --test compare_setup` checks repeated CLI setup
 selections, scoped models/trials, dependency expansion, non-overwriting sweep
 publication, standalone measured/unmeasured reports and an injected browser
