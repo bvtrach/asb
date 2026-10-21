@@ -264,3 +264,12 @@ source, not a native Windows/ARM/other-kernel or live provider/SDK/container
 qualification. Version 0.2.42 remains staged. Independent final proof review,
 actual-main delivery ancestry, exact-head hosted/package CI, merge, both
 post-merge jobs and release remain pending; no push or PR action was performed.
+
+Root's independent final proof review approved checkpoint `9db664ef`: its delta
+from qualified `9b843ee3` is documentation only, all 24 outer summaries support
+1413/0/21 without recounting nested subprocesses, all four hash observations and
+the frozen executable match, and separate doctests, strict lint/format and the
+complete make/doc/diagram/completion gates passed. Root independently reran both
+generated shell syntax checks. This does not replace actual-main ancestry
+review, exact-head hosted/package CI, both post-merge jobs or the staged signed
+release, and does not qualify native Windows/ARM or live SDK execution.
