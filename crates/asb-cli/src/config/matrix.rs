@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod prepared;
+mod publication;
 mod selections;
 pub(crate) use prepared::Population;
 
@@ -181,15 +182,14 @@ pub(super) fn setup(mut options: SetupOptions, output: &mut dyn Write) -> Result
         if let Some(path) = options.output {
             let path = Path::new(&path);
             create_parent(path, output)?;
-            fs::write(path, text)
-                .map_err(|error| Error::Io(format!("cannot write {}: {error}", path.display())))?;
+            publication::scalar(path, text.as_bytes())?;
             writeln!(
                 output,
                 "Wrote {}\n{}",
                 path.display(),
                 run_command_message(&path.to_string_lossy())
             )
-            .map_err(crate::io_error)?;
+            .map_err(|error| publication::confirmation(path, error))?;
         } else {
             output.write_all(text.as_bytes()).map_err(crate::io_error)?;
         }
@@ -246,6 +246,7 @@ fn stamp() -> u128 {
 }
 
 fn render(config: &BenchmarkConfig) -> Result<String, Error> {
+    prepared::source_bound(config)?;
     let text = toml::to_string_pretty(config)
         .map_err(|error| Error::Input(format!("cannot render configuration: {error}")))?;
     if text.len() > crate::benchmark::MAX_CONFIG_BYTES {
@@ -278,35 +279,14 @@ pub(crate) fn publish_sweep(
     output: &mut dyn Write,
 ) -> Result<(), Error> {
     let prepared = prepared::Sweep::new(path, configs)?;
-    if path.exists() {
+    if fs::symlink_metadata(path).is_ok() {
         return Err(Error::Input(format!(
             "sweep {} already exists; choose a new --output filename",
             path.display()
         )));
     }
     create_parent(path, output)?;
-    let directory = &prepared.directory;
-    fs::create_dir(directory)
-        .map_err(|error| Error::Io(format!("cannot create {}: {error}", directory.display())))?;
-    for (filename, text) in &prepared.configurations {
-        let file = directory.join(filename);
-        fs::write(&file, text)
-            .map_err(|error| Error::Io(format!("cannot write {}: {error}", file.display())))?;
-    }
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|error| {
-            Error::Io(format!(
-                "cannot create sweep {}: {error}; generated configurations remain in {}",
-                path.display(),
-                directory.display()
-            ))
-        })?;
-    file.write_all(prepared.manifest.as_bytes())
-        .and_then(|()| file.sync_all())
-        .map_err(crate::io_error)?;
+    publication::sweep(path, &prepared)?;
     writeln!(
         output,
         "Wrote {} benchmarks and sweep {}\nRun it with: asb sweep '{}'",
@@ -314,5 +294,5 @@ pub(crate) fn publish_sweep(
         path.display(),
         path.display()
     )
-    .map_err(crate::io_error)
+    .map_err(|error| publication::confirmation(path, error))
 }

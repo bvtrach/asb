@@ -1,6 +1,94 @@
 //! Pure selection serialization: no directory or destination mutation here.
 use super::*;
 
+/// Lower bound on pretty-TOML size, BEFORE the serializer clones strings or
+/// builds encoded values. TOML never compresses decoded UTF-8 string bytes;
+/// even a multiline literal preserves them and adds delimiters. Every string
+/// array member also requires at least two delimiter bytes. Fixed keys/numbers
+/// only add output, so ignoring those cannot reject a valid <=64KiB document.
+/// This bounds serializer SOURCE storage, not arbitrary serde implementations.
+pub(super) fn source_bound(config: &BenchmarkConfig) -> Result<(), Error> {
+    let mut remaining = crate::benchmark::MAX_CONFIG_BYTES;
+    let mut string = |value: &str| -> Result<(), Error> {
+        remaining = remaining.checked_sub(value.len().saturating_add(2)).ok_or_else(||
+            Error::Input("generated benchmark configuration exceeds 64 KiB before serialization; shorten selected values; no setup files were written".into()))?;
+        Ok(())
+    };
+    // Destructure exhaustively: adding a field requires reviewing this bound.
+    let BenchmarkConfig {
+        planning,
+        agent,
+        workload,
+        provider,
+        model,
+        concurrency,
+        trial_set,
+        trial,
+        workspace,
+        log_file,
+        measurements,
+    } = config;
+    let _: &usize = concurrency;
+    for value in [agent, workload, provider, model, workspace, log_file] {
+        string(value)?;
+    }
+    for value in [trial_set, trial].into_iter().flatten() {
+        string(value)?;
+    }
+    if let Some(crate::benchmark::MeasurementConfig {
+        enabled,
+        directory,
+        collectors,
+    }) = measurements
+    {
+        let _: &bool = enabled;
+        string(directory)?;
+        for value in collectors {
+            string(value)?;
+        }
+    }
+    if let Some(crate::planning::PlanningConfig {
+        backend,
+        required_policies,
+        budgets,
+        reservation,
+        repetition,
+    }) = planning
+    {
+        // Also destructure numeric-only nested records exhaustively so schema
+        // additions cannot silently bypass the source-storage review.
+        let crate::planning::PhaseBudgets {
+            environment_preparation_seconds,
+            agent_preparation_seconds,
+            execution_seconds,
+            evaluation_seconds,
+        } = budgets;
+        let _: [&Option<u64>; 4] = [
+            environment_preparation_seconds,
+            agent_preparation_seconds,
+            execution_seconds,
+            evaluation_seconds,
+        ];
+        if let Some(crate::planning::Resources {
+            cpu_millis,
+            memory_mib,
+            disk_mib,
+        }) = reservation
+        {
+            let _: [&u64; 3] = [cpu_millis, memory_mib, disk_mib];
+        }
+        let crate::planning::Repetition { index, total } = repetition;
+        let _: [&usize; 2] = [index, total];
+        if let Some(value) = backend {
+            string(value)?;
+        }
+        for value in required_policies {
+            string(value)?;
+        }
+    }
+    Ok(())
+}
+
 /// Check each expanded selection before retaining another cloned configuration.
 /// Final serialization rechecks bounds after per-output paths are assigned.
 #[derive(Default)]
@@ -58,8 +146,10 @@ impl Sweep {
         let directory = std::path::absolute(parent.join(&group)).map_err(crate::io_error)?;
         let mut configurations = Vec::with_capacity(configs.len());
         let mut references = Vec::with_capacity(configs.len());
+        let mut reference_bytes = 0usize;
         let mut total = 0usize;
         for (index, config) in configs.iter_mut().enumerate() {
+            source_bound(config)?;
             crate::planning::resolve(config)?;
             let filename = format!("benchmark-{index:03}.toml");
             config.log_file = format!("benchmark-{index:03}.log");
@@ -80,25 +170,42 @@ impl Sweep {
                     "generated sweep configurations exceed 32 MiB; select a smaller batch; no setup files were written".into(),
                 ));
             }
+            reference_bytes = reference_bytes
+                .checked_add(group.len())
+                .and_then(|size| size.checked_add(filename.len() + 3))
+                .filter(|size| *size as u64 <= crate::sweep::MAX_SWEEP_BYTES)
+                .ok_or_else(manifest_size_error)?;
             references.push(format!("{group}/{filename}"));
             configurations.push((filename, text));
         }
-        let manifest = toml::to_string_pretty(&crate::sweep::SweepFile {
-            resources: None,
-            configs: references,
-        })
-        .map_err(|error| Error::Input(format!("cannot render sweep: {error}")))?;
-        if manifest.len() as u64 > crate::sweep::MAX_SWEEP_BYTES {
-            return Err(Error::Input(
-                "generated sweep manifest exceeds 16 MiB; shorten the output filename or select a smaller batch; no setup files were written".into(),
-            ));
-        }
+        let manifest = render_manifest(references)?;
         Ok(Self {
             directory,
             configurations,
             manifest,
         })
     }
+}
+
+fn manifest_size_error() -> Error {
+    Error::Input("generated sweep manifest exceeds 16 MiB; shorten the output filename or select a smaller batch; no setup files were written".into())
+}
+fn render_manifest(references: Vec<String>) -> Result<String, Error> {
+    let mut remaining = crate::sweep::MAX_SWEEP_BYTES as usize;
+    for reference in &references {
+        remaining = remaining
+            .checked_sub(reference.len().saturating_add(2))
+            .ok_or_else(manifest_size_error)?;
+    }
+    let text = toml::to_string_pretty(&crate::sweep::SweepFile {
+        resources: None,
+        configs: references,
+    })
+    .map_err(|error| Error::Input(format!("cannot render sweep: {error}")))?;
+    if text.len() as u64 > crate::sweep::MAX_SWEEP_BYTES {
+        return Err(manifest_size_error());
+    }
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -196,5 +303,89 @@ mod tests {
             }
         }
         panic!("selection expansion retained an excessive population");
+    }
+
+    #[test]
+    fn raw_storage_check_covers_optional_planning_and_collection_cardinality() {
+        let mut candidate = config();
+        candidate.planning = Some(crate::planning::PlanningConfig {
+            backend: Some("x".repeat(crate::benchmark::MAX_CONFIG_BYTES)),
+            ..Default::default()
+        });
+        assert!(source_bound(&candidate).is_err());
+        candidate.planning.as_mut().unwrap().backend = None;
+        candidate.planning.as_mut().unwrap().required_policies = vec![String::new(); 40_000];
+        assert!(source_bound(&candidate).is_err());
+        candidate.planning = None;
+        candidate.measurements = Some(crate::benchmark::MeasurementConfig {
+            enabled: false,
+            directory: String::new(),
+            collectors: vec![String::new(); 40_000],
+        });
+        assert!(source_bound(&candidate).is_err());
+        candidate.measurements = None;
+        for value in [
+            "\n".repeat(40_000),
+            "é".repeat(25_000),
+            "'\"\\\r\n\u{0000}".repeat(1000),
+        ] {
+            candidate.workspace = value;
+            let expected = toml::to_string_pretty(&candidate).unwrap();
+            assert!(expected.len() >= candidate.workspace.len());
+            assert_eq!(
+                render(&candidate).is_ok(),
+                expected.len() <= crate::benchmark::MAX_CONFIG_BYTES
+            );
+        }
+    }
+
+    #[test]
+    fn aggregate_serialization_accepts_exact_32_mib_and_rejects_one_extra_byte() {
+        let mut base = config();
+        base.log_file = "benchmark-000.log".into();
+        base.workspace.clear();
+        let overhead = render(&base).unwrap().len();
+        let mut full = base.clone();
+        full.workspace = "x".repeat(crate::benchmark::MAX_CONFIG_BYTES - overhead);
+        let last_size = render(&base).unwrap().len();
+        let mut reduced = full.clone();
+        reduced
+            .workspace
+            .truncate(reduced.workspace.len() - last_size);
+        let mut configs = vec![full; 511];
+        configs.push(reduced);
+        configs.push(base);
+        let prepared = Sweep::new(Path::new("unused/exact.toml"), configs.clone()).unwrap();
+        assert_eq!(
+            prepared
+                .configurations
+                .iter()
+                .map(|(_, text)| text.len())
+                .sum::<usize>(),
+            crate::sweep::plan::MAX_CONFIG_BYTES
+        );
+        drop(prepared);
+        configs.last_mut().unwrap().workspace.push('x');
+        let error = match Sweep::new(Path::new("unused/over.toml"), configs) {
+            Ok(_) => panic!("one-byte aggregate overflow accepted"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("32 MiB"), "{error}");
+    }
+
+    #[test]
+    fn manifest_serialization_accepts_exact_16_mib_and_rejects_one_extra_byte() {
+        let overhead = render_manifest(vec![String::new()]).unwrap().len();
+        let reference = "x".repeat(crate::sweep::MAX_SWEEP_BYTES as usize - overhead);
+        assert_eq!(
+            render_manifest(vec![reference.clone()]).unwrap().len() as u64,
+            crate::sweep::MAX_SWEEP_BYTES
+        );
+        assert!(
+            render_manifest(vec![format!("{reference}x")])
+                .unwrap_err()
+                .to_string()
+                .contains("16 MiB")
+        );
     }
 }

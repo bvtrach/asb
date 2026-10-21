@@ -84,6 +84,52 @@ fn setup_args() -> Vec<&'static str> {
     ]
 }
 
+#[test]
+fn actual_setup_late_size_failure_writes_nothing_and_valid_files_round_trip() {
+    let project = Project::new();
+    project.write("scalar.toml", "prior configuration bytes");
+    let path = project.0.join("scalar.toml");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o751)).unwrap();
+    }
+    let oversized = "x".repeat(70_000);
+    let mut scalar = setup_args();
+    scalar.extend(["--workspace", &oversized, "--output", "scalar.toml"]);
+    let output = project.command(&scalar);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("64 KiB"));
+    assert_eq!(std::fs::read(&path).unwrap(), b"prior configuration bytes");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o751
+        );
+    }
+    let mut late = setup_args();
+    late.extend(["--model", &oversized, "--output", "unpublished/late.toml"]);
+    let output = project.command(&late);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no setup files were written"));
+    assert!(!project.0.join("unpublished").exists());
+    assert!(!std::fs::read_dir(&project.0).unwrap().any(|entry| {
+        entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .contains("-configs-")
+    }));
+    let mut valid = setup_args();
+    valid.extend(["--output", "scalar.toml"]);
+    success(project.command(&valid));
+    let config: toml::Value = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(config["model"].as_str(), Some("fixture"));
+    success(project.command(&["compare", "scalar.toml"]));
+}
+
 #[cfg(unix)]
 #[test]
 #[allow(unsafe_code)]

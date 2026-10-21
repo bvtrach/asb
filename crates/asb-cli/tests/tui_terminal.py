@@ -231,6 +231,23 @@ def main():
         assert config64["concurrency"] == 64 and isinstance(config64["concurrency"], int)
         assert not (root / "invoked-agent").exists()
 
+        # Reach the real final publication event with a configuration which
+        # would exceed run's 64KiB reader. No sweep/config/private staging is
+        # created, prior valid generations remain byte-identical, and terminal
+        # restoration must still happen on this late error.
+        prior_setup = {item: item.read_bytes() for item in root.glob("asb-sweep-*.toml")}
+        prior_paths = set(root.iterdir())
+        project_file = root / ".asb/project.toml"
+        original_project = project_file.read_text()
+        project_file.write_text("tools_dir='.asb-tools'\nworkloads_dir='workloads'\nworkspace_dir='" + "x" * 70_000 + "'\n")
+        code, transcript = session(binary, root, ["setup", "tui"],
+            b"pi \tlocal \t \tbug-fix \t\t\t")
+        assert code != 0 and b"64 KiB" in transcript, transcript[-3000:]
+        assert b"no setup files were written" in transcript, transcript[-3000:]
+        assert set(root.iterdir()) == prior_paths
+        assert all(item.read_bytes() == data for item, data in prior_setup.items())
+        project_file.write_text(original_project)
+
         # Both cancellation encodings exercise restoration and bounded exit.
         for arguments in [["setup", "tui"], ["workload", "tui"]]:
             for key in [b"\x03", b"\x1b"]:

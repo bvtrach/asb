@@ -120,6 +120,13 @@ impl std::fmt::Display for CliError {
 impl std::error::Error for CliError {}
 
 pub(crate) fn read_config(path: &std::path::Path) -> Result<String, CliError> {
+    read_config_after_inspection(path, || {})
+}
+
+fn read_config_after_inspection(
+    path: &std::path::Path,
+    inspected: impl FnOnce(),
+) -> Result<String, CliError> {
     const MAX_CONFIG_BYTES: u64 = crate::benchmark::MAX_CONFIG_BYTES as u64;
     let oversized = || {
         CliError::Input(format!(
@@ -151,6 +158,7 @@ pub(crate) fn read_config(path: &std::path::Path) -> Result<String, CliError> {
     if metadata.len() > MAX_CONFIG_BYTES {
         return Err(oversized());
     }
+    inspected();
     let mut contents = Vec::new();
     // A concurrent writer can grow a regular file after metadata inspection.
     // Bound the actual read as well as the opened object's initial length.
