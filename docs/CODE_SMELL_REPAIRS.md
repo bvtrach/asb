@@ -14,6 +14,33 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+Integrated candidate, staged patch **0.2.30**: independently source-approved
+typed task-controller contracts `ac8c7753` and historical layout correction
+`da9c1f51` are combined with capture checkpoint `8dabf284` and current repeated
+execution contracts. The latest matching grade is still consumed before close;
+settlement remains independently cached and can positively retain preserved
+resources without pretending normal removal succeeded. Typed initial-material
+requests and preparation-failure events preserve the new material and launch
+gates; agent requests retain the shared preparation budget. Invalid later grades
+revoke normal-close permission, never confirmed preservation. The generic
+transport still permits untagged retained-inspection responses and drains unknown
+in-flight cancellation events. Independent source review approved `c9a21b26`;
+the subsequent `cf658ba2` merge adds only the qualified capture delivery ledger.
+Fresh all-target/all-feature offline qualification at that source passed
+**1,203 tests**, zero failures and 21 explicit optional skips across 22 targets.
+Focused protocol/controller/remote, actual Python task-server and repeated-run
+checks additionally passed 98 tests. Strict Clippy, formatting and sequential
+offline build/private Rust docs/pinned AutoUML 0.7.2/flows/interactive views/bash
+and zsh completions passed. The actual executable SHA-256 remained unchanged
+before/after runtime tests and the final build:
+`c489e15faa664c44df3201f8ddeff8738a6d8feecc3cd93b665efb6414115a41`.
+Hosted/package CI, PR merge, post-merge verification and release remain pending.
+Signed merge `889702ed` retains actual main `b12d8488` with a tree identical
+to qualified `64e7c45e`; no production, tests or Cargo bytes changed.
+The older pre-main full suite passed 1,100
+tests with 21 optional skips, but is historical, not qualification of this merge.
+Blocking controller request/cleanup transport is a separate pending class.
+
 Integrated candidate, staged patch **0.2.29**: independently source-approved
 bounded capture `823f5081` is combined with newly qualified sweep checkpoint
 `1657ae18`, preserving repeated native/official execution, fresh preparation,
@@ -36,9 +63,11 @@ Strict Clippy, formatting and sequential build/private Rust docs/pinned AutoUML
 0.7.2/flows/interactive views/bash and zsh completions passed. Actual executable
 SHA-256 stayed unchanged before/after tests and final build:
 `3acc60d2381d4f6037159d1a7c41fb5f6ae6d0ed2b9acd64183de388934d59a6`.
-Exact-head hosted/package CI, main-ancestry publication review, merge, post-merge
-verification and release remain pending. This does not qualify optional skipped
-host/provider tests, runtime discovery, or the remaining overall audit.
+Exact-head hosted/package CI passed in runs `39655735876` and `39655737318`;
+PR #295 merged as `b12d84882609aae00d16dabd497126348e9ef1ef` after independent
+main-ancestry publication review. Post-merge run `39657490808` and release
+remain pending. This does not qualify optional skipped host/provider tests,
+runtime discovery, or the remaining overall audit.
 The subsequent signed ancestry merge retains actual main
 `46d20e382b7781c3fb3bf48216e6090ca4b37998` with a tree identical to qualified
 `650b3944`; production, tests, Cargo files and the qualified executable are
@@ -71,9 +100,10 @@ passed 1,178 tests with zero failures and 21 explicit optional skips across
 22 targets. Strict Clippy, formatting and sequential build/private docs/pinned
 AutoUML/flows/interactive views/completions passed. Exact-head hosted/package CI
 passed in runs `39653948153` and `39653949094`; PR #293 merged as
-`46d20e382b7781c3fb3bf48216e6090ca4b37998`. Post-merge run `39655443641` and
-release remain pending. The earlier 1,077-test sweep evidence is not substituted
-for these checks.
+`46d20e382b7781c3fb3bf48216e6090ca4b37998`. Both post-merge jobs passed in
+run `39655443641`; **0.2.28** is released with GitHub-verified valid annotated
+SSH tag `69af3fc8d835876856ff3a19bcd7af30a3b7e326` targeting that exact merge.
+The earlier 1,077-test sweep evidence is not substituted for these checks.
 
 The parent typed run-disposition integration is staged as **0.2.27**, on the
 independently source-reviewed selection-identity integration **0.2.26**, after
@@ -517,6 +547,24 @@ addition to the line-series axes; the earlier line-only candidate was not
 treated as completion evidence.
 The custom BPF scope validator is also a small function (about sixty lines),
 not the reported 533; its confirmed correctness defect is tracked below.
+
+Private task-controller contract candidate, staged patch **0.2.29**: typed Rust requests and event kinds
+and Python operation/event identifiers preserve the existing JSON wire. Validated
+ready and completed-execution views retain selected-instance/baseline/budget,
+guest metadata, output and quiescence/delegated-owner obligations. A private
+matching-completed-grade token replaces the official session's writable close
+flag: every evaluator request clears it first, and normal close consumes it.
+False grades remain completed grades. Separate normal-close/cancellation ack
+validators preserve stopped-preservation versus destructive removal, while
+cancellation still drains unknown/in-flight events. Generic untagged inspection,
+extension evaluation kinds and structured/native outcome APIs stay unchanged.
+Constructor matrices and actual Python-task-loop/Rust-session fixtures require
+no Docker, installed SDK, real agent or provider. Original source `ac8c7753` is
+independently approved; integration review, full qualification and delivery
+remain pending. Qualified typed saved sweep modes are retained; internal command
+identifiers remain separate work. Blocking controller request writes,
+Python nominal-interval deadline accounting and controller Drop custody are not
+repaired by these typed contracts and must not be claimed bounded here.
 
 cli2key startup/session candidate, staged patch **0.2.23** after checkpoint
 **0.2.22**: explicit external versus local ownership

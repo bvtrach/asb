@@ -1,5 +1,6 @@
 //! Private, bounded JSON-lines transport to workload-owned execution engines.
 use super::session::{ResourceDisposition, ResourceSettlement};
+use super::task_protocol::{CancellationAck, CompletedGrade, EventKind, NormalCloseAck, Request};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -263,7 +264,7 @@ impl Controller {
 
     pub(crate) fn receive(&mut self, deadline: Instant) -> Result<Value, String> {
         let event = self.receive_raw(deadline)?;
-        if event.get("event").and_then(Value::as_str) == Some("error") {
+        if EventKind::of(&event) == Some(EventKind::Error) {
             // ExecutionError reasons are fixed local diagnostics from our
             // engine, not arbitrary SDK HTTP bodies or request dumps.
             if event["error_class"] == "ExecutionError"
@@ -306,8 +307,8 @@ impl Controller {
                 return Err("workload cancellation exceeded its cleanup deadline".into());
             }
             let event = self.receive_raw(deadline)?;
-            if event["event"] == "closed" {
-                let disposition = Self::closed_disposition(&event)?;
+            if EventKind::of(&event) == Some(EventKind::Closed) {
+                let disposition = CancellationAck::decode(&event)?.disposition();
                 self.wait_for_exit(deadline, false)?;
                 return Ok(disposition);
             }
@@ -320,36 +321,28 @@ impl Controller {
     pub(crate) fn request(
         &mut self,
         request: Value,
-        expected: &str,
+        expected: EventKind,
         timeout: Duration,
     ) -> Result<Value, String> {
         self.send(&request)?;
         let response = self.receive(Instant::now() + timeout)?;
-        if response.get("event").and_then(Value::as_str) != Some(expected) {
+        if EventKind::of(&response) != Some(expected) {
             return Err("workload controller returned an unexpected protocol event".into());
         }
         Ok(response)
     }
 
-    fn closed_disposition(event: &Value) -> Result<ResourceDisposition, String> {
-        if event["event"] != "closed" {
-            return Err("workload cleanup did not return a closed acknowledgement".into());
-        }
-        match event["cleanup"].as_str() {
-            Some("removed") => Ok(ResourceDisposition::Removed),
-            Some("not_created") => Ok(ResourceDisposition::NotCreated),
-            Some("stopped-preserved") => Ok(ResourceDisposition::StoppedPreserved),
-            _ => Err("workload cleanup did not confirm removal or stopped preservation; inspect private task cleanup artifacts".into()),
-        }
-    }
-
-    pub(crate) fn finish(&mut self, timeout: Duration) -> Result<ResourceSettlement, String> {
+    pub(super) fn finish(
+        &mut self,
+        _grade: CompletedGrade,
+        timeout: Duration,
+    ) -> Result<ResourceSettlement, String> {
         let deadline = Instant::now() + timeout;
-        self.send(&serde_json::json!({"op":"close"}))?;
+        self.send(&Request::Close.value()?)?;
         // Keep stdin open until cleanup acknowledges completion. EOF is
         // cancellation and is only the fallback for a failed caller.
         let response = self.receive(deadline)?;
-        let disposition = Self::closed_disposition(&response)?;
+        let disposition = NormalCloseAck::decode(&response)?.disposition();
         self.input.take();
         self.wait_for_exit(deadline, false)?;
         let success = self
@@ -433,6 +426,17 @@ impl Drop for Controller {
 
 #[cfg(test)]
 mod tests {
+    fn completed_grade() -> super::CompletedGrade {
+        let identity = crate::workloads::TaskIdentity::local("fixture", Some("task"));
+        super::CompletedGrade::decode(
+            &serde_json::json!({"event":"evaluated", "result":{
+                "workload":"fixture", "task_id":"task", "dataset":null,
+                "outcome":"unresolved", "resolved":false
+            }}),
+            &identity,
+        )
+        .unwrap()
+    }
     #[test]
     fn published_harbor_assets_import_without_the_terminal_bench_1_adapter() {
         let root = std::env::temp_dir()
@@ -509,7 +513,9 @@ mod tests {
         controller
             .receive(Instant::now() + Duration::from_secs(3))
             .unwrap();
-        controller.finish(Duration::from_secs(8)).unwrap();
+        controller
+            .finish(completed_grade(), Duration::from_secs(8))
+            .unwrap();
         assert!(controller.child.try_wait().unwrap().unwrap().success());
     }
 
@@ -530,7 +536,7 @@ mod tests {
             controller
                 .receive(Instant::now() + Duration::from_secs(3))
                 .unwrap();
-            let result = controller.finish(Duration::from_secs(3));
+            let result = controller.finish(completed_grade(), Duration::from_secs(3));
             if matches!(cleanup, "not_created" | "removed") && event == "closed" {
                 let settled = result.unwrap();
                 assert!(settled.diagnostic.is_some());
@@ -543,7 +549,7 @@ mod tests {
     #[test]
     fn cancellation_drains_inflight_events_and_waits_for_owned_cleanup() {
         let mut command = Command::new("python3");
-        command.args(["-u", "-c", "import json,sys,time\nprint(json.dumps(dict(event='ready')),flush=True)\nassert sys.stdin.read()==''\nfor event in ['output','execution_ended','completed','error']:\n print(json.dumps(dict(event=event,private='never print this')),flush=True)\ntime.sleep(3.2)\nprint(json.dumps(dict(event='closed',cleanup='removed')),flush=True)\nsys.exit(1)\n"]);
+        command.args(["-u", "-c", "import json,sys,time\nprint(json.dumps(dict(event='ready')),flush=True)\nassert sys.stdin.read()==''\nfor event in ['output','execution_ended','completed','error','future',None]:\n print(json.dumps(dict(event=event,private='never print this')),flush=True)\ntime.sleep(3.2)\nprint(json.dumps(dict(event='closed',cleanup='removed')),flush=True)\nsys.exit(1)\n"]);
         let mut controller = Controller::spawn(&mut command).unwrap();
         controller
             .receive(Instant::now() + Duration::from_secs(3))
@@ -599,7 +605,9 @@ mod tests {
                 .receive(Instant::now() + Duration::from_secs(3))
                 .unwrap();
             if normal {
-                let settled = controller.finish(Duration::from_secs(3)).unwrap();
+                let settled = controller
+                    .finish(completed_grade(), Duration::from_secs(3))
+                    .unwrap();
                 assert_eq!(settled.disposition, ResourceDisposition::StoppedPreserved);
                 assert!(settled.diagnostic.is_some());
             } else {
@@ -634,7 +642,9 @@ mod tests {
                 .receive(Instant::now() + Duration::from_secs(3))
                 .unwrap();
             let failed = if normal {
-                controller.finish(Duration::from_millis(100)).unwrap_err()
+                controller
+                    .finish(completed_grade(), Duration::from_millis(100))
+                    .unwrap_err()
             } else {
                 controller.cancel(Duration::from_millis(100)).unwrap_err()
             };
@@ -701,7 +711,7 @@ mod tests {
         let response = controller
             .request(
                 json!({"value":"private fixture"}),
-                "completed",
+                EventKind::Completed,
                 Duration::from_secs(5),
             )
             .unwrap();
@@ -727,5 +737,64 @@ mod tests {
             assert!(!error.contains("private fixture"));
             assert!(error.contains("JSON") || error.contains("framing"));
         }
+    }
+
+    #[test]
+    fn typed_error_events_keep_local_diagnostics_but_never_expose_sdk_bodies() {
+        for (class, reason, expected) in [
+            (
+                "ExecutionError",
+                "fixed local reason".to_owned(),
+                Some("workload execution failed: fixed local reason"),
+            ),
+            ("SdkError", "private SDK response".to_owned(), None),
+            ("ExecutionError", "private\nSDK response".to_owned(), None),
+            ("ExecutionError", "private\rSDK response".to_owned(), None),
+            ("ExecutionError", "private".repeat(100), None),
+        ] {
+            let mut command = Command::new("python3");
+            command
+                .args([
+                    "-I",
+                    "-S",
+                    "-B",
+                    "-u",
+                    "-c",
+                    "import json,sys;print(sys.argv[1],flush=True);sys.stdin.read()",
+                ])
+                .arg(json!({"event":"error","error_class":class,"reason":reason}).to_string());
+            let mut controller = Controller::spawn(&mut command).unwrap();
+            let error = controller
+                .receive(Instant::now() + Duration::from_secs(3))
+                .unwrap_err();
+            match expected {
+                Some(expected) => assert_eq!(error, expected),
+                None => {
+                    assert_eq!(
+                        error,
+                        "workload controller could not complete the operation; inspect the private task artifacts"
+                    );
+                    assert!(!error.contains("private SDK"));
+                }
+            }
+            controller
+                .complete_response(Instant::now() + Duration::from_secs(3))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn generic_transport_still_accepts_untagged_one_shot_inspection_responses() {
+        let mut command = Command::new("python3");
+        command.args(["-I", "-S", "-B", "-u", "-c",
+            "import json,sys;json.loads(sys.stdin.readline());print(json.dumps(dict(ok=True,scope='inspection')),flush=True);sys.stdin.read()"]);
+        let mut controller = Controller::spawn(&mut command).unwrap();
+        controller.send(&json!({"reference":"fixture"})).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        assert_eq!(
+            controller.receive(deadline).unwrap(),
+            json!({"ok":true,"scope":"inspection"})
+        );
+        controller.complete_response(deadline).unwrap();
     }
 }
