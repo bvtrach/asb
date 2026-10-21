@@ -14,7 +14,8 @@ use std::path::Path;
 
 pub(crate) struct ProcessContext<'a> {
     pub name: &'a str,
-    pub status: &'a std::process::ExitStatus,
+    pub status: Option<std::process::ExitStatus>,
+    pub capture_complete: bool,
     pub stdout: &'a str,
     pub stderr: &'a str,
     /// Opened admitted sources, not mutable filesystem names. Only positional
@@ -30,11 +31,15 @@ impl<'a> ProcessContext<'a> {
     ) -> Self {
         Self {
             name,
-            status,
+            status: Some(*status),
+            capture_complete: true,
             stdout: diagnostics[0],
             stderr: diagnostics[1],
             sources,
         }
+    }
+    pub fn from_completion(name: &'a str, completion: &crate::measurements::ProducerCompletion, diagnostics: [&'a str; 2], sources: [&'a crate::evidence::Capture; 2]) -> Self {
+        Self { name, status: completion.exit, capture_complete: completion.capture_complete, stdout: diagnostics[0], stderr: diagnostics[1], sources }
     }
     pub fn stdout_reader(&self) -> Result<impl std::io::Read + '_, String> {
         self.sources[0].reader()
@@ -55,8 +60,7 @@ pub(crate) struct ProcessData {
 
 impl ProcessData {
     pub fn from_output(context: &ProcessContext<'_>) -> Self {
-        let completed = context.status.success()
-            || (context.status.code().is_none() && !context.stdout.is_empty());
+        let completed = context.capture_complete && context.status.is_none_or(|status| status.success());
         Self {
             status: if completed { "completed" } else { "failed" }.into(),
             metrics: BTreeMap::new(),

@@ -185,7 +185,7 @@ fn read_turn(
 }
 
 #[cfg(target_os = "linux")]
-fn runtime() -> io::Result<PathBuf> {
+pub(super) fn runtime() -> io::Result<PathBuf> {
     #[cfg(test)]
     return Ok(std::env::current_exe()?
         .parent()
@@ -199,7 +199,7 @@ fn runtime() -> io::Result<PathBuf> {
 
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
-fn nonblocking(pipe: &impl std::os::fd::AsRawFd) -> io::Result<()> {
+pub(super) fn nonblocking(pipe: &impl std::os::fd::AsRawFd) -> io::Result<()> {
     let fd = pipe.as_raw_fd();
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {

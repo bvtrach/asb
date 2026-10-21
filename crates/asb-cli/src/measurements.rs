@@ -7,7 +7,9 @@
 
 use crate::collectors;
 mod cohort;
+mod producer;
 mod snapshot;
+pub(crate) use producer::{Completion as ProducerCompletion, Policy as ProducerPolicy, Producer};
 use snapshot::ProcessTreeSnapshot;
 pub(crate) use snapshot::SnapshotCommand;
 #[cfg(test)]
@@ -345,22 +347,21 @@ struct LifecycleRecord {
 pub(crate) struct Collector {
     pub(crate) name: String,
     pub(crate) adapter: &'static dyn collectors::CollectorAdapter,
-    pub(crate) child: Child,
+    pub(crate) producer: Producer,
     pub(crate) started: Instant,
     pub(crate) captures: [crate::evidence::Capture; 2],
 }
-
-impl Drop for Collector {
-    fn drop(&mut self) {
-        if self.child.try_wait().ok().flatten().is_none() {
-            let _ = stop_collector(&mut self.child, self.adapter.graceful_shutdown(&self.name));
-        }
+impl Collector {
+    pub(crate) fn spawn(name: &str, adapter: &'static dyn collectors::CollectorAdapter, mut command: Command, route: crate::launch::CommandRoute, captures: [crate::evidence::Capture; 2]) -> Result<Self, String> {
+        let files = [captures[0].writer()?, captures[1].writer()?];
+        let producer = Producer::spawn(&mut command, route, adapter.producer_policy(name), files)?;
+        Ok(Self { name: name.into(), adapter, producer, started: Instant::now(), captures })
     }
 }
 
 struct StoppedCollector {
     collector: Collector,
-    status: std::process::ExitStatus,
+    completion: producer::Completion,
     elapsed_ms: u128,
 }
 
@@ -392,7 +393,6 @@ pub struct Session {
     component_timings: BTreeMap<String, ComponentTiming>,
     process_sampler: Option<ProcessSampler>,
     process_identity: Option<ProcessIdentity>,
-    process_tree_snapshots: Vec<(String, ProcessTreeSnapshot)>,
     incomplete_collectors: BTreeMap<String, String>,
     clock_ticks_per_second: Option<u64>,
 }
@@ -406,13 +406,9 @@ impl Drop for Session {
         if self.run_started && !self.run_finishing && !self.run_failed {
             let _ = self.event(collectors::LifecycleEvent::RunFailed);
         }
-        for mut collector in self.collectors.drain(..) {
-            let _ = stop_collector(
-                &mut collector.child,
-                collector.adapter.graceful_shutdown(&collector.name),
-            );
-        }
-        let _ = self.stop_process_tree_snapshots();
+        // Each producer owns its single stop operation and fallback custody.
+        // Dropping one failed producer cannot bypass its siblings.
+        self.collectors.clear();
         self.stop_process_sampler();
         if self.run_started && !self.run_finishing {
             let _ = write_json(&self.dir.join("lifecycle.json"), &self.lifecycle);
@@ -561,7 +557,6 @@ impl Session {
             component_timings: BTreeMap::new(),
             process_sampler: None,
             process_identity: None,
-            process_tree_snapshots: Vec::new(),
             incomplete_collectors: BTreeMap::new(),
             clock_ticks_per_second: clock_ticks_per_second(),
         };
@@ -600,9 +595,6 @@ impl Session {
             event,
             collectors::LifecycleEvent::AgentExecuteEnd | collectors::LifecycleEvent::RunFailed
         ) {
-            if let Err(error) = self.stop_process_tree_snapshots() {
-                errors.push(error);
-            }
             self.stop_process_sampler();
             if let Err(error) = self.stop_collector_processes(true) {
                 errors.push(error);
@@ -873,7 +865,6 @@ impl Session {
 
     /// Finish collectors and write the run record and aggregate summary.
     pub fn finish<'a>(mut self, measurement: RunMeasurement<'a>) -> Result<(), String> {
-        let snapshot_result = self.stop_process_tree_snapshots();
         self.stop_process_sampler();
         let mut errors = Vec::new();
         let mut observe = |result: Result<(), String>| {
@@ -881,7 +872,6 @@ impl Session {
                 errors.push(error);
             }
         };
-        observe(snapshot_result);
         observe(self.stop_collector_processes(false));
         observe(self.process_stopped_collectors());
         observe(write_json(&self.dir.join("run.json"), &measurement));
@@ -916,35 +906,19 @@ impl Session {
             });
         self.collectors = remaining;
         for mut collector in collectors {
-            let status = match collector.child.try_wait() {
-                Ok(Some(status)) => status,
-                Ok(None) => match stop_collector(
-                    &mut collector.child,
-                    collector.adapter.graceful_shutdown(&collector.name),
-                ) {
-                    Ok(status) => status,
-                    Err(error) => {
-                        errors.push(format!(
-                            "cannot finish {} collector: {error}",
-                            collector.name
-                        ));
-                        // Collector retains its existing fallback teardown on
-                        // Drop. One failed child cannot skip sibling cleanup.
-                        continue;
-                    }
-                },
-                Err(error) => {
-                    errors.push(format!(
-                        "cannot inspect {} collector: {error}",
-                        collector.name
-                    ));
-                    continue;
-                }
-            };
+            let mut completion = collector.producer.stop();
+            if completion.capture_complete && !collector.adapter.accepts_termination(&collector.name, completion.exit) {
+                completion.capture_complete = false;
+                completion.error = Some(format!("collector principal terminated unexpectedly: {:?}", completion.exit));
+            }
+            if let Some(error) = &completion.error {
+                errors.push(format!("cannot finish {} collector: {error}", collector.name));
+                self.incomplete_collectors.insert(collector.name.clone(), error.clone());
+            }
             let elapsed_ms = finished_at.duration_since(collector.started).as_millis();
             self.stopped_collectors.push(StoppedCollector {
                 collector,
-                status,
+                completion,
                 elapsed_ms,
             });
         }
@@ -961,7 +935,7 @@ impl Session {
         let mut errors = Vec::new();
         for StoppedCollector {
             mut collector,
-            status,
+            completion,
             elapsed_ms,
         } in std::mem::take(&mut self.stopped_collectors)
         {
@@ -1001,9 +975,9 @@ impl Session {
             if let Some(error) = self.incomplete_collectors.get(&collector.name) {
                 stderr = bounded(format!("{error}\n{stderr}").as_bytes());
             }
-            let context = collectors::ProcessContext::new(
+            let context = collectors::ProcessContext::from_completion(
                 &collector.name,
-                &status,
+                &completion,
                 [&stdout, &stderr],
                 [&captures[0], &captures[1]],
             );
@@ -1038,7 +1012,7 @@ impl Session {
                 schema_version: 1,
                 collector: collector.name.clone(),
                 status: data.status,
-                exit_code: status.code(),
+                exit_code: completion.exit.and_then(|status| status.code()),
                 elapsed_ms,
                 stdout,
                 stderr,
@@ -1095,19 +1069,10 @@ impl Session {
                 captures[1].writer()?,
             )
             .ok_or_else(|| format!("cannot start {name} process-tree sampler"))?;
-            self.process_tree_snapshots.push((name.into(), sampler));
-            // Keep a bounded placeholder child so the existing collector
-            // lifecycle and result processing remain unchanged.
-            let child = Command::new("sleep")
-                .arg("86400")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .map_err(|error| format!("cannot create {name} collector lifecycle: {error}"))?;
             self.collectors.push(Collector {
                 name: name.into(),
                 adapter: collectors::find(name).expect("registered collector"),
-                child,
+                producer: Producer::snapshot(sampler),
                 started: Instant::now(),
                 captures,
             });
@@ -1125,6 +1090,16 @@ impl Session {
         Command::new(executable)
     }
 
+    pub(crate) fn collector_command(&self, name: &str) -> Result<(Command, crate::launch::CommandRoute), String> {
+        let executable = self.executable(name);
+        let mut launch = if self.sudo_collectors.contains(name) {
+            let mut launch = crate::launch::ProcessLaunch::new("sudo");
+            launch.arg("-n").arg("--").arg(executable);
+            launch
+        } else { crate::launch::ProcessLaunch::new(executable) };
+        producer::command(&mut launch)
+    }
+
     fn executable(&self, name: &str) -> PathBuf {
         if let Some(tool_dir) = &self.tool_dir {
             let binary = tool_binary_name(name);
@@ -1140,21 +1115,6 @@ impl Session {
         PathBuf::from(tool_binary_name(name))
     }
 
-    fn stop_process_tree_snapshots(&mut self) -> Result<(), String> {
-        let mut errors = Vec::new();
-        for (name, sampler) in std::mem::take(&mut self.process_tree_snapshots) {
-            if let Err(error) = sampler.stop() {
-                self.incomplete_collectors
-                    .insert(name.clone(), error.clone());
-                errors.push(format!("{name} producer capture failed: {error}"));
-            }
-        }
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors.join("; "))
-        }
-    }
 }
 
 fn check_measurement_directory(dir: &Path) -> Result<(), String> {
@@ -1357,35 +1317,6 @@ pub(crate) fn measurement_interval_ms() -> u64 {
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(1_000)
         .clamp(100, 60_000)
-}
-
-/// Stop a collector without allowing a wrapper such as `sudo` to strand its
-/// real tracing child.  The previous unbounded `wait()` could deadlock an
-/// entire sweep after the agent had already exited.
-fn stop_collector(child: &mut Child, graceful: bool) -> std::io::Result<std::process::ExitStatus> {
-    let pid = child.id();
-    if graceful {
-        let _ = Command::new("kill")
-            .args(["-INT", &pid.to_string()])
-            .status();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            if let Some(status) = child.try_wait()? {
-                return Ok(status);
-            }
-            if Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    }
-    let _ = child.kill();
-    // `sudo` may have spawned the actual collector as a direct child. Reap
-    // that child too; otherwise the pipe-backed collector can outlive ASB.
-    let _ = Command::new("pkill")
-        .args(["-KILL", "-P", &pid.to_string()])
-        .status();
-    child.wait()
 }
 
 pub(crate) fn pidstat_interval_seconds() -> String {
