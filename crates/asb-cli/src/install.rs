@@ -315,25 +315,14 @@ pub fn tool_with_progress(
 /// Install only collector dependencies, not the selected collectors themselves.
 /// Existing project-local binaries are never overwritten by this automatic path.
 pub(crate) fn tool_installed_locally(id: &str, tools_root: &Path) -> bool {
-    tools::find(id)
-        .is_some_and(|tool| executable_file(&executable(tool.recipe(), &tools_root.join(id))))
+    local_lookup(id, tools_root).path().is_some()
 }
 
-fn executable_file(path: &Path) -> bool {
-    let Ok(metadata) = fs::metadata(path) else {
-        return false;
-    };
-    if !metadata.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        metadata.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
+fn local_lookup(id: &str, tools_root: &Path) -> crate::executables::Lookup {
+    if agents::find(id).is_some() {
+        agents::local_lookup(id, tools_root)
+    } else {
+        tools::local_lookup(id, tools_root)
     }
 }
 
@@ -352,14 +341,15 @@ pub(crate) fn ensure_collector_dependencies(
         let recipe = tool.recipe();
         let root = tools_root.join(id);
         let destination = executable(recipe, &root);
-        if destination.is_file() {
-            if executable_file(&destination) {
-                continue;
+        match tools::local_lookup(id, tools_root) {
+            crate::executables::Lookup::Found(_) => continue,
+            crate::executables::Lookup::Unusable(path) => {
+                return Err(Error::Io(format!(
+                    "required tool `{id}` at {} is not executable; make it executable or reinstall it, then retry",
+                    path.display()
+                )));
             }
-            return Err(Error::Io(format!(
-                "required tool `{id}` at {} is not executable; make it executable or reinstall it, then retry",
-                destination.display()
-            )));
+            crate::executables::Lookup::Missing => {}
         }
         if dry_run {
             writeln!(
@@ -471,11 +461,13 @@ pub fn tool_available(name: &str, tools_root: &Path) -> bool {
     let Some((plan, _, _)) = built_in_tool(name) else {
         return false;
     };
-    let local = executable(plan, &tools_root.join(name));
-    if local.is_file() {
-        return executable_file(&local);
+    match local_lookup(name, tools_root) {
+        crate::executables::Lookup::Found(_) => true,
+        crate::executables::Lookup::Unusable(_) => false,
+        crate::executables::Lookup::Missing => {
+            matches!(plan, Recipe::Host { executable } if host_executable(executable).is_ok())
+        }
     }
-    matches!(plan, Recipe::Host { executable } if host_executable(executable).is_ok_and(|path| executable_file(&path)))
 }
 
 /// All installable IDs, composed from the agent and non-agent registries.
@@ -1081,7 +1073,7 @@ pub(crate) fn host_executable(name: &str) -> Result<PathBuf, Error> {
         .flat_map(|value| std::env::split_paths(&value).collect::<Vec<_>>())
         .map(|directory| directory.join(name))
         .chain([PathBuf::from("/usr/bin").join(name), PathBuf::from("/bin").join(name)])
-        .find(|path| path.is_file())
+        .find(|path| crate::executables::is_executable(path))
         .ok_or_else(|| {
             Error::Io(format!(
                 "measurement tool `{name}` is not installed on this host; install its distribution package and rerun `asb tool install {name}`"

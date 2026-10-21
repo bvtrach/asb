@@ -47,6 +47,20 @@ without changing established result/workspace identities unintentionally.
 Also review duplicated manifest reference validation and executable resolution;
 same names alone do not prove equivalent semantics. Pending.
 
+Executable-policy candidate, staged patch **0.2.16**: project-local source
+installation, readiness and launch share one registry-neutral executable lookup.
+Explicit source overrides precede adapter-owned package preferences; unusable
+present candidates cannot silently fall through to stale fallback code. Codex
+owns its native-package preference, and host discovery cannot claim a project
+installation. Root independently reviewed the original production repair and
+reran all seven isolated policy fixtures after current-stack integration. These
+exercise actual source installation and execution for every registered agent
+and tool, custom roots, override precedence, broken/non-executable/symlink
+entries and host-only discovery. Existing installer regressions now call the
+same shared executable predicate rather than a removed duplicate. Final full
+source/package checks, review of integration, PR merge, post-merge verification
+and the patch release remain pending.
+
 Shared benchmark-path candidate, staged patch **0.2.13**: all five equivalent legacy normalizers now
 use one component/stem policy, and both sweep execution and comparison use the
 same checked TOML-reference contract. Filename prefixes, Unicode-per-character
@@ -188,6 +202,15 @@ Share mechanics while leaving actual agent/provider/workload semantics in
 their adapters. Audit mutable globals for necessary scope: atomics for unique
 names and synchronized process ownership are not intrinsically defects.
 Avoid removing synchronization without an ownership replacement. Pending.
+
+Host prerequisite consent/probes now have a separate candidate repair: private
+typed requests, consumed approvals, one capability probe per sysctl/cgroup setup,
+and explicit independent-versus-dependent failure policies. Sysctls retain
+approved interactive fallback; cgroup delegation remains passwordless-only and
+requires separate consent. Offline fake-executor tests and the existing isolated
+fake-sudo fixtures cover both routes. This candidate does not repair wizard
+worker ownership or change tracefs lease/installation semantics; independent
+review and delivery are still pending.
 
 Process-gate inspection found an additional launch-contract problem: its
 `pre_exec` closure allocates buffers and enumerates the environment after fork
