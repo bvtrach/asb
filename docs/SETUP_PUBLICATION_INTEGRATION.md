@@ -65,3 +65,27 @@ qualification, not Windows runtime, optional/live-provider or whole-audit
 qualification. Independent final evidence review, current-main coordination,
 hosted/package CI, merge, post-merge verification and release remain pending;
 no push or PR accompanies this evidence-only checkpoint.
+
+Root independently approved final proof `f3883ca8` after checking all 24 outer
+Cargo summaries, the docs-only delta from qualified source `24d7a880`, all
+focused/full/lint/build hash brackets, doctest/lint and completed build/
+documentation evidence. It preserved the current exact executable as
+`target/qualification/setup40-24d7a880-asb` and verified the same SHA-256.
+The original historical executable and retained failures remain separate.
+This approval does not substitute for current-main ancestry or hosted delivery.
+# Actual-main promotion for staged 0.2.40
+
+Signed merge `c9443c1a23d081e292572a530c96430ec504ad83` preserves actual
+PR #304 main ancestry (`c612c6c9a4b743c206840908e6a9c91915e75f26`). The only
+conflict was the repair ledger: both the setup qualification and later delivery
+history are retained, with v0.2.38's actual release recorded. The entire delta
+from independently approved setup checkpoint `ed400f9b` consists of five proof
+documents; all production, tests, Cargo files and workflows are unchanged.
+Root checked the exact protected tree and reviewed the documentation resolution.
+This is not another full qualification run.
+
+Runtime PR #303 has both post-merge jobs green and signed v0.2.38 is published.
+Collector PR #304 passed exact-head CI and merged; its two post-merge jobs and
+signed v0.2.39 release remain prerequisites to merging this setup class. Require
+this class's exact-head hosted/package CI and both post-merge jobs before its
+signed v0.2.40 release. The removed 90% coverage gate stays removed.
