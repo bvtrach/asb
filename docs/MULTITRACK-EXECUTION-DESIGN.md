@@ -635,6 +635,55 @@ alias mutation, nested roots/views, replaced/symlink sources, remote daemons,
 aggregate exhaustion/cancellation and actual owned fixture cleanup. This component
 is still a design, not implemented coverage.
 
+### Remaining Terminal 1.0 installed-client same-shell execution
+
+The pinned SDK's installed-agent contract launches its coding CLI commands in
+the configured-user persistent `TmuxSession` and later runs the verifier in that
+same parent shell. It does not propagate arbitrary nested tool subprocess
+exports back into the parent shell. ASB must match this actual contract rather
+than claim either stronger tool-shell persistence or that merely sharing the
+container is sufficient. Current direct Docker exec does not meet the contract.
+
+Use a workload-owned execution-launch strategy beneath the generic guest
+execution boundary. The default Docker-exec transport remains unchanged;
+Terminal's same-shell strategy launches the existing `__asb-agent` foreground
+child through the exact SDK session without replacing its parent shell. Shared
+gate, deadline, bounded output, collector attachment and cancellation logic
+must consume a transport contract instead of duplicating the runner. The
+strategy returns child target identity, demultiplexed output, final status and
+confirmed settlement, not merely a successful `send_command` call.
+
+Private bounded streams and a nonce-bound exit receipt can bridge the SDK
+session to the controller. Launch credentials belong in a private environment
+channel, not recorded tmux keystrokes. A blocking SDK call must not occupy the
+controller's cancellation reader. Own and join every launcher worker and bridge;
+uncertainty requires stopped preservation. The SDK parent shell persists through
+evaluation independently of the measured client process tree.
+
+The bridge's Docker exec PID is not the client PID. Keep transport exec identity
+separate from the real stopped application's namespace PID and start-time
+identity. Host collector attachment requires an authoritative mapping to the
+actual daemon-host process, never a bridge-PID substitution. Where only a
+namespace target is available, disclose it and reject incompatible collectors
+before execution; do not fabricate host identity.
+
+Initialize the SDK session after initial workload material verification, as an
+explicit preparation stage, and bind its pinned recipe, configured user and
+recording policy into preparation identity. Only positively owned declared
+instrumentation paths may change; no broad HOME or `/tmp` exclusion is allowed.
+Validate shell identity, user, cwd, environment and readiness before release.
+Batch readiness must cover this stage and the paused real client gate: a failed
+sibling initialization aborts all waiting clients before any is resumed.
+
+Tests must distinguish bridge and client PIDs, prove the same shell survives
+into verification, preserve launcher-inherited user/cwd/environment, retain
+bounded streamed stdout/stderr and exact child exit, and exercise cancellation
+at launch/gate/execution/return. Test shell replacement/death, malformed or
+duplicate receipts, blocked channels, sibling preparation failure and teardown
+uncertainty. Qualify an actual installed client on a true same-shell original
+task with repeat-two/concurrency-two. This strategy remains unimplemented; the
+successful separate-shell fixtures do not close it.
+
 ## Current test coverage
 
 Gate tests cover delayed siblings, early return, panic, identity mismatch,
