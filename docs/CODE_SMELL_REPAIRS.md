@@ -14,7 +14,7 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
-Artifact integration, staged patch **0.2.35**, pending full qualification:
+Artifact integration, staged patch **0.2.35**, locally qualified, delivery pending:
 historical artifact checkpoint `a2708632` is combined with committed
 publication34 `3359bfb2`.
 The incoming bundled recording/replay, selected-track capture proofs and typed
@@ -29,9 +29,9 @@ capture and artifact tests are retained, including the actual private MiniSWE
 checkpoint, not unfinished cross-feature work; later committed and qualified
 tests are recorded below. No runtime/collector repair is
 folded in. Earlier 511-, 1,246- and 1,258-test results describe their historical
-trees, not this combined source. Source review and fresh focused qualification
-are recorded below; final independent review, full qualification, hosted/package
-CI, merge, post-merge verification and release remain pending. No build, test or
+trees, not this combined source. Source review, fresh focused and full qualification
+are recorded below; final independent qualification review, hosted/package CI,
+merge, post-merge verification and release remain pending. No build, test or
 cache use accompanied initial `8cf06433`.
 Windows identity, publication and independent-reader qualification remains
 source-only; this merge adds no Windows runtime evidence.
@@ -69,7 +69,38 @@ reviewed integration, and the actual executable SHA-256 stayed
 before/after/final. Logs/hashes are `target/artifact35-*`. Only the allocated
 REPORT target cache was used. This is focused Linux/offline qualification, not
 a fresh full suite, Windows runtime, original external SDK or live-provider
-qualification. Full execution remains held for final independent review.
+qualification. Full execution initially remained held for final independent
+review before the subsequently authorized qualification below.
+
+Final independent review approved `1b69f4ee`; signed actual-main34 ancestry merge
+`b25d9f11` has an identical tree. The fresh locked/offline workspace/all-target/
+all-feature suite at exact `b25d9f11` then passed **1,303 tests**, zero failed,
+with 21 explicit optional skips across **24 outer targets**. The library accounts
+for 1,071 passed and 13 skipped; the remaining targets account for 232 passed
+and eight skipped. `target/artifact35-full-summary.log` retains each Cargo
+target's final outer result without double-counting nested child-test summaries;
+the complete transcript is `target/artifact35-full.log`. No failed full run was
+retried, and no source edit or actual executable relink occurred during runtime.
+
+Only after the full handle was terminal, strict workspace/all-target/all-feature
+Clippy and formatting passed, followed by sequential offline `make build` with
+pinned AutoUML 0.7.2. That completed actual build, private Rustdocs, type diagrams,
+data/control flows, interactive views and both generated completions. Bash and
+Zsh completion syntax checks also passed. Graphviz emitted two ordinary layout
+fallback warnings, not failed gates. Logs are `target/artifact35-full-clippy.log`,
+`artifact35-full-fmt.log`, `artifact35-full-make.log` and corresponding full
+shell-syntax logs under `target/`. The actual ASB SHA-256 matched before full,
+after full and after all gates:
+`eb1ccde0206f8afa34378522b9506efadfb049093b1dd14bdc497cf30304a0ba`.
+The generated empty installation log is preserved as
+`target/artifact35-full-install.log`; earlier failure/focused evidence remains.
+
+All local handles are terminal. This signed qualification update changes only
+documentation: production, tests, Cargo and CI remain identical to `b25d9f11`.
+No raw-recording-custody, runtime-input or collector follow-up was folded in.
+Native Windows/original external SDK/live-provider qualification is not claimed.
+Hosted/package CI, final independent proof review, PR/merge, both post-merge jobs
+and release remain pending for this staged patch; no push was performed here.
 
 Historical artifact integration:
 
