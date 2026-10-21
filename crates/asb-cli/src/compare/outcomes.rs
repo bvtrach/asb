@@ -438,6 +438,10 @@ fn invalid(path: &Path, reason: &str) -> Error {
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/outcome_logs.rs"]
+mod log_boundary_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
