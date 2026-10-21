@@ -573,6 +573,28 @@ per SDK. The representative tasks are 1.0 `hello-world` (separate verifier shell
 and 2.1 `cancel-async-tasks`. Known repair commands qualify execution/grading,
 not AI solving. Other explicit feature requirements remain open.
 
+A subsequent separate-frozen-binary qualification passed SWE-bench's four
+attempts, but exposed external verifier dependency failures in both Terminal
+SDKs: `curl` could not connect to `astral.sh`, preventing installation of `uv`.
+The original retained evidence must stay authoritative: 1.0 returned unknown
+grading (`parse_error`), and 2.1 returned an official zero reward for one attempt
+while continuing all four slots. Neither outcome may be changed into success or
+silently regraded. These failures do not contradict the repaired initial-material
+checks, but the latest all-success live qualification is not green.
+
+The 1.0 failure additionally exposed an execution-continuation defect:
+`Session.finish()` successfully confirms cancellation/stopped preservation, then
+returns an error solely because grading was incomplete. The runner conflates
+that grading state with unconfirmed resource cleanup and stops later batches.
+Separate resource disposition (removed, not created, positively stopped/preserved,
+or unconfirmed) from the evaluator outcome. Positively settled preservation may
+permit new distinct attempts while retaining an overall grader failure and
+artifact locator; unknown ownership, timeout, unreaped controllers or uncertain
+proxy cleanup must still stop admission. Never retry the same attempt's verifier
+automatically. Add a real-CLI failure matrix proving all four slots execute after
+a confirmed preserved grading error and no later batch launches on uncertainty.
+This disposition repair is still outstanding.
+
 ### Remaining cross-service bind alias component
 
 Reuse the existing bounded multi-root Rust census rather than inventing an inode

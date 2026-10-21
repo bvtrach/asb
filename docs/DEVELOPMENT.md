@@ -1,5 +1,24 @@
 # Development
 
+Real workload qualifications must use a separate frozen executable, not
+`target/debug/asb`. Cargo package verification can replace the ordinary build
+output even though the extracted packaged-crate tests use another target tree.
+Build first, allocate a new project-local qualification directory, copy the
+executable there, and pass that exact copy to `ASB_TEST_BENCHMARK_ASB`:
+
+```sh
+cargo build --offline --locked
+mkdir -p target/qualification
+asb_qualification_dir=$(mktemp -d "$PWD/target/qualification/frozen.XXXXXX")
+install -m 755 target/debug/asb "$asb_qualification_dir/asb"
+sha256sum "$asb_qualification_dir/asb"
+```
+
+Keep the copy unchanged and verify its hash after qualification. Ordinary
+build/package gates may then run without replacing the selected executable.
+Fresh per-campaign artifacts and actual running-process executable identities
+remain required; a frozen copy is not evidence that a workload or grader passed.
+
 `benchmark_live_material_environment.py` uses the same explicit image/binary/
 artifact-parent opt-ins as the mounted-root qualification below. It prepares
 two network-none services per fixture, checks independent fresh generated
