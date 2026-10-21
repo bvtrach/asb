@@ -46,6 +46,10 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+The agent-process sampler regression launches a bounded local Node fixture,
+changes its process title and checks two seconds of continued sampling, an
+unrelated Node process and the original process's exit. It uses no provider,
+agent package, container or privileged collector.
 Run `asb run` with credentials only as an explicit local
 smoke/benchmark operation.
 

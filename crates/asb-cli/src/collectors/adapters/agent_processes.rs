@@ -45,6 +45,7 @@ struct Identity {
 #[derive(Default)]
 struct Totals {
     seen: BTreeSet<(u32, u64)>,
+    admitted: BTreeSet<(u32, u64)>,
     peak_rss_kib: u64,
     samples: u64,
     incomplete: bool,
@@ -384,6 +385,19 @@ impl Identity {
         })
     }
 
+    fn matches_sample(&self, proc: &Path, admitted: bool) -> bool {
+        // Admission requires the exact launch entry point. Once this PID/start
+        // lifetime was observed, argv is no longer identity: clients may rename
+        // their process title. Keep checking its executable and tree membership
+        // (the latter at both ends of the sample) rather than admitting every
+        // process using the same interpreter.
+        if admitted {
+            let executable = self.interpreter.as_ref().unwrap_or(&self.executable);
+            return fs::read_link(proc.join("exe")).is_ok_and(|path| path == *executable);
+        }
+        self.matches(proc)
+    }
+
     fn matches(&self, proc: &Path) -> bool {
         if let Some((flag, entry)) = &self.runtime_arguments {
             if !fs::read_link(proc.join("exe")).is_ok_and(|path| path == self.executable) {
@@ -432,8 +446,23 @@ impl Identity {
 }
 
 impl Totals {
+    fn matches_process(
+        &mut self,
+        proc: &Path,
+        generation: (u32, u64),
+        identity: &Identity,
+    ) -> bool {
+        if identity.matches_sample(proc, self.admitted.contains(&generation)) {
+            true
+        } else {
+            self.admitted.remove(&generation);
+            false
+        }
+    }
+
     fn sample(&mut self, root: measurements::ProcessIdentity, identity: &Identity) {
         if !root.matches() {
+            self.admitted.clear();
             return;
         }
         let mut rss = 0u64;
@@ -446,7 +475,8 @@ impl Totals {
                 continue;
             }
             let proc = PathBuf::from(format!("/proc/{pid}"));
-            if !identity.matches(&proc) {
+            let key = (pid, generation.start_time_ticks);
+            if !self.matches_process(&proc, key, identity) {
                 continue;
             }
             let Some((start, resident)) = process_memory(&proc) else {
@@ -460,7 +490,7 @@ impl Totals {
             };
             if generation.start_time_ticks != start
                 || !generation.in_tree(root)
-                || !identity.matches(&proc)
+                || !self.matches_process(&proc, key, identity)
             {
                 continue;
             }
@@ -472,6 +502,10 @@ impl Totals {
             observed.insert((pid, start));
             rss = rss.saturating_add(resident);
         }
+        // Admission is current observation state, not the historical worker
+        // census. Missing, reparented, reused or changed-executable tasks must
+        // qualify their entry point again if they later reappear.
+        self.admitted = observed.clone();
         if !observed.is_empty() && root.matches() {
             self.seen.extend(observed);
             self.samples += 1;
@@ -721,8 +755,25 @@ mod tests {
         symlink("/not/the/interpreter", root.join("exe")).unwrap();
         fs::write(root.join("cmdline"), format!("cat\0{}\0", script.display())).unwrap();
         assert!(!identity.matches(&root));
+        assert!(
+            !identity.matches_sample(&root, true),
+            "an admitted PID must still use its selected interpreter"
+        );
+        let mut totals = Totals::default();
+        let generation = (123, 456);
+        totals.seen.insert(generation);
+        totals.admitted.insert(generation);
+        assert!(!totals.matches_process(&root, generation, &identity));
+        assert!(!totals.admitted.contains(&generation));
+        assert!(totals.seen.contains(&generation));
         fs::remove_file(root.join("exe")).unwrap();
         symlink(&executable, root.join("exe")).unwrap();
+        fs::write(root.join("cmdline"), b"runtime\0unrelated-script.js\0").unwrap();
+        assert!(identity.matches_sample(&root, true));
+        assert!(
+            !totals.matches_process(&root, generation, &identity),
+            "returning to the same interpreter cannot inherit historical admission"
+        );
         let inline = Identity {
             executable,
             interpreter: None,
@@ -736,6 +787,90 @@ mod tests {
         assert!(inline.matches(&root));
         fs::write(root.join("cmdline"), b"python\0-c\0tool_call()\0").unwrap();
         assert!(!inline.matches(&root));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn admitted_agent_remains_sampled_after_title_change_without_admitting_other_node_tasks() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::process::{Child, Command, Stdio};
+        struct OwnedChild(Child);
+        impl Drop for OwnedChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let root = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("renamed-agent", None).attempt_id);
+        fs::create_dir_all(&root).unwrap();
+        let script = root.join("agent.js");
+        fs::write(&script, "setTimeout(() => process.exit(3), 10000); console.log('ready'); process.stdin.on('data', () => { process.title = 'renamed-agent'; console.log('renamed'); });").unwrap();
+        let identity = Identity::resolve("node", &[script.to_string_lossy().into_owned()])
+            .expect("Node is required by the offline replay tests");
+        let mut agent = OwnedChild(
+            Command::new("node")
+                .arg(&script)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let mut output = BufReader::new(agent.0.stdout.take().unwrap());
+        let mut line = String::new();
+        output.read_line(&mut line).unwrap();
+        assert_eq!(line.trim(), "ready");
+        let generation = measurements::ProcessIdentity::read(agent.0.id()).unwrap();
+        let mut totals = Totals::default();
+        totals.sample(generation, &identity);
+        assert_eq!(totals.samples, 1);
+        agent
+            .0
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"rename\n")
+            .unwrap();
+        line.clear();
+        output.read_line(&mut line).unwrap();
+        assert_eq!(line.trim(), "renamed");
+        assert!(!identity.matches(&PathBuf::from(format!("/proc/{}", agent.0.id()))));
+        for _ in 0..20 {
+            thread::sleep(Duration::from_millis(100));
+            totals.sample(generation, &identity);
+        }
+        assert_eq!(
+            totals.samples, 21,
+            "sampling must continue beyond the initial title change"
+        );
+        assert_eq!(totals.seen.len(), 1);
+        let other = OwnedChild(
+            Command::new("node")
+                .args(["-e", "setTimeout(() => {}, 10000)"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let other_generation = measurements::ProcessIdentity::read(other.0.id()).unwrap();
+        totals.sample(other_generation, &identity);
+        assert_eq!(
+            totals.samples, 21,
+            "same interpreter is not sufficient for initial admission"
+        );
+        assert_eq!(totals.seen.len(), 1);
+        agent.0.kill().unwrap();
+        agent.0.wait().unwrap();
+        totals.sample(generation, &identity);
+        assert_eq!(
+            totals.samples, 21,
+            "an exited PID lifetime cannot add observations"
+        );
+        drop(other);
+        drop(agent);
         fs::remove_dir_all(root).unwrap();
     }
 
