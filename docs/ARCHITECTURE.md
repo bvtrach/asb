@@ -857,6 +857,14 @@ guarantee that a particular model can complete an agent workload.
 The ASB source checkout is not a benchmark project: `init` rejects its
 distinctive workspace layout before creating any files.
 
+The reusable `cassette` backend defines multi-track manifests, compatibility
+identities, bounded selective ZIP reading and reproducible selection plans.
+It neither starts providers nor changes workloads. Metadata parsing uses a
+validated bounded central-directory snapshot before enabling payload reads;
+selected entries receive CRC, length and SHA-256 validation. This backend is a
+delivery foundation, not yet a change to run/sweep's JSONL CLI behavior. See
+[multi-track delivery contracts](MULTITRACK.md) for the integration sequence.
+
 Recording and replay are implemented as a separate `tape` module behind the
 runner boundary. The `run --record` and `run --replay` flags enable the
 configured proxy chain; the default chain contains ASB's built-in loopback
