@@ -215,3 +215,24 @@ publication34 qualification exclusively owned compiler resources while these
 changes were prepared. Fresh focused execution, strict lint and independent
 follow-up review remain required. No normal collector/Perfetto migration or
 full class-35 qualification is claimed.
+
+### Observed focused follow-up at immutable `325b3bd9`
+
+The actual ASB build completed before runtime cases. All **81 measurement** and
+**23 process-gate** tests passed, zero failures/zero skips, including the new
+deterministic retry/I/O/start/panic fixtures and the original actual local
+process/descriptor regressions. The deliberately panicking worker is observed
+and reported as a failed producer; its expected panic text is not a failed test.
+Strict locked/offline/all-target/all-feature Clippy (`-D warnings`), formatting
+and diff whitespace checks passed. The actual executable SHA-256 stayed
+`8621cdef57d71c3079c704e75dc0e233e358725f138ac2d9c598d2f928bee41a`
+before/after focused tests. Evidence is retained in
+`target/collector35-followup-{build,measurements,control,clippy,fmt}.log` and
+`target/collector35-followup-binary-{before,after}.sha256`.
+
+The parent independently source-approved this corrected partial foundation.
+Only the exclusive diagnostics cache was used (offline, two jobs, incremental
+off), with all test handles now terminal. This is not full class qualification:
+ordinary producer ownership/graceful concurrent draining, snapshot placeholder
+removal and bounded Perfetto readiness still require coherent implementation,
+new focused source review and later full/hosted/package/post-merge gates.
