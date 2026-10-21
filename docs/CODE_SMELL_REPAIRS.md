@@ -52,6 +52,85 @@ Independent final evidence review, current-main coordination, hosted/package
 CI, merge, both post-merge jobs and a coordinated release remain pending.
 No push or PR accompanied this evidence-only checkpoint. See
 [setup integration](SETUP_PUBLICATION_INTEGRATION.md) for exact scope and limits.
+Latest verified delivery: setup [PR #305](https://github.com/martin-beck/asb/pull/305)
+merged as `4caaab14bbbcfd2f30a99e58b522394dbd5a29cc`, with exact-head CI
+`39684689249` and both post-merge jobs `39686295128` successful. Signed
+annotated v0.2.40 tag `2afd95ae592371fd5a72dd588c9a5f81b53ffff4` targets that
+commit with GitHub-verified valid signature; release published at
+2026-10-21 22:36:19 UTC.
+
+Official-binding PR #306 passed exact-head CI `39687408084` and merged with an
+identical tree as `fb4cce4d8f82547b998228685a2659b839118b20`. Its post-merge run
+`39688437266` is in progress; signed v0.2.41 remains pending. Termination stage42
+preserves this actual-main ancestry in `cab2dd4f`; production/tests remain
+byte-identical to independently qualified source `9b843ee3`. Its hosted
+delivery is still pending.
+
+Earlier collector [PR #304](https://github.com/martin-beck/asb/pull/304)
+merged as `c612c6c9a4b743c206840908e6a9c91915e75f26`. Exact-head CI
+`39683131129` and both enabled post-merge jobs `39684518488` passed. Signed
+annotated tag `v0.2.39` (`72eda8b095eb25cbb0d9e890b28eed7bd16a5780`)
+targets that commit with GitHub-verified valid signature; release published on
+21 October at 22:22:50 UTC (22 October in Berlin).
+
+Setup PR #305 passed exact-head CI `39684689249` and merged with an identical
+tree as `4caaab14bbbcfd2f30a99e58b522394dbd5a29cc`. Its post-merge run
+`39686295128` and signed v0.2.40 are complete as recorded above. Official engine
+binding stage 0.2.41 preserves that actual-main ancestry in signed merge
+`4ec464b5`; production/tests remain identical to independently qualified source
+`453898c0`. Its later hosted merge is recorded above; post-merge delivery is pending.
+
+Earlier runtime discovery [PR #303](https://github.com/martin-beck/asb/pull/303)
+merged as `54ecdcd1c62099a65a3da87ebffdb4d4f619f900`. Exact-head CI
+`39681539596` and both enabled post-merge jobs `39683034184` passed. Signed
+annotated tag `v0.2.38` (`ea9c743e694a07a7131a8109663c4076030f78f5`)
+targets that commit with GitHub-verified valid signature; release published on
+21 October at 22:10:08 UTC (22 October in Berlin).
+
+Installer repair [PR #302](https://github.com/martin-beck/asb/pull/302)
+merged as `1a88ed8547270bdb4bb70cc88183fe2c449be0d5`. Exact-head CI
+`39679529018` and both enabled post-merge jobs `39681422803` passed. Signed
+annotated tag `v0.2.37` (`f5621819d283b5fd12d16b2e9762aaa4f39000e7`)
+targets that commit; GitHub reports its signature valid. The release was
+published on 21 October at 21:58:26 UTC.
+
+Earlier v0.2.35 artifact delivery is also complete: PR #300 merged as
+`8a115715e312b25b17385a0505c78d49994495b0`, exact-head `39676012093` and
+both post-merge `39677637820` passed, release published at 21:29:24 UTC.
+Recording cleanup PR #301 merged as
+`574d9661f2211fb21e961312961c4b557c948833`, exact-head `39677762299` and
+both post-merge `39679248531` passed, signed v0.2.36 published at 21:40:48 UTC.
+
+Collector PR #304 passed exact-head CI `39683131129` and merged with an
+identical tree as `c612c6c9a4b743c206840908e6a9c91915e75f26`.
+Post-merge run `39684518488` and signed v0.2.39 are complete as recorded above. Earlier
+staged/local proof below is historical; its then-pending statements do not
+override these later delivery checks or qualify other unfinished repairs.
+
+Recording raw-source custody, staged patch **0.2.36**: integrated source
+`05ebf11d` retains the exact reviewed raw core from `bd2dea5e` alongside artifact,
+publication and bounded controller stack `b25d9f11`. The fresh focused matrix
+passed **680 tests**, zero failed, with four optional skips; strict workspace/
+all-target/all-feature Clippy and formatting passed with a stable actual 0.2.36
+executable hash. Parent qualifications do not qualify this combined tree.
+Detailed source boundaries, counts, hash and logs are recorded in
+[the raw custody integration proof](RECORDING_RAW_INTEGRATION.md).
+Independent integration review approved `98c51664`; signed `807012d9` then folds
+the independently reviewed packaged-fixture permission teardown without changing
+production or version. Fresh full locked/offline/workspace/all-target/all-feature
+qualification at `807012d9` passed **1,314 tests**, zero failed, with 21 optional
+skips across 24 outer targets. Before/after/final actual executable hash stayed
+`dfc3f9dcd0a22a66eb0f91f3336c2dad15c1c9bf075b7e3f26c4b9846d6c542a`.
+Fresh artifact entry two (all ten scenarios), recording/raw 12, strict Clippy/fmt,
+sequential make/private Rustdocs/pinned AutoUML/flows/interactive/completions and
+Bash/Zsh syntax checks all passed. Logs and exact limitations are in the linked
+integration proof. Final independent qualification review, hosted/package CI,
+merge, post-merge checks and release remain pending. No unrelated
+collector/runtime-input/installer/setup repair is folded in.
+
+Historical artifact35 snapshot below predates its later full qualification:
+`b25d9f11` subsequently passed 1,303 tests with 21 optional skips, recorded in
+`4b78a350`. That evidence remains distinct from the new raw36 focused matrix.
 
 Artifact integration, staged patch **0.2.35**, local qualification and package-fixture repair, delivery pending:
 historical artifact checkpoint `a2708632` is combined with committed

@@ -273,3 +273,22 @@ complete make/doc/diagram/completion gates passed. Root independently reran both
 generated shell syntax checks. This does not replace actual-main ancestry
 review, exact-head hosted/package CI, both post-merge jobs or the staged signed
 release, and does not qualify native Windows/ARM or live SDK execution.
+
+## Actual-main promotion
+
+Signed merge `cab2dd4f5a74ec0f1cf7b2ed566c1766cf3044c6` preserves actual main
+`fb4cce4d8f82547b998228685a2659b839118b20` (merged official-binding PR #306).
+The incoming delta against independently approved `182ada4c` contains only seven
+proof documents. Production, tests, Cargo and CI remain byte-identical to the
+qualified combined42 source. The merge was conflict-free; a whitespace check
+found one inherited blank line at the end of the setup proof, which was removed
+before the signed merge. No functional test was retried or source modified.
+
+Setup PR #305 has both post-merge jobs green in `39686295128`; signed v0.2.40
+targets `4caaab14bbbcfd2f30a99e58b522394dbd5a29cc` and was published at
+2026-10-21 22:36:19 UTC with GitHub-verified valid tag signature. Official-binding
+PR #306 passed exact-head run `39687408084`; its post-merge run `39688437266`
+is in progress at this checkpoint. This stage must wait for that class's
+complete verification and signed v0.2.41 release before merging, and still needs
+its own exact-head hosted/package CI, both post-merge jobs and signed release.
+The removed coverage threshold remains removed.

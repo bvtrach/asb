@@ -185,3 +185,21 @@ complete make/doc/diagram/completion and separate shell syntax gates passed.
 The ARM and non-live qualification limits remain explicit. This approval does
 not substitute for actual-main ancestry review, exact-head hosted/package CI,
 both post-merge jobs or the stage 0.2.41 signed release.
+
+## Actual-main promotion
+
+Signed merge `4ec464b56c50ec77dd91c397473fc459d724adbb` preserves actual main
+`4caaab14bbbcfd2f30a99e58b522394dbd5a29cc` (merged setup PR #305).
+Against approved checkpoint `31070b9a`, its changes are confined to six proof
+documents: production, tests, manifests, lockfile and CI remain byte-identical.
+The fresh qualification above therefore still describes the exact source being
+promoted; no new runtime qualification is inferred from merging documentation.
+
+The preceding collector class is released as signed v0.2.39 from
+`c612c6c9a4b743c206840908e6a9c91915e75f26`, after exact-head run
+`39683131129` and both post-merge jobs in `39684518488` passed. Setup PR #305
+passed exact-head run `39684689249`; its post-merge run `39686295128` remains
+in progress at this checkpoint. Stage 0.2.41 must wait for that class's complete
+post-merge verification and signed v0.2.40 release before merging. This class
+still requires its own exact-head hosted/package CI, both post-merge jobs and
+signed release. The removed coverage threshold stays removed.
