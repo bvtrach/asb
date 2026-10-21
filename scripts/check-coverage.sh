@@ -8,6 +8,9 @@ export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0
 output=target/coverage
 mkdir -p "$output"
 python3 scripts/test_check_coverage.py
+# Explicitly discard prior executions while retaining compilation caches. A
+# previously covered branch must not pass after its tests stop executing it.
+cargo llvm-cov clean --profraw-only
 cargo llvm-cov --locked --workspace --all-targets --no-report
 cargo llvm-cov report --json --output-path "$output/all.json"
 cargo llvm-cov report --text --output-path "$output/all-lines.txt"
