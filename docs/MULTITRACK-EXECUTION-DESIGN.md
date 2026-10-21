@@ -252,6 +252,29 @@ aggregate budgets, global runtime/network snapshots and shared-storage groups;
 it must not run isolated A/B pairs per service or silently exclude generated
 Docker configuration files without corresponding semantic observations.
 
+### Shared observation allowance
+
+The private guest request optionally carries entry, filename-allocation,
+payload-read and visible-attribute-read allowances. Each is checked against the
+original per-invocation ceiling before traversal: 100,000 entries, 16 MiB names,
+2 GiB payload and 16 MiB attributes. The response reports actual charged usage
+only when that extension was requested. Usage and limits are neither content
+fingerprints nor public coverage; the controller validates the counters, debits
+the shared ledger, and removes the private usage object before composition.
+Requests without the extension retain the old response shape.
+
+Single-container capture owns one two-observation ledger (200,000 entries,
+32 MiB names, 4 GiB payload and 32 MiB attributes total). A future multi-service
+composer can share that same ledger across its service/round calls, declaring
+at most 32 observations (16 services, two rounds), never silently resetting
+allowances. Each call remains subject to the original smaller ceilings. The
+constructor bounds aggregate allowances by those 32-call maxima. Actual usage,
+not the maximum reservation, is subtracted, so unused allowance remains usable.
+A failed transport or invalid consumption leaves the ledger unresolved and
+unusable; any later ownership/snapshot failure must likewise abort the capture,
+not authorize another attempt. Helper staging/receipt validation has separate
+bounded transport limits and is not counted as workload payload consumption.
+
 ## Implemented native repeated execution
 
 Explicit repetition, including `--repeat 1`, allocates a new project-local

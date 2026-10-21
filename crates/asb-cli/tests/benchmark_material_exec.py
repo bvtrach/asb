@@ -30,6 +30,45 @@ def emit(value):
 
 
 class TransportTests(unittest.TestCase):
+    def test_shared_budget_debits_all_dimensions_and_never_changes_observation(self):
+        usage = {"entries":2,"names":20,"bytes":12,"attributes":8}
+        budget = subject.ObservationBudget({key:value*2 for key,value in usage.items()})
+        roots = [{"name":"filesystem","path":"/"}]
+        expected = observation()
+        for index in range(2):
+            result = {**expected,"usage":dict(usage)}
+            with patch.object(subject,"run",return_value=json.dumps(result).encode()) as run:
+                self.assertEqual(subject.observe(["fixture"],roots,deadline=time.monotonic()+3,budget=budget),expected)
+                request = json.loads(run.call_args.args[1])
+                self.assertEqual(request["limits"],{key:value*(2-index) for key,value in usage.items()})
+        self.assertEqual(budget.remaining,{key:0 for key in usage})
+        with patch.object(subject,"run") as run:
+            with self.assertRaisesRegex(MaterialError,"exhausted"):
+                subject.observe(["fixture"],roots,deadline=time.monotonic()+3,budget=budget)
+            run.assert_not_called()
+
+    def test_invalid_or_failed_consumption_cannot_reuse_a_fresh_budget(self):
+        roots = [{"name":"filesystem","path":"/"}]
+        usage = {"entries":2,"names":20,"bytes":12,"attributes":8}
+        bad = [None,{**usage,"entries":True},{**usage,"bytes":13},
+            {**usage,"attributes":-1},{**usage,"names":2**40},{**usage,"unknown":1}]
+        for invalid in bad:
+            budget = subject.ObservationBudget()
+            with patch.object(subject,"run",return_value=json.dumps({**observation(),"usage":invalid}).encode()):
+                with self.assertRaises(MaterialError):
+                    subject.observe(["fixture"],roots,deadline=time.monotonic()+3,budget=budget)
+            with self.assertRaisesRegex(MaterialError,"unresolved"):
+                budget.allowance()
+        budget = subject.ObservationBudget()
+        with patch.object(subject,"run",side_effect=MaterialError("fixture transport failure")):
+            with self.assertRaises(MaterialError):
+                subject.observe(["fixture"],roots,deadline=time.monotonic()+3,budget=budget)
+        with self.assertRaisesRegex(MaterialError,"unresolved"):
+            budget.allowance()
+        for count in [0,True,33]:
+            with self.assertRaises(MaterialError):
+                subject.ObservationBudget(observations=count)
+
     def test_private_observation_requires_matching_exact_schema_and_coverage(self):
         for selective in [False, True]:
             roots = [{"name":"filesystem", "path":"/"}]

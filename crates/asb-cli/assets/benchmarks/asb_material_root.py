@@ -6,7 +6,7 @@ stages instrumentation before any environment sampling begins.
 import time
 
 from asb_material import MaterialError, RUNTIME_FILES, RUNTIME_ROOTS, canonical_digest, change_inventory, image_digest, path_name, tar_digest
-from asb_material_exec import observe, run
+from asb_material_exec import ObservationBudget, observe, run
 
 RUNTIME = "/opt/asb-runtime"
 
@@ -118,7 +118,7 @@ service in isolation cannot establish a stable multi-service environment.
         check()
         return {"image":anchor,"changes":changes,"topology":topology,"hidden":hidden}
 
-    def sample():
+    def sample(budget=None):
         nonlocal kernel_identity
         verify_runtime()
         if kernel_identity is None and any(item["kind"] == "bind" for item in initial_mounts["mounts"]):
@@ -142,7 +142,7 @@ service in isolation cannot establish a stable multi-service environment.
                     root["exclusions"].append(path[len(root["path"].rstrip("/"))+1:])
             roots.append(root)
         result = observe([*command, RUNTIME+"/asb", "__asb-material"], roots,
-            deadline=min(deadline, time.monotonic()+90), cancelled=cancelled)
+            deadline=min(deadline, time.monotonic()+90), cancelled=cancelled, budget=budget)
         after = snapshot()
         verify_runtime()
         if before != after:
@@ -155,7 +155,8 @@ service in isolation cannot establish a stable multi-service environment.
 
 def capture(task, definition, exclusions, binary, deadline):
     sample = prepare(task,exclusions,binary,deadline)
-    rounds = [sample(),sample()]
+    budget = ObservationBudget(observations=2)
+    rounds = [sample(budget),sample(budget)]
     if rounds[0] != rounds[1]:
         raise MaterialError("prepared filesystem changed between complete root observations")
     # Helper staging is instrumentation, not workload content. Its implementation

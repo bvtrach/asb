@@ -101,6 +101,40 @@ fn private_root_witness_authorizes_exact_inode_without_changing_public_identity(
 }
 
 #[test]
+fn private_census_enforces_smaller_shared_allowance_and_reports_actual_consumption() {
+    let fixture = Fixture::new();
+    fs::write(fixture.0.join("input"), b"fixture").unwrap();
+    let baseline = invoke(fixture.request().to_string().as_bytes(), &[]);
+    assert!(baseline.status.success());
+    let mut request = fixture.request();
+    request["limits"] = json!({"entries":100,"names":65536,"bytes":1024,"attributes":65536});
+    let output = invoke(request.to_string().as_bytes(), &[]);
+    assert!(output.status.success(), "{output:?}");
+    let mut value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let usage = value.as_object_mut().unwrap().remove("usage").unwrap();
+    assert_eq!(usage["entries"], 2);
+    assert_eq!(usage["bytes"], 7);
+    assert!(usage["names"].as_u64().unwrap() > 0);
+    assert_eq!(
+        value,
+        serde_json::from_slice::<Value>(&baseline.stdout).unwrap()
+    );
+    for (field, limit) in [
+        ("entries", 1),
+        ("names", 1),
+        ("bytes", 6),
+        ("entries", 100001),
+        ("attributes", 16777217),
+    ] {
+        let mut wrong = request.clone();
+        wrong["limits"][field] = json!(limit);
+        let output = invoke(wrong.to_string().as_bytes(), &[]);
+        assert!(!output.status.success(), "{field}={limit}");
+        assert!(output.stdout.is_empty());
+    }
+}
+
+#[test]
 fn malformed_oversized_or_unknown_requests_never_echo_input_or_paths() {
     let fixture = Fixture::new();
     let mut unknown = fixture.request();

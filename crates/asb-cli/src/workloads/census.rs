@@ -26,6 +26,18 @@ const MAX_REQUEST: usize = 1024 * 1024;
 struct Request {
     schema_version: u32,
     roots: Vec<Root>,
+    #[serde(default)]
+    limits: Option<Budget>,
+}
+
+/// Private per-call allowance and actual consumption; never part of the digest.
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Budget {
+    entries: usize,
+    names: usize,
+    bytes: u64,
+    attributes: usize,
 }
 
 #[derive(Deserialize)]
@@ -63,6 +75,8 @@ struct Observation {
     entries: usize,
     bytes: u64,
     coverage: Coverage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<Budget>,
 }
 
 #[derive(Serialize)]
@@ -495,6 +509,21 @@ fn observe(
     if request.schema_version != 1 || request.roots.is_empty() || request.roots.len() > 64 {
         return Err(invalid());
     }
+    let limits = request.limits.unwrap_or(Budget {
+        entries,
+        names,
+        bytes,
+        attributes: 16 * 1024 * 1024,
+    });
+    if limits.entries == 0
+        || limits.entries > entries
+        || limits.names == 0
+        || limits.names > names
+        || limits.bytes > bytes
+        || limits.attributes > 16 * 1024 * 1024
+    {
+        return Err(invalid());
+    }
     let mut roles = BTreeSet::new();
     let mut paths = BTreeSet::new();
     for root in &request.roots {
@@ -535,10 +564,10 @@ fn observe(
     }
     let mut census = Census {
         records: Vec::new(),
-        entries_left: entries,
-        names_left: names,
-        bytes_left: bytes,
-        attributes_left: 16 * 1024 * 1024,
+        entries_left: limits.entries,
+        names_left: limits.names,
+        bytes_left: limits.bytes,
+        attributes_left: limits.attributes,
         deadline: Instant::now() + Duration::from_secs(60),
     };
     let mut exclusions = BTreeMap::new();
@@ -640,7 +669,13 @@ fn observe(
         scope: "declared-root-material-observation-v3",
         sha256: format!("{:x}", digest.finalize()),
         entries: census.records.len(),
-        bytes: bytes - census.bytes_left,
+        bytes: limits.bytes - census.bytes_left,
+        usage: request.limits.map(|_| Budget {
+            entries: limits.entries - census.entries_left,
+            names: limits.names - census.names_left,
+            bytes: limits.bytes - census.bytes_left,
+            attributes: limits.attributes - census.attributes_left,
+        }),
         coverage: Coverage {
             file_content: request
                 .roots
@@ -709,6 +744,7 @@ mod tests {
         fn request(&self, names: &[&str]) -> Request {
             Request {
                 schema_version: 1,
+                limits: None,
                 roots: names
                     .iter()
                     .map(|name| Root {

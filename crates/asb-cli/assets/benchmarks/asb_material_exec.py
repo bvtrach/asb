@@ -89,14 +89,58 @@ def run(command, payload=b"", *, deadline, cancelled=None, output_limit=4096):
             raise MaterialError("material helper transport could not be reaped; owned workload preservation is required")
 
 
-def observe(command, roots, *, deadline, cancelled=None):
-    payload = json.dumps({"schema_version":1, "roots":roots}, separators=(",", ":")).encode()
+class ObservationBudget:
+    """One sequential composer's allowance across every service and both rounds.
+
+    Limits charge actual reads/allocations, not declared file lengths. Each
+    helper keeps its original maxima; successful calls debit shared remaining
+    allowance. A failed call invalidates the whole capture, never earns a retry.
+    """
+    maxima = {"entries":100000,"names":16*1024**2,"bytes":2*1024**3,"attributes":16*1024**2}
+
+    def __init__(self, limits=None, *, observations=2):
+        if type(observations) is not int or not 1 <= observations <= 32:
+            raise MaterialError("material observation population exceeds bounds")
+        limits = {key:value*observations for key,value in self.maxima.items()} if limits is None else limits
+        if (not isinstance(limits,dict) or set(limits) != set(self.maxima)
+                or any(type(value) is not int or not 0 <= value <= self.maxima[key]*32
+                    for key,value in limits.items())):
+            raise MaterialError("material aggregate observation budget is invalid")
+        self.remaining = dict(limits)
+        self._pending = None
+
+    def allowance(self):
+        if self._pending is not None:
+            raise MaterialError("material observation budget has an unresolved failed call")
+        limits = {key:min(value,self.maxima[key]) for key,value in self.remaining.items()}
+        if limits["entries"] == 0 or limits["names"] == 0:
+            raise MaterialError("material aggregate observation budget is exhausted")
+        self._pending = dict(limits)
+        return limits
+
+    def consume(self, usage, limits):
+        if (limits != self._pending or not isinstance(usage,dict) or set(usage) != set(self.maxima)
+                or any(type(value) is not int or not 0 <= value <= limits[key]
+                    or value > self.remaining[key] for key,value in usage.items())):
+            raise MaterialError("material helper returned invalid aggregate consumption")
+        self.remaining = {key:value-usage[key] for key,value in self.remaining.items()}
+        self._pending = None
+
+
+def observe(command, roots, *, deadline, cancelled=None, budget=None):
+    request = {"schema_version":1, "roots":roots}
+    limits = budget.allowance() if budget is not None else None
+    if limits is not None:
+        request["limits"] = limits
+    payload = json.dumps(request, separators=(",", ":")).encode()
     output = run(command, payload, deadline=deadline, cancelled=cancelled)
     try:
         value = json.loads(output)
     except (ValueError, UnicodeError):
         raise MaterialError("material helper returned invalid private JSON") from None
     fields = {"schema_version", "scope", "sha256", "entries", "bytes", "coverage"}
+    if budget is not None:
+        fields.add("usage")
     coverage = {"file_content", "posix_metadata", "visible_inode_equivalence",
         "extended_attributes", "visible_extended_attributes", "complete_namespace",
         "atomic_snapshot", "image_anchored_selection"}
@@ -118,4 +162,12 @@ def observe(command, roots, *, deadline, cancelled=None):
     if (value["coverage"]["file_content"] != (not selective)
             or value["coverage"]["image_anchored_selection"] != selective):
         raise MaterialError("material helper coverage differs from the requested observation")
+    if budget is not None:
+        usage = value["usage"]
+        if (not isinstance(usage,dict) or usage.get("entries") != value["entries"]
+                or usage.get("bytes") != value["bytes"]):
+            raise MaterialError("material helper returned contradictory aggregate consumption")
+        budget.consume(usage,limits)
+        # Private allocation/read counters are not content or public coverage.
+        value.pop("usage")
     return value
