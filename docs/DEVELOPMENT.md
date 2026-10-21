@@ -379,6 +379,15 @@ agent/provider/container runs. Fault hooks exist only in test builds and have no
 environment/configuration surface in the installed CLI. `run` integrates the
 backend through its own recording/replay coordinators; sweep/resume/report and
 viewer delivery remain separate steps in MULTITRACK.md.
+`cargo test --locked --offline --lib runner::recording` includes deterministic
+source-name and parent-namespace replacement after original validation, private
+custody move/restore/unlink/sync faults, EEXIST arrivals, no recursive deletion,
+and unwind retention. `raw_custody_consumption` in the actual `repeated_run`
+target records true/false local file grades through a synthetic loopback provider,
+checks track/continuation evidence after raw deletion and replays selected tracks
+with the provider closed. Build the actual ASB first and keep its hash stable
+through the runtime checks. These qualify Linux fixtures, not a live provider,
+external SDK, native Windows, or crash-atomic multi-entry restoration.
 `cargo test --locked --offline --test repeated_run` additionally records real
 embedded-proxy ZIP captures with a bounded loopback provider and synthetic agent.
 It checks no-overwrite/fresh defaults, ordinary complete failed recordings,

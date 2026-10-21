@@ -1,4 +1,5 @@
 //! Run-owned recording coordination; providers and proxies see only JSONL.
+mod raw;
 use super::{RunResult, io_error, replica};
 use crate::cassette::{
     Compatibility, Limits, Manifest, Publication, RecordingJournal, Statistics, Track,
@@ -331,15 +332,19 @@ impl Recorder {
             }
             let mut published = journal.finalize().map_err(recording_error)?;
             if producers_quiescent {
-                let mut raw_retained=false;
+                let mut cleanup_failures=0;
                 for track in &published.manifest.tracks {
                     let output = producer(&self.root,track.batch,track.replica as usize,self.concurrency);
                     match cleanup_raw(&output,track,state.raw_identities.get(&track.id)) {
                         Ok(()) => (),
-                        Err(_) => { published.cleanup_complete=false; raw_retained=true; }
+                        Err(error) => {
+                            published.cleanup_complete=false;
+                            cleanup_failures+=1;
+                            if cleanup_failures<=16 { published.warnings.push(error.to_string()); }
+                        }
                     }
                 }
-                if raw_retained { published.warnings.push("published cassette is usable; raw capture cleanup was incomplete or unconfirmed; inspect artifacts".into()); }
+                if cleanup_failures>0 { published.warnings.push(format!("published cassette is usable; {cleanup_failures} raw capture cleanups were incomplete or durability-unconfirmed; inspect artifacts (at most 16 details retained)")); }
             } else { published.cleanup_complete=false; published.warnings.push("published cassette is usable; raw captures retained because producer cleanup is unconfirmed".into()); }
             Ok(Some(published))
         })
@@ -455,52 +460,7 @@ std::thread_local! {
 }
 
 fn cleanup_raw(output: &Path, track: &Track, original: Option<&fs::Metadata>) -> Result<(), Error> {
-    let Some(mut file) = open_payload(output)? else {
-        return Ok(());
-    };
-    let original =
-        original.ok_or_else(|| Error::Io("raw capture has no original file identity".into()))?;
-    verify_raw_identity(original, &file.metadata().map_err(io_error)?)?;
-    if payload_identity(&mut file)? != (track.bytes, track.sha256.clone()) {
-        return Err(Error::Io(
-            "raw capture changed after commit; retained".into(),
-        ));
-    }
-    verify_raw_identity(original, &file.metadata().map_err(io_error)?)?;
-    let current = fs::symlink_metadata(output).map_err(io_error)?;
-    if !current.is_file() {
-        return Err(Error::Io("raw capture pathname changed; retained".into()));
-    }
-    verify_raw_identity(original, &current)?;
-    #[cfg(test)]
-    BEFORE_RAW_UNLINK.with_borrow_mut(|hook| {
-        if let Some(replace) = hook.take() {
-            replace();
-        }
-    });
-    fs::remove_file(output).map_err(io_error)?;
-    File::open(output.parent().expect("owned producer parent"))
-        .and_then(|parent| parent.sync_all())
-        .map_err(io_error)
-}
-fn verify_raw_identity(original: &fs::Metadata, current: &fs::Metadata) -> Result<(), Error> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if original.dev() == current.dev()
-            && original.ino() == current.ino()
-            && original.len() == current.len()
-            && original.mtime() == current.mtime()
-            && original.mtime_nsec() == current.mtime_nsec()
-            && original.ctime() == current.ctime()
-            && original.ctime_nsec() == current.ctime_nsec()
-        {
-            return Ok(());
-        }
-    }
-    Err(Error::Io(
-        "raw capture identity changed or cannot be confirmed; retained".into(),
-    ))
+    raw::cleanup(output, track, original)
 }
 fn open_payload(output: &Path) -> Result<Option<File>, Error> {
     match fs::symlink_metadata(output) {

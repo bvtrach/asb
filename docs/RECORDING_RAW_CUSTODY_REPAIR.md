@@ -47,3 +47,47 @@ recording/replay/grade/continuation contracts. Use offline local files and
 synthetic clients only. Independent review, focused/full tests, strict lint,
 build/docs/packaging, PR/merge, both post-merge jobs and a signed patch release
 remain required. Version staging is deferred; retain the removed coverage gate.
+
+## Candidate implementation boundary
+
+Unix raw cleanup now pins the producer directory and the admitted original file,
+verifies original identity/version and the bounded committed digest, then moves
+the candidate relative to pinned handles into a fresh owner-only (0700) custody
+directory. Only the moved candidate may be consumed. It must still match the
+original inode/device, size, modification time and committed bytes; post-move
+reads also check stable change time. Rename-induced change time is not mistaken
+for a different original. No original source pathname is unlinked.
+
+A foreign candidate is restored with relative `linkat` without following links
+or replacing any existing entry, followed by private custody unlink. This is not
+a multi-entry transaction: a failed/interrupted unlink can retain both links.
+Unsupported hard-link restoration (including directories) or an occupied source
+name retains the candidate in custody. Diagnostics distinguish restored,
+restored-but-durability-unconfirmed, retained in custody, and actual successful
+deletion followed by failed directory synchronization. Locations include the
+custody component, original parent and pinned parent device/inode, so renaming
+the parent does not falsely identify a replacement namespace as the owner.
+Recorder finalization preserves the usable archive and limits detailed cleanup
+warnings to 16 plus a total failure count; ancillary retention does not change
+an official grade, track association, or producer-quiescence evidence.
+
+The empty private directory intentionally remains after successful consumption;
+removing its checked original name would recreate a namespace race. There is at
+most one newly created directory per cleanup attempt (normal finalization visits
+each track once); maximum recording population already bounds normal count.
+Retained candidates can contain sensitive raw inference bytes. There is no
+automatic expiry, project-wide disk quota or recursive recovery/cleanup. There
+is no Drop cleanup, print, retry, worker or new continuation permission. Quiet
+private custody is a concurrency boundary, not a hostile same-UID sandbox.
+The existing non-Unix inability to confirm destructive raw identity remains an
+honest retention warning, not an execution refusal or a new platform guarantee.
+Native Windows and other Unix kernels are not runtime-qualified by Linux tests.
+
+Private deterministic fixtures cover the observed three replacement windows,
+foreign directories, arrivals/replaced namespaces after the move, committed-byte
+mutation, move/unlink/restore faults, restore EEXIST, both-link retention and both
+post-unlink synchronization distinctions. A real CLI test records true/false
+local file grades using a bounded synthetic loopback provider, verifies immutable
+track evidence after raw consumption and then replays with that provider closed.
+This is not an original external SDK or live-provider qualification. Fresh
+focused build/test/lint evidence and independent source review are pending.

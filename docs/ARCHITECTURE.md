@@ -1391,6 +1391,14 @@ owners share a private persistent-inode lock implementation, with domain-owned
 paths and diagnostics. Finalization requires the caller to stop/join recording
 producers; freezing the journal does not drain a proxy itself. This backend is a
 delivery foundation integrated by the run-owned recording/replay coordinators.
+After confirmed archive publication and observed producer cleanup, raw recording
+consumption pins the producer namespace and moves a candidate into fresh private
+custody before identity/digest revalidation. Only that private candidate can be
+unlinked; the original source name and replacement namespaces are never deletion
+targets. Foreign candidates are restored without replacement or retained with a
+locatable diagnostic. Actual unlink followed by failed namespace synchronization
+is reported as removed but durability-unconfirmed, not falsely retained. Empty
+private custody directories remain; no recursive/Drop retry cleanup is implied.
 Run recordings publish ZIP bundles from fresh executions; replay freezes a
 selection plan before any client admission, selectively stages private JSONL,
 and compares the source identity with adapter-observed initial material at the
