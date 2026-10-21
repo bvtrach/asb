@@ -165,6 +165,11 @@ pub(crate) trait CollectorAdapter: Sync {
     fn requires_pid(&self) -> bool {
         false
     }
+    /// Process-scoped collectors finish when execution ends, not after the
+    /// workload's potentially long grading phase. Whole-run tracing can opt out.
+    fn stop_at_execution_end(&self) -> bool {
+        self.requires_pid()
+    }
     /// Inspect the prepared entry point. Arguments can include prompts and
     /// must never be logged or persisted by this hook.
     fn agent_launch(
@@ -394,6 +399,11 @@ mod tests {
             assert_eq!(adapter.environment_flag(), environment, "{id}");
             assert_eq!(adapter.tool_id(), tool, "{id}");
             assert_eq!(adapter.requires_pid(), pid, "{id}");
+            assert_eq!(
+                adapter.stop_at_execution_end(),
+                pid && id != "perfetto",
+                "{id}"
+            );
             let dependencies: &[&str] = if id == "flamegraph" { &["perf"] } else { &[] };
             assert_eq!(adapter.dependencies(), dependencies, "{id}");
             for process in ["perf", "perf-stat", "perfetto", "bpftrace-sched", "other"] {
@@ -421,6 +431,7 @@ mod tests {
         assert_eq!(adapter.tool_id(), None);
         assert!(adapter.dependencies().is_empty());
         assert!(!adapter.requires_pid());
+        assert!(!adapter.stop_at_execution_end());
         assert!(!adapter.graceful_shutdown("process"));
         assert!(!adapter.prioritizes_artifact("artifact.svg"));
         assert!(adapter.display_artifact("artifact.svg").is_none());

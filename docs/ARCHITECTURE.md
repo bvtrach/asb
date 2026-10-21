@@ -88,7 +88,14 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   and enlarge controls as bar charts. Built-in BPFTrace profiles remain
   bounded cumulative one-second snapshots and final aggregates (custom
   interval programs may add series), while Perfetto retains its timestamped
-  trace and extracts timestamped scheduler-event and scheduler-duration
+  trace. Process-attached collector processes stop at the agent-execution
+  boundary (also on run failure), before grading. Report processing/export
+  stays after workload evaluation; an optional processor failure becomes a
+  failed collector record, never cancellation before official grading.
+  Shutdown/processing overhead does not extend the recorded agent execution
+  interval. Whole-run tracing can explicitly opt out through
+  the collector trait. Perfetto does so to capture the complete typed lifecycle,
+  and extracts timestamped scheduler-event and scheduler-duration
   series; those trace timestamps are used as line-chart x coordinates;
   the `system` record also captures bounded host-comparison metadata: CPU model,
   vendor and Arm implementer/part, package/core/thread topology, frequency
