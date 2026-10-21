@@ -43,8 +43,42 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   every command resolves relative paths from this project root;
 - `runner`: configuration loading, bounded agent-output logging, and live agent
   process execution;
-- `compare`: offline sweep-result loading, numeric aggregation, and dependency-free
-  SVG bar/line chart generation;
+- `compare`: offline reports use explicit loaded, globally validated, prepared,
+  rendered and published phases. Stable row identities and typed result sources
+  bind original evaluation evidence; preparation computes population coverage
+  and unique chart identities once. Structured outcomes, recorded modules,
+  execution-plan fingerprints and retained-grade provenance are validated at
+  the source boundary. Preparation computes metric-policy and binary-resolution
+  cohorts once, including conservative missing-slot coverage; JSON and HTML
+  render those same summaries without consulting the live workload registry.
+  Native rewards retain nullable resolution and independent execution status.
+  Recorded planning objects, controller caps and module revisions remain
+  provenance metadata; they never become observed metric charts.
+  See [benchmark outcomes](BENCHMARK_OUTCOMES.md) for policy semantics.
+  Sources are opened once as bounded regular
+  files (64 KiB per benchmark, 32 MiB retained configurations, 16 MiB per
+  manifest/collector/preview and 64 MiB per saved plan). Manifest, configuration
+  and saved-plan validation consume retained snapshots, never a refreshed second
+  identity read. Collector previews retain physical paths separately from published
+  logical links. Nullable time-series observations keep aligned timestamps in
+  full JSON; SVGs disclose a 2048-observation bound preserving segment endpoints
+  and extrema, never bridge unknown gaps, and distinguish sample indices from
+  measured milliseconds. Raw state/event timelines are not downsampled.
+  Scalar charts retain accepted negative metrics around an explicit zero
+  baseline, with signed labels and original observations in hover metadata.
+  Signed scalar and series coordinates share overflow-safe normalization;
+  nonnegative scalar scales retain their existing zero-to-maximum geometry.
+  A separate persistent report lock guards private same-filesystem staging;
+  Linux and macOS native rename/exchange publish a whole generation after rendering
+  and synchronization. Replaced generations, including user-added files, remain
+  recoverable backups. If exchange is unsupported, a no-replace capability probe
+  runs only in the private stage before moving the old report. A documented
+  recoverable backup/commit/rollback path then has a brief destination-absence
+  and crash window; it never overwrites a foreign destination. Failed rollback
+  retains the old backup and prints a restore command. Missing safe no-replace
+  support fails closed before moving user data. No native macOS runtime
+  qualification is implied by Linux tests. Post-commit
+  durability or confirmation errors explicitly report that publication occurred;
 - `measurements`: opt-in process-scoped runtime collection. It writes bounded JSON
   records for host facts, elapsed time, success rate, and normalized input,
   output, cached, and total token usage, and
@@ -420,6 +454,12 @@ paths. Per-configuration evidence publication is serialized without serializing
 agent execution, and metadata publication failure never changes a fresh grade.
 Schema-2 private outcomes declare the slot and execution-output paths; old
 schema-1 whole-group outcomes retain their previous read compatibility.
+Group sealing, replica continuation and reconciliation consume one private
+validated outcome representation. Its constructor checks named protocol/cleanup,
+cohort, selection/configuration identity, grade/baseline and evidence-path
+invariants before exposing task summaries or evidence roots. Unknown process
+or grade observations remain invalid for ordinary execution reuse; false
+observations are retained as completed outcomes.
 After a configuration's
 replicas finish, the checkpoint binds its complete result tree and all declared
 evaluator roots into `.checkpoint/completed/<index>.json`. Every replica must
@@ -598,6 +638,38 @@ bridge. It removes only Codex host metadata (`additional_tools` and reasoning
 context) that the bridge API cannot accept, while forwarding prompts, function
 tools, credentials, and streaming responses unchanged. External
 `CLI2KEY_BASE_URL` endpoints are used directly and are not modified.
+External cli2key endpoints own no local processes. A local provider session
+retains its startup guard and pre-established fallible `OwnedReaper` through
+both bridge and compatibility-hop lifetimes. Before each child starts, a
+fallible output worker owns a nonblocking Unix socket transport. Readiness is
+limited to five seconds, 64 KiB, 64 messages and 4 KiB per line (including
+output without a newline). Only the key/readiness result enters a single-slot
+channel; subsequent output is continuously drained and discarded. No startup
+output or key is included in diagnostics. Non-Unix local startup fails before
+spawning and can still use an explicitly configured external endpoint.
+Admission rechecks every owned child after compatibility-hop readiness, so a
+bridge that exited after its initial key cannot admit a ready local session.
+This observes the boundary, not future process liveness.
+Failure, unwinding and session destruction share one five-second cleanup deadline
+across both children and readers. Closing the embedded hop's stdin lifetime
+pipe gives it at most two seconds within that budget to close its listener,
+cancel outbound work and observe its own curl subprocesses' close events.
+The hop uses the network client's existing bounded TERM/KILL escalation for
+those declared children. Failed cooperative acknowledgement is diagnostic;
+remaining direct children receive KILL. Unconfirmed children transfer to the existing reaper;
+cooperatively stopped readers retain their own transports until exit. Only
+already-finished threads are joined; after the shared deadline an unfinished
+handle is released and the nonblocking worker exits when scheduled to observe
+its stop flag. Worker-exit receipts test that behavior separately from caller
+waiting. Startup errors retain their original diagnostic and cleanup uncertainty.
+The generic `ProviderSession::finish` contract explicitly settles model catalog
+sessions after fetch/parse, and benchmark sessions after grading/workload cleanup
+but before result publication. A finish error preserves the original catalog,
+client or official grading failure and the independent grade, reports ancillary
+cleanup uncertainty and prevents a completion receipt. Early preparation errors
+also attempt finish exactly once; silent Drop cleanup is the unwind fallback.
+This bounds caller waiting, not actual kernel-stuck exit, descendant supervision
+or crash-persistent recovery.
 Agents, providers, and workloads use the same source layout: each has a
 `mod.rs` for category-wide behavior and an `adapters/` directory containing
 the adapter registry (`adapters/mod.rs`) and one module per implementation.

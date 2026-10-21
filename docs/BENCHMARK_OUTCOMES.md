@@ -43,6 +43,10 @@ measurement record and private completion summary. It carries independent
 execution success, evaluation, cleanup confirmation, evaluator evidence paths,
 policy, execution-attempt identity, evaluation identity and optional superseding
 evaluation reference. Execution errors do not erase confirmed evaluation.
+Cleanup confirmation includes workload/proxy teardown and explicit provider
+session finish. Provider cleanup uncertainty sets that independent observation
+false and prevents completion receipts while retaining native rewards, nullable
+resolution, legacy grades and the observed execution success.
 Legacy fields remain readable; a record without the new object keeps its
 historical binary semantics. Explicit malformed objects fail closed.
 Grade-only recovery does not invent execution, timing or token observations.
@@ -55,6 +59,13 @@ Module provenance may come from the original saved selection, never the live
 registry. Missing execution-plan fingerprints remain unknown.
 Completed native reward outcomes can be sealed and reused without inventing
 resolution; pending/error outcomes cannot earn a completed-outcome receipt.
+The private checkpoint constructor parses the structured outcome once and
+checks its selected module/metric policy, completed evaluation, execution
+lineage, summary process/resolution fields and cleanup/evaluator-root binding
+before any group, replica or reconciliation consumer receives it. Legacy
+records without that object keep their Boolean-grade requirements. Measurement
+records must also agree on module, structured outcome and execution-plan
+fingerprint; the checkpoint does not derive a missing planning fingerprint.
 
 Comparison preserves the structured outcome in every available report row.
 Metric groups bind agent/provider/model, workload, dataset, module descriptor,

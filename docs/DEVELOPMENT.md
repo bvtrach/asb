@@ -239,6 +239,29 @@ report JavaScript under Node with an injected DOM fixture: every filter
 dimension, combined intersections, replica identities, select/clear all,
 empty charts, hover cleanup and selection restoration. SVG-generation tests
 also check that bars, series/legends and composition rows carry benchmark groups.
+`cargo test --locked --offline --lib compare::pipeline_tests` exercises actual
+report generation without benchmarks or providers: cross-row/population
+validation before writes, bounded growing/replaced/FIFO inputs, symlink-parent
+path semantics, aligned nullable observations, full-source JSON with bounded
+graphs, gap preservation, atomic regeneration, persistent writer exclusion,
+recoverable previous generations and truthful post-publication failures.
+It runs the actual generated SVG and embedded interaction script under Node's
+synthetic DOM, including observed-sample hover, zoom, pan and modal controls;
+signed scalar fixtures additionally check negative/mixed/extreme finite and
+subnormal geometry, unchanged JSON values, embedded HTML and signed-value hover.
+this is not browser-layout qualification. The ignored
+`real_headless_browser_qualifies_generated_report_interactions` test can use an
+existing local browser selected explicitly with `ASB_TEST_CHROMIUM`; it never
+downloads one or modifies host/Snap permissions. A host confinement failure is
+not a passing browser qualification. Existing state/event SVGs remain intact.
+Private-backend tests force unsupported exchange, failed no-replace capability,
+backup/commit/rollback and directory-sync errors on real owned directories. They
+prove old user-added files and unrelated sentinels survive and a racing foreign
+destination is never overwritten. The recoverable fallback explicitly permits
+a short missing-destination/crash window; after a crash, preserve the sibling
+`.asb-report-previous-*` backup before restoring it to an absent report path.
+Linux uses `renameat2`; macOS uses `renamex_np` with `RENAME_SWAP`/`RENAME_EXCL`.
+These are source contracts, not a claim of native macOS execution on Linux.
 Reserved-`all` tests cover complete registry expansion, enabled/original trial
 populations, catalog-name collisions and provider-scoped model discovery using
 only a bounded loopback HTTP fixture with no real provider credentials.
@@ -382,6 +405,48 @@ The cli2key concurrency regression uses two mock bridge listeners and mock
 clients, with fixture-only credentials. Both authenticated local requests must
 overlap and reach different owned servers; both servers must be reaped afterward.
 It does not use the installed cli2key package or a backend subscription.
+`cargo test --locked --offline --lib cli2key` additionally checks real local
+startup fixtures with oversized/unterminated output, excessive messages/bytes,
+silent startup, post-readiness draining and cleanup while another output
+writer remains open. Reader/reaper creation fails before child admission.
+Injected errors and unwinding after either spawn, shared-deadline/poll-error
+handoff, pidfd-pinned reaping and unrelated sentinel survival require no host
+credentials or provider. The same guard/reaper remains owned on success.
+The caller's cleanup wait has one five-second budget across both children and
+readers; unconfirmed children retain fallback custody rather than being
+dropped. This does not establish descendant or abrupt-crash cleanup.
+Repeated-run provider fixtures exercise actual two-replica batches: uncertain
+provider finish preserves true/false grades but prevents admission of another
+batch; confirmed finish permits later negative-grade attempts. A channel-driven
+early-error fixture requires waiting material peers to observe cancellation
+before provider teardown can complete. Output failures retain their I/O class
+when provider cleanup also fails. These fixtures use replay and root-scoped
+test-only provider sessions, not live credentials or provider processes.
+The `provider_finish` library fixtures additionally run seven actual replay-only
+benchmark attempts: true/false grades, client failure, early preparation failure
+and successful finish. They require explicit finish once, preserve each grade
+and primary error, report cleanup uncertainty and withhold completion receipts.
+Native completed rewards with nullable resolution remain valid through normal
+finish; provider uncertainty preserves their numeric reward and execution
+observation while setting structured cleanup confirmation false.
+Loopback catalog fixtures cover successful parsing, invalid JSON and HTTP failure
+combined with finish failure. Both use only fixture credentials. Output-worker
+exit receipts confirm cooperative exit even after the caller releases an
+unfinished thread handle at its deadline; no unconditional join is used.
+Final admission also rechecks both children after proxy readiness. A pinned
+two-child fixture makes the bridge exit after its key and before the proxy's
+marker, then requires rejection, complete direct-child reaping and sentinel
+survival. An actual embedded Node compatibility hop routes through a held
+loopback HTTP fixture using its real owned curl child. Explicit finish must
+close the outbound connection, reap curl and exit cooperatively with status
+zero. An ignored-EOF fixture verifies escalation after the two-second grace
+inside the same five-second caller budget, with an uncertainty diagnostic.
+The same embedded fixture aborts an unfinished POST while a sibling outbound
+request completes, then shuts down with another partial POST still open. Body
+collection/URL/forwarding errors remain inside one handler envelope, and closing
+or destroyed responses receive no late 502. Request-event receipts establish
+the partial-body states without relying on a sleep. The concurrent CLI fixture
+retains bounded fixture-only Node stderr when reporting a startup failure.
 The agent-process sampler regression launches a bounded local Node fixture,
 changes its process title and checks two seconds of continued sampling, an
 unrelated Node process and the original process's exit. It uses no provider,
@@ -778,6 +843,24 @@ completion records and seals, then closes both slots through public
 `--resume --reconcile-completed`, checks unchanged repeats without new provider
 requests and regenerates honest grade-only comparison output. These tests
 must not promote a recovered grade to measured process success.
+The completed-outcome invariant matrix starts from the current schema-2
+retained fixture with original start intents and allocations, mutates each
+protocol, identity, grade, cleanup and path obligation independently, and
+requires sealing, continuation and reconciliation to reject without publishing
+any group or replica receipt. Wire fixtures retain schema-1 compatibility and
+reject unknown/malformed records; the unmeasured sweep CLI fixture additionally
+checks invalid groups cannot start another synthetic client or change receipts.
+That public CLI check also removes only the late invalid member's group and
+slot receipts, requires its exact invariant diagnostic before allocation
+inspection, and checks no replacement receipt or changed outcome bytes. Valid
+earlier/sibling receipts stay unchanged. The allocated unit fixture separately
+proves all-candidate validation precedes publication; neither fixture qualifies
+an original task runtime.
+Structured-outcome checkpoint fixtures additionally seal completed native
+rewards with null resolution and both process results, preserving legacy
+structured/unstructured Boolean grades. Independent mutations reject pending,
+error, missing primary rewards, policy/module, lineage, process/resolution,
+cleanup and evaluator-root mismatches through the same validated constructor.
 
 An opt-in complete-catalog planning/reporting check runs with no agent,
 provider, Docker or evaluator execution:

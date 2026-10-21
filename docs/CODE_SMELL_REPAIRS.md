@@ -14,18 +14,24 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
-Integrated candidate, staged patch **0.2.20**: the independently reviewed
+Integrated candidate, staged patch **0.2.21**: the independently reviewed
 launch-descriptor/one-shot admission repair (`b1a54fde`) is combined with the
 reviewed workload-wizard stack (`6af7939b`), retaining shared benchmark paths,
 bounded flamegraph cleanup, host prerequisite consent and adapter-owned
 executable readiness. Adapter package preferences and source readiness coexist
 with the raw-OS launch descriptor; native command configuration and exclusive
 gate admission remain intact. The new planning execution budget and recorded
-report-metadata boundaries remain intact as well. Independent integration
-source review approved `3259da7e`; its fresh full offline suite passed 1,008
-tests, followed by strict Clippy, formatting and build/docs/diagrams checks.
-Exact-head hosted/package CI, PR merge, post-merge verification and a patch
-release remain pending. This staging entry
+report-metadata boundaries remain intact as well. The typed comparison pipeline
+retains bounded source snapshots, nullable series, signed bars and complete
+generation publication. Planning, controller caps and module revisions stay
+metadata rather than measurements. Independent integration source review
+approved parent `3259da7e`; its full offline suite passed 1,008 tests followed by
+strict Clippy, formatting and build/docs/diagrams checks. The independently
+approved report integration `1fb9bdf1` passed 1,036 full offline tests with
+21 optional skips, strict Clippy, formatting and build/docs/diagrams checks.
+Actual main ancestry through launch repair PR #286 changes only this ledger,
+not that qualified production/test tree. Exact-head hosted/package CI, PR merge,
+post-merge verification and patch release remain pending. This staging entry
 does not claim delivery or close the other audit repair classes.
 
 ## 1. Endpoint preparation invariants
@@ -61,7 +67,7 @@ without changing established result/workspace identities unintentionally.
 Also review duplicated manifest reference validation and executable resolution;
 same names alone do not prove equivalent semantics. Pending.
 
-Executable-policy candidate, staged patch **0.2.18**: project-local source
+Executable-policy repair, released patch **0.2.18**: project-local source
 installation, readiness and launch share one registry-neutral executable lookup.
 Explicit source overrides precede adapter-owned package preferences; unusable
 present candidates cannot silently fall through to stale fallback code. Codex
@@ -74,8 +80,9 @@ entries and host-only discovery. Existing installer regressions now call the
 same shared executable predicate rather than a removed duplicate. Current-main
 integration `b395617e` is independently source-approved; its full offline suite
 passed 996 tests, followed by strict Clippy, formatting and build/docs checks.
-Exact-head hosted/package CI, PR merge, post-merge verification and the patch
-release remain pending.
+PR #263 merged as `c9beafb6dfb52562dac59dc6de7bcbc7f7421204`.
+Exact-head hosted/package CI and both post-merge jobs passed in run
+`39635610656`; the released signed tag is GitHub-verified at that exact commit.
 
 Shared benchmark-path repair, released patch **0.2.13**: all five equivalent legacy normalizers now
 use one component/stem policy, and both sweep execution and comparison use the
@@ -189,6 +196,27 @@ Simplify checkpoint validation into named invariants without losing checks.
 Review broad parameter lists, result structs, visibility, dead API surface and
 module names in those owning boundaries. Pending.
 
+Checkpoint candidate, staged patch **0.2.22**: completion group/replica sealing, partial continuation
+and retained-outcome reconciliation now consume a private validated outcome
+instead of passing an unchecked wire record after a long Boolean expression.
+Named protocol/cleanup, cohort, identity, grade/baseline and evidence-path
+invariants retain schema-1 group compatibility, schema-2 slot requirements,
+dataset/evaluator bindings and false grades. Independent mutation fixtures
+exercise every invariant through sealing, continuation and reconciliation,
+requiring no receipt publication; actual replay-only CLI rejection checks keep
+client-launch counts and historical receipt bytes unchanged. Removing the
+invalid native member's group/slot receipts additionally proves public CLI
+unsealed-slot validation reaches the exact named invariant before allocation
+inspection, without republishing those receipts. Earlier valid native seals
+remain intact; all-candidate publication ordering is covered separately by the
+allocated unit fixture, not claimed as original-runtime qualification. Independent
+source review approved `9d0c6f3f`; a separate execution passed all 23 checkpoint
+tests and both public CLI tests. The worker's stable-binary full qualification
+passed 933 tests with 20 explicit optional skips, followed sequentially by fmt
+and strict Clippy, with unchanged executable hashes. Integrated-version and
+ordinary/package hosted CI, merge and post-merge release verification remain
+pending. This does not close other structural items.
+
 Runner repair, released patch **0.2.10**: private consuming admission,
 preparation, execution-evidence, proxy-settlement, evaluation and finalization
 states now separate owned resources and independent outcomes. It repairs the
@@ -213,8 +241,123 @@ released from that exact commit with a GitHub-verified signed tag.
 Audit correction: current `perfetto_instance_config` is seven lines, not the
 reported 630. Comparison's filter JavaScript is already a separate asset.
 Do not perform redundant extraction based on stale line counts.
+Comparison candidate, staged patch **0.2.21**: explicit loaded/validated/prepared/rendered/published
+states replace intertwined loading, grading coverage, graph planning and output
+publication. Stable identities, typed result provenance and one-time population
+aggregation preserve existing evidence semantics. Confirmed fixes retain null
+positions with original timestamps (no shifted samples), disclose bounded
+original-index extrema-preserving line rendering instead of silent truncation,
+and provide nearest observed-sample hover text. Opened-once bounded source reads
+reject nonregular files and growth; retained physical SVG paths prevent
+symlink-parent components from being misread as logical output links.
+Generation-specific private staging and a separate persistent report lock
+publish whole generations with Linux/macOS native atomic exchange and preserve the old tree
+as a recoverable backup. Pre-commit failures leave old bytes unchanged;
+post-commit sync/output errors truthfully report published-but-unconfirmed.
+Offline source/DOM/publication regressions require no provider or privileged
+collector. Real browser qualification remains opt-in and host-dependent. This
+candidate passed independent source review and a separate execution of all 25
+pipeline regressions (one explicit real-browser opt-in remains ignored). Signed
+scalar bars preserve negative observations, finite zero-based geometry even at
+opposite-sign floating-point extremes, and exact original values in embedded
+HTML hover. Worker full qualification passed 990 tests with 21 explicit skips
+at `4cb19e48`. Integrated version/package and ordinary hosted verification remain
+pending; this is not a release or a universal non-Linux atomicity claim.
+When the filesystem lacks exchange, a private no-replace probe precedes the
+recoverable backup/commit/rollback fallback. This path honestly discloses a
+temporary absent-destination/crash window, retains the old backup on failed
+restore and never overwrites a racing foreign destination. Missing safe native
+no-replace support fails closed without first moving user data. MacOS native
+calls are selected explicitly; Linux fixtures do not qualify a macOS runtime.
+Separate confirmed follow-up: bar charts still clamp signed values to zero.
+The signed-domain repair above covers line-series axes only; bar baselines,
+rectangles, signed ticks and labels need their own offline coordinate tests
+and repair before claiming all chart families faithfully display negatives.
 The custom BPF scope validator is also a small function (about sixty lines),
 not the reported 533; its confirmed correctness defect is tracked below.
+
+cli2key startup/session candidate, staged patch **0.2.23** after checkpoint
+**0.2.22**: explicit external versus local ownership
+keeps the shared fallibly pre-established `OwnedReaper` through successful
+session transfer. Both children enter immediate custody; each nonblocking
+output worker is created fallibly before its child. Readiness has byte, line,
+message, channel and time bounds, followed by deliberate drain/discard for the
+session lifetime. One cleanup deadline covers both children/readers; uncertain
+children transfer to the existing worker, and startup errors retain cleanup
+diagnostics. Finished readers alone are joined; stopped workers retain their
+transport until they exit. Offline fixtures check limits, silence, creation
+failure, both spawn error/unwind boundaries, pinned direct-child reaping,
+deadline/poll-error handoff, retained output writers and sentinel survival.
+External endpoint/key behavior and two-listener concurrent authenticated
+requests retain their regressions. This repairs provider-owned direct-child
+custody and readiness, not other provider/collector lifecycle paths, arbitrary
+descendants or crash recovery. Independent review and delivery remain pending.
+The shared provider-session interface now includes an explicit default no-op
+finish contract. cli2key consumes its local owner exactly once and reports
+uncertainty; generic model discovery always finishes after fetch/parse, while
+the runner closes after grading/workload cleanup and before publication.
+Provider cleanup failure is ancillary to client/grading failure, preserves the
+official grade and prevents a continuation receipt. An early-error envelope
+also finishes after preparation/execution errors. Private replay-only full-entry
+fixtures and loopback catalog fixtures verify success, independent true/false
+grades, client/preparation/fetch/parse failures and finish uncertainty without
+duplicate cleanup or retry. Worker receipts distinguish cooperative reader exit
+from releasing an unfinished handle after the caller's shared deadline.
+Independent review rejected the initial candidate's last-child-only readiness
+observation: the required bridge could exit while the compatibility hop was
+starting. Final admission now checks every owned child, with a deterministic
+two-child/pinned-identity regression. Self-review also retained the embedded
+hop's cooperative outbound cleanup: stdin lifetime EOF starts shutdown, which
+observes declared curl close events before success. Its at-most-two-second
+grace consumes the existing shared five-second budget before direct-child
+escalation. Real embedded-hop/held-loopback/curl and ignored-EOF fixtures verify
+both paths; forced or unsuccessful cooperative exit reports uncertainty.
+Follow-up review found that incoming-body collection previously escaped the
+proxy handler's error envelope. The complete handler now catches body/URL/
+forwarding errors, checks closing before forwarding and avoids late 502 writes
+to aborted/destroyed responses. Actual partial-POST abort/shutdown fixtures
+retain a sibling request and require cooperative exit/reaping. A full-suite
+concurrent-proxy startup exit remains under investigation with bounded fixture
+stderr; a passing isolated rerun is not claimed as its diagnosis.
+Independent source review approved `bdf219d4`; root separately passed its 18
+cli2key library tests, two provider-finish matrix entries (including five actual
+runner cases and loopback catalog cases), and four actual CLI regressions.
+The signed `ad5ce506` integration retains the structured native outcome/report
+pipeline and bounded model transport from **0.2.19**; root semantic review
+approved its generic finish/native cleanup wiring. Seven actual runner
+finish cases now include completed numeric rewards with null resolution:
+provider uncertainty preserves those rewards, legacy grades and execution
+success, sets structured cleanup confirmation false and withholds receipts.
+The approved structured checkpoint constructor from `3fa5239c` (**0.2.20**)
+is retained without restoring Boolean-only native outcome requirements.
+Final integrated source review, full stable-binary qualification, package and
+hosted CI, merge and release remain pending. The earlier `93babfdd` full-suite
+proxy-startup failure remains unattributed; bounded fixture stderr and 100
+passing fresh concurrency fixtures are diagnostic evidence, not proof of its
+cause or repair. No live-provider qualification is claimed.
+Follow-up reporting review found that a healthy-native compatibility exception
+also hid recorded cleanup failures. It now applies only without a recorded
+failure kind/reason or explicit cleanup failure; unknown cleanup alone does not
+invent a failure. Reports generated from the actual native finish fixtures
+retain the numeric reward/null resolution and disclose provider uncertainty in
+both row status and HTML, while healthy native completion stays completed.
+Root source review approved `f7b7bb9d`; that immutable pre-planning integration
+passed the full offline suite (1,033 passed, 21 optional skips), strict Clippy,
+formatting and sequential build/documentation gates with unchanged binary bytes
+through the suite. The provisional **0.2.21** integration now also includes
+the exact planning/report checkpoint `c893de62`: admission policy, controller
+budgets, persisted policy/task plans and computed protocol fingerprints remain
+upstream-owned, while explicit provider finish still precedes publication and
+gates cleanup confirmation and receipts. Actual finish fixtures verify saved
+plan/policy/budget consistency and fingerprint propagation alongside native
+reward preservation. That planning integration, `fbd0d69d`, subsequently
+received independent source approval and passed 1,049 offline tests, strict
+Clippy, formatting and sequential build/docs checks with stable executable
+bytes. The current **0.2.23** candidate also retains the approved report and
+checkpoint integration `1fb8c542`, including declared planning metadata outside
+measurement charts; provider, runner and model-discovery source is unchanged
+from `fbd0d69d`. Fresh current-integration qualification and independent review
+remain pending, along with package/hosted CI, merge and release.
 
 ## 6. Shared implementation and lifecycle policies
 
@@ -245,7 +388,9 @@ intent, although no current production caller uses that method; do not claim
 an observed credential leak. Tests must preserve explicit environment removal,
 clearing, non-UTF8 arguments/environment, I/O, owner death and descendant cleanup.
 
-Separate launch-descriptor candidate (not yet merged/released): the adapter
+Separate launch-descriptor repair: PR #286 merged as
+`f2e805824c0815c31269b586ebca677c9a71218f`; post-merge verification and the
+**0.2.20** release remain pending. The adapter
 returns an OS-string client executable/prefix/explicit argv[0] descriptor;
 native preparation constructs the gate command once before all configuration.
 The same actual `Command` retains standard-library environment clearing,
@@ -292,7 +437,7 @@ merged as `ac80fcb4201cc679afd280b79775b46cfe20ef5b`. Exact-head
 ordinary/package CI and both post-merge jobs passed (run `39622744776`);
 the signed release points to that exact commit.
 
-Workload-wizard candidate, staged patch **0.2.19**: explicit browsing, editing
+Workload-wizard repair, released patch **0.2.19**: explicit browsing, editing
 and saved states repair the advertised Enter-to-finish action. Saved subsets
 are restored when editing, replaced rather than appended, retained across
 deselection, and published only for selected workloads. Every selected subset
@@ -304,8 +449,10 @@ integration tests, including ten actual PTY workflow scenarios and terminal
 restoration. Worker full offline qualification passed 956 tests with 20 explicit
 optional skips. Current-main integration `6af7939b` is independently
 source-approved; a fresh full offline suite passed 998 tests, followed by
-strict Clippy, formatting and build/docs checks. Exact-head hosted/package CI,
-merge and post-merge release verification remain pending. Detached installation-worker custody and
+strict Clippy, formatting and build/docs checks. PR #284 merged as
+`d33064f04abd84e89aad7b451efdf369c0cb7400`; exact-head hosted/package CI and
+both post-merge jobs passed in run `39637435805`. The released signed tag is
+GitHub-verified at that exact commit. Detached installation-worker custody and
 other TUI structural issues remain separate repair classes.
 
 ## 7. Limits, diagnostics and CLI consistency

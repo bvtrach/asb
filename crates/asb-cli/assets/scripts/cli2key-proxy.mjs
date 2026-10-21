@@ -7,7 +7,7 @@
 
 import http from "node:http";
 import { Readable } from "node:stream";
-import { cancelNetworkRequests, networkFetch } from "./network-fetch.mjs";
+import { cancelNetworkRequests, networkFetch, quiesceNetworkRequests } from "./network-fetch.mjs";
 
 function usage(message) {
   if (message) console.error(`asb cli2key proxy: ${message}`);
@@ -48,18 +48,21 @@ function normalizeBody(path, body) {
   }
 }
 
+let closing = false;
 const server = http.createServer(async (request, response) => {
-  const chunks = [];
-  for await (const chunk of request) chunks.push(Buffer.from(chunk));
-  const raw = Buffer.concat(chunks);
-  const path = request.url || "/";
-  const body = normalizeBody(path, raw.length ? raw.toString("utf8") : "");
-  const target = new URL(path, `${upstream}/`);
-  const headers = { ...request.headers };
-  delete headers.host;
-  delete headers.connection;
-  delete headers["content-length"];
   try {
+    if (closing) { response.destroy(); return; }
+    const chunks = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    if (closing || request.aborted || response.destroyed) return;
+    const raw = Buffer.concat(chunks);
+    const path = request.url || "/";
+    const body = normalizeBody(path, raw.length ? raw.toString("utf8") : "");
+    const target = new URL(path, `${upstream}/`);
+    const headers = { ...request.headers };
+    delete headers.host;
+    delete headers.connection;
+    delete headers["content-length"];
     const result = await networkFetch(target, {
       method: request.method,
       headers,
@@ -74,6 +77,7 @@ const server = http.createServer(async (request, response) => {
     }
     else response.end();
   } catch (error) {
+    if (closing || request.aborted || response.destroyed || response.writableEnded) return;
     response.writeHead(502, { "content-type": "application/json" });
     response.end(JSON.stringify({ error: { message: `cli2key upstream unavailable: ${error.message}` } }));
   }
@@ -86,6 +90,25 @@ server.on("error", (error) => {
 server.listen(port, "127.0.0.1", () => {
   console.log("ASB cli2key proxy ready");
 });
-const shutdown = () => { cancelNetworkRequests(); server.close(() => process.exit(0)); };
+const shutdown = async () => {
+  if (closing) return;
+  closing = true;
+  const closed = new Promise((resolve) => server.close(resolve));
+  cancelNetworkRequests();
+  try {
+    // Observe owned subprocess close before exiting; a resistant curl receives
+    // the existing bounded TERM/KILL escalation in the network client.
+    await quiesceNetworkRequests();
+    server.closeAllConnections();
+    await closed;
+    process.exit(0);
+  } catch {
+    server.closeAllConnections();
+    process.exit(1);
+  }
+};
 process.once("SIGINT", shutdown);
 process.once("SIGTERM", shutdown);
+process.stdin.once("end", shutdown);
+process.stdin.once("error", shutdown);
+process.stdin.resume();

@@ -1,14 +1,20 @@
 //! Local cli2key API lifecycle and client configuration.
 
 use crate::Error;
-use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use std::sync::mpsc;
-use std::thread;
-use std::time::{Duration, Instant};
+#[cfg(unix)]
+use std::time::Duration;
 
+#[cfg(unix)]
+#[path = "custody.rs"]
+mod custody;
+#[cfg(not(unix))]
+#[path = "custody_unsupported.rs"]
+mod custody;
+
+#[cfg(unix)]
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 // Upstream cannot bind port zero. Serialize startup through readiness, not
 // session lifetime, so our concurrent sessions select different free ports.
@@ -59,8 +65,13 @@ pub(in crate::providers) fn local_executable() -> Option<String> {
 pub struct Bridge {
     api_key: String,
     base_url: String,
-    process: Option<Child>,
-    proxy: Option<Child>,
+    _session: Session,
+}
+
+enum Session {
+    External,
+    Local { _owner: custody::Local },
+    Finished,
 }
 
 impl crate::providers::ProviderSession for Bridge {
@@ -69,6 +80,15 @@ impl crate::providers::ProviderSession for Bridge {
     }
     fn base_url(&self) -> &str {
         Bridge::base_url(self)
+    }
+    fn finish(&mut self) -> Result<(), Error> {
+        if let Session::Local { _owner: owner } =
+            std::mem::replace(&mut self._session, Session::Finished)
+        {
+            owner.finish().map_err(Error::Run)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -81,8 +101,7 @@ impl Bridge {
             return Ok(Self {
                 api_key,
                 base_url,
-                process: None,
-                proxy: None,
+                _session: Session::External,
             });
         }
         let executable = executable.ok_or(Error::Run(
@@ -113,156 +132,63 @@ impl Bridge {
         let base_url = format!("http://{client_host}:{port_number}/v1");
         let mut command = Command::new(executable);
         crate::project::apply_network_proxy(&mut command, std::path::Path::new("."))?;
-        let process = command
+        command
             .arg("serve")
             .env("CODEX_BRIDGE_HOST", &host)
             .env("CODEX_BRIDGE_PORT", &port)
             .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| Error::Run(format!("could not start cli2key bridge at {executable}: {error}. Check directory access and reinstall with `asb tool install cli2key`.")))?;
-        // Own the child immediately: every startup error must kill and reap it.
-        let mut bridge = Self {
-            api_key: String::new(),
-            base_url,
-            process: Some(process),
-            proxy: None,
-        };
-        let process = bridge.process.as_mut().expect("spawned bridge");
-        let stdout = process
-            .stdout
-            .take()
-            .ok_or_else(|| Error::Run("cli2key bridge did not expose startup output".into()))?;
-        let (sender, receiver) = mpsc::channel();
-        thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().take(64) {
-                let Ok(line) = line else { break };
-                if sender.send(line).is_err() {
-                    break;
-                }
-            }
-        });
-        let mut discovered_key = None;
-        let deadline = Instant::now() + STARTUP_TIMEOUT;
-        for _ in 0..64 {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(Error::Run(
-                    "cli2key bridge did not become ready within 5 seconds".into(),
-                ));
-            }
-            match receiver.recv_timeout(remaining) {
-                Ok(line) => {
-                    if let Some(key) = line.strip_prefix("Codex Bridge API key: ") {
-                        discovered_key = Some(key.trim().to_owned());
-                        break;
-                    }
-                    if let Some(status) = process.try_wait().map_err(|error| {
-                        Error::Run(format!("cannot inspect cli2key bridge: {error}"))
-                    })? {
-                        return Err(Error::Run(format!(
-                            "cli2key bridge exited during startup with {status}"
-                        )));
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    let status = process.try_wait().map_err(|error| {
-                        Error::Run(format!("cannot inspect cli2key bridge: {error}"))
-                    })?;
-                    return Err(Error::Run(match status {
-                        Some(status) => {
-                            format!("cli2key bridge exited during startup with {status}")
-                        }
-                        None => "cli2key bridge did not become ready within 5 seconds".into(),
-                    }));
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(Error::Run(
-                        "cli2key bridge closed its startup output".into(),
-                    ));
-                }
-            }
-        }
-        let api_key = std::env::var("CLI2KEY_API_KEY")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .or(discovered_key)
-            .ok_or_else(|| Error::Run("cli2key bridge did not provide an API key".into()))?;
-        bridge.api_key = api_key;
-        let proxy_root = std::env::current_dir()
+            .stderr(Stdio::null());
+        let mut owner = custody::Local::new().map_err(Error::Run)?;
+        let result: Result<(String, String), Error> = (|| {
+            let discovered_key = owner.spawn(&mut command, true).map_err(Error::Run)?;
+            let api_key = std::env::var("CLI2KEY_API_KEY")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(discovered_key);
+            let proxy_root = std::env::current_dir()
             .map_err(|error| Error::Run(format!("cannot locate the project directory for the cli2key compatibility proxy: {error}")))?
             .join(".asb-runtime");
-        std::fs::create_dir_all(&proxy_root).map_err(|error| {
-            Error::Run(format!(
-                "cannot create cli2key compatibility proxy directory {}: {error}",
-                proxy_root.display()
-            ))
-        })?;
-        std::fs::write(proxy_root.join("network-fetch.mjs"), NETWORK_FETCH).map_err(|error| {
-            Error::Run(format!(
-                "cannot materialize cli2key network client: {error}"
-            ))
-        })?;
-        let proxy_script = proxy_root.join(format!("cli2key-proxy-{}.mjs", std::process::id()));
-        std::fs::write(&proxy_script, BUILTIN_COMPAT_PROXY).map_err(|error| {
-            Error::Run(format!(
-                "cannot write cli2key compatibility proxy {}: {error}",
-                proxy_script.display()
-            ))
-        })?;
-        let proxy_port = free_port()?;
-        let upstream = bridge.base_url.clone();
-        let mut command = Command::new("node");
-        crate::project::apply_network_proxy(&mut command, std::path::Path::new("."))?;
-        let mut proxy = command
-            .arg(&proxy_script)
-            .args(["--port", &proxy_port.to_string(), "--upstream", &upstream])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| {
+            std::fs::create_dir_all(&proxy_root).map_err(|error| {
                 Error::Run(format!(
-                    "could not start cli2key compatibility proxy: {error}. Check Node.js with `node --version` and verify the executable's permissions."
+                    "cannot create cli2key compatibility proxy directory {}: {error}",
+                    proxy_root.display()
                 ))
             })?;
-        let stdout = proxy.stdout.take().ok_or_else(|| {
-            Error::Run("cli2key compatibility proxy did not expose startup output".into())
-        })?;
-        let (sender, receiver) = mpsc::channel();
-        thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().take(8) {
-                let Ok(line) = line else { break };
-                if sender.send(line).is_err() {
-                    break;
-                }
-            }
-        });
-        let deadline = Instant::now() + STARTUP_TIMEOUT;
-        let mut ready = false;
-        while Instant::now() < deadline {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            match receiver.recv_timeout(remaining) {
-                Ok(line) if line == "ASB cli2key proxy ready" => {
-                    ready = true;
-                    break;
-                }
-                Ok(_) => {}
-                Err(mpsc::RecvTimeoutError::Timeout) => break,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            }
+            std::fs::write(proxy_root.join("network-fetch.mjs"), NETWORK_FETCH).map_err(
+                |error| {
+                    Error::Run(format!(
+                        "cannot materialize cli2key network client: {error}"
+                    ))
+                },
+            )?;
+            let proxy_script = proxy_root.join(format!("cli2key-proxy-{}.mjs", std::process::id()));
+            std::fs::write(&proxy_script, BUILTIN_COMPAT_PROXY).map_err(|error| {
+                Error::Run(format!(
+                    "cannot write cli2key compatibility proxy {}: {error}",
+                    proxy_script.display()
+                ))
+            })?;
+            let proxy_port = free_port()?;
+            let upstream = base_url.clone();
+            let mut command = Command::new("node");
+            crate::project::apply_network_proxy(&mut command, std::path::Path::new("."))?;
+            command
+                .arg(&proxy_script)
+                .args(["--port", &proxy_port.to_string(), "--upstream", &upstream])
+                .stdin(Stdio::piped())
+                .stderr(Stdio::null());
+            owner.spawn(&mut command, false).map_err(Error::Run)?;
+            owner.confirm_ready().map_err(Error::Run)?;
+            Ok((api_key, format!("http://127.0.0.1:{proxy_port}/v1")))
+        })();
+        match result {
+            Ok((api_key, base_url)) => Ok(Self {
+                api_key,
+                base_url,
+                _session: Session::Local { _owner: owner },
+            }),
+            Err(error) => Err(Error::Run(owner.failure(error.to_string()))),
         }
-        if !ready {
-            let _ = proxy.kill();
-            let _ = proxy.wait();
-            return Err(Error::Run(
-                "cli2key compatibility proxy did not become ready within 5 seconds".into(),
-            ));
-        }
-        bridge.base_url = format!("http://127.0.0.1:{proxy_port}/v1");
-        bridge.proxy = Some(proxy);
-        Ok(bridge)
     }
 
     /// Return the API key to configure the selected agent.
@@ -273,20 +199,6 @@ impl Bridge {
     /// Return the OpenAI-compatible base URL to configure the selected agent.
     pub fn base_url(&self) -> &str {
         &self.base_url
-    }
-}
-
-impl Drop for Bridge {
-    fn drop(&mut self) {
-        if let Some(proxy) = self.proxy.as_mut() {
-            let _ = crate::project::stop_network_child(proxy);
-        }
-        if let Some(process) = self.process.as_mut() {
-            if process.try_wait().ok().flatten().is_none() {
-                let _ = process.kill();
-            }
-            let _ = process.wait();
-        }
     }
 }
 
