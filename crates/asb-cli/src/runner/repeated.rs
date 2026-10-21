@@ -34,6 +34,9 @@ pub(crate) struct BatchIdentity {
 }
 
 impl BatchIdentity {
+    pub(super) fn number(&self) -> u64 {
+        self.number
+    }
     pub(crate) fn admission(&self) -> crate::planning::BatchAdmissionPolicy {
         crate::planning::BatchAdmissionPolicy::current()
     }
@@ -70,6 +73,8 @@ struct ReplayInput {
 
 #[derive(Serialize)]
 struct Plan<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recording: Option<PathBuf>,
     admission: crate::planning::BatchAdmissionPolicy,
     schema_version: u32,
     scope: &'static str,
@@ -109,14 +114,10 @@ pub(super) fn run(
         || options.preparation_gate.is_some()
         || options.launch_gate.is_some()
         || options.batch.is_some()
+        || options.recording.is_some()
     {
         return Err(Error::Input(
             "repeated execution cannot reuse legacy observers, slots or preparation gates".into(),
-        ));
-    }
-    if options.mode == Some(crate::tape::Mode::Record) {
-        return Err(Error::Input(
-            "repeated recording requires the pending bundle integration".into(),
         ));
     }
     crate::planning::resolve_snapshot(&config, options.measurement_dir.is_some(), options.policy)?;
@@ -140,6 +141,14 @@ pub(super) fn run(
     let replay_inputs = replay_inputs(config_path, &config, options, &mut slots)?;
     let parent = project_root.join("results/asb-executions");
     let root = parent.join(&campaign);
+    let recording_destination = (options.mode == Some(crate::tape::Mode::Record))
+        .then(|| {
+            let destination = options.cassette.map(PathBuf::from).unwrap_or_else(|| {
+                super::default_cassette(config_path, &config).with_extension("asb.zip")
+            });
+            super::recording::preflight(&destination)
+        })
+        .transpose()?;
     let measurement_root = measured
         .then(|| {
             options
@@ -150,6 +159,7 @@ pub(super) fn run(
         .transpose()
         .map_err(io_error)?;
     let plan = Plan {
+        recording: recording_destination.clone(),
         admission,
         schema_version: 1,
         scope: "intended-executions-not-attempt-evidence",
@@ -162,6 +172,7 @@ pub(super) fn run(
         repeat,
         concurrency: config.concurrency,
         mode: match options.mode {
+            Some(crate::tape::Mode::Record) => "record",
             Some(crate::tape::Mode::Replay) => "replay",
             _ => "live",
         },
@@ -179,6 +190,15 @@ pub(super) fn run(
     )
     .map_err(Error::Run)?;
     publish_bytes(&root.join("plan.json"), &bytes)?;
+    let recording = recording_destination.map(|destination| {
+        Arc::new(super::recording::Recorder::new(
+            destination,
+            root.clone(),
+            campaign.clone(),
+            repeat,
+            config.concurrency,
+        ))
+    });
     let private_cassette = stage_replay(&root, &plan, config.concurrency)?;
     if let Some(measurement_root) = &measurement_root
         && measurement_root != &root
@@ -209,6 +229,7 @@ pub(super) fn run(
     let mut completed_batches = 0u64;
     let mut stopped = false;
     let mut first_reason = None;
+    let mut producers_quiescent = true;
     for number in 1..=repeat {
         let identity = BatchIdentity {
             campaign: campaign.clone(),
@@ -229,8 +250,11 @@ pub(super) fn run(
             cleanup_confirmed: AtomicBool::new(true),
         });
         let prepared = batch_root.join("prepared.json");
+        let batch_recorder = recording.clone();
         let gate = batch::Gate::new(config.concurrency, reference.clone(), admission.material_timeout())?.observe(Arc::new(move |compatibility| {
-            publish(&prepared, &json!({"schema_version":1,"scope":"verified-prepared-material","compatibility":compatibility}))
+            publish(&prepared, &json!({"schema_version":1,"scope":"verified-prepared-material","compatibility":compatibility}))?;
+            if let Some(recorder) = &batch_recorder { recorder.prepare(compatibility,number)?; }
+            Ok(())
         }));
         let mut selected = config.clone();
         selected
@@ -262,6 +286,11 @@ pub(super) fn run(
             .measurement_dir
             .map(|_| path_text(measures.as_deref().expect("explicit override is measured")))
             .transpose()?;
+        let batch_cassette = if recording.is_some() {
+            Some(path_text(&super::recording::base(&root, number))?)
+        } else {
+            private_cassette.clone()
+        };
         let result = super::run_loaded(
             config_path,
             selected,
@@ -273,7 +302,8 @@ pub(super) fn run(
                 launch_gate: Some(&launch_gate),
                 verify_initial_material: true,
                 measurement_dir: override_measurements.as_deref(),
-                cassette: private_cassette.as_deref(),
+                cassette: batch_cassette.as_deref(),
+                recording: recording.as_deref(),
                 on_completion: Some(observer.as_ref()),
                 ..options
             },
@@ -287,6 +317,8 @@ pub(super) fn run(
             .map_err(|_| Error::Run("execution completion state was interrupted".into()))?
             .len();
         let batch_failed = result.is_err();
+        producers_quiescent &=
+            completed == config.concurrency && observer.cleanup_confirmed.load(Ordering::Acquire);
         // A published outcome for every admitted slot distinguishes ordinary
         // completed failures from setup, output or evidence-publication failure.
         stopped = must_stop(
@@ -322,10 +354,65 @@ pub(super) fn run(
         reference = Some(prepared?);
         completed_batches += 1;
     }
+    let publication = recording
+        .as_ref()
+        .map(|recorder| recorder.finalize(producers_quiescent));
+    let publication_status = match &publication {
+        None => serde_json::Value::Null,
+        Some(Ok(Some(published))) => {
+            json!({"status":"published","format":"asb-zip-v1","path":published.destination,"tracks":published.manifest.tracks.len(),"cleanup_complete":published.cleanup_complete,"warnings":published.warnings})
+        }
+        Some(Ok(None)) => json!({"status":"not-created","reason":"no verified recording material"}),
+        Some(Err(error)) => json!({"status":"failed","reason":error.to_string()}),
+    };
     publish(
         &root.join("finished.json"),
-        &json!({"schema_version":1,"completed_batches":completed_batches,"failed_batches":failures,"stopped":stopped}),
+        &json!({"schema_version":1,"completed_batches":completed_batches,"failed_batches":failures,"stopped":stopped,"cassette_publication":publication_status}),
     )?;
+    if publication.is_some() {
+        if options.json {
+            serde_json::to_writer(
+                &mut *output,
+                &json!({"type":"cassette-publication","publication":publication_status}),
+            )
+            .map_err(|error| Error::Io(error.to_string()))?;
+            writeln!(output).map_err(io_error)?;
+        } else {
+            match &publication {
+                Some(Ok(Some(published))) => {
+                    writeln!(
+                        output,
+                        "Cassette: {} (ZIP v1, {} tracks, published)",
+                        published.destination.display(),
+                        published.manifest.tracks.len()
+                    )
+                    .map_err(io_error)?;
+                    for warning in &published.warnings {
+                        writeln!(output, "Warning: {warning}").map_err(io_error)?;
+                    }
+                }
+                Some(Ok(None)) => writeln!(
+                    output,
+                    "Recording was not created: no compatible workload material was prepared."
+                )
+                .map_err(io_error)?,
+                Some(Err(_)) => writeln!(
+                    output,
+                    "Recording publication is not confirmed; partial evidence was retained."
+                )
+                .map_err(io_error)?,
+                None => (),
+            }
+        }
+    }
+    if let Some(Err(error)) = publication {
+        return Err(Error::Io(format!(
+            "{}; {error}",
+            first_reason
+                .as_deref()
+                .unwrap_or("recording publication failed")
+        )));
+    }
     if failures > 0 || stopped {
         Err(Error::Run(format!(
             "repeated execution had {failures} failed batch(es){}; {}; inspect {}",
@@ -673,7 +760,7 @@ fn publish(path: &Path, value: &impl Serialize) -> Result<(), Error> {
     publish_bytes(path, &encode(value)?)
 }
 
-fn publish_bytes(path: &Path, bytes: &[u8]) -> Result<(), Error> {
+pub(super) fn publish_bytes(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     let directory = path
         .parent()
         .ok_or_else(|| Error::Input("execution metadata needs a parent".into()))?;

@@ -100,7 +100,7 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
             runner::run_with_tape(
                 &options.path,
                 runner::RunOptions {
-                    repeat: options.repeat,
+                    repeat: options.repeat.or(options.record.then_some(1)),
                     json: options.json,
                     show_output: options.show_output,
                     measurement_dir: options.measurements.as_deref(),

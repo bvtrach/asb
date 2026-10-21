@@ -1,9 +1,49 @@
 # Recording finalization and run integration
 
-Status: recorder lifecycle and receipt integration implemented on the feature
-branch; final qualification and bundle coordinator integration remain unfinished.
-This is not a claim that bundled run/sweep/viewer commands are available.
+Status: recorder lifecycle, bounded source discovery, immutable track proofs and
+run-owned recording coordination are implemented on the feature branch. Bundled
+replay selection/extraction, sweep/report integration and the viewer remain
+unfinished. This is not a claim that the complete workflow is available on main.
 See MULTITRACK.md for the full delivery scope.
+
+## Run recording checkpoint
+
+CLI recording uses fresh campaign executions even with omitted repetition and
+publishes ZIP regardless of an explicitly supplied filename extension. A single
+run-owned journal is initialized only by verified material admission; stable
+batch/replica intents are not claims of an actual client launch. Client and
+evaluator execution never hold its writer mutex. Completed captures commit exact
+bytes before logs/measurements and completion metadata. Commit errors preserve
+real grades but withhold completion and stop later batches. Setup failures retain
+partial bytes with unknown outcomes/statistics; writer uncertainty retains the
+partial artifact for explicit recovery rather than retrying an execution.
+
+An immutable, bounded digest receipt binds each full producer/attempt/track
+association. It avoids repeating compatibility/path objects in every journal
+association: each receipt is at most 128 bytes, and the complete population's
+association budget is checked before admission. Run completion retains typed
+track evidence rather than sealing a growing ZIP or removed raw path. Shared
+checkpoint validation checks that exact association, execution slot/campaign,
+agent/provider/model/task, grade/statistics, capture metadata and actual committed
+payload. The read-only backend verifier does not acquire writer/recovery custody;
+it checks immutable intent/start/commit metadata and staged bytes, or a durable
+publication receipt plus the selected archive entry. This is selected-track
+integrity, not a whole-archive checksum claim. Inode checks protect each verifier
+operation, not authenticated historical filesystem provenance.
+
+Execution completion and archive publication have separate final status fields.
+Raw deletion requires confirmed archive publication and observed producer cleanup;
+the original regular-file identity and exact committed bytes are rechecked before
+removal. Changed/replaced files, links, directories and unconfirmed cleanup retain
+raw diagnostics with a warning. A missing published target never silently falls
+back to leftover staging. Broader sweep/compare readers still need their planned
+artifact-aware integration and batch-index deduplication before qualification.
+Large populations also need an up-front reservation for the backend journal's
+start/commit metadata before they can be advertised as ready. Incremental bounds
+already fail conservatively, but should not discover a predictable metadata
+shortage only after earlier paid executions. Cleanup errors after unlink may mean
+unconfirmed directory durability rather than a retained raw file; warnings do not
+promise retention when removal itself already succeeded.
 
 The source codec detects ZIP by bounded content inspection, independently of
 filename extensions. Legacy single JSONL takes precedence over adjacent replica

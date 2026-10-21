@@ -33,6 +33,8 @@ struct Outcome {
     #[serde(default)]
     capture_evidence: Vec<crate::proxy::capture::CaptureEvidence>,
     #[serde(default)]
+    recording_track: Option<crate::runner::recording::Evidence>,
+    #[serde(default)]
     replica: Option<crate::runner::replica::Identity>,
     #[serde(default)]
     outputs: Vec<PathBuf>,
@@ -552,11 +554,29 @@ fn validate_captures(record: &Outcome) -> Result<(), Error> {
     if record.capture_evidence.len() > 64 {
         return Err(invalid("capture evidence population exceeds its bound"));
     }
+    if let Some(recording) = &record.recording_track {
+        if record.summary.get("recording")
+            != Some(
+                &serde_json::to_value(recording)
+                    .map_err(|_| invalid("cannot encode recording evidence"))?,
+            )
+        {
+            return Err(invalid("recording evidence differs from execution summary"));
+        }
+        recording.validate_summary(&record.summary, &record.capture_evidence)?;
+    } else if !record.summary["recording"].is_null() {
+        return Err(invalid("execution recording has no typed track evidence"));
+    }
     for capture in &record.capture_evidence {
         capture
             .validate()
             .map_err(|_| invalid("capture evidence metadata is malformed"))?;
-        if !record.proxy_evidence.contains(&capture.output) {
+        if !record.proxy_evidence.contains(&capture.output)
+            && record
+                .recording_track
+                .as_ref()
+                .is_none_or(|recording| capture.output != recording.producer)
+        {
             return Err(invalid(
                 "capture output is absent from declared proxy evidence",
             ));

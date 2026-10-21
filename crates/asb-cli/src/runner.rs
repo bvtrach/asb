@@ -4,6 +4,7 @@ mod completion;
 pub(crate) mod diagnostics;
 mod native;
 mod phases;
+pub(crate) mod recording;
 mod repeated;
 use phases::{
     AdmittedAttempt, AttemptIssues, ExecutionEvidence, FinalizedAttempt, MeasuredOutput,
@@ -58,6 +59,8 @@ fn emit_warning(
 #[derive(Serialize)]
 struct RunResult<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
+    recording: Option<recording::Evidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     execution: Option<repeated::ExecutionIdentity>,
     planning: crate::planning::ResolvedPlan,
     effective_budgets: crate::planning::EffectiveBudgets,
@@ -102,6 +105,7 @@ struct RunResult<'a> {
 /// Execution choices shared by single runs, replicas, and sweeps.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RunOptions<'a> {
+    pub recording: Option<&'a recording::Recorder>,
     pub repeat: Option<u64>,
     pub batch: Option<&'a repeated::BatchIdentity>,
     pub verify_initial_material: bool,
@@ -1014,7 +1018,8 @@ fn run_mode(
             &evaluation,
             workloads::outcome::EvaluationOutcome::Pending { .. }
         );
-        let result = RunResult {
+        let mut result = RunResult {
+            recording: None,
             execution: options.batch.map(|batch| batch.execution(options.replica)),
             planning: policy,
             effective_budgets,
@@ -1091,10 +1096,32 @@ fn run_mode(
             stdout: bounded(&child.stdout),
             stderr,
         };
+        // A recording failure changes command completion, never the actual
+        // process or official workload grade. Commit before sealing outputs.
+        let recording_error = options.recording.and_then(|recorder| {
+            let batch = options.batch.expect("campaign-owned recording");
+            match recorder.commit(batch.number(), options.replica, &result, &proxy_evidence) {
+                Ok(evidence) => {
+                    result.recording = Some(evidence);
+                    None
+                }
+                Err(error) => Some(error),
+            }
+        });
+        if let Some(error) = &recording_error {
+            result.status = "failed";
+            if result.failure_kind.is_none() {
+                result.failure_kind = Some("recording_error");
+                result.failure_reason = Some(error.to_string());
+            }
+        }
         let log_publication =
             phases::LogPublication::publish(config_path, &config.log_file, &result);
-        let measurement_completion =
-            phases::finish_measurements(measurement_session, &result, success);
+        let measurement_completion = phases::finish_measurements(
+            measurement_session,
+            &result,
+            success && recording_error.is_none(),
+        );
         // This private record preserves evaluator outcomes, including unresolved
         // tasks. Its absence never changes a benchmark grade or blocks execution;
         // a future continuation must also validate its input and evidence seals.
@@ -1109,6 +1136,7 @@ fn run_mode(
         if log_publication.confirmed()
             && measurement_completion.confirmed()
             && provider_cleanup_error.is_none()
+            && recording_error.is_none()
         {
             match completion::persist(
                 config_path,
@@ -1169,6 +1197,13 @@ fn run_mode(
             None => outcome,
         };
         let outcome = diagnostics::preserve_primary(outcome, presentation);
+        let outcome = match recording_error {
+            Some(error) => Err(Error::Io(match outcome {
+                Ok(()) => error.to_string(),
+                Err(primary) => format!("{primary}; {error}"),
+            })),
+            None => outcome,
+        };
         if let Some(cleanup) = provider_cleanup_error {
             match outcome {
                 Ok(()) => Err(Error::Run(cleanup)),
@@ -1565,7 +1600,7 @@ pub(crate) fn resolve_log_path(config_path: &Path, configured_path: &str) -> Pat
 }
 
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
-    let summary = serde_json::json!({
+    let mut summary = serde_json::json!({
         "execution": result.execution,
         "planning": result.planning,
         "effective_budgets": result.effective_budgets,
@@ -1597,6 +1632,10 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
         "steps": result.steps,
         "token_usage": result.token_usage,
     });
+    if let Some(recording) = &result.recording {
+        summary["recording"] =
+            serde_json::to_value(recording).map_err(|error| Error::Io(error.to_string()))?;
+    }
     // Sweep output is JSONL: keep each run summary on exactly one line so
     // callers can stream and parse it without having to recover pretty JSON
     // objects from a mixed human transcript.
@@ -2804,6 +2843,7 @@ mod tests {
 
     fn result<'a>() -> RunResult<'a> {
         RunResult {
+            recording: None,
             execution: None,
             planning: crate::planning::resolve(
                 &toml::from_str(

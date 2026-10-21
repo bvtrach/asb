@@ -68,6 +68,7 @@ row = json.dumps({'batch':batch,'replica':replica,'workspace':str(workspace),'be
 fd = os.open(root/'attempts.jsonl',os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
 os.write(fd,row.encode()); os.close(fd)
 if batch == 1 and replica == 1:
+    if (root/'block-bundle-commit').exists(): (root/'.new-recording.jsonl.partial/track-1.jsonl').write_text('preserved blocking stage')
     if (root/'block-outcome-first').exists(): (workspace.parent/'.asb-completions').write_text('retain this blocking fixture')
     if (root/'grader-error-first').exists(): (workspace/'src/parser.py').write_bytes(bytes([255]))
     if (root/'mutate-source').exists(): (root/'input.jsonl').write_text('changed after planning')
@@ -116,6 +117,248 @@ fn records(bytes: &[u8]) -> Vec<Value> {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+/// Bounded loopback responses, never a live provider or credential. The owner
+/// joins the listener on every assertion/error path, including command failure.
+struct RecordingProvider {
+    endpoint: String,
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+impl RecordingProvider {
+    fn new() -> Self {
+        use std::io::{Read, Write};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        };
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (ending, observed) = (stop.clone(), calls.clone());
+        let worker = std::thread::spawn(move || {
+            while !ending.load(Ordering::Acquire) {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(connection) => connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("fixture listener: {error}"),
+                };
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 4096];
+                let body_start = loop {
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert!(count > 0, "fixture upload ended before headers");
+                    request.extend_from_slice(&buffer[..count]);
+                    assert!(request.len() <= 64 * 1024);
+                    if let Some(index) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                        break index + 4;
+                    }
+                };
+                let headers = String::from_utf8(request[..body_start].to_vec()).unwrap();
+                let inference = headers.starts_with("POST /v1/chat/completions ");
+                assert!(
+                    inference
+                        || headers.starts_with("GET /models ")
+                        || headers.starts_with("GET /v1/models "),
+                    "unexpected fixture route: {:?}",
+                    headers.lines().next()
+                );
+                let length: usize = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.split_once(':')
+                            .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                            .map(|(_, length)| length.trim().parse().unwrap())
+                    })
+                    .unwrap_or(0);
+                assert!(length <= 64 * 1024);
+                while request.len() < body_start + length {
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                if inference {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                }
+                let body = if inference {
+                    r#"{"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}"#
+                } else {
+                    r#"{"data":[{"id":"fixture","supported_parameters":["tools"]}]}"#
+                };
+                write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            }
+        });
+        Self {
+            endpoint,
+            calls,
+            stop,
+            worker: Some(worker),
+        }
+    }
+}
+impl Drop for RecordingProvider {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        let result = self.worker.take().unwrap().join();
+        if !std::thread::panicking() {
+            result.unwrap();
+        }
+    }
+}
+fn record(project: &Project, provider: &RecordingProvider, repeat: Option<&str>) -> Output {
+    let config = project.0.join("benchmark.toml");
+    fs::write(
+        &config,
+        fs::read_to_string(&config)
+            .unwrap()
+            .replace("provider='fixture'", "provider='openrouter'"),
+    )
+    .unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_asb"));
+    command
+        .current_dir(&project.0)
+        .isolated_env()
+        .env("HOME", &project.0)
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("ASB_PROVIDER_BASE_URL", &provider.endpoint)
+        .env("OPENROUTER_API_KEY", "fixture-only-key")
+        .env("OPENROUTER_BASE_URL", format!("{}/v1", provider.endpoint))
+        .env(
+            "OPENROUTER_MODELS_URL",
+            format!("{}/models", provider.endpoint),
+        )
+        .args([
+            "run",
+            "benchmark.toml",
+            "--record",
+            "--cassette",
+            "new-recording.jsonl",
+            "--json",
+        ]);
+    if let Some(repeat) = repeat {
+        command.args(["--repeat", repeat]);
+    }
+    command.output().unwrap()
+}
+
+#[test]
+fn bundled_recording_uses_fresh_default_and_stable_repeated_slots_even_with_jsonl_suffix() {
+    for (repeat, concurrency) in [(None, 1), (Some("2"), 2)] {
+        let project = Project::new();
+        project.config(concurrency);
+        let provider = RecordingProvider::new();
+        if repeat.is_some() {
+            fs::write(project.0.join("fail-first"), "ordinary failed agent").unwrap();
+        }
+        let output = record(&project, &provider, repeat);
+        assert_eq!(
+            output.status.success(),
+            repeat.is_none(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let rows = records(&output.stdout);
+        let summaries: Vec<_> = rows
+            .iter()
+            .filter(|row| row.get("task").is_some())
+            .collect();
+        let expected = if repeat.is_some() { 4 } else { 1 };
+        assert_eq!(summaries.len(), expected, "{rows:?}");
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::SeqCst),
+            expected
+        );
+        let destination = project.0.join("new-recording.jsonl");
+        assert_eq!(&fs::read(&destination).unwrap()[..2], b"PK");
+        let archive =
+            asb_cli::cassette::Archive::open(&destination, asb_cli::cassette::Limits::default())
+                .unwrap();
+        assert_eq!(archive.manifest().tracks.len(), expected);
+        assert!(archive.manifest().compatibility.protocol_sha256.is_some());
+        for (index, track) in archive.manifest().tracks.iter().enumerate() {
+            assert_eq!(track.id, index as u64 + 1);
+            assert!(track.complete);
+            assert!(track.automatically_selectable());
+            assert_eq!(track.statistics.requests, Some(1));
+            assert_eq!(track.statistics.tokens, Some(5));
+            let summary = summaries[index];
+            let evidence: asb_cli::cassette::TrackEvidence =
+                serde_json::from_value(summary["recording"]["track"].clone()).unwrap();
+            evidence
+                .verify(asb_cli::cassette::Limits::default())
+                .unwrap();
+            assert!(!PathBuf::from(summary["recording"]["producer"].as_str().unwrap()).exists());
+        }
+        if repeat.is_some() {
+            assert_eq!(archive.manifest().tracks[0].process_success, Some(false));
+        }
+        assert_eq!(
+            fs::read_to_string(project.0.join("workspace/preserve-user-file")).unwrap(),
+            "untouched user material"
+        );
+        let before = provider.calls.load(std::sync::atomic::Ordering::SeqCst);
+        let refused = record(&project, &provider, repeat);
+        assert!(!refused.status.success());
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("already exists"));
+        assert_eq!(
+            provider.calls.load(std::sync::atomic::Ordering::SeqCst),
+            before
+        );
+    }
+}
+
+#[test]
+fn bundle_commit_failure_keeps_real_grades_and_stops_before_another_batch() {
+    let project = Project::new();
+    project.config(2);
+    fs::write(
+        project.0.join("block-bundle-commit"),
+        "force create-new staging failure",
+    )
+    .unwrap();
+    let provider = RecordingProvider::new();
+    let output = record(&project, &provider, Some("2"));
+    assert!(!output.status.success());
+    let rows = records(&output.stdout);
+    let summaries: Vec<_> = rows
+        .iter()
+        .filter(|row| row.get("task").is_some())
+        .collect();
+    assert_eq!(summaries.len(), 2, "{rows:?}");
+    assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    for summary in summaries {
+        assert_eq!(summary["process_success"], true);
+        assert_eq!(summary["workload_success"], true);
+        assert_eq!(summary["execution"]["batch"], 1);
+    }
+    let root = PathBuf::from(rows[0]["path"].as_str().unwrap())
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    assert!(!root.join("batch-2").exists());
+    assert!(!project.0.join("new-recording.jsonl").exists());
+    assert_eq!(
+        fs::read_to_string(project.0.join(".new-recording.jsonl.partial/track-1.jsonl")).unwrap(),
+        "preserved blocking stage"
+    );
+    let finished: Value =
+        serde_json::from_slice(&fs::read(root.join("finished.json")).unwrap()).unwrap();
+    assert_eq!(finished["cassette_publication"]["status"], "failed");
+    assert!(root.join("batch-1/capture-concurrency-1.jsonl").is_file());
 }
 
 #[test]
