@@ -22,9 +22,28 @@ import uuid
 from asb_docker import DockerSession, docker_command
 from asb_execution import ExecutionError, ManagedDockerWorkspace
 from asb_resources import ResourceJournal, build_image_tag
-from asb_terminal_catalog import verify, tree_manifest
-from asb_terminal_bench_1 import (quiet_sdk, restore_task_networks, original_networks,
-                                write_json, record_grading_start, network_options)
+from asb_terminal_catalog import verify, tree_manifest, read_json, SPECS
+from asb_harness import (quiet_sdk, restore_task_networks, original_networks,
+                         write_json, record_grading_start, network_options)
+
+
+# An SDK package alone is not a workload contract. Additional profiles need
+# pinned catalog provenance, task-shape and reward/retained-grading contracts.
+HARBOR_PROFILES = frozenset({"terminal-bench-2.1"})
+
+
+def harbor_profile(workload):
+    if not isinstance(workload, str) or workload not in HARBOR_PROFILES:
+        raise ExecutionError("Harbor workload has no qualified task and grading profile")
+    return workload
+
+
+def verify_catalog(path, workload=None):
+    """Resolve identity before SDK/environment setup; never trust catalog labels alone."""
+    if workload is None:
+        workload = read_json(path).get("workload")
+    workload = harbor_profile(workload)
+    return verify(path, workload)
 
 
 class ImageUnavailable(ExecutionError):
@@ -288,6 +307,7 @@ def retained_environment_class(command, resumed):
 @quiet_sdk
 def grade_retained(retained, catalog_path, cancelled):
     from asb_retained import require
+    workload = harbor_profile(retained.identity["workload"])
     catalog_path = Path(catalog_path)
     if retained.selected_evaluation() is not None:
         inspect_retained(retained)
@@ -326,7 +346,7 @@ def grade_retained(retained, catalog_path, cancelled):
             and retained.recorded_cleanup == "stopped-preserved","retained Harbor submission has no preserved pre-verifier capture")
     require(isinstance(retained.task.get("original_networks"),dict),"retained Harbor task has no original network topology")
     networks = network_options(retained.task["original_networks"])
-    catalog = verify(catalog_path,"terminal-bench-2.1")
+    catalog = verify_catalog(catalog_path,workload)
     selected = next((item for item in catalog["tasks"] if item["id"] == retained.identity["task_id"]),None)
     require(selected is not None and catalog["dataset"] == retained.identity["dataset"]
             and catalog["sdk"] == retained.task.get("sdk"),"retained Harbor task differs from its installed grading catalog")
@@ -339,7 +359,7 @@ def grade_retained(retained, catalog_path, cancelled):
     from harbor.models.task.task import Task
     from harbor.models.task.config import TaskOS
     from harbor.models.trial.paths import TrialPaths
-    runtime_identity("terminal-bench-2.1")
+    runtime_identity(workload)
     task = Task(definition)
     require(not task.has_steps and task.config.environment.os == TaskOS.LINUX,"retained original Harbor task requires its single-step Linux definition")
     require(not cancelled.is_set(),"retained Harbor grading cancelled before environment restart")
@@ -373,11 +393,13 @@ def grade_retained(retained, catalog_path, cancelled):
 
 def verify_retained(retained, prefix=None, result=None):
     from asb_retained import require
+    workload = harbor_profile(retained.identity["workload"])
     retained.verify_environment_baseline()
     prefix = (retained.selected_evaluation() or "") if prefix is None else prefix
     result = retained.object(prefix+"evaluation.json") if result is None else result
     retained.grade(result)
-    require(retained.task.get("sdk") == {"package":"harbor","version":"0.24.0"},
+    spec = SPECS[workload]
+    require(retained.task.get("sdk") == {"package":spec["package"],"version":spec["version"]},
             "retained original Harbor SDK differs")
     rewards = result.get("rewards")
     require(isinstance(rewards,dict) and set(rewards) == {"reward"}
@@ -410,7 +432,8 @@ class HarborTask:
         except Exception as error:
             raise ExecutionError("prepared material transport failed: " + type(error).__name__) from None
 
-    def __init__(self, client, catalog, task, artifacts):
+    def __init__(self, client, catalog, task, artifacts, workload=None):
+        self.workload = harbor_profile(workload) if workload is not None else None
         self.client, self.catalog_path, self.task_id = client, Path(catalog), task
         self.artifacts = Path(artifacts).absolute()
         self.attempt = "asb-" + uuid.uuid4().hex
@@ -435,14 +458,15 @@ class HarborTask:
 
     @quiet_sdk
     def __enter__(self):
+        self.catalog = verify_catalog(self.catalog_path, self.workload)
+        self.workload = self.catalog["workload"]
         os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
         from harbor.models.task.task import Task
         from harbor.models.trial.paths import TrialPaths
         from harbor.models.task.config import TaskOS
-        self.catalog = verify(self.catalog_path, "terminal-bench-2.1")
         selected = next((item for item in self.catalog["tasks"] if item["id"] == self.task_id), None)
         if selected is None:
-            raise ExecutionError("selected original Terminal-Bench 2.1 task is not installed")
+            raise ExecutionError("selected Harbor profile task is not installed")
         self.definition = self.catalog_path.parent / selected["definition"]
         self.task = Task(self.definition)
         if self.task.has_steps or self.task.config.environment.os != TaskOS.LINUX:
@@ -482,7 +506,7 @@ class HarborTask:
                 self.task.config.environment.workdir or container.attrs["Config"].get("WorkingDir") or "/")
             self.agent_timeout = self.task.config.agent.timeout_sec
             definition_sha = hashlib.sha256(json.dumps(tree_manifest(self.definition), sort_keys=True).encode()).hexdigest()
-            self.invocation = {"identity":{"workload":"terminal-bench-2.1", "task_id":self.task_id,
+            self.invocation = {"identity":{"workload":self.workload, "task_id":self.task_id,
                 "attempt_id":self.attempt,"dataset":self.catalog["dataset"]}, "prompt":self.task.instruction,
                 "workspace":self.workspace.workdir, "baseline":{"kind":"upstream-environment-definition",
                 "source_revision":self.catalog["dataset"]["revision"], "definition_sha256":definition_sha},
@@ -519,7 +543,7 @@ class HarborTask:
     def grade_environment(self, timeout=1800):
         from harbor.verifier.verifier import Verifier
         identity = self.invocation["identity"] if self.invocation else {
-            "workload":"terminal-bench-2.1","task_id":self.task_id,"attempt_id":self.attempt,"dataset":self.catalog["dataset"]}
+            "workload":harbor_profile(self.catalog["workload"]),"task_id":self.task_id,"attempt_id":self.attempt,"dataset":self.catalog["dataset"]}
         record_grading_start(self.artifacts,identity)
         # Reward files are outputs of this verifier invocation, not a cache or
         # something left by a client before the official test script ran.
@@ -540,7 +564,7 @@ class HarborTask:
             # SDK exceptions may include command output; retain only the class
             # on the protocol. Original verifier artifacts remain private.
             result = {"resolved":False, "outcome":"evaluation_error", "error_class":type(error).__name__}
-        result.update(schema_version=1,workload="terminal-bench-2.1",task_id=self.task_id,
+        result.update(schema_version=1,workload=identity["workload"],task_id=self.task_id,
                       dataset=self.catalog["dataset"],sdk=self.catalog["sdk"],artifact="evaluation.json")
         if result["outcome"] in ["resolved","unresolved"]:
             from asb_retained import record_verifier_return
@@ -590,6 +614,8 @@ class HarborTask:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", required=True, type=Path)
+    parser.add_argument("--workload", choices=sorted(HARBOR_PROFILES),
+                        help="explicit qualified profile; otherwise use the validated catalog identity")
     parser.add_argument("--task", required=True)
     parser.add_argument("--artifacts", required=True, type=Path)
     args = parser.parse_args()
@@ -602,7 +628,7 @@ def main():
     signal.signal(signal.SIGTERM, cancelled)
     from asb_task_server import serve
     with DockerSession() as client:
-        return serve(HarborTask(client,args.catalog,args.task,args.artifacts),sys.stdin,sys.stdout)
+        return serve(HarborTask(client,args.catalog,args.task,args.artifacts,args.workload),sys.stdin,sys.stdout)
 
 
 if __name__ == "__main__":

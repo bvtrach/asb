@@ -9,6 +9,11 @@ fn direct_creation_and_shared_default_bridge_bind_only_owned_workload_material()
 }
 
 #[test]
+fn sdk_harness_infrastructure_and_harbor_profiles_remain_independent_of_tb1() {
+    python_protocol("benchmark_harness.py");
+}
+
+#[test]
 fn python_subprocess_isolation_retains_only_coverage_instrumentation() {
     python_protocol("test_environment.py");
 }
@@ -166,6 +171,9 @@ fn harbor_execution_preserves_official_verification_and_scopes_resources() {
 }
 
 fn python_protocol(test: &str) {
+    let temporary = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/benchmark-protocol-tmp");
+    std::fs::create_dir_all(&temporary).expect("create project-local Python test scratch");
     let output = std::process::Command::new("python3")
         .arg(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -175,6 +183,7 @@ fn python_protocol(test: &str) {
         .isolated_env()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("TMPDIR", temporary)
         .env("ASB_TEST_HOST_ASB", env!("CARGO_BIN_EXE_asb"))
         .output()
         .expect("run standard-library-only catalog tests");
