@@ -51,7 +51,7 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
     let (family, prefix) = match connection.interface {
         crate::endpoint::Interface::AnthropicMessages => ("ANTHROPIC", "anthropic"),
         crate::endpoint::Interface::OpenAiChat => ("OPENAI", "openai"),
-        _ => unreachable!("unsupported mini-swe endpoint"),
+        _ => return Err(context.unsupported_endpoint("mini-swe")),
     };
     let base_url = if connection.interface == crate::endpoint::Interface::AnthropicMessages {
         connection.base_url.trim_end_matches("/v1")

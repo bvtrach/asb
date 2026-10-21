@@ -61,7 +61,7 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
     let protocol = match connection.interface {
         crate::endpoint::Interface::OpenAiResponses => "openai-responses",
         crate::endpoint::Interface::OpenAiChat => "openai-chat-completions",
-        _ => unreachable!("unsupported Cline endpoint"),
+        _ => return Err(context.unsupported_endpoint("cline")),
     };
     configure(
         &directory,
