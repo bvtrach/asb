@@ -28,6 +28,8 @@ impl Recorded {
             ));
         }
         for field in [
+            "module",
+            "benchmark_outcome",
             "schema_version",
             "replica_index",
             "execution_cohort",
@@ -97,6 +99,10 @@ impl Recorded {
             "adapter smoke only; upstream task resolution not measured"
         } else if !crate::workloads::resolution_eligible(kind) {
             "recorded task unscored; grading scope or baseline is not eligible"
+        } else if self.summary["benchmark_outcome"]["evaluation"]["status"] == "completed"
+            && self.summary["benchmark_outcome"]["evaluation"]["resolution"].is_null()
+        {
+            "recorded native rewards evaluated; resolution not applicable"
         } else {
             match self.summary["workload_success"].as_bool() {
                 Some(true) => "recorded task resolved",
@@ -538,6 +544,85 @@ mod tests {
     }
 
     #[test]
+    fn recorded_protocol_revisions_partition_scores_without_live_relabeling() {
+        let fixture = Fixture::new("terminal-bench-2.1", 2);
+        for slot in 1..=2 {
+            let mut record = fixture.record(slot, json!(true), true, true);
+            let mut module = crate::workloads::descriptor("terminal-bench-2.1").unwrap();
+            module.dataset = Some(serde_json::from_value(fixture.dataset.clone()).unwrap());
+            module.protocol.revision = slot as u32;
+            record["summary"]["module"] = json!(module);
+            fixture.publish(slot, &record);
+        }
+        let report = fixture.compare().unwrap();
+        assert_eq!(report["metric_groups"].as_object().unwrap().len(), 2);
+        assert_eq!(report["resolution_groups"].as_object().unwrap().len(), 2);
+        assert_eq!(report["benchmarks"][0]["module"]["protocol"]["revision"], 1);
+        assert_eq!(report["benchmarks"][1]["module"]["protocol"]["revision"], 2);
+    }
+
+    #[test]
+    fn native_partial_rewards_survive_completion_collection_and_html_report() {
+        use crate::workloads::outcome::*;
+        let fixture = Fixture::new("terminal-bench-2.1", 4);
+        for slot in 1..=3 {
+            let mut record = fixture.record(slot, Value::Null, true, true);
+            let evaluation = if slot == 3 {
+                EvaluationOutcome::Pending {
+                    reason: "external evaluator queued".into(),
+                }
+            } else {
+                EvaluationOutcome::Completed {
+                    resolution: None,
+                    rewards: BTreeMap::from([("accuracy".into(), slot as f64 / 4.0)]),
+                    reason: None,
+                }
+            };
+            record["summary"]["benchmark_outcome"] = json!(BenchmarkOutcome {
+                schema_version: 1,
+                execution_success: Some(true),
+                evaluation,
+                cleanup_confirmed: Some(true),
+                evidence: vec![],
+                policy: MetricPolicy {
+                    id: "accuracy".into(),
+                    version: 2,
+                    reward: "accuracy".into(),
+                    aggregation: Aggregation::TaskMean
+                },
+                lineage: EvaluationLineage {
+                    execution_attempt: format!("ab123-{slot}"),
+                    evaluation_id: format!("eval-{slot}"),
+                    supersedes: None
+                },
+            });
+            fixture.publish(slot, &record);
+        }
+        let report = fixture.compare().unwrap();
+        let rows = report["benchmarks"].as_array().unwrap();
+        assert!(rows[0]["metrics"]["success_rate"].is_null());
+        assert_eq!(rows[0]["metrics"]["benchmark_rewards.accuracy"], 0.25);
+        assert_eq!(report["evaluation_coverage"]["evaluated_attempts"], 2);
+        let groups = report["metric_groups"].as_object().unwrap();
+        assert_eq!(groups.len(), 1);
+        let group = groups.values().next().unwrap();
+        assert_eq!(group["estimate"], 0.375);
+        assert_eq!(group["repetitions_by_task"]["original-task"], 4);
+        assert_eq!(group["selected_attempts"], 4);
+        assert_eq!(group["complete"], false);
+        assert!(group["task_cluster_standard_error"].is_null());
+        let html =
+            fs::read_to_string(fixture.root.join("results/sweep-comparison/report.html")).unwrap();
+        assert!(html.contains("accuracy v2 / accuracy"));
+        assert!(html.contains("0.375000"));
+        let mut bad = fixture.record(1, Value::Null, true, true);
+        bad["summary"]["benchmark_outcome"] = rows[0]["benchmark_outcome"].clone();
+        bad["summary"]["benchmark_outcome"]["lineage"]["execution_attempt"] = json!("foreign");
+        fixture.publish(1, &bad);
+        assert!(fixture.compare().is_err());
+    }
+
+    #[test]
     fn every_original_adapter_keeps_unmeasured_grades_and_incomplete_population_honest() {
         for workload in [
             "swe-bench",
@@ -563,6 +648,10 @@ mod tests {
             let rows = report["benchmarks"].as_array().unwrap();
             assert_eq!(rows.len(), 4);
             for (slot, row) in rows.iter().enumerate().take(3) {
+                assert!(
+                    row["module"].is_null(),
+                    "legacy records must not acquire today's descriptor"
+                );
                 assert_eq!(row["result_source"], "task-outcome");
                 assert_eq!(row["replica_index"], slot + 1);
                 assert_eq!(row["metrics"]["elapsed_ms"], 57.0);

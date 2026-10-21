@@ -21,6 +21,8 @@ const Y_TICKS: usize = 5;
 
 #[derive(Debug)]
 struct BenchmarkData {
+    module: Option<crate::workloads::contracts::ModuleDescriptor>,
+    benchmark_outcome: Option<crate::workloads::outcome::BenchmarkOutcome>,
     result_source: &'static str,
     reconciled: bool,
     replica_index: Option<usize>,
@@ -220,6 +222,8 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
                     |selection| selection.evaluation_kind.clone(),
                 );
                 benchmark_data.push(BenchmarkData {
+                    module: selection.as_ref().and_then(|s| s.module.clone()),
+                    benchmark_outcome: None,
                     result_source: "missing",
                     reconciled: false,
                     replica_index: None,
@@ -372,7 +376,10 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
                 Some("unscored") => Some(
                     "unscored: initial task was already passing or its baseline could not be verified".into()
                 ),
-                Some(status) if run_value.get("success") == Some(&Value::Bool(false)) => Some(
+                Some(status) if run_value.get("success") == Some(&Value::Bool(false))
+                    && !(run_value["benchmark_outcome"]["evaluation"]["status"] == "completed"
+                        && run_value["benchmark_outcome"]["evaluation"]["resolution"].is_null()
+                        && run_value["process_success"] == true) => Some(
                     if let Some(reason) = run_value.get("failure_reason").and_then(Value::as_str) {
                         format!("benchmark run failed: {reason}")
                     } else {
@@ -411,15 +418,76 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
                 )));
             }
             let mut metrics = BTreeMap::new();
+            let module: Option<crate::workloads::contracts::ModuleDescriptor> = run_value
+                .get("module")
+                .filter(|v| !v.is_null())
+                .map(|value| serde_json::from_value(value.clone()))
+                .transpose()
+                .map_err(|e| Error::Input(format!("invalid recorded module descriptor: {e}")))?;
+            if module.as_ref().is_some_and(|m| {
+                !m.valid()
+                    || m.id != workload
+                    || task.as_ref().is_some_and(|t| m.dataset != t.dataset)
+            }) {
+                return Err(Error::Input(
+                    "recorded module differs from task identity".into(),
+                ));
+            }
+            if let (Some(recorded), Some(planned)) =
+                (&module, selection.as_ref().and_then(|s| s.module.as_ref()))
+                && recorded != planned
+            {
+                return Err(Error::Input(
+                    "recorded module differs from saved protocol selection".into(),
+                ));
+            }
+            let module = module.or_else(|| selection.as_ref().and_then(|s| s.module.clone()));
+            let benchmark_outcome = crate::workloads::outcome::BenchmarkOutcome::read(&run_value)
+                .map_err(Error::Input)?;
+            if let (Some(outcome), Some(task)) = (&benchmark_outcome, &task)
+                && outcome.lineage.execution_attempt != task.attempt_id
+            {
+                return Err(Error::Input(
+                    "evaluation lineage differs from execution attempt".into(),
+                ));
+            }
+            if let Some(outcome) = &benchmark_outcome
+                && (outcome.execution_success != run_value["process_success"].as_bool()
+                    || (crate::workloads::resolution_eligible(&workload_evaluation)
+                        && outcome.evaluation.resolution()
+                            != run_value["workload_success"].as_bool()))
+            {
+                return Err(Error::Input(
+                    "structured outcome conflicts with legacy execution or resolution".into(),
+                ));
+            }
             let evaluation_completed = identity_bound
                 && crate::workloads::resolution_eligible(&workload_evaluation)
-                && run_value
-                    .get("workload_success")
-                    .and_then(Value::as_bool)
-                    .is_some();
+                && benchmark_outcome.as_ref().map_or_else(
+                    || {
+                        run_value
+                            .get("workload_success")
+                            .and_then(Value::as_bool)
+                            .is_some()
+                    },
+                    |outcome| outcome.evaluation.completed(),
+                );
             flatten_numbers("", &run_value, &mut metrics)?;
+            metrics.retain(|key, _| !key.starts_with("benchmark_outcome."));
+            if let Some(outcome) = &benchmark_outcome
+                && let crate::workloads::outcome::EvaluationOutcome::Completed { rewards, .. } =
+                    &outcome.evaluation
+            {
+                for (name, value) in rewards {
+                    metrics.insert(format!("benchmark_rewards.{}", path_key(name)), *value);
+                }
+            }
             // Correct old presentations without rewriting their raw evidence.
-            if !crate::workloads::resolution_eligible(&workload_evaluation) {
+            if !crate::workloads::resolution_eligible(&workload_evaluation)
+                || benchmark_outcome
+                    .as_ref()
+                    .is_some_and(|o| o.evaluation.resolution().is_none())
+            {
                 metrics.remove("success_rate");
             } else {
                 let resolved = evaluation_completed
@@ -511,6 +579,8 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
                 }
             }
             benchmark_data.push(BenchmarkData {
+                module,
+                benchmark_outcome,
                 result_source: if measured {
                     "measurements"
                 } else {
@@ -606,12 +676,19 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
     let mut resolution_groups: BTreeMap<String, crate::workloads::ResolutionSummary> =
         BTreeMap::new();
     for benchmark in &benchmark_data {
+        if benchmark.benchmark_outcome.as_ref().is_some_and(|outcome| {
+            outcome.policy != crate::workloads::outcome::MetricPolicy::default()
+                || (outcome.evaluation.completed() && outcome.evaluation.resolution().is_none())
+        }) {
+            continue;
+        }
         let key = serde_json::to_string(&(
             &benchmark.agent,
             &benchmark.provider,
             &benchmark.model,
             &benchmark.workload,
             coverage::group_kind(benchmark),
+            &benchmark.module,
             benchmark
                 .task
                 .as_ref()
@@ -641,6 +718,7 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
         "selection_plan": plan.as_ref().map(|plan| json!({"run_id":plan.run_id,"configuration_match":true,"execution_mode":plan.execution_mode,"respect_record_timings":plan.respect_record_timings,"scheduling":plan.scheduling})),
         "evaluation_coverage":evaluation_coverage,
         "population_coverage":population_coverage,
+        "metric_groups":coverage::metric_groups(&benchmark_data)?,
         "input": sweep_path,
         "input_kind": if single { "benchmark" } else { "sweep" },
         "sweep": if single { Value::Null } else { json!(sweep_path) },
@@ -649,6 +727,8 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
         "report": "report.html",
         "benchmarks": benchmark_data.iter().map(|benchmark| json!({
             "name": benchmark.label,
+            "module": benchmark.module,
+            "benchmark_outcome": benchmark.benchmark_outcome,
             "directory": benchmark.directory,
             "agent": benchmark.agent,
             "workload": benchmark.workload,
@@ -1003,6 +1083,7 @@ fn write_html_report(
         coverage.evaluated_attempts, coverage.eligible_selected_attempts, coverage.unevaluated_attempts, coverage.unscored_attempts,
         if selection_mode.is_some() {"Pre-run task selection is preserved and matches the configurations."} else {"No pre-run selection snapshot exists; dataset completeness cannot be established from these legacy records."}));
     html.push_str(&coverage::html_table(benchmarks)?);
+    html.push_str(&coverage::metric_html(benchmarks)?);
     html.push_str("<section class=\"explain\"><strong>How to read this report</strong><p>Each row is one selected task attempt for an agent/provider/model/workload combination. Runtime, success rate, token usage, host metadata, component timings, and structured collector measurements are summarized in the table and charts. Network wait remains null unless directly observed. The complete machine-readable evidence inventory is available in comparison.json.</p></section>");
     html.push_str("<section class=\"filters\"><div class=\"section-title\"><h2>Filter results</h2><div><button type=\"button\" data-action=\"all\">Select all</button><button type=\"button\" data-action=\"none\">Clear all</button></div></div><div class=\"filter-grid\">");
     for (group, values) in &dimensions {

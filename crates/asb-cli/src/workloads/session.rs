@@ -289,6 +289,26 @@ pub(crate) trait WorkloadSession {
         }
     }
     fn evaluate(&mut self, final_response: &str) -> Result<Evaluation, String>;
+    /// Modules may override this for asynchronous or non-binary evaluators.
+    fn evaluate_outcome(&mut self, final_response: &str) -> super::outcome::EvaluationOutcome {
+        match self.evaluate(final_response) {
+            Ok(Evaluation::Passed) => super::outcome::EvaluationOutcome::binary(true),
+            Ok(Evaluation::Failed(reason)) => {
+                let mut outcome = super::outcome::EvaluationOutcome::binary(false);
+                if let super::outcome::EvaluationOutcome::Completed {
+                    reason: diagnostic, ..
+                } = &mut outcome
+                {
+                    *diagnostic = Some(reason);
+                }
+                outcome
+            }
+            Err(reason) => super::outcome::EvaluationOutcome::Error { reason },
+        }
+    }
+    fn metric_policy(&self) -> super::outcome::MetricPolicy {
+        super::outcome::MetricPolicy::default()
+    }
     /// Adapter-owned evaluator artifacts that bind a historical task outcome.
     /// This is not a request to inspect unrelated project or host directories.
     fn checkpoint_evidence(&self) -> Vec<PathBuf> {

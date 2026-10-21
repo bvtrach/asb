@@ -289,6 +289,8 @@ fn outcome_state(
 
 fn validate_outcome(record: &Outcome, entry: &PlannedBenchmark) -> Result<TaskIdentity, Error> {
     let summary = &record.summary;
+    let structured = crate::workloads::outcome::BenchmarkOutcome::read(summary)
+        .map_err(|_| invalid("malformed structured benchmark outcome"))?;
     let config = &entry.configuration;
     if !summary["execution_cohort"].is_null() {
         let cohort: crate::measurements::ExecutionCohort =
@@ -309,6 +311,14 @@ fn validate_outcome(record: &Outcome, entry: &PlannedBenchmark) -> Result<TaskId
     }
     let task: TaskIdentity = serde_json::from_value(summary["task"].clone())
         .map_err(|_| invalid("outcome task identity is missing or malformed"))?;
+    if !summary["module"].is_null() {
+        let module: crate::workloads::contracts::ModuleDescriptor =
+            serde_json::from_value(summary["module"].clone())
+                .map_err(|_| invalid("malformed recorded module"))?;
+        if !module.valid() || entry.selection.module.as_ref() != Some(&module) {
+            return Err(invalid("recorded module differs from selected protocol"));
+        }
+    }
     let baseline: BaselineEvidence =
         serde_json::from_value(summary["workload_baseline"].clone())
             .map_err(|_| invalid("outcome baseline evidence is missing or malformed"))?;
@@ -328,7 +338,16 @@ fn validate_outcome(record: &Outcome, entry: &PlannedBenchmark) -> Result<TaskId
         || summary["workload"] != config.workload
         || summary["provider"] != config.provider
         || summary["model"] != config.model
-        || summary["workload_success"].as_bool().is_none()
+        || structured.as_ref().map_or_else(
+            || summary["workload_success"].as_bool().is_none(),
+            |outcome| {
+                !outcome.evaluation.completed()
+                    || outcome.cleanup_confirmed != Some(true)
+                    || outcome.lineage.execution_attempt != task.attempt_id
+                    || outcome.execution_success != summary["process_success"].as_bool()
+                    || outcome.evaluation.resolution() != summary["workload_success"].as_bool()
+            },
+        )
         || summary["process_success"].as_bool().is_none()
         || summary["workload_evaluation"] != entry.selection.evaluation_kind
         || !baseline.supports(&entry.selection.evaluation_kind)
@@ -361,6 +380,8 @@ fn validate_outcome(record: &Outcome, entry: &PlannedBenchmark) -> Result<TaskId
 
 fn measurement_matches(measured: &Value, summary: &Value) -> bool {
     [
+        "module",
+        "benchmark_outcome",
         "replica_index",
         "execution_cohort",
         "schema_version",
