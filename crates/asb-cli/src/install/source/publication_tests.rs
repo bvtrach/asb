@@ -41,7 +41,9 @@ case "$source" in
  https://fixture.invalid/failure) printf 'truncated' > "$destination"; exit 22 ;;
  https://fixture.invalid/oversize) printf 'much too large' > "$destination" ;;
  https://fixture.invalid/empty) : > "$destination" ;;
- https://fixture.invalid/symlink) /bin/rm "$destination"; /bin/ln -s "$ASB_FIXTURE_ROOT/foreign" "$destination" ;;
+ https://fixture.invalid/symlink)
+   /bin/ln -s "$ASB_FIXTURE_ROOT/foreign" "$destination.replacement"
+   /bin/mv -Tf "$destination.replacement" "$destination" ;;
  https://fixture.invalid/timeout) printf '%s\n' "$$" > "$ASB_FIXTURE_ROOT/curl-pid"; exec /bin/sleep 60 ;;
  https://fixture.invalid/blocked)
    printf '#!/bin/sh\n' > "$destination"
@@ -286,7 +288,7 @@ fn publication_fixture_child() {
                 |_| Ok(()),
             )
             .unwrap_err();
-            assert!(error.to_string().contains("not a regular file"));
+            assert!(error.to_string().contains("not a regular file"), "{error}");
             assert_eq!(fs::read(&foreign).unwrap(), b"do not change");
             assert_old_ready(&root, &destination);
             no_scratch(&destination);

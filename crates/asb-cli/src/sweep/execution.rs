@@ -163,9 +163,19 @@ impl Execution<'_> {
         );
         // Preserve official false grades too. Failure to produce a complete
         // evidence seal must not change the benchmark result or retry a task.
-        if let Some(checkpoint) = self.checkpoint {
-            let _ = checkpoint.completed(index, &resolved, entry);
-        }
-        result
+        let presentation = if let Some(checkpoint) = self.checkpoint
+            && let Err(error) = checkpoint.completed(index, &resolved, entry)
+        {
+            runner::diagnostics::Warning::new(
+                runner::diagnostics::Stage::Group,
+                &config_path,
+                &checkpoint.completion_path(index),
+                &error,
+            )
+            .emit(self.options.json, output, self.warnings)
+        } else {
+            Ok(())
+        };
+        runner::diagnostics::preserve_primary(result, presentation)
     }
 }

@@ -94,12 +94,38 @@ and rejects every undeclared pair before configuration or command mutation.
 These are protocol-only fixtures: no agent/provider is executed. See the
 [independently checked repair ledger](CODE_SMELL_REPAIRS.md) for the broader
 code-smell audit and remaining delivery classes.
+Continuation metadata is optional for a fresh grade, not optional for reuse.
+If an outcome, replica/group receipt or initial/final input seal cannot be
+published, human output identifies the missing evidence without changing the
+grade or retrying a client. JSONL instead emits a separate schema-1 object with
+`event: "continuation_warning"`, a stable `code`, display path, explicit
+`path_role` (`destination`, or `source_outcome` when an observer cannot report
+its receipt destination), safe reason and
+explicit remediation. Consumers must distinguish these events from schema-2
+benchmark summaries (`task`, `process_success`, `workload_success`); unchanged
+successful publication adds no event. Arbitrary helper/observer text is not
+printed. Identical stage/configuration/cause warnings are emitted once across
+replicas; different causes remain distinct. A writer failure is reported without
+discarding an existing benchmark failure. Existing sealed logs and grade
+records are never rewritten to add these presentation diagnostics. Missing
+starts/seals may not be reconstructable: preserve results and use explicit
+continuation/reconciliation only when its normal checks permit it.
+`cargo test --offline --locked --test completion_diagnostics` uses actual blocked
+publication paths, a private catalog-command fixture and a local synthetic
+client, not a provider, installed agent package or workload container. It checks
+both grades, client failures, concurrent deduplication, broken writers and
+conservative resume without another client invocation.
 Report identity regressions cover literal dots/brackets versus nested paths,
 empty/backslash keys, Unicode and colliding/long graph filenames, case-insensitive
 aliases, repeated configuration stems and deterministic regeneration. Numeric
 paths escape object-key separators; use `comparison.json`'s graph list rather
 than constructing filenames for unusual metric names. Conflicting collector
 identities fail explicitly instead of silently replacing a prior observation.
+Shell completions are generated from the actual Clap command schema using a
+pinned compatible `clap_complete`. Tests enumerate every public command/flag
+for both shells, execute Bash completions in every command context, and check
+writer errors and the internal helper's separate/equals argument forms.
+Registry suggestions affect only the completion clone, not custom tool parsing.
 `cargo test --locked cassette::` exercises the provider-free multi-track backend:
 manifest and compatibility bounds, stable seeded choices, selector edge cases,
 bounded metadata inspection, selective corruption checks and durable publication.
@@ -128,8 +154,9 @@ explicitly unclassified lower bound, not a guessed count.
 Run `asb run` with credentials only as an explicit local
 smoke/benchmark operation.
 
-CI's `coverage-90-percent` check requires at least 90% executable-line coverage.
-Run the same offline check locally with:
+Coverage is an optional local diagnostic, not a required CI check or merge
+threshold. The former `coverage-90-percent` CI job and required check were
+removed deliberately. To run the retained offline diagnostic locally:
 
 ```sh
 rustup component add llvm-tools-preview
@@ -137,7 +164,9 @@ cargo install cargo-llvm-cov --version 0.9.0 --locked
 bash scripts/check-coverage.sh
 ```
 
-Both LLVM's complete aggregate and production-only coverage must pass. The
+The diagnostic script reports and checks its historical 90% thresholds for
+both LLVM's complete aggregate and production-only coverage. Those local
+thresholds are informational for delivery, not a branch-protection policy. The
 production denominator comes from LLVM's non-test `asb` executable map, without
 excluding any production modules; unit and integration tests contribute the
 execution counts, but adding test-body lines cannot inflate that denominator.
