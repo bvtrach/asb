@@ -133,8 +133,9 @@ explicitly unclassified lower bound, not a guessed count.
 Run `asb run` with credentials only as an explicit local
 smoke/benchmark operation.
 
-CI's `coverage-90-percent` check requires at least 90% executable-line coverage.
-Run the same offline check locally with:
+Coverage is an optional local diagnostic, not a required CI check or merge
+threshold. The former `coverage-90-percent` CI job and required check were
+removed deliberately. To run the retained offline diagnostic locally:
 
 ```sh
 rustup component add llvm-tools-preview
@@ -142,7 +143,9 @@ cargo install cargo-llvm-cov --version 0.9.0 --locked
 bash scripts/check-coverage.sh
 ```
 
-Both LLVM's complete aggregate and production-only coverage must pass. The
+The diagnostic script reports and checks its historical 90% thresholds for
+both LLVM's complete aggregate and production-only coverage. Those local
+thresholds are informational for delivery, not a branch-protection policy. The
 production denominator comes from LLVM's non-test `asb` executable map, without
 excluding any production modules; unit and integration tests contribute the
 execution counts, but adding test-body lines cannot inflate that denominator.
