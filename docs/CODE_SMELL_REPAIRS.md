@@ -4,14 +4,15 @@ Scope: the supplied ASB CLI code-smell report, independently checked against
 main `19033110543252063d27c495584caa6f982cef7c` (21 October 2026). This ledger
 tracks work, not a claim that the whole audit is complete. Each repair class
 needs an independently reviewed PR, ordinary and packaged offline CI tests,
-post-merge verification, and a patch release. Coverage additionally needs a
-required 90% production-code gate; excluded production files or lowered
-thresholds are not acceptable substitutes for tests. That coverage prerequisite
-is now delivered by PR #264, merged as
-`cbfaa4c1ebc2ea3880916f7767ed08bd64b6c2f7`: the required
-`coverage-90-percent` check independently gates both aggregate and production
-coverage, without production-file exclusions or reduced thresholds. Individual
-repair classes still need their own exact-head validation and release.
+post-merge verification, and a patch release. PR #264 originally introduced
+a required 90% production/aggregate coverage gate at
+`cbfaa4c1ebc2ea3880916f7767ed08bd64b6c2f7`. Main commit `398c36cc` later removed
+that hosted job and branch-protection requirement. The user explicitly
+confirmed keeping the newer removal on 21 October: do not restore the gate or
+treat a local percentage as a delivery threshold. Local coverage remains
+informational, not a substitute for meaningful offline regressions. Required
+functional CI, independent review, exact-head validation and patch releases
+still apply to each repair class.
 
 ## 1. Endpoint preparation invariants
 
@@ -56,14 +57,13 @@ artifact names stay unchanged; unusual keys use escaped path notation and
 consumers should obtain graph filenames from `comparison.json`.
 Delivery: independently reviewed PR #257 merged as
 `552cd640124ca1ad02d8c4fcfd8f85c8400fa62f`, patch version **0.2.5**.
-Exact-head tests, mandatory coverage and
-hosted checks passed; post-merge CI and release remain pending. Earlier
-candidate verification is not a substitute for those remaining gates.
+Exact-head tests, mandatory coverage and hosted checks passed.
 The first main run exposed a test-only Perfetto descriptor observation race.
 Independently reviewed PR #267 merged as
 `9e7a1ba49e60f394cf1339315d0df9c8c939eafd`, preserving lease rejection
-assertions behind a child-authored post-exec observation. Release stays held
-until that repaired main passes every post-merge job.
+assertions behind a child-authored post-exec observation. Every post-merge job
+passed at that repaired main in run `39599622348`, and **v0.2.5** was released
+from that exact commit with a GitHub-verified signed tag.
 
 ## 3. Completion persistence, subprocess and cleanup failures
 
@@ -134,6 +134,20 @@ not only helper tests, and repair the explicit save/finish state in this class.
 
 ## 7. Limits, diagnostics and CLI consistency
 
+Completion candidate: removed hand-maintained command/flag lists and generate
+Bash/Zsh directly from Clap's actual public command tree, with existing tool
+registry suggestions retained. A private first-argument helper keeps both
+`--__generate-completion bash` and `--__generate-completion=bash`; invalid
+arity/shells and output failures are tested. Every public command context is
+exercised under Bash, and independent review exercised real interactive Zsh
+completion as well as both shell syntax checks. New schema entries need no
+second completion definition. PR #260 targets patch **0.2.8**, following the
+installer repair in PR #259 and BPF scope/startup repair in PR #268.
+The current-main coverage regressions remain in
+place with an explicit test-module import after removing the old generator.
+Exact-head source/package tests, mandatory coverage, hosted CI, merge,
+post-merge verification and release remain required.
+
 Unify intended limits (including TUI concurrency versus benchmark maximum),
 replace positional pane access and scattered protocol deadlines with named
 contracts, and audit shell-completion drift. Preserve signal-exit information
@@ -202,5 +216,9 @@ poll/deadline handoff, unwinding, real direct-child reaping and an unrelated
 surviving sentinel. No live provider, privileged collector or network is used.
 This does not claim whole-install transactionality, parent-directory crash
 durability, arbitrary descendant supervision or crash-persistent reaping.
-Fresh exact-head ordinary/package tests, mandatory coverage, hosted checks,
-merge, post-merge checks and release remain required for this candidate.
+Delivery: PR #259 merged as
+`55a3d0d69972707ce2db105f93ddb5806563776f`. Every post-merge job passed in
+run `39601181355`, including the source/package/install-smoke checks and the
+local-host job. Hosted coverage was 90.779707% production and 90.431599%
+aggregate. **v0.2.6** was released from that exact commit with a GitHub-verified
+signed tag. The broader cleanup and orchestration audit remains incomplete.
