@@ -1,6 +1,22 @@
 //! Protocol-phase fixtures, NOT qualification of runtime/SDK installation.
 //! Production execution always constructs PreparedBootstrap through real prefetch.
 use super::*;
+
+#[test]
+fn material_request_and_response_share_the_same_absolute_deadline() {
+    let mut command = Command::new("python3");
+    command.args(["-I", "-S", "-B", "-u", "-c", "import json,sys\nrequest=json.loads(sys.stdin.readline())\nassert request['op']=='initial-material'\nassert isinstance(request['binary'],str)\nassert sys.stdin.read()==''\n"]);
+    let mut controller = Controller::spawn(&mut command).unwrap();
+    let started = Instant::now();
+    let error =
+        request_initial_material_until(&mut controller, started + Duration::from_millis(100))
+            .unwrap_err();
+    assert!(error.contains("deadline"), "{error}");
+    assert!(started.elapsed() < Duration::from_secs(1));
+    controller
+        .complete_response(Instant::now() + Duration::from_secs(1))
+        .unwrap();
+}
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
@@ -652,7 +668,12 @@ fn broken_output_and_deadline_use_same_preserving_error_envelope() {
             show_output: true,
         };
         session
-            .dispatch_agent(&mut context, &connection, fixture.prepared())
+            .dispatch_agent(
+                &mut context,
+                &connection,
+                fixture.prepared(),
+                Instant::now() + Duration::from_secs(3),
+            )
             .unwrap();
         let result = session.receive_execution(
             &mut context,

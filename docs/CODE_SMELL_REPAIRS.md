@@ -14,6 +14,103 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+Controller transport integration, staged patch **0.2.33**: qualified
+old-main controller checkpoint `7472c33a` is combined with actual main
+`cabaa576` (peer PR #294, bundled recording/replay, version 0.2.31). The next
+0.2.32 slot belongs to the separate cli2key fixture repair; approved fixture head
+`5e4bd492` is included through signed merge `af0eb258` without changing staged
+0.2.33 or the reviewed controller production. New run-owned recording/replay coordination, bounded capture
+receipts, immutable track/selection proofs, typed recording-failure disposition
+and checkpoint fields remain byte-identical to the incoming main. Provider and
+proxy archive/track authority boundaries, handler accounting, resource/grade
+independence, and raw-deletion confirmation semantics are unchanged.
+The retained controller delta still supplies nonblocking Unix duplex transport,
+pre-spawn custody, absolute preparation/material/response/cleanup budgets and
+monotonic Python task-loop waits without changing typed grade permission or
+positive resource settlement. Legacy non-Unix transport remains explicitly
+outside the Unix boundedness qualification. The only merge conflict was the
+test layout guard: the named category record and exact controller-directory
+allowance are retained alongside main's exact `proxy/capture.rs` allowance and
+all registered-adapter negative guards. Both parents' tests and new CI package
+asset checks remain present. Earlier old-main full-suite evidence below does not
+qualify this new combined tree; its independent integration review and fresh
+qualification are recorded next. Hosted CI, merge, post-merge verification and
+release remain pending. Publication/artifact
+repairs and runtime34/collector35 are not folded into this integration.
+
+Root independently source-approved `10f8f133` and fixture head `5e4bd492`.
+The authorized fixture-only merge `af0eb258` had only Cargo version conflicts,
+resolved to 0.2.33. The
+fixture and diagnostic document remain byte-identical to approved `5e4bd492`.
+The actual 0.2.33 executable was built first. Focused offline qualification
+passed 150 tests with no failures or ignored cases: controller 29, remote 25,
+typed task contracts six, layout one, bounded capture 12, recording two, replay
+three, actual repeated CLI 29, capture-session two, benchmark protocol 35 and
+cli2key fixture six. The fresh all-target/all-feature offline suite at frozen
+`af0eb258` passed **1,258 tests**, zero failures and 21 explicit optional skips
+across 23 targets. No skipped original-SDK/host/provider qualification is implied.
+Strict workspace/all-target/all-feature Clippy, formatting and sequential offline
+build/private Rust docs/pinned AutoUML 0.7.2/flows/interactive views/bash and zsh
+completions passed. Actual executable SHA-256 remained
+`f6f22e68ede91b814fa59dd7a94fbf57cc9fc88540d418f25549a21b392eee72`
+before and after focused tests, after the full suite and after the final build.
+Logs and hashes are `target/controller33-*`; source and executable were frozen
+through all runtime handles. The preexisting untracked `.asb/install.log` remains
+unchanged, including its original empty contents and timestamp. This qualification
+does not qualify the legacy non-Unix blocking transport or close the remaining
+audit classes. Actual-main ancestry, hosted/package CI, PR publication/merge,
+post-merge verification and release remain coordinated root-owned steps.
+
+Root reviewed the final focused/full/lint/build transcripts and unchanged actual
+executable hash, then retained actual main `06c47a9e` (PR #298, fixture patch
+0.2.32) through signed merge `436bee9d`. That merge's tree is byte-identical to
+qualified-ledger checkpoint `bf6dacca`; only this subsequent ledger addition
+changes files. No production/test/Cargo/script/workflow requalification is
+fabricated for an ancestry-only update. PR #298's exact-head CI passed; its two
+post-merge jobs remain under observation. PR #297 now targets this staged 0.2.33
+head and needs fresh exact-head hosted/package CI before merge, followed by both
+post-merge jobs and a separate patch release. The parent release stays held
+until its own post-merge validation succeeds.
+
+Integrated candidate, staged patch **0.2.31**: the independently source-reviewed
+Unix controller transport `eec99cf8` is combined with typed-controller integration
+`cf658ba2`, repeated preparation and current capture. It retains the independent
+positive resource settlement and normal-close diagnostics instead of converting
+confirmed preservation into uncertain cleanup. Initial-material writing/reading
+share one absolute budget; shared-launch dispatch cannot borrow its later
+execution allowance while sending the preparation request. Python task-loop
+deadlines retain the shared preparation budget and reject late dequeued requests.
+The existing non-Unix compatibility path receives the same settlement semantics,
+but its blocking I/O/Drop remains explicitly unqualified by Unix tests.
+Independent source review approved integration `a5aa6e03`; its only minor finding,
+a duplicate Python `time` import, was removed at `faf22231`. Initial focused
+qualification found one obsolete test accessing a child after correct Unix
+fallback handoff; independently reviewed test-only `8b9a009d` instead requires
+explicit custody uncertainty and the original pre-established worker's exit.
+Focused controller/protocol/remote and actual protocol/repeated-run targets
+passed 112 tests. The first full run then rejected the new generic controller
+directory through the strict layout guard; independently reviewed test-only
+`9e874106` adds exactly that directory and also forbids registered adapter stems
+as generic directories. A fresh full all-target/all-feature offline suite at
+`9e874106` passed **1,217 tests**, zero failures and 21 explicit optional skips
+across 22 targets. Both earlier failure transcripts remain retained.
+Strict Clippy subsequently rejected the test's complex tuple. Independently
+reviewed test-only `4a3b8647` replaces it with a named `CategoryLayout`, retaining
+the same five registry populations, allowlists and assertions without lint
+suppression. Its focused layout regression, strict all-target/all-feature
+Clippy and formatting passed; the full 1,217-test evidence above remains tied
+to `9e874106`, not falsely claimed as a fresh full run at `4a3b8647`.
+Sequential offline build/private Rust docs/pinned AutoUML 0.7.2/flows/interactive
+views/bash and zsh completions passed. The actual executable SHA-256 stayed
+unchanged before/after runtime tests and the final build:
+`26627f73727662096c474899ad97cde664f5236b1eaf1bb8c991345f1c30e1c8`.
+Signed ancestry merge `e8313859` retains typed-controller delivery head
+`940a9d39` and changes only the ledger, not production, tests or Cargo bytes.
+Subsequent signed main merge `4074c87b` retains actual main `1bcc8253` with a
+tree identical to qualified-ledger checkpoint `3b8e5d4c`.
+Hosted exact-head/package CI, PR merge, post-merge verification and release
+remain pending. No optional SDK/host/provider qualification is inferred.
+
 Integrated candidate, staged patch **0.2.30**: independently source-approved
 typed task-controller contracts `ac8c7753` and historical layout correction
 `da9c1f51` are combined with capture checkpoint `8dabf284` and current repeated
@@ -34,7 +131,9 @@ offline build/private Rust docs/pinned AutoUML 0.7.2/flows/interactive views/bas
 and zsh completions passed. The actual executable SHA-256 remained unchanged
 before/after runtime tests and the final build:
 `c489e15faa664c44df3201f8ddeff8738a6d8feecc3cd93b665efb6414115a41`.
-Hosted/package CI, PR merge, post-merge verification and release remain pending.
+Exact-head ordinary/package CI passed in run `39657670241`; PR #296 merged
+as `1bcc8253e563847e8898dd6a4562b6d384220f92`. Both post-merge jobs in run
+`39659641538` and release remain pending.
 Signed merge `889702ed` retains actual main `b12d8488` with a tree identical
 to qualified `64e7c45e`; no production, tests or Cargo bytes changed.
 The older pre-main full suite passed 1,100
@@ -65,8 +164,10 @@ SHA-256 stayed unchanged before/after tests and final build:
 `3acc60d2381d4f6037159d1a7c41fb5f6ae6d0ed2b9acd64183de388934d59a6`.
 Exact-head hosted/package CI passed in runs `39655735876` and `39655737318`;
 PR #295 merged as `b12d84882609aae00d16dabd497126348e9ef1ef` after independent
-main-ancestry publication review. Post-merge run `39657490808` and release
-remain pending. This does not qualify optional skipped host/provider tests,
+main-ancestry publication review. Both post-merge jobs passed in run
+`39657490808`; **0.2.29** is released with GitHub-verified valid annotated SSH
+tag `a71266ce3167f68ba49ca3ea4538813eaa396aaa` at that exact merge.
+This does not qualify optional skipped host/provider tests,
 runtime discovery, or the remaining overall audit.
 The subsequent signed ancestry merge retains actual main
 `46d20e382b7781c3fb3bf48216e6090ca4b37998` with a tree identical to qualified
@@ -564,7 +665,26 @@ independently approved; integration review, full qualification and delivery
 remain pending. Qualified typed saved sweep modes are retained; internal command
 identifiers remain separate work. Blocking controller request writes,
 Python nominal-interval deadline accounting and controller Drop custody are not
-repaired by these typed contracts and must not be claimed bounded here.
+repaired by those typed contracts and must not be claimed bounded there.
+
+Separate Unix controller transport candidate: actual regressions first reproduced
+a one-second blocked stdin write despite a 100 ms request budget, an escaped
+stdout reader after Controller destruction with an owned writer retained, and
+Python polling past its fake monotonic deadline. The Unix implementation now
+uses nonblocking owned process pipes and a bounded caller-owned duplex pump,
+without a reader thread. Write/response and acknowledgement/exit operations
+share absolute deadlines; failed close cannot restart the cleanup clock.
+Direct-child fallback custody is fallibly established before spawn. Explicit
+cleanup and destruction poll within their deadline and hand uncertain children
+to that existing keeper, never an unconditional caller wait or new Drop worker.
+Python uses monotonic elapsed time and rejects late queued requests. Exact
+wire/grade-token/normal-removal versus preserving-cancellation contracts remain.
+Owned-child, pipe-pressure, framing, sentinel, pidfd, setup-failure and unwind
+fixtures require no SDK, Docker, real agent, provider or host changes. Independent
+review, full qualification and delivery remain pending. Non-Unix retains the
+legacy blocking implementation and remains explicitly unqualified for this
+bounded transport guarantee; this is not a completed portable lifecycle repair,
+arbitrary descendant supervision, container recovery or a hard OS scheduling bound.
 
 cli2key startup/session candidate, staged patch **0.2.23** after checkpoint
 **0.2.22**: explicit external versus local ownership

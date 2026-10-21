@@ -1062,10 +1062,42 @@ and unknown events without printing their payloads. The wire spellings, adapter
 evaluation-kind extension strings and structured/native outcome APIs do not
 change. Existing official Python task sessions still supply binary grades;
 this refactoring does not add native-reward transport to those SDK sessions.
-Python receive deadlines retain main's monotonic elapsed-time accounting and
-shared preparation allowance. The controller's blocking request write and Drop
-custody remain separate pending bounded-I/O repairs; typed contracts do not
-make those waits wall-clock bounded.
+On Unix, controller stdin/stdout retain private standard process pipes with
+nonblocking parent ends and blocking child ends. One caller-owned duplex pump
+keeps an eight-event queue and a 1 MiB frame bound (one oversize probe byte);
+there is no detached
+reader or blocking reader join. Requests start one absolute deadline before
+encoding/writing, and the same deadline covers the response. One-shot inspection
+also constrains error cleanup and child-exit observation to its deadline. Task
+sessions retain their separate preserving-cancellation budget after an execution
+or evaluator failure. Agent dispatch and
+resume writes consume the existing execution-protocol deadline rather than
+starting another clock. A partial failed write closes stdin: it cannot be retried
+as a new request or interpreted as normal close.
+Normal close, cancellation and final exit observation share the earliest
+cleanup deadline, so a failed close does not restart another cleanup budget.
+Only the existing validated acknowledgements can confirm resource cleanup.
+Unix destruction closes its owned pipes, gives EOF up to three seconds, then
+signals only the still-owned direct controller with TERM inside a total
+fifteen-second fallback budget. An existing shorter cleanup deadline takes
+precedence. Deadline/poll uncertainty sends KILL to that direct child and
+transfers custody to an `OwnedReaper` established fallibly before spawn; caller
+cleanup never performs an unconditional child wait or creates a Drop worker.
+This is bounded caller observation, not proof that a kernel-stuck controller
+has exited or that its Docker resources were preserved. Resource recovery still
+requires the adapter's journal/ownership checks. The fallback is neither
+descendant supervision nor crash-persistent recovery.
+Python task-loop waits use actual monotonic deadlines, including checking a
+late dequeued request before it can authorize close; idle, collector attachment,
+queue publication and execution/evaluation defaults retain purpose-specific
+names and existing values. The non-Unix controller intentionally retains its
+legacy blocking pipes, reader and Drop behavior for compatibility. It is not
+qualified by the Unix tests and does not gain this bounded-I/O/custody guarantee;
+cancellable non-Unix transport remains unresolved portability work. Process
+spawn, operating-system scheduling and arbitrary SDK operations are not given
+a new hard real-time guarantee. Shared preparation retains its independent
+remaining-time allowance: dispatch writes cannot consume the later execution
+budget. Initial-material request writing and response reading share one deadline.
 Task controllers now persist a private `resources.json` before creating their
 declared containers, Compose networks and volumes. The journal binds the exact
 names to one attempt, a random ownership label and the Docker daemon identity;
