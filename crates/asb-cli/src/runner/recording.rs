@@ -447,6 +447,13 @@ fn read_association(evidence: &TrackEvidence) -> Result<Association, Error> {
     serde_json::from_slice(&bytes)
         .map_err(|_| Error::Input("recording association is malformed".into()))
 }
+#[cfg(test)]
+std::thread_local! {
+    static BEFORE_RAW_UNLINK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
 fn cleanup_raw(output: &Path, track: &Track, original: Option<&fs::Metadata>) -> Result<(), Error> {
     let Some(mut file) = open_payload(output)? else {
         return Ok(());
@@ -465,6 +472,12 @@ fn cleanup_raw(output: &Path, track: &Track, original: Option<&fs::Metadata>) ->
         return Err(Error::Io("raw capture pathname changed; retained".into()));
     }
     verify_raw_identity(original, &current)?;
+    #[cfg(test)]
+    BEFORE_RAW_UNLINK.with_borrow_mut(|hook| {
+        if let Some(replace) = hook.take() {
+            replace();
+        }
+    });
     fs::remove_file(output).map_err(io_error)?;
     File::open(output.parent().expect("owned producer parent"))
         .and_then(|parent| parent.sync_all())
@@ -544,6 +557,78 @@ fn recording_error(error: crate::cassette::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn raw_cleanup_preserves_foreign_entries_replaced_after_final_check() {
+        struct Owned(PathBuf);
+        impl Drop for Owned {
+            fn drop(&mut self) {
+                BEFORE_RAW_UNLINK.with_borrow_mut(|hook| {
+                    hook.take();
+                });
+                fs::remove_dir_all(&self.0).unwrap();
+            }
+        }
+        for mode in ["regular", "symlink", "parent"] {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/raw-cleanup-race-fixtures")
+                .join(crate::workloads::TaskIdentity::local("raw-cleanup-race", None).attempt_id);
+            fs::create_dir_all(root.join("producer")).unwrap();
+            let _owned = Owned(root.clone());
+            let output = root.join("producer/capture.jsonl");
+            fs::write(&output, b"{}\n").unwrap();
+            let original = fs::metadata(&output).unwrap();
+            let track = Track {
+                id: 1,
+                batch: 1,
+                replica: 1,
+                complete: false,
+                process_success: None,
+                workload_success: None,
+                bytes: 3,
+                sha256: crate::cassette::digest(b"{}\n"),
+                statistics: Statistics::default(),
+            };
+            let replacement_root = root.clone();
+            BEFORE_RAW_UNLINK.with_borrow_mut(|hook| {
+                *hook = Some(Box::new(move || {
+                    let output = replacement_root.join("producer/capture.jsonl");
+                    if mode == "parent" {
+                        fs::rename(
+                            replacement_root.join("producer"),
+                            replacement_root.join("saved-producer"),
+                        )
+                        .unwrap();
+                        fs::create_dir(replacement_root.join("producer")).unwrap();
+                    } else {
+                        fs::rename(&output, replacement_root.join("saved-original")).unwrap();
+                    }
+                    if mode == "symlink" {
+                        let target = replacement_root.join("foreign-target");
+                        fs::write(&target, b"foreign content").unwrap();
+                        std::os::unix::fs::symlink(target, &output).unwrap();
+                    } else {
+                        fs::write(&output, b"foreign content").unwrap();
+                    }
+                }));
+            });
+            let cleaned = cleanup_raw(&output, &track, Some(&original));
+            assert!(
+                fs::symlink_metadata(&output).is_ok(),
+                "{mode}: removed a foreign pathname after validating the original: {cleaned:?}"
+            );
+            assert_eq!(fs::read(&output).unwrap(), b"foreign content", "{mode}");
+            if mode == "symlink" {
+                assert!(
+                    fs::symlink_metadata(&output)
+                        .unwrap()
+                        .file_type()
+                        .is_symlink()
+                );
+            }
+        }
+    }
 
     #[test]
     fn compact_association_budget_fits_maximum_population_before_launch() {
