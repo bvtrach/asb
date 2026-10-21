@@ -14,6 +14,8 @@ pub(crate) struct PlanningCatalog {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TaskSelection {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module: Option<super::contracts::ModuleDescriptor>,
     pub workload: String,
     pub task_id: String,
     pub dataset: Option<DatasetIdentity>,
@@ -25,6 +27,17 @@ impl TaskSelection {
     pub(crate) fn valid(&self) -> bool {
         let bounded = |value: &str, limit| !value.is_empty() && value.len() <= limit;
         bounded(&self.workload, 256)
+            && self.module.as_ref().is_none_or(|module| {
+                module.valid()
+                    && module.id == self.workload
+                    && module.dataset == self.dataset
+                    && match module.support {
+                        super::contracts::SupportLevel::OfficialAdapter => {
+                            self.evaluation_kind == "upstream-harness"
+                        }
+                        _ => self.evaluation_kind == module.protocol.id,
+                    }
+            })
             && bounded(&self.task_id, 256)
             && bounded(&self.evaluation_kind, 128)
             && self.dataset.is_some() == self.population_size.is_some()
@@ -53,6 +66,11 @@ pub(crate) fn describe(
     catalog: Option<&PlanningCatalog>,
 ) -> Result<TaskSelection, String> {
     if let Some(catalog) = catalog {
+        if super::descriptor(workload)
+            .is_some_and(|module| module.dataset.as_ref() != Some(&catalog.dataset))
+        {
+            return Err("installed dataset differs from the owning module descriptor".into());
+        }
         let task = trial.ok_or_else(|| {
             format!("select an installed instance ID for `{workload}` before starting the sweep")
         })?;
@@ -68,6 +86,8 @@ pub(crate) fn describe(
         super::selected_trial(workload, trial, trial_set, directory)?;
     }
     let selection = TaskSelection {
+        module: super::descriptor(workload)
+            .filter(|module| module.dataset.as_ref() == catalog.map(|catalog| &catalog.dataset)),
         workload: workload.into(),
         task_id: trial.unwrap_or(workload).into(),
         dataset: catalog.map(|catalog| catalog.dataset.clone()),
@@ -88,6 +108,57 @@ pub(crate) fn describe(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_module_binds_protocol_and_legacy_selection_remains_readable() {
+        let current = describe("bug-fix", None, None, Path::new("."), None).unwrap();
+        assert!(current.module.is_some());
+        let mut changed = current.clone();
+        changed.module.as_mut().unwrap().protocol.revision += 1;
+        assert_ne!(current, changed);
+        changed.module.as_mut().unwrap().id = "other".into();
+        assert!(!changed.valid());
+        changed = current.clone();
+        changed.evaluation_kind = "upstream-harness".into();
+        assert!(!changed.valid());
+        let mut old = serde_json::to_value(&current).unwrap();
+        old.as_object_mut().unwrap().remove("module");
+        let old: TaskSelection = serde_json::from_value(old).unwrap();
+        assert!(old.valid());
+        assert!(old.module.is_none());
+        assert_ne!(current, old);
+    }
+
+    #[test]
+    fn official_catalog_mismatch_cannot_discard_the_protocol_binding() {
+        let profile = super::super::descriptor("swe-bench-lite").unwrap();
+        let mut catalog = PlanningCatalog {
+            dataset: profile.dataset.unwrap(),
+            task_ids: ["task-1".into()].into_iter().collect(),
+            evaluation_kind: "upstream-harness",
+        };
+        let selection = describe(
+            "swe-bench-lite",
+            Some("task-1"),
+            None,
+            Path::new("."),
+            Some(&catalog),
+        )
+        .unwrap();
+        assert!(selection.module.is_some());
+        catalog.dataset.revision = "different".into();
+        assert!(
+            describe(
+                "swe-bench-lite",
+                Some("task-1"),
+                None,
+                Path::new("."),
+                Some(&catalog)
+            )
+            .unwrap_err()
+            .contains("descriptor")
+        );
+    }
 
     #[test]
     fn selected_instances_are_validated_without_inventing_attempts_or_baselines() {

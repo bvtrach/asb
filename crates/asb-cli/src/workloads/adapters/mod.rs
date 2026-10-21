@@ -30,7 +30,18 @@ mod terminal_bench;
 mod terminal_bench_1_0;
 mod terminal_bench_2_1;
 
+/// An adapter-owned source bundle installed by the generic workload installer.
+#[derive(Clone, Copy)]
+pub(crate) struct SourceBundle {
+    pub archive: &'static str,
+    pub marker: &'static str,
+    pub prompt: &'static str,
+}
+
 pub(super) trait WorkloadAdapter: Sync {
+    fn descriptor(&self, name: &str) -> super::contracts::ModuleDescriptor {
+        super::contracts::ModuleDescriptor::local(name, self.evaluation_kind(name))
+    }
     fn process_lifetime(&self) -> super::session::ProcessLifetime {
         super::session::ProcessLifetime::Quiesce
     }
@@ -78,6 +89,9 @@ pub(super) trait WorkloadAdapter: Sync {
         Ok(Vec::new())
     }
     fn source(&self) -> Option<&'static str> {
+        None
+    }
+    fn source_bundle(&self) -> Option<SourceBundle> {
         None
     }
     fn install(
@@ -144,19 +158,37 @@ pub(super) trait WorkloadAdapter: Sync {
 
 pub(super) struct StaticExternalAdapter {
     id: &'static str,
+    source: &'static str,
+    bundle: Option<SourceBundle>,
     trials: &'static [(&'static str, &'static str)],
 }
 
 impl StaticExternalAdapter {
     pub(super) const fn new(
         id: &'static str,
+        source: &'static str,
         trials: &'static [(&'static str, &'static str)],
     ) -> Self {
-        Self { id, trials }
+        Self {
+            id,
+            source,
+            bundle: None,
+            trials,
+        }
+    }
+    pub(super) const fn with_bundle(mut self, bundle: SourceBundle) -> Self {
+        self.bundle = Some(bundle);
+        self
     }
 }
 
 impl WorkloadAdapter for StaticExternalAdapter {
+    fn source(&self) -> Option<&'static str> {
+        Some(self.source)
+    }
+    fn source_bundle(&self) -> Option<SourceBundle> {
+        self.bundle
+    }
     fn id(&self) -> &'static str {
         self.id
     }
@@ -176,6 +208,14 @@ impl WorkloadAdapter for StaticExternalAdapter {
 
 pub(super) struct PromptAdapter;
 impl WorkloadAdapter for PromptAdapter {
+    fn descriptor(&self, name: &str) -> super::contracts::ModuleDescriptor {
+        let mut descriptor =
+            super::contracts::ModuleDescriptor::local(name, self.evaluation_kind(name));
+        if self.evaluation_kind(name) == "response-review" {
+            descriptor.protocol.submission = super::contracts::SubmissionKind::ResponseText;
+        }
+        descriptor
+    }
     fn evaluation_kind(&self, name: &str) -> &'static str {
         if name == "repository-navigation" {
             "response-review"
