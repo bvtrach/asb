@@ -201,8 +201,8 @@ Focused offline qualification passed: runner 73 tests (three optional skips),
 report pipeline 27 (one optional browser skip), completed-outcome invariants 28,
 actual replay CLI two, continuation-diagnostics CLI six and unmeasured-sweep CLI
 two. The binary stayed unchanged throughout the final focused run. Strict
-all-target/all-feature Clippy and formatting pass. Independent source review,
-source review approved `5c4ed922`; its full offline all-target/all-feature suite
+all-target/all-feature Clippy and formatting pass. Independent source review
+approved `5c4ed922`; its full offline all-target/all-feature suite
 passed 1,068 tests with 21 optional skips, followed by strict Clippy, formatting
 and build/docs/diagrams checks. Integration with the qualified `656aeed1`
 identity/provider/report/checkpoint stream preserves the typed disposition
