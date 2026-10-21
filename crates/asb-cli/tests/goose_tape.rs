@@ -149,7 +149,7 @@ if (process.env.ASB_TAPE_MODE === 'replay' &&
 }
 const body = {model:'test-model', messages:[{role:'user', content:process.env.ASB_TEST_CHANGED ? 'changed' : 'test'}], tools:[{type:'function'}]};
 fetch(host + process.env.OPENAI_BASE_PATH, {method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})
-  .then(async r => { if (!r.ok) throw new Error(await r.text()); console.log('{"status":"ok"}'); })
+  .then(async r => { if (!r.ok) throw new Error(await r.text()); require('fs').writeFileSync('src/parser.py', "def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n"); console.log('{"status":"ok"}'); })
   .catch(e => { console.error(e); process.exitCode = 1; });
 "##).unwrap();
     std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -171,7 +171,14 @@ fetch(host + process.env.OPENAI_BASE_PATH, {method:'POST',headers:{'content-type
         String::from_utf8_lossy(&record.stdout),
         String::from_utf8_lossy(&record.stderr)
     );
-    let cassette = std::fs::read_to_string(root.join("tape.jsonl")).unwrap();
+    let mut archive = asb_cli::cassette::Archive::open(
+        &root.join("tape.jsonl"),
+        asb_cli::cassette::Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(archive.manifest().tracks.len(), 1);
+    assert!(archive.manifest().tracks[0].complete);
+    let cassette = String::from_utf8(archive.read_track(1).unwrap()).unwrap();
     assert_eq!(cassette.lines().count(), 1);
     let before_replay = provider.requests.lock().unwrap().clone();
     assert!(

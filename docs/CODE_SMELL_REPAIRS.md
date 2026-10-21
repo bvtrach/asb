@@ -14,6 +14,27 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+Artifact integration, staged patch **0.2.35**, source-only: historical artifact
+checkpoint `a2708632` is combined with committed publication34 `3359bfb2`.
+The incoming bundled recording/replay, selected-track capture proofs and typed
+recording-failure disposition are retained. Native exact frozen-byte evidence
+handoff still precedes initial result construction; recording commit then updates
+that result before log and measurement publication. Artifact evidence locations
+remain attached to failed publishers. Guest pending/final publication, pinned
+namespace custody, instrumentation guard and execution workspace are unchanged
+from the reviewed artifact integration. Both parents' recording, publication,
+capture and artifact tests are retained, including the actual private MiniSWE
+`--output` fixture. Only the committed publication checkpoint is included, not
+its author's unfinished cross-feature tests. No runtime/collector repair is
+folded in. Earlier 511-, 1,246- and 1,258-test results describe their historical
+trees, not this combined source. Independent integration review, fresh focused
+and full qualification, hosted/package CI, merge, post-merge verification and
+release remain pending. No build, test or cache use accompanied this merge.
+Windows identity, publication and independent-reader qualification remains
+source-only; this merge adds no Windows runtime evidence.
+
+Historical artifact integration:
+
 Integrated source candidate, staged patch **0.2.33**: independently reviewed
 attempt-artifact checkpoint `eccb92be` is combined with qualified publication32
 stack `5516c4e9`. The original artifact namespace/snapshot/custody implementation
@@ -52,6 +73,22 @@ all-feature Clippy and formatting passed. The actual executable SHA-256 stayed
 before/after all runtime checks. Logs and hashes are `target/artifact33-*`;
 the source and executable were frozen until every runtime handle was terminal.
 Full qualification remains held for independent review and cache coordination.
+Historical publication34 integration:
+
+Publication integration, staged patch **0.2.34**, source-only: the qualified
+historical publication stack `5516c4e9` is combined with current-main bounded
+controller integration `af0eb258`. Incoming peer main `cabaa576` supplies bundled
+recording/replay, immutable capture/track proofs and recording-failure disposition;
+the separately reviewed cli2key fixture repair stages patch 0.2.32, and controller
+transport stages 0.2.33. This new tree must preserve both parents' grade, resource,
+capture, publication and continuation obligations. Both recording and publication
+test families are retained, with no restored coverage threshold. Earlier local
+qualifications below remain historical; they do not qualify this combined source.
+Independent semantic review, added cross-feature offline regressions, fresh
+focused/full qualification, hosted/package CI, merge, post-merge checks and
+release remain pending. No artifact/runtime/collector repair is folded in.
+
+Historical publication integration:
 
 Integrated candidate, staged patch **0.2.32**: source-reviewed publication
 `1a2980fb`, platform confirmation `4affdb3a` and independent Windows capture
@@ -111,6 +148,31 @@ The [full residual requirement/disposition matrix and ordered plan](CODE_SMELL_R
 records the read-only 21 October comparison of exact main `4224472f` with
 qualified stack `48609d50`, including misreports, completed versus unmerged
 repairs and remaining evidence-publication/artifact/transport obligations.
+
+Historical controller source integration:
+
+Controller transport source integration, staged patch **0.2.33**: qualified
+old-main controller checkpoint `7472c33a` is combined with actual main
+`cabaa576` (peer PR #294, bundled recording/replay, version 0.2.31). The next
+0.2.32 slot is reserved for the separate cli2key fixture repair; that repair is
+not merged here. New run-owned recording/replay coordination, bounded capture
+receipts, immutable track/selection proofs, typed recording-failure disposition
+and checkpoint fields remain byte-identical to the incoming main. Provider and
+proxy archive/track authority boundaries, handler accounting, resource/grade
+independence, and raw-deletion confirmation semantics are unchanged.
+The retained controller delta still supplies nonblocking Unix duplex transport,
+pre-spawn custody, absolute preparation/material/response/cleanup budgets and
+monotonic Python task-loop waits without changing typed grade permission or
+positive resource settlement. Legacy non-Unix transport remains explicitly
+outside the Unix boundedness qualification. The only merge conflict was the
+test layout guard: the named category record and exact controller-directory
+allowance are retained alongside main's exact `proxy/capture.rs` allowance and
+all registered-adapter negative guards. Both parents' tests and new CI package
+asset checks remain present. This checkpoint is source-only: earlier full-suite
+evidence below does not qualify this new combined tree. Independent integration
+review, fresh build/focused/full checks, Clippy/formatting/build/docs, hosted CI,
+merge, post-merge verification and release remain pending. Publication/artifact
+repairs and runtime34/collector35 are not folded into this integration.
 
 Integrated candidate, staged patch **0.2.31**: the independently source-reviewed
 Unix controller transport `eec99cf8` is combined with typed-controller integration

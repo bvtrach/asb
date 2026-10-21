@@ -431,8 +431,20 @@ individual cleanup boundaries, exact-candidate recovery and foreign targets.
 An owned test child is actually killed at recording/prepared/linked/published
 stages, checking active-owner exclusion and recovery without new attempts. No
 agent/provider/container runs. Fault hooks exist only in test builds and have no
-environment/configuration surface in the installed CLI. The backend does not yet
-expose new run/sweep flags; integration follows MULTITRACK.md.
+environment/configuration surface in the installed CLI. `run` integrates the
+backend through its own recording/replay coordinators; sweep/resume/report and
+viewer delivery remain separate steps in MULTITRACK.md.
+`cargo test --locked --offline --test repeated_run` additionally records real
+embedded-proxy ZIP captures with a bounded loopback provider and synthetic agent.
+It checks no-overwrite/fresh defaults, ordinary complete failed recordings,
+seeded selections under changed arrival ordering, actual per-slot response
+identity, statistic ties, selected-only integrity, every compatibility field,
+source replacement after private staging, legacy selection/unknown metadata,
+strict partial consumption and zero-client/inference metadata-budget rejection.
+Recording commit failure preserves true grades and existing primary failures but
+publishes failed typed log/measurement disposition before withholding completion
+and stopping later admission. These tests use fixture-only credentials and no
+installed agents, real LLM calls, containers or privileged collectors.
 `cargo test --locked --lib runner::batch` checks the internal cancellable
 preparation gate and runner no-launch/cancellation wiring. Material regressions
 live in `workloads::material` and `workloads::session`: bounded canonical files,

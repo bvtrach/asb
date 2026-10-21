@@ -31,6 +31,10 @@ struct Outcome {
     #[serde(default)]
     proxy_evidence: Vec<PathBuf>,
     #[serde(default)]
+    capture_evidence: Vec<crate::proxy::capture::CaptureEvidence>,
+    #[serde(default)]
+    recording_track: Option<crate::runner::recording::Evidence>,
+    #[serde(default)]
     replica: Option<crate::runner::replica::Identity>,
     #[serde(default)]
     outputs: Vec<PathBuf>,
@@ -317,6 +321,7 @@ impl ValidatedOutcome {
 
     fn validate(record: Outcome, entry: &PlannedBenchmark) -> Result<Self, Error> {
         record.validate_protocol(entry)?;
+        validate_captures(&record)?;
         record.validate_cohort()?;
         let task = record.validate_identity(entry)?;
         let structured = crate::workloads::outcome::BenchmarkOutcome::read(&record.summary)
@@ -545,6 +550,41 @@ impl Outcome {
     }
 }
 
+fn validate_captures(record: &Outcome) -> Result<(), Error> {
+    if record.capture_evidence.len() > 64 {
+        return Err(invalid("capture evidence population exceeds its bound"));
+    }
+    if let Some(recording) = &record.recording_track {
+        if record.summary.get("recording")
+            != Some(
+                &serde_json::to_value(recording)
+                    .map_err(|_| invalid("cannot encode recording evidence"))?,
+            )
+        {
+            return Err(invalid("recording evidence differs from execution summary"));
+        }
+        recording.validate_summary(&record.summary, &record.capture_evidence)?;
+    } else if !record.summary["recording"].is_null() {
+        return Err(invalid("execution recording has no typed track evidence"));
+    }
+    for capture in &record.capture_evidence {
+        capture
+            .validate()
+            .map_err(|_| invalid("capture evidence metadata is malformed"))?;
+        if !record.proxy_evidence.contains(&capture.output)
+            && record
+                .recording_track
+                .as_ref()
+                .is_none_or(|recording| capture.output != recording.producer)
+        {
+            return Err(invalid(
+                "capture output is absent from declared proxy evidence",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn measurement_matches(measured: &Value, summary: &Value) -> bool {
     [
         "execution_plan_fingerprint",
@@ -666,6 +706,52 @@ pub(in crate::sweep) fn publish(path: &Path, receipt: &impl Serialize) -> Result
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn capture_metadata_is_optional_but_validated_before_outcome_reuse() {
+        let fixture = Fixture::new(true);
+        let original = fixture.read(0);
+        assert!(
+            super::ValidatedOutcome::validate(
+                serde_json::from_value(original.clone()).unwrap(),
+                &fixture.entry
+            )
+            .is_ok()
+        );
+        let output = fixture.directory.join("capture.jsonl");
+        let capture = serde_json::json!({"adapter":"llmtape","output":output,"complete":true,
+            "accepted":1,"completed":1,"failed":0,"recorded":1,"inference_requests":1,
+            "bytes":3,"sha256":"a".repeat(64)});
+        let mut record = original.clone();
+        record["capture_evidence"] = serde_json::json!([capture]);
+        let validate = |value: serde_json::Value| {
+            super::ValidatedOutcome::validate(
+                serde_json::from_value(value).unwrap(),
+                &fixture.entry,
+            )
+            .map(|_| ())
+        };
+        assert!(
+            validate(record.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("absent from declared proxy evidence")
+        );
+        record["proxy_evidence"] = serde_json::json!([output]);
+        validate(record.clone()).unwrap();
+        for field in ["accepted", "completed", "recorded", "inference_requests"] {
+            let mut bad = record.clone();
+            bad["capture_evidence"][0][field] = serde_json::json!(99);
+            assert!(validate(bad).is_err(), "accepted contradictory {field}");
+        }
+        record["capture_evidence"] = serde_json::json!(vec![capture; 65]);
+        assert!(
+            validate(record)
+                .unwrap_err()
+                .to_string()
+                .contains("population exceeds")
+        );
+    }
+
     #[test]
     fn settlement_presence_and_measurement_agreement_are_not_lost() {
         #[derive(serde::Deserialize)]
