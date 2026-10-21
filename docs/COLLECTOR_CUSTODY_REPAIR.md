@@ -285,3 +285,59 @@ class claim is authorized yet. Further preflight/postprocessor subprocesses,
 platform qualification and integration with newer main remain separate review
 obligations. The file-syscall policy bounds caller settlement and retains an
 uncertain worker; it does not invent a hard deadline on kernel file writes.
+
+## Explicit perf deliberate-stop compatibility follow-up
+
+The intermediate ordinary-producer checkpoint is immutable `0fe173e0`. Its
+remaining perf compatibility seam is addressed in the next source checkpoint,
+not silently treated as already qualified. Linux v6.12 primary source confirms
+that both [perf stat's signal exit](https://github.com/torvalds/linux/blob/v6.12/tools/perf/builtin-stat.c)
+and [perf record's signal exit](https://github.com/torvalds/linux/blob/v6.12/tools/perf/builtin-record.c)
+can restore/re-raise SIGINT after flushing. Thus exit signal 2 or wrapper code
+130 is eligible for owning-adapter validation only with an actual requested and
+acknowledged principal interruption, matching guardian proof and complete I/O.
+The generic runtime carries these separate facts; it neither names perf nor
+converts a signal exit into exit zero. Collector JSON explicitly retains
+`exit_signal` alongside nullable `exit_code`.
+
+The perf adapter validates the complete bounded stat counter source before
+marking it completed. Record data must pass the installed selected perf binary's
+built-in offline `script -i <explicit path>` decoder, the same decoding operation
+used for flamegraphs, under a 300-second/256-MiB-per-stream owning policy. Its
+process uses the generic exact guardian, concurrent capture pumps and confirmed
+cleanup. No partial ad-hoc perf.data parser or live sample is substituted. The
+decoder receives a cleared environment, disabled debuginfod and disabled global
+and system perf configuration; these config controls are documented in upstream
+[perf configuration implementation](https://github.com/torvalds/linux/blob/v6.12/tools/perf/util/config.c).
+No caller script, sudo or provider is selected. A successful decoder may
+legitimately produce no samples: this is explicit zero-sample validity, not an
+invented metric. Nonzero, timeout and output overflow retain validation captures
+and cannot upgrade record status. An owning-adapter policy retains original raw
+capture when its data validator fails; legacy adapters' existing cleanup policy
+is unchanged. Sibling outputs and independent official grades still finalize.
+
+Actual synthetic Python processes reproduce requested/acknowledged SIGINT with
+complete numeric counters, truncated counters, and spontaneous SIGINT. The exit
+remains signal 2 in all three. Private inert project-local decoder fixtures
+exercise the actual record-adapter entry point exactly once on valid/failed
+decode, plus bounded timeout and stream overflow. They check explicit argv and
+cleared/configured environment, raw retention and honest empty output. These
+fixtures prove lifecycle/dispatch contracts, not any live kernel perf facility.
+A generic publication matrix additionally checks truthful signal serialization,
+raw retention for rejected or incomplete evidence, a surviving sibling result,
+and unchanged false official grade/run/summary.
+
+Fresh focused evidence: **88 measurement tests, 126 collector tests, 23 guardian
+tests, zero failures**; collector group retains the same **five opt-in skips**.
+The final owning-perf group passed **10/0/0**; strict locked/offline all-target /
+all-feature Clippy (`-D warnings`), fmt and diff whitespace checks passed. Actual
+ASB was built before runtime tests and stayed SHA-256
+`e4c4072dd221e49c38da1c222f97f451729eae971c2644124546fbcf767e41a1`.
+Evidence is `target/collector35-perf-contract-{build-third,focus-third,
+measurements-first,collectors-final,gate-first,clippy-first,fmt}.log` and binary
+before/after SHA files. The first decoder fixture's expected pathname was not
+canonicalized while production correctly supplied the canonical explicit path;
+its **9-pass/1-fail** transcript is preserved, then only the fixture expectation
+was corrected. All runtime handles are terminal. Independent source review,
+current-main semantic integration and full/hosted/post-merge gates remain
+required; there is still no full-class, merge or release claim.

@@ -324,6 +324,7 @@ struct CollectorResult {
     collector: String,
     status: String,
     exit_code: Option<i32>,
+    exit_signal: Option<i32>,
     elapsed_ms: u128,
     stdout: String,
     stderr: String,
@@ -1000,7 +1001,7 @@ impl Session {
             if completion.capture_complete
                 && !collector
                     .adapter
-                    .accepts_termination(&collector.name, completion.exit)
+                    .accepts_termination(&collector.name, &completion)
             {
                 completion.capture_complete = false;
                 completion.error = Some(format!(
@@ -1091,6 +1092,7 @@ impl Session {
             } {
                 Ok(data) => data,
                 Err(error) => {
+                    read_failed |= collector.adapter.retain_raw_on_processing_failure();
                     let mut data = collectors::ProcessData::from_output(&context);
                     data.status = "failed".into();
                     stderr = bounded(
@@ -1116,6 +1118,18 @@ impl Session {
                 collector: collector.name.clone(),
                 status: data.status,
                 exit_code: completion.exit.and_then(|status| status.code()),
+                exit_signal: completion.exit.and_then(|status| {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+                        status.signal()
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = status;
+                        None
+                    }
+                }),
                 elapsed_ms,
                 stdout,
                 stderr,
@@ -1365,6 +1379,7 @@ pub(crate) fn write_unavailable(path: &Path, collector: &str, error: String) -> 
             collector: collector.into(),
             status: "unavailable".into(),
             exit_code: None,
+            exit_signal: None,
             elapsed_ms: 0,
             stdout: String::new(),
             stderr: error,

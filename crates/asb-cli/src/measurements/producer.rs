@@ -26,6 +26,8 @@ pub(crate) struct Completion {
     pub exit: Option<ExitStatus>,
     pub guardian_cleanup_confirmed: Option<bool>,
     pub capture_complete: bool,
+    pub interruption_requested: bool,
+    pub interruption_acknowledged: bool,
     pub error: Option<String>,
 }
 impl Completion {
@@ -34,6 +36,8 @@ impl Completion {
             exit,
             guardian_cleanup_confirmed: None,
             capture_complete: false,
+            interruption_requested: false,
+            interruption_acknowledged: false,
             error: Some(reason.into()),
         }
     }
@@ -43,6 +47,8 @@ impl Completion {
             exit: Some(exit),
             guardian_cleanup_confirmed: None,
             capture_complete: true,
+            interruption_requested: false,
+            interruption_acknowledged: false,
             error: None,
         }
     }
@@ -202,6 +208,8 @@ impl Producer {
                     exit: None,
                     guardian_cleanup_confirmed: None,
                     capture_complete: true,
+                    interruption_requested: false,
+                    interruption_acknowledged: false,
                     error: None,
                 },
                 Err(error) => Completion::failed(None, error),
@@ -216,9 +224,13 @@ impl Producer {
     }
     #[cfg(test)]
     pub fn completed(exit: ExitStatus) -> Self {
+        Self::observed(Completion::test_completed(exit))
+    }
+    #[cfg(test)]
+    pub fn observed(completion: Completion) -> Self {
         Self {
             active: None,
-            completion: Some(Completion::test_completed(exit)),
+            completion: Some(completion),
         }
     }
     #[cfg(test)]
@@ -285,6 +297,7 @@ fn capture(
     let mut out = gate.take_stdout();
     let mut err = gate.take_stderr();
     let mut pipes_nonblocking = false;
+    let mut interruption_requested = false;
     #[cfg(test)]
     let mut injected = false;
     // Gate, files and dependency live outside the unwind scope. A broken pump
@@ -322,6 +335,7 @@ fn capture(
                         gate.interrupt_principal(deadline).map_err(|error| {
                             format!("collector principal interruption failed: {error}")
                         })?;
+                        interruption_requested = true;
                     }
                     grace = Some(deadline);
                 } else {
@@ -377,6 +391,8 @@ fn capture(
             exit,
             guardian_cleanup_confirmed: Some(cleanup_confirmed),
             capture_complete: true,
+            interruption_requested,
+            interruption_acknowledged: gate.interruption_acknowledged(),
             error: None,
         },
         Err(error) => {
@@ -424,6 +440,8 @@ fn capture(
                 .or(exit);
             let mut completion = Completion::failed(exit, error);
             completion.guardian_cleanup_confirmed = Some(cleanup_confirmed);
+            completion.interruption_requested = interruption_requested;
+            completion.interruption_acknowledged = gate.interruption_acknowledged();
             completion
         }
     }

@@ -1,6 +1,59 @@
 use super::*;
 use serde::ser::{Error as _, SerializeMap};
 
+#[cfg(target_os = "linux")]
+#[test]
+fn perf_interrupt_result_preserves_signal_grade_and_raw_on_invalid_or_unrequested_capture() {
+    use std::os::unix::process::ExitStatusExt;
+    for case in ["valid", "bad-data", "incomplete", "unsolicited"] {
+        let root = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("perf-result", None).attempt_id);
+        let mut session = Session::start_with_collectors(&root, &[], None).unwrap();
+        stopped_fixture(&mut session, "perf-stat");
+        let mut stopped = session.stopped_collectors.pop().unwrap();
+        stopped.collector.adapter = collectors::find("perf").unwrap();
+        fs::write(
+            root.join("perf-stat.stderr"),
+            if case == "bad-data" {
+                "partial counter"
+            } else {
+                "1.0,42,,cycles,100,100.0,,\n"
+            },
+        )
+        .unwrap();
+        let mut completion =
+            ProducerCompletion::test_completed(std::process::ExitStatus::from_raw(libc::SIGINT));
+        completion.interruption_requested = case != "unsolicited";
+        completion.interruption_acknowledged = case != "unsolicited";
+        completion.guardian_cleanup_confirmed = Some(true);
+        completion.capture_complete = case != "incomplete";
+        stopped.collector.producer = Producer::observed(completion);
+        session.collectors.push(stopped.collector);
+        stopped_fixture(&mut session, "sibling");
+        let _ = session.finish(fixture_measurement());
+        let result: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("perf-stat.json")).unwrap()).unwrap();
+        assert_eq!(result["exit_code"], serde_json::Value::Null);
+        assert_eq!(result["exit_signal"], libc::SIGINT);
+        assert_eq!(
+            result["status"],
+            if case == "valid" {
+                "completed"
+            } else {
+                "failed"
+            }
+        );
+        assert_eq!(root.join("perf-stat.stdout").exists(), case != "valid");
+        assert_eq!(root.join("perf-stat.stderr").exists(), case != "valid");
+        assert!(root.join("sibling.json").is_file());
+        let run: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("run.json")).unwrap()).unwrap();
+        assert_eq!(run["workload_success"], false);
+        assert!(root.join("summary.json").is_file());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn incomplete_snapshot_retains_raw_prefix_without_parsing_and_finishes_sibling() {

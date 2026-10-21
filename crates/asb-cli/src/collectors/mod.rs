@@ -16,6 +16,7 @@ pub(crate) struct ProcessContext<'a> {
     pub name: &'a str,
     pub status: Option<std::process::ExitStatus>,
     pub capture_complete: bool,
+    pub controlled_interruption: bool,
     pub stderr: &'a str,
     /// Opened admitted sources, not mutable filesystem names. Only positional
     /// readers are exposed to processing; prefixes above are diagnostics.
@@ -33,6 +34,7 @@ impl<'a> ProcessContext<'a> {
             name,
             status: Some(*status),
             capture_complete: true,
+            controlled_interruption: false,
             stderr: diagnostics[1],
             sources,
         }
@@ -47,6 +49,10 @@ impl<'a> ProcessContext<'a> {
             name,
             status: completion.exit,
             capture_complete: completion.capture_complete,
+            controlled_interruption: completion.interruption_requested
+                && completion.interruption_acknowledged
+                && completion.guardian_cleanup_confirmed == Some(true)
+                && completion.capture_complete,
             stderr: diagnostics[1],
             sources,
         }
@@ -329,8 +335,18 @@ pub(crate) trait CollectorAdapter: Sync {
             graceful: None,
         }
     }
-    fn accepts_termination(&self, _name: &str, status: Option<std::process::ExitStatus>) -> bool {
-        status.is_none_or(|status| status.success())
+    /// Allows complete captures to reach adapter-specific data validation; it
+    /// does not itself certify any metrics or rewrite an actual exit status.
+    fn accepts_termination(
+        &self,
+        _name: &str,
+        completion: &crate::measurements::ProducerCompletion,
+    ) -> bool {
+        completion.exit.is_none_or(|status| status.success())
+    }
+    /// Owning adapters can preserve raw evidence rejected by data validation.
+    fn retain_raw_on_processing_failure(&self) -> bool {
+        false
     }
     fn process(
         &self,
