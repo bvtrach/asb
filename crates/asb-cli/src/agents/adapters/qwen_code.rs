@@ -106,7 +106,7 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
                 .env_remove("ANTHROPIC_API_KEY")
                 .env_remove("ANTHROPIC_BASE_URL");
         }
-        _ => unreachable!("unsupported Qwen endpoint"),
+        _ => return Err(context.unsupported_endpoint("qwen-code")),
     }
     Ok(())
 }

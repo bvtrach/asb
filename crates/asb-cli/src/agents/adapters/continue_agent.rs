@@ -37,7 +37,7 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
     let provider = match connection.interface {
         crate::endpoint::Interface::AnthropicMessages => "anthropic",
         crate::endpoint::Interface::OpenAiChat => "openai",
-        _ => unreachable!("unsupported Continue endpoint"),
+        _ => return Err(context.unsupported_endpoint("continue")),
     };
     let key = connection.credential.as_deref().unwrap_or("asb-local");
     let url = &connection.base_url;
