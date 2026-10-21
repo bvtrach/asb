@@ -160,3 +160,53 @@ status, grade, capture or continuation condition.
 Independent final source/focused review and explicit authorization are still
 required before any full suite. No make/package/hosted/full/new-main integration
 qualification, native Windows execution or release is claimed here.
+
+## Official41 integration: source and short focused proof
+
+Root and the independent reviewer approved `c6bdb0bf` before this integration.
+Before rebuilding, its actual executable was copied without replacement to
+`target/qualification/termination42-c6bdb0bf-asb`; both original and copy matched
+the full `a73287e4...` hash above. Historical hashes are not substituted for a
+preserved executable.
+
+Signed merge `71e72c372bcc2acddddea9cd6b47ce9b8b785232` combines `c6bdb0bf`
+and reviewed official-engine checkpoint `31070b9a`. Only Cargo version lines
+conflicted, resolved to staged 0.2.42. The complete incoming production, test and
+documentation diff was inspected. Incoming adapter subtree, contracts/baselines
+and official-engine documentation are byte-identical to `31070b9a`. All other
+tracked paths, including Cargo42, termination, gates, capture, runner,
+measurements, comparison, guest/Python/controller, publication and existing
+tests, remain byte-identical to `c6bdb0bf`. Successful exact-diff proofs are
+`termination42-integration-{incoming,protected}-proof.log`. Root independently
+confirmed these protected-tree relationships.
+
+The new combined actual ASB built first (`termination42-integration-build.log`)
+on the same exclusive home-filesystem cache. Before runtime, after runtime and
+after strict lint it matched SHA256
+`a8876a2c2ced0174019dfe1a06dcc6012f4b78dd2cbe83e964e4d0b8b45e164e`;
+see `termination42-integration-{before,after,final}.sha256`.
+
+Fresh short focused logs `termination42-integration-<suffix>.log`:
+
+| Suffix | Passed | Ignored |
+| --- | ---: | ---: |
+| workloads-adapters | 33 | 0 |
+| workloads-contracts-baselines | 2 | 0 |
+| adapter_layout | 1 | 0 |
+| termination | 8 | 0 |
+| process_gate | 26 | 0 |
+| workloads-remote | 26 | 0 |
+| workloads-task_protocol | 7 | 0 |
+| collectors-adapters-perf | 50 | 3 |
+| guest_agent | 15 | 0 |
+
+Total: 168 passing executions, zero failures and three existing ignored
+executions; filters overlap. The termination filter now also includes the
+approved actual Python task-loop declared-metadata test. Root's full-suite
+authorization is conditional on this combined focus and strict lint passing;
+all these handles are now terminal zero. Strict workspace/all-target/all-feature
+Clippy (`-D warnings`), formatting and diff checks also passed; logs have suffixes
+`clippy`, `fmt` and `diffcheck`. This is new combined-source focused evidence,
+not reuse of official41's 1401-test full qualification or a full result for42.
+The newly generated untracked `crates/asb-cli/.asb` and prior fixture directories
+are preserved. No unrelated source, cache or host state was changed.
