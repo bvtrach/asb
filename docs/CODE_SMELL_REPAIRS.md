@@ -22,9 +22,17 @@ all-target/all-feature Clippy and formatting passed with a stable actual 0.2.36
 executable hash. Parent qualifications do not qualify this combined tree.
 Detailed source boundaries, counts, hash and logs are recorded in
 [the raw custody integration proof](RECORDING_RAW_INTEGRATION.md).
-Independent integration review approved `98c51664`; fresh full execution remains
-held for the packaged-fixture cleanup follow-up and root clearance. Hosted/
-package CI, merge, post-merge checks and release remain pending. No unrelated
+Independent integration review approved `98c51664`; signed `807012d9` then folds
+the independently reviewed packaged-fixture permission teardown without changing
+production or version. Fresh full locked/offline/workspace/all-target/all-feature
+qualification at `807012d9` passed **1,314 tests**, zero failed, with 21 optional
+skips across 24 outer targets. Before/after/final actual executable hash stayed
+`dfc3f9dcd0a22a66eb0f91f3336c2dad15c1c9bf075b7e3f26c4b9846d6c542a`.
+Fresh artifact entry two (all ten scenarios), recording/raw 12, strict Clippy/fmt,
+sequential make/private Rustdocs/pinned AutoUML/flows/interactive/completions and
+Bash/Zsh syntax checks all passed. Logs and exact limitations are in the linked
+integration proof. Final independent qualification review, hosted/package CI,
+merge, post-merge checks and release remain pending. No unrelated
 collector/runtime-input/installer/setup repair is folded in.
 
 Historical artifact35 snapshot below predates its later full qualification:
