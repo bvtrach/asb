@@ -479,6 +479,8 @@ pub struct Session {
     lifecycle: Vec<LifecycleRecord>,
     #[cfg(test)]
     pub(crate) test_attach_failure: bool,
+    #[cfg(test)]
+    pub(crate) test_event_failure: Option<collectors::LifecycleEvent>,
     pub(crate) trace_id: String,
     sudo_collectors: BTreeSet<String>,
     component_starts: BTreeMap<String, Instant>,
@@ -511,6 +513,10 @@ impl Drop for Session {
         }
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "../tests/unit/measurement_lifecycle_faults.rs"]
+mod lifecycle_fault_tests;
 
 impl Session {
     pub fn started_unix_ms(&self) -> u128 {
@@ -610,6 +616,8 @@ impl Session {
             lifecycle: Vec::new(),
             #[cfg(test)]
             test_attach_failure: false,
+            #[cfg(test)]
+            test_event_failure: None,
             trace_id: format!(
                 "{}-{}",
                 std::process::id(),
@@ -632,17 +640,27 @@ impl Session {
         Ok(session)
     }
 
-    /// Deliver a non-secret typed lifecycle event to registered collectors.
+    /// Add a private fixture hook without a production registry/config surface.
+    #[cfg(test)]
+    pub(crate) fn add_test_adapter(&mut self, adapter: &'static dyn collectors::CollectorAdapter) {
+        self.adapters.push(adapter);
+    }
+
+    /// Dispatch every hook and stop scoped capture even when a hook fails.
     pub(crate) fn event(&mut self, event: collectors::LifecycleEvent) -> Result<(), String> {
-        if self.lifecycle.len() >= 256 {
-            return Err("too many benchmark lifecycle events".into());
+        let mut errors = Vec::new();
+        #[cfg(test)]
+        if self.test_event_failure == Some(event) {
+            errors.push(format!("fixture collector event failure: {event:?}"));
         }
         let elapsed_us = self.lifecycle_started.elapsed().as_micros();
         // Timestamp the event before potentially slow collector shutdown or
         // processing, so their overhead cannot become agent execution time.
         self.record_component_event(event);
         for collector in self.adapters.clone() {
-            collector.lifecycle_event(self, event)?;
+            if let Err(error) = collector.lifecycle_event(self, event) {
+                errors.push(error);
+            }
         }
         if matches!(
             event,
@@ -650,19 +668,29 @@ impl Session {
         ) {
             self.stop_process_tree_snapshots();
             self.stop_process_sampler();
-            self.stop_collector_processes(true)?;
+            if let Err(error) = self.stop_collector_processes(true) {
+                errors.push(error);
+            }
         }
-        self.lifecycle.push(LifecycleRecord {
-            sequence: self.lifecycle.len(),
-            elapsed_us,
-            event,
-        });
+        if self.lifecycle.len() < 256 {
+            self.lifecycle.push(LifecycleRecord {
+                sequence: self.lifecycle.len(),
+                elapsed_us,
+                event,
+            });
+        } else {
+            errors.push("too many benchmark lifecycle events".into());
+        }
         match event {
             collectors::LifecycleEvent::RunStarted => self.run_started = true,
             collectors::LifecycleEvent::RunFailed => self.run_failed = true,
             _ => {}
         }
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 
     fn record_component_event(&mut self, event: collectors::LifecycleEvent) {
@@ -975,6 +1003,7 @@ impl Session {
                 status: &status,
                 stdout: &stdout,
                 stderr: &stderr,
+                stdout_path: &collector.stdout_path,
                 stderr_path: &collector.stderr_path,
             };
             let data = match collector.adapter.process(self, &context) {

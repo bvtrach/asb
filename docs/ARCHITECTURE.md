@@ -84,6 +84,14 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   under a machine-readable `metrics` object plus bounded `series` arrays.
   Process rows in the same observation are summed, not plotted as extra time
   points. `series_timestamps` uses monotonic observation-completion offsets;
+  CPU/I/O and BPF processing reads complete stopped stdout files, not their
+  256 KiB diagnostic prefix. Input is bounded to 16 MiB; truncated final lines,
+  invalid UTF-8, nonfinite parsed values or processed data above a 12 MiB
+  serialized budget fail the collector without prefix measurements. The
+  processed budget reserves worst-case sixfold JSON diagnostic escaping and
+  outer fields beneath comparison's 16 MiB
+  result limit. Temporary full output is removed after processing on either
+  success or failure; an optional collector error never erases an official grade.
   historical files fall back to pidstat clock offsets with midnight handling.
   Average and child-summary rows are excluded. CPU/I/O observations use the
   millisecond series timestamp contract (both monotonic pidstat markers and
@@ -115,7 +123,10 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   series with at least two points and expose the same hover, zoom, pan, reset,
   and enlarge controls as bar charts. Built-in BPFTrace profiles remain
   bounded cumulative one-second snapshots and final aggregates (custom
-  interval programs may add series), while Perfetto retains its timestamped
+  interval programs may add series). Their legacy arrays have no measured
+  timestamps and are sample-indexed, not qualified aligned clock series;
+  sparse per-CPU maps must not be assumed synchronized by array index.
+  Perfetto retains its timestamped
   trace. Process-attached collector processes stop at the agent-execution
   boundary (also on run failure), before grading. Report processing/export
   stays after workload evaluation; an optional processor failure becomes a
@@ -251,6 +262,36 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
 - `workloads/`: one UTF-8 `.txt` prompt per workload name. Built-in supporting
   files are stored under `.asb/fixtures/<name>/` and materialized into the run
   workspace without overwriting existing edits.
+
+The runner uses private consuming attempt states rather than one shared mutable
+orchestration context. `AdmittedAttempt` publishes start intent before resolving
+the project; `PreparedAttempt` owns the workload, optional proxy and measurement
+sessions through execution. Native command intent becomes an owned
+`PreparedNative` only after adapter, endpoint, Python, runtime and replay
+preparation, so the gate executes that exact command. `ExecutionEvidence` owns
+captured output, guest observations and the frozen execution clock.
+Proxy settlement consumes execution into `SettledAttempt`; evaluation consumes
+that into `EvaluatedAttempt`, retaining an independent `EvaluationOutcome`.
+Explicit cleanup then yields `FinalizedAttempt`. Existing adapter cancellation
+on aborted transitions preserves unfinished resources rather than calling
+destructive normal-close from Drop. Provider bridge ownership remains outside
+these transitions until proxy settlement and evaluation have finished.
+
+Post-execution lifecycle failures are ancillary `AttemptIssues`, not missing
+submissions or replacement grades. Dispatch attempts every collector hook and
+execution-scoped shutdown even after a hook fails. Before execution/resume,
+required instrumentation errors still fail closed. After output exists, official
+evaluation and explicit cleanup run despite client/proxy/collector failures.
+Human presentation and guest-owner transport have distinct failure policies:
+broken presentation stops writes while already-admitted work completes; losing
+the owner transport still cancels/preserves. A final measurement-publication
+error leaves the immutable task outcome available and prevents a completion
+receipt, so an incomplete measurement cannot silently authorize continuation.
+Run-log publication is a separate typed obligation: a failed log write never
+skips final measurement publication or hides the grade from terminal rendering.
+Both log and measurement publication must be confirmed before a completion
+record/observer receipt is permitted. Original run failures precede ancillary
+log/measurement diagnostics; repairing reporting does not repeat the agent.
 
 `WorkloadAdapter` creates a distinct mutable `WorkloadSession` for each
 attempt. The session owns its task invocation, prepared workspace, initial
