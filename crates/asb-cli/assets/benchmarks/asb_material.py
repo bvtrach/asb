@@ -103,9 +103,10 @@ def capture_task(task, definition, exclusions=(), deadline=None, binary=None):
     if binary is not None and getattr(journal,"material_services",None) is not None:
         from asb_material_services import resolve
         _receipt, services, _primary = resolve(task,deadline)
-        if len(services) != 1 or _receipt["networks"]:
-            from asb_material_environment import capture
-            return capture(task,definition,exclusions,binary,deadline)
+        from asb_material_environment import capture
+        return capture(task,definition,exclusions,binary,deadline)
+    if binary is not None:
+        raise MaterialError("verified material requires a frozen pre-creation service declaration")
     if len(containers) != 1:
         raise MaterialError("multiple declared services require explicit prepared material coverage")
     if time.monotonic() >= deadline or (task.cancelled is not None and task.cancelled.is_set()):
@@ -118,9 +119,6 @@ def capture_task(task, definition, exclusions=(), deadline=None, binary=None):
         raise MaterialError("prepared material resource ownership could not be confirmed") from None
     if resource is None or resource.id != task.workspace.container.id:
         raise MaterialError("prepared material resource differs from the task container")
-    if binary is not None:
-        from asb_material_root import capture
-        return capture(task, definition, exclusions, binary, deadline)
     return capture_workdir(task.workspace, definition, exclusions, task.cancelled, deadline)
 
 

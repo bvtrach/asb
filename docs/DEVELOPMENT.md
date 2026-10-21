@@ -125,6 +125,10 @@ against a synthetic loopback provider supplying a known repair. It uses the same
 ASB/project opt-ins, may download public client packages into isolated guests,
 and never uses a real provider key or calls an LLM. This qualifies the
 controller/runner/grade path, not AI solving or full mount/service coverage.
+Set `ASB_TEST_BENCHMARK_SUITE=terminal-bench-1.0` or `terminal-bench-2.1`
+to apply the same counts, isolation, compatibility, official grading and cleanup
+assertions to those installed original SDK classes. Missing installation fails
+explicitly; these opt-ins are not claimed green merely because SWE-bench passed.
 The same opt-in checks actual Docker root-header metadata inspection, retained
 120-second socket read timeout and early response closure. Pure
 `benchmark_docker.py` tests response ownership before the first read, after a

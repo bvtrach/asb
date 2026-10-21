@@ -508,6 +508,41 @@ report actual consumption; exhausting any aggregate dimension aborts capture.
 - Complete repeat/bundle CLI help, documentation and integration qualification
   before marking this feature/release ready.
 
+## Current direct-container and single-service coverage
+
+The modern verified path now uses the complete environment composer for every
+service declaration, including a single network-none service. Earlier sections
+describing a single-service root-only fallback are historical implementation
+steps, not the current dispatch contract. Missing pre-creation declarations stop
+verified preparation rather than silently reducing material coverage.
+
+Direct SDK creation freezes a private receipt before creating the container,
+without changing its Docker options. Original SWE-bench keeps Docker's shared
+default bridge. The observer looks up that named bridge and validates only the
+owned container's endpoint; unrelated peer membership is neither enumerated nor
+included in baseline identity. Shared bridge configuration, address pools,
+gateways, flags and driver options remain literal external observations. Only
+positively generated own endpoint identities are normalized. The bridge is never
+journal-owned or removed. This is relevant workload-environment comparison, not
+an external-network snapshot or a guarantee about peer activity.
+
+Pure regressions cover frozen direct intent, foreign membership churn, own
+endpoint disagreement, external IPv6/IPAM options, fresh generated identities,
+and single-service runtime-file/environment/resource-limit changes. Actual
+original SWE-bench fresh preparations, the single-network-none composer and
+public original SWE-bench repeat-two/concurrency-two qualification passed with
+one unchanged binary. The public test observed four distinct attempts, eight
+loopback inference calls, four official resolved grades and confirmed cleanup;
+it used a known repair, not an AI-generated solution.
+
+The opt-in repeated fixture also accepts `ASB_TEST_BENCHMARK_SUITE` values
+`terminal-bench-1.0` and `terminal-bench-2.1`. Initial qualification exposed
+remaining failures before agent launch: 1.0's prepared census encounters SDK
+tmux/session instrumentation, while 2.1 reports mutation within a complete
+service round. These failures remain open and are not grounds for skipping
+material checks. Cross-service disjoint bind alias coverage also remains open.
+Focused SWE-bench/composer successes do not qualify these other SDK classes.
+
 ## Current test coverage
 
 Gate tests cover delayed siblings, early return, panic, identity mismatch,

@@ -30,6 +30,9 @@ class EnvironmentQualification(unittest.TestCase):
     def test_single_service_owned_bridge_uses_complete_environment_observation(self):
         self.qualify(networked=True,single=True)
 
+    def test_single_service_network_none_uses_complete_environment_observation(self):
+        self.qualify(single=True)
+
     def test_two_service_routed_bridge_binds_default_routes(self):
         self.qualify(networked=True,internal=False)
 

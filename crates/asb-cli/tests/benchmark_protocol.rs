@@ -4,6 +4,11 @@ mod support;
 use support::IsolatedEnvironment;
 
 #[test]
+fn direct_creation_and_shared_default_bridge_bind_only_owned_workload_material() {
+    python_protocol("benchmark_material_direct.py");
+}
+
+#[test]
 fn python_subprocess_isolation_retains_only_coverage_instrumentation() {
     python_protocol("test_environment.py");
 }

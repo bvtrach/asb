@@ -16,12 +16,15 @@ def _require(condition):
         raise MaterialError("prepared network intent differs from observed or supported semantics")
 
 
-def _pools(role, definition, attributes):
+def _pools(role, definition, attributes, automatic=True):
     requested = definition.get("ipam") or {}
     _require(isinstance(requested,dict) and not set(requested)-{"driver","config","options"})
     actual = attributes.get("IPAM") or {}
     _require(actual.get("Driver") == requested.get("driver","default") == "default")
-    _require((actual.get("Options") or {}) == (requested.get("options") or {}))
+    if automatic or "options" in requested:
+        _require((actual.get("Options") or {}) == (requested.get("options") or {}))
+    else:
+        _require(isinstance(actual.get("Options") or {},dict))
     configs = actual.get("Config") or []
     selected = requested.get("config") or []
     _require(isinstance(configs,list) and 1 <= len(configs) <= 2 and isinstance(selected,list))
@@ -50,14 +53,14 @@ def _pools(role, definition, attributes):
                     ("ip_range","IPRange"),("aux_addresses","AuxiliaryAddresses")]:
                 if source in explicit:
                     _require(explicit[source] == config.get(target))
-        else:
+        elif automatic:
             _require(not config.get("IPRange") and not config.get("AuxiliaryAddresses"))
             value["Subnet"] = {"automatic_pool":role,"family":subnet.version,"prefix":subnet.prefixlen}
             if gateway:
                 value["Gateway"] = {"automatic_gateway":role,"family":subnet.version,
                     "offset":int(ipaddress.ip_address(gateway))-int(subnet.network_address)}
         result.append(value)
-        pools.append((subnet,gateway,explicit is None))
+        pools.append((subnet,gateway,explicit is None and automatic))
     ipam = copy.deepcopy(actual)
     _require(not set(ipam)-{"Driver","Options","Config"})
     ipam["Config"] = result
@@ -93,13 +96,19 @@ def _canonicalize(snapshot):
     public,mappings = {},{}
     for role,item in sorted(networks.items()):
         definition,attrs = item["definition"],item["attributes"]
+        ownership = item.get("ownership","owned")
+        _require(ownership in ["owned","external-shared-default-bridge-v1"])
+        shared = ownership != "owned"
         _require(not set(definition)-{"driver","driver_opts","internal","attachable","enable_ipv4","enable_ipv6","ipam"})
         _require(attrs.get("Driver") == definition.get("driver","bridge") == "bridge")
         _require(attrs.get("Scope") == "local")
         for source,target,default in [("internal","Internal",False),("attachable","Attachable",False),
                 ("enable_ipv4","EnableIPv4",True),("enable_ipv6","EnableIPv6",False)]:
             requested = definition.get(source,default)
-            _require(type(requested) is bool and attrs.get(target,default) == requested)
+            if shared:
+                _require(type(attrs.get(target,default)) is bool)
+            else:
+                _require(type(requested) is bool and attrs.get(target,default) == requested)
         options,requested_options = attrs.get("Options") or {},definition.get("driver_opts") or {}
         _require(isinstance(options,dict) and isinstance(requested_options,dict))
         _require(all(options.get(key) == value for key,value in requested_options.items()))
@@ -108,10 +117,10 @@ def _canonicalize(snapshot):
             selected.pop(key,None)
         selected["Options"] = copy.deepcopy(options)
         bridge_key = "com.docker.network.bridge.name"
-        if bridge_key in options and bridge_key not in requested_options:
+        if bridge_key in options and bridge_key not in requested_options and not shared:
             _require(options[bridge_key] == "br-"+attrs["Id"][:12])
             selected["Options"][bridge_key] = {"automatic_bridge":role}
-        selected["IPAM"],pools = _pools(role,definition,attrs)
+        selected["IPAM"],pools = _pools(role,definition,attrs,automatic=not shared)
         endpoints,used_addresses,used_macs = {},set(),set()
         for service,endpoint in sorted(item["endpoints"].items()):
             intent = snapshot["attachments"][service][role] or {}
@@ -122,7 +131,7 @@ def _canonicalize(snapshot):
             _require(isinstance(aliases,list) and all(isinstance(alias,str) for alias in aliases))
             _require(set(aliases) <= set(endpoint.get("Aliases") or []))
             value = copy.deepcopy(endpoint)
-            value["NetworkID"] = {"owned_network":role}
+            value["NetworkID"] = {"shared_network":role} if shared else {"owned_network":role}
             value["EndpointID"] = {"owned_endpoint":service,"network":role}
             generated = {service_intent["container"]:{"owned_container":service}}
             if service_intent.get("hostname") is None:
@@ -185,9 +194,20 @@ def _canonicalize(snapshot):
         if len((declared.get("ipam") or {}).get("config") or []) > 1:
             declared["ipam"]["config"].sort(key=lambda value:ipaddress.ip_network(value["subnet"]).version)
         public[role] = {"definition":declared,"configuration":selected,"endpoints":endpoints}
+        if shared:
+            public[role]["ownership"] = ownership
     names = {item["attributes"]["Name"]:role for role,item in networks.items()}
-    modes = {service:{"owned_network":names[mode]} if mode in names else {"literal":mode}
-        for service,mode in snapshot["modes"].items()}
+    for role,item in networks.items():
+        if item.get("ownership") == "external-shared-default-bridge-v1":
+            names["default"] = role
+    modes = {}
+    for service,mode in snapshot["modes"].items():
+        if mode in names:
+            role = names[mode]
+            shared = networks[role].get("ownership") == "external-shared-default-bridge-v1"
+            modes[service] = {"shared_network":role} if shared else {"owned_network":role}
+        else:
+            modes[service] = {"literal":mode}
     result = {"networks":public,"modes":modes}
     canonical_digest(result,"asb-owned-bridge-network-identity-v1")
     return result,mappings

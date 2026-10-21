@@ -26,7 +26,7 @@ def capture(task, definition, exclusions, binary, deadline):
             raise MaterialError("prepared environment observation was cancelled or timed out")
     receipt,resources,primary = resolve(task,deadline)
     def network_snapshot(live):
-        if not receipt["networks"]:
+        if not receipt["networks"] and not receipt.get("external_networks"):
             return None,{}
         raw = observe_networks(task,deadline)
         if (raw["services"] != {role:resource.id for role,resource in live.items()}
@@ -142,5 +142,6 @@ def capture(task, definition, exclusions, binary, deadline):
         raise MaterialError("prepared environment changed between complete service rounds")
     check()
     return {"schema_version":1,"scope":"prepared-workload-material-v1",
-        "sha256":canonical_digest({"scope":"owned-bridge-environment-v1" if receipt["networks"] else "owned-network-none-environment-v1",
+        "sha256":canonical_digest({"scope":"shared-default-bridge-workload-environment-v1" if receipt.get("external_networks")
+            else "owned-bridge-environment-v1" if receipt["networks"] else "owned-network-none-environment-v1",
             "definition":definition,"primary":primary,"observation":rounds[0]},"asb-prepared-workload-material-v1")}

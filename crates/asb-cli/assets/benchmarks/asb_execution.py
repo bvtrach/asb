@@ -122,13 +122,16 @@ class ManagedDockerWorkspace:
         labels = {"asb.owner": "asb", "asb.attempt": self.attempt}
         if self.journal is not None:
             labels.update(self.journal.declare("containers", self.attempt))
-        self.container = self.client.containers.create(
+        creation = dict(
             image=self.image.id, name=self.attempt, command=["/bin/sh", "-c", "exec tail -f /dev/null"],
             detach=True, working_dir=self.workdir,
             labels=labels,
             mem_limit=self.limits["memory_bytes"], nano_cpus=int(self.limits["cpus"] * 10**9),
             pids_limit=self.limits["pids"],
         )
+        if self.journal is not None:
+            self.journal.direct_container(creation)
+        self.container = self.client.containers.create(**creation)
         self.cleanup_status = "pending"
         try:
             self.container.start()

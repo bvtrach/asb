@@ -138,6 +138,21 @@ class ResourceJournal:
             publish(self.directory, "resources.json", self.record)
         return self.labels
 
+    def direct_container(self, options):
+        """Freeze direct creation before the SDK starts a single owned service."""
+        from asb_material_direct import declare
+        from asb_material_binds import declare as binds
+        value = declare(options,self.record)
+        if hasattr(self,"material_services"):
+            if self.material_services != value:
+                raise RecoveryError("direct container creation declaration cannot be changed")
+            return
+        self.material_services = value
+        publish(self.directory,"material-services.json",value)
+        configuration = {"services":{"main":{"container_name":options["name"]}}}
+        self.material_binds = binds(self.directory,configuration,self.record)
+        publish(self.directory,"material-binds.json",self.material_binds)
+
     def compose(self, configuration):
         for name, service in configuration.get("services", {}).items():
             service.setdefault("labels", {}).update(self.declare("containers", service["container_name"]))

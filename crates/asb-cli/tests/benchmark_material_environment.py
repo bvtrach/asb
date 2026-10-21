@@ -67,7 +67,7 @@ class RuntimeTests(unittest.TestCase):
 
 
 class EnvironmentTests(unittest.TestCase):
-    def fixture(self,letter="a",volumes=None):
+    def fixture(self,letter="a",volumes=None,single=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -76,6 +76,8 @@ class EnvironmentTests(unittest.TestCase):
         journal = ResourceJournal(api,root,owner)
         self.addCleanup(journal.close)
         config = {"services":{role:{"container_name":owner+"-"+role} for role in ["main","database"]}}
+        if single:
+            config["services"].pop("database")
         if volumes:
             config["volumes"] = {role:{"name":owner+"-"+role} for role in (["data"] if volumes == "shared" else ["left","right"])}
         journal.compose(config)
@@ -119,6 +121,8 @@ class EnvironmentTests(unittest.TestCase):
             events.append(("runtime",role)); budgets.append(budget)
             resource = next(item for item in task.client.containers.values.values() if item.id == identity)
             result = files(resource.attrs["Config"]["Hostname"],resource.name)
+            if getattr(task,"runtime_suffix",None):
+                result[0]["text"] += task.runtime_suffix
             budget.consume({"entries":3,"names":39,"bytes":sum(len(item["text"]) for item in result),"attributes":0},budget.allowance())
             return result
         with patch.object(subject,"prepare",side_effect=prepare),patch.object(subject,"read_files",side_effect=read), \
@@ -139,6 +143,30 @@ class EnvironmentTests(unittest.TestCase):
         shared,_ = self.capture(self.fixture(volumes="shared"))
         independent,_ = self.capture(self.fixture("b",volumes="independent"))
         self.assertNotEqual(shared,independent)
+
+    def test_single_network_none_binds_runtime_files_and_configuration(self):
+        task = self.fixture(single=True)
+        baseline,events = self.capture(task)
+        self.assertEqual([event for event in events if event[0] == "runtime"],
+            [("runtime","main")]*4)
+        fresh,_ = self.capture(self.fixture("b",single=True))
+        self.assertEqual(baseline,fresh)
+        task.runtime_suffix = "\n# workload-visible runtime change\n"
+        changed,_ = self.capture(task)
+        self.assertNotEqual(baseline,changed)
+        task.runtime_suffix = None
+        for section,key,value in [("Config","Env",["WORKLOAD_SETTING=changed"]),
+                                  ("HostConfig","Memory",536870912)]:
+            with self.subTest(section=section,key=key):
+                mapping = task.workspace.container.attrs[section]
+                previous = mapping.get(key)
+                mapping[key] = value
+                changed,_ = self.capture(task)
+                self.assertNotEqual(baseline,changed)
+                if previous is None:
+                    mapping.pop(key)
+                else:
+                    mapping[key] = previous
 
     def test_runtime_mutation_and_owner_replacement_cannot_be_hidden_by_normalization(self):
         def mutate(task,role,events):

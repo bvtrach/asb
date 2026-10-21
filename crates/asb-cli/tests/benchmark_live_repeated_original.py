@@ -1,4 +1,4 @@
-"""Opt-in public repeated original SWE-bench execution with Pi and no LLM.
+"""Opt-in public repeated original benchmark execution with Pi and no LLM.
 
 Uses installed original SDK/catalog/client assets and a deterministic loopback
 provider. A known repair exercises grading, not AI task-solving capability.
@@ -44,13 +44,26 @@ class RepeatedOriginalQualification(unittest.TestCase):
         import guest_provider_fixture as provider
         root = Path(os.environ["ASB_TEST_SWECATALOG_ROOT"]).resolve()
         binary = Path(os.environ["ASB_TEST_BENCHMARK_ASB"]).resolve()
+        suite = os.environ.get("ASB_TEST_BENCHMARK_SUITE","swe-bench-lite")
+        self.assertIn(suite,["swe-bench-lite","terminal-bench-1.0","terminal-bench-2.1"])
+        instance = {"swe-bench-lite":"astropy__astropy-12907",
+            "terminal-bench-1.0":"hello-world","terminal-bench-2.1":"cancel-async-tasks"}[suite]
         artifacts = Path(tempfile.mkdtemp(prefix="repeated-original-",dir=root))
         print(f"Retained repeated original-task qualification: {artifacts}",flush=True)
         provider.root = artifacts
         fix = ("from pathlib import Path; p=Path('astropy/modeling/separable.py'); t=p.read_text(); "
                "old='cright[-right.shape[0]:, -right.shape[1]:] = 1'; "
                "assert t.count(old)==1; p.write_text(t.replace(old, 'cright[-right.shape[0]:, -right.shape[1]:] = right'))")
-        (artifacts/"command.txt").write_text("python -c "+shlex.quote(fix))
+        command = "python -c "+shlex.quote(fix)
+        if suite == "terminal-bench-1.0":
+            command = "printf 'Hello, world!\\n' > hello.txt"
+        elif suite == "terminal-bench-2.1":
+            solution = ("import asyncio\nasync def run_tasks(tasks, max_concurrent):\n"
+                "    semaphore = asyncio.Semaphore(max_concurrent)\n"
+                "    async def run(task):\n        async with semaphore:\n            await task()\n"
+                "    async with asyncio.TaskGroup() as group:\n        for task in tasks:\n            group.create_task(run(task))\n")
+            command = "python3 -c "+shlex.quote("from pathlib import Path; Path('run.py').write_text("+repr(solution)+")")
+        (artifacts/"command.txt").write_text(command)
         barrier, lock, arrivals = threading.Barrier(2),threading.Lock(),[]
         class Handler(provider.Handler):
             def do_POST(self):
@@ -70,7 +83,7 @@ class RepeatedOriginalQualification(unittest.TestCase):
         try:
             config = artifacts/"benchmark.toml"
             config.write_text("agent='pi'\nprovider='openrouter'\nmodel='fixture-model'\n"
-                "workload='swe-bench-lite'\ntrial='astropy__astropy-12907'\nconcurrency=2\n"
+                f"workload='{suite}'\ntrial='{instance}'\nconcurrency=2\n"
                 "workspace='unused-workspace'\nlog_file='unused.log'\n"
                 "[measurements]\nenabled=false\ndirectory='unused-measurements'\ncollectors=[]\n")
             base = f"http://127.0.0.1:{server.server_address[1]}/v1"
@@ -112,6 +125,7 @@ class RepeatedOriginalQualification(unittest.TestCase):
                 self.assertEqual(len(list((campaign/f"batch-{batch}/outcomes").glob("*.json"))),2)
             self.assertFalse((artifacts/"unused-workspace").exists())
             (artifacts/"qualification.json").write_text(json.dumps({"campaign":str(campaign),
+                "workload":suite,"task":instance,
                 "executions":4,"distinct_original_attempts":4,"official_resolved":4,
                 "loopback_inference_requests":len(arrivals),"live_llm_provider_called":False,
                 "material_identity":identities[0]["material_sha256"]},sort_keys=True)+"\n")

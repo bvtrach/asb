@@ -60,6 +60,9 @@ def observe(task, deadline):
     """
     from asb_resources import owned_resource
     receipt,services,primary = resolve(task,deadline)
+    if receipt.get("external_networks"):
+        from asb_material_shared_network import observe as shared
+        return shared(task,receipt,services,primary,deadline)
     journal = task.journal
     def check():
         if (time.monotonic() >= deadline or journal.lock is None
