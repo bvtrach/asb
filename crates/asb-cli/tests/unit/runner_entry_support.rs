@@ -17,6 +17,24 @@ struct Hook {
 thread_local! { static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) }; }
 
 pub(crate) struct Scope;
+
+pub(crate) fn module_descriptor(
+    name: &str,
+    mut descriptor: Option<workloads::contracts::ModuleDescriptor>,
+) -> Option<workloads::contracts::ModuleDescriptor> {
+    HOOK.with_borrow(|slot| {
+        if name == "repository-navigation"
+            && slot.as_ref().is_some_and(|hook| hook.native_reward)
+            && let Some(module) = descriptor.as_mut()
+        {
+            // This process-local fixture's declared protocol feeds normal
+            // planning, fingerprints and runtime before any evidence is saved.
+            module.protocol.score_policy = "metric:accuracy@1".into();
+        }
+    });
+    descriptor
+}
+
 impl Scope {
     pub fn new(root: &Path, event: LifecycleEvent, calls: Rc<RefCell<Vec<&'static str>>>) -> Self {
         HOOK.with(|slot| {

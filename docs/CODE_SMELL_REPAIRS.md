@@ -167,6 +167,11 @@ presentation failure preserves evidence; Unix quiescent-guest controller pipes
 use owned deadline-aware transport and cancel on failure. Independent official
 grades, adapter-file metrics and validated cassette usage survive capture
 uncertainty, while transcript-derived claims and continuation receipts do not.
+Unmeasured sweeps retain those independent grades through a validated, bounded
+latest-isolated-log reporting fallback; source transcripts never enter reports,
+conflicting latest attempts fail before publication, and no resume/outcome or
+completion receipt is created. Actual sequential sweep fixtures exercise both
+binary grades, nullable native rewards and refusal to resume without retry.
 Borrowed writers cannot be made generically cancellable; non-Unix guest writes
 retain that limitation. Windows pipe pumping is source-only here, not native
 runtime qualification. Non-Unix/non-Windows direct execution fails before spawn

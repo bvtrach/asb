@@ -9,7 +9,10 @@ mod adapters;
 pub(crate) mod contracts;
 
 pub(crate) fn descriptor(name: &str) -> Option<contracts::ModuleDescriptor> {
-    adapters::find(name).map(|adapter| adapter.descriptor(name))
+    let descriptor = adapters::find(name).map(|adapter| adapter.descriptor(name));
+    #[cfg(test)]
+    let descriptor = crate::runner::fixture_module_descriptor(name, descriptor);
+    descriptor
 }
 
 pub(crate) fn describe_module(

@@ -959,6 +959,15 @@ fn full_runner_entry_bounded_capture_preserves_independent_file_grades_without_r
     ]);
 }
 
+#[test]
+fn actual_unmeasured_sweep_capture_failure_keeps_grades_reporting_only() {
+    isolated_full_entry_cases(&[
+        "capture-sweep-true-limit",
+        "capture-sweep-false-limit",
+        "capture-sweep-native-limit",
+    ]);
+}
+
 fn isolated_full_entry_cases(cases: &[&str]) {
     use support::IsolatedEnvironment;
     let executable = std::env::current_exe().unwrap();
@@ -1016,6 +1025,7 @@ fn full_entry_child(case: &str) {
     let provider_case = case.starts_with("provider-");
     let disposition_case = case.starts_with("disposition-");
     let capture_case = case.starts_with("capture-");
+    let capture_sweep = case.starts_with("capture-sweep-");
     let fixture = Fixture::new();
     let root = fixture.0.canonicalize().unwrap();
     let project = project::ProjectConfig {
@@ -1085,7 +1095,7 @@ fn full_entry_child(case: &str) {
     if case == "provider-early-failed-finish" {
         std::fs::write(root.join("workspace"), "blocking fixture file").unwrap();
     }
-    let config: BenchmarkConfig = toml::from_str(&format!("agent='{agent_id}'\nprovider='openrouter'\nmodel='fixture'\nworkload='repository-navigation'\nworkspace='workspace'\nlog_file='run.jsonl'\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n")).unwrap();
+    let config: BenchmarkConfig = toml::from_str(&format!("agent='{agent_id}'\nprovider='openrouter'\nmodel='fixture'\nworkload='repository-navigation'\nworkspace='workspace'\nlog_file='run.jsonl'\n[measurements]\nenabled={}\ndirectory='measurements'\ncollectors=[]\n", !capture_sweep)).unwrap();
     let config_path = root.join("benchmark.toml");
     std::fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
     let blocked_log = case.starts_with("blocked-log");
@@ -1120,6 +1130,10 @@ fn full_entry_child(case: &str) {
     } else {
         entry_test_support::Scope::new(&root, event, calls.clone())
     };
+    if capture_sweep {
+        check_unmeasured_capture_sweep(case, &root, &cassette, &counter, &calls);
+        return;
+    }
     let observer = Observer {
         started: AtomicUsize::new(0),
         completed: AtomicUsize::new(0),
@@ -1552,6 +1566,198 @@ fn full_entry_child(case: &str) {
             "never replace the blocking user directory"
         );
     }
+}
+
+fn check_unmeasured_capture_sweep(
+    case: &str,
+    root: &Path,
+    cassette: &Path,
+    counter: &Path,
+    calls: &Rc<RefCell<Vec<&'static str>>>,
+) {
+    let manifest = root.join("sweep.toml");
+    std::fs::write(&manifest, "configs=['benchmark.toml']\n").unwrap();
+    let tapes = root.join("tapes");
+    let tape_directory = tapes.join("000-benchmark/cassettes");
+    std::fs::create_dir_all(&tape_directory).unwrap();
+    std::fs::copy(
+        cassette,
+        tape_directory.join("benchmark-pi-repository-navigation-fixture.jsonl"),
+    )
+    .unwrap();
+    let options = crate::sweep::Options {
+        json: true,
+        mode: Some(tape::Mode::Replay),
+        cassette_root: Some(&tapes),
+        ..Default::default()
+    };
+    let error =
+        crate::sweep::run_with_options(manifest.to_str().unwrap(), options, &mut Vec::new())
+            .unwrap_err()
+            .to_string();
+    assert!(error.contains("capture limit"), "{error}");
+    let results = root.join("sweep-results");
+    let directory = results.join("000-benchmark");
+    let log_bytes = std::fs::read(directory.join("run.log")).unwrap();
+    let log: serde_json::Value = serde_json::from_slice(&log_bytes).unwrap();
+    assert_eq!(log["status"], "failed");
+    assert_eq!(log["failure_kind"], "run_error");
+    assert_eq!(
+        log["benchmark_outcome"]["evaluation"]["status"],
+        "completed"
+    );
+    if case.contains("native") {
+        assert!(log["workload_success"].is_null());
+        assert!(log["benchmark_outcome"]["evaluation"]["resolution"].is_null());
+        assert_eq!(
+            log["benchmark_outcome"]["evaluation"]["rewards"]["accuracy"],
+            0.5
+        );
+    } else {
+        assert_eq!(log["workload_success"], !case.contains("false"));
+    }
+    assert!(!directory.join("measurements").exists());
+    assert!(!directory.join(".asb-completions").exists());
+    let checkpoint = results.join(".checkpoint");
+    assert!(!checkpoint.join("completed/000000.json").exists());
+    assert!(!checkpoint.join("replicas/000000/001.json").exists());
+    let retained = [
+        results.join("plan.json"),
+        directory.join("benchmark.toml"),
+        checkpoint.join("started/000000/001.json"),
+    ]
+    .into_iter()
+    .map(|path| {
+        let bytes = std::fs::read(&path).unwrap();
+        (path, bytes)
+    })
+    .collect::<Vec<_>>();
+    let report = root.join("results/sweep-comparison/comparison.json");
+    let report_bytes = std::fs::read(&report).unwrap();
+    let compared: serde_json::Value = serde_json::from_slice(&report_bytes).unwrap();
+    assert_eq!(compared["benchmarks"][0]["result_source"], "run-log");
+    assert_eq!(
+        compared["benchmarks"][0]["benchmark_outcome"],
+        log["benchmark_outcome"]
+    );
+    if case.contains("native") {
+        assert_eq!(
+            compared["benchmarks"][0]["metrics"]["benchmark_rewards.accuracy@1.accuracy.ratio"],
+            0.5
+        );
+        assert!(
+            compared["benchmarks"][0]["metrics"]
+                .get("success_rate")
+                .is_none()
+        );
+    } else {
+        assert_eq!(
+            compared["benchmarks"][0]["metrics"]["success_rate"],
+            if case.contains("false") { 0.0 } else { 1.0 }
+        );
+    }
+    assert!(
+        compared["benchmarks"][0]["status"]
+            .as_str()
+            .unwrap()
+            .contains("capture limit")
+    );
+    let html = std::fs::read_to_string(report.with_file_name("report.html")).unwrap();
+    assert!(html.contains("capture limit"));
+    if case.contains("native") {
+        assert!(html.contains("accuracy v1 / accuracy"));
+    }
+    assert!(!html.contains("fixture-file-grade"));
+    crate::compare::generate(manifest.to_str().unwrap(), &mut Vec::new()).unwrap();
+    assert_eq!(std::fs::read(&report).unwrap(), report_bytes);
+    let cli = Command::new(std::env::var_os("ASB_RUNTIME_EXECUTABLE").unwrap())
+        .current_dir(root)
+        .args(["compare", "sweep.toml"])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .output()
+        .unwrap();
+    assert!(
+        cli.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli.stderr)
+    );
+    let cli_report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
+    assert_eq!(
+        cli_report["benchmarks"][0]["benchmark_outcome"],
+        log["benchmark_outcome"]
+    );
+    assert_eq!(cli_report["benchmarks"][0]["result_source"], "run-log");
+    assert!(
+        cli_report["benchmarks"][0]["status"]
+            .as_str()
+            .unwrap()
+            .contains("capture limit")
+    );
+    // Relative CLI invocation legitimately renders relative display paths;
+    // restoring the same absolute invocation must restore identical report bytes.
+    crate::compare::generate(manifest.to_str().unwrap(), &mut Vec::new()).unwrap();
+    assert_eq!(std::fs::read(&report).unwrap(), report_bytes);
+    assert_eq!(std::fs::read(directory.join("run.log")).unwrap(), log_bytes);
+    // A malformed/mismatched latest record must not fall back to an earlier
+    // valid grade, nor replace the previously published report generation.
+    for (path, value) in [
+        ("/agent", serde_json::json!("other-agent")),
+        ("/provider", serde_json::json!("other-provider")),
+        ("/model", serde_json::json!("other-model")),
+        ("/task/task_id", serde_json::json!("other-task")),
+        ("/replica_index", serde_json::json!(2)),
+    ] {
+        let mut invalid = log.clone();
+        *invalid.pointer_mut(path).unwrap() = value;
+        let bytes = [
+            log_bytes.as_slice(),
+            b"\n",
+            invalid.to_string().as_bytes(),
+            b"\n",
+        ]
+        .concat();
+        std::fs::write(directory.join("run.log"), &bytes).unwrap();
+        assert!(
+            crate::compare::generate(manifest.to_str().unwrap(), &mut Vec::new()).is_err(),
+            "{path}"
+        );
+        assert_eq!(std::fs::read(&report).unwrap(), report_bytes);
+        assert_eq!(std::fs::read(directory.join("run.log")).unwrap(), bytes);
+    }
+    std::fs::write(
+        directory.join("run.log"),
+        [log_bytes.as_slice(), b"\nnot-json\n"].concat(),
+    )
+    .unwrap();
+    assert!(crate::compare::generate(manifest.to_str().unwrap(), &mut Vec::new()).is_err());
+    assert_eq!(std::fs::read(&report).unwrap(), report_bytes);
+    std::fs::write(directory.join("run.log"), &log_bytes).unwrap();
+    let resume = crate::sweep::Options {
+        resume: true,
+        ..options
+    };
+    let error = crate::sweep::run_with_options(manifest.to_str().unwrap(), resume, &mut Vec::new())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("outcome") || error.contains("unsealed") || error.contains("incomplete"),
+        "{error}"
+    );
+    assert_eq!(std::fs::read(directory.join("run.log")).unwrap(), log_bytes);
+    assert_eq!(std::fs::read(&report).unwrap(), report_bytes);
+    assert!(!directory.join(".asb-completions").exists());
+    assert!(!checkpoint.join("completed/000000.json").exists());
+    assert!(!checkpoint.join("replicas/000000/001.json").exists());
+    for (path, bytes) in retained {
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "called\n");
+    assert_eq!(
+        calls.borrow().as_slice(),
+        ["evaluate", "finish", "provider-finish"]
+    );
 }
 
 fn check_full_entry_disposition(

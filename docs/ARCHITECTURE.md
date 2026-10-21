@@ -1455,7 +1455,18 @@ its run record is absent. It validates actual identity and slot mapping, rejects
 conflicts with existing measurement records and discloses its result source.
 Grades do not disappear merely because collection was disabled, and missing
 collector/host/time-series data is never fabricated. Outcome reporting does not
-prove resume eligibility or historical integrity. The report links every result artifact and explains the
+prove resume eligibility or historical integrity. If no private outcome was
+published (including incomplete capture), comparison can use the most recent
+bounded schema-2 record from the sweep's fixed isolated replica log. It strips
+transcripts, validates configuration/task/slot/policy bindings and rejects a
+latest-log conflict with a recorded outcome or measurement before publication.
+The original benchmark's configured log location cannot redirect this fallback.
+Log evidence has unknown cleanup confirmation and is explicitly reporting-only:
+it creates no outcome, completion/group receipt or resume permission. A failed
+latest record cannot silently borrow an earlier grade. Explicit imported or
+grade-only recovered outcomes keep their existing unknown-execution policy;
+their interrupted partial logs remain diagnostic and are not promoted by this
+fallback. The report links every result artifact and explains the
 measurement fields. Its dependency-free JavaScript can enable or disable
 benchmarks, agents, providers, models, and workloads without rerunning the
 sweep. Each chart

@@ -67,6 +67,17 @@ the Windows private-pipe pump retains a source implementation, and non-Unix gues
 presentation remains caller-controlled. Retained workload services keep their
 existing ThroughEvaluation supervisor and are covered by the separate guest
 agent/owner-loss tests.
+`cargo test --locked --offline --lib actual_unmeasured_sweep_capture_failure`
+also runs actual sequential sweeps with true/false and nullable native rewards,
+automatic comparison, repeat regeneration and resume refusal without another
+client. Latest-log configuration/task/slot mutations and malformed trailing
+records must leave the previous report and source bytes unchanged. These use
+the same private process-local evaluator fixture; the native fixture declares
+matching selection metadata before normal saved-plan publication, not by
+editing retained evidence or adding an SDK capability. The bounded log fallback
+is reporting-only and cannot create missing completion receipts. Separate log
+tests reject latest-attempt conflicts with older private outcomes and ambiguous
+multi-replica slots, while preserving private record bytes.
 `cargo test --locked --offline --test tui_install` exercises the actual ASB
 install helper and real terminal backend with local fake npm/node executables.
 Closing the backend's output pipe forces EPIPE while the input PTY stays open:

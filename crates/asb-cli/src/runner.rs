@@ -1546,6 +1546,14 @@ fn process_failure_reason(
 }
 
 // Direct and gated children retain explicit custody on every return path.
+#[cfg(test)]
+pub(crate) fn fixture_module_descriptor(
+    name: &str,
+    descriptor: Option<workloads::contracts::ModuleDescriptor>,
+) -> Option<workloads::contracts::ModuleDescriptor> {
+    phases::entry_test_support::module_descriptor(name, descriptor)
+}
+
 mod capture;
 #[cfg(unix)]
 pub(crate) use capture::transport::GuestTransport;
