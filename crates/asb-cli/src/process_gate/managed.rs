@@ -152,6 +152,10 @@ impl ManagedGate {
     }
 
     pub(crate) fn stop(&mut self) -> io::Result<ExitStatus> {
+        self.stop_before(Instant::now() + CLEANUP)
+    }
+
+    fn stop_before(&mut self, deadline: Instant) -> io::Result<ExitStatus> {
         if let Some(status) = self.complete {
             return Ok(status);
         }
@@ -160,26 +164,8 @@ impl ManagedGate {
                 "native gate retained in wait-only custody; cleanup is unconfirmed",
             ));
         }
-        let deadline = Instant::now() + CLEANUP;
         if !self.admitted {
-            // Never TERM or CONT an unknown/legacy stopped launcher. Its
-            // watcher may translate TERM into CONT and thereby launch work.
-            let child = self.child.as_mut().expect("owned gate");
-            if let Some(status) = self.observed {
-                self.complete = Some(status);
-                return Ok(status);
-            }
-            let _ = child.kill();
-            loop {
-                if let Some(status) = child.try_wait()? {
-                    self.complete = Some(status);
-                    return Ok(status);
-                }
-                if Instant::now() >= deadline {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            return self.stop_starting_before(deadline, Child::try_wait);
         } else {
             loop {
                 match self.try_wait() {
@@ -219,14 +205,53 @@ impl ManagedGate {
             self.keeper.adopt_wait_only(child);
         }
     }
+
+    fn stop_starting_before(
+        &mut self,
+        deadline: Instant,
+        mut poll: impl FnMut(&mut Child) -> io::Result<Option<ExitStatus>>,
+    ) -> io::Result<ExitStatus> {
+        // Never TERM or CONT an unknown/legacy stopped launcher. Its watcher
+        // may translate TERM into CONT and thereby launch work.
+        if let Some(status) = self.observed {
+            self.complete = Some(status);
+            return Ok(status);
+        }
+        let child = self.child.as_mut().expect("owned startup gate");
+        let _ = child.kill();
+        loop {
+            match poll(child) {
+                Ok(Some(status)) => {
+                    self.complete = Some(status);
+                    return Ok(status);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.handoff();
+                    return Err(io::Error::other(format!(
+                        "cannot confirm startup gate cleanup: {error}; gate retained in wait-only custody"
+                    )));
+                }
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        self.handoff();
+        Err(io::Error::other(
+            "startup gate cleanup deadline exceeded; gate retained in wait-only custody",
+        ))
+    }
 }
 
 impl Drop for ManagedGate {
     fn drop(&mut self) {
-        if self.child.is_some() && self.complete.is_none() {
-            if let Err(error) = self.stop() {
-                eprintln!("asb process gate cleanup: {error}");
-            }
+        if self.child.is_some()
+            && self.complete.is_none()
+            && let Err(error) = self.stop()
+        {
+            eprintln!("asb process gate cleanup: {error}");
         }
     }
 }

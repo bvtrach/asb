@@ -141,6 +141,17 @@ detached: a draw error can return while an installer still mutates project
 files. Shared progress handling must own worker completion/cancellation, with
 a fake-install regression for terminal failure during active work.
 
+Prerequisite native gate custody repair is staged separately, not yet merged.
+Its private `ManagedGate` is used by the actual runner ownership boundary:
+versioned PID-bound Hello precedes admission, completion requires Quiescent
+plus direct exit, startup failure never resumes an unsupported launcher, and
+admitted cancellation never kills the supervising gate. A precreated wait-only
+fallback retains uncertain custody; the gate retries identity-scoped teardown
+and its existing independent watcher handles stopped parent death. This does
+not yet repair the TUI workers, the pre-exec allocation contract or stream
+memory/reader lifetime. Focused offline protocol, real-child and parent-loss
+matrices are being verified; full independent review is still required.
+
 Coverage-driven inspection also found a wizard transition defect: saving
 trials consumes `selected_workload`, so the advertised next Enter reopens
 trial selection instead of finishing. Add bounded event-loop/PTY regressions,

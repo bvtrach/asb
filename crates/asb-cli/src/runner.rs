@@ -1356,15 +1356,14 @@ enum OwnedChild {
 
 impl OwnedChild {
     fn stop(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        #[cfg(target_os = "linux")]
-        if let Self::Gated(gate) = self {
-            return gate.stop();
+        match self {
+            Self::Direct(child) => {
+                let _ = child.kill();
+                child.wait()
+            }
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.stop(),
         }
-        let Self::Direct(child) = self else {
-            unreachable!()
-        };
-        let _ = child.kill();
-        child.wait()
     }
     fn id(&self) -> u32 {
         match self {
@@ -1415,11 +1414,15 @@ impl Drop for OwnedChild {
     fn drop(&mut self) {
         // ManagedGate owns its own bounded cancellation/handoff policy. Never
         // follow it with an unconditional raw wait in this outer owner.
-        if let Self::Direct(child) = self {
-            if child.try_wait().ok().flatten().is_none() {
-                let _ = child.kill();
+        match self {
+            Self::Direct(child) => {
+                if child.try_wait().ok().flatten().is_none() {
+                    let _ = child.kill();
+                }
+                let _ = child.wait();
             }
-            let _ = child.wait();
+            #[cfg(target_os = "linux")]
+            Self::Gated(_) => {}
         }
     }
 }
