@@ -1997,7 +1997,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     #[ignore = "requires project-local Perfetto, delegated tracefs and user namespaces"]
-    fn live_perfetto_streaming_preserves_markers_beyond_the_old_ring_capacity() {
+    fn live_perfetto_streaming_preserves_markers_beyond_the_service_ring_capacity() {
         let tools = std::path::PathBuf::from(std::env::var_os("ASB_TEST_PERFETTO_TOOLS").unwrap());
         let dir = tools
             .parent()
@@ -2014,8 +2014,8 @@ mod tests {
         let text = String::from_utf8(output.stdout).unwrap();
         let written: u64 = text.lines().nth(1).unwrap().parse().unwrap();
         assert!(
-            written > 64 * 1024 * 1024,
-            "did not exceed the old ring: {written}"
+            written > 128 * 1024 * 1024,
+            "did not exceed the configured ring: {written}"
         );
         println!("Streaming trace bytes before compression: {written}");
     }
@@ -2044,7 +2044,7 @@ mod tests {
                 std::process::id(),
                 "x".repeat(1000)
             );
-            for _ in 0..320 {
+            for _ in 0..640 {
                 for _ in 0..256 {
                     session.write_trace_marker(&marker).unwrap();
                 }
