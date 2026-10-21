@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod prepared;
 mod selections;
+pub(crate) use prepared::Population;
 
 pub(super) fn setup(mut options: SetupOptions, output: &mut dyn Write) -> Result<(), Error> {
     for values in [
@@ -86,7 +87,7 @@ pub(super) fn setup(mut options: SetupOptions, output: &mut dyn Write) -> Result
             }
         }
     }
-    let mut configs = Vec::new();
+    let mut configs = Population::default();
     for workload in unique(&options.workload) {
         let catalog =
             crate::workloads::planning_catalog(workload, &directory).map_err(Error::Input)?;
@@ -161,12 +162,13 @@ pub(super) fn setup(mut options: SetupOptions, output: &mut dyn Write) -> Result
                                 enabled_trials.as_ref(),
                             )?;
                         }
-                        configs.push(config);
+                        configs.push(config)?;
                     }
                 }
             }
         }
     }
+    let configs = configs.into_configs();
     if repeated || configs.len() > 1 {
         let path = options
             .output

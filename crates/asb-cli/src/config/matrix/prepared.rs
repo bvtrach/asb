@@ -1,6 +1,44 @@
 //! Pure selection serialization: no directory or destination mutation here.
 use super::*;
 
+/// Check each expanded selection before retaining another cloned configuration.
+/// Final serialization rechecks bounds after per-output paths are assigned.
+#[derive(Default)]
+pub(crate) struct Population {
+    configurations: Vec<BenchmarkConfig>,
+    encoded_bytes: usize,
+}
+impl Population {
+    pub(crate) fn len(&self) -> usize {
+        self.configurations.len()
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.configurations.is_empty()
+    }
+    pub(crate) fn push(&mut self, configuration: BenchmarkConfig) -> Result<(), Error> {
+        if self.len() >= crate::sweep::MAX_CONFIGS {
+            return Err(Error::Input(
+                "setup configuration population limit exceeded".into(),
+            ));
+        }
+        let bytes = render(&configuration)?.len();
+        let total = self.encoded_bytes.checked_add(bytes).ok_or_else(|| {
+            Error::Input("setup configuration size overflow; no setup files were written".into())
+        })?;
+        if total > crate::sweep::plan::MAX_CONFIG_BYTES {
+            return Err(Error::Input(
+                "generated sweep configurations exceed 32 MiB during selection expansion; select a smaller batch; no setup files were written".into(),
+            ));
+        }
+        self.configurations.push(configuration);
+        self.encoded_bytes = total;
+        Ok(())
+    }
+    pub(crate) fn into_configs(self) -> Vec<BenchmarkConfig> {
+        self.configurations
+    }
+}
+
 pub(super) struct Sweep {
     pub(super) directory: PathBuf,
     pub(super) configurations: Vec<(String, String)>,
@@ -134,5 +172,29 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("32 MiB"), "{error}");
+    }
+
+    #[test]
+    fn expansion_rejects_byte_budget_before_retaining_a_gib_sized_population() {
+        let mut population = Population::default();
+        let mut config = config();
+        config.workspace = "x".repeat(60_000);
+        for _ in 0..600 {
+            let retained = population.len();
+            if let Err(error) = population.push(config.clone()) {
+                assert!(
+                    error.to_string().contains("during selection expansion"),
+                    "{error}"
+                );
+                assert_eq!(
+                    population.len(),
+                    retained,
+                    "rejection must not retain the candidate"
+                );
+                assert!(retained < 600);
+                return;
+            }
+        }
+        panic!("selection expansion retained an excessive population");
     }
 }
