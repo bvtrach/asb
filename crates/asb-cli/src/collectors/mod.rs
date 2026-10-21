@@ -47,6 +47,7 @@ impl ProcessData {
 }
 
 pub(crate) struct PreflightContext<'a> {
+    pub project_root: Option<&'a Path>,
     pub measurement_dir: &'a Path,
     pub selected: &'a [String],
     pub tool_dir: Option<&'a Path>,

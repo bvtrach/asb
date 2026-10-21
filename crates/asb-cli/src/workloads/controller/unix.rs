@@ -2,6 +2,7 @@
 //! thread join or unconditional child wait belongs to the caller's path.
 use super::MAX_MESSAGE;
 use crate::process_cleanup::OwnedReaper;
+use crate::workloads::session::{ResourceDisposition, ResourceSettlement};
 use crate::workloads::task_protocol::{
     CancellationAck, CompletedGrade, EventKind, NormalCloseAck, Request,
 };
@@ -290,7 +291,7 @@ impl Controller {
         self.cleanup_budget(deadline);
     }
 
-    pub(crate) fn cancel(&mut self, timeout: Duration) -> Result<(), String> {
+    pub(crate) fn cancel(&mut self, timeout: Duration) -> Result<ResourceDisposition, String> {
         let deadline = self.cleanup_budget(Instant::now() + timeout);
         self.input.take();
         loop {
@@ -302,8 +303,9 @@ impl Controller {
                 Err(error) => return Err(self.cleanup_failure(error, deadline)),
             };
             if EventKind::of(&event) == Some(EventKind::Closed) {
-                CancellationAck::decode(&event)?;
-                return self.wait_for_exit(deadline, false);
+                let disposition = CancellationAck::decode(&event)?.disposition();
+                self.wait_for_exit(deadline, false)?;
+                return Ok(disposition);
             }
             // Deliberately discard arbitrary in-flight events until the owner
             // confirms removal/not-created/stopped preservation. Never echo them.
@@ -329,14 +331,32 @@ impl Controller {
         &mut self,
         _grade: CompletedGrade,
         timeout: Duration,
-    ) -> Result<(), String> {
+    ) -> Result<ResourceSettlement, String> {
         let deadline = self.cleanup_budget(Instant::now() + timeout);
         let result = (|| {
             self.send(&Request::Close.value()?, deadline)?;
             let response = self.receive(deadline)?;
-            NormalCloseAck::decode(&response)?;
+            let disposition = NormalCloseAck::decode(&response)?.disposition();
             self.input.take();
-            self.wait_for_exit(deadline, true)
+            self.wait_for_exit(deadline, false)?;
+            let success = self
+                .child
+                .as_mut()
+                .ok_or("workload controller cleanup already transferred")?
+                .try_wait()
+                .map_err(|_| "cannot check settled workload controller")?
+                .ok_or("settled workload controller was not reaped")?
+                .success();
+            Ok(ResourceSettlement {
+                disposition,
+                diagnostic: if disposition != ResourceDisposition::Removed {
+                    Some("normal workload teardown did not remove resources; confirmed cancellation disposition retained".into())
+                } else if !success {
+                    Some("workload controller failed after confirmed resource removal".into())
+                } else {
+                    None
+                },
+            })
         })();
         result.map_err(|error| self.cleanup_failure(error, deadline))
     }

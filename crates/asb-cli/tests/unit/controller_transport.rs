@@ -239,9 +239,11 @@ fn close_and_cancellation_share_ack_exit_and_retry_cleanup_deadline() {
         let mut controller = ready_child(script);
         let started = Instant::now();
         let result = if normal {
-            controller.finish(grade(), Duration::from_millis(150))
+            controller
+                .finish(grade(), Duration::from_millis(150))
+                .map(|_| ())
         } else {
-            controller.cancel(Duration::from_millis(150))
+            controller.cancel(Duration::from_millis(150)).map(|_| ())
         };
         let error = result.unwrap_err();
         assert!(error.contains("did not exit"), "{error}");

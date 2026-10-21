@@ -2,7 +2,9 @@
 //! preserve the existing wire and are not workload evaluation-kind registries.
 use super::Evaluation;
 use super::controller::decode_base64;
-use super::session::{BaselineEvidence, DatasetIdentity, ProcessLifetime, TaskIdentity};
+use super::session::{
+    BaselineEvidence, DatasetIdentity, ProcessLifetime, ResourceDisposition, TaskIdentity,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
@@ -14,6 +16,7 @@ const DEFAULT_AGENT_TIMEOUT_SECONDS: f64 = 900.0;
 pub(super) enum EventKind {
     Ready,
     Paused,
+    PreparationFailed,
     Output,
     ExecutionEnded,
     Completed,
@@ -21,6 +24,8 @@ pub(super) enum EventKind {
     Evaluated,
     Error,
     Closed,
+    #[serde(rename = "initial-material")]
+    InitialMaterial,
 }
 
 impl EventKind {
@@ -45,12 +50,17 @@ pub(super) enum Request<'a> {
         timeout: u64,
     },
     Close,
+    #[serde(rename = "initial-material")]
+    InitialMaterial {
+        binary: &'a Path,
+    },
 }
 
 #[derive(Serialize)]
 pub(super) struct AgentRequest<'a> {
     pub binary: &'a Path,
     pub project_root: &'a Path,
+    pub preparation_seconds: Option<f64>,
     pub timeout: f64,
     pub tools_root: &'a Path,
     pub bootstrap: &'a crate::install::GuestBootstrap,
@@ -238,31 +248,39 @@ impl CompletedGrade {
 }
 
 pub(super) struct NormalCloseAck {
-    _private: (),
+    disposition: ResourceDisposition,
 }
 impl NormalCloseAck {
     pub fn decode(event: &Value) -> Result<Self, String> {
-        if EventKind::of(event) != Some(EventKind::Closed) || event["cleanup"] != "removed" {
-            return Err("workload resource cleanup did not confirm removal; inspect private task cleanup artifacts".into());
-        }
-        Ok(Self { _private: () })
+        // A positive preservation acknowledgement is settled but is not a
+        // successful normal teardown. Controller::finish retains that diagnostic.
+        Ok(Self {
+            disposition: CancellationAck::decode(event)?.disposition(),
+        })
+    }
+    pub fn disposition(&self) -> ResourceDisposition {
+        self.disposition
     }
 }
 
 pub(super) struct CancellationAck {
-    _private: (),
+    disposition: ResourceDisposition,
 }
 impl CancellationAck {
     pub fn decode(event: &Value) -> Result<Self, String> {
-        if EventKind::of(event) != Some(EventKind::Closed)
-            || !matches!(
-                event["cleanup"].as_str(),
-                Some("removed" | "not_created" | "stopped-preserved")
-            )
-        {
+        if EventKind::of(event) != Some(EventKind::Closed) {
             return Err("cancelled workload cleanup did not confirm removal or stopped preservation; inspect private task cleanup artifacts".into());
         }
-        Ok(Self { _private: () })
+        let disposition = match event["cleanup"].as_str() {
+            Some("removed") => ResourceDisposition::Removed,
+            Some("not_created") => ResourceDisposition::NotCreated,
+            Some("stopped-preserved") => ResourceDisposition::StoppedPreserved,
+            _ => return Err("cancelled workload cleanup did not confirm removal or stopped preservation; inspect private task cleanup artifacts".into()),
+        };
+        Ok(Self { disposition })
+    }
+    pub fn disposition(&self) -> ResourceDisposition {
+        self.disposition
     }
 }
 

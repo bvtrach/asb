@@ -125,11 +125,8 @@ pub(crate) fn start<'a>(
     let scope = crate::process_gate::DescendantScope::new()
         .map_err(|_| Error::Run("cannot own workload service descendants".into()))?;
     let started = Instant::now();
-    let mut child = OwnedChild::Direct(
-        command
-            .spawn()
-            .map_err(|error| Error::Run(format!("cannot start workload client: {error}")))?,
-    );
+    let mut child = OwnedChild::spawn_direct(command)
+        .map_err(|error| Error::Run(format!("cannot start workload client: {error}")))?;
     let out = child
         .take_stdout()
         .ok_or_else(|| Error::Run("workload client stdout is not piped".into()))?;

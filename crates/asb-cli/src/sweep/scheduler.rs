@@ -47,9 +47,9 @@ impl Scheduling {
     }
 }
 
-pub(super) enum Event {
+pub(super) enum Event<T = ()> {
     Started(usize),
-    Finished(usize, Result<(), Error>),
+    Finished(usize, Result<T, Error>),
 }
 
 #[derive(Default)]
@@ -151,13 +151,34 @@ pub(super) fn run(
     )
 }
 
+#[cfg(test)]
 pub(super) fn run_with_resources(
     limits: Scheduling,
     weights: &[usize],
     capacity: Option<crate::planning::Resources>,
     costs: &[crate::planning::Resources],
     execute: impl Fn(usize) -> Result<(), Error> + Sync,
-    mut observe: impl FnMut(Event) -> Result<(), Error>,
+    observe: impl FnMut(Event) -> Result<(), Error>,
+) -> Result<(), Error> {
+    run_with_resources_stopping_on(
+        limits,
+        weights,
+        capacity,
+        costs,
+        execute,
+        |_| false,
+        observe,
+    )
+}
+
+pub(super) fn run_with_resources_stopping_on<T: Send>(
+    limits: Scheduling,
+    weights: &[usize],
+    capacity: Option<crate::planning::Resources>,
+    costs: &[crate::planning::Resources],
+    execute: impl Fn(usize) -> Result<T, Error> + Sync,
+    stop_admission: impl Fn(&T) -> bool + Sync,
+    mut observe: impl FnMut(Event<T>) -> Result<(), Error>,
 ) -> Result<(), Error> {
     limits.validate(weights)?;
     if costs.len() != weights.len()
@@ -185,6 +206,7 @@ pub(super) fn run_with_resources(
             let sender = sender.clone();
             let queue = &queue;
             let execute = &execute;
+            let stop_admission = &stop_admission;
             match std::thread::Builder::new().spawn_scoped(scope, move || {
                 while let Some((index, _permit)) = queue.take() {
                     if sender.send(Event::Started(index)).is_err() {
@@ -198,6 +220,9 @@ pub(super) fn run_with_resources(
                                         .into(),
                                 ))
                             });
+                    if result.as_ref().is_ok_and(stop_admission) {
+                        queue.stop();
+                    }
                     if sender.send(Event::Finished(index, result)).is_err() {
                         break;
                     }
@@ -243,6 +268,104 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
+
+    #[test]
+    fn actual_spool_failure_stops_before_next_claim_and_joins_admitted_resource_holders() {
+        use std::io::Write;
+        let root = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("scheduler-spool", None).attempt_id);
+        std::fs::create_dir(&root).unwrap();
+        let admitted = std::sync::Barrier::new(2);
+        let release = (Mutex::new(false), Condvar::new());
+        let active = AtomicUsize::new(0);
+        let mut starts = Vec::new();
+        let mut finishes = Vec::new();
+        let costs = vec![
+            crate::planning::Resources {
+                cpu_millis: 1,
+                memory_mib: 1,
+                disk_mib: 1
+            };
+            4
+        ];
+        let capacity = crate::planning::Resources {
+            cpu_millis: 2,
+            memory_mib: 2,
+            disk_mib: 2,
+        };
+        run_with_resources_stopping_on(
+            Scheduling::new(2, Some(2), &[1; 4]).unwrap(),
+            &[1; 4],
+            Some(capacity),
+            &costs,
+            |index| {
+                assert!(
+                    index < 2,
+                    "a worker claimed a later configuration after locally observing output failure"
+                );
+                active.fetch_add(1, Ordering::SeqCst);
+                admitted.wait();
+                let report = if index == 0 {
+                    let mut spool =
+                        super::super::spool::Output::create(&root.join("output"), 1).unwrap();
+                    let mut output = super::super::presentation::Presentation::new(&mut spool);
+                    assert!(output.write_all(&vec![0; 5 * 1024 * 1024]).is_err());
+                    super::super::execution::ConfigurationReport {
+                        result: Err(Error::Run("official false grade retained".into())),
+                        output_error: output.error(),
+                        spool_created: true,
+                    }
+                } else {
+                    let mut done = release.0.lock().unwrap();
+                    while !*done {
+                        done = release.1.wait(done).unwrap();
+                    }
+                    super::super::execution::ConfigurationReport {
+                        result: Ok(()),
+                        output_error: None,
+                        spool_created: false,
+                    }
+                };
+                active.fetch_sub(1, Ordering::SeqCst);
+                Ok(report)
+            },
+            |report| report.output_error.is_some(),
+            |event| {
+                match event {
+                    Event::Started(index) => starts.push(index),
+                    Event::Finished(index, result) => {
+                        let report = result.unwrap();
+                        if index == 0 {
+                            assert!(
+                                report
+                                    .result
+                                    .unwrap_err()
+                                    .to_string()
+                                    .contains("official false grade retained")
+                            );
+                            assert!(report.output_error.is_some());
+                            assert_eq!(
+                                active.load(Ordering::SeqCst),
+                                1,
+                                "the admitted sibling must still hold its execution permit"
+                            );
+                            *release.0.lock().unwrap() = true;
+                            release.1.notify_all();
+                        }
+                        finishes.push(index);
+                    }
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        starts.sort();
+        finishes.sort();
+        assert_eq!(starts, [0, 1]);
+        assert_eq!(finishes, [0, 1]);
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn resource_admission_limits_jobs_independently_of_replica_slots_and_releases_failed_work() {

@@ -70,10 +70,10 @@ class ProtocolTests(unittest.TestCase):
 
     def test_typed_identifiers_preserve_wire_and_reject_unknown_operation_types(self):
         self.assertEqual([item.value for item in Operation],
-                         ["execute", "agent", "resume", "capture", "evaluate", "close", "cancel"])
+                         ["execute", "agent", "resume", "capture", "evaluate", "close", "cancel", "initial-material"])
         self.assertEqual(json.loads(json.dumps(list(Event))),
                          ["ready", "paused", "output", "execution_ended", "completed",
-                          "submission", "evaluated", "error", "closed"])
+                          "submission", "evaluated", "error", "closed", "initial-material", "preparation_failed"])
         for unknown in [None, 1, [], {}, "private-unknown-operation"]:
             with self.subTest(operation=unknown):
                 status, events, task = self.run_protocol([{"op": unknown}, {"op": "close"}])
@@ -83,6 +83,49 @@ class ProtocolTests(unittest.TestCase):
                 self.assertEqual(events[1], {"event": "error", "error_class": "ExecutionError",
                                             "reason": "unknown task protocol operation"})
                 self.assertNotIn("private-unknown-operation", json.dumps(events))
+    def test_shared_launch_attach_wait_exceeds_legacy_idle_and_sixty_second_caps(self):
+        import queue
+        now, waiting = [0.0], [False]
+        class VirtualQueue(queue.Queue):
+            def get(self, **options):
+                if waiting[0] and now[0] < 120:
+                    now[0] += 40
+                    raise queue.Empty
+                result = super().get(**options)
+                if waiting[0]:waiting[0] = False
+                return result
+        def execute(_task,_request,attach,*_args,**options):
+            budget = options["preparation_budget"]
+            self.assertEqual(budget.deadline,1800)
+            waiting[0] = True
+            attach(dict(exec_id="owned-exec"))
+            self.assertEqual(now[0],120)
+            return dict(stdout=b"",stderr=b"",exit_code=0)
+        with patch("asb_task_server.queue.Queue",VirtualQueue), \
+                patch("asb_task_server.time.monotonic",side_effect=lambda:now[0]), \
+                patch("asb_guest.execute_agent",side_effect=execute):
+            status,events,_ = self.run_protocol([dict(op="agent",preparation_seconds=1800),
+                dict(op="resume",exec_id="owned-exec"),dict(op="close")])
+        self.assertEqual(status,0)
+        self.assertEqual([event["event"] for event in events],["ready","paused","completed","closed"])
+
+    def test_material_capture_is_explicit_offline_and_never_starts_execution(self):
+        class MaterialTask(Task):
+            calls = 0
+            def initial_material(self):
+                self.calls += 1
+                return {"schema_version":1,"scope":"prepared-workload-material-v1","sha256":"a"*64}
+        task = MaterialTask()
+        self.run_protocol([{"op":"close"}],task)
+        self.assertEqual(task.calls,0)
+        status,events,_ = self.run_protocol([{"op":"initial-material"},{"op":"close"}],task)
+        self.assertEqual(status,0)
+        self.assertEqual(task.calls,1)
+        self.assertEqual(task.commands,[])
+        self.assertEqual([event["event"] for event in events],["ready","initial-material","closed"])
+        self.assertEqual(events[1]["material"]["sha256"],"a"*64)
+        _,events,_ = self.run_protocol([{"op":"initial-material"},{"op":"close"}])
+        self.assertIn("has not declared prepared material coverage",events[1]["reason"])
 
     def run_protocol(self, requests, task=None):
         task = task or Task()
@@ -98,6 +141,19 @@ class ProtocolTests(unittest.TestCase):
             os.close(write_fd)
             source.close()
         return status, [json.loads(line) for line in output.getvalue().splitlines()], task
+
+    def test_material_runtime_is_forwarded_privately_without_agent_dispatch(self):
+        class MaterialTask(Task):
+            def initial_material(self, binary=None):
+                self.binary = binary
+                return {"schema_version":1,"scope":"prepared-workload-material-v1","sha256":"a"*64}
+        task = MaterialTask()
+        status, events, _ = self.run_protocol([{"op":"initial-material","binary":"/private/fixture-helper"},
+                                              {"op":"close"}], task)
+        self.assertEqual(status,0)
+        self.assertEqual(task.binary,"/private/fixture-helper")
+        self.assertEqual(task.commands,[])
+        self.assertNotIn("/private/fixture-helper",json.dumps(events))
 
     def test_selected_command_and_credentials_stay_in_private_request_not_events(self):
         status, events, task = self.run_protocol([

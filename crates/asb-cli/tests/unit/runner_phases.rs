@@ -1,9 +1,8 @@
 //! Offline evidence/grade/resource transition contracts, not SDK qualification.
 use super::*;
+use crate::test_support as support;
 use std::cell::RefCell;
 use std::rc::Rc;
-#[path = "../support/mod.rs"]
-mod support;
 
 struct Fixture(PathBuf);
 impl Fixture {
@@ -103,7 +102,7 @@ impl workloads::WorkloadSession for Workload {
             Err(reason) => Evaluation::Error { reason },
         }
     }
-    fn finish(&mut self) -> Result<(), String> {
+    fn finish(&mut self) -> Result<workloads::session::ResourceSettlement, String> {
         self.operations.borrow_mut().push(if self.grade == 2 {
             "preserve"
         } else {
@@ -113,7 +112,15 @@ impl workloads::WorkloadSession for Workload {
         if self.cleanup_error {
             Err("owned cleanup unavailable".into())
         } else {
-            Ok(())
+            Ok(workloads::session::ResourceSettlement {
+                disposition: if self.grade >= 2 {
+                    workloads::ResourceDisposition::StoppedPreserved
+                } else {
+                    workloads::ResourceDisposition::Removed
+                },
+                diagnostic: (self.grade == 6)
+                    .then(|| "normal removal failed; owned resources stopped".into()),
+            })
         }
     }
 }
@@ -156,6 +163,7 @@ fn prepared(
 fn evidence(exit: i32, guest: bool) -> ExecutionEvidence {
     use std::os::unix::process::ExitStatusExt;
     ExecutionEvidence {
+        capture_complete: true,
         output: Output {
             status: std::process::ExitStatus::from_raw(exit << 8),
             stdout: b"submission".to_vec(),
@@ -205,6 +213,14 @@ fn native_guest_grade_and_cleanup_matrix_preserves_independent_facts() {
                         }
                     );
                     assert_eq!(final_state.cleanup_confirmed, !cleanup_error);
+                    assert_eq!(
+                        final_state.resource_disposition,
+                        (!cleanup_error).then_some(if grade == 2 {
+                            workloads::ResourceDisposition::StoppedPreserved
+                        } else {
+                            workloads::ResourceDisposition::Removed
+                        })
+                    );
                     assert_eq!(final_state.evidence.output.status.code(), Some(exit));
                     assert_eq!(final_state.evidence.output.stdout, b"submission");
                     assert_eq!(final_state.evidence.guest.is_some(), guest);
@@ -345,6 +361,155 @@ fn changed_gate_carrier_or_target_framing_is_rejected_before_custody_or_executio
             "invalid route must not establish a reaper"
         );
         assert!(!marker.exists(), "{variant}: replacement command executed");
+    }
+}
+
+#[test]
+fn confirmed_preservation_keeps_diagnostic_without_fabricating_a_grade() {
+    let fixture = Fixture::new();
+    let (prepared, operations) = prepared(&fixture, 6, false, None);
+    let finalized = prepared
+        .executed(evidence(7, false), AttemptIssues::default())
+        .settle(None)
+        .evaluate("submission")
+        .finish();
+    assert!(finalized.cleanup_confirmed);
+    assert_eq!(
+        finalized.resource_disposition,
+        Some(workloads::ResourceDisposition::StoppedPreserved)
+    );
+    assert_eq!(finalized.outcome.success(), None);
+    assert!(
+        finalized
+            .issues
+            .run_error
+            .as_deref()
+            .unwrap()
+            .contains("normal removal failed")
+    );
+    assert_eq!(operations.borrow().as_slice(), ["evaluate", "finish"]);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn native_launch_waits_for_siblings_and_refuses_an_unverifiable_sibling_gate() {
+    use support::IsolatedEnvironment;
+    if std::env::var_os("ASB_NATIVE_LAUNCH_TEST_CHILD").is_none() {
+        let executable = std::env::current_exe().unwrap();
+        let runtime = executable.parent().unwrap().parent().unwrap().join("asb");
+        let child = Command::new(&executable)
+            .args(["--exact", "runner::phases::tests::native_launch_waits_for_siblings_and_refuses_an_unverifiable_sibling_gate", "--nocapture"])
+            .isolated_env()
+            .env("ASB_NATIVE_LAUNCH_TEST_CHILD", "1")
+            .env("ASB_RUNTIME_EXECUTABLE", runtime)
+            .output().unwrap();
+        assert!(
+            child.status.success(),
+            "{}",
+            String::from_utf8_lossy(&child.stdout)
+        );
+        return;
+    }
+    use crate::workloads::session::LaunchReadiness;
+    use std::sync::mpsc;
+    struct Announce<'a> {
+        admission: super::super::batch::LaunchAdmission<'a>,
+        arrived: mpsc::Sender<()>,
+    }
+    impl LaunchReadiness for Announce<'_> {
+        fn ready(&self) -> Result<(), String> {
+            self.arrived.send(()).unwrap();
+            self.admission.ready()
+        }
+        fn abort(&self) {
+            self.admission.abort();
+        }
+        fn remaining(&self) -> Result<Duration, String> {
+            self.admission.remaining()
+        }
+    }
+    fn material() -> crate::cassette::Compatibility {
+        crate::cassette::Compatibility {
+            agent: "fixture".into(),
+            provider: "fixture".into(),
+            model: "fixture".into(),
+            workload: "fixture".into(),
+            task: "fixture".into(),
+            dataset_sha256: None,
+            prompt_sha256: "a".repeat(64),
+            material_sha256: "b".repeat(64),
+        }
+    }
+    fn run(
+        marker: &Path,
+        launch: &dyn LaunchReadiness,
+        verifiable: bool,
+    ) -> Result<MeasuredOutput, Error> {
+        let gate = crate::process_gate::executable().unwrap();
+        let (mut command, route) = crate::launch::ProcessLaunch::new("/bin/sh")
+            .native(verifiable.then_some(gate.as_path()));
+        command
+            .args([
+                "-c",
+                "printf started > \"$1\"",
+                "fixture",
+                marker.to_str().unwrap(),
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let target = route.target(&command);
+        run_measured_agent_with_launch(
+            &mut command,
+            &target,
+            Some(route),
+            None,
+            false,
+            &mut Vec::new(),
+            NativeLaunch {
+                readiness: Some(launch),
+                runtime: MAX_AGENT_RUNTIME,
+            },
+        )
+    }
+    for verifiable in [false, true] {
+        let fixture = Fixture::new();
+        let gate = super::super::batch::Gate::deferred(2, Duration::from_secs(5)).unwrap();
+        let first_marker = fixture.0.join("first");
+        let second_marker = fixture.0.join("second");
+        std::thread::scope(|scope| {
+            let (tx, rx) = mpsc::channel();
+            let first_gate = &gate;
+            let first_marker = &first_marker;
+            let first = scope.spawn(move || {
+                let admission = Announce {
+                    admission: super::super::batch::LaunchAdmission::new(
+                        first_gate,
+                        replica::Identity { index: 1, total: 2 },
+                        material(),
+                    )
+                    .unwrap(),
+                    arrived: tx,
+                };
+                run(first_marker, &admission, true)
+            });
+            rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            assert!(
+                !first_marker.exists(),
+                "ready replica executed before its sibling was prepared"
+            );
+            let second = super::super::batch::LaunchAdmission::new(
+                &gate,
+                replica::Identity { index: 2, total: 2 },
+                material(),
+            )
+            .unwrap();
+            let result = run(&second_marker, &second, verifiable);
+            drop(second);
+            assert_eq!(result.is_ok(), verifiable);
+            assert_eq!(first.join().unwrap().is_ok(), verifiable);
+        });
+        assert_eq!(first_marker.exists(), verifiable);
+        assert_eq!(second_marker.exists(), verifiable);
     }
 }
 
@@ -726,6 +891,9 @@ fn native_postexecution_event_failure_retains_actual_child_output_and_grade() {
 
 fn result() -> RunResult<'static> {
     RunResult {
+        execution: None,
+        workload_resource_disposition: Some(workloads::ResourceDisposition::Removed),
+        workload_artifacts: Vec::new(),
         planning: crate::planning::resolve(
             &toml::from_str("agent='pi'\nprovider='fixture'\nmodel='fixture'\nworkload='fixture'")
                 .unwrap(),
@@ -783,6 +951,8 @@ fn postgrade_log_publication_is_independent_and_diagnostics_keep_primary_order()
         serde_json::from_slice(&std::fs::read(fixture.0.join("nested/run.jsonl")).unwrap())
             .unwrap();
     assert_eq!(logged["workload_success"], true);
+    assert_eq!(logged["workload_resource_disposition"], "removed");
+    assert_eq!(logged["workload_artifacts"], serde_json::json!([]));
     std::fs::create_dir(fixture.0.join("blocked.jsonl")).unwrap();
     for primary in [
         None,
@@ -887,6 +1057,8 @@ fn final_measurement_errors_preserve_grade_and_disallow_completion_receipts() {
                 measured["workload_success"], true,
                 "finalization must still attempt publication after marker failure"
             );
+            assert_eq!(measured["workload_resource_disposition"], "removed");
+            assert_eq!(measured["workload_artifacts"], serde_json::json!([]));
         }
     }
 }
@@ -947,6 +1119,35 @@ fn full_runner_entry_disposition_keeps_pending_and_operational_failures_consiste
     ]);
 }
 
+#[test]
+fn full_runner_entry_bounded_capture_preserves_independent_file_grades_without_receipts() {
+    isolated_full_entry_cases(&[
+        "capture-true-limit",
+        "capture-false-limit",
+        "capture-native-limit",
+        "capture-true-read-failure",
+        "capture-mini-swe-read-failure",
+    ]);
+}
+
+#[test]
+fn actual_unmeasured_sweep_capture_failure_keeps_grades_reporting_only() {
+    isolated_full_entry_cases(&[
+        "capture-sweep-true-limit",
+        "capture-sweep-false-limit",
+        "capture-sweep-native-limit",
+    ]);
+}
+
+#[test]
+fn repeated_provider_finish_uncertainty_stops_batches_without_losing_grades() {
+    isolated_full_entry_cases(&[
+        "provider-repeat-failed-finish",
+        "provider-repeat-grader-failed-finish",
+        "provider-repeat-grader-success",
+    ]);
+}
+
 fn isolated_full_entry_cases(cases: &[&str]) {
     use support::IsolatedEnvironment;
     let executable = std::env::current_exe().unwrap();
@@ -970,6 +1171,166 @@ fn isolated_full_entry_cases(cases: &[&str]) {
             String::from_utf8_lossy(&child.stderr)
         );
     }
+}
+
+#[test]
+fn early_provider_teardown_notifies_material_peers_before_waiting_for_cleanup() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let gate = super::super::batch::Gate::new(2, None, Duration::from_secs(10)).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (sent, received) = std::sync::mpsc::channel();
+    struct Provider {
+        received: std::sync::mpsc::Receiver<()>,
+        calls: Arc<AtomicUsize>,
+    }
+    impl providers::ProviderSession for Provider {
+        fn api_key(&self) -> &str {
+            "fixture"
+        }
+        fn base_url(&self) -> &str {
+            "http://127.0.0.1:1"
+        }
+        fn finish(&mut self) -> Result<(), Error> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.received
+                .recv_timeout(Duration::from_secs(2))
+                .expect("peer must observe abort before provider teardown waits");
+            Err(Error::Run("fixture slow provider cleanup failure".into()))
+        }
+    }
+    std::thread::scope(|scope| {
+        let mut arrival = Some(
+            gate.register(replica::Identity { index: 1, total: 2 })
+                .unwrap(),
+        );
+        let mut peer = gate
+            .register(replica::Identity { index: 2, total: 2 })
+            .unwrap();
+        let handle = scope.spawn(move || {
+            let identity = crate::cassette::Compatibility {
+                agent: "fixture".into(),
+                provider: "fixture".into(),
+                model: "fixture".into(),
+                workload: "fixture".into(),
+                task: "fixture".into(),
+                dataset_sha256: None,
+                prompt_sha256: "a".repeat(64),
+                material_sha256: "b".repeat(64),
+            };
+            assert!(
+                peer.ready(identity)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("early fixture")
+            );
+            sent.send(()).unwrap();
+        });
+        let mut provider: Option<Box<dyn providers::ProviderSession>> = Some(Box::new(Provider {
+            received,
+            calls: calls.clone(),
+        }));
+        let result = super::super::finish_provider_attempt(
+            Err(Error::Io("early fixture output failure".into())),
+            &mut arrival,
+            &mut provider,
+        );
+        assert!(
+            matches!(&result, Err(Error::Io(reason)) if reason.contains("early fixture") && reason.contains("provider cleanup failed"))
+        );
+        assert!(provider.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        handle.join().unwrap();
+    });
+}
+
+fn repeated_provider_finish_child(
+    case: &str,
+    root: &Path,
+    config_path: &Path,
+    config: BenchmarkConfig,
+    cassette: &Path,
+) {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let failed_finish = case.ends_with("failed-finish");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let _scope = entry_test_support::SharedProviderScope::new(
+        root,
+        Arc::new(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            if failed_finish {
+                Err(Error::Run(
+                    "fixture shared provider cleanup uncertain".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }),
+    );
+    let mut output = Vec::new();
+    let result = super::super::repeated::run(
+        config_path,
+        config,
+        2,
+        RunOptions {
+            json: true,
+            mode: Some(tape::Mode::Replay),
+            cassette: Some(cassette.to_str().unwrap()),
+            ..Default::default()
+        },
+        &mut output,
+        &Mutex::new(BTreeSet::new()),
+    );
+    assert!(
+        result.is_err(),
+        "negative grade or cleanup failure must fail"
+    );
+    if failed_finish {
+        assert!(
+            result
+                .as_ref()
+                .unwrap_err()
+                .to_string()
+                .contains("provider cleanup")
+        );
+    }
+    let rows: Vec<serde_json::Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let summaries: Vec<_> = rows
+        .iter()
+        .filter(|row| row.get("task").is_some())
+        .collect();
+    let expected = if failed_finish { 2 } else { 4 };
+    assert_eq!(summaries.len(), expected, "{rows:?}");
+    assert_eq!(calls.load(Ordering::SeqCst), expected);
+    for row in summaries {
+        assert_eq!(row["process_success"], true);
+        assert_eq!(row["workload_success"], !case.contains("repeat-grader"));
+        assert_eq!(
+            row["benchmark_outcome"]["cleanup_confirmed"],
+            !failed_finish
+        );
+        if failed_finish {
+            assert_eq!(row["execution"]["batch"], 1);
+        }
+    }
+    let campaign = PathBuf::from(rows[0]["path"].as_str().unwrap())
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    assert_eq!(campaign.join("batch-2").exists(), !failed_finish);
+    let final_record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(campaign.join("finished.json")).unwrap()).unwrap();
+    assert_eq!(final_record["stopped"], failed_finish);
 }
 
 fn full_entry_child(case: &str) {
@@ -1003,6 +1364,8 @@ fn full_entry_child(case: &str) {
     }
     let provider_case = case.starts_with("provider-");
     let disposition_case = case.starts_with("disposition-");
+    let capture_case = case.starts_with("capture-");
+    let capture_sweep = case.starts_with("capture-sweep-");
     let fixture = Fixture::new();
     let root = fixture.0.canonicalize().unwrap();
     let project = project::ProjectConfig {
@@ -1019,7 +1382,13 @@ fn full_entry_child(case: &str) {
     .unwrap();
     std::fs::create_dir(root.join("workloads")).unwrap();
     workloads::populate(&root.join("workloads")).unwrap();
-    let agent = root.join("tools/pi/bin/pi");
+    let mini_swe_case = case == "capture-mini-swe-read-failure";
+    let agent_id = if mini_swe_case { "mini-swe" } else { "pi" };
+    let agent = root.join(if mini_swe_case {
+        "tools/mini-swe/bin/mini"
+    } else {
+        "tools/pi/bin/pi"
+    });
     std::fs::create_dir_all(agent.parent().unwrap()).unwrap();
     let counter = root.join("agent-executions");
     let quoted_counter = counter.to_string_lossy().replace('\'', "'\\''");
@@ -1027,11 +1396,19 @@ fn full_entry_child(case: &str) {
     std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o700)).unwrap();
     let cassette = root.join("cassette.jsonl");
     let body = serde_json::json!({"model":"fixture","tools":[{"type":"function","function":{"name":"fixture","parameters":{"type":"object"}}}],"messages":[]});
-    let row = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body.to_string()},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{}"}});
+    let response_body = if capture_case && !case.contains("read-failure") {
+        r#"{"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}"#
+    } else {
+        "{}"
+    };
+    let row = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body.to_string()},"response":{"status":200,"headers":{"content-type":"application/json"},"body":response_body}});
     std::fs::write(&cassette, format!("{row}\n")).unwrap();
-    if provider_case || (disposition_case && !case.contains("run")) {
+    if provider_case || capture_case || (disposition_case && !case.contains("run")) {
         let node = crate::tools::host_executable(Path::new("node")).unwrap();
-        let answer = if case == "provider-false-failed-finish" || case.contains("false") {
+        let answer = if case == "provider-false-failed-finish"
+            || case.contains("false")
+            || case.contains("repeat-grader")
+        {
             "incorrect"
         } else {
             "src/cli.py src/registry.py lookup"
@@ -1043,14 +1420,34 @@ fn full_entry_child(case: &str) {
             0
         };
         let counter_js = serde_json::to_string(&counter).unwrap();
-        std::fs::write(&agent, format!("#!{}\nrequire('node:fs').appendFileSync({counter_js},'called\\n');fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw new Error('fixture request failed');await r.text();console.log(JSON.stringify({response}));process.exitCode={exit};}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
+        let artifact_js = if mini_swe_case {
+            "require('node:fs').writeFileSync('.asb-mini-swe.traj.json',JSON.stringify({trajectory_format:'mini-swe-agent-1.1',info:{model_stats:{api_calls:4}},messages:[{extra:{response:{usage:{prompt_tokens:11,completion_tokens:13}}}}]}));"
+        } else {
+            ""
+        };
+        let capture_js = if capture_case {
+            format!(
+                "require('node:fs').writeFileSync('fixture-file-grade','{}');{artifact_js}console.log(JSON.stringify({{usage:{{prompt_tokens:499,completion_tokens:500,total_tokens:999}}}}));process.stdout.write('x'.repeat(9*1024*1024));",
+                !case.contains("false")
+            )
+        } else {
+            String::new()
+        };
+        std::fs::write(&agent, format!("#!{}\nrequire('node:fs').appendFileSync({counter_js},'called\\n');fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw new Error('fixture request failed');await r.text();{capture_js}console.log(JSON.stringify({response}));process.exitCode={exit};}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
     }
     if case == "provider-early-failed-finish" {
         std::fs::write(root.join("workspace"), "blocking fixture file").unwrap();
     }
-    let config: BenchmarkConfig = toml::from_str("agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='repository-navigation'\nworkspace='workspace'\nlog_file='run.jsonl'\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n").unwrap();
+    let mut config: BenchmarkConfig = toml::from_str(&format!("agent='{agent_id}'\nprovider='openrouter'\nmodel='fixture'\nworkload='repository-navigation'\nworkspace='workspace'\nlog_file='run.jsonl'\n[measurements]\nenabled={}\ndirectory='measurements'\ncollectors=[]\n", !capture_sweep)).unwrap();
+    if case.starts_with("provider-repeat-") {
+        config.concurrency = 2;
+    }
     let config_path = root.join("benchmark.toml");
     std::fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
+    if case.starts_with("provider-repeat-") {
+        repeated_provider_finish_child(case, &root, &config_path, config, &cassette);
+        return;
+    }
     let blocked_log = case.starts_with("blocked-log");
     if blocked_log {
         std::fs::create_dir(root.join("run.jsonl")).unwrap();
@@ -1068,7 +1465,10 @@ fn full_entry_child(case: &str) {
     } else {
         LifecycleEvent::RunFinishing
     };
-    let _scope = if disposition_case {
+    let _capture_scope = case
+        .contains("read-failure")
+        .then(super::capture::test_support::Scope::read_failure);
+    let _scope = if disposition_case || capture_case {
         entry_test_support::Scope::disposition(&root, calls.clone(), case)
     } else if provider_case {
         entry_test_support::Scope::provider(
@@ -1080,6 +1480,10 @@ fn full_entry_child(case: &str) {
     } else {
         entry_test_support::Scope::new(&root, event, calls.clone())
     };
+    if capture_sweep {
+        check_unmeasured_capture_sweep(case, &root, &cassette, &counter, &calls);
+        return;
+    }
     let observer = Observer {
         started: AtomicUsize::new(0),
         completed: AtomicUsize::new(0),
@@ -1131,7 +1535,7 @@ fn full_entry_child(case: &str) {
         mode: Some(tape::Mode::Replay),
         cassette: Some(cassette.to_str().unwrap()),
         on_completion: Some(&observer),
-        execution_cohort: (provider_case || disposition_case).then_some(&cohort),
+        execution_cohort: (provider_case || disposition_case || capture_case).then_some(&cohort),
         ..Default::default()
     };
     let result = run_mode(
@@ -1141,6 +1545,81 @@ fn full_entry_child(case: &str) {
         &mut output,
         &Mutex::new(BTreeSet::new()),
     );
+    if capture_case {
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains(if case.contains("read-failure") {
+                    "capture failed"
+                } else {
+                    "capture limit"
+                })
+        );
+        assert_eq!(std::fs::read_to_string(counter).unwrap(), "called\n");
+        assert_eq!(
+            calls.borrow().as_slice(),
+            ["evaluate", "finish", "provider-finish"]
+        );
+        let log: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("run.jsonl")).unwrap()).unwrap();
+        let measured: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("measurements/run.json")).unwrap())
+                .unwrap();
+        for record in [&log, &measured] {
+            assert_eq!(record["status"], "failed");
+            assert_eq!(record["failure_kind"], "run_error");
+            assert_eq!(
+                record["benchmark_outcome"]["evaluation"]["status"],
+                "completed"
+            );
+            if case.contains("native") {
+                assert!(record["workload_success"].is_null());
+                assert_eq!(
+                    record["benchmark_outcome"]["evaluation"]["rewards"]["accuracy"],
+                    0.5
+                );
+            } else {
+                assert_eq!(record["workload_success"], !case.contains("false"));
+            }
+            if mini_swe_case {
+                assert_eq!(record["token_usage"]["total_tokens"], 24);
+                assert_eq!(record["steps"], 4);
+            } else if case.contains("read-failure") {
+                assert!(record["token_usage"]["total_tokens"].is_null());
+                assert!(record["steps"].is_null());
+            } else {
+                assert_eq!(record["token_usage"]["total_tokens"], 7);
+                assert!(
+                    record["token_usage"]["source"]
+                        .as_str()
+                        .unwrap()
+                        .contains("cassette")
+                );
+            }
+        }
+        assert_eq!(observer.completed.load(Ordering::SeqCst), 0);
+        assert!(!root.join(".asb-completions").exists());
+        let lines = std::str::from_utf8(&output.bytes)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].get("status").is_none());
+        assert_eq!(lines[1]["event"], "continuation_warning");
+        let report =
+            crate::compare::generate(config_path.to_str().unwrap(), &mut Vec::new()).unwrap();
+        let comparison: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(report.with_file_name("comparison.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            comparison["benchmarks"][0]["benchmark_outcome"],
+            log["benchmark_outcome"]
+        );
+        return;
+    }
     if disposition_case {
         check_full_entry_disposition(
             case,
@@ -1439,6 +1918,205 @@ fn full_entry_child(case: &str) {
     }
 }
 
+fn check_unmeasured_capture_sweep(
+    case: &str,
+    root: &Path,
+    cassette: &Path,
+    counter: &Path,
+    calls: &Rc<RefCell<Vec<&'static str>>>,
+) {
+    let manifest = root.join("sweep.toml");
+    std::fs::write(&manifest, "configs=['benchmark.toml']\n").unwrap();
+    let tapes = root.join("tapes");
+    let tape_directory = tapes.join("000-benchmark/cassettes");
+    std::fs::create_dir_all(&tape_directory).unwrap();
+    std::fs::copy(
+        cassette,
+        tape_directory.join("benchmark-pi-repository-navigation-fixture.jsonl"),
+    )
+    .unwrap();
+    let options = crate::sweep::Options {
+        json: true,
+        mode: Some(tape::Mode::Replay),
+        cassette_root: Some(&tapes),
+        ..Default::default()
+    };
+    let error =
+        crate::sweep::run_with_options(manifest.to_str().unwrap(), options, &mut Vec::new())
+            .unwrap_err()
+            .to_string();
+    assert!(error.contains("capture limit"), "{error}");
+    let results = root.join("sweep-results");
+    let directory = results.join("000-benchmark");
+    let log_bytes = std::fs::read(directory.join("run.log")).unwrap();
+    let log: serde_json::Value = serde_json::from_slice(&log_bytes).unwrap();
+    assert_eq!(log["status"], "failed");
+    assert_eq!(log["failure_kind"], "run_error");
+    assert_eq!(log["workload_resource_disposition"], "not-required");
+    assert!(log["workload_artifacts"].is_array());
+    assert_eq!(
+        log["benchmark_outcome"]["evaluation"]["status"],
+        "completed"
+    );
+    if case.contains("native") {
+        assert!(log["workload_success"].is_null());
+        assert!(log["benchmark_outcome"]["evaluation"]["resolution"].is_null());
+        assert_eq!(
+            log["benchmark_outcome"]["evaluation"]["rewards"]["accuracy"],
+            0.5
+        );
+    } else {
+        assert_eq!(log["workload_success"], !case.contains("false"));
+    }
+    assert!(!directory.join("measurements").exists());
+    assert!(!directory.join(".asb-completions").exists());
+    let checkpoint = results.join(".checkpoint");
+    assert!(!checkpoint.join("completed/000000.json").exists());
+    assert!(!checkpoint.join("replicas/000000/001.json").exists());
+    let retained = [
+        results.join("plan.json"),
+        directory.join("benchmark.toml"),
+        checkpoint.join("started/000000/001.json"),
+    ]
+    .into_iter()
+    .map(|path| {
+        let bytes = std::fs::read(&path).unwrap();
+        (path, bytes)
+    })
+    .collect::<Vec<_>>();
+    let report = root.join("results/sweep-comparison/comparison.json");
+    let report_bytes = std::fs::read(&report).unwrap();
+    let compared: serde_json::Value = serde_json::from_slice(&report_bytes).unwrap();
+    assert_eq!(compared["benchmarks"][0]["result_source"], "run-log");
+    assert_eq!(compared["benchmarks"][0]["planning"], log["planning"]);
+    assert_eq!(
+        compared["benchmarks"][0]["effective_budgets"],
+        log["effective_budgets"]
+    );
+    assert_eq!(
+        compared["benchmarks"][0]["benchmark_outcome"],
+        log["benchmark_outcome"]
+    );
+    if case.contains("native") {
+        assert_eq!(
+            compared["benchmarks"][0]["metrics"]["benchmark_rewards.accuracy@1.accuracy.ratio"],
+            0.5
+        );
+        assert!(
+            compared["benchmarks"][0]["metrics"]
+                .get("success_rate")
+                .is_none()
+        );
+    } else {
+        assert_eq!(
+            compared["benchmarks"][0]["metrics"]["success_rate"],
+            if case.contains("false") { 0.0 } else { 1.0 }
+        );
+    }
+    assert!(
+        compared["benchmarks"][0]["status"]
+            .as_str()
+            .unwrap()
+            .contains("capture limit")
+    );
+    let html = std::fs::read_to_string(report.with_file_name("report.html")).unwrap();
+    assert!(html.contains("capture limit"));
+    if case.contains("native") {
+        assert!(html.contains("accuracy v1 / accuracy"));
+    }
+    assert!(!html.contains("fixture-file-grade"));
+    crate::compare::generate(manifest.to_str().unwrap(), &mut Vec::new()).unwrap();
+    assert_eq!(std::fs::read(&report).unwrap(), report_bytes);
+    let cli = Command::new(std::env::var_os("ASB_RUNTIME_EXECUTABLE").unwrap())
+        .current_dir(root)
+        .args(["compare", "sweep.toml"])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap())
+        .output()
+        .unwrap();
+    assert!(
+        cli.status.success(),
+        "{}",
+        String::from_utf8_lossy(&cli.stderr)
+    );
+    let cli_report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
+    assert_eq!(
+        cli_report["benchmarks"][0]["benchmark_outcome"],
+        log["benchmark_outcome"]
+    );
+    assert_eq!(cli_report["benchmarks"][0]["result_source"], "run-log");
+    assert!(
+        cli_report["benchmarks"][0]["status"]
+            .as_str()
+            .unwrap()
+            .contains("capture limit")
+    );
+    // Relative CLI invocation legitimately renders relative display paths;
+    // restoring the same absolute invocation must restore identical report bytes.
+    crate::compare::generate(manifest.to_str().unwrap(), &mut Vec::new()).unwrap();
+    assert_eq!(std::fs::read(&report).unwrap(), report_bytes);
+    assert_eq!(std::fs::read(directory.join("run.log")).unwrap(), log_bytes);
+    // A malformed/mismatched latest record must not fall back to an earlier
+    // valid grade, nor replace the previously published report generation.
+    for (path, value) in [
+        ("/agent", serde_json::json!("other-agent")),
+        ("/provider", serde_json::json!("other-provider")),
+        ("/model", serde_json::json!("other-model")),
+        ("/task/task_id", serde_json::json!("other-task")),
+        ("/replica_index", serde_json::json!(2)),
+    ] {
+        let mut invalid = log.clone();
+        *invalid.pointer_mut(path).unwrap() = value;
+        let bytes = [
+            log_bytes.as_slice(),
+            b"\n",
+            invalid.to_string().as_bytes(),
+            b"\n",
+        ]
+        .concat();
+        std::fs::write(directory.join("run.log"), &bytes).unwrap();
+        assert!(
+            crate::compare::generate(manifest.to_str().unwrap(), &mut Vec::new()).is_err(),
+            "{path}"
+        );
+        assert_eq!(std::fs::read(&report).unwrap(), report_bytes);
+        assert_eq!(std::fs::read(directory.join("run.log")).unwrap(), bytes);
+    }
+    std::fs::write(
+        directory.join("run.log"),
+        [log_bytes.as_slice(), b"\nnot-json\n"].concat(),
+    )
+    .unwrap();
+    assert!(crate::compare::generate(manifest.to_str().unwrap(), &mut Vec::new()).is_err());
+    assert_eq!(std::fs::read(&report).unwrap(), report_bytes);
+    std::fs::write(directory.join("run.log"), &log_bytes).unwrap();
+    let resume = crate::sweep::Options {
+        resume: true,
+        ..options
+    };
+    let error = crate::sweep::run_with_options(manifest.to_str().unwrap(), resume, &mut Vec::new())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("outcome") || error.contains("unsealed") || error.contains("incomplete"),
+        "{error}"
+    );
+    assert_eq!(std::fs::read(directory.join("run.log")).unwrap(), log_bytes);
+    assert_eq!(std::fs::read(&report).unwrap(), report_bytes);
+    assert!(!directory.join(".asb-completions").exists());
+    assert!(!checkpoint.join("completed/000000.json").exists());
+    assert!(!checkpoint.join("replicas/000000/001.json").exists());
+    for (path, bytes) in retained {
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+    }
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "called\n");
+    assert_eq!(
+        calls.borrow().as_slice(),
+        ["evaluate", "finish", "provider-finish"]
+    );
+}
+
 fn check_full_entry_disposition(
     case: &str,
     root: &Path,
@@ -1487,6 +2165,16 @@ fn check_full_entry_disposition(
     for record in [&log, &measured] {
         assert_eq!(record["status"], expected_status, "{case}");
         assert_eq!(record["failure_kind"].as_str(), expected_kind, "{case}");
+        assert_eq!(
+            record["workload_resource_disposition"],
+            if case.contains("cleanup") {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!("not-required")
+            },
+            "resource settlement must remain independent of evaluation and provider cleanup"
+        );
+        assert_eq!(record["workload_artifacts"], log["workload_artifacts"]);
         assert_eq!(record["process_success"], !case.contains("client"));
         assert_eq!(
             record["benchmark_outcome"]["cleanup_confirmed"],
@@ -1532,6 +2220,11 @@ fn check_full_entry_disposition(
         );
         assert_eq!(summary["failure_kind"], log["failure_kind"]);
         assert_eq!(summary["benchmark_outcome"], log["benchmark_outcome"]);
+        assert_eq!(
+            summary["workload_resource_disposition"],
+            log["workload_resource_disposition"]
+        );
+        assert_eq!(summary["workload_artifacts"], log["workload_artifacts"]);
     }
     assert_eq!(
         measured["success"],
@@ -1563,6 +2256,14 @@ fn check_full_entry_disposition(
             log["benchmark_outcome"]
         );
         assert_eq!(record["summary"]["failure_kind"], log["failure_kind"]);
+        assert_eq!(
+            record["workload_resource_disposition"],
+            log["workload_resource_disposition"]
+        );
+        assert_eq!(
+            record["summary"]["workload_artifacts"],
+            log["workload_artifacts"]
+        );
     }
     let report = crate::compare::generate(
         root.join("benchmark.toml").to_str().unwrap(),

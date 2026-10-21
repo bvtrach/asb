@@ -1,6 +1,7 @@
 //! Legacy non-Unix transport. Its blocking pipes, reader and Drop are retained
 //! for compatibility, NOT covered by the Unix bounded-I/O/custody guarantee.
 use super::MAX_MESSAGE;
+use crate::workloads::session::{ResourceDisposition, ResourceSettlement};
 use crate::workloads::task_protocol::{
     CancellationAck, CompletedGrade, EventKind, NormalCloseAck, Request,
 };
@@ -117,7 +118,7 @@ impl Controller {
     /// EOF interrupts active work; continue draining its bounded event stream
     /// until the owner confirms teardown. Cancellation's nonzero child exit
     /// is expected, but it never substitutes for confirmed resource quiescence.
-    pub(crate) fn cancel(&mut self, timeout: Duration) -> Result<(), String> {
+    pub(crate) fn cancel(&mut self, timeout: Duration) -> Result<ResourceDisposition, String> {
         let deadline = Instant::now() + timeout;
         self.input.take();
         loop {
@@ -126,8 +127,9 @@ impl Controller {
             }
             let event = self.receive_raw(deadline)?;
             if EventKind::of(&event) == Some(EventKind::Closed) {
-                CancellationAck::decode(&event)?;
-                return self.wait_for_exit(deadline, false);
+                let disposition = CancellationAck::decode(&event)?.disposition();
+                self.wait_for_exit(deadline, false)?;
+                return Ok(disposition);
             }
             // A command already in flight can produce output, an error or a
             // final result before the input reader observes EOF. No payload
@@ -154,15 +156,31 @@ impl Controller {
         &mut self,
         _grade: CompletedGrade,
         timeout: Duration,
-    ) -> Result<(), String> {
+    ) -> Result<ResourceSettlement, String> {
         let deadline = Instant::now() + timeout;
         self.send(&Request::Close.value()?, deadline)?;
         // Keep stdin open until cleanup acknowledges completion. EOF is
         // cancellation and is only the fallback for a failed caller.
         let response = self.receive(deadline)?;
-        NormalCloseAck::decode(&response)?;
+        let disposition = NormalCloseAck::decode(&response)?.disposition();
         self.input.take();
-        self.wait_for_exit(deadline, true)
+        self.wait_for_exit(deadline, false)?;
+        let success = self
+            .child
+            .try_wait()
+            .map_err(|_| "cannot check settled workload controller")?
+            .ok_or("settled workload controller was not reaped")?
+            .success();
+        Ok(ResourceSettlement {
+            disposition,
+            diagnostic: if disposition != ResourceDisposition::Removed {
+                Some("normal workload teardown did not remove resources; confirmed cancellation disposition retained".into())
+            } else if !success {
+                Some("workload controller failed after confirmed resource removal".into())
+            } else {
+                None
+            },
+        })
     }
 
     pub(crate) fn complete_response(&mut self, deadline: Instant) -> Result<(), String> {

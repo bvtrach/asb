@@ -1,6 +1,22 @@
 //! Protocol-phase fixtures, NOT qualification of runtime/SDK installation.
 //! Production execution always constructs PreparedBootstrap through real prefetch.
 use super::*;
+
+#[test]
+fn material_request_and_response_share_the_same_absolute_deadline() {
+    let mut command = Command::new("python3");
+    command.args(["-I", "-S", "-B", "-u", "-c", "import json,sys\nrequest=json.loads(sys.stdin.readline())\nassert request['op']=='initial-material'\nassert isinstance(request['binary'],str)\nassert sys.stdin.read()==''\n"]);
+    let mut controller = Controller::spawn(&mut command).unwrap();
+    let started = Instant::now();
+    let error =
+        request_initial_material_until(&mut controller, started + Duration::from_millis(100))
+            .unwrap_err();
+    assert!(error.contains("deadline"), "{error}");
+    assert!(started.elapsed() < Duration::from_secs(1));
+    controller
+        .complete_response(Instant::now() + Duration::from_secs(1))
+        .unwrap();
+}
 use std::fs;
 use std::io::{self, Write};
 use std::path::Path;
@@ -22,10 +38,13 @@ impl Fixture {
         }
     }
     fn session(&self, events: &[Value], cleanup: &str) -> Session {
+        self.session_with_grade(events, cleanup, json!(false))
+    }
+    fn session_with_grade(&self, events: &[Value], cleanup: &str, resolved: Value) -> Session {
         let script = r#"
 import json,sys
 from pathlib import Path
-events=json.loads(sys.argv[1]); log=Path(sys.argv[2]); cleanup=sys.argv[3]
+events=json.loads(sys.argv[1]); log=Path(sys.argv[2]); cleanup=sys.argv[3]; resolved=json.loads(sys.argv[4])
 def record(op):
  with log.open('a') as stream: stream.write(op+'\n')
 def closed():
@@ -33,6 +52,7 @@ def closed():
 raw=sys.stdin.readline()
 if not raw: closed();sys.exit(0)
 request=json.loads(raw);assert request['op']=='agent';record('agent')
+log.with_name('preparation-seconds').write_text(json.dumps(request['preparation_seconds']))
 assert request['request']['config']['concurrency']==1
 assert request['request']['config']['workspace']=='/fixture-task'
 assert request['timeout']==1
@@ -47,7 +67,7 @@ for event in events:
 for raw in sys.stdin:
  request=json.loads(raw);record(request['op'])
  if request['op']=='evaluate':
-  print(json.dumps(dict(event='evaluated',result=dict(workload='fixture',task_id='task',dataset=None,outcome='unresolved',resolved=False))),flush=True)
+  print(json.dumps(dict(event='evaluated',result=dict(workload='fixture',task_id='task',dataset=None,outcome='unresolved',resolved=resolved))),flush=True)
  elif request['op']=='close':
   print(json.dumps(dict(event='closed',cleanup=cleanup)),flush=True);sys.exit(0)
 closed()
@@ -57,7 +77,8 @@ closed()
             .args(["-I", "-S", "-B", "-u", "-c", script])
             .arg(serde_json::to_string(events).unwrap())
             .arg(self.0.join("operations"))
-            .arg(cleanup);
+            .arg(cleanup)
+            .arg(serde_json::to_string(&resolved).unwrap());
         self.with_controller(Controller::spawn(&mut command).unwrap())
     }
     fn with_controller(&self, controller: Controller) -> Session {
@@ -73,12 +94,16 @@ closed()
                 workspace: self.0.join("workspace"),
             },
             baseline: BaselineEvidence::Unavailable,
+            initial_material: Err(
+                "legacy execution fixture did not request initial material".into()
+            ),
             guest_workspace: "/fixture-task".into(),
             agent_timeout: Duration::from_secs(1),
             measurement_active: false,
             preparation_active: false,
             cleanup_attempted: false,
             completed_grade: None,
+            settlement: None,
             artifacts: self.0.join("attempt"),
         }
     }
@@ -94,7 +119,7 @@ from asb_execution import ExecutionError
 log=Path(sys.argv[2]);grades=json.loads(sys.argv[3])
 def record(op):
  with log.open('a') as output: output.write(op+'\n')
-def execute_agent(task,request,attach,output,cancelled,on_ended):
+def execute_agent(task,request,attach,output,cancelled,on_ended,**options):
  record('agent')
  assert request['op']=='agent' and request['timeout']==1
  assert request['request']['config']['workspace']=='/fixture-task'
@@ -104,7 +129,7 @@ def execute_agent(task,request,attach,output,cancelled,on_ended):
   metadata=dict(schema_version=1,exit_code=7,final_response='fixture',token_usage={},steps=2,tree_quiesced=True))
  on_ended(result)
  return result
-guest=types.ModuleType('asb_guest');guest.execute_agent=execute_agent;sys.modules['asb_guest']=guest
+guest=types.ModuleType('asb_guest');guest.execute_agent=execute_agent;guest.PreparationBudget=lambda seconds:None;sys.modules['asb_guest']=guest
 class Task:
  invocation=dict(identity=dict(workload='fixture',task_id='task',attempt_id='owned-attempt',dataset=None),prompt='fixture issue',workspace='/fixture-task')
  cleanup_status='pending'
@@ -181,6 +206,7 @@ fn actual_python_producer_and_rust_session_keep_both_grades_and_consume_close_pe
             replay: true,
             measurements: None,
             show_output: true,
+            launch: None,
         };
         let mut output = Vec::new();
         let result =
@@ -237,13 +263,124 @@ fn actual_python_late_bad_grade_or_error_revokes_close_and_preserves_instead() {
         assert!(session.completed_grade.is_some());
         assert!(session.evaluate("").is_err());
         assert!(session.completed_grade.is_none());
-        assert!(
-            session
-                .finish()
-                .unwrap_err()
-                .contains("stopped and preserved")
+        assert_eq!(
+            session.finish().unwrap().disposition,
+            ResourceDisposition::StoppedPreserved
         );
         assert_eq!(fixture.operations(), ["evaluate", "evaluate", "preserve"]);
+    }
+}
+
+#[test]
+fn unmeasured_shared_launch_requires_valid_target_and_aborts_before_cancellation() {
+    use super::super::session::LaunchReadiness;
+    use std::cell::Cell;
+    struct Launch<'a> {
+        fixture: &'a Fixture,
+        fail_ready: bool,
+        ready: Cell<usize>,
+        aborted: Cell<bool>,
+    }
+    impl LaunchReadiness for Launch<'_> {
+        fn ready(&self) -> Result<(), String> {
+            self.ready.set(self.ready.get() + 1);
+            if self.fail_ready {
+                Err("sibling preparation failed".into())
+            } else {
+                Ok(())
+            }
+        }
+        fn abort(&self) {
+            assert!(
+                !self.fixture.operations().iter().any(|op| op == "cancel"),
+                "peers must be notified before namespace cancellation"
+            );
+            self.aborted.set(true);
+        }
+        fn remaining(&self) -> Result<Duration, String> {
+            Ok(Duration::from_secs(1800))
+        }
+    }
+    for fault in [
+        "none",
+        "bad-target",
+        "missing-target",
+        "preparation-failed",
+        "ready-failure",
+    ] {
+        let fixture = Fixture::new();
+        let mut target = json!({"container_id":"a".repeat(64),"exec_id":"b".repeat(64),
+            "namespace_pid":42,"daemon_pid":null,"pid_scope":"container-namespace"});
+        if fault == "bad-target" {
+            target["exec_id"] = json!("invalid");
+        }
+        let events = match fault {
+            "missing-target" => vec![completed()],
+            "preparation-failed" => vec![
+                json!({"event":"preparation_failed"}),
+                json!({"event":"error","error_class":"ExecutionError","reason":"selected agent runtime installation failed; inspect private install artifacts"}),
+            ],
+            _ => vec![json!({"event":"paused","target":target}), completed()],
+        };
+        let mut session = fixture.session(&events, "stopped-preserved");
+        let config = configuration();
+        let project = crate::project::ProjectConfig::default();
+        let connection = connection();
+        let launch = Launch {
+            fixture: &fixture,
+            fail_ready: fault == "ready-failure",
+            ready: Cell::new(0),
+            aborted: Cell::new(false),
+        };
+        let mut context = ExecutionContext {
+            launch: Some(&launch),
+            config: &config,
+            connection: Some(&connection),
+            project_root: &fixture.0,
+            project_config: &project,
+            replay: true,
+            measurements: None,
+            show_output: false,
+        };
+        let result = session.run_prepared(
+            &mut context,
+            &mut Vec::new(),
+            &connection,
+            fixture.prepared(),
+        );
+        let result = session.settle_execution(&mut context, result);
+        assert_eq!(result.is_ok(), fault == "none", "{fault}");
+        if fault == "preparation-failed" {
+            assert!(
+                result
+                    .as_ref()
+                    .err()
+                    .unwrap()
+                    .contains("selected agent runtime installation failed")
+            );
+        }
+        assert_eq!(
+            launch.ready.get(),
+            usize::from(matches!(fault, "none" | "ready-failure")),
+            "{fault}"
+        );
+        assert_eq!(launch.aborted.get(), fault != "none", "{fault}");
+        assert_eq!(
+            fs::read_to_string(fixture.0.join("preparation-seconds")).unwrap(),
+            "1800.0",
+            "shared preparation budget must cross the typed request unchanged"
+        );
+        if fault == "none" {
+            session.cancel().unwrap();
+        }
+        assert_eq!(
+            fixture.operations(),
+            if fault == "none" {
+                vec!["agent", "resume", "cancel"]
+            } else {
+                vec!["agent", "cancel"]
+            }
+        );
     }
 }
 
@@ -272,6 +409,7 @@ fn completed_guest_survives_capture_end_errors_and_still_grades_then_closes() {
         let project = crate::project::ProjectConfig::default();
         let connection = connection();
         let mut context = ExecutionContext {
+            launch: None,
             config: &config,
             connection: Some(&connection),
             project_root: &fixture.0,
@@ -322,6 +460,7 @@ fn prepared_protocol_preserves_output_exit_time_and_grades_only_after_completion
         let project = crate::project::ProjectConfig::default();
         let connection = connection();
         let mut context = ExecutionContext {
+            launch: None,
             config: &config,
             connection: Some(&connection),
             project_root: &fixture.0,
@@ -358,6 +497,42 @@ fn prepared_protocol_preserves_output_exit_time_and_grades_only_after_completion
 }
 
 #[test]
+fn unknown_grade_settlement_never_repeats_evaluation_or_cancellation() {
+    let fixture = Fixture::new();
+    let mut session = fixture.session_with_grade(&[completed()], "stopped-preserved", Value::Null);
+    let config = configuration();
+    let project = crate::project::ProjectConfig::default();
+    let connection = connection();
+    let mut context = ExecutionContext {
+        launch: None,
+        config: &config,
+        connection: Some(&connection),
+        project_root: &fixture.0,
+        project_config: &project,
+        replay: true,
+        measurements: None,
+        show_output: false,
+    };
+    session.begin_agent_preparation(&mut context).unwrap();
+    let result = session.run_prepared(
+        &mut context,
+        &mut Vec::new(),
+        &connection,
+        fixture.prepared(),
+    );
+    session.settle_execution(&mut context, result).unwrap();
+    assert!(session.evaluate("").is_err());
+    let settlement = session.finish().unwrap();
+    assert_eq!(
+        settlement.disposition,
+        crate::workloads::ResourceDisposition::StoppedPreserved
+    );
+    assert_eq!(session.finish().unwrap(), settlement);
+    drop(session);
+    assert_eq!(fixture.operations(), ["agent", "evaluate", "cancel"]);
+}
+
+#[test]
 fn protocol_errors_preserve_original_reason_and_cancel_instead_of_grading() {
     let bad_metadata = json!({"event":"completed","result":{"metadata":{}}});
     let mut live_tree = completed();
@@ -380,6 +555,7 @@ fn protocol_errors_preserve_original_reason_and_cancel_instead_of_grading() {
         let project = crate::project::ProjectConfig::default();
         let connection = connection();
         let mut context = ExecutionContext {
+            launch: None,
             config: &config,
             connection: Some(&connection),
             project_root: &fixture.0,
@@ -400,6 +576,15 @@ fn protocol_errors_preserve_original_reason_and_cancel_instead_of_grading() {
         assert!(error.contains(reason), "{error}");
         assert_eq!(fixture.operations(), ["agent", "cancel"]);
         assert!(session.completed_grade.is_none());
+        assert_eq!(
+            session.finish().unwrap().disposition,
+            ResourceDisposition::StoppedPreserved
+        );
+        assert_eq!(
+            session.finish().unwrap().disposition,
+            ResourceDisposition::StoppedPreserved
+        );
+        assert_eq!(fixture.operations(), ["agent", "cancel"]);
     }
 }
 
@@ -428,6 +613,7 @@ fn broken_human_output_does_not_cancel_a_completed_guest_submission_or_grader() 
     let project = crate::project::ProjectConfig::default();
     let connection = connection();
     let mut context = ExecutionContext {
+        launch: None,
         config: &config,
         connection: Some(&connection),
         project_root: &fixture.0,
@@ -472,6 +658,7 @@ fn broken_output_and_deadline_use_same_preserving_error_envelope() {
         let project = crate::project::ProjectConfig::default();
         let connection = connection();
         let mut context = ExecutionContext {
+            launch: None,
             config: &config,
             connection: Some(&connection),
             project_root: &fixture.0,
@@ -517,6 +704,7 @@ fn production_preparation_still_rejects_unregistered_agent_without_protocol_disp
     let project = crate::project::ProjectConfig::default();
     let connection = connection();
     let mut context = ExecutionContext {
+        launch: None,
         config: &config,
         connection: Some(&connection),
         project_root: &fixture.0,
@@ -560,6 +748,7 @@ fn measured_protocol_rejects_unverified_target_and_execution_end_before_start() 
         .unwrap();
         measurements.event(LifecycleEvent::RunStarted).unwrap();
         let mut context = ExecutionContext {
+            launch: None,
             config: &config,
             connection: Some(&connection),
             project_root: &fixture.0,
@@ -615,6 +804,7 @@ fn completed_metadata_retains_unknown_timing_and_requires_valid_service_handoff(
         let project = crate::project::ProjectConfig::default();
         let connection = connection();
         let mut context = ExecutionContext {
+            launch: None,
             config: &config,
             connection: Some(&connection),
             project_root: &fixture.0,
@@ -665,6 +855,7 @@ fn completed_metadata_retains_unknown_timing_and_requires_valid_service_handoff(
         let project = crate::project::ProjectConfig::default();
         let connection = connection();
         let mut context = ExecutionContext {
+            launch: None,
             config: &config,
             connection: Some(&connection),
             project_root: &fixture.0,

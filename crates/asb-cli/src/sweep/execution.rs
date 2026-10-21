@@ -9,6 +9,14 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+/// Benchmark errors and inability to deliver output have different admission
+/// policies. Do not recover this distinction from an error's display text.
+pub(super) struct ConfigurationReport {
+    pub result: Result<(), Error>,
+    pub output_error: Option<Error>,
+    pub spool_created: bool,
+}
+
 pub(super) fn result_name(index: usize, reference: &Path) -> String {
     format!("{index:03}-{}", benchmark_stem(reference))
 }
@@ -55,27 +63,44 @@ impl Execution<'_> {
             .join(format!(".terminal-output-{index:06}.tmp"))
     }
 
-    pub(super) fn run(&self, index: usize) -> Result<(), Error> {
-        std::fs::create_dir_all(self.directory(index)).map_err(crate::io_error)?;
-        if self.options.resume {
-            spool::preserve(
+    pub(super) fn run(&self, index: usize) -> ConfigurationReport {
+        let mut output_error = None;
+        let mut prepared_output = false;
+        let result = (|| {
+            std::fs::create_dir_all(self.directory(index)).map_err(crate::io_error)?;
+            if self.options.resume {
+                spool::preserve(
+                    &self.output_path(index),
+                    self.plan.entries[index].configuration.concurrency,
+                    &self.results.join(".checkpoint/interrupted-terminal"),
+                )?;
+            }
+            let mut spool = spool::Output::create(
                 &self.output_path(index),
                 self.plan.entries[index].configuration.concurrency,
-                &self.results.join(".checkpoint/interrupted-terminal"),
             )?;
-        }
-        let mut output = spool::Output::create(
-            &self.output_path(index),
-            self.plan.entries[index].configuration.concurrency,
-        )?;
-        let result = self.run_to(index, &mut output);
-        let flush = output.flush().map_err(crate::io_error);
-        match (result, flush) {
-            (Err(error), Err(flush)) => {
-                Err(Error::Run(format!("{error}; output flush failed: {flush}")))
+            let mut output = super::presentation::Presentation::new(&mut spool);
+            prepared_output = true;
+            let result = self.run_to(index, &mut output);
+            let flush = output.flush().map_err(crate::io_error);
+            output_error = output.error();
+            match (result, flush) {
+                (Err(error), Err(flush)) => {
+                    Err(Error::Run(format!("{error}; output flush failed: {flush}")))
+                }
+                (Err(error), _) | (_, Err(error)) => Err(error),
+                _ => Ok(()),
             }
-            (Err(error), _) | (_, Err(error)) => Err(error),
-            _ => Ok(()),
+        })();
+        // Failure before a spool could be opened also prevents reliable
+        // presentation. No client has started on that path.
+        if !prepared_output && let Err(error) = &result {
+            output_error = Some(Error::Io(format!("cannot prepare sweep output: {error}")));
+        }
+        ConfigurationReport {
+            result,
+            output_error,
+            spool_created: prepared_output,
         }
     }
 
@@ -178,5 +203,67 @@ impl Execution<'_> {
             Ok(())
         };
         runner::diagnostics::preserve_primary(result, presentation)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn failed_creation_and_old_spool_preservation_never_claim_cleanup_ownership() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/sweep-execution-fixtures")
+            .join(crate::workloads::TaskIdentity::local("spool-ownership", None).attempt_id);
+        std::fs::create_dir_all(&root).unwrap();
+        let config: crate::benchmark::BenchmarkConfig = toml::from_str(
+            "agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='bug-fix'\n",
+        )
+        .unwrap();
+        let selection = crate::workloads::TaskSelection {
+            module: None,
+            workload: "bug-fix".into(),
+            task_id: "bug-fix".into(),
+            dataset: None,
+            evaluation_kind: "bundled-fixture".into(),
+            population_size: None,
+        };
+        let plan:plan::SweepPlan=serde_json::from_value(serde_json::json!({"schema_version":1,"run_id":"abc","entries":[{"reference":"a.toml","configuration":config,"selection":selection}]})).unwrap();
+        let warnings = Mutex::new(BTreeSet::new());
+        let reused = super::super::resume::State::default();
+        let path = root.join(".terminal-output-000000.tmp");
+        std::fs::write(&path, "old output must survive").unwrap();
+        std::fs::create_dir(root.join(".checkpoint")).unwrap();
+        std::fs::write(
+            root.join(".checkpoint/interrupted-terminal"),
+            "history blocker",
+        )
+        .unwrap();
+        for resume in [false, true] {
+            let execution = Execution {
+                source: "fixture",
+                parent: &root,
+                plan: &plan,
+                results: &root,
+                backup: &root,
+                replay_inputs: None,
+                restore_recordings: false,
+                options: Options {
+                    resume,
+                    ..Default::default()
+                },
+                warnings: &warnings,
+                checkpoint: None,
+                reused: &reused,
+            };
+            let report = execution.run(0);
+            assert!(report.result.is_err());
+            assert!(report.output_error.is_some());
+            assert!(!report.spool_created);
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap(),
+                "old output must survive"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

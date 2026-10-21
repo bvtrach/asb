@@ -247,7 +247,12 @@ fn preflight_with_marker(context: &mut PreflightContext<'_>, marker: &Path) -> R
 
 fn preflight_perfetto(context: &mut PreflightContext<'_>, executable: &Path) -> Result<(), String> {
     probe_trace_processor(context.tool_dir)?;
-    let service = Service::acquire(executable, context.measurement_dir)?;
+    let service = Service::acquire(
+        executable,
+        context
+            .project_root
+            .ok_or("Perfetto requires the benchmark project's explicit authority")?,
+    )?;
     if perfetto_probe(&service, context.measurement_dir)? {
         return Ok(());
     }
@@ -335,7 +340,12 @@ impl measurements::Session {
             return Ok(());
         }
         let executable = measurements::resolve_executable(self.tool_dir.as_deref(), "perfetto");
-        let service = Service::acquire(&executable, &self.dir)?;
+        let service = Service::acquire(
+            &executable,
+            self.project_root
+                .as_deref()
+                .ok_or("Perfetto requires the benchmark project's explicit authority")?,
+        )?;
         let marker = service.marker.clone();
         self.start_perfetto_with_marker(&marker, Some(service))
     }
@@ -1738,6 +1748,7 @@ print(json.dumps(c.execute(sys.argv[1]).fetchall()))
             let tools = root.join("tools");
             let mut sudo_collectors = std::collections::BTreeSet::new();
             let mut context = PreflightContext {
+                project_root: None,
                 states: &mut crate::collectors::CollectorStates::default(),
                 measurement_dir: &root,
                 selected: &[],

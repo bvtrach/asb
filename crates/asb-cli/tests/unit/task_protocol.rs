@@ -182,7 +182,7 @@ fn completed_grade_is_not_process_success_or_an_unknown_or_inconsistent_resoluti
 }
 
 #[test]
-fn normal_close_and_cancel_acknowledgements_are_distinct_and_fail_closed() {
+fn typed_cleanup_acknowledgements_preserve_positive_settlement_and_reject_unknowns() {
     for cleanup in [
         "removed",
         "not_created",
@@ -194,7 +194,10 @@ fn normal_close_and_cancel_acknowledgements_are_distinct_and_fail_closed() {
         "future",
     ] {
         let event = json!({"event":"closed","cleanup":cleanup});
-        assert_eq!(NormalCloseAck::decode(&event).is_ok(), cleanup == "removed");
+        assert_eq!(
+            NormalCloseAck::decode(&event).is_ok(),
+            matches!(cleanup, "removed" | "not_created" | "stopped-preserved")
+        );
         assert_eq!(
             CancellationAck::decode(&event).is_ok(),
             matches!(cleanup, "removed" | "not_created" | "stopped-preserved")
@@ -218,6 +221,12 @@ fn rust_request_and_python_producer_event_spellings_match_the_original_wire() {
     for (request, expected) in [
         (Request::Close, json!({"op":"close"})),
         (
+            Request::InitialMaterial {
+                binary: Path::new("fixture-asb"),
+            },
+            json!({"op":"initial-material","binary":"fixture-asb"}),
+        ),
+        (
             Request::Evaluate { timeout: 60 },
             json!({"op":"evaluate","timeout":60}),
         ),
@@ -233,6 +242,7 @@ fn rust_request_and_python_producer_event_spellings_match_the_original_wire() {
         payload: AgentRequest {
             binary: Path::new("fixture-asb"),
             project_root: Path::new("fixture-project"),
+            preparation_seconds: Some(1800.0),
             timeout: 1.0,
             tools_root: Path::new("fixture-tools"),
             bootstrap: &bootstrap,
@@ -247,7 +257,7 @@ fn rust_request_and_python_producer_event_spellings_match_the_original_wire() {
     .unwrap();
     assert_eq!(
         agent,
-        json!({"op":"agent","binary":"fixture-asb","project_root":"fixture-project","timeout":1.0,
+        json!({"op":"agent","binary":"fixture-asb","project_root":"fixture-project","preparation_seconds":1800.0,"timeout":1.0,
         "tools_root":"fixture-tools","bootstrap":{"runtime_tools":[],"assets":[],"public_package_cache":false},
         "measure_target":false,"project_configuration":"fixture","environment":{},"network":null,"request":{"replay":true}})
     );
@@ -271,12 +281,21 @@ fn rust_request_and_python_producer_event_spellings_match_the_original_wire() {
         "evaluated",
         "error",
         "closed",
+        "initial-material",
+        "preparation_failed",
     ];
     assert_eq!(python["events"], json!(events));
     assert_eq!(
         python["operations"],
         json!([
-            "execute", "agent", "resume", "capture", "evaluate", "close", "cancel"
+            "execute",
+            "agent",
+            "resume",
+            "capture",
+            "evaluate",
+            "close",
+            "cancel",
+            "initial-material"
         ])
     );
     for name in events {

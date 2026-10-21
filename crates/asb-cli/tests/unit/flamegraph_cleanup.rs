@@ -251,6 +251,7 @@ else: raise AssertionError('unrecognized fixture role')
         let selected = vec!["flamegraph".to_owned()];
         let tools = root.join("tools");
         let mut context = crate::collectors::PreflightContext {
+            project_root: Some(&root),
             measurement_dir: &root,
             selected: &selected,
             tool_dir: Some(&tools),

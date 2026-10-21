@@ -9,7 +9,10 @@ mod adapters;
 pub(crate) mod contracts;
 
 pub(crate) fn descriptor(name: &str) -> Option<contracts::ModuleDescriptor> {
-    adapters::find(name).map(|adapter| adapter.descriptor(name))
+    let descriptor = adapters::find(name).map(|adapter| adapter.descriptor(name));
+    #[cfg(test)]
+    let descriptor = crate::runner::fixture_module_descriptor(name, descriptor);
+    descriptor
 }
 
 pub(crate) fn describe_module(
@@ -41,13 +44,19 @@ impl PreflightContext<'_> {
 pub(crate) fn preflight(name: &str, context: &PreflightContext<'_>) -> Result<(), crate::Error> {
     adapters::find(name).map_or(Ok(()), |adapter| adapter.preflight(context))
 }
+#[cfg(target_os = "linux")]
+mod attributes;
+#[cfg(target_os = "linux")]
+pub(crate) mod census;
 mod controller;
+mod material;
 pub(crate) mod outcome;
 pub(crate) mod recovery;
 pub(crate) mod relay;
 mod remote;
 mod selection;
 pub(crate) mod session;
+pub(crate) mod staging;
 mod task_protocol;
 pub(crate) fn runtime_inputs(
     name: &str,
@@ -66,7 +75,9 @@ pub(crate) fn source_bundle(name: &str) -> Option<SourceBundle> {
 pub(crate) use selection::{PlanningCatalog, TaskSelection};
 pub(crate) use session::BaselineEvidence;
 pub use session::TaskIdentity;
-pub(crate) use session::{ExecutionContext, PreparationContext, WorkloadSession};
+pub(crate) use session::{
+    ExecutionContext, PreparationContext, ResourceDisposition, WorkloadSession,
+};
 
 pub(crate) fn planning_catalog(
     name: &str,

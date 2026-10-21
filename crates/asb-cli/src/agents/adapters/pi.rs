@@ -13,6 +13,7 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     prepare_adapter,
 )
 .with_output_usage(output_usage)
+.with_state_environment_vars(&["PI_CODING_AGENT_DIR"])
 .with_execution_failure(execution_failure)
 .with_step_count(step_count);
 

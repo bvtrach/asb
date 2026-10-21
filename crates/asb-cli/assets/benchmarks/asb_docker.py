@@ -12,6 +12,7 @@ import signal
 import socket
 import subprocess
 import threading
+from urllib.parse import urlsplit
 
 
 class DockerAccessError(RuntimeError):
@@ -104,6 +105,60 @@ class StdioConnections:
                     process.wait()
 
 
+class ClosingResponseStream:
+    """Own an HTTP response even when its consumer stops before the first read.
+
+    Docker SDK's default raw stream disables socket timeouts and does not close
+    the response on early generator close. Archive inspection needs both the
+    configured read timeout and deterministic release of its owned connection.
+    """
+    def __init__(self, response, chunk_size, decode):
+        self.response = response
+        self.closed = False
+        try:
+            self.iterator = iter(response.iter_content(chunk_size, decode))
+        except BaseException:
+            self.closed = True
+            response.close()
+            raise
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.closed:
+            raise StopIteration
+        try:
+            return next(self.iterator)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            try:
+                close = getattr(self.iterator, "close", None)
+                if close is not None:
+                    close()
+            finally:
+                self.response.close()
+
+
+class ArchiveStreamPolicy:
+    """Change archive reads only; quiet TTY/attach streams retain SDK semantics."""
+    def _stream_raw_result(self, response, chunk_size=1, decode=True):
+        path = urlsplit(response.url).path
+        if not ("/containers/" in path and path.endswith("/archive")):
+            return super()._stream_raw_result(response, chunk_size, decode)
+        try:
+            self._raise_for_status(response)
+        except BaseException:
+            response.close()
+            raise
+        return ClosingResponseStream(response, chunk_size, decode)
+
+
 class DockerSession:
     def __init__(self):
         self.connections = None
@@ -115,6 +170,13 @@ class DockerSession:
 
         connections = StdioConnections(docker_command() + ["system", "dial-stdio"])
         self.connections = connections
+
+        class BoundedAPIClient(ArchiveStreamPolicy, docker.APIClient):
+            pass
+
+        class BoundedDockerClient(docker.DockerClient):
+            def __init__(self, *args, **kwargs):
+                self.api = BoundedAPIClient(*args, **kwargs)
 
         class Connection(UnixHTTPConnection):
             def connect(self):
@@ -137,7 +199,7 @@ class DockerSession:
             # Explicit version suppresses constructor-time I/O before mounting
             # the transport. The unversioned /version request then negotiates
             # the actual daemon version, including newer minimum API versions.
-            self.client = docker.DockerClient(base_url="unix:///unused", version="1.41", timeout=120)
+            self.client = BoundedDockerClient(base_url="unix:///unused", version="1.41", timeout=120)
             self.client.api.mount("http+docker://", Adapter("http+unix:///unused", timeout=120))
             version = self.client.version()["ApiVersion"]
             self.client.api._version = version
@@ -148,9 +210,11 @@ class DockerSession:
             raise
 
     def __exit__(self, *_exception):
-        if self.client is not None:
-            self.client.close()
-            self.client = None
-        if self.connections is not None:
-            self.connections.close()
-            self.connections = None
+        client,self.client = self.client,None
+        connections,self.connections = self.connections,None
+        try:
+            if client is not None:
+                client.close()
+        finally:
+            if connections is not None:
+                connections.close()
