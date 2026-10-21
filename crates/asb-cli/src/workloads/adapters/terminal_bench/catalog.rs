@@ -49,6 +49,69 @@ pub(super) struct Task {
     definition: String,
 }
 
+pub(super) fn requirements(
+    adapter: &TerminalBenchAdapter,
+    directory: &Path,
+    catalog: &Catalog,
+) -> Result<std::collections::BTreeMap<String, crate::planning::TaskRequirements>, String> {
+    let mut requirements = std::collections::BTreeMap::new();
+    for task in &catalog.tasks {
+        // The pinned original SDK owns YAML semantics. Do not guess those or
+        // Compose's multi-service limits from scalar text; effective controller
+        // budgets are recorded after preparation for that harness.
+        let path = directory
+            .join(adapter.id)
+            .join(&task.definition)
+            .join("task.toml");
+        if !path.exists() {
+            continue;
+        }
+        let mut text = String::new();
+        fs::File::open(&path)
+            .map_err(|error| error.to_string())?
+            .take(64 * 1024 + 1)
+            .read_to_string(&mut text)
+            .map_err(|error| error.to_string())?;
+        if text.len() > 64 * 1024 {
+            return Err("task requirements exceed 64 KiB".into());
+        }
+        let value: toml::Value =
+            toml::from_str(&text).map_err(|error| format!("invalid task requirements: {error}"))?;
+        requirements.insert(task.id.clone(), requirements_from_toml(&value)?);
+    }
+    Ok(requirements)
+}
+
+fn requirements_from_toml(
+    value: &toml::Value,
+) -> Result<crate::planning::TaskRequirements, String> {
+    let number = |section: &str, field: &str| -> Result<Option<f64>, String> {
+        value
+            .get(section)
+            .and_then(|v| v.get(field))
+            .map(|v| {
+                let n = v
+                    .as_float()
+                    .or_else(|| v.as_integer().map(|n| n as f64))
+                    .ok_or("invalid numeric task requirement")?;
+                if !n.is_finite() || n <= 0.0 || n > 1_000_000_000.0 {
+                    return Err("task requirement is outside supported bounds");
+                }
+                Ok(n)
+            })
+            .transpose()
+            .map_err(str::to_owned)
+    };
+    Ok(crate::planning::TaskRequirements {
+        source: "pinned-task-definition".into(),
+        cpu_millis: number("environment", "cpus")?.map(|n| (n * 1000.0).ceil() as u64),
+        memory_mib: number("environment", "memory_mb")?.map(|n| n.ceil() as u64),
+        disk_mib: number("environment", "storage_mb")?.map(|n| n.ceil() as u64),
+        execution_seconds: number("agent", "timeout_sec")?,
+        evaluation_seconds: number("verifier", "timeout_sec")?,
+    })
+}
+
 pub(super) fn read(adapter: &TerminalBenchAdapter, directory: &Path) -> Result<Catalog, String> {
     let root = directory.join(adapter.id);
     let path = root.join("catalog.json");
@@ -357,4 +420,21 @@ fn selection(
         &path,
         &toml::to_string_pretty(&selected).map_err(|error| Error::Io(error.to_string()))?,
     )
+}
+
+#[cfg(test)]
+mod planning_tests {
+    use super::*;
+    #[test]
+    fn task_metadata_preserves_unknowns_fractional_timeouts_and_declared_resources() {
+        let value = toml::from_str("[environment]\ncpus=1.5\nmemory_mb=2048\n[agent]\ntimeout_sec=0.5\n[verifier]\ntimeout_sec=300").unwrap();
+        let plan = requirements_from_toml(&value).unwrap();
+        assert_eq!(plan.cpu_millis, Some(1500));
+        assert_eq!(plan.memory_mib, Some(2048));
+        assert_eq!(plan.disk_mib, None);
+        assert_eq!(plan.execution_seconds, Some(0.5));
+        assert_eq!(plan.evaluation_seconds, Some(300.0));
+        let invalid = toml::from_str("[agent]\ntimeout_sec=-1").unwrap();
+        assert!(requirements_from_toml(&invalid).is_err());
+    }
 }

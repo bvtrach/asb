@@ -28,6 +28,9 @@ impl Recorded {
             ));
         }
         for field in [
+            "execution_plan_fingerprint",
+            "module",
+            "benchmark_outcome",
             "schema_version",
             "replica_index",
             "execution_cohort",
@@ -97,6 +100,10 @@ impl Recorded {
             "adapter smoke only; upstream task resolution not measured"
         } else if !crate::workloads::resolution_eligible(kind) {
             "recorded task unscored; grading scope or baseline is not eligible"
+        } else if self.summary["benchmark_outcome"]["evaluation"]["status"] == "completed"
+            && self.summary["benchmark_outcome"]["evaluation"]["resolution"].is_null()
+        {
+            "recorded native rewards evaluated; resolution not applicable"
         } else {
             match self.summary["workload_success"].as_bool() {
                 Some(true) => "recorded task resolved",
@@ -538,6 +545,225 @@ mod tests {
     }
 
     #[test]
+    fn execution_plan_fingerprints_partition_known_and_unknown_experiments() {
+        let fixture = Fixture::new("terminal-bench-2.1", 3);
+        for slot in 1..=3 {
+            let mut record = fixture.record(slot, json!(true), true, true);
+            if slot < 3 {
+                record["summary"]["execution_plan_fingerprint"] = json!(format!("plan-{slot}"));
+            }
+            fixture.publish(slot, &record);
+        }
+        let report = fixture.compare().unwrap();
+        assert_eq!(report["metric_groups"].as_object().unwrap().len(), 3);
+        assert_eq!(report["population_coverage"].as_object().unwrap().len(), 3);
+        assert_eq!(report["resolution_groups"].as_object().unwrap().len(), 3);
+        assert!(report["benchmarks"][2]["execution_plan_fingerprint"].is_null());
+    }
+
+    #[test]
+    fn validated_protocol_cohorts_aggregate_upstream_task_defaults_and_separate_operator_overrides()
+    {
+        let fixture = Fixture::new("terminal-bench-2.1", 1);
+        let mut fingerprints = Vec::new();
+        let mut entries = Vec::new();
+        fs::write(
+            fixture.root.join("sweep.toml"),
+            "configs=['one.toml','two.toml','three.toml']",
+        )
+        .unwrap();
+        for (index, name) in ["one", "two", "three"].into_iter().enumerate() {
+            let slot = index + 1;
+            let task = format!("task-{slot}");
+            let mut config: crate::benchmark::BenchmarkConfig = toml::from_str(&format!("agent='pi'\nprovider='fixture-provider'\nmodel='fixture-model'\nworkload='terminal-bench-2.1'\ntrial='{task}'\n[planning.repetition]\nindex=1\ntotal=1\n")).unwrap();
+            if slot == 3 {
+                config.planning.as_mut().unwrap().budgets.execution_seconds = Some(1200);
+            }
+            let mut policy = crate::planning::resolve(&config).unwrap();
+            let task_default = 900.0 + slot as f64;
+            policy.task_requirements = Some(crate::planning::TaskRequirements {
+                source: "pinned-task-definition".into(),
+                cpu_millis: Some(slot as u64 * 1000),
+                memory_mib: Some(slot as u64 * 1024),
+                execution_seconds: Some(task_default),
+                evaluation_seconds: Some(300.0 + slot as f64),
+                ..Default::default()
+            });
+            let caps = crate::planning::EffectiveBudgets {
+                environment_preparation_seconds: Some(900),
+                agent_preparation_seconds: None,
+                execution_seconds: Some(if slot == 3 { 1200.0 } else { task_default }),
+                evaluation_seconds: Some(1800),
+                task_default_execution_seconds: Some(task_default),
+            };
+            let fingerprint =
+                crate::planning::protocol_fingerprint(&config, &policy, caps, 1).unwrap();
+            let altered = crate::planning::EffectiveBudgets {
+                execution_seconds: Some(caps.execution_seconds.unwrap() + 1.0),
+                ..caps
+            };
+            assert!(crate::planning::protocol_fingerprint(&config, &policy, altered, 1).is_err());
+            let changed_ready = crate::planning::EffectiveBudgets {
+                task_default_execution_seconds: Some(task_default + 1.0),
+                execution_seconds: Some(if slot == 3 {
+                    1200.0
+                } else {
+                    task_default + 1.0
+                }),
+                ..caps
+            };
+            assert!(
+                crate::planning::protocol_fingerprint(&config, &policy, changed_ready, 1).is_err(),
+                "a changed ready default cannot bypass the pinned task definition"
+            );
+            fingerprints.push(fingerprint.clone());
+            let mut record = fixture.record(1, json!(true), true, true);
+            record["summary"]["task"]["task_id"] = json!(task);
+            record["summary"]["task"]["attempt_id"] = json!(format!("ab123-{slot}"));
+            record["summary"]["execution_cohort"]["id"] = json!(format!("ab123{slot}"));
+            record["summary"]["execution_plan_fingerprint"] = json!(fingerprint);
+            record["summary"]["planning"] = json!(policy);
+            record["summary"]["effective_budgets"] = json!(caps);
+            fs::write(
+                fixture.root.join(format!("{name}.toml")),
+                toml::to_string(&config).unwrap(),
+            )
+            .unwrap();
+            entries.push(json!({"reference":format!("{name}.toml"), "configuration":config, "policy":policy,
+                "selection":{"workload":"terminal-bench-2.1","task_id":task,"dataset":fixture.dataset,
+                    "evaluation_kind":"upstream-harness","population_size":3}}));
+            let directory = fixture
+                .root
+                .join(format!("sweep-results/{index:03}-{name}/.asb-completions"));
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join("001.json"), record.to_string()).unwrap();
+        }
+        fs::write(
+            fixture.root.join("sweep-results/plan.json"),
+            json!({"schema_version":1,"run_id":"a123","execution_mode":"replay","entries":entries})
+                .to_string(),
+        )
+        .unwrap();
+        assert_eq!(fingerprints[0], fingerprints[1]);
+        assert_ne!(fingerprints[1], fingerprints[2]);
+        let report = fixture.compare().unwrap();
+        assert_eq!(report["metric_groups"].as_object().unwrap().len(), 2);
+        assert_eq!(report["population_coverage"].as_object().unwrap().len(), 2);
+        assert_eq!(report["resolution_groups"].as_object().unwrap().len(), 2);
+        let mut counts = report["population_coverage"]
+            .as_object()
+            .unwrap()
+            .values()
+            .map(|group| group["selected_attempts"].as_u64().unwrap())
+            .collect::<Vec<_>>();
+        counts.sort_unstable();
+        assert_eq!(counts, [1, 2]);
+    }
+
+    #[test]
+    fn recorded_protocol_revisions_partition_scores_without_live_relabeling() {
+        let fixture = Fixture::new("terminal-bench-2.1", 2);
+        for slot in 1..=2 {
+            let mut record = fixture.record(slot, json!(true), true, true);
+            let mut module = crate::workloads::descriptor("terminal-bench-2.1").unwrap();
+            module.dataset = Some(serde_json::from_value(fixture.dataset.clone()).unwrap());
+            module.protocol.revision = slot as u32;
+            record["summary"]["module"] = json!(module);
+            fixture.publish(slot, &record);
+        }
+        let report = fixture.compare().unwrap();
+        assert_eq!(report["metric_groups"].as_object().unwrap().len(), 2);
+        assert_eq!(report["resolution_groups"].as_object().unwrap().len(), 2);
+        assert_eq!(report["benchmarks"][0]["module"]["protocol"]["revision"], 1);
+        assert_eq!(report["benchmarks"][1]["module"]["protocol"]["revision"], 2);
+    }
+
+    #[test]
+    fn native_partial_rewards_survive_completion_collection_and_html_report() {
+        use crate::workloads::outcome::*;
+        let fixture = Fixture::new("terminal-bench-2.1", 4);
+        let mut module = crate::workloads::descriptor("terminal-bench-2.1").unwrap();
+        module.dataset = Some(serde_json::from_value(fixture.dataset.clone()).unwrap());
+        module.protocol.score_policy = "metric:accuracy@2".into();
+        assert!(module.valid());
+        let plan_path = fixture.root.join("sweep-results/plan.json");
+        let mut plan = read_json(&plan_path).unwrap();
+        plan["entries"][0]["selection"]["module"] = json!(module);
+        fs::write(plan_path, plan.to_string()).unwrap();
+        let evidence = fixture.root.join("verifier.json");
+        fs::write(&evidence, "{}").unwrap();
+        for slot in 1..=3 {
+            let mut record = fixture.record(slot, Value::Null, true, true);
+            record["summary"]["module"] = json!(module);
+            let evaluation = if slot == 3 {
+                EvaluationOutcome::Pending {
+                    reason: "external evaluator queued".into(),
+                }
+            } else {
+                EvaluationOutcome::Completed {
+                    resolution: None,
+                    rewards: BTreeMap::from([("accuracy".into(), slot as f64 / 4.0)]),
+                    reason: None,
+                }
+            };
+            record["summary"]["benchmark_outcome"] = json!(BenchmarkOutcome {
+                schema_version: 1,
+                execution_success: Some(true),
+                evaluation,
+                cleanup_confirmed: Some(true),
+                evidence: vec![evidence.clone()],
+                policy: MetricPolicy {
+                    id: "accuracy".into(),
+                    version: 2,
+                    reward: "accuracy".into(),
+                    aggregation: Aggregation::TaskMean,
+                    missing_rewards: MissingRewardPolicy::Exclude,
+                    rewards: BTreeMap::from([(
+                        "accuracy".into(),
+                        RewardSpec {
+                            unit: "ratio".into(),
+                            range: Some([0.0, 1.0])
+                        }
+                    )])
+                },
+                lineage: EvaluationLineage {
+                    execution_attempt: format!("ab123-{slot}"),
+                    evaluation_id: format!("eval-{slot}"),
+                    supersedes: None
+                },
+            });
+            fixture.publish(slot, &record);
+        }
+        let report = fixture.compare().unwrap();
+        let rows = report["benchmarks"].as_array().unwrap();
+        assert!(rows[0]["metrics"]["success_rate"].is_null());
+        assert_eq!(
+            rows[0]["metrics"]["benchmark_rewards.accuracy@2.accuracy.ratio"],
+            0.25
+        );
+        assert_eq!(report["evaluation_coverage"]["evaluated_attempts"], 2);
+        let groups = report["metric_groups"].as_object().unwrap();
+        assert_eq!(groups.len(), 1);
+        let group = groups.values().next().unwrap();
+        assert_eq!(group["estimate"], 0.375);
+        assert_eq!(group["policy"]["missing_rewards"], "exclude");
+        assert_eq!(group["repetitions_by_task"]["original-task"], 4);
+        assert_eq!(group["selected_attempts"], 4);
+        assert_eq!(group["complete"], false);
+        assert!(group["task_cluster_standard_error"].is_null());
+        let html =
+            fs::read_to_string(fixture.root.join("results/sweep-comparison/report.html")).unwrap();
+        assert!(html.contains("accuracy v2 / accuracy"));
+        assert!(html.contains("0.375000"));
+        assert!(html.contains("observed-only rewards; missing excluded"));
+        let mut bad = fixture.record(1, Value::Null, true, true);
+        bad["summary"]["benchmark_outcome"] = rows[0]["benchmark_outcome"].clone();
+        bad["summary"]["benchmark_outcome"]["lineage"]["execution_attempt"] = json!("foreign");
+        fixture.publish(1, &bad);
+        assert!(fixture.compare().is_err());
+    }
+
+    #[test]
     fn every_original_adapter_keeps_unmeasured_grades_and_incomplete_population_honest() {
         for workload in [
             "swe-bench",
@@ -563,6 +789,10 @@ mod tests {
             let rows = report["benchmarks"].as_array().unwrap();
             assert_eq!(rows.len(), 4);
             for (slot, row) in rows.iter().enumerate().take(3) {
+                assert!(
+                    row["module"].is_null(),
+                    "legacy records must not acquire today's descriptor"
+                );
                 assert_eq!(row["result_source"], "task-outcome");
                 assert_eq!(row["replica_index"], slot + 1);
                 assert_eq!(row["metrics"]["elapsed_ms"], 57.0);
@@ -597,6 +827,20 @@ mod tests {
             assert_eq!(report["evaluation_coverage"]["selected_attempts"], 4);
             assert_eq!(report["evaluation_coverage"]["evaluated_attempts"], 2);
             assert_eq!(report["evaluation_coverage"]["unevaluated_attempts"], 2);
+            let metric = report["metric_groups"]
+                .as_object()
+                .unwrap()
+                .values()
+                .next()
+                .unwrap();
+            assert_eq!(
+                metric["estimate"], 0.25,
+                "binary metric must retain the selected-attempt denominator"
+            );
+            assert_eq!(metric["rewarded_attempts"], 2);
+            assert_eq!(metric["contributing_attempts"], 4);
+            assert_eq!(metric["policy"]["missing_rewards"], "zero");
+            assert_eq!(metric["complete"], false);
             let group = report["resolution_groups"]
                 .as_object()
                 .unwrap()

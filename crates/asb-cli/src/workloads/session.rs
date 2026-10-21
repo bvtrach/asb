@@ -58,6 +58,7 @@ impl TaskIdentity {
 }
 
 pub(crate) struct PreparationContext<'a> {
+    pub budgets: crate::planning::PhaseBudgets,
     pub on_allocation: Option<&'a super::recovery::AllocationObserver<'a>>,
     pub workload: &'a str,
     pub trial: Option<&'a str>,
@@ -76,8 +77,135 @@ impl PreparationContext<'_> {
 
 pub(crate) struct TaskInvocation {
     pub identity: TaskIdentity,
-    pub prompt: String,
+    pub input: TaskInput,
     pub workspace: PathBuf,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TaskInput {
+    pub instructions: String,
+    pub attachments: Vec<TaskAttachment>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TaskAttachment {
+    /// Relative artifact reference under the task workspace, never an inline
+    /// payload or unbounded controller message.
+    pub artifact: PathBuf,
+    pub media_type: String,
+    pub sha256: String,
+    pub byte_length: u64,
+}
+
+impl From<String> for TaskInput {
+    fn from(instructions: String) -> Self {
+        Self {
+            instructions,
+            attachments: Vec::new(),
+        }
+    }
+}
+impl From<&str> for TaskInput {
+    fn from(instructions: &str) -> Self {
+        instructions.to_owned().into()
+    }
+}
+impl TaskInput {
+    pub(crate) fn validate_for_agent(&self, agent: &str) -> Result<(), String> {
+        if self.instructions.is_empty()
+            || self.instructions.len() > 64 * 1024
+            || self.attachments.len() > 32
+        {
+            return Err("task input exceeds invocation bounds".into());
+        }
+        let supported =
+            crate::agents::find(agent).map_or(&["text"][..], |adapter| adapter.input_modalities());
+        if !supported.contains(&"text") {
+            return Err("agent does not support task instructions".into());
+        }
+        for attachment in &self.attachments {
+            let modality = attachment
+                .media_type
+                .split_once('/')
+                .map(|(kind, _)| kind)
+                .ok_or("invalid attachment media type")?;
+            if attachment.artifact.as_os_str().is_empty()
+                || attachment.artifact.as_os_str().len() > 4096
+                || attachment.artifact.is_absolute()
+                || attachment
+                    .artifact
+                    .components()
+                    .any(|part| !matches!(part, std::path::Component::Normal(_)))
+                || attachment.byte_length == 0
+                || attachment.byte_length > 256 * 1024 * 1024
+                || attachment.sha256.len() != 64
+                || !attachment
+                    .sha256
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+                || attachment.media_type.len() > 128
+                || attachment.media_type.chars().any(char::is_control)
+            {
+                return Err("invalid bounded task attachment reference".into());
+            }
+            if !supported.contains(&modality) {
+                return Err(format!(
+                    "agent input transport does not support {modality} attachments"
+                ));
+            }
+        }
+        if !self.attachments.is_empty() {
+            return Err("agent input transport does not deliver task attachments yet; inline supported text in instructions instead".into());
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    #[test]
+    fn structured_inputs_refuse_unsupported_modalities_and_invalid_artifact_references() {
+        let mut input: TaskInput = "solve the fixture".into();
+        assert!(input.validate_for_agent("pi").is_ok());
+        input.attachments.push(TaskAttachment {
+            artifact: "image.png".into(),
+            media_type: "image/png".into(),
+            sha256: "a".repeat(64),
+            byte_length: 1024,
+        });
+        assert!(
+            input
+                .validate_for_agent("pi")
+                .unwrap_err()
+                .contains("does not support image")
+        );
+        input.attachments[0].artifact = "../private/image.png".into();
+        assert!(
+            input
+                .validate_for_agent("pi")
+                .unwrap_err()
+                .contains("invalid bounded")
+        );
+        input.attachments.clear();
+        input.attachments.push(TaskAttachment {
+            artifact: "missing-unverified.txt".into(),
+            media_type: "text/plain".into(),
+            sha256: "a".repeat(64),
+            byte_length: 1024,
+        });
+        assert!(
+            input
+                .validate_for_agent("pi")
+                .unwrap_err()
+                .contains("does not deliver task attachments")
+        );
+        input.attachments.clear();
+        input.instructions = "x".repeat(64 * 1024 + 1);
+        assert!(input.validate_for_agent("pi").is_err());
+    }
 }
 
 /// The runner provides negotiated connections, never workload/agent dispatch.
@@ -166,6 +294,11 @@ impl BaselineEvidence {
 }
 
 pub(crate) trait WorkloadSession {
+    /// Effective controller caps, not a claim about elapsed time or a hidden
+    /// upstream verifier's own (possibly tighter) task deadline.
+    fn effective_budgets(&self) -> crate::planning::EffectiveBudgets {
+        crate::planning::EffectiveBudgets::default()
+    }
     fn invocation(&self) -> &TaskInvocation;
     fn evaluation_kind(&self) -> &'static str;
     fn baseline_passed(&self) -> Option<bool>;
@@ -175,6 +308,29 @@ pub(crate) trait WorkloadSession {
         }
     }
     fn evaluate(&mut self, final_response: &str) -> Result<Evaluation, String>;
+    /// Modules may override this for asynchronous or non-binary evaluators.
+    fn evaluate_outcome(&mut self, final_response: &str) -> super::outcome::EvaluationOutcome {
+        match self.evaluate(final_response) {
+            Ok(Evaluation::Passed) => super::outcome::EvaluationOutcome::binary(true),
+            Ok(Evaluation::Failed(reason)) => {
+                let mut outcome = super::outcome::EvaluationOutcome::binary(false);
+                if let super::outcome::EvaluationOutcome::Completed {
+                    reason: diagnostic, ..
+                } = &mut outcome
+                {
+                    *diagnostic = Some(reason);
+                }
+                outcome
+            }
+            Err(reason) => super::outcome::EvaluationOutcome::Error { reason },
+        }
+    }
+    fn metric_policy(&self) -> super::outcome::MetricPolicy {
+        super::outcome::MetricPolicy::default()
+    }
+    fn module_descriptor(&self) -> Option<super::contracts::ModuleDescriptor> {
+        super::descriptor(&self.invocation().identity.workload)
+    }
     /// Adapter-owned evaluator artifacts that bind a historical task outcome.
     /// This is not a request to inspect unrelated project or host directories.
     fn checkpoint_evidence(&self) -> Vec<PathBuf> {
@@ -215,7 +371,7 @@ impl FileSession {
         Self {
             invocation: TaskInvocation {
                 identity: TaskIdentity::local(context.workload, context.trial),
-                prompt,
+                input: prompt.into(),
                 workspace: context.workspace.to_path_buf(),
             },
             evaluator,
@@ -253,6 +409,7 @@ mod tests {
             ..Default::default()
         };
         let context = super::PreparationContext {
+            budgets: Default::default(),
             on_allocation: None,
             workload: "fixture",
             trial: None,
@@ -369,6 +526,7 @@ mod tests {
         std::fs::create_dir_all(&workloads).unwrap();
         super::super::populate(&workloads).unwrap();
         let mut session = super::super::prepare_task(&PreparationContext {
+            budgets: Default::default(),
             on_allocation: None,
             workload: "bug-fix",
             trial: None,
@@ -381,7 +539,7 @@ mod tests {
         .unwrap();
         assert_eq!(session.invocation().workspace, workspace);
         assert_eq!(session.invocation().identity.task_id, "bug-fix");
-        assert!(!session.invocation().prompt.trim().is_empty());
+        assert!(!session.invocation().input.instructions.trim().is_empty());
         assert_eq!(session.baseline_passed(), Some(false));
         assert_eq!(session.evaluation_kind(), "bundled-fixture");
         assert!(matches!(
@@ -393,6 +551,7 @@ mod tests {
         // Baseline evidence belongs to this attempt, not the mutated workspace.
         assert_eq!(session.baseline_passed(), Some(false));
         let later = super::super::prepare_task(&PreparationContext {
+            budgets: Default::default(),
             on_allocation: None,
             workload: "bug-fix",
             trial: None,

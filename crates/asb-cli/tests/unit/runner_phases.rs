@@ -49,6 +49,60 @@ impl workloads::WorkloadSession for Workload {
             _ => Err("official verifier unavailable".into()),
         }
     }
+    fn metric_policy(&self) -> workloads::outcome::MetricPolicy {
+        use workloads::outcome::*;
+        if self.grade < 3 {
+            return MetricPolicy::default();
+        }
+        MetricPolicy {
+            id: "accuracy".into(),
+            reward: "accuracy".into(),
+            rewards: std::collections::BTreeMap::from([(
+                "accuracy".into(),
+                RewardSpec {
+                    unit: "ratio".into(),
+                    range: Some([0.0, 1.0]),
+                },
+            )]),
+            ..Default::default()
+        }
+    }
+    fn checkpoint_evidence(&self) -> Vec<PathBuf> {
+        if self.grade >= 3 {
+            vec![self.invocation.workspace.join("grade.json")]
+        } else {
+            vec![]
+        }
+    }
+    fn evaluate_outcome(&mut self, response: &str) -> workloads::outcome::EvaluationOutcome {
+        use workloads::outcome::EvaluationOutcome as Evaluation;
+        if self.grade >= 3 {
+            assert_eq!(response, "submission");
+            self.operations.borrow_mut().push("evaluate");
+            return match self.grade {
+                3 => Evaluation::Completed {
+                    resolution: None,
+                    rewards: std::collections::BTreeMap::from([("accuracy".into(), 0.5)]),
+                    reason: None,
+                },
+                4 => Evaluation::Pending {
+                    reason: "queued".into(),
+                },
+                _ => Evaluation::Error {
+                    reason: "native verifier unavailable".into(),
+                },
+            };
+        }
+        match self.evaluate(response) {
+            Ok(workloads::Evaluation::Passed) => Evaluation::binary(true),
+            Ok(workloads::Evaluation::Failed(reason)) => Evaluation::Completed {
+                resolution: Some(false),
+                rewards: std::collections::BTreeMap::from([("resolution".into(), 0.0)]),
+                reason: Some(reason),
+            },
+            Err(reason) => Evaluation::Error { reason },
+        }
+    }
     fn finish(&mut self) -> Result<(), String> {
         self.operations.borrow_mut().push(if self.grade == 2 {
             "preserve"
@@ -76,13 +130,16 @@ fn prepared(
     cleanup_error: bool,
     measurements: Option<measurements::Session>,
 ) -> (PreparedAttempt, Rc<RefCell<Vec<&'static str>>>) {
+    if grade >= 3 {
+        std::fs::write(fixture.0.join("grade.json"), "native evaluator evidence").unwrap();
+    }
     let operations = Rc::new(RefCell::new(Vec::new()));
     (
         PreparedAttempt {
             workload: Box::new(Workload {
                 invocation: workloads::session::TaskInvocation {
                     identity: workloads::TaskIdentity::local("fixture", None),
-                    prompt: "fixture".into(),
+                    input: "fixture".into(),
                     workspace: fixture.0.clone(),
                 },
                 operations: operations.clone(),
@@ -359,6 +416,49 @@ fn native_and_guest_apply_the_same_adapter_terminal_answer_policy() {
 }
 
 #[test]
+fn native_reward_pending_and_error_survive_marker_and_cleanup_failures() {
+    use workloads::outcome::EvaluationOutcome as Evaluation;
+    for grade in [3, 4, 5] {
+        for event in [
+            LifecycleEvent::PhaseBegin(LifecyclePhase::WorkloadEvaluation),
+            LifecycleEvent::PhaseEnd(LifecyclePhase::WorkloadEvaluation),
+            LifecycleEvent::PhaseBegin(LifecyclePhase::WorkloadCleanup),
+        ] {
+            let fixture = Fixture::new();
+            let mut session =
+                measurements::Session::start_with_collectors(&fixture.0.join("measure"), &[], None)
+                    .unwrap();
+            session.test_event_failure = Some(event);
+            let (prepared, operations) = prepared(&fixture, grade, true, Some(session));
+            let result = prepared
+                .executed(evidence(7, false), AttemptIssues::default())
+                .settle(None)
+                .evaluate("submission")
+                .finish();
+            match &result.outcome.evaluation {
+                Evaluation::Completed {
+                    resolution,
+                    rewards,
+                    ..
+                } => {
+                    assert_eq!(grade, 3);
+                    assert_eq!(*resolution, None);
+                    assert_eq!(rewards["accuracy"], 0.5);
+                }
+                Evaluation::Pending { .. } => assert_eq!(grade, 4),
+                Evaluation::Error { .. } => assert_eq!(grade, 5),
+            }
+            assert_eq!(&*operations.borrow(), &["evaluate", "finish"]);
+            assert_eq!(result.outcome.success(), None);
+            assert_eq!(result.evaluator_evidence.len(), 1);
+            assert!(!result.cleanup_confirmed);
+            assert!(result.issues.collector_failure().is_some());
+            assert!(result.issues.run_error.is_some());
+        }
+    }
+}
+
+#[test]
 fn every_evaluation_and_cleanup_marker_failure_still_invokes_owned_operations() {
     for event in [
         LifecycleEvent::PhaseBegin(LifecyclePhase::WorkloadEvaluation),
@@ -626,6 +726,16 @@ fn native_postexecution_event_failure_retains_actual_child_output_and_grade() {
 
 fn result() -> RunResult<'static> {
     RunResult {
+        planning: crate::planning::resolve(
+            &toml::from_str("agent='pi'\nprovider='fixture'\nmodel='fixture'\nworkload='fixture'")
+                .unwrap(),
+        )
+        .unwrap(),
+        effective_budgets: Default::default(),
+        execution_plan: None,
+        execution_plan_fingerprint: None,
+        module: None,
+        benchmark_outcome: None,
         replica_index: Some(1),
         execution_cohort: None,
         schema_version: 2,
@@ -788,6 +898,19 @@ fn full_runner_entry_observer_warning_is_redacted_and_broken_warning_writer_keep
     isolated_full_entry_cases(&["observer-failure", "observer-warning-writer"]);
 }
 
+#[test]
+fn full_runner_entry_explicit_provider_finish_preserves_grades_and_primary_failures() {
+    isolated_full_entry_cases(&[
+        "provider-true-failed-finish",
+        "provider-false-failed-finish",
+        "provider-client-failed-finish",
+        "provider-early-failed-finish",
+        "provider-success",
+        "provider-native-failed-finish",
+        "provider-native-success",
+    ]);
+}
+
 fn isolated_full_entry_cases(cases: &[&str]) {
     use support::IsolatedEnvironment;
     let executable = std::env::current_exe().unwrap();
@@ -842,6 +965,7 @@ fn full_entry_child(case: &str) {
             }
         }
     }
+    let provider_case = case.starts_with("provider-");
     let fixture = Fixture::new();
     let root = fixture.0.canonicalize().unwrap();
     let project = project::ProjectConfig {
@@ -868,6 +992,24 @@ fn full_entry_child(case: &str) {
     let body = serde_json::json!({"model":"fixture","tools":[{"type":"function","function":{"name":"fixture","parameters":{"type":"object"}}}],"messages":[]});
     let row = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body.to_string()},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{}"}});
     std::fs::write(&cassette, format!("{row}\n")).unwrap();
+    if provider_case {
+        let node = crate::tools::host_executable(Path::new("node")).unwrap();
+        let answer = if case == "provider-false-failed-finish" {
+            "incorrect"
+        } else {
+            "src/cli.py src/registry.py lookup"
+        };
+        let response = serde_json::json!({"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":answer}]}]});
+        let exit = if case == "provider-client-failed-finish" {
+            7
+        } else {
+            0
+        };
+        std::fs::write(&agent, format!("#!{}\nfetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw new Error('fixture request failed');await r.text();console.log(JSON.stringify({response}));process.exitCode={exit};}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
+    }
+    if case == "provider-early-failed-finish" {
+        std::fs::write(root.join("workspace"), "blocking fixture file").unwrap();
+    }
     let config: BenchmarkConfig = toml::from_str("agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='repository-navigation'\nworkspace='workspace'\nlog_file='run.jsonl'\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n").unwrap();
     let config_path = root.join("benchmark.toml");
     std::fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
@@ -888,7 +1030,16 @@ fn full_entry_child(case: &str) {
     } else {
         LifecycleEvent::RunFinishing
     };
-    let _scope = entry_test_support::Scope::new(&root, event, calls.clone());
+    let _scope = if provider_case {
+        entry_test_support::Scope::provider(
+            &root,
+            calls.clone(),
+            !case.ends_with("success"),
+            case.contains("native"),
+        )
+    } else {
+        entry_test_support::Scope::new(&root, event, calls.clone())
+    };
     let observer = Observer {
         started: AtomicUsize::new(0),
         completed: AtomicUsize::new(0),
@@ -928,22 +1079,176 @@ fn full_entry_child(case: &str) {
         writes: 0,
         failures: 0,
     };
+    let cohort = measurements::ExecutionCohort {
+        id: workloads::TaskIdentity::local("execution-cohort", None).attempt_id,
+        selected_replicas: 1,
+        admitted_slots: vec![1],
+    };
     let options = RunOptions {
         json: true,
         mode: Some(tape::Mode::Replay),
         cassette: Some(cassette.to_str().unwrap()),
         on_completion: Some(&observer),
+        execution_cohort: provider_case.then_some(&cohort),
         ..Default::default()
     };
-    let error = run_mode(
+    let result = run_mode(
         &config_path,
         config,
         options,
         &mut output,
         &Mutex::new(BTreeSet::new()),
-    )
-    .unwrap_err()
-    .to_string();
+    );
+    if provider_case {
+        let error = result.err().map(|error| error.to_string());
+        assert_eq!(error.is_none(), case.ends_with("success"), "{error:?}");
+        assert_eq!(
+            calls
+                .borrow()
+                .iter()
+                .filter(|call| **call == "provider-finish")
+                .count(),
+            1
+        );
+        assert!(!calls.borrow().contains(&"provider-fallback"));
+        if case == "provider-early-failed-finish" {
+            let error = error.unwrap();
+            assert!(error.starts_with("cannot create workspace"), "{error}");
+            assert!(error.contains("fixture provider cleanup uncertain"));
+            assert_eq!(calls.borrow().as_slice(), ["provider-finish"]);
+            assert!(!counter.exists());
+            assert!(!root.join(".asb-completions").exists());
+            return;
+        }
+        assert_eq!(
+            calls.borrow().as_slice(),
+            ["evaluate", "finish", "provider-finish"]
+        );
+        assert_eq!(
+            observer.completed.load(Ordering::SeqCst),
+            usize::from(case.ends_with("success"))
+        );
+        assert_eq!(
+            root.join(".asb-completions").exists(),
+            case.ends_with("success")
+        );
+        let log: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("run.jsonl")).unwrap()).unwrap();
+        let summary: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+        let measured: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("measurements/run.json")).unwrap())
+                .unwrap();
+        let plan: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(log["execution_plan"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(plan["policy"], log["planning"]);
+        assert_eq!(plan["effective_controller_caps"], log["effective_budgets"]);
+        assert!(!plan["task"].is_null());
+        for record in [&log, &summary] {
+            assert_eq!(record["planning"], log["planning"]);
+            assert_eq!(record["effective_budgets"], log["effective_budgets"]);
+            assert_eq!(record["execution_plan"], log["execution_plan"]);
+        }
+        for record in [&log, &summary, &measured] {
+            assert_eq!(
+                record["execution_plan_fingerprint"],
+                log["execution_plan_fingerprint"]
+            );
+            assert!(
+                record["execution_plan_fingerprint"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("asb-protocol-v1:")
+            );
+            if case.contains("native") {
+                assert!(record["workload_success"].is_null());
+                assert!(record["success_rate"].is_null());
+                assert_eq!(
+                    record["benchmark_outcome"]["evaluation"]["status"],
+                    "completed"
+                );
+                assert!(record["benchmark_outcome"]["evaluation"]["resolution"].is_null());
+                assert_eq!(
+                    record["benchmark_outcome"]["evaluation"]["rewards"]["accuracy"],
+                    0.5
+                );
+            } else {
+                assert_eq!(
+                    record["workload_success"],
+                    case != "provider-false-failed-finish"
+                );
+            }
+            assert_eq!(
+                record["benchmark_outcome"]["cleanup_confirmed"],
+                case.ends_with("success")
+            );
+            assert_eq!(
+                record["benchmark_outcome"]["execution_success"],
+                case != "provider-client-failed-finish"
+            );
+            assert_eq!(
+                record["process_success"],
+                case != "provider-client-failed-finish"
+            );
+        }
+        if case.contains("native") {
+            // Render the actual attempt's saved measurement/log contract. A
+            // completed numeric reward must retain independent cleanup facts.
+            let report =
+                crate::compare::generate(config_path.to_str().unwrap(), &mut Vec::new()).unwrap();
+            let comparison: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(report.with_file_name("comparison.json")).unwrap(),
+            )
+            .unwrap();
+            let row = &comparison["benchmarks"][0];
+            assert_eq!(
+                row["benchmark_outcome"]["evaluation"]["rewards"]["accuracy"],
+                0.5
+            );
+            assert!(row["benchmark_outcome"]["evaluation"]["resolution"].is_null());
+            assert_eq!(row["benchmark_outcome"]["execution_success"], true);
+            assert_eq!(
+                row["benchmark_outcome"]["cleanup_confirmed"],
+                case.ends_with("success")
+            );
+            let html = std::fs::read_to_string(report).unwrap();
+            if case.ends_with("success") {
+                assert_eq!(row["status"], "completed");
+                assert!(!html.contains("fixture provider cleanup uncertain"));
+                assert!(!row["status"].as_str().unwrap().contains("failed"));
+            } else {
+                assert!(
+                    row["status"]
+                        .as_str()
+                        .unwrap()
+                        .contains("fixture provider cleanup uncertain")
+                );
+                assert!(html.contains("fixture provider cleanup uncertain"));
+            }
+        }
+        if let Some(error) = error {
+            assert!(
+                error.contains("fixture provider cleanup uncertain"),
+                "{error}"
+            );
+            if case == "provider-client-failed-finish" {
+                assert_eq!(summary["failure_kind"], "agent_failure");
+                assert!(
+                    error
+                        .find(summary["failure_reason"].as_str().unwrap())
+                        .unwrap()
+                        < error.find("provider cleanup failed").unwrap()
+                );
+            } else if case == "provider-false-failed-finish" {
+                assert_eq!(summary["failure_kind"], "workload_check_failed");
+            } else {
+                assert_eq!(summary["failure_kind"], "provider_cleanup_error");
+            }
+        }
+        return;
+    }
+    let error = result.unwrap_err().to_string();
     assert!(
         error.contains("replay consumed 0 of 1"),
         "primary proxy validation must not be replaced: {error}"

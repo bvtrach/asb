@@ -16,6 +16,7 @@ pub(super) struct PreparedReport {
     pub evaluation: coverage::EvaluationCoverage,
     pub populations: BTreeMap<String, coverage::PopulationCoverage>,
     pub resolution: BTreeMap<String, crate::workloads::ResolutionSummary>,
+    pub metric_groups: BTreeMap<String, crate::workloads::outcome::MetricSummary>,
     pub dimensions: BTreeMap<&'static str, Vec<String>>,
     pub dispatch_groups: BTreeMap<String, usize>,
 }
@@ -23,6 +24,7 @@ impl PreparedReport {
     pub(super) fn prepare(data: ValidatedReport) -> Result<Self, Error> {
         let evaluation = coverage::evaluation_summary(&data.rows);
         let populations = coverage::populations(&data.rows)?;
+        let metric_groups = coverage::metric_groups(&data.rows)?;
         let mut metrics: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         let mut series: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         let mut resolution: BTreeMap<String, crate::workloads::ResolutionSummary> = BTreeMap::new();
@@ -48,28 +50,38 @@ impl PreparedReport {
             for name in row.series.keys() {
                 series.entry(name.clone()).or_default().push(index);
             }
-            let key = serde_json::to_string(&(
-                &row.agent,
-                &row.provider,
-                &row.model,
-                &row.workload,
-                coverage::group_kind(row),
-                row.task
-                    .as_ref()
-                    .and_then(|task| task.dataset.as_ref())
-                    .or_else(|| {
-                        row.selection
-                            .as_ref()
-                            .and_then(|selection| selection.dataset.as_ref())
-                    }),
-            ))
-            .map_err(|error| Error::Run(error.to_string()))?;
-            resolution.entry(key).or_default().observe(
-                coverage::group_kind(row),
-                row.metrics
-                    .get("success_rate")
-                    .is_some_and(|value| *value == 1.0),
-            );
+            if row.benchmark_outcome.as_ref().is_some_and(|outcome| {
+                outcome.policy != crate::workloads::outcome::MetricPolicy::default()
+                    || (outcome.evaluation.completed() && outcome.evaluation.resolution().is_none())
+            }) {
+                continue;
+            }
+            for fingerprint in coverage::fingerprints(row, &data.rows)? {
+                let key = serde_json::to_string(&(
+                    &row.agent,
+                    &row.provider,
+                    &row.model,
+                    &row.workload,
+                    coverage::group_kind(row),
+                    &row.module,
+                    &fingerprint,
+                    row.task
+                        .as_ref()
+                        .and_then(|task| task.dataset.as_ref())
+                        .or_else(|| {
+                            row.selection
+                                .as_ref()
+                                .and_then(|selection| selection.dataset.as_ref())
+                        }),
+                ))
+                .map_err(|error| Error::Run(error.to_string()))?;
+                resolution.entry(key).or_default().observe(
+                    coverage::group_kind(row),
+                    row.metrics
+                        .get("success_rate")
+                        .is_some_and(|value| *value == 1.0),
+                );
+            }
         }
         for values in dimensions.values_mut() {
             values.sort();
@@ -116,6 +128,7 @@ impl PreparedReport {
             graphs,
             evaluation,
             populations,
+            metric_groups,
             resolution,
             dimensions,
             dispatch_groups,

@@ -1856,6 +1856,7 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
                     for trial in trials {
                         let name = format!("asb-test-{stamp}-{index:03}.toml");
                         let config = BenchmarkConfig {
+                            planning: None,
                             agent: agent.clone(),
                             workload: workload.clone(),
                             provider: provider.clone(),
@@ -2469,7 +2470,8 @@ mod tests {
             std::fs::write(&installer, "#!/bin/sh\nif [ \"$1\" != missing ]; then\n printf '#!/bin/sh\\nexit 0\\n' > \"$2\"\n /bin/chmod \"$3\" \"$2\"\nfi\nexit 0\n").unwrap();
             std::fs::set_permissions(&installer, std::fs::Permissions::from_mode(0o700)).unwrap();
             assert!(
-                std::process::Command::new(&installer)
+                std::process::Command::new("/bin/sh")
+                    .arg(&installer)
                     .arg(state)
                     .arg(&perf)
                     .arg(if state == "ready" { "700" } else { "600" })

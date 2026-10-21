@@ -52,7 +52,14 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
 - `compare`: offline reports use explicit loaded, globally validated, prepared,
   rendered and published phases. Stable row identities and typed result sources
   bind original evaluation evidence; preparation computes population coverage
-  and unique chart identities once. Sources are opened once as bounded regular
+  and unique chart identities once. Structured outcomes, recorded modules,
+  execution-plan fingerprints and retained-grade provenance are validated at
+  the source boundary. Preparation computes metric-policy and binary-resolution
+  cohorts once, including conservative missing-slot coverage; JSON and HTML
+  render those same summaries without consulting the live workload registry.
+  Native rewards retain nullable resolution and independent execution status.
+  See [benchmark outcomes](BENCHMARK_OUTCOMES.md) for policy semantics.
+  Sources are opened once as bounded regular
   files (64 KiB per benchmark, 32 MiB retained configurations, 16 MiB per
   manifest/collector/preview and 64 MiB per saved plan). Manifest, configuration
   and saved-plan validation consume retained snapshots, never a refreshed second
@@ -588,6 +595,38 @@ bridge. It removes only Codex host metadata (`additional_tools` and reasoning
 context) that the bridge API cannot accept, while forwarding prompts, function
 tools, credentials, and streaming responses unchanged. External
 `CLI2KEY_BASE_URL` endpoints are used directly and are not modified.
+External cli2key endpoints own no local processes. A local provider session
+retains its startup guard and pre-established fallible `OwnedReaper` through
+both bridge and compatibility-hop lifetimes. Before each child starts, a
+fallible output worker owns a nonblocking Unix socket transport. Readiness is
+limited to five seconds, 64 KiB, 64 messages and 4 KiB per line (including
+output without a newline). Only the key/readiness result enters a single-slot
+channel; subsequent output is continuously drained and discarded. No startup
+output or key is included in diagnostics. Non-Unix local startup fails before
+spawning and can still use an explicitly configured external endpoint.
+Admission rechecks every owned child after compatibility-hop readiness, so a
+bridge that exited after its initial key cannot admit a ready local session.
+This observes the boundary, not future process liveness.
+Failure, unwinding and session destruction share one five-second cleanup deadline
+across both children and readers. Closing the embedded hop's stdin lifetime
+pipe gives it at most two seconds within that budget to close its listener,
+cancel outbound work and observe its own curl subprocesses' close events.
+The hop uses the network client's existing bounded TERM/KILL escalation for
+those declared children. Failed cooperative acknowledgement is diagnostic;
+remaining direct children receive KILL. Unconfirmed children transfer to the existing reaper;
+cooperatively stopped readers retain their own transports until exit. Only
+already-finished threads are joined; after the shared deadline an unfinished
+handle is released and the nonblocking worker exits when scheduled to observe
+its stop flag. Worker-exit receipts test that behavior separately from caller
+waiting. Startup errors retain their original diagnostic and cleanup uncertainty.
+The generic `ProviderSession::finish` contract explicitly settles model catalog
+sessions after fetch/parse, and benchmark sessions after grading/workload cleanup
+but before result publication. A finish error preserves the original catalog,
+client or official grading failure and the independent grade, reports ancillary
+cleanup uncertainty and prevents a completion receipt. Early preparation errors
+also attempt finish exactly once; silent Drop cleanup is the unwind fallback.
+This bounds caller waiting, not actual kernel-stuck exit, descendant supervision
+or crash-persistent recovery.
 Agents, providers, and workloads use the same source layout: each has a
 `mod.rs` for category-wide behavior and an `adapters/` directory containing
 the adapter registry (`adapters/mod.rs`) and one module per implementation.
