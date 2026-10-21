@@ -476,6 +476,10 @@ fn inherit_lease(command: &mut Command, lease: &File) {
 fn inherit_lease(_: &mut Command, _: &File) {}
 
 #[cfg(all(test, target_os = "linux"))]
+#[path = "../../../../tests/unit/perfetto_service.rs"]
+mod coverage_tests;
+
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
