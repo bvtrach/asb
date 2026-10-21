@@ -39,6 +39,7 @@ type PreparationObserver = dyn Fn(&Compatibility) -> Result<(), Error> + Send + 
 
 struct State {
     deadline: Option<Instant>,
+    participants: Vec<bool>,
     registered: Vec<bool>,
     ready: Vec<bool>,
     identity: Option<Compatibility>,
@@ -58,10 +59,38 @@ impl Gate {
         expected: Option<Compatibility>,
         timeout: Duration,
     ) -> Result<Self, Error> {
+        if total > 64 {
+            return Err(Error::Input("invalid preparation gate population".into()));
+        }
+        Self::selected(total, &(1..=total).collect::<Vec<_>>(), expected, timeout)
+    }
+
+    /// Wait for actual admitted original slots, never synthetic arrivals for
+    /// reused peers. Identity.total remains the original selected concurrency.
+    pub(crate) fn selected(
+        total: usize,
+        admitted: &[usize],
+        expected: Option<Compatibility>,
+        timeout: Duration,
+    ) -> Result<Self, Error> {
         if !(1..=64).contains(&total) || timeout.is_zero() {
             return Err(Error::Input(
                 "invalid preparation gate population or timeout".into(),
             ));
+        }
+        let mut participants = vec![false; total];
+        if admitted.is_empty() || admitted.len() > total {
+            return Err(Error::Input(
+                "invalid preparation participant population".into(),
+            ));
+        }
+        for slot in admitted {
+            if !(1..=total).contains(slot) || participants[*slot - 1] {
+                return Err(Error::Input(
+                    "invalid or duplicate preparation participant".into(),
+                ));
+            }
+            participants[*slot - 1] = true;
         }
         if let Some(identity) = &expected {
             identity
@@ -76,6 +105,7 @@ impl Gate {
                         .ok_or_else(|| Error::Input("preparation deadline overflows".into()))?,
                 ),
                 registered: vec![false; total],
+                participants,
                 ready: vec![false; total],
                 identity: expected,
                 aborted: None,
@@ -89,7 +119,18 @@ impl Gate {
 
     /// A separate launch budget starts at the first post-material registration.
     pub(crate) fn deferred(total: usize, timeout: Duration) -> Result<Self, Error> {
-        let mut gate = Self::new(total, None, timeout)?;
+        if total > 64 {
+            return Err(Error::Input("invalid preparation gate population".into()));
+        }
+        Self::deferred_selected(total, &(1..=total).collect::<Vec<_>>(), timeout)
+    }
+
+    pub(crate) fn deferred_selected(
+        total: usize,
+        admitted: &[usize],
+        timeout: Duration,
+    ) -> Result<Self, Error> {
+        let mut gate = Self::selected(total, admitted, None, timeout)?;
         gate.state.get_mut().map_err(|_| unavailable())?.deadline = None;
         Ok(gate)
     }
@@ -114,6 +155,7 @@ impl Gate {
         }
         if !replica.valid()
             || replica.total != state.registered.len()
+            || !state.participants[replica.index - 1]
             || state.registered[replica.index - 1]
             || state.released
         {
@@ -175,7 +217,13 @@ impl Arrival<'_> {
         } else {
             state.identity.get_or_insert(identity);
             state.ready[self.index] = true;
-            if state.ready.iter().all(|ready| *ready) && state.aborted.is_none() {
+            if state
+                .ready
+                .iter()
+                .zip(&state.participants)
+                .all(|(ready, selected)| !selected || *ready)
+                && state.aborted.is_none()
+            {
                 // Publication can block: do not hold the coordination mutex while
                 // writing it, so peers can still time out and abort admission.
                 let identity = state.identity.clone().ok_or_else(unavailable)?;
@@ -310,6 +358,80 @@ mod tests {
     }
 
     #[test]
+    fn noncontiguous_original_slots_release_only_after_genuine_subset_arrivals() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for deferred in [false, true] {
+            let observations = Arc::new(AtomicUsize::new(0));
+            let counter = observations.clone();
+            let gate = if deferred {
+                Gate::deferred_selected(4, &[2, 4], Duration::from_secs(3)).unwrap()
+            } else {
+                Gate::selected(4, &[2, 4], Some(material()), Duration::from_secs(3)).unwrap()
+            }
+            .observe(Arc::new(move |_| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }));
+            std::thread::scope(|scope| {
+                let mut first = gate.register(Identity { index: 2, total: 4 }).unwrap();
+                let (tx, rx) = mpsc::channel();
+                scope.spawn(move || {
+                    first.ready(material()).unwrap();
+                    tx.send(()).unwrap();
+                });
+                assert!(rx.recv_timeout(Duration::from_millis(30)).is_err());
+                assert_eq!(observations.load(Ordering::SeqCst), 0);
+                gate.register(Identity { index: 4, total: 4 })
+                    .unwrap()
+                    .ready(material())
+                    .unwrap();
+                rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            });
+            assert_eq!(gate.confirmed_identity().unwrap(), material());
+            assert_eq!(observations.load(Ordering::SeqCst), 1);
+            let state = gate.state.lock().unwrap();
+            assert_eq!(state.registered, [false, true, false, true]);
+            assert_eq!(state.ready, [false, true, false, true]);
+        }
+    }
+
+    #[test]
+    fn subset_gate_rejects_nonmembers_duplicate_or_renumbered_original_slots() {
+        for admitted in [vec![], vec![0], vec![5], vec![2, 2]] {
+            assert!(Gate::selected(4, &admitted, None, Duration::from_secs(1)).is_err());
+        }
+        for bad in [
+            Identity { index: 1, total: 4 },
+            Identity { index: 2, total: 2 },
+            Identity { index: 2, total: 4 },
+        ] {
+            let gate = Gate::selected(4, &[2, 4], None, Duration::from_secs(1)).unwrap();
+            let mut first = gate.register(Identity { index: 2, total: 4 }).unwrap();
+            assert!(gate.register(bad).is_err());
+            assert!(first.ready(material()).is_err());
+            assert!(gate.confirmed_identity().is_err());
+        }
+    }
+
+    #[test]
+    fn subset_failure_or_expiry_cannot_release_waiting_original_peers() {
+        for timeout in [false, true] {
+            let gate =
+                Gate::selected(4, &[2, 4], Some(material()), Duration::from_secs(3)).unwrap();
+            let mut first = gate.register(Identity { index: 2, total: 4 }).unwrap();
+            let mut second = gate.register(Identity { index: 4, total: 4 }).unwrap();
+            if timeout {
+                gate.state.lock().unwrap().deadline = Some(Instant::now() - Duration::from_secs(1));
+            } else {
+                second.abort("pending original slot failed before readiness");
+            }
+            assert!(first.ready(material()).is_err());
+            assert!(second.ready(material()).is_err());
+            assert!(gate.confirmed_identity().is_err());
+        }
+    }
+
+    #[test]
     fn no_agent_admitted_until_all_material_matches() {
         let gate = Gate::new(2, None, Duration::from_secs(3)).unwrap();
         std::thread::scope(|scope| {
@@ -421,6 +543,8 @@ mod tests {
         );
         assert!(Gate::new(0, None, Duration::from_secs(1)).is_err());
         assert!(Gate::new(65, None, Duration::from_secs(1)).is_err());
+        assert!(Gate::new(usize::MAX, None, Duration::from_secs(1)).is_err());
+        assert!(Gate::deferred(usize::MAX, Duration::from_secs(1)).is_err());
         assert!(Gate::new(1, None, Duration::ZERO).is_err());
     }
 
