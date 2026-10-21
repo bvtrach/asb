@@ -193,6 +193,10 @@ impl ModuleDescriptor {
 }
 
 #[cfg(test)]
+#[path = "contracts_baselines.rs"]
+mod baselines;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
