@@ -13,6 +13,12 @@ is now delivered by PR #264, merged as
 coverage, without production-file exclusions or reduced thresholds. Individual
 repair classes still need their own exact-head validation and release.
 
+Subsequent policy change: main commit `398c36cc` removed the hosted coverage
+job and its branch-protection requirement. The current request in this thread
+still asks for a required 90% gate; clarification is pending. Local coverage
+measurements continue, but must not be described as a currently required hosted
+check while that requirement is absent.
+
 ## 1. Endpoint preparation invariants
 
 Eight production adapter branches used `unreachable!` for unsupported wire
@@ -110,17 +116,21 @@ Simplify checkpoint validation into named invariants without losing checks.
 Review broad parameter lists, result structs, visibility, dead API surface and
 module names in those owning boundaries. Pending.
 
-Runner candidate (not yet merged/released): private consuming admission,
+Runner candidate, staged patch **0.2.10** (not yet merged/released): private consuming admission,
 preparation, execution-evidence, proxy-settlement, evaluation and finalization
 states now separate owned resources and independent outcomes. It repairs the
 verified path where collector lifecycle errors discarded client output or an
 official grade and skipped explicit workload cleanup. Native supervised-exit
 time excludes collector/proxy teardown, and terminal-answer validation belongs
 to the owning agent adapter. Broken human presentation retains admitted work
-and its grade; broken owner transport remains cancellation. Incomplete final
-measurement publication prevents a completion receipt without replacing a
-fresh grade. Offline phase/child/controller/fault matrices exercise these
-contracts. This does not close the remaining comparison/sweep/driver structural
+and its grade; broken owner transport remains cancellation. Log-publication
+failure still attempts measurements and presentation. Both log and measurement
+publication must be confirmed before a completion receipt can be emitted.
+Independent review and seven isolated full-entry fault cases verify that
+original grades, primary errors, secondary publication/output diagnostics,
+observer redaction and exact-once execution/evaluation/cleanup survive the
+combined failure paths. The larger phase matrix uses synthetic execution
+evidence, not full benchmark runs. This does not close the remaining comparison/sweep/driver structural
 work, stream-memory limits, blocking child-wait class or exact inner-principal
 native timing. Hosted and full final verification remain required.
 
