@@ -914,6 +914,20 @@ and SVG; comparison consumes only its `@asb_*` aggregate maps, embeds that
 profile SVG in the HTML artifact view, and emits one cross-run chart per
 numeric metric. NUMA topology and language-runtime data-structure probes remain
 custom profiles because their event layouts are neither portable nor stable.
+Custom sources are bounded, regular UTF-8 files, opened once during preflight.
+The adapter retains the exact validated and parameter-bound bytes in generic,
+session-owned typed collector state; configure and attachment never reopen the
+path or reconstruct configuration from the environment. Other adapters use the
+same state contract without collector-specific orchestration branches. Attachment
+adds ASB's process-tree tracking prelude and requires readiness before the agent
+resumes. A missing preparation state is an error, not permission to reread.
+Every custom process probe needs a positive, side-effect-free process-tree
+predicate. The validator handles complete multiline blocks and nested Boolean
+expressions, rejects membership mutation and opaque preprocessing, and reserves
+`@asb_tree` for the generated prelude. This is a process-scope contract, not a
+sandbox for arbitrary custom actions: custom programs remain trusted code.
+Numeric custom parameters use namespaced identifier substitution rather than
+the unsupported bpftrace `-D` option; see the development guide for migration.
 The `perfetto` recipe downloads SHA-256-pinned official Tracebox and trace
 processor binaries into the project tool directory. It supports Linux x86_64
 and aarch64. Ftrace itself is a tracefs interface provided by the running host

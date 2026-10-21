@@ -11,7 +11,6 @@ mod cohort;
 mod coverage_tests;
 pub use cohort::ExecutionCohort;
 use serde::{Deserialize, Serialize};
-use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -471,7 +470,7 @@ pub struct Session {
     started_unix_ms: u128,
     pub(crate) collectors: Vec<Collector>,
     stopped_collectors: Vec<StoppedCollector>,
-    states: BTreeMap<TypeId, Box<dyn Any>>,
+    states: collectors::CollectorStates,
     shared_artifacts: BTreeMap<collectors::SharedArtifact, PathBuf>,
     run_started: bool,
     run_failed: bool,
@@ -591,7 +590,7 @@ impl Session {
         check_measurement_directory(dir)?;
         // Privilege and tracefs checks must complete before any agent process
         // is prepared. This prevents a partially measured benchmark run.
-        let sudo_collectors = preflight_collectors(dir, selected, tool_dir, &adapters)?;
+        let (sudo_collectors, states) = preflight_collectors(dir, selected, tool_dir, &adapters)?;
         let started_unix_ms = unix_ms();
         let mut session = Self {
             adapters,
@@ -602,7 +601,7 @@ impl Session {
             started_unix_ms,
             collectors: Vec::new(),
             stopped_collectors: Vec::new(),
-            states: BTreeMap::new(),
+            states,
             shared_artifacts: BTreeMap::new(),
             run_started: false,
             run_failed: false,
@@ -802,12 +801,7 @@ impl Session {
     }
 
     pub(crate) fn state<T: Default + 'static>(&mut self) -> Rc<RefCell<T>> {
-        self.states
-            .entry(TypeId::of::<T>())
-            .or_insert_with(|| Box::new(Rc::new(RefCell::new(T::default()))))
-            .downcast_ref::<Rc<RefCell<T>>>()
-            .expect("state is keyed by its concrete type")
-            .clone()
+        self.states.state::<T>()
     }
 
     pub(crate) fn set_artifact(&mut self, kind: collectors::SharedArtifact, path: PathBuf) {
@@ -1344,18 +1338,20 @@ fn preflight_collectors(
     selected: &[String],
     tool_dir: Option<&Path>,
     adapters: &[&'static dyn collectors::CollectorAdapter],
-) -> Result<BTreeSet<String>, String> {
+) -> Result<(BTreeSet<String>, collectors::CollectorStates), String> {
     let mut sudo_collectors = BTreeSet::new();
+    let mut states = collectors::CollectorStates::default();
     let mut context = collectors::PreflightContext {
         measurement_dir,
         selected,
         tool_dir,
         sudo_collectors: &mut sudo_collectors,
+        states: &mut states,
     };
     for collector in adapters {
         collector.preflight(&mut context)?;
     }
-    Ok(sudo_collectors)
+    Ok((sudo_collectors, states))
 }
 
 pub(crate) fn passwordless_sudo_available() -> bool {

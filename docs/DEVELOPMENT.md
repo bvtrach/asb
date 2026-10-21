@@ -528,3 +528,67 @@ socket syscall counts and the generated SVG/HTML comparison from loopback
 replay. The additional `io-wait` profile needs enabled scheduler statistics;
 preflight rejects a disabled or unavailable host setting with a copyable
 command. Tests never change this host-wide setting.
+
+### Custom BPFTrace program contract
+
+Use `ASB_MEASURE_BPFTRACE=1` and
+`ASB_BPFTRACE_PROGRAMS='/absolute/program.bt?ASB_PARAM_LIMIT=12'` when opting into
+custom programs. Separate at most eight programs with `;` and at most 32
+parameters per program with `&`. Specifications are limited to 16 KiB, each
+regular UTF-8 source to 256 KiB, and the combined source bodies to 1 MiB.
+For example, a program body can contain:
+
+```bpftrace
+tracepoint:raw_syscalls:sys_enter /@asb_tree[pid]/ {
+  if (@asb_calls < ASB_PARAM_LIMIT) { @asb_calls = count(); }
+}
+```
+
+Parameters must be `ASB_PARAM_` followed by an uppercase ASCII identifier
+(at most 64 characters total). Values are canonical decimal integers from zero
+through 9223372036854775807: no signs, leading zeros, expressions or strings.
+Rename old parameters such as `limit=12` to `ASB_PARAM_LIMIT=12` in both the
+configuration and source. Duplicate, missing and unused parameters fail
+preparation. Substitution changes only complete identifier tokens, never
+comments, strings, probe provider/path/symbol fields, map/variable names or
+member accesses. ASB does not pass `-D`
+or accept custom preprocessor directives.
+
+Each process-probe predicate must positively constrain an ASB-maintained tree
+key (`pid`, `tid`, or supported scheduler `args` PID fields). Every OR branch
+must retain scope; additional AND filters are allowed. Predicate assignments,
+increments/decrements and unsupported calls are rejected before scope proof.
+The read-only `str` and `strncmp` filters are supported. Custom actions cannot
+reference reserved `@asb_tree`; control handlers may aggregate existing results
+but cannot replace process-scoped probes. This validates process scope, not
+arbitrary action safety; custom programs are trusted code, especially under sudo.
+
+The source is read and validated once at preflight, then retained through
+configuration and attachment, even if the original file changes or disappears.
+Attachment checks startup readiness before resuming the benchmarked agent.
+Offline tests cover mutations, malformed/multiline/UTF-8 sources, numeric
+binding, and replacement/deletion after preflight. When `/usr/bin/bpftrace` is
+installed, the unprivileged `-e SOURCE -V` regression checks the real CLI option
+route without `-D`; an absent default executable is reported as an explicit
+skip. `ASB_TEST_BPFTRACE` can select another executable (an invalid explicit path
+fails). This options-only test does not claim script compilation or kernel
+attachment. The opt-in privileged tests above cover actual attachment.
+
+For the installed bpftrace 0.20.2, source inspection confirms that `BEGIN`
+executes before the process probes attach, but its buffered `printf` is consumed
+by `poll_output` only after both attachment loops succeed. ASB waits for the
+observed output, not merely execution of `BEGIN`. See the
+[upstream run sequence](https://github.com/bpftrace/bpftrace/blob/v0.20.2/src/bpftrace.cpp#L1207-L1284).
+This version-specific source evidence is not a substitute for opt-in live
+attachment qualification on a different tool or kernel.
+
+Custom startup establishes the shared private `OwnedReaper` before spawning.
+Readiness failure or unwinding kills the owned child and polls against one
+five-second cleanup deadline; uncertain exit transfers custody to that worker
+and preserves the startup error alongside an explicit cleanup diagnostic.
+Readiness success transfers the still-owned child to the collector session.
+Real-child fixtures check failure before spawn, success transfer, pidfd-pinned
+reaping, unrelated sentinel survival, poll/deadline handoff and unwinding.
+This bounds the caller, not a kernel-stuck process's actual exit. Other built-in
+collector startup/normal-stop paths retain their existing lifecycle policies;
+this change does not claim they all have bounded cleanup.
