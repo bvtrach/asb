@@ -74,7 +74,20 @@ deduplicated diagnostics and fault-injection tests. Audit curl kill/wait,
 installer temporary publication/cleanup and consumed agent artifacts for
 bounded teardown and actionable errors. Best-effort cleanup in destructors
 is not automatically equivalent to an incorrectly ignored required write.
-Pending.
+Completion-diagnostic candidate: fresh outcome/observer/group-checkpoint and
+initial/final input-seal failures now produce deduplicated human warnings or
+typed JSONL events. Original grades, process results, sealed logs and primary
+errors remain intact; missing evidence never authorizes an automatic retry.
+Actual filesystem-publication and broken-writer fixtures cover true/false
+grades, concurrent replicas and conservative resume. Review regressions also
+distinguish receipt destinations from source outcomes and preserve every
+admitted configuration's failure after parallel-sweep output breaks, without
+further writes or retries. Independent source and fixture review approved
+candidate `16528073`; exact-head ordinary/package checks and both mandatory
+coverage gates passed before integration with newer main. The integrated
+candidate stages patch **0.2.9**, after the shell-completion repair; fresh
+release-head qualification and delivery remain pending. Other subprocess/publication cleanup
+items in this class are not claimed complete.
 
 ## 4. Typed domain and wire contracts
 
@@ -145,8 +158,10 @@ second completion definition. PR #260 targets patch **0.2.8**, following the
 installer repair in PR #259 and BPF scope/startup repair in PR #268.
 The current-main coverage regressions remain in
 place with an explicit test-module import after removing the old generator.
-Exact-head source/package tests, mandatory coverage, hosted CI, merge,
-post-merge verification and release remain required.
+PR #260 merged as `0897aeb4e4ee5656b80f2e998b52dbe48acee8fe` after final
+source/package/install-smoke CI passed in run `39611418478`. Post-merge
+verification and the signed v0.2.8 release are tracked in the PR. Coverage is
+optional under the user-confirmed policy above, not a remaining release gate.
 
 Unify intended limits (including TUI concurrency versus benchmark maximum),
 replace positional pane access and scattered protocol deadlines with named
@@ -164,8 +179,8 @@ Ordinary CI must use offline/synthetic inputs, not live provider credentials,
 privileged collectors or paid requests. New regression tests run in the
 ordinary suite and extracted package. Maintain honest null/unavailable
 measurements and preserve existing original-task evaluation evidence. A green
-focused test does not establish completion of a whole repair class or the
-90% coverage requirement.
+focused test does not establish completion of a whole repair class or replace
+the required functional source/package and post-merge checks.
 
 Additional safety finding from coverage tests: custom BPFTrace scope validation
 can skip multiline probe headers and accepts an OR-true predicate containing
@@ -190,9 +205,11 @@ predicate proof/mutation, multiline/UTF-8/malformed inputs, numeric binding,
 frozen bytes, real child identity/reaping and ownership transfer. The installed
 tool's unprivileged `-e SOURCE -V` check validates actual option routing only,
 not script compilation or privileged attachment. Custom actions remain trusted
-code, and other collector lifecycle paths are not claimed repaired. Exact-head
-independent review, ordinary/package tests, mandatory coverage, hosted checks,
-merge, post-merge verification and release remain required.
+code, and other collector lifecycle paths are not claimed repaired. Delivery:
+PR #268 merged as `49a8a2b722ed66d4a084ef17f5f373e80b7859cc`. All post-merge
+jobs passed in run `39602305053`, with 90.940026% production and 90.542923%
+aggregate coverage. **v0.2.7** was released from that exact commit with a
+GitHub-verified signed tag.
 
 Installer inspection found that HTTP downloads write directly to the published
 destination. A failed/truncated or oversized response can replace a usable
@@ -202,7 +219,8 @@ publication, preserve existing tools on failures, and test readiness queries
 with offline fake download commands. This is a verified publication issue,
 unlike blanket claims about every ignored scratch deletion.
 
-Delivery candidate: PR #259, patch version **0.2.6**. Private sibling staging
+Delivery: PR #259 merged as `55a3d0d69972707ce2db105f93ddb5806563776f`,
+patch version **0.2.6**. Private sibling staging
 validates HTTP status, bounded size, optional checksum, executable mode and
 version readiness before atomic per-file publication. Existing executable
 bytes and mode survive every pre-publication failure. Download and version
