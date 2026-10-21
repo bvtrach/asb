@@ -676,8 +676,18 @@ Transport output and child shutdown are bounded, including full-pipe failure.
 Normal Harbor grading now publishes the same durable verifier-start record.
 Completed false/true grades are preserved and reused, recovered cleanup must
 confirm stopped preservation before selection, and inspection/import/compare
-follow the explicit selected evaluator. Terminal verifier raw-outcome
-reconstruction and complete interrupted-slot continuation remain unfinished.
+follow the explicit selected evaluator.
+Both original Terminal SDKs now publish a create-new, durable SDK-return
+observation before the final normalized result. It binds the parsed outcome,
+task identity, start record and raw pane/reward bytes (including absent reward
+formats). If final publication is lost, retained grading reconstructs from that
+record without an SDK invocation, Docker or a restarted service. Private staging
+and explicit selection preserve every original artifact; inspection/import/compare
+revalidate the original observation, raw files, wrapper bytes/absence and cleanup.
+An interrupted metadata copy or missed selection can be reconciled without tests.
+Missing trustworthy SDK-return evidence remains unknown; raw logs alone are not
+permission to infer success or repeat a side-effecting verifier. Complete
+interrupted-slot continuation and final delivery qualification remain unfinished.
 See the full benchmark delivery
 checklist before claiming complete upstream benchmark support.
 Their shared installer also downloads a checksum-pinned original

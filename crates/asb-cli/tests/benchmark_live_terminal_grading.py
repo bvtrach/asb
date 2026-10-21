@@ -64,6 +64,20 @@ class OriginalTerminalGrading(unittest.TestCase):
                     for field in ["process_success","elapsed_ms","exit_code","token_usage","steps"]:
                         self.assertIsNone(report[field])
                     self.assertEqual((artifacts/"submission.json").read_bytes(),submission)
+                    selected = json.loads((artifacts/"selected-evaluation.json").read_bytes())
+                    source = artifacts/selected["directory"]
+                    archive = qualification/(reference.stem+"-lost-wrapper")
+                    archive.mkdir(mode=0o700)
+                    (artifacts/"selected-evaluation.json").rename(archive/"selection.json")
+                    (source/"evaluation.json").rename(archive/"evaluation.json")
+                    raw = {path:path.read_bytes() for path in source.rglob("*") if path.is_file()}
+                    reconstruction_env = dict(environment,DOCKER_HOST="unix://"+str(qualification/"no-docker.sock"))
+                    reconstructed = subprocess.run(command,cwd=root,env=reconstruction_env,capture_output=True,timeout=30)
+                    reference.with_suffix(".reconstructed.stderr").write_bytes(reconstructed.stderr)
+                    self.assertEqual(reconstructed.returncode,0,reconstructed.stderr.decode())
+                    report = json.loads(reconstructed.stdout)
+                    self.assertIs(report["workload_success"],resolved)
+                    self.assertEqual(raw,{path:path.read_bytes() for path in source.rglob("*") if path.is_file()})
                     container.reload()
                     self.assertIs(container.attrs["State"]["Running"],False)
                     self.assertEqual(set(container.attrs["NetworkSettings"]["Networks"]),set(saved_networks))

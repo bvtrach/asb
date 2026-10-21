@@ -144,13 +144,16 @@ class HarborTests(unittest.TestCase):
             task.catalog = {"dataset":{"revision":"pinned"},"sdk":{"version":"pinned"}}
             task.task = SimpleNamespace(config=SimpleNamespace(verifier=SimpleNamespace(timeout_sec=60,user="verifier")))
             task.environment = SimpleNamespace(default_user=None)
-            task.paths = SimpleNamespace(reward_text_path=root/"reward.txt",reward_json_path=root/"reward.json")
+            verifier_dir = root/"official/verifier"
+            verifier_dir.mkdir(parents=True)
+            task.paths = SimpleNamespace(reward_text_path=verifier_dir/"reward.txt",reward_json_path=verifier_dir/"reward.json")
             for rewards, expected in [({"reward":1},"resolved"), ({"reward":0},"unresolved"), ({},"evaluation_error"),
                 ({"reward":float("nan")},"evaluation_error"), ({"reward":0.5},"evaluation_error"),
                 ({"reward":True},"evaluation_error"), ({"other":1},"evaluation_error")]:
                 # These SDK seams represent separate first-verifier attempts,
                 # not permission to repeat tests against one mutated task.
                 (root/"evaluation-started.json").unlink(missing_ok=True)
+                (root/"verifier-return.json").unlink(missing_ok=True)
                 with self.subTest(rewards=rewards), patch.object(subject,"restore_task_networks") as restore:
                     task.paths.reward_text_path.write_text("stale reward")
                     task.paths.reward_json_path.write_text('{"reward":1}')
@@ -158,6 +161,7 @@ class HarborTests(unittest.TestCase):
                         self.assertFalse(task.paths.reward_text_path.exists())
                         self.assertFalse(task.paths.reward_json_path.exists())
                         self.assertEqual(task.environment.default_user,"verifier")
+                        task.paths.reward_json_path.write_text(json.dumps(rewards))
                         return SimpleNamespace(rewards=rewards)
                     verifier = Mock(return_value=SimpleNamespace(verify=verify))
                     modules["harbor.verifier.verifier"].Verifier = verifier

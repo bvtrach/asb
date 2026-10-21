@@ -7,10 +7,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 
 sys.dont_write_bytecode = True
 from benchmark_retained import Fixture, swe
+from benchmark_retained import retained,terminal,harbor
+from unittest.mock import patch
 
 WORKLOADS = [("swe-bench", "swebench"), ("swe-bench-lite", "swebench"),
              ("swe-bench-verified", "swebench"), ("terminal-bench-1.0", "terminal-bench"),
@@ -94,6 +97,43 @@ class SweepFixture:
 
 @unittest.skipUnless(os.environ.get("ASB_TEST_HOST_ASB"), "requires compiled ASB")
 class GradeImportTests(unittest.TestCase):
+    def test_terminal_sdk_return_reconstruction_imports_both_versions_and_binds_sources(self):
+        fixture = SweepFixture()
+        self.addCleanup(fixture.temporary.cleanup)
+        sources = []
+        for index,module in [(3,terminal),(4,harbor)]:
+            artifacts = fixture.root/f".asb/attempts/a-{index}-1"
+            source = artifacts/("recovered-evaluation-"+"e"*32)
+            source.mkdir(mode=0o700)
+            (artifacts/"official").rename(source/"official")
+            (artifacts/"evaluation.json").rename(source/"evaluation.json")
+            identity = json.loads((artifacts/"task.json").read_text())["identity"]
+            (source/"evaluation-started.json").write_text(json.dumps({"schema_version":1,
+                "scope":"official-verifier-started-not-a-grade","task":identity}))
+            cleanup = {"schema_version":1,"scope":"retained-grading-resources-preserved","attempt":identity["attempt_id"],
+                       "resources":json.loads((artifacts/"interruption.json").read_text())["resources"]}
+            (source/"grading-cleanup.json").write_text(json.dumps(cleanup))
+            files = ([f"official/case-1/{identity['attempt_id']}/panes/post-test.txt"] if index == 3 else
+                     ["official/verifier/reward.json","official/verifier/reward.txt"])
+            retained.record_verifier_return(source,identity,json.loads((source/"evaluation.json").read_text()),
+                                             ["evaluation-started.json",*files])
+            (source/"evaluation.json").rename(fixture.root/f"lost-wrapper-{index}.json")
+            value = retained.RetainedOutcome({"reference":{"artifacts":str(artifacts),
+                **{key:identity[key] for key in ["workload","task_id","dataset"]}}},inspect=True)
+            value.grading = True
+            with patch.object(module,"DockerSession",side_effect=AssertionError("reconstruction started Docker")):
+                module.grade_retained(value,"unused",threading.Event())
+            sources.append(source)
+        imported = fixture.run("sweep","sweep.toml","--import-grades","--json")
+        self.assertEqual(imported.returncode,0,imported.stderr.decode())
+        compared = fixture.run("compare","sweep.toml")
+        self.assertEqual(compared.returncode,0,compared.stderr.decode())
+        before = {path:path.read_bytes() for path in fixture.imports()}
+        (sources[1]/"verifier-return.json").write_text("{}")
+        compared = fixture.run("compare","sweep.toml")
+        self.assertNotEqual(compared.returncode,0)
+        self.assertEqual(before,{path:path.read_bytes() for path in fixture.imports()})
+
     def test_reconstructed_swe_grades_import_and_compare_bind_original_raw_artifacts(self):
         fixture = SweepFixture()
         self.addCleanup(fixture.temporary.cleanup)

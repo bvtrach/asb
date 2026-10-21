@@ -293,6 +293,18 @@ metrics. Only positively-owned fixture resources are removed afterward. It
 never calls an agent or live provider and does not prove full-population AI
 performance or reconstruction of a verifier that already started.
 
+`benchmark_verifier_reconstruction.py` covers both original SDKs' durable return
+records and metadata-only recovery. It checks normal/recovered evaluator
+locations, missing/failed wrappers, both grades, source tampering, cancellation,
+missing observations/cleanup and interrupted copy/selection. SDK-return facts
+must match the raw artifacts; no SDK, Docker or provider starts during recovery.
+Both public retained-grading qualifications now archive only wrapper/selection
+after actual SDK completion and require recovery with Docker deliberately
+unavailable. Original bytes, stopped state and repeated grading/inspection must
+stay unchanged. This fault injection cannot recover a grade never observed or
+published by the SDK adapter; such outcomes remain unknown and are not retried
+implicitly. Import/compare tests also validate these source bindings.
+
 See
 [evaluation semantics](EVALUATION.md). Perfetto
 post-processing scopes scheduler counts and series to the benchmark process

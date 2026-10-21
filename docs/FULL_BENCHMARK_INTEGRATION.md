@@ -2438,3 +2438,45 @@ Twelve retained SWE grading/reconstruction checks and ten public import/compare
 checks are included. Strict Clippy, formatting and `make build` with rustdoc,
 diagrams, interactive views and completions passed. Packaged-crate and exact-head
 hosted checks follow; the full delivery checklist remains incomplete.
+
+### Original Terminal SDK-return reconstruction and delivery audit
+
+Both original Terminal SDK adapters now publish a durable create-new SDK-return
+observation before their final result. The observation binds parsed facts to
+the actual task/SDK, durable start marker and raw verifier pane/reward bytes,
+including which reward format was absent. A lost/failed normalized wrapper can
+be reconstructed in a separate metadata-only evaluator directory without SDK,
+Docker, services, agents or providers. Private staging and explicit selection
+handle interrupted copying/publication without another verifier invocation.
+Original bytes are not replaced. Inspection/import/compare validate both copied
+and original evidence, wrapper bytes/absence and confirmed source cleanup.
+
+Outcomes without a trustworthy published SDK return remain unknown: the adapter
+does not infer a grade from success-looking logs or silently repeat side effects.
+That physical observability limit is not historical attestation or an execution
+metric. Both false and true grades are preserved identically.
+
+Provider-free contracts cover both versions, both grades, normal/recovered
+locations, missing/failed wrappers, changed observations/raw data, cancellation,
+missing cleanup and interrupted staging/selection. Eleven import/compare cases
+also pass. Actual original SDK/public CLI qualifications passed in 43.484 seconds
+at `retained-terminal-grading-iem6axqu` and 45.092 seconds at
+`retained-harbor-grading-kptz_8ma`, each for correct/incorrect states, then lost
+wrapper reconstruction with a deliberately unavailable Docker endpoint. Original
+bytes, repeated reports and stopped state remained unchanged. No live LLM was
+used. Prior SWE reconstruction hosted CI run 39541287011 passed.
+
+See [the delivery audit](FULL_BENCHMARK_AUDIT.md) for the actual requirement map,
+implemented evidence and remaining release gates. The objective is unchanged:
+safe started-slot continuation, population-scale qualification/presentation,
+full review, PR merge, exact-main CI and the new minor release still remain.
+Final current-source/package/hosted checks follow this increment.
+
+Final source verification passed 447 unit tests, 87 offline CLI tests, twenty-one
+benchmark protocol suites, ten guest/lifecycle checks and remaining integrations.
+The new SDK-return reconstruction suite covers five contracts across both
+original versions and all normal/recovered/missing/failed outcome variants;
+eleven import/compare checks pass. Strict Clippy, formatting and `make build`
+including rustdoc, complete diagrams, interactive views and completions passed.
+Package and exact-head hosted verification follow. The audit's remaining
+continuation, population qualification and final delivery gates stay open.

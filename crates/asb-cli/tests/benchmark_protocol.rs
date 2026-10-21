@@ -1,6 +1,11 @@
 //! Provider-free tests of the upstream workload protocol's pure data layer.
 
 #[test]
+fn terminal_sdk_return_reconstruction_never_repeats_verifiers_or_invents_lost_metrics() {
+    python_protocol("benchmark_verifier_reconstruction.py");
+}
+
+#[test]
 fn retained_harbor_grading_uses_original_verifier_without_recreating_environments() {
     python_protocol("benchmark_harbor_grading.py");
 }

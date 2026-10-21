@@ -224,6 +224,143 @@ class RetainedOutcome:
         require(result.get("sdk") == self.task.get("sdk"), "retained evaluator SDK differs from its task")
 
 
+def publish_once(path,value):
+    """Durable metadata publication without replacing a previous observation."""
+    temporary = path.parent/(".metadata-"+uuid.uuid4().hex)
+    body = json.dumps(value,sort_keys=True).encode()+b"\n"
+    require(len(body) <= 4*1024**2,"verifier metadata exceeds its publication bound")
+    try:
+        descriptor = os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+        with os.fdopen(descriptor,"wb") as output:
+            output.write(body)
+            output.flush()
+            os.fsync(output.fileno())
+        os.link(temporary,path)
+        descriptor = os.open(path.parent,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:os.fsync(descriptor)
+        finally:os.close(descriptor)
+    finally:temporary.unlink(missing_ok=True)
+
+
+def record_verifier_return(root,identity,result,files):
+    # The SDK has already returned parsed facts. This is a write-ahead record,
+    # not an inference from success-looking terminal output or agent exit.
+    files = list(files)
+    require("evaluation-started.json" in files and 2 <= len(files) <= 8 and len(set(files)) == len(files),
+            "verifier return has no complete raw artifact declaration")
+    reader = RetainedOutcome.__new__(RetainedOutcome)
+    reader.root,reader.evidence = root,{}
+    evidence = {}
+    for relative in files:
+        path = reader.child(relative)
+        if path.exists():
+            reader.bytes(relative)
+            evidence[relative] = reader.evidence[relative]
+        else:evidence[relative] = None
+    require(evidence["evaluation-started.json"] is not None,"verifier return has no durable start record")
+    require(any(value is not None for name,value in evidence.items() if name != "evaluation-started.json"),
+            "verifier return has no raw SDK output")
+    publish_once(root/"verifier-return.json",{"schema_version":1,"scope":"official-sdk-return-not-execution-recovery",
+        "task":identity,"result":result,"files":evidence})
+
+
+def verifier_return(retained,prefix):
+    observation = retained.object(prefix+"verifier-return.json")
+    files = observation.get("files")
+    result = observation.get("result")
+    require(observation.get("schema_version") == 1 and observation.get("scope") == "official-sdk-return-not-execution-recovery"
+            and observation.get("task") == retained.identity and isinstance(result,dict)
+            and "reconstruction" not in result and isinstance(files,dict) and 2 <= len(files) <= 8
+            and "evaluation-started.json" in files,"verifier return observation is malformed")
+    for relative,expected in files.items():
+        require(isinstance(relative,str) and not relative.startswith("/") and ".." not in PurePosixPath(relative).parts,
+                "verifier return raw artifact escapes its directory")
+        if expected is None:require(not retained.child(prefix+relative).exists(),"absent verifier output changed after SDK return")
+        else:
+            body = retained.bytes(prefix+relative)
+            require(expected == {"sha256":hashlib.sha256(body).hexdigest(),"bytes":len(body)},
+                    "verifier raw artifact changed after SDK return")
+    start = retained.object(prefix+"evaluation-started.json")
+    require(start.get("schema_version") == 1 and start.get("scope") == "official-verifier-started-not-a-grade"
+            and start.get("task") == retained.identity,"verifier return belongs to a different invocation")
+    return observation
+
+
+def verify_verifier_reconstruction(retained,prefix,result):
+    receipt = result.get("reconstruction")
+    require(isinstance(receipt,dict) and receipt.get("schema_version") == 1
+            and receipt.get("scope") == "sdk-return-reconstruction-not-test-retry"
+            and isinstance(receipt.get("source"),str),"verifier reconstruction provenance is malformed")
+    source = receipt["source"]
+    require(source == "" or re.fullmatch(r"recovered-evaluation-[a-f0-9]{32}/",source),
+            "verifier reconstruction source is malformed")
+    require(source != prefix,"verifier reconstruction cannot refer to itself")
+    observation = verifier_return(retained,source)
+    require({key:value for key,value in result.items() if key != "reconstruction"} == observation["result"],
+            "reconstructed grade differs from the SDK return")
+    names = {source+relative for relative in observation["files"]} | {source+"verifier-return.json",source+"evaluation.json"}
+    if source:
+        names.add(source+"grading-cleanup.json")
+        retained.verify_grading_cleanup(source)
+    require(isinstance(receipt.get("inputs"),dict) and set(receipt["inputs"]) == names,
+            "verifier reconstruction source population is incomplete")
+    for relative,expected in receipt["inputs"].items():
+        if expected is None:require(not retained.child(relative).exists(),"missing verifier artifact was replaced after reconstruction")
+        else:
+            body = retained.bytes(relative)
+            require(expected == {"sha256":hashlib.sha256(body).hexdigest(),"bytes":len(body)},
+                    "original verifier artifacts changed after reconstruction")
+
+
+def reconstruct_verifier_return(retained,verify,cancelled):
+    prefixes = [""]
+    for index,path in enumerate(retained.root.iterdir()):
+        require(index < 256,"retained verifier population exceeds its bound")
+        if re.fullmatch(r"recovered-evaluation-[a-f0-9]{32}",path.name):prefixes.append(path.name+"/")
+    sources = [prefix for prefix in prefixes if retained.child(prefix+"verifier-return.json").exists()]
+    if not sources:return False
+    require(len(sources) == 1,"multiple SDK return observations cannot be guessed")
+    source = sources[0]
+    observation = verifier_return(retained,source)
+    result = dict(observation["result"])
+    preview = RetainedOutcome({"reference":retained.reference},inspect=True)
+    preview.select_grade(result)
+    verify(preview,source,result=result)
+    names = list(observation["files"])+["verifier-return.json","evaluation.json"]
+    if source:names.append("grading-cleanup.json")
+    bodies,inputs = {},{}
+    for relative in names:
+        path = retained.child(source+relative)
+        if path.exists():
+            body = retained.bytes(source+relative)
+            inputs[source+relative] = {"sha256":hashlib.sha256(body).hexdigest(),"bytes":len(body)}
+            if relative != "evaluation.json":bodies[relative] = body
+        else:inputs[source+relative] = None
+    require(not cancelled.is_set(),"verifier reconstruction cancelled before publication")
+    staging = ".verifier-reconstruction-"+uuid.uuid4().hex
+    retained.child(staging).mkdir(mode=0o700)
+    for relative,body in bodies.items():
+        path = retained.child(staging+"/"+relative)
+        path.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+        with path.open("xb") as output:
+            os.fchmod(output.fileno(),0o600)
+            output.write(body)
+            output.flush()
+            os.fsync(output.fileno())
+    result["reconstruction"] = {"schema_version":1,"scope":"sdk-return-reconstruction-not-test-retry","source":source,"inputs":inputs}
+    publish_once(retained.child(staging+"/evaluation.json"),result)
+    preview = RetainedOutcome({"reference":retained.reference},inspect=True)
+    preview.select_grade(result)
+    verify(preview,staging+"/")
+    require(not cancelled.is_set(),"verifier reconstruction cancelled before selection")
+    directory = "recovered-evaluation-"+uuid.uuid4().hex
+    os.rename(retained.child(staging),retained.child(directory))
+    retained.select_grade(result)
+    verify(retained,directory+"/")
+    retained.publish_selection(directory)
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--module",required=True)

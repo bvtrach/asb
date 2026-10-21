@@ -292,13 +292,13 @@ def grade_retained(retained, catalog_path, cancelled):
     if retained.selected_evaluation() is not None:
         inspect_retained(retained)
         return
+    completed,started = [],False
     if retained.child("evaluation.json").exists():
         result = retained.object("evaluation.json")
         if result.get("outcome") in ["resolved","unresolved"]:
             inspect_retained(retained)
             return
-        require(False,"the retained Harbor verifier already started; reconstruct its original outcome instead of rerunning tests")
-    completed,started = [],False
+        started = True
     for index,path in enumerate(retained.root.iterdir()):
         require(index < 256,"retained attempt has excessive top-level artifacts")
         if path.name.startswith("recovered-evaluation-"):
@@ -317,6 +317,8 @@ def grade_retained(retained, catalog_path, cancelled):
         verify_retained(retained,prefix)
         retained.publish_selection(completed[0])
         return
+    from asb_retained import reconstruct_verifier_return
+    if reconstruct_verifier_return(retained,verify_retained,cancelled):return
     require(not started and not retained.child("evaluation-started.json").exists()
             and not any(retained.child("official/verifier/"+name).exists() for name in ["reward.json","reward.txt","test-stdout.txt"]),
             "the retained Harbor verifier already started; reconstruct its original outcome instead of rerunning side-effecting tests")
@@ -369,11 +371,11 @@ def grade_retained(retained, catalog_path, cancelled):
     retained.publish_selection(directory)
 
 
-def verify_retained(retained, prefix=None):
+def verify_retained(retained, prefix=None, result=None):
     from asb_retained import require
     retained.verify_environment_baseline()
     prefix = (retained.selected_evaluation() or "") if prefix is None else prefix
-    result = retained.object(prefix+"evaluation.json")
+    result = retained.object(prefix+"evaluation.json") if result is None else result
     retained.grade(result)
     require(retained.task.get("sdk") == {"package":"harbor","version":"0.24.0"},
             "retained original Harbor SDK differs")
@@ -385,7 +387,16 @@ def verify_retained(retained, prefix=None):
     # Match the pinned SDK: JSON takes precedence when both outputs exist.
     reward = retained.object(prefix+"official/verifier/reward.json").get("reward") if encoded.is_file() else float(retained.bytes(prefix+"official/verifier/reward.txt").decode().strip())
     require(type(reward) in [int,float] and reward == rewards["reward"], "retained reward file differs from its report")
-    if prefix:retained.verify_grading_cleanup(prefix)
+    if retained.child(prefix+"verifier-return.json").exists():
+        from asb_retained import verifier_return
+        observation = verifier_return(retained,prefix)
+        require(set(observation["files"]) == {"evaluation-started.json","official/verifier/reward.json","official/verifier/reward.txt"}
+                and observation["result"] == {key:value for key,value in result.items() if key != "reconstruction"},
+                "original Harbor SDK return disagrees with its binary reward")
+    if "reconstruction" in result:
+        from asb_retained import verify_verifier_reconstruction
+        verify_verifier_reconstruction(retained,prefix,result)
+    elif prefix:retained.verify_grading_cleanup(prefix)
 
 
 class HarborTask:
@@ -497,8 +508,9 @@ class HarborTask:
     @quiet_sdk
     def grade_environment(self, timeout=1800):
         from harbor.verifier.verifier import Verifier
-        record_grading_start(self.artifacts,self.invocation["identity"] if self.invocation else {
-            "workload":"terminal-bench-2.1","task_id":self.task_id,"attempt_id":self.attempt,"dataset":self.catalog["dataset"]})
+        identity = self.invocation["identity"] if self.invocation else {
+            "workload":"terminal-bench-2.1","task_id":self.task_id,"attempt_id":self.attempt,"dataset":self.catalog["dataset"]}
+        record_grading_start(self.artifacts,identity)
         # Reward files are outputs of this verifier invocation, not a cache or
         # something left by a client before the official test script ran.
         for path in [self.paths.reward_text_path, self.paths.reward_json_path]:
@@ -520,6 +532,10 @@ class HarborTask:
             result = {"resolved":False, "outcome":"evaluation_error", "error_class":type(error).__name__}
         result.update(schema_version=1,workload="terminal-bench-2.1",task_id=self.task_id,
                       dataset=self.catalog["dataset"],sdk=self.catalog["sdk"],artifact="evaluation.json")
+        if result["outcome"] in ["resolved","unresolved"]:
+            from asb_retained import record_verifier_return
+            record_verifier_return(self.artifacts,identity,result,["evaluation-started.json",
+                "official/verifier/reward.json","official/verifier/reward.txt"])
         write_json(self.artifacts / "evaluation.json", result)
         return result
 

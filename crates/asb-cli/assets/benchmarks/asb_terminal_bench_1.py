@@ -107,11 +107,11 @@ def inspect_retained(retained):
     verify_retained(retained)
 
 
-def verify_retained(retained, prefix=None):
+def verify_retained(retained, prefix=None, result=None):
     from asb_retained import require
     retained.verify_environment_baseline()
     prefix = (retained.selected_evaluation() or "") if prefix is None else prefix
-    result = retained.object(prefix+"evaluation.json")
+    result = retained.object(prefix+"evaluation.json") if result is None else result
     retained.grade(result)
     require(retained.task.get("sdk") == {"package":"terminal-bench","version":"0.2.18"},
             "retained original Terminal-Bench SDK differs")
@@ -122,7 +122,16 @@ def verify_retained(retained, prefix=None):
             "retained original Terminal-Bench parsed tests disagree")
     pane = prefix+"official/" + retained.identity["task_id"] + "/" + retained.identity["attempt_id"] + "/panes/post-test.txt"
     require(bool(retained.bytes(pane)), "retained original verifier pane is missing")
-    if prefix:
+    if retained.child(prefix+"verifier-return.json").exists():
+        from asb_retained import verifier_return
+        observation = verifier_return(retained,prefix)
+        require(set(observation["files"]) == {"evaluation-started.json",pane.removeprefix(prefix)}
+                and observation["result"] == {key:value for key,value in result.items() if key != "reconstruction"},
+                "original Terminal SDK return disagrees with its parsed result")
+    if "reconstruction" in result:
+        from asb_retained import verify_verifier_reconstruction
+        verify_verifier_reconstruction(retained,prefix,result)
+    elif prefix:
         retained.verify_grading_cleanup(prefix)
 
 
@@ -172,6 +181,8 @@ def grade_retained(retained, catalog_path, cancelled):
         verify_retained(retained,prefix)
         retained.publish_selection(completed[0])
         return
+    from asb_retained import reconstruct_verifier_return
+    if reconstruct_verifier_return(retained,verify_retained,cancelled):return
     pane = "official/"+retained.identity["task_id"]+"/"+retained.identity["attempt_id"]+"/panes/post-test.txt"
     require(not started and not retained.child("evaluation-started.json").exists() and not retained.child(pane).exists(),
             "the retained verifier already started; reconstruct its original outcome instead of rerunning side-effecting tests")
@@ -401,8 +412,9 @@ class TerminalBenchTask:
     @quiet_sdk
     def grade_environment(self, timeout=1800):
         from terminal_bench.agents.failure_mode import FailureMode
-        record_grading_start(self.artifacts,self.invocation["identity"] if hasattr(self,"invocation") else {
-            "workload":"terminal-bench-1.0","task_id":self.task_id,"attempt_id":self.attempt,"dataset":self.catalog["dataset"]})
+        identity = self.invocation["identity"] if getattr(self,"invocation",None) else {
+            "workload":"terminal-bench-1.0","task_id":self.task_id,"attempt_id":self.attempt,"dataset":self.catalog["dataset"]}
+        record_grading_start(self.artifacts,identity)
         session = self.agent_session if self.handler.task.run_tests_in_same_shell else self.terminal.create_session(getattr(self,"test_session_name","tests"), as_configured_user=False)
         failure = self.evaluator._run_tests(self.terminal, session, self.handler)
         pane = session.capture_pane(capture_entire=True)
@@ -416,6 +428,10 @@ class TerminalBenchTask:
             "test_results":{name:status.value for name,status in (parsed or {}).items()},
             "failure_mode":failure.value, "parse_failure":parse_failure.value,
             "artifact":"evaluation.json"}
+        if valid:
+            from asb_retained import record_verifier_return
+            record_verifier_return(self.artifacts,identity,result,["evaluation-started.json",
+                str(self.handler.trial_paths.post_test_pane_path.relative_to(self.artifacts))])
         write_json(self.artifacts / "evaluation.json", result)
         return result
 
