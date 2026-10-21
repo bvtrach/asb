@@ -92,15 +92,28 @@ pub(super) fn metric_groups(
 
 pub(super) fn metric_html(benchmarks: &[BenchmarkData]) -> Result<String, Error> {
     let mut html = String::from(
-        "<section><h2>Benchmark metric policies</h2><p>Estimates use completed named rewards only; incomplete coverage is not an official population score. Uncertainty is the standard error over independent task means, unavailable with fewer than two tasks or unequal repetition counts for attempt means. Repetitions are not pass@k.</p><table><tr><th>Group</th><th>Policy / reward</th><th>Reward coverage</th><th>Tasks</th><th>Estimate</th><th>Task standard error</th></tr>",
+        "<section><h2>Benchmark metric policies</h2><p>Each policy declares whether missing rewards contribute zero or are excluded. Imputation does not change evaluator status; incomplete coverage is not an official population score. Uncertainty is the standard error over independent task means under that policy, unavailable with fewer than two tasks or unequal repetition counts for attempt means. Repetitions are not pass@k.</p><table><tr><th>Group</th><th>Policy / reward</th><th>Reward coverage</th><th>Tasks</th><th>Estimate</th><th>Task standard error</th></tr>",
     );
     for (key, group) in metric_groups(benchmarks)? {
+        let missing = match (&group.policy.missing_rewards, &group.policy.aggregation) {
+            (
+                crate::workloads::outcome::MissingRewardPolicy::Zero,
+                crate::workloads::outcome::Aggregation::AttemptMean,
+            ) => "missing rewards contribute zero; selected-attempt denominator",
+            (
+                crate::workloads::outcome::MissingRewardPolicy::Zero,
+                crate::workloads::outcome::Aggregation::TaskMean,
+            ) => "missing rewards contribute zero within selected task means",
+            (crate::workloads::outcome::MissingRewardPolicy::Exclude, _) => {
+                "observed-only rewards; missing excluded"
+            }
+        };
         let unit = group
             .policy
             .rewards
             .get(&group.policy.reward)
             .map_or("unknown", |spec| spec.unit.as_str());
-        html.push_str(&format!("<tr><td>{}</td><td>{} v{} / {} ({})</td><td>{}/{}</td><td>{}</td><td>{}</td><td>{}</td></tr>", super::escape(&key), super::escape(&group.policy.id), group.policy.version, super::escape(&group.policy.reward), super::escape(unit), group.rewarded_attempts, group.selected_attempts, group.unique_tasks, group.estimate.map_or_else(|| "Unavailable".into(), |v| format!("{v:.6}")), group.task_cluster_standard_error.map_or_else(|| "Unavailable".into(), |v| format!("{v:.6}"))));
+        html.push_str(&format!("<tr><td>{}</td><td>{} v{} / {} ({})<br>{}</td><td>{}/{}</td><td>{}</td><td>{}</td><td>{}</td></tr>", super::escape(&key), super::escape(&group.policy.id), group.policy.version, super::escape(&group.policy.reward), super::escape(unit), missing, group.rewarded_attempts, group.selected_attempts, group.unique_tasks, group.estimate.map_or_else(|| "Unavailable".into(), |v| format!("{v:.6}")), group.task_cluster_standard_error.map_or_else(|| "Unavailable".into(), |v| format!("{v:.6}"))));
     }
     html.push_str("</table></section>");
     Ok(html)

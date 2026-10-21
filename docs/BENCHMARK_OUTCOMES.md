@@ -7,6 +7,14 @@ nullable resolution, pending evaluation, or evaluator error. Numeric rewards
 are never converted to a Boolean resolution. `metric_policy` declares the
 policy identity/version, primary named reward and attempt-mean or task-mean
 aggregation. Other named rewards remain available in generic metric charts.
+Completed evaluations must contain the primary requested reward; empty or
+secondary-only rewards cannot earn completed-outcome receipts. Pending/error
+states remain unevaluated. `missing_rewards` is explicit policy: `zero` adds
+zero to aggregation for missing selected rewards, while `exclude` computes an
+observed-only estimate. Binary defaults to `zero`, retaining its historical
+selected-attempt denominator. Zero imputation never changes evaluator status
+or invents a false grade, and coverage remains incomplete. Reports expose both
+rewarded and contributing attempt counts and label observed-only estimates.
 Each reward declares a unit and optional finite inclusive range. Names and
 units use bounded portable identifiers; undeclared, nonfinite and out-of-range
 rewards become evaluation errors. Native scoring requires evaluator evidence.
@@ -31,6 +39,13 @@ evaluation reference. Execution errors do not erase confirmed evaluation.
 Legacy fields remain readable; a record without the new object keeps its
 historical binary semantics. Explicit malformed objects fail closed.
 Grade-only recovery does not invent execution, timing or token observations.
+Both existing import and retained-slot closure paths expose
+`legacy_evaluation_provenance`: the original execution attempt, retained source
+scope and digest of its validated evidence manifest. Old sources have no
+evaluation ID or supersession ID, so those stay null. Inspection regenerates
+no IDs and does not create a new structured evaluation from today's policy.
+Module provenance may come from the original saved selection, never the live
+registry. Missing execution-plan fingerprints remain unknown.
 Completed native reward outcomes can be sealed and reused without inventing
 resolution; pending/error outcomes cannot earn a completed-outcome receipt.
 
@@ -38,7 +53,7 @@ Comparison preserves the structured outcome in every available report row.
 Metric groups bind agent/provider/model, workload, dataset, module descriptor,
 evaluation scope and versioned policy. Missing attempts remain in observed
 policy coverage. The JSON and HTML reports show completed reward coverage,
-observed repetitions by task, means and task-cluster standard error. An
+selected repetitions by task, policy-defined means and task-cluster standard error. An
 incomplete estimate is explicitly not an official population score. Uncertainty
 requires at least two independently treated tasks; attempt means with unequal
 observed cluster sizes do not receive a guessed standard error. This is a
@@ -47,7 +62,7 @@ Non-binary policies do not enter legacy binary-resolution score tables.
 
 ## Remaining work beyond this implementation
 
-- Repetition counts describe observed attempts, not a new scheduler repetition
+- Repetition counts describe selected attempts, not a new scheduler repetition
   plan or seed policy. Step 4 owns planning.
 - Step 4 must populate and validate the execution-plan fingerprint against saved
   plans during execution and resume. This change carries/groups it, but does
@@ -55,7 +70,9 @@ Non-binary policies do not enter legacy binary-resolution score tables.
 - Only attempt means and task means are implemented. Custom upstream metric
   scripts, weighted policies, pass@k, bootstrap intervals and official exports
   require separate validated policy implementations.
-- Evaluation lineage is recorded and checked against the execution attempt.
+- New evaluation lineage is recorded and checked against the execution attempt;
+  existing retained-grade paths explicitly preserve legacy provenance and
+  unknown evaluation identity rather than minting replacement IDs.
   There is no new regrading/async worker command or lineage-graph reconciliation
   API. Existing official-grade recovery retains its legacy path.
 - Current family adapters continue their binary evaluator protocols. Their

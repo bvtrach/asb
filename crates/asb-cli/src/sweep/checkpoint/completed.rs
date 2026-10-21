@@ -723,6 +723,29 @@ mod tests {
     }
 
     #[test]
+    fn completed_native_evaluation_without_primary_reward_cannot_be_sealed() {
+        use crate::workloads::outcome::*;
+        for rewards in [json!({}), json!({"secondary":0.5})] {
+            let fixture = Fixture::new(false);
+            let mut record = fixture.read(0);
+            record["summary"]["benchmark_outcome"] = json!({
+                "schema_version":1,"execution_success":true,
+                "evaluation":{"status":"completed","resolution":null,"rewards":rewards},
+                "cleanup_confirmed":true,"evidence":[fixture.evidence],
+                "policy":{"id":"accuracy","version":1,"reward":"accuracy","aggregation":"attempt-mean","missing_rewards":"exclude",
+                    "rewards":{"accuracy":{"unit":"ratio","range":[0,1]},"secondary":{"unit":"ratio","range":[0,1]}}},
+                "lineage":{"execution_attempt":record["summary"]["task"]["attempt_id"],"evaluation_id":"eval-fixture","supersedes":null}
+            });
+            let parsed: BenchmarkOutcome =
+                serde_json::from_value(record["summary"]["benchmark_outcome"].clone()).unwrap();
+            assert!(parsed.validate().unwrap_err().contains("primary reward"));
+            fixture.write(0, &record);
+            assert!(fixture.seal().is_err());
+            assert!(!fixture.inputs.completion_path(0).exists());
+        }
+    }
+
+    #[test]
     fn incomplete_wrong_or_duplicated_outcomes_never_produce_a_receipt() {
         for case in [
             "cleanup",

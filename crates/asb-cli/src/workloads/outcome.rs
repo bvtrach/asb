@@ -58,6 +58,16 @@ pub(crate) struct MetricPolicy {
     pub aggregation: Aggregation,
     #[serde(default = "binary_reward_specs")]
     pub rewards: BTreeMap<String, RewardSpec>,
+    #[serde(default)]
+    pub missing_rewards: MissingRewardPolicy,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum MissingRewardPolicy {
+    #[default]
+    Zero,
+    Exclude,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -118,6 +128,12 @@ impl MetricPolicy {
             );
         }
         if let EvaluationOutcome::Completed { rewards, .. } = evaluation {
+            if !rewards.contains_key(&self.reward) {
+                return Err(format!(
+                    "completed evaluation is missing primary reward `{}`",
+                    self.reward
+                ));
+            }
             for (name, value) in rewards {
                 let spec = self
                     .rewards
@@ -161,6 +177,7 @@ impl Default for MetricPolicy {
             reward: "resolution".into(),
             aggregation: Aggregation::AttemptMean,
             rewards: binary_reward_specs(),
+            missing_rewards: MissingRewardPolicy::Zero,
         }
     }
 }
@@ -183,6 +200,18 @@ pub(crate) struct BenchmarkOutcome {
 pub(crate) struct EvaluationLineage {
     pub execution_attempt: String,
     pub evaluation_id: String,
+    pub supersedes: Option<String>,
+}
+
+/// Older retained grades have an original task identity and sealed evidence,
+/// but no recorded evaluation identifier or supersession relationship.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LegacyEvaluationProvenance {
+    pub execution_attempt: Option<String>,
+    pub source_scope: Option<String>,
+    pub evidence_manifest_sha256: Option<String>,
+    pub evaluation_id: Option<String>,
     pub supersedes: Option<String>,
 }
 
@@ -233,6 +262,7 @@ pub(crate) struct MetricSummary {
     pub selected_attempts: usize,
     pub evaluated_attempts: usize,
     pub rewarded_attempts: usize,
+    pub contributing_attempts: usize,
     pub unique_tasks: usize,
     pub repetitions_by_task: BTreeMap<String, usize>,
     pub estimate: Option<f64>,
@@ -248,13 +278,20 @@ pub(crate) fn aggregate(
     let mut repetitions = BTreeMap::new();
     let mut values: BTreeMap<String, Vec<f64>> = BTreeMap::new();
     let mut evaluated = 0;
+    let mut rewarded = 0;
     for (task, outcome) in rows {
         *repetitions.entry(task.clone()).or_insert(0) += 1;
+        let mut present = false;
         if let EvaluationOutcome::Completed { rewards, .. } = outcome {
             evaluated += 1;
             if let Some(value) = rewards.get(&policy.reward).filter(|v| v.is_finite()) {
                 values.entry(task.clone()).or_default().push(*value);
+                rewarded += 1;
+                present = true;
             }
+        }
+        if !present && policy.missing_rewards == MissingRewardPolicy::Zero {
+            values.entry(task.clone()).or_default().push(0.0);
         }
     }
     let count: usize = values.values().map(Vec::len).sum();
@@ -292,12 +329,13 @@ pub(crate) fn aggregate(
         policy,
         selected_attempts: rows.len(),
         evaluated_attempts: evaluated,
-        rewarded_attempts: count,
+        rewarded_attempts: rewarded,
+        contributing_attempts: count,
         unique_tasks: repetitions.len(),
         repetitions_by_task: repetitions,
         estimate,
         task_cluster_standard_error: standard_error,
-        complete: count == rows.len() && !rows.is_empty() && estimate.is_some(),
+        complete: rewarded == rows.len() && !rows.is_empty() && estimate.is_some(),
     }
 }
 
@@ -318,6 +356,7 @@ mod tests {
             version: 2,
             reward: "accuracy".into(),
             aggregation: Aggregation::TaskMean,
+            missing_rewards: MissingRewardPolicy::Exclude,
             rewards: BTreeMap::from([(
                 "accuracy".into(),
                 RewardSpec {
@@ -344,6 +383,91 @@ mod tests {
         assert_eq!(summary.evaluated_attempts, 3);
         assert!(!summary.complete);
         assert_eq!(partial(0.8).resolution(), None);
+    }
+
+    #[test]
+    fn completed_requires_primary_reward_and_default_binary_uses_selected_denominator() {
+        let mut policy = MetricPolicy {
+            id: "accuracy".into(),
+            reward: "accuracy".into(),
+            ..Default::default()
+        };
+        policy.rewards.insert(
+            "accuracy".into(),
+            RewardSpec {
+                unit: "ratio".into(),
+                range: Some([0.0, 1.0]),
+            },
+        );
+        let empty = EvaluationOutcome::Completed {
+            resolution: None,
+            rewards: BTreeMap::new(),
+            reason: None,
+        };
+        assert!(
+            policy
+                .validate_evaluation(&empty)
+                .unwrap_err()
+                .contains("primary reward")
+        );
+        // Even another declared reward is not the policy's requested grade.
+        assert!(
+            policy
+                .validate_evaluation(&EvaluationOutcome::binary(true))
+                .is_err()
+        );
+        let rows = vec![
+            ("a".into(), EvaluationOutcome::binary(true)),
+            (
+                "a".into(),
+                EvaluationOutcome::Pending {
+                    reason: "queued".into(),
+                },
+            ),
+            ("b".into(), EvaluationOutcome::binary(false)),
+            (
+                "b".into(),
+                EvaluationOutcome::Error {
+                    reason: "verifier unavailable".into(),
+                },
+            ),
+            (
+                "c".into(),
+                EvaluationOutcome::Pending {
+                    reason: "missing attempt".into(),
+                },
+            ),
+        ];
+        let summary = aggregate(MetricPolicy::default(), &rows);
+        assert_eq!(summary.estimate, Some(0.2));
+        assert_eq!(summary.contributing_attempts, 5);
+        assert_eq!(summary.rewarded_attempts, 2);
+        assert_eq!(summary.evaluated_attempts, 2);
+        assert_eq!(summary.repetitions_by_task["a"], 2);
+        assert!(!summary.complete);
+        assert_eq!(
+            rows[1].1.resolution(),
+            None,
+            "aggregation cannot fabricate an evaluator grade"
+        );
+        let observed = MetricPolicy {
+            missing_rewards: MissingRewardPolicy::Exclude,
+            ..MetricPolicy::default()
+        };
+        let summary = aggregate(observed, &rows);
+        assert_eq!(summary.estimate, Some(0.5));
+        assert_eq!(summary.contributing_attempts, 2);
+        assert!(!summary.complete);
+        let complete_binary = aggregate(
+            MetricPolicy::default(),
+            &[
+                ("a".into(), EvaluationOutcome::binary(true)),
+                ("b".into(), EvaluationOutcome::binary(false)),
+            ],
+        );
+        assert_eq!(complete_binary.estimate, Some(0.5));
+        assert_eq!(complete_binary.task_cluster_standard_error, Some(0.5));
+        assert!(complete_binary.complete);
     }
 
     #[test]
