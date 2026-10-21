@@ -38,8 +38,9 @@ qualification are recorded next. Hosted CI, merge, post-merge verification and
 release remain pending. Publication/artifact
 repairs and runtime34/collector35 are not folded into this integration.
 
-Root independently source-approved `10f8f133` and the fixture-only `af0eb258`
-merge, whose only conflicts were Cargo version lines resolved to 0.2.33. The
+Root independently source-approved `10f8f133` and fixture head `5e4bd492`.
+The authorized fixture-only merge `af0eb258` had only Cargo version conflicts,
+resolved to 0.2.33. The
 fixture and diagnostic document remain byte-identical to approved `5e4bd492`.
 The actual 0.2.33 executable was built first. Focused offline qualification
 passed 150 tests with no failures or ignored cases: controller 29, remote 25,
