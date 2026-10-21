@@ -22,6 +22,8 @@ impl PreflightContext<'_> {
 pub(crate) fn preflight(name: &str, context: &PreflightContext<'_>) -> Result<(), crate::Error> {
     adapters::find(name).map_or(Ok(()), |adapter| adapter.preflight(context))
 }
+#[cfg(target_os = "linux")]
+pub(crate) mod census;
 mod controller;
 mod material;
 pub(crate) mod recovery;

@@ -91,6 +91,20 @@ partial read, at EOF and on error. Directory-header inspection never advances
 to descendants in the pure material fixture. Separate per-path archive hashes
 are not used as an environment identity: they cannot preserve cross-path inode
 relationships and multiply RPC cost over large change inventories.
+`cargo test --locked --lib workloads::census` qualifies descriptor-pinned Linux
+declared-root observations and global resource accounting. `cargo test --locked
+--test material_census` exercises the private actual-binary protocol with an empty
+environment, strict bounded input and redacted hash/count-only output. These
+components do not establish xattr, mount, complete-namespace or snapshot coverage.
+The opt-in `benchmark_live_census.py` needs the installed SWE SDK interpreter,
+`ASB_TEST_SWECATALOG_ROOT` and `ASB_TEST_BENCHMARK_ASB`. It stages the same ASB
+runtime in a newly owned original task, checks cross-root hardlinks versus copies,
+reads the original repository and verifies normal container removal. Its declared
+root subprocesses have a separate 90-second watchdog; the helper's own 60-second
+deadline is cooperative between filesystem operations. A subprocess timeout takes
+the enclosing owned workload's stopped-preservation path; killing a Docker CLI
+alone does not prove guest-exec termination. No provider, real client,
+evaluator or host mount is used; artifacts stay in the selected project.
 `cargo test --locked --test repeated_run` exercises the native repeat prototype
 through the real CLI with a fake client and loopback replay. It verifies exact
 counts, overlap/sequential batches, fresh material, private replay input copies,

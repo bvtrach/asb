@@ -90,6 +90,45 @@ a global SDK patch. Root-header inspection must use this owned stream lifecycle.
 Construction errors close the response too, and transport-child cleanup runs
 even if the SDK client close fails.
 
+### Declared-root guest census component
+
+The private Linux `__asb-material` helper now accepts a bounded JSON declaration
+over stdin and returns only an observation digest, entry/byte counts and explicit
+coverage flags. It starts no provider, agent or evaluator. This is not the
+`prepared-workload-material-v1` response and must not replace that protocol's
+complete environment declaration. Extended attributes/ACLs, complete namespace
+coverage and atomic snapshot coverage are explicitly false.
+
+Traversal pins roots and children with descriptor-relative `O_PATH|O_NOFOLLOW`.
+Only already verified regular-file descriptors are reopened for reading through
+the private proc descriptor reference; symlink targets use `readlinkat` on the
+pinned symlink. Devices, FIFOs and other unsupported nodes fail without reading
+their payloads. Files/directories are checked before and after observation;
+root path replacement is additionally checked. Records bind logical names,
+modes/ownership, exact file content and symlink targets, not physical root paths
+or raw timestamps. Temporary numeric inode/device pairs only establish observed
+equivalence groups; canonical logical representatives enter the hash. Conflicting
+content, metadata or timestamp/link-count versions for the same inode are errors.
+Link counts are not treated as proof of namespace-wide alias completeness.
+
+One invocation budgets 100,000 entries, 16 MiB retained/pending names, 2 GiB read
+content and depth 128 across all declared roots. The 60-second observation deadline
+is cooperative between operations, not a hard syscall/stdin timeout: an owning
+controller must enforce cancellation and a wall-time watchdog. The opt-in live
+fixture uses a 90-second owned `docker exec` subprocess deadline. Terminating that
+CLI is not proof that its guest exec stopped: a timeout must also take the
+workload's exact-owner stopped-preservation/cancellation path, with cleanup
+confirmation or an explicit failure. Cross-root
+equivalence does not by itself model shared mount topology or external writers.
+Do not stop all task processes or pause a container and assume its in-container
+collector can still execute; broader preparation quiescence remains adapter-owned.
+
+Remaining wiring must bind xattrs/ACLs, grouped root/delta content, mounts and
+namespace-visible aliases, service roles and logical networks, validate stable
+before/after observations, and exclude only positively owned staging material.
+The current helper is qualified as a reusable component, not complete official
+root/mount/multiservice support or an atomic machine snapshot.
+
 ## Implemented native repeated execution
 
 Explicit repetition, including `--repeat 1`, allocates a new project-local

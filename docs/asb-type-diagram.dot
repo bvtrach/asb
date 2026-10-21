@@ -182,6 +182,7 @@ digraph ASB_Rust_UML {
         "asb-cli_src_process_gate_Drop" [label="{process_gate_Drop||+drop() void\l}", shape=record];
         "asb-cli_src_process_gate_Owner" [label="{process_gate_Owner|-process: OwnedFd\l-cancellation: OwnedFd\l-watcher_done: OwnedFd\l|+bind() cassette_Result\<Self\>\l+cancelled() cassette_Result\<bool\>\l+wait(child: Child) cassette_Result\<std::process::ExitStatus\>\l+start_waker() cassette_Result\<()\>\l+stop_waker() void\l}", shape=record];
         "asb-cli_tests_Drop" [label="{asb-cli_tests_Drop||+drop() void\l+drop() void\l}", shape=record];
+        "asb-cli_tests_Fixture" [label="{asb-cli_tests_Fixture||+new() Self\l+request() Value\l}", shape=record];
         "asb-cli_tests_MockProvider" [label="{asb-cli_tests_MockProvider|-endpoint: String\l-requests: Arc\<Mutex\<Vec\<String\>\>\>\l-done: Arc\<AtomicBool\>\l-thread: Option\<std::thread::JoinHandle\<()\>\>\l|+start() Self\l}", shape=record];
         "asb-cli_tests_Process" [label="{asb-cli_tests_Process}", shape=record];
         "asb-cli_tests_Project" [label="{asb-cli_tests_Project}", shape=record];
@@ -380,7 +381,9 @@ digraph ASB_Rust_UML {
         style="rounded,dashed";
         "asb-cli_src_workloads_AttemptReference" [label="{workloads_AttemptReference|+schema_version: u32\l+preparation_id: String\l+workload: String\l+task_id: String\l+dataset: workloads_DatasetIdentity\l+artifacts: PathBuf\l|+matches_selection(selection: workloads_TaskSelection) bool\l+validate_location(project_root: &Path) cassette_Result\<(), Error\>\l}", shape=record];
         "asb-cli_src_workloads_BaselineEvidence" [label="{workloads_BaselineEvidence||+measured_passed() Option\<bool\>\l+supports(evaluation_kind: &str) bool\l+from_record(record: Value) Self\l}", shape=record];
+        "asb-cli_src_workloads_Census" [label="{workloads_Census|-records: Vec\<workloads_Record\>\l-entries_left: usize\l-names_left: usize\l-bytes_left: u64\l-deadline: Instant\l|+check() cassette_Result\<(), &'static str\>\l+charge_name(name: &str) cassette_Result\<(), &'static str\>\l+visit(root: &Root, relative: &str, file: File, depth: usize) cassette_Result\<(), &'static str\>\l}", shape=record];
         "asb-cli_src_workloads_Controller" [label="{workloads_Controller|-child: Child\l-input: Option\<ChildStdin\>\l-events: Option\<Receiver\<Result\<Value, String\>\>\>\l|+spawn(command: &mut Command) cassette_Result\<Self, String\>\l+send(request: &Value) cassette_Result\<(), String\>\l+receive(deadline: Instant) cassette_Result\<Value, String\>\l+receive_raw(deadline: Instant) cassette_Result\<Value, String\>\l+cancel(timeout: Duration) cassette_Result\<(), String\>\l+request(request: Value, expected: &str, timeout: Duration) cassette_Result\<Value, String\>\l+finish(timeout: Duration) cassette_Result\<(), String\>\l+complete_response(deadline: Instant) cassette_Result\<(), String\>\l+wait_for_exit(deadline: Instant, require_success: bool) cassette_Result\<(), String\>\l}", shape=record];
+        "asb-cli_src_workloads_Coverage" [label="{workloads_Coverage|-file_content: bool\l-posix_metadata: bool\l-visible_inode_equivalence: bool\l-extended_attributes: bool\l-complete_namespace: bool\l-atomic_snapshot: bool\l}", shape=record];
         "asb-cli_src_workloads_DatasetIdentity" [label="{workloads_DatasetIdentity|+source: String\l+revision: String\l+split: String\l}", shape=record];
         "asb-cli_src_workloads_Drop" [label="{workloads_Drop||+drop() void\l}", shape=record];
         "asb-cli_src_workloads_EvaluationFailure" [label="{workloads_EvaluationFailure|+kind: &'static str\l+reason: String\l}", shape=record];
@@ -394,13 +397,17 @@ digraph ASB_Rust_UML {
         "asb-cli_src_workloads_InstallationContext" [label="{workloads_InstallationContext|+project_root: &'a Path\l+tools_root: &'a Path\l+workloads_root: &'a Path\l}", shape=record];
         "asb-cli_src_workloads_LocalTarget" [label="{workloads_LocalTarget|+pid: u32\l+namespace_pid: u32\l+start_time_ticks: u64\l+cgroup: PathBuf\l}", shape=record];
         "asb-cli_src_workloads_Material" [label="{workloads_Material|-schema_version: u32\l-scope: String\l-sha256: String\l}", shape=record];
+        "asb-cli_src_workloads_Observation" [label="{workloads_Observation|-schema_version: u32\l-scope: &'static str\l-sha256: String\l-entries: usize\l-bytes: u64\l-coverage: workloads_Coverage\l}", shape=record];
         "asb-cli_src_workloads_PlanningCatalog" [label="{workloads_PlanningCatalog|+dataset: workloads_DatasetIdentity\l+task_ids: BTreeSet\<String\>\l+evaluation_kind: &'static str\l}", shape=record];
         "asb-cli_src_workloads_PreflightContext" [label="{workloads_PreflightContext|+project_root: &'a Path\l+project_config: ProjectConfig\l+agent: &'a str\l|+tool_root(id: &str) PathBuf\l}", shape=record];
         "asb-cli_src_workloads_PreparationContext" [label="{workloads_PreparationContext|+verify_initial_material: bool\l+on_allocation: Option\<&'a super::recovery::AllocationObserver\<'a\>\>\l+workload: &'a str\l+trial: Option\<&'a str\>\l+trial_set: Option\<&'a str\>\l+workload_directory: &'a Path\l+workspace: &'a Path\l+project_root: &'a Path\l+project_config: ProjectConfig\l|+tool_root(id: &str) PathBuf\l}", shape=record];
         "asb-cli_src_workloads_ReaderGuard" [label="{workloads_ReaderGuard||+drop() void\l}", shape=record];
+        "asb-cli_src_workloads_Record" [label="{workloads_Record|-name: String\l-kind: &'static str\l-mode: u32\l-uid: u32\l-gid: u32\l-bytes: Option\<u64\>\l-sha256: Option\<String\>\l-link: Option\<String\>\l-inode_group: Option\<String\>\l-inode: Option\<(u64, u64)\>\l-version: Option\<(i64, i64, i64, i64, u64)\>\l}", shape=record];
         "asb-cli_src_workloads_RecoveryContext" [label="{workloads_RecoveryContext|+project_root: &'a Path\l+project_config: ProjectConfig\l+reference: &'a AttemptReference\l}", shape=record];
+        "asb-cli_src_workloads_Request" [label="{workloads_Request|-schema_version: u32\l-roots: Vec\<workloads_Root\>\l}", shape=record];
         "asb-cli_src_workloads_ResolutionSummary" [label="{workloads_ResolutionSummary|+task_count: usize\l+resolved_count: usize\l+unresolved_count: usize\l+unscored_count: usize\l+success_rate: Option\<f64\>\l|+observe(kind: &str, resolved: bool) void\l}", shape=record];
         "asb-cli_src_workloads_RetainedOutcomeContext" [label="{workloads_RetainedOutcomeContext|+recovery: workloads_RecoveryContext\<'a\>\l+summary: Value\l}", shape=record];
+        "asb-cli_src_workloads_Root" [label="{workloads_Root|-name: String\l-path: String\l-exclusions: Vec\<String\>\l}", shape=record];
         "asb-cli_src_workloads_Session" [label="{workloads_Session|-process_lifetime: ProcessLifetime\l-controller: workloads_Controller\l-invocation: workloads_TaskInvocation\l-baseline: workloads_BaselineEvidence\l-initial_material: cassette_Result\<String, String\>\l-guest_workspace: String\l-agent_timeout: Duration\l-measurement_active: bool\l-preparation_active: bool\l-cleanup_attempted: bool\l-evaluation_completed: bool\l-artifacts: PathBuf\l|+cancel() cassette_Result\<(), String\>\l+run(context: &mut ExecutionContext\<'_\>, output: sweep_Write) cassette_Result\<workloads_ExecutionResult, String\>\l}", shape=record];
         "asb-cli_src_workloads_SourceExpectation" [label="{workloads_SourceExpectation|-files: &'static [FileExpectation]\l}", shape=record];
         "asb-cli_src_workloads_State" [label="{workloads_State|-hash: Sha256\l-entries: usize\l-bytes: u64\l-names: usize\l|+visit(root: &Path, path: &Path, depth: usize) cassette_Result\<(), String\>\l}", shape=record];
@@ -645,6 +652,8 @@ digraph ASB_Rust_UML {
     "asb-cli_src_workloads_AttemptReference" -> "asb-cli_src_Error" [arrowhead="vee", style="dashed"];
     "asb-cli_src_workloads_AttemptReference" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
     "asb-cli_src_workloads_AttemptReference" -> "asb-cli_src_workloads_DatasetIdentity" [arrowhead="vee"];
+    "asb-cli_src_workloads_Census" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
+    "asb-cli_src_workloads_Census" -> "asb-cli_src_workloads_Record" [arrowhead="vee"];
     "asb-cli_src_workloads_Controller" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
     "asb-cli_src_workloads_ExecutionContext" -> "asb-cli_src_BenchmarkConfig" [arrowhead="vee"];
     "asb-cli_src_workloads_ExecutionContext" -> "asb-cli_src_ProjectConfig" [arrowhead="vee"];
@@ -653,10 +662,12 @@ digraph ASB_Rust_UML {
     "asb-cli_src_workloads_FileSession" -> "asb-cli_src_cassette_Result" [arrowhead="vee"];
     "asb-cli_src_workloads_FileSession" -> "asb-cli_src_workloads_TaskInvocation" [arrowhead="vee"];
     "asb-cli_src_workloads_InspectionRuntime" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
+    "asb-cli_src_workloads_Observation" -> "asb-cli_src_workloads_Coverage" [arrowhead="vee"];
     "asb-cli_src_workloads_PlanningCatalog" -> "asb-cli_src_workloads_DatasetIdentity" [arrowhead="vee"];
     "asb-cli_src_workloads_PreflightContext" -> "asb-cli_src_ProjectConfig" [arrowhead="vee"];
     "asb-cli_src_workloads_PreparationContext" -> "asb-cli_src_ProjectConfig" [arrowhead="vee"];
     "asb-cli_src_workloads_RecoveryContext" -> "asb-cli_src_ProjectConfig" [arrowhead="vee"];
+    "asb-cli_src_workloads_Request" -> "asb-cli_src_workloads_Root" [arrowhead="vee"];
     "asb-cli_src_workloads_RetainedOutcomeContext" -> "asb-cli_src_workloads_RecoveryContext" [arrowhead="vee"];
     "asb-cli_src_workloads_Session" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
     "asb-cli_src_workloads_Session" -> "asb-cli_src_cassette_Result" [arrowhead="vee"];
@@ -704,4 +715,5 @@ digraph ASB_Rust_UML {
     "tests_asb-cli_src_sweep_checkpoint_Fixture" -> "asb-cli_src_sweep_PlannedBenchmark" [arrowhead="vee"];
     "tests_asb-cli_src_sweep_checkpoint_Fixture" -> "asb-cli_src_sweep_checkpoint_completed_Inputs" [arrowhead="vee"];
     "tests_asb-cli_src_workloads_Fixture" -> "asb-cli_src_workloads_AttemptReference" [arrowhead="vee"];
+    "tests_asb-cli_src_workloads_Fixture" -> "asb-cli_src_workloads_Request" [arrowhead="vee", style="dashed"];
 }

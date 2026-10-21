@@ -35,6 +35,12 @@ use std::process::ExitCode;
 /// Run the process CLI.
 #[must_use]
 pub fn entry(args: Vec<OsString>) -> ExitCode {
+    if args.first().is_some_and(|arg| arg == "__asb-material") {
+        #[cfg(target_os = "linux")]
+        return workloads::census::entry(&args[1..]);
+        #[cfg(not(target_os = "linux"))]
+        return ExitCode::from(2);
+    }
     if args.first().is_some_and(|arg| arg == "__asb-namespace") {
         return match agents::driver::namespace_id() {
             Ok(namespace) => {
@@ -138,6 +144,7 @@ mod adapter_layout_tests {
                     "mod.rs",
                     "session.rs",
                     "material.rs",  // Generic bounded initial-file material identity.
+                    "census.rs",    // Descriptor-owned guest material observations.
                     "selection.rs", // Generic pre-execution catalog/identity contract.
                     "recovery.rs",  // Generic attempt references and adapter dispatch.
                     "controller.rs",
