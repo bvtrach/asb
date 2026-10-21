@@ -510,7 +510,7 @@ fn scalar_replaces_destination_symlinks_without_changing_targets_and_native_rena
         scalar(&path, b"not a directory")
             .unwrap_err()
             .to_string()
-            .contains("not published")
+            .contains("publication outcome is unconfirmed")
     );
     assert_eq!(
         fs::read(path.join("foreign")).unwrap(),
@@ -572,4 +572,124 @@ fn a_partial_manifest_is_never_visible_while_its_private_writer_is_blocked() {
     worker.join().unwrap().unwrap();
     assert!(absent, "partial manifest escaped private staging");
     assert_eq!(crate::sweep::read_manifest(&path).unwrap().configs.len(), 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_sweep_parent_and_stem_refuse_before_any_publication_mutation() {
+    use std::os::unix::ffi::OsStringExt;
+    let fixture = Fixture::new();
+    let parent = fixture
+        .0
+        .join(std::ffi::OsString::from_vec(b"project-\xff".to_vec()));
+    fs::create_dir(&parent).unwrap();
+    let prior = parent.join("prior.toml");
+    fs::write(&prior, b"prior configuration unchanged").unwrap();
+    let config: BenchmarkConfig = toml::from_str("agent='pi'\nworkload='bug-fix'\nprovider='openrouter'\nmodel='fixture'\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n").unwrap();
+    for path in [
+        parent.join("not-created/selection.toml"),
+        fixture.0.join(std::ffi::OsString::from_vec(
+            b"selection-\xfe.toml".to_vec(),
+        )),
+    ] {
+        let error = publish_sweep(&path, vec![config.clone()], &mut Vec::new())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("UTF-8") && error.contains("no setup files were written"),
+            "{error}"
+        );
+        assert!(!path.exists());
+        assert!(!parent.join("not-created").exists());
+        assert_eq!(fs::read(&prior).unwrap(), b"prior configuration unchanged");
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 1);
+    }
+}
+
+#[test]
+fn ambiguous_commit_retains_evidence_and_never_claims_not_published_or_retries() {
+    struct Uncertain {
+        perform: bool,
+        interrupted: bool,
+        commits: Cell<usize>,
+        cleanups: Cell<usize>,
+    }
+    impl Backend for Uncertain {
+        fn boundary(&self, point: Boundary, _: &Path) -> io::Result<()> {
+            if point == Boundary::Cleanup {
+                self.cleanups.set(self.cleanups.get() + 1);
+            }
+            Ok(())
+        }
+        fn commit(&self, source: &Path, destination: &Path, no_replace: bool) -> io::Result<()> {
+            self.commits.set(self.commits.get() + 1);
+            if self.perform {
+                System.commit(source, destination, no_replace)?;
+            }
+            if self.interrupted {
+                Err(io::ErrorKind::Interrupted.into())
+            } else {
+                Err(io::Error::from_raw_os_error(5))
+            } // EIO, after a real commit.
+        }
+    }
+    for no_replace in [false, true] {
+        for (perform, interrupted) in [(true, false), (true, true), (false, false)] {
+            let fixture = Fixture::new();
+            let path = fixture.destination();
+            if !no_replace {
+                prior(&path);
+            }
+            let backend = Uncertain {
+                perform,
+                interrupted,
+                commits: Cell::new(0),
+                cleanups: Cell::new(0),
+            };
+            let prepared = fixture.prepared();
+            let result = if no_replace {
+                sweep_with(&path, &prepared, &backend)
+            } else {
+                scalar_with(&path, b"complete new configuration", &backend)
+            };
+            let error = result.unwrap_err().to_string();
+            assert!(
+                error.contains("publication outcome is unconfirmed")
+                    && error.contains(&path.display().to_string())
+                    && error.contains("retained staging")
+                    && !error.contains("not published"),
+                "{error}"
+            );
+            assert_eq!(backend.commits.get(), 1, "commit was retried");
+            assert_eq!(backend.cleanups.get(), 0, "uncertain evidence was cleaned");
+            assert!(
+                fs::read_dir(&fixture.0).unwrap().any(|entry| entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".asb-setup-")),
+                "quarantine was lost"
+            );
+            if perform {
+                if no_replace {
+                    let manifest = crate::sweep::read_manifest(&path).unwrap();
+                    for name in manifest.configs {
+                        toml::from_str::<BenchmarkConfig>(
+                            &crate::read_config(&fixture.0.join(name)).unwrap(),
+                        )
+                        .unwrap();
+                    }
+                    assert!(prepared.directory.is_dir());
+                } else {
+                    assert_eq!(fs::read(&path).unwrap(), b"complete new configuration");
+                }
+            } else if no_replace {
+                assert!(!path.exists());
+                assert!(prepared.directory.is_dir());
+            } else {
+                old(&path);
+            }
+        }
+    }
 }

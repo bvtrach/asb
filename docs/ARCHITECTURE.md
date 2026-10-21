@@ -1591,8 +1591,12 @@ and their generation directory have been synchronized. Failed generations are
 retained with their exact paths, never recursively cleaned. Small publication
 stages retain live identity owners and detach exposed entries into private quiet
 custody before commit/settlement; foreign arrivals remain recoverable evidence.
-Committed-but-unconfirmed durability and presentation errors explicitly report
-publication. These are not cross-file transactions or hostile same-UID sandbox
+Known committed-but-unconfirmed durability/presentation errors explicitly report
+publication; ambiguous actual commit errors instead retain evidence and require
+destination inspection without retry/rollback or a false nonpublication claim.
+Generated absolute runtime paths which cannot be represented in UTF-8 are
+refused before any setup mutation, never lossy-converted. These are not
+cross-file transactions or hostile same-UID sandbox
 guarantees. See [setup publication](SETUP_PUBLICATION_REPAIR.md) for platform,
 serializer and focused-qualification limits.
 

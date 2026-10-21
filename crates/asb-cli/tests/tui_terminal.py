@@ -248,6 +248,28 @@ def main():
         assert all(item.read_bytes() == data for item, data in prior_setup.items())
         project_file.write_text(original_project)
 
+        # The actual project path can contain raw OS bytes even though the
+        # generated configuration wire format cannot represent an absolute
+        # measurement path there. Refuse before any setup/staging creation.
+        raw_root = root / os.fsdecode(b"project-\xff")
+        for directory in [".asb", "workloads", "home", ".asb-tools/pi/node_modules/.bin"]:
+            (raw_root / directory).mkdir(parents=True, exist_ok=True)
+        (raw_root / ".asb/project.toml").write_text(original_project)
+        (raw_root / "workloads/bug-fix.txt").write_text("Offline task, never executed.\n")
+        raw_agent = raw_root / ".asb-tools/pi/node_modules/.bin/pi"
+        raw_agent.write_bytes(agent.read_bytes())
+        raw_agent.chmod(0o755)
+        raw_prior = raw_root / "prior.toml"
+        raw_prior.write_bytes(b"prior configuration unchanged")
+        raw_paths = set(raw_root.iterdir())
+        code, transcript = session(binary, raw_root, ["setup", "tui"],
+            b"pi \tlocal \t \tbug-fix \t\t\t")
+        assert code != 0 and b"UTF-8" in transcript, transcript[-3000:]
+        assert b"no setup files were written" in transcript, transcript[-3000:]
+        assert set(raw_root.iterdir()) == raw_paths
+        assert raw_prior.read_bytes() == b"prior configuration unchanged"
+        assert not (raw_root / "invoked-agent").exists()
+
         # Both cancellation encodings exercise restoration and bounded exit.
         for arguments in [["setup", "tui"], ["workload", "tui"]]:
             for key in [b"\x03", b"\x1b"]:

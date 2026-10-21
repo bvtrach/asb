@@ -141,9 +141,18 @@ impl Sweep {
             ));
         }
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+        let stem = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_str()
+            .ok_or_else(|| unrepresentable_path(path))?;
         let group = format!("{stem}-configs-{}", stamp());
         let directory = std::path::absolute(parent.join(&group)).map_err(crate::io_error)?;
+        // The wire format stores generated runtime paths as UTF-8 strings.
+        // Refuse before any mkdir/write instead of silently targeting U+FFFD.
+        directory
+            .to_str()
+            .ok_or_else(|| unrepresentable_path(&directory))?;
         let mut configurations = Vec::with_capacity(configs.len());
         let mut references = Vec::with_capacity(configs.len());
         let mut reference_bytes = 0usize;
@@ -156,8 +165,9 @@ impl Sweep {
             if let Some(measures) = config.measurements.as_mut() {
                 measures.directory = directory
                     .join(format!("measurements-{index:03}"))
-                    .to_string_lossy()
-                    .into_owned();
+                    .to_str()
+                    .ok_or_else(|| unrepresentable_path(&directory))?
+                    .to_owned();
             }
             let text = render(config)?;
             total = total.checked_add(text.len()).ok_or_else(|| {
@@ -185,6 +195,12 @@ impl Sweep {
             manifest,
         })
     }
+}
+
+fn unrepresentable_path(path: &Path) -> Error {
+    Error::Input(format!(
+        "setup output path {path:?} cannot be represented as UTF-8 in generated configuration; choose UTF-8 project/output directories; no setup files were written"
+    ))
 }
 
 fn manifest_size_error() -> Error {

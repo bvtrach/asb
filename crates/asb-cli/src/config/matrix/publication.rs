@@ -26,24 +26,43 @@ trait Backend {
     fn sync(&self, file: &File) -> io::Result<()> {
         file.sync_all()
     }
+    fn commit(&self, source: &Path, destination: &Path, no_replace: bool) -> io::Result<()> {
+        if no_replace {
+            fs::hard_link(source, destination)
+        } else {
+            fs::rename(source, destination)
+        }
+    }
 }
 struct System;
 impl Backend for System {}
 
 struct PublicationFailure {
-    published: bool,
+    state: CommitState,
     error: Error,
+}
+#[derive(Clone, Copy, PartialEq)]
+enum CommitState {
+    NotPublished,
+    Published,
+    Unconfirmed,
 }
 impl PublicationFailure {
     fn before(error: Error) -> Self {
         Self {
-            published: false,
+            state: CommitState::NotPublished,
             error,
         }
     }
     fn after(error: Error) -> Self {
         Self {
-            published: true,
+            state: CommitState::Published,
+            error,
+        }
+    }
+    fn unconfirmed(error: Error) -> Self {
+        Self {
+            state: CommitState::Unconfirmed,
             error,
         }
     }
@@ -87,7 +106,7 @@ fn sweep_with(
     })?;
     // Keep one descriptor at a time, not up to 65,536 open files. On ANY error
     // retain this exact generation, including partial files and unknown arrivals.
-    let mut published = false;
+    let mut state = CommitState::NotPublished;
     let result = (|| {
         let generation_owner = open(directory).map_err(crate::io_error)?;
         let mut identities = Vec::with_capacity(prepared.configurations.len());
@@ -161,11 +180,11 @@ fn sweep_with(
             return Err(stage.failed(io::Error::other(error.to_string()), backend));
         }
         stage.publish(path, true, backend).map_err(|failure| {
-            published = failure.published;
+            state = failure.state;
             failure.error
         })
     })();
-    result.map_err(|error| Error::Io(format!("{}{error}; generated configurations (possibly partial) remain in {}; no setup generation is recursively cleaned", if published { String::new() } else { format!("Sweep manifest was not published at {}: ", path.display()) }, directory.display())))
+    result.map_err(|error| Error::Io(format!("{}{error}; generated configurations (possibly partial) remain in {}; no setup generation is recursively cleaned", if state == CommitState::NotPublished { format!("Sweep manifest was not published at {}: ", path.display()) } else { String::new() }, directory.display())))
 }
 fn parent(path: &Path) -> &Path {
     path.parent()
@@ -447,15 +466,31 @@ impl Staged {
         backend: &impl Backend,
     ) -> Result<(), PublicationFailure> {
         let stage = self.detach(backend).map_err(PublicationFailure::before)?;
-        let committed = (|| {
-            backend.boundary(Boundary::Commit, destination)?;
-            if no_replace {
-                fs::hard_link(&stage.file, destination)
-            } else {
-                fs::rename(&stage.file, destination)
-            }
-        })();
+        // A boundary fault happens BEFORE attempting the syscall and is known
+        // not to have committed. Once attempted, an error need not prove that.
+        if let Err(error) = backend.boundary(Boundary::Commit, destination) {
+            let cleanup = stage.cleanup(backend);
+            return Err(PublicationFailure::before(Error::Io(format!(
+                "setup was not published at {}: {error}{}",
+                destination.display(),
+                cleanup
+                    .err()
+                    .map_or_else(String::new, |error| format!("; {error}"))
+            ))));
+        }
+        let committed = backend.commit(&stage.file, destination, no_replace);
         if let Err(error) = committed {
+            // NO-REPLACE AlreadyExists is an unchanged competing entry. For
+            // other filesystem errors retain evidence conservatively: remote
+            // filesystems can commit before returning EIO/Interrupted, and an
+            // automatic retry or cleanup would erase the recovery evidence.
+            if !(no_replace && error.kind() == io::ErrorKind::AlreadyExists) {
+                return Err(PublicationFailure::unconfirmed(Error::Io(format!(
+                    "Setup publication outcome is unconfirmed at {} after the commit operation returned {error}; inspect this destination and retained staging {} before retrying; no rollback, retry or cleanup was attempted",
+                    destination.display(),
+                    stage.directory.display()
+                ))));
+            }
             let cleanup = stage.cleanup(backend);
             return Err(PublicationFailure::before(Error::Io(format!(
                 "setup was not published at {}: {error}{}",

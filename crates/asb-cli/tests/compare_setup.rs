@@ -132,6 +132,52 @@ fn actual_setup_late_size_failure_writes_nothing_and_valid_files_round_trip() {
 
 #[cfg(unix)]
 #[test]
+fn actual_setup_in_non_utf8_project_refuses_unrepresentable_runtime_paths_before_writing() {
+    use std::os::unix::ffi::OsStringExt;
+    let outer = Project::new();
+    let project = Project(
+        outer
+            .0
+            .join(std::ffi::OsString::from_vec(b"project-\xff".to_vec())),
+    );
+    project.write(
+        ".asb/project.toml",
+        "tools_dir='tools'\nworkloads_dir='catalogs'\nworkspace_dir='workspace'\n",
+    );
+    project.write("prior.toml", "prior configuration unchanged");
+    let before = std::fs::read_dir(&project.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut args = setup_args();
+    args.extend([
+        "--model",
+        "second-model",
+        "--output",
+        "not-created/selection.toml",
+    ]);
+    let output = project.command(&args);
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("UTF-8") && error.contains("no setup files were written"),
+        "{error}"
+    );
+    assert_eq!(
+        std::fs::read(project.0.join("prior.toml")).unwrap(),
+        b"prior configuration unchanged"
+    );
+    assert_eq!(
+        std::fs::read_dir(&project.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<std::collections::BTreeSet<_>>(),
+        before
+    );
+}
+
+#[cfg(unix)]
+#[test]
 #[allow(unsafe_code)]
 fn compare_rejects_fifo_manifest_benchmark_and_plan_without_waiting_for_a_writer() {
     use std::os::unix::ffi::OsStrExt;
