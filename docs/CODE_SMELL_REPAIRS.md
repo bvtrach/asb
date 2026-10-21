@@ -241,10 +241,19 @@ the reviewed runner publication repairs and current development policy;
 fresh exact-head functional/package CI, independent review, merge and
 post-merge release verification remain required.
 
-Coverage-driven inspection also found a wizard transition defect: saving
-trials consumes `selected_workload`, so the advertised next Enter reopens
-trial selection instead of finishing. Add bounded event-loop/PTY regressions,
-not only helper tests, and repair the explicit save/finish state in this class.
+Workload-wizard candidate, staged patch **0.2.17**: explicit browsing, editing
+and saved states repair the advertised Enter-to-finish action. Saved subsets
+are restored when editing, replaced rather than appended, retained across
+deselection, and published only for selected workloads. Every selected subset
+must be nonempty and present in the reloaded catalog; all configurations are
+validated and serialized before the first write. This is semantic validation,
+not a claim of transactional multi-file I/O. Independent source review approved
+`6758b426`; a separate execution passed all 39 TUI unit tests and both terminal
+integration tests, including ten actual PTY workflow scenarios and terminal
+restoration. Worker full offline qualification passed 956 tests with 20 explicit
+optional skips. Version/package, exact-head hosted CI, merge and post-merge
+release verification remain pending. Detached installation-worker custody and
+other TUI structural issues remain separate repair classes.
 
 ## 7. Limits, diagnostics and CLI consistency
 
