@@ -376,6 +376,15 @@ later metadata rejection, removed original sources and both alias levels.
 This guards the gap between staging and initial sealing, but is not an atomic
 filesystem snapshot or permission to resume: full slot admission remains pending.
 
+Strict outcome validation now takes a borrowed configuration/selection context;
+legacy entries adapt into that same context without cloning or changing their
+wire records. The protocol, capture, cohort, identity, grade, lineage, cleanup
+and evidence pipeline remains single and unchanged. A direct-context/legacy
+matrix checks accepted true/false and native nullable grades, rejection of
+incomplete or foreign evidence and identical diagnostics. Campaign-specific
+execution/cohort/start/path authority must be composed with this validator,
+not substituted for it or synthesized through a fake legacy entry.
+
 The first current-main integrated suite retained one library failure: Linux
 returned `ETXTBSY` when the native-gate argument/environment fixture executed its
 new mock script; all other library and integration targets completed normally.
