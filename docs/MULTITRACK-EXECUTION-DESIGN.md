@@ -348,6 +348,26 @@ subnets and driver options remain literal and checked. Only positively proven
 automatic allocation may become tagged logical service/network identities.
 Unlisted members and unsupported dependencies are errors, not omitted state.
 
+`asb_material_networks.observe` now provides the private observation component:
+it freshly resolves the complete service set, looks up only named declared owned
+local bridge networks, rechecks ownership after reload, and requires exact
+bidirectional membership. Container/network endpoint IDs, network IDs, owned
+names, IPv4/IPv6 addresses and prefix lengths, and MAC addresses must agree.
+It retains bounded deep-copied raw inspect data, creation intent, attachment
+intent and service network modes. It neither modifies Docker state nor claims
+canonical environment equivalence. In particular, raw consistency does not
+validate requested static addresses/IPAM against actual allocation. Runtime
+configuration and generated-file integration still reject routed environments
+until that canonicalization and qualification are complete.
+
+The opt-in `benchmark_live_material_networks.py` uses an explicitly cached image
+and two owned idle containers on an owned internal bridge. It checks stable raw
+observations, rejection after disconnecting a declared endpoint, and a changed
+private witness after reconnecting it. Successful cleanup confirms absence by
+exact owned names; failure stops and preserves only its own resources. It starts
+no agent, provider or evaluator. This qualifies membership observation only,
+not cross-attempt routed equivalence or deterministic network behaviour.
+
 ### Owned network-none environment composer
 
 Verified capture now routes multiple declared services to an environment
