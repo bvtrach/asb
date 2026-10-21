@@ -294,3 +294,12 @@ open. Independent final proof review, actual-main delivery ancestry, hosted/
 packaged exact-head CI, merge, both post-merge jobs and a signed release remain
 pending. No push or PR accompanies this evidence-only checkpoint; the removed
 coverage gate stays removed.
+
+Root independently approved final proof checkpoint `3b2189e8` after reading its
+docs-only delta, all 24 outer summaries, all four full-suite hash records and
+the preserved actual executable, separate doctests, strict lint/format and the
+complete make/doc/diagram/completion gates. Root also independently reran the
+generated Bash/Zsh syntax checks. Production, tests, Cargo, workflows and
+scripts remain unchanged from qualified `e71a3b62`. Actual-main ancestry,
+exact-head hosted/package CI, both post-merge jobs and signed stage43 release
+remain required; this is not a native non-Linux or live SDK qualification.
