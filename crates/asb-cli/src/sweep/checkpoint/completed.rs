@@ -311,6 +311,17 @@ fn validate_outcome(record: &Outcome, entry: &PlannedBenchmark) -> Result<TaskId
     }
     let task: TaskIdentity = serde_json::from_value(summary["task"].clone())
         .map_err(|_| invalid("outcome task identity is missing or malformed"))?;
+    if let Some(outcome) = &structured {
+        let selected = entry.selection.module.as_ref();
+        if selected.map_or_else(
+            || outcome.policy != crate::workloads::outcome::MetricPolicy::default(),
+            |module| !outcome.policy.matches_module(module),
+        ) {
+            return Err(invalid(
+                "outcome metric policy differs from selected protocol",
+            ));
+        }
+    }
     if !summary["module"].is_null() {
         let module: crate::workloads::contracts::ModuleDescriptor =
             serde_json::from_value(summary["module"].clone())
@@ -719,6 +730,26 @@ mod tests {
             std::fs::write(&output, "different recording").unwrap();
             assert!(fixture.verify().is_err());
         }
+    }
+
+    #[test]
+    fn custom_policy_without_recorded_module_cannot_bypass_selected_protocol() {
+        let fixture = Fixture::new(false);
+        let mut record = fixture.read(0);
+        record["summary"]["module"] = Value::Null;
+        record["summary"]["workload_success"] = Value::Null;
+        record["summary"]["benchmark_outcome"] = json!({
+            "schema_version":1,"execution_success":true,
+            "evaluation":{"status":"completed","resolution":null,"rewards":{"accuracy":0.5}},
+            "cleanup_confirmed":true,"evidence":[fixture.evidence],
+            "policy":{"id":"accuracy","version":1,"reward":"accuracy","aggregation":"attempt-mean",
+                "rewards":{"accuracy":{"unit":"ratio","range":[0,1]}}},
+            "lineage":{"execution_attempt":record["summary"]["task"]["attempt_id"],"evaluation_id":"eval-fixture","supersedes":null}
+        });
+        fixture.write(0, &record);
+        let error = fixture.seal().unwrap_err();
+        assert!(error.to_string().contains("metric policy"), "{error}");
+        assert!(!fixture.inputs.completion_path(0).exists());
     }
 
     #[test]

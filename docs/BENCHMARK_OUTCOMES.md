@@ -31,6 +31,13 @@ keys. Different known identities and unknown legacy identities are separate
 comparison groups. Step 4 must supply this fingerprint from its immutable plan,
 covering backend, effective budgets, resource/network policy and overrides;
 reports never derive it from current configuration or runtime defaults.
+Missing selected slots remain in compatible observed cohorts' coverage,
+preferring the same configuration's observed replicas. When a missing slot has
+no unique cohort, coverage is conservative in each compatible cohort; this is
+not evidence that execution happened under any of them. Actual legacy records
+retain their unknown fingerprint and are never relabeled. Structured rewards
+require an attributed execution task, and completion receipts bind the selected
+metric policy even if a result omits its module field.
 The runner writes `benchmark_outcome` into the run log, JSONL summary,
 measurement record and private completion summary. It carries independent
 execution success, evaluation, cleanup confirmation, evaluator evidence paths,

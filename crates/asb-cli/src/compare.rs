@@ -488,6 +488,11 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
             let module = module.or_else(|| selection.as_ref().and_then(|s| s.module.clone()));
             let benchmark_outcome = crate::workloads::outcome::BenchmarkOutcome::read(&run_value)
                 .map_err(Error::Input)?;
+            if benchmark_outcome.is_some() && task.is_none() {
+                return Err(Error::Input(
+                    "structured benchmark outcome has no execution task identity".into(),
+                ));
+            }
             if module.is_none()
                 && benchmark_outcome
                     .as_ref()
@@ -755,33 +760,35 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
         }) {
             continue;
         }
-        let key = serde_json::to_string(&(
-            &benchmark.agent,
-            &benchmark.provider,
-            &benchmark.model,
-            &benchmark.workload,
-            coverage::group_kind(benchmark),
-            &benchmark.module,
-            &benchmark.execution_plan_fingerprint,
-            benchmark
-                .task
-                .as_ref()
-                .and_then(|task| task.dataset.as_ref())
-                .or_else(|| {
-                    benchmark
-                        .selection
-                        .as_ref()
-                        .and_then(|selection| selection.dataset.as_ref())
-                }),
-        ))
-        .map_err(|error| Error::Run(error.to_string()))?;
-        resolution_groups.entry(key).or_default().observe(
-            coverage::group_kind(benchmark),
-            benchmark
-                .metrics
-                .get("success_rate")
-                .is_some_and(|value| *value == 1.0),
-        );
+        for fingerprint in coverage::fingerprints(benchmark, &benchmark_data)? {
+            let key = serde_json::to_string(&(
+                &benchmark.agent,
+                &benchmark.provider,
+                &benchmark.model,
+                &benchmark.workload,
+                coverage::group_kind(benchmark),
+                &benchmark.module,
+                &fingerprint,
+                benchmark
+                    .task
+                    .as_ref()
+                    .and_then(|task| task.dataset.as_ref())
+                    .or_else(|| {
+                        benchmark
+                            .selection
+                            .as_ref()
+                            .and_then(|selection| selection.dataset.as_ref())
+                    }),
+            ))
+            .map_err(|error| Error::Run(error.to_string()))?;
+            resolution_groups.entry(key).or_default().observe(
+                coverage::group_kind(benchmark),
+                benchmark
+                    .metrics
+                    .get("success_rate")
+                    .is_some_and(|value| *value == 1.0),
+            );
+        }
     }
     let evaluation_coverage = coverage::evaluation_summary(&benchmark_data);
     let population_coverage = coverage::populations(&benchmark_data)?;
