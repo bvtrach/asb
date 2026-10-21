@@ -87,6 +87,10 @@ pub(in crate::providers) fn catalog_offer(
 }
 
 #[cfg(test)]
+#[path = "../../../../tests/unit/zen_endpoint_metadata.rs"]
+mod transport_tests;
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn opencode_catalog_reads_explicit_model_tool_support() {
