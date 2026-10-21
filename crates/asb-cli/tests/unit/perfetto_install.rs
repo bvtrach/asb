@@ -1,6 +1,7 @@
 //! Negative source-install tests retain real SHA-256 verification. No fixture
 //! impersonates a valid pinned binary, and no downloaded code is executed.
 use super::*;
+use std::process::Command;
 #[cfg(unix)]
 #[test]
 fn isolated_perfetto_install_rejects_unverified_source_and_missing_dependencies() {
