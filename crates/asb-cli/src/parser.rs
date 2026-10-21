@@ -100,6 +100,8 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
             runner::run_with_tape(
                 &options.path,
                 runner::RunOptions {
+                    track: options.track,
+                    replay_seed: options.seed,
                     repeat: options.repeat.or(options.record.then_some(1)),
                     json: options.json,
                     show_output: options.show_output,
@@ -322,6 +324,12 @@ struct RunArgs {
     /// Sequential batches of fresh isolated executions at configured concurrency.
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..=65533))]
     repeat: Option<u64>,
+    /// Replay one track ID, or min|max|median:tokens|duration|requests.
+    #[arg(long, requires = "replay")]
+    track: Option<crate::cassette::Selector>,
+    /// Reproducible whole-track sampling with replacement (ZIP bundles only).
+    #[arg(long, requires = "replay")]
+    seed: Option<u64>,
     #[arg(long)]
     record: bool,
     #[arg(long)]

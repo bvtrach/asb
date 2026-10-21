@@ -1,4 +1,5 @@
 //! Fresh sequential batches with a durable intended-slot plan and outcome links.
+mod replay;
 use super::{RunOptions, batch, replica};
 use crate::{Error, benchmark::BenchmarkConfig, cassette::Compatibility, io_error};
 use serde::Serialize;
@@ -17,6 +18,12 @@ const MAX_OUTCOME_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ExecutionIdentity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replay_track: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replay_seed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replay_algorithm: Option<String>,
     admission: crate::planning::BatchAdmissionPolicy,
     campaign: String,
     batch: u64,
@@ -27,6 +34,8 @@ pub(crate) struct ExecutionIdentity {
 
 #[derive(Clone, Serialize)]
 pub(crate) struct BatchIdentity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replay: Option<replay::BatchChoices>,
     campaign: String,
     number: u64,
     repeat: u64,
@@ -42,6 +51,15 @@ impl BatchIdentity {
     }
     pub(crate) fn execution(&self, replica: replica::Identity) -> ExecutionIdentity {
         ExecutionIdentity {
+            replay_track: self
+                .replay
+                .as_ref()
+                .map(|choices| choices.tracks[replica.index - 1]),
+            replay_seed: self.replay.as_ref().and_then(|choices| choices.seed),
+            replay_algorithm: self
+                .replay
+                .as_ref()
+                .and_then(|choices| choices.algorithm.clone()),
             admission: self.admission(),
             campaign: self.campaign.clone(),
             batch: self.number,
@@ -54,6 +72,8 @@ impl BatchIdentity {
 
 #[derive(Serialize)]
 struct Slot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replay_track: Option<u64>,
     id: u64,
     batch: u64,
     replica: usize,
@@ -65,6 +85,8 @@ struct Slot {
 
 #[derive(Serialize)]
 struct ReplayInput {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    track: Option<u64>,
     source: PathBuf,
     private: PathBuf,
     bytes: u64,
@@ -73,6 +95,8 @@ struct ReplayInput {
 
 #[derive(Serialize)]
 struct Plan<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replay_selection: Option<crate::cassette::SelectionPlan>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recording: Option<PathBuf>,
     admission: crate::planning::BatchAdmissionPolicy,
@@ -138,14 +162,20 @@ pub(super) fn run(
             .as_ref()
             .is_some_and(|value| value.enabled);
     let mut slots = planned_slots(&config, repeat, measured)?;
-    let replay_inputs = replay_inputs(config_path, &config, options, &mut slots)?;
+    let mut replay = replay::Prepared::open(config_path, &config, options, repeat)?;
+    let replay_inputs = if let Some(replay) = &replay {
+        replay.inputs(&mut slots)?
+    } else {
+        replay_inputs(config_path, &config, options, &mut slots)?
+    };
     let parent = project_root.join("results/asb-executions");
     let root = parent.join(&campaign);
     let recording_destination = (options.mode == Some(crate::tape::Mode::Record))
         .then(|| {
-            let destination = options.cassette.map(PathBuf::from).unwrap_or_else(|| {
-                super::default_cassette(config_path, &config).with_extension("asb.zip")
-            });
+            let destination = options
+                .cassette
+                .map(PathBuf::from)
+                .unwrap_or_else(|| super::default_bundle_cassette(config_path, &config));
             super::recording::preflight(&destination)
         })
         .transpose()?;
@@ -159,6 +189,7 @@ pub(super) fn run(
         .transpose()
         .map_err(io_error)?;
     let plan = Plan {
+        replay_selection: replay.as_ref().and_then(|replay| replay.selection.clone()),
         recording: recording_destination.clone(),
         admission,
         schema_version: 1,
@@ -199,7 +230,12 @@ pub(super) fn run(
             config.concurrency,
         ))
     });
-    let private_cassette = stage_replay(&root, &plan, config.concurrency)?;
+    let private_cassette = if let Some(replay) = &mut replay {
+        replay.stage(&root, &plan.replay_inputs)?;
+        None
+    } else {
+        stage_replay(&root, &plan, config.concurrency)?
+    };
     if let Some(measurement_root) = &measurement_root
         && measurement_root != &root
     {
@@ -224,7 +260,33 @@ pub(super) fn run(
         )
         .map_err(io_error)?;
     }
-    let mut reference: Option<Compatibility> = None;
+    if let Some(selection) = &plan.replay_selection {
+        if options.json {
+            serde_json::to_writer(
+                &mut *output,
+                &json!({"type":"replay-selection","selection":selection}),
+            )
+            .map_err(|error| Error::Io(error.to_string()))?;
+            writeln!(output).map_err(io_error)?;
+        } else {
+            writeln!(
+                output,
+                "Replay seed: {} ({})\nSelected track IDs: {}",
+                selection.seed,
+                selection.algorithm,
+                selection
+                    .tracks
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+            .map_err(io_error)?;
+        }
+    }
+    let mut reference: Option<Compatibility> = replay
+        .as_ref()
+        .and_then(|replay| replay.compatibility.clone());
     let mut failures = 0u64;
     let mut completed_batches = 0u64;
     let mut stopped = false;
@@ -232,6 +294,9 @@ pub(super) fn run(
     let mut producers_quiescent = true;
     for number in 1..=repeat {
         let identity = BatchIdentity {
+            replay: replay
+                .as_ref()
+                .map(|replay| replay.batch_choices(&plan, number, config.concurrency)),
             campaign: campaign.clone(),
             number,
             repeat,
@@ -288,6 +353,13 @@ pub(super) fn run(
             .transpose()?;
         let batch_cassette = if recording.is_some() {
             Some(path_text(&super::recording::base(&root, number))?)
+        } else if replay.is_some() {
+            Some(replay::stage_batch(
+                &root,
+                &plan,
+                number,
+                config.concurrency,
+            )?)
         } else {
             private_cassette.clone()
         };
@@ -463,6 +535,7 @@ fn planned_slots(
             )?;
             let measures = PathBuf::from(format!("batch-{batch}/measurements"));
             slots.push(Slot {
+                replay_track: None,
                 id: (batch - 1) * config.concurrency as u64 + replica as u64,
                 batch,
                 replica,
@@ -522,6 +595,7 @@ fn replay_inputs(
                 .ok_or_else(|| Error::Input("replay inputs exceed 2 GiB aggregate bound".into()))?;
             let id = inputs.len();
             inputs.push(ReplayInput {
+                track: None,
                 source: source.clone(),
                 private: PathBuf::from(format!("inputs/recording-{}.jsonl", id + 1)),
                 bytes,
@@ -803,6 +877,7 @@ mod tests {
             root: root.clone(),
             directory: root.clone(),
             identity: BatchIdentity {
+                replay: None,
                 campaign: "fixture".into(),
                 number: 1,
                 repeat: 2,
@@ -869,6 +944,7 @@ mod tests {
                 root: root.clone(),
                 directory: root.clone(),
                 identity: BatchIdentity {
+                    replay: None,
                     campaign: "fixture".into(),
                     number: 1,
                     repeat: 2,

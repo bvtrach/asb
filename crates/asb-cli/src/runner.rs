@@ -105,6 +105,8 @@ struct RunResult<'a> {
 /// Execution choices shared by single runs, replicas, and sweeps.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RunOptions<'a> {
+    pub track: Option<crate::cassette::Selector>,
+    pub replay_seed: Option<u64>,
     pub recording: Option<&'a recording::Recorder>,
     pub repeat: Option<u64>,
     pub batch: Option<&'a repeated::BatchIdentity>,
@@ -143,7 +145,23 @@ pub(crate) fn run_with_diagnostics(
     let text = read_config(config_path)?;
     let config: BenchmarkConfig = toml::from_str(&text)
         .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
-    if let Some(repeat) = options.repeat {
+    if (options.track.is_some() || options.replay_seed.is_some())
+        && options.mode != Some(tape::Mode::Replay)
+    {
+        return Err(Error::Input("--track and --seed require --replay".into()));
+    }
+    let bundled_replay = if options.mode == Some(tape::Mode::Replay) {
+        let source = replay_cassette(config_path, &config, options.cassette)?;
+        crate::cassette::Source::is_bundle(&source)
+            .map_err(|error| Error::Input(error.to_string()))?
+    } else {
+        false
+    };
+    if let Some(repeat) = options.repeat.or((bundled_replay
+        || options.track.is_some()
+        || options.replay_seed.is_some())
+    .then_some(1))
+    {
         return repeated::run(config_path, config, repeat, options, output, warnings);
     }
     run_loaded(config_path, config, options, output, warnings)
@@ -1555,6 +1573,40 @@ fn default_cassette(config_path: &Path, config: &BenchmarkConfig) -> std::path::
             component(&config.workload),
             component(&config.model)
         ))
+}
+
+/// Explicit paths win. Preserve historical JSONL/base-or-replica routing when
+/// present; otherwise discover the new default ZIP recording. Presence includes
+/// invalid files/links, which must fail normally rather than silently fall back.
+fn replay_cassette(
+    config_path: &Path,
+    config: &BenchmarkConfig,
+    requested: Option<&str>,
+) -> Result<PathBuf, Error> {
+    if let Some(path) = requested {
+        return Ok(PathBuf::from(path));
+    }
+    let legacy = default_cassette(config_path, config);
+    for path in std::iter::once(legacy.clone()).chain(
+        (1..=crate::benchmark::MAX_CONCURRENCY)
+            .map(|replica| crate::benchmark_paths::replica_path(&legacy, replica)),
+    ) {
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => return Ok(legacy),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(io_error(error)),
+        }
+    }
+    let bundle = default_bundle_cassette(config_path, config);
+    match std::fs::symlink_metadata(&bundle) {
+        Ok(_) => Ok(bundle),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(legacy),
+        Err(error) => Err(io_error(error)),
+    }
+}
+
+fn default_bundle_cassette(config_path: &Path, config: &BenchmarkConfig) -> PathBuf {
+    default_cassette(config_path, config).with_extension("asb.zip")
 }
 
 fn write_log(

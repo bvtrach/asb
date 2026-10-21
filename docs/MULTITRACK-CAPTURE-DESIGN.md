@@ -1,9 +1,10 @@
 # Recording finalization and run integration
 
 Status: recorder lifecycle, bounded source discovery, immutable track proofs and
-run-owned recording coordination are implemented on the feature branch. Bundled
-replay selection/extraction, sweep/report integration and the viewer remain
-unfinished. This is not a claim that the complete workflow is available on main.
+run-owned recording coordination and bundled replay selection/extraction are
+implemented on the feature branch. Full integration qualification, sweep/report
+integration and the viewer remain unfinished. This is not a claim that the
+complete workflow is available on main.
 See MULTITRACK.md for the full delivery scope.
 
 ## Run recording checkpoint
@@ -55,7 +56,28 @@ files; absent bases discover the supported sparse concurrency suffixes through
 length/checksum but manufacture no manifest, completeness or statistics. Open
 regular files retain source identity and selected reads verify the observed
 digest; FIFO, dangling, changed and oversized inputs fail explicitly. This codec
-is a building block, not completed CLI source/selection integration.
+also provides the bounded format probe for CLI source dispatch.
+
+## Run replay checkpoint
+
+The run-owned replay coordinator freezes whole-track choices in batch/replica
+order and writes the seed, versioned algorithm, manifest digest and selected IDs
+into the campaign plan before launching any client. It validates aggregate
+selected size before decoding and stages one unique bounded payload at a time.
+Each batch gets aliases for its own selected IDs; proxies retain independent
+progress/cursors. Later batches never reopen the user source. Current prepared
+material is still derived by workload adapters: the bundle identity is an
+expectation at the first material gate, not a substitute for current observation.
+
+CLI `--track` and `--seed` require replay. ZIP replay defaults to one fresh batch,
+regardless of extension. Explicit numeric legacy selection is supported without
+manufactured completeness/statistics; legacy seeds/statistical selectors fail
+clearly. Existing no-selector legacy routing remains unchanged. Shared default
+resolution prefers an existing legacy base/layout, then the new default ZIP;
+explicit paths always win, and invalid present sources cannot trigger fallback.
+Per-attempt identities project replay track, seed and algorithm from the saved
+plan, never from worker completion order. Strict mismatch/full-consumption checks
+remain the existing tape adapter's responsibility, including incomplete tracks.
 
 The separate `capture-session.mjs` component now implements create-new output,
 exact-byte and handler accounting, sticky uncertain finalization/close state, and

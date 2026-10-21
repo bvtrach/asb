@@ -1319,7 +1319,16 @@ batch evidence verification reuses one archive index. Sweep and cassette output
 owners share a private persistent-inode lock implementation, with domain-owned
 paths and diagnostics. Finalization requires the caller to stop/join recording
 producers; freezing the journal does not drain a proxy itself. This backend is a
-delivery foundation, not yet a change to run/sweep's JSONL CLI behavior. See
+delivery foundation integrated by the run-owned recording/replay coordinators.
+Run recordings publish ZIP bundles from fresh executions; replay freezes a
+selection plan before any client admission, selectively stages private JSONL,
+and compares the source identity with adapter-observed initial material at the
+shared preparation gate. Per-batch aliases project the selected track IDs while
+each proxy owns independent progress. Provider adapters and proxy protocols do
+not parse archives or choose tracks. Legacy no-selector JSONL replay retains
+its previous workspace behavior; explicit repeats/track selections are fresh.
+Sweep bundle/resume/report integration and the offline viewer remain separate
+delivery steps. See
 [multi-track delivery contracts](MULTITRACK.md) for the integration sequence.
 
 Recording and replay are implemented as a separate `tape` module behind the
@@ -1336,9 +1345,9 @@ from agent to provider to configure additional registered adapters; an empty
 list is rejected when record/replay is enabled. Provider adapters continue to
 own endpoint routing, record-mode upstream resolution, and optional local-
 bridge lifecycle. The runner and sweep executor retain no provider-specific
-proxy knowledge and tear every hop down after the child exits. `--record`
-writes a JSONL cassette with a bounded `delay_ms` response latency for every
-interaction; `--replay` requires that cassette and never starts cli2key or a
+proxy knowledge and tear every hop down after the child exits. The recorder
+writes internal JSONL captures with a bounded `delay_ms` response latency for
+every interaction; replay consumes selected JSONL and never starts cli2key or a
 live provider. Passing `--respect-record-timings` with `--replay` makes llmtape
 match each request first, then wait for its recorded delay before returning the
 response. The same option is available on `asb sweep`. This keeps the

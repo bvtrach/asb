@@ -35,6 +35,17 @@ pub struct Source {
 }
 
 impl Source {
+    /// Bounded format probe for CLI dispatch only, not archive validation. Missing
+    /// bases return false so historical concurrent JSONL layouts keep their route.
+    pub fn is_bundle(path: &Path) -> Result<bool, Error> {
+        let Some(mut file) = open_regular(path)? else {
+            return Ok(false);
+        };
+        let mut prefix = [0; 2];
+        let count = file.read(&mut prefix).map_err(io_error)?;
+        Ok(count == 2 && prefix == *b"PK")
+    }
+
     /// Detect ZIP by bytes, not suffix. If the base is absent, inspect at most
     /// the supported 64 legacy concurrency paths, preserving sparse track IDs.
     /// A present base takes precedence, as in historical single-file replay.

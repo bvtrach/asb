@@ -62,9 +62,10 @@ url = os.environ['ASB_PROVIDER_BASE_URL'].rstrip('/')
 if url.endswith('/v1'): url = url[:-3]
 with urllib.request.urlopen(urllib.request.Request(url+'/v1/chat/completions',data=json.dumps(body).encode(),headers={'Content-Type':'application/json'}),timeout=5) as response:
     assert response.status == 200
+    response_tag = json.load(response).get('recorded_track')
 time.sleep(.06)
 (workspace/'src/parser.py').write_text("def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n")
-row = json.dumps({'batch':batch,'replica':replica,'workspace':str(workspace),'before':before,'runtime':str(runtime),'start':start,'end':time.monotonic_ns()})+'\n'
+row = json.dumps({'batch':batch,'replica':replica,'workspace':str(workspace),'before':before,'runtime':str(runtime),'start':start,'end':time.monotonic_ns(),'response_tag':response_tag})+'\n'
 fd = os.open(root/'attempts.jsonl',os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
 os.write(fd,row.encode()); os.close(fd)
 if batch == 1 and replica == 1:
@@ -72,6 +73,7 @@ if batch == 1 and replica == 1:
     if (root/'block-outcome-first').exists(): (workspace.parent/'.asb-completions').write_text('retain this blocking fixture')
     if (root/'grader-error-first').exists(): (workspace/'src/parser.py').write_bytes(bytes([255]))
     if (root/'mutate-source').exists(): (root/'input.jsonl').write_text('changed after planning')
+    if (root/'replace-bundle').exists(): (root/'new-recording.jsonl').write_text('replaced after private staging')
     if (root/'mutate-prompt').exists(): (root/'workloads/bug-fix.txt').write_text('Changed instructions must not launch another batch.')
 sys.exit(7 if (root/'fail-first').exists() and batch == 1 and replica == 1 else 0)
 "##).unwrap();
@@ -194,9 +196,9 @@ impl RecordingProvider {
                     observed.fetch_add(1, Ordering::SeqCst);
                 }
                 let body = if inference {
-                    r#"{"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}"#
+                    json!({"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5},"recorded_track": observed.load(Ordering::SeqCst)}).to_string()
                 } else {
-                    r#"{"data":[{"id":"fixture","supported_parameters":["tools"]}]}"#
+                    r#"{"data":[{"id":"fixture","supported_parameters":["tools"]}]}"#.to_owned()
                 };
                 write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
             }
@@ -219,6 +221,15 @@ impl Drop for RecordingProvider {
     }
 }
 fn record(project: &Project, provider: &RecordingProvider, repeat: Option<&str>) -> Output {
+    record_to(project, provider, repeat, Some("new-recording.jsonl"))
+}
+
+fn record_to(
+    project: &Project,
+    provider: &RecordingProvider,
+    repeat: Option<&str>,
+    cassette: Option<&str>,
+) -> Output {
     let config = project.0.join("benchmark.toml");
     fs::write(
         &config,
@@ -240,18 +251,419 @@ fn record(project: &Project, provider: &RecordingProvider, repeat: Option<&str>)
             "OPENROUTER_MODELS_URL",
             format!("{}/models", provider.endpoint),
         )
-        .args([
-            "run",
-            "benchmark.toml",
-            "--record",
-            "--cassette",
-            "new-recording.jsonl",
-            "--json",
-        ]);
+        .args(["run", "benchmark.toml", "--record", "--json"]);
+    if let Some(cassette) = cassette {
+        command.args(["--cassette", cassette]);
+    }
     if let Some(repeat) = repeat {
         command.args(["--repeat", repeat]);
     }
     command.output().unwrap()
+}
+
+fn replay_bundle(project: &Project, extra: &[&str]) -> Output {
+    replay_from(project, Some("new-recording.jsonl"), extra)
+}
+
+fn replay_from(project: &Project, cassette: Option<&str>, extra: &[&str]) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_asb"));
+    command
+        .current_dir(&project.0)
+        .isolated_env()
+        .env("HOME", &project.0)
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("OPENROUTER_BASE_URL", "http://127.0.0.1:1")
+        .args(["run", "benchmark.toml", "--replay", "--json"]);
+    if let Some(cassette) = cassette {
+        command.args(["--cassette", cassette]);
+    }
+    command.args(extra).output().unwrap()
+}
+
+#[test]
+fn default_record_and_replay_pair_while_existing_legacy_default_keeps_precedence() {
+    let project = Project::new();
+    project.config(1);
+    let provider = RecordingProvider::new();
+    let recorded = record_to(&project, &provider, None, None);
+    assert!(
+        recorded.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recorded.stderr)
+    );
+    drop(provider);
+    let bundles: Vec<_> = fs::read_dir(project.0.join("cassettes"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "zip"))
+        .collect();
+    assert_eq!(bundles.len(), 1);
+    let replayed = replay_from(&project, None, &[]);
+    assert!(
+        replayed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replayed.stderr)
+    );
+    assert!(
+        records(&replayed.stdout)
+            .iter()
+            .any(|row| row["type"] == "replay-selection")
+    );
+    let name = bundles[0]
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .strip_suffix(".asb.zip")
+        .unwrap();
+    let legacy = bundles[0].with_file_name(format!("{name}.jsonl"));
+    fs::copy(project.0.join("input.jsonl"), &legacy).unwrap();
+    let legacy_replay = replay_from(&project, None, &[]);
+    assert!(
+        legacy_replay.status.success(),
+        "{}",
+        String::from_utf8_lossy(&legacy_replay.stderr)
+    );
+    assert!(
+        records(&legacy_replay.stdout)
+            .iter()
+            .all(|row| row["execution"].is_null() && row["type"] != "replay-selection")
+    );
+    fs::remove_file(&legacy).unwrap();
+    // Legacy-only installations still resolve their old default without ZIP.
+    fs::rename(&bundles[0], project.0.join("saved-bundle.zip")).unwrap();
+    fs::copy(project.0.join("input.jsonl"), &legacy).unwrap();
+    assert!(replay_from(&project, None, &[]).status.success());
+}
+
+fn rewrite_bundle(
+    project: &Project,
+    edit: impl FnOnce(&mut asb_cli::cassette::Manifest, &mut std::collections::BTreeMap<u64, Vec<u8>>),
+) {
+    use std::io::Write;
+    let path = project.0.join("new-recording.jsonl");
+    let mut archive =
+        asb_cli::cassette::Archive::open(&path, asb_cli::cassette::Limits::default()).unwrap();
+    let mut manifest = archive.manifest().clone();
+    let mut payloads = manifest
+        .tracks
+        .iter()
+        .map(|track| (track.id, archive.read_track(track.id).unwrap()))
+        .collect();
+    edit(&mut manifest, &mut payloads);
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    zip.start_file("manifest.json", options).unwrap();
+    zip.write_all(&serde_json::to_vec(&manifest).unwrap())
+        .unwrap();
+    for (id, payload) in payloads {
+        zip.start_file(format!("tracks/{id}.jsonl"), options)
+            .unwrap();
+        zip.write_all(&payload).unwrap();
+    }
+    zip.finish().unwrap();
+}
+
+#[test]
+fn bundled_replay_rejects_each_compatibility_difference_before_client_launch() {
+    let project = Project::new();
+    project.config(1);
+    let provider = RecordingProvider::new();
+    let recorded = record(&project, &provider, None);
+    assert!(
+        recorded.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recorded.stderr)
+    );
+    drop(provider);
+    let path = project.0.join("new-recording.jsonl");
+    let original = fs::read(&path).unwrap();
+    let attempts = fs::read(project.0.join("attempts.jsonl")).unwrap();
+    for field in [
+        "agent", "provider", "model", "workload", "task", "dataset", "prompt", "material",
+        "protocol",
+    ] {
+        fs::write(&path, &original).unwrap();
+        rewrite_bundle(&project, |manifest, _| {
+            let identity = &mut manifest.compatibility;
+            match field {
+                "agent" => identity.agent = "different".into(),
+                "provider" => identity.provider = "different".into(),
+                "model" => identity.model = "different".into(),
+                "workload" => identity.workload = "different".into(),
+                "task" => identity.task = "different".into(),
+                "dataset" => identity.dataset_sha256 = Some("e".repeat(64)),
+                "prompt" => identity.prompt_sha256 = "e".repeat(64),
+                "material" => identity.material_sha256 = "e".repeat(64),
+                "protocol" => identity.protocol_sha256 = Some("e".repeat(64)),
+                _ => unreachable!(),
+            }
+        });
+        let output = replay_bundle(&project, &["--repeat", "2", "--track", "1"]);
+        assert!(!output.status.success(), "{field}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("differs"),
+            "{field}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            fs::read(project.0.join("attempts.jsonl")).unwrap(),
+            attempts,
+            "{field} launched a client"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(project.0.join("workspace/preserve-user-file")).unwrap(),
+        "untouched user material"
+    );
+}
+
+#[test]
+fn bundled_replay_only_decodes_selected_entries_and_fails_closed_on_selected_corruption() {
+    let project = Project::new();
+    project.config(2);
+    let provider = RecordingProvider::new();
+    assert!(record(&project, &provider, Some("1")).status.success());
+    drop(provider);
+    // Keep track2's length/CRC valid but make its payload disagree with SHA.
+    rewrite_bundle(&project, |_, payloads| {
+        let payload = payloads.get_mut(&2).unwrap();
+        let index = payload.iter().position(|byte| *byte == b'f').unwrap();
+        payload[index] = b'g';
+    });
+    let good = replay_bundle(&project, &["--track", "1"]);
+    assert!(
+        good.status.success(),
+        "{}",
+        String::from_utf8_lossy(&good.stderr)
+    );
+    let attempts = fs::read(project.0.join("attempts.jsonl")).unwrap();
+    let corrupt = replay_bundle(&project, &["--track", "2"]);
+    assert!(!corrupt.status.success());
+    assert!(
+        String::from_utf8_lossy(&corrupt.stderr).contains("checksum"),
+        "{}",
+        String::from_utf8_lossy(&corrupt.stderr)
+    );
+    assert_eq!(
+        fs::read(project.0.join("attempts.jsonl")).unwrap(),
+        attempts
+    );
+}
+
+#[test]
+fn bundled_replay_keeps_private_inputs_after_source_replacement_and_allows_new_concurrency() {
+    let project = Project::new();
+    project.config(2);
+    let provider = RecordingProvider::new();
+    assert!(record(&project, &provider, Some("1")).status.success());
+    drop(provider);
+    let config = project.0.join("benchmark.toml");
+    fs::write(
+        &config,
+        fs::read_to_string(&config)
+            .unwrap()
+            .replace("concurrency=2", "concurrency=1"),
+    )
+    .unwrap();
+    fs::write(project.0.join("expected-concurrency"), "1").unwrap();
+    fs::write(
+        project.0.join("replace-bundle"),
+        "replace only after staging",
+    )
+    .unwrap();
+    let replayed = replay_bundle(&project, &["--repeat", "3", "--seed", "11"]);
+    assert!(
+        replayed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replayed.stderr)
+    );
+    let summaries: Vec<_> = records(&replayed.stdout)
+        .into_iter()
+        .filter(|row| row.get("task").is_some())
+        .collect();
+    assert_eq!(summaries.len(), 3);
+    assert!(summaries.iter().all(|row| row["workload_success"] == true));
+    assert_eq!(
+        fs::read_to_string(project.0.join("new-recording.jsonl")).unwrap(),
+        "replaced after private staging"
+    );
+}
+
+#[test]
+fn incomplete_numeric_track_keeps_strict_full_consumption_and_continues_completed_failures() {
+    let project = Project::new();
+    project.config(1);
+    let provider = RecordingProvider::new();
+    assert!(record(&project, &provider, None).status.success());
+    drop(provider);
+    rewrite_bundle(&project, |manifest, payloads| {
+        let payload = payloads.get_mut(&1).unwrap();
+        payload.extend_from_within(..);
+        let track = &mut manifest.tracks[0];
+        track.complete = false;
+        track.bytes = payload.len() as u64;
+        track.sha256 = asb_cli::cassette::digest(payload);
+        track.statistics.requests = Some(2);
+    });
+    let attempts = records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len();
+    let automatic = replay_bundle(&project, &[]);
+    assert!(!automatic.status.success());
+    assert!(String::from_utf8_lossy(&automatic.stderr).contains("no complete nonempty"));
+    assert_eq!(
+        records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+        attempts
+    );
+    let explicit = replay_bundle(&project, &["--repeat", "2", "--track", "1"]);
+    assert!(!explicit.status.success());
+    assert!(
+        String::from_utf8_lossy(&explicit.stderr).contains("consumed 1 of 2"),
+        "{}",
+        String::from_utf8_lossy(&explicit.stderr)
+    );
+    assert_eq!(
+        records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+        attempts + 2
+    );
+    let rows: Vec<_> = records(&explicit.stdout)
+        .into_iter()
+        .filter(|row| row.get("task").is_some())
+        .collect();
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows.iter()
+            .all(|row| row["process_success"] == true && row["workload_success"] == true)
+    );
+}
+
+#[test]
+fn replay_selection_flags_reject_invalid_modes_and_keep_legacy_metadata_unknown() {
+    let project = Project::new();
+    project.config(1);
+    for flags in [
+        vec!["--track", "1"],
+        vec!["--seed", "2"],
+        vec!["--record", "--track", "1"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_asb"))
+            .current_dir(&project.0)
+            .isolated_env()
+            .args(["run", "benchmark.toml"])
+            .args(flags)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(!project.0.join("results").exists());
+    }
+    for flags in [vec!["--seed", "2"], vec!["--track", "min:tokens"]] {
+        let output = project.run_extra("1", &flags);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("legacy JSONL"));
+        assert!(!project.0.join("results").exists());
+    }
+    let legacy = project.0.join("input.jsonl");
+    fs::rename(&legacy, project.0.join("input-concurrency-64.jsonl")).unwrap();
+    let output = project.run_extra("1", &["--track", "64"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows = records(&output.stdout);
+    let summary = rows.iter().find(|row| row.get("task").is_some()).unwrap();
+    assert_eq!(summary["execution"]["replay_track"], 64);
+    assert!(summary["execution"].get("replay_seed").is_none());
+    assert!(summary["execution"].get("replay_algorithm").is_none());
+    assert!(rows.iter().all(|row| row["type"] != "replay-selection"));
+}
+
+#[test]
+fn bundled_replay_choices_drive_actual_private_batch_inputs_without_a_provider() {
+    let project = Project::new();
+    project.config(2);
+    let provider = RecordingProvider::new();
+    let recorded = record(&project, &provider, Some("2"));
+    assert!(
+        recorded.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recorded.stderr)
+    );
+    let mut archive = asb_cli::cassette::Archive::open(
+        &project.0.join("new-recording.jsonl"),
+        asb_cli::cassette::Limits::default(),
+    )
+    .unwrap();
+    let mut tags = std::collections::BTreeMap::new();
+    for id in 1..=4 {
+        let payload = archive.read_track(id).unwrap();
+        let row: Value = serde_json::from_slice(
+            payload
+                .split(|byte| *byte == b'\n')
+                .find(|row| !row.is_empty())
+                .unwrap(),
+        )
+        .unwrap();
+        let response: Value =
+            serde_json::from_str(row["response"]["body"].as_str().unwrap()).unwrap();
+        tags.insert(id, response["recorded_track"].clone());
+    }
+    let before = provider.calls.load(std::sync::atomic::Ordering::SeqCst);
+    drop(provider);
+    let mut observed_selections = Vec::new();
+    for extra in [
+        vec!["--repeat", "3", "--seed", "19"],
+        vec!["--repeat", "3", "--seed", "19"],
+        vec!["--repeat", "2", "--track", "3"],
+        vec!["--track", "max:tokens"],
+    ] {
+        let attempt_offset = records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len();
+        let replayed = replay_bundle(&project, &extra);
+        assert!(
+            replayed.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&replayed.stdout),
+            String::from_utf8_lossy(&replayed.stderr)
+        );
+        let rows = records(&replayed.stdout);
+        let selection = rows
+            .iter()
+            .find(|row| row["type"] == "replay-selection")
+            .unwrap()["selection"]
+            .clone();
+        let plan_path = rows
+            .iter()
+            .find(|row| row["type"] == "execution-plan")
+            .unwrap()["path"]
+            .as_str()
+            .unwrap();
+        let plan: Value = serde_json::from_slice(&fs::read(plan_path).unwrap()).unwrap();
+        assert_eq!(plan["replay_selection"], selection);
+        let chosen = selection["tracks"].as_array().unwrap();
+        let attempts = records(&fs::read(project.0.join("attempts.jsonl")).unwrap());
+        assert_eq!(attempts.len() - attempt_offset, chosen.len());
+        for row in &attempts[attempt_offset..] {
+            let slot =
+                (row["batch"].as_u64().unwrap() - 1) * 2 + row["replica"].as_u64().unwrap() - 1;
+            let id = chosen[slot as usize].as_u64().unwrap();
+            assert_eq!(row["response_tag"], tags[&id], "wrong batch/replica input");
+            assert!(!row["before"].as_str().unwrap().contains("if segment"));
+        }
+        for row in rows.iter().filter(|row| row.get("task").is_some()) {
+            let slot = row["execution"]["slot"].as_u64().unwrap() as usize - 1;
+            assert_eq!(row["execution"]["replay_track"], chosen[slot]);
+            assert_eq!(row["execution"]["replay_seed"], selection["seed"]);
+        }
+        if extra.contains(&"3") && extra.contains(&"--track") {
+            assert!(chosen.iter().all(|id| *id == 3));
+        }
+        if extra.contains(&"max:tokens") {
+            assert_eq!(chosen, &vec![json!(1), json!(1)]);
+        }
+        observed_selections.push(selection);
+    }
+    assert_eq!(observed_selections[0], observed_selections[1]);
+    assert_eq!(before, 4);
 }
 
 #[test]
