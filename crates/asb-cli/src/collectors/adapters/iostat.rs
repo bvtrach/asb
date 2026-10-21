@@ -52,16 +52,18 @@ fn process(
     context: &ProcessContext<'_>,
 ) -> Result<ProcessData, String> {
     let mut result = ProcessData::from_output(context);
-    result.metrics = parse_pidstat_io_metrics(context.stdout);
+    let output = super::super::read_complete_output(context.stdout_path)?;
+    result.metrics = parse_pidstat_io_metrics(&output);
     if result.metrics.is_empty() {
-        result.metrics = parse_iostat_metrics(context.stdout);
+        result.metrics = parse_iostat_metrics(&output);
     }
-    let samples = samples(context.stdout);
+    let samples = samples(&output);
     result.series = samples.series;
     result.timestamps = samples.timestamps;
     if result.metrics.is_empty() && result.series.is_empty() {
         result.status = "unavailable".into();
     }
+    super::super::validate_processed_output(&result)?;
     Ok(result)
 }
 
@@ -234,4 +236,28 @@ fn iostat_name(name: &str) -> String {
             .replace(['/', '-'], "_")
             .to_lowercase()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn io_processing_includes_observations_beyond_the_diagnostic_cap() {
+        let mut input = "12:00:00 UID PID kB_rd/s kB_wr/s kB_ccwr/s iodelay Command\n12:00:01 1000 42 10 20 0 1 agent\n".to_owned();
+        input.push_str(&"# ignored fixture filler\n".repeat(15000));
+        input.push_str("12:00:03 1000 42 30 40 0 3 agent\n");
+        assert!(input.len() > 256 * 1024);
+        let result =
+            crate::collectors::process_output_fixture(&super::ADAPTER, "iostat", &input).unwrap();
+        assert_eq!(result.status, "completed");
+        assert_eq!(result.metrics["process.io.read_kib_per_s"], 20.0);
+        assert_eq!(result.series["process.io.read_kib_per_s"], [10.0, 30.0]);
+        assert_eq!(
+            result.timestamps["process.io.read_kib_per_s"],
+            [1000.0, 3000.0]
+        );
+        assert!(
+            crate::collectors::process_output_fixture(&super::ADAPTER, "iostat", "unfinished")
+                .is_err()
+        );
+    }
 }

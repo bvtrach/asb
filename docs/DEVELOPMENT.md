@@ -71,6 +71,12 @@ Perf-stat regression fixtures process a complete synthetic file larger than
 the diagnostic cap, retain missing-interval timestamps and hybrid CPU counter
 totals, and reject invalid or excessive input without publishing partial totals.
 They need neither perf permissions nor a live agent/provider.
+CPU/I/O and BPF adapter fixtures likewise place final samples/cumulative maps
+beyond 256 KiB, pass unrelated diagnostic strings and require full-file means,
+series and final values. Shared output tests reject incomplete, oversized,
+invalid-UTF-8 and nonfinite data and enforce the processed JSON budget without
+allocating a second serialized buffer. These are offline fixtures, not native
+BPF clock-series qualification.
 `cargo test --locked --offline --test compare_setup` checks repeated CLI setup
 selections, scoped models/trials, dependency expansion, non-overwriting sweep
 publication, standalone measured/unmeasured reports and an injected browser
