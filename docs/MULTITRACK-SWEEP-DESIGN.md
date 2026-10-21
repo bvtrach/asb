@@ -22,6 +22,24 @@ selection validation, workload compatibility and settled attempt evidence remain
 separate obligations. Tests cover path parity for every supported concurrency,
 structural mutation matrices, all execution modes and input-size boundaries.
 
+The standalone coordinator now uses a read-only `Prepared` phase followed by
+consuming activation. It owns its plan/configuration once, fixes encoded plan
+bytes and selected-source handles, and accepts an explicit campaign parent
+without changing original project authority. The absolute original configuration
+invocation is retained separately from canonical source identity, including
+cross-project symlinks. Recording inspection creates no missing directories;
+activation creates/rechecks them before campaign publication and any client.
+Inspection is not a reservation, and the journal's no-replace boundary remains
+authoritative. Unselected legacy inputs still use their prior hash-then-verified
+staging path rather than claiming pinned-source ownership. Sweep integration
+must preserve those sources across result rotation before activation.
+Prepared campaigns own saved policy and presentation/measurement-override
+settings; they borrow neither caller option strings nor their own configuration.
+Activation derives routing, mode, timing and counts from the frozen plan/source
+and constructs per-batch options explicitly. The earlier caller-provided cohort
+was overwritten by the runner; partial-resume cohort handling still requires the
+deliberate admitted-slot/cohort seam below, not reuse of that inert input.
+
 ## Ownership and shared contracts
 
 Extract a reusable runner-owned campaign plan and bounded reader from the

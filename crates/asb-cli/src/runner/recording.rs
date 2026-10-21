@@ -123,17 +123,45 @@ pub(crate) struct Recorder {
     state: Mutex<State>,
 }
 
-/// Refuse final/partial destinations before workload/tool preparation. The
-/// journal independently owns the authoritative no-replace publication boundary.
-pub(super) fn preflight(destination: &Path) -> Result<PathBuf, Error> {
+/// Read-only destination planning. This observes names, never reserves them.
+/// Activation and the journal must independently recheck no-overwrite conditions.
+pub(super) fn inspect_destination(destination: &Path) -> Result<PathBuf, Error> {
     let absolute = std::path::absolute(destination).map_err(io_error)?;
     let name = absolute
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| Error::Input("recording cassette needs a UTF-8 filename".into()))?;
-    let parent = absolute
+    let requested_parent = absolute
         .parent()
         .ok_or_else(|| Error::Input("recording cassette needs a parent".into()))?;
+    // Resolve existing directory/symlink prefixes without creating missing
+    // parents. Parent components after a missing name behave as create_dir_all
+    // followed by canonicalization did, but planning has no filesystem writes.
+    let mut parent = PathBuf::new();
+    for component in requested_parent.components() {
+        match component {
+            std::path::Component::CurDir => (),
+            std::path::Component::ParentDir => {
+                parent.pop();
+            }
+            component => {
+                parent.push(component.as_os_str());
+                match fs::symlink_metadata(&parent) {
+                    Ok(_) => {
+                        parent = parent.canonicalize().map_err(io_error)?;
+                        if !parent.is_dir() {
+                            return Err(Error::Input(
+                                "recording cassette parent must be a directory".into(),
+                            ));
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                    Err(error) => return Err(io_error(error)),
+                }
+            }
+        }
+    }
+    let absolute = parent.join(name);
     for path in [&absolute, &parent.join(format!(".{name}.partial"))] {
         match fs::symlink_metadata(path) {
             Ok(_) => return Err(Error::Input("recording destination or partial artifact already exists; choose a new cassette or explicitly recover it".into())),
@@ -141,8 +169,21 @@ pub(super) fn preflight(destination: &Path) -> Result<PathBuf, Error> {
             Err(error) => return Err(io_error(error)),
         }
     }
-    fs::create_dir_all(parent).map_err(io_error)?;
-    Ok(parent.canonicalize().map_err(io_error)?.join(name))
+    Ok(absolute)
+}
+
+/// Refuse final/partial destinations before workload/tool preparation. The
+/// journal independently owns the authoritative no-replace publication boundary.
+pub(super) fn preflight(destination: &Path) -> Result<PathBuf, Error> {
+    let expected = inspect_destination(destination)?;
+    fs::create_dir_all(expected.parent().expect("inspected parent")).map_err(io_error)?;
+    let observed = inspect_destination(&expected)?;
+    if expected != observed {
+        return Err(Error::Input(
+            "recording cassette parent changed during activation".into(),
+        ));
+    }
+    Ok(observed)
 }
 
 impl Recorder {
@@ -544,6 +585,59 @@ fn recording_error(error: crate::cassette::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn destination_inspection_is_read_only_and_activation_rechecks_foreign_outputs() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/recording-destination-fixtures")
+            .join(crate::workloads::TaskIdentity::local("destination", None).attempt_id);
+        fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let destination = root.join("missing/nested/recording.asb.zip");
+        assert_eq!(inspect_destination(&destination).unwrap(), destination);
+        assert!(!root.join("missing").exists());
+        assert_eq!(preflight(&destination).unwrap(), destination);
+        assert!(destination.parent().unwrap().is_dir());
+        fs::write(&destination, b"foreign").unwrap();
+        assert!(preflight(&destination).is_err());
+        assert_eq!(fs::read(&destination).unwrap(), b"foreign");
+        let other = root.join("other.asb.zip");
+        inspect_destination(&other).unwrap();
+        let partial = root.join(".other.asb.zip.partial");
+        fs::create_dir(&partial).unwrap();
+        assert!(preflight(&other).is_err());
+        assert!(partial.is_dir());
+        let non_directory = root.join("file");
+        fs::write(&non_directory, b"sentinel").unwrap();
+        assert!(inspect_destination(&non_directory.join("new.zip")).is_err());
+        assert_eq!(fs::read(&non_directory).unwrap(), b"sentinel");
+        let with_parent = root.join("never-created/../next/archive.zip");
+        assert_eq!(
+            inspect_destination(&with_parent).unwrap(),
+            root.join("next/archive.zip")
+        );
+        assert!(!root.join("never-created").exists());
+        assert!(!root.join("next").exists());
+        #[cfg(unix)]
+        {
+            let alias = root.join("alias");
+            std::os::unix::fs::symlink(root.join("missing"), &alias).unwrap();
+            let candidate = alias.join("future/next.zip");
+            assert_eq!(
+                inspect_destination(&candidate).unwrap(),
+                root.join("missing/future/next.zip")
+            );
+            assert!(!root.join("missing/future").exists());
+            let nested_alias = root.join("nested-alias");
+            std::os::unix::fs::symlink(root.join("missing/nested"), &nested_alias).unwrap();
+            assert_eq!(
+                inspect_destination(&nested_alias.join("../sibling/next.zip")).unwrap(),
+                root.join("missing/sibling/next.zip")
+            );
+            assert!(!root.join("missing/sibling").exists());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn compact_association_budget_fits_maximum_population_before_launch() {
