@@ -117,6 +117,16 @@ pub(super) enum OwnedChild {
     Gated(crate::process_gate::ManagedGate),
 }
 impl OwnedChild {
+    #[cfg(unix)]
+    pub fn wait_stopped(&mut self) -> io::Result<()> {
+        match self {
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.wait_stopped(),
+            Self::Direct(_) => Err(io::Error::other(
+                "shared launch refuses a direct child without gate custody",
+            )),
+        }
+    }
     pub fn spawn_direct(command: &mut Command) -> io::Result<Self> {
         DirectChild::spawn(command).map(Self::Direct)
     }

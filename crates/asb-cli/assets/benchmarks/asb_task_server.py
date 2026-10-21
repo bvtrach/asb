@@ -9,6 +9,7 @@ import base64
 import json
 import queue
 import threading
+import time
 
 from asb_execution import ExecutionError
 
@@ -24,9 +25,11 @@ def serve(task, source, destination, idle_timeout=900):
     # retain the attempt for adapter-owned submission/evaluation recovery.
     task.interrupted = True
 
+    emission_lock = threading.Lock()
     def emit(event, **fields):
-        destination.write(json.dumps({"event": event, **fields}) + "\n")
-        destination.flush()
+        with emission_lock:
+            destination.write(json.dumps({"event": event, **fields}) + "\n")
+            destination.flush()
 
     def reader():
         try:
@@ -48,23 +51,24 @@ def serve(task, source, destination, idle_timeout=900):
         except (OSError, ValueError, queue.Full):
             peer_closed.set()
 
-    def receive(timeout=None):
+    def receive(timeout=None, cap_idle=True):
         # Polling this event also handles EOF while idle or paused. No global
         # filesystem leases or stale process-name assumptions are involved.
-        timeout = idle_timeout if timeout is None else min(timeout, idle_timeout)
-        elapsed = 0.0
-        while elapsed < timeout:
+        timeout = idle_timeout if timeout is None else min(timeout, idle_timeout) if cap_idle else timeout
+        deadline = time.monotonic()+timeout
+        while time.monotonic() < deadline:
             if peer_closed.is_set():
                 raise ExecutionError("ASB controller disconnected")
             try:
-                return requests.get(timeout=min(0.05, timeout - elapsed))
+                return requests.get(timeout=max(0,min(0.05, deadline-time.monotonic())))
             except queue.Empty:
-                elapsed += min(0.05, timeout - elapsed)
+                pass
         raise ExecutionError("ASB controller did not respond before the protocol deadline")
 
-    def attach(target):
+    def attach(target, preparation_budget=None):
         emit("paused", target=target)
-        response = receive(timeout=60)
+        response = receive(timeout=preparation_budget.remaining() if preparation_budget else 60,
+                           cap_idle=preparation_budget is None)
         if response.get("op") != "resume" or response.get("exec_id") != target["exec_id"]:
             raise ExecutionError("execution was cancelled before collector attachment completed")
 
@@ -86,9 +90,12 @@ def serve(task, source, destination, idle_timeout=900):
                 try:
                     if operation in ["execute", "agent"]:
                         if operation == "agent":
-                            from asb_guest import execute_agent
-                            result = execute_agent(task, request, attach, output, peer_closed,
-                                on_ended=lambda result: emit("execution_ended", elapsed_seconds=result["elapsed_seconds"], exit_code=result["exit_code"]))
+                            from asb_guest import execute_agent, PreparationBudget
+                            seconds = request.get("preparation_seconds")
+                            budget = PreparationBudget(seconds) if seconds is not None else None
+                            result = execute_agent(task, request, lambda target: attach(target,budget), output, peer_closed,
+                                on_ended=lambda result: emit("execution_ended", elapsed_seconds=result["elapsed_seconds"], exit_code=result["exit_code"]),
+                                preparation_budget=budget, on_preparation_failure=lambda: emit("preparation_failed"))
                         else:
                             result = task.workspace.execute(
                                 request.get("argv"), request.get("environment"),
@@ -104,6 +111,11 @@ def serve(task, source, destination, idle_timeout=900):
                         emit("submission", submission=task.capture_submission())
                     elif operation == "evaluate":
                         emit("evaluated", result=task.evaluate(timeout=request.get("timeout", 1800)))
+                    elif operation == "initial-material":
+                        capture = getattr(task, "initial_material", None)
+                        if capture is None:
+                            raise ExecutionError("workload adapter has not declared prepared material coverage")
+                        emit("initial-material", material=capture(binary=request["binary"]) if "binary" in request else capture())
                     else:
                         raise ExecutionError("unknown task protocol operation")
                 except ExecutionError as error:

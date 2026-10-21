@@ -77,7 +77,10 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   ends; no unrelated producer shares these private write descriptions. Native
   presentation errors preserve evidence. Non-Unix guest presentation still has
   the borrowed-writer limitation. Retained ThroughEvaluation service lifetime
-  and its existing bounded capture/ownership are unchanged;
+  and its existing bounded capture/ownership are unchanged. Shared native launch
+  failures notify waiting peers before bounded child settlement. Repeated
+  execution cannot admit another batch from an incomplete captured slot, even
+  when an independent file grade and sibling outcome are available;
 - `compare`: offline reports use explicit loaded, globally validated, prepared,
   rendered and published phases. Stable row identities and typed result sources
   bind original evaluation evidence; preparation computes population coverage
@@ -411,7 +414,47 @@ boundary with actual upstream catalogs, submissions, environments and
 evaluators; a session by itself is not proof of full benchmark support.
 An adapter can also expose a read-only `PlanningCatalog`: dataset identity,
 available task IDs and evaluator scope, without preparing an environment.
-Sweep planning caches this once per installed workload and saves a bounded
+Verified preparation additionally has an internal opt-in material-ready gate:
+native file sessions fingerprint adapter-owned initial files before baseline
+evaluation and reject evaluator mutation. Workers retain their sessions locally;
+only immutable identities cross the cancellable rendezvous before proxy/agent
+startup. Early failure and timeout release peers, and explicit cancellation
+retains official workload preservation semantics. Legacy runs do not acquire
+these scans. The native `run --repeat` prototype publishes an intended-slot plan,
+allocates fresh campaigns and batches, freezes private legacy replay inputs and
+links every completed outcome. Batches continue only after confirmed preparation,
+complete output publication and cleanup. Measurement overrides relocate only
+measurements, not project-local workspaces/logs. Collector preflight and sessions
+receive the benchmark's project root explicitly: an external measurement path,
+even beneath a different project, never selects its tracing capabilities or
+service registry. Official sessions now expose an
+on-demand versioned material identity through the workload controller, separate
+from evaluator baseline evidence. The shared capture verifies declared resource
+ownership and binds actual prepared file content plus image/runtime definition.
+The controller stages the running ASB helper into an absent owned root, verifies
+its exact bounded TAR tree before reuse/execution, and composes two complete
+image-anchored root observations with change/deletion inventories plus
+full-content shared memory. The complete composer covers declared mounts,
+services and supported owned/default-bridge runtime/network topology;
+unsupported coverage has no narrow fallback in verified CLI execution. Owned
+local bind sources additionally receive a joint multi-root census for cross-service
+regular-file and symlink hardlink relationships. `PreparedSampler` exposes bind
+views only after a successful guest census matched exact source/root witnesses.
+Every new census or failed callback invalidates that authorization. A complete
+initial guest round precedes host content reads and must agree with both later
+rounds. Joint host observations bracket each later whole guest round and recheck
+service authority, source chains and locality. Identical source paths share a
+logical root, but only subtrees hidden in every view are excluded; each binding's
+nested/semantic exclusions remain explicit. Host paths and numeric inode
+witnesses are private, never public identities. Host and guest reads share one
+bounded allowance without resets. This adds relevant owned local filesystem
+observations, not a portable host snapshot or provenance guarantee.
+The TAR reader never extracts files; legacy runs never
+request the capture. Broader
+official material coverage and real SDK qualification, bundled recording/replay
+and campaign-aware comparison remain integration work; see
+[the execution design](MULTITRACK-EXECUTION-DESIGN.md).
+Sweep planning caches each read-only planning catalog once per installed workload and saves a bounded
 `plan.json` before running anything. A `TaskSelection` is requested intent,
 not an actual `TaskIdentity`, measured baseline, or evaluator result. Compare
 uses that snapshot when preparation failed, validates source configuration
@@ -443,7 +486,14 @@ from an executable's pathname.
 After workload cleanup and measurement completion, the runner writes private
 `.asb-completions/` outcome records beside the run log, including unresolved
 outcomes, actual task identity, cleanup status and workload-owned evaluator
-evidence paths. These records omit agent stdout/stderr. When one replica
+evidence paths. These records omit agent stdout/stderr. Resource settlement
+remains independent of its grade: removed,
+not-created, not-required, or positively stopped-preserved resources may admit
+later fresh batches. Unknown settlement stops admission. Preserved resources
+retain their artifact locations and never authorize an implicit verifier retry.
+New outcome, log and measurement records agree on disposition and artifact
+references. Legacy handling requires both outcome disposition fields absent;
+explicit null denotes unknown settlement, not a legacy omission. When one replica
 finishes, a generic completion observer can independently bind its
 one-based slot, selected population, original input digest, private outcome
 record, workspace, log, native runtime state (if present), measurements and
@@ -952,6 +1002,16 @@ through runtime validation and checksum-pinned prefetch; protocol-only unit
 fixtures cannot enable a production preparation bypass. Dispatch, bounded event
 receipt, measured-target resume and completion decoding remain separate phases
 inside the same failure/cancellation envelope.
+Workload-owned launch transports sit beneath the shared Docker workspace
+gate/deadline/output state machine. The default transport uses the Docker exec
+identity; a different launcher supplies its actual stopped client identity and
+child status without treating a bridge's PID or exit code as the agent's.
+Namespace-only targets cannot satisfy host collector verification. A retained
+workload keeps the entire iterable transport until namespace teardown, not only
+its output stream. Closure is idempotent but sticky failures, including
+cancellation exceptions in a drain worker, prevent false cleanup confirmation.
+The SDK-shell launch strategy is still pending; this abstraction alone does not
+change Terminal's current direct-exec client launch semantics.
 Failed preparation/execution cancels the controller through EOF and drains its
 bounded protocol until cleanup acknowledgement and child exit, retaining the
 original error and any cleanup failure. Normal completion still requires a
@@ -969,8 +1029,10 @@ checks precede stopping resources. A changed journal or unconfirmed stop is a
 preservation failure, not successful cleanup. `interruption.json` explicitly
 states that preservation is neither grading nor retry permission.
 Cancellation accepts a stopped-preserved acknowledgement and still reports
-the interrupted operation as failed; normal completion requires removal and
-cannot accept that acknowledgement as a completed attempt. A preserved
+the interrupted operation as failed. Positive preservation can admit later
+fresh attempts, but is not successful normal removal or a completed grade.
+Normal-close preservation retains an explicit teardown failure diagnostic.
+A preserved
 environment's filesystem is retained, not its running process/shell state.
 Official sessions also track whether their latest evaluator response actually
 completed a matching task grade. Errors, missing/contradictory resolved flags

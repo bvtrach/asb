@@ -121,6 +121,14 @@ pub(crate) fn observe_provider(
     root: &Path,
     original: Option<Box<dyn providers::ProviderSession>>,
 ) -> Option<Box<dyn providers::ProviderSession>> {
+    let shared = SHARED_PROVIDERS.lock().unwrap().get(root).cloned();
+    if let Some(finish) = shared {
+        assert!(
+            original.is_none(),
+            "shared provider fixture requires replay"
+        );
+        return Some(Box::new(SharedProvider { finish }));
+    }
     HOOK.with(|slot| {
         let slot = slot.borrow();
         let Some(hook) = slot
@@ -139,6 +147,46 @@ pub(crate) fn observe_provider(
             finished: false,
         }))
     })
+}
+type SharedFinish = dyn Fn() -> Result<(), Error> + Send + Sync;
+static SHARED_PROVIDERS: std::sync::Mutex<
+    std::collections::BTreeMap<PathBuf, std::sync::Arc<SharedFinish>>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Root-scoped fixture shared with actual concurrent runner threads. No runtime
+/// environment switches or production provider registry changes are involved.
+pub(crate) struct SharedProviderScope(PathBuf);
+impl SharedProviderScope {
+    pub fn new(root: &Path, finish: std::sync::Arc<SharedFinish>) -> Self {
+        let root = root.canonicalize().unwrap();
+        assert!(
+            SHARED_PROVIDERS
+                .lock()
+                .unwrap()
+                .insert(root.clone(), finish)
+                .is_none()
+        );
+        Self(root)
+    }
+}
+impl Drop for SharedProviderScope {
+    fn drop(&mut self) {
+        SHARED_PROVIDERS.lock().unwrap().remove(&self.0);
+    }
+}
+struct SharedProvider {
+    finish: std::sync::Arc<SharedFinish>,
+}
+impl providers::ProviderSession for SharedProvider {
+    fn api_key(&self) -> &str {
+        "fixture-key"
+    }
+    fn base_url(&self) -> &str {
+        "http://127.0.0.1:1/v1"
+    }
+    fn finish(&mut self) -> Result<(), Error> {
+        (self.finish)()
+    }
 }
 struct Provider {
     calls: Rc<RefCell<Vec<&'static str>>>,
@@ -308,7 +356,7 @@ impl workloads::WorkloadSession for Observed {
             module
         })
     }
-    fn finish(&mut self) -> Result<(), String> {
+    fn finish(&mut self) -> Result<workloads::session::ResourceSettlement, String> {
         self.calls.borrow_mut().push("finish");
         let result = self.inner.finish();
         if self.cleanup_error {

@@ -11,6 +11,45 @@ fn child(script: &str) -> OwnedChild {
     .unwrap()
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn shared_launch_failure_aborts_peers_before_stopping_its_owned_child() {
+    struct Admission {
+        pid: u32,
+        aborted: std::cell::Cell<bool>,
+    }
+    impl crate::workloads::session::LaunchReadiness for Admission {
+        fn ready(&self) -> Result<(), String> {
+            unreachable!("this fixture fails before admission")
+        }
+        fn remaining(&self) -> Result<Duration, String> {
+            unreachable!("this fixture fails before admission")
+        }
+        fn abort(&self) {
+            let stat = std::fs::read_to_string(format!("/proc/{}/stat", self.pid)).unwrap();
+            let state = stat
+                .rsplit_once(") ")
+                .unwrap()
+                .1
+                .split_whitespace()
+                .next()
+                .unwrap();
+            assert_ne!(state, "Z", "peers must be notified before child cleanup");
+            self.aborted.set(true);
+        }
+    }
+    let mut owned = child("exec sleep 30");
+    let admission = Admission {
+        pid: owned.id(),
+        aborted: std::cell::Cell::new(false),
+    };
+    let error =
+        super::super::native_launch_failure(&mut owned, Some(&admission), "fixture launch failure");
+    assert!(admission.aborted.get());
+    assert_eq!(error.to_string(), "fixture launch failure");
+    assert!(owned.try_wait().unwrap().is_some());
+}
+
 #[test]
 fn dual_pipe_pressure_is_drained_with_bounded_capture_and_preserved_exit() {
     let child = OwnedChild::spawn_direct(

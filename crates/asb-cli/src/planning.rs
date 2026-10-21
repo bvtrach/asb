@@ -7,6 +7,35 @@ pub(crate) const DEFAULT_NATIVE_EXECUTION_SECONDS: u64 = 900;
 pub(crate) const DEFAULT_ENVIRONMENT_PREPARATION_SECONDS: u64 = 900;
 pub(crate) const DEFAULT_EVALUATION_SECONDS: u64 = 1800;
 
+/// Fixed shared admission policy, not a configurable per-agent phase cap.
+/// Its typed constructor also supplies the actual gate deadlines.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct BatchAdmissionPolicy {
+    scope: &'static str,
+    material_seconds: u64,
+    launch_seconds: u64,
+    material_arming: &'static str,
+    launch_arming: &'static str,
+}
+
+impl BatchAdmissionPolicy {
+    pub(crate) const fn current() -> Self {
+        Self {
+            scope: "verified-material-shared-launch-v1",
+            material_seconds: 1800,
+            launch_seconds: 1800,
+            material_arming: "batch-gate-construction",
+            launch_arming: "first-post-material-slot-registration",
+        }
+    }
+    pub(crate) fn material_timeout(self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.material_seconds)
+    }
+    pub(crate) fn launch_timeout(self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.launch_seconds)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Resources {
@@ -171,11 +200,22 @@ impl ExecutionPlanFingerprint {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn protocol_fingerprint(
     config: &BenchmarkConfig,
     policy: &ResolvedPlan,
     effective: EffectiveBudgets,
     replica_concurrency: usize,
+) -> Result<ExecutionPlanFingerprint, Error> {
+    protocol_fingerprint_with_admission(config, policy, effective, replica_concurrency, None)
+}
+
+pub(crate) fn protocol_fingerprint_with_admission(
+    config: &BenchmarkConfig,
+    policy: &ResolvedPlan,
+    effective: EffectiveBudgets,
+    replica_concurrency: usize,
+    admission: Option<BatchAdmissionPolicy>,
 ) -> Result<ExecutionPlanFingerprint, Error> {
     use sha2::{Digest, Sha256};
     resolve_snapshot(config, !policy.collectors.is_empty(), Some(policy))?;
@@ -235,13 +275,17 @@ pub(crate) fn protocol_fingerprint(
         .as_object_mut()
         .expect("serialized repetition object")
         .remove("index");
-    let identity = serde_json::json!({
+    let mut identity = serde_json::json!({
         "schema_version":1,
         "module": workloads::descriptor(&config.workload),
         "policy":cohort,
         "execution_default_rule":if policy.backend == "local-docker" { "pinned-module-ready-invocation" } else { "native-controller-default" },
         "replica_concurrency":replica_concurrency,
     });
+    if let Some(admission) = admission {
+        identity["batch_admission"] =
+            serde_json::to_value(admission).map_err(|error| Error::Io(error.to_string()))?;
+    }
     let bytes = serde_json::to_vec(&identity).map_err(|error| Error::Io(error.to_string()))?;
     Ok(ExecutionPlanFingerprint(format!(
         "asb-protocol-v1:{:x}",
@@ -571,6 +615,68 @@ mod tests {
         assert_eq!(plan.budgets.execution_seconds, Some(42));
         assert!(plan.collectors.is_empty());
     }
+    #[test]
+    fn shared_admission_policy_has_its_own_cohort_and_matches_actual_gate_caps() {
+        let mut config = config("[planning.repetition]\nindex=1\ntotal=3");
+        let caps = EffectiveBudgets {
+            execution_seconds: Some(900.0),
+            ..Default::default()
+        };
+        let admission = BatchAdmissionPolicy::current();
+        assert_eq!(admission.material_timeout().as_secs(), 1800);
+        assert_eq!(admission.launch_timeout().as_secs(), 1800);
+        let manual = protocol_fingerprint(&config, &resolve(&config).unwrap(), caps, 2).unwrap();
+        let first = protocol_fingerprint_with_admission(
+            &config,
+            &resolve(&config).unwrap(),
+            caps,
+            2,
+            Some(admission),
+        )
+        .unwrap();
+        assert_ne!(manual, first);
+        config.planning.as_mut().unwrap().repetition.index = 2;
+        assert_eq!(
+            first,
+            protocol_fingerprint_with_admission(
+                &config,
+                &resolve(&config).unwrap(),
+                caps,
+                2,
+                Some(admission)
+            )
+            .unwrap()
+        );
+        config.planning.as_mut().unwrap().repetition.total = 4;
+        assert_ne!(
+            first,
+            protocol_fingerprint_with_admission(
+                &config,
+                &resolve(&config).unwrap(),
+                caps,
+                2,
+                Some(admission)
+            )
+            .unwrap()
+        );
+        config.planning.as_mut().unwrap().repetition.total = 3;
+        let changed = BatchAdmissionPolicy {
+            launch_seconds: 1801,
+            ..admission
+        };
+        assert_ne!(
+            first,
+            protocol_fingerprint_with_admission(
+                &config,
+                &resolve(&config).unwrap(),
+                caps,
+                2,
+                Some(changed)
+            )
+            .unwrap()
+        );
+    }
+
     #[test]
     fn protocol_cohort_omits_occurrence_but_binds_repeat_total_caps_and_replica_concurrency() {
         let mut config = config("[planning.repetition]\nindex=1\ntotal=3");

@@ -57,9 +57,19 @@ fn install_receipt(command: &mut Command, receipt_fd: i32) {
 
 #[cfg(unix)]
 pub(crate) fn resume(child: &mut std::process::Child) -> io::Result<()> {
-    let pid = child.id();
+    wait_stopped(child)?;
+    if unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGCONT) } == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn wait_stopped(child: &mut std::process::Child) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
+        let pid = child.id();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             if child.try_wait()?.is_some() {
@@ -81,11 +91,9 @@ pub(crate) fn resume(child: &mut std::process::Child) -> io::Result<()> {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }
-    if unsafe { libc::kill(pid as libc::pid_t, libc::SIGCONT) } == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = child;
+    Ok(())
 }
 
 #[cfg(unix)]
