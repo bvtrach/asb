@@ -1235,7 +1235,7 @@ mod tests {
         ] {
             let fixture = Fixture::new("swe-bench-lite", 1);
             let mut record = fixture.record(1, json!(false), true, true);
-            record["summary"]["process_termination"] = retained_fact;
+            record["summary"]["process_termination"] = retained_fact.clone();
             let outcome = fixture.publish(1, &record);
             let directory = fixture.directory().join("measurements");
             fs::create_dir(&directory).unwrap();
@@ -1243,7 +1243,7 @@ mod tests {
             let mut measurement = record["summary"].clone();
             measurement["status"] = json!("completed");
             measurement["success"] = json!(true);
-            measurement["process_termination"] = measured_fact;
+            measurement["process_termination"] = measured_fact.clone();
             if diagnostic {
                 measurement["process_termination_diagnostic"] = json!("malformed");
             }

@@ -58,6 +58,8 @@ pub(super) fn flatten_numbers(
                         | "started_unix_ms"
                         | "collected_unix_ms"
                         | "clock_ticks_per_second"
+                        | "process_termination"
+                        | "process_termination_diagnostic"
                 ) || (prefix.is_empty()
                     && matches!(key.as_str(), "execution_cohort" | "replica_index"))
                 {
@@ -121,6 +123,26 @@ impl GraphNames {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn termination_observations_are_categorical_at_every_metric_root() {
+        for prefix in ["", "host", "component", "collector"] {
+            let mut values = BTreeMap::new();
+            flatten_numbers(
+                prefix,
+                &json!({
+                    "elapsed_ms":4,
+                    "process_termination":{"kind":"code","code":137},
+                    "nested":{"process_termination":{"kind":"signal","signal":9}},
+                    "process_termination_diagnostic":"malformed"
+                }),
+                &mut values,
+            )
+            .unwrap();
+            assert_eq!(values.len(), 1);
+            assert_eq!(values.values().next(), Some(&4.0));
+        }
+    }
 
     #[test]
     fn numeric_paths_preserve_literal_separators_arrays_empty_keys_and_backslashes() {
