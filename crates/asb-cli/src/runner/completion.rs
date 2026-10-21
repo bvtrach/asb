@@ -51,6 +51,15 @@ pub(super) fn persist(
     render_json(result, &mut summary)?;
     let summary: serde_json::Value = serde_json::from_slice(&summary)
         .map_err(|_| Error::Io("cannot encode task completion summary".into()))?;
+    if !crate::workloads::ResourceDisposition::matches_record(
+        Some(&serde_json::json!(result.workload_resource_disposition)),
+        workload_cleanup_confirmed,
+        &summary,
+    ) {
+        return Err(Error::Input(
+            "task settlement disposition contradicts cleanup confirmation".into(),
+        ));
+    }
     let proxy_outputs = proxy
         .output_files
         .iter()
@@ -72,6 +81,7 @@ pub(super) fn persist(
         "replica":context.replica,"outputs":outputs,
         "scope":"task-outcome-not-yet-a-resume-receipt",
         "workload_cleanup_confirmed":workload_cleanup_confirmed,
+        "workload_resource_disposition":result.workload_resource_disposition,
         "proxy_cleanup_confirmed":proxy.cleanup_confirmed,
         "proxy_evidence":proxy_outputs,
         "summary":summary,"workload_evidence":evidence}))

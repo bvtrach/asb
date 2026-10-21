@@ -15,6 +15,54 @@ from asb_execution import ExecutionError, ManagedDockerWorkspace
 
 
 class TerminalExecutionTests(unittest.TestCase):
+    def test_only_same_shell_tasks_initialize_an_agent_terminal(self):
+        for same_shell in [False,True]:
+            with self.subTest(same_shell=same_shell):
+                task = subject.TerminalBenchTask(Mock(),"catalog","task","unused")
+                task.handler = SimpleNamespace(task=SimpleNamespace(run_tests_in_same_shell=same_shell))
+                task.terminal = Mock()
+                sentinel = object()
+                task.terminal.create_session.return_value = sentinel
+                if not same_shell:
+                    task.terminal.create_session.side_effect = AssertionError("unused session must not start")
+                task.prepare_agent_session()
+                if same_shell:
+                    task.terminal.create_session.assert_called_once_with("agent",as_configured_user=True)
+                    self.assertIs(task.agent_session,sentinel)
+                else:
+                    task.terminal.create_session.assert_not_called()
+                    self.assertIsNone(task.agent_session)
+
+    def test_fresh_grading_preserves_declared_shell_semantics(self):
+        import asb_retained
+        failure = ModuleType("terminal_bench.agents.failure_mode")
+        failure.FailureMode = SimpleNamespace(NONE=SimpleNamespace(value="none"))
+        for same_shell in [False,True]:
+            with self.subTest(same_shell=same_shell), tempfile.TemporaryDirectory() as directory:
+                task = subject.TerminalBenchTask(Mock(),"catalog","task",directory)
+                pane_path = Mock()
+                task.handler = SimpleNamespace(task=SimpleNamespace(run_tests_in_same_shell=same_shell),
+                    trial_paths=SimpleNamespace(post_test_pane_path=pane_path))
+                task.invocation = {"identity":{"dataset":{},"task_id":"task"}}
+                task.catalog = {"dataset":{},"sdk":{}}
+                session = Mock()
+                session.capture_pane.return_value = "verifier output"
+                task.terminal = Mock()
+                task.terminal.create_session.return_value = session
+                task.evaluator = Mock()
+                task.evaluator._run_tests.return_value = failure.FailureMode.NONE
+                task.evaluator._parse_results.return_value = ({"test":SimpleNamespace(value="passed")},failure.FailureMode.NONE)
+                task.evaluator._is_resolved.return_value = True
+                task.prepare_agent_session()
+                with patch.dict(sys.modules,{"terminal_bench.agents.failure_mode":failure}), \
+                     patch.object(subject,"record_grading_start"),patch.object(subject,"write_json"), \
+                     patch.object(asb_retained,"record_verifier_return"):
+                    result = task.grade_environment()
+                self.assertTrue(result["resolved"])
+                task.terminal.create_session.assert_called_once_with(
+                    "agent" if same_shell else "tests",as_configured_user=same_shell)
+                task.evaluator._run_tests.assert_called_once_with(task.terminal,session,task.handler)
+
     def test_verifier_networks_remove_agent_override_and_preserve_original_services(self):
         container = Mock(attrs={"NetworkSettings": {"Networks": {"fixture-only": {}, "service": {}}}})
         client = Mock()

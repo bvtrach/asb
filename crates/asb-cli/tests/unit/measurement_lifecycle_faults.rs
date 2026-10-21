@@ -44,9 +44,16 @@ fn failing_adapter_and_full_journal_still_stop_process_collectors_before_evaluat
             .join("../../target/lifecycle-fault-fixtures")
             .join(crate::workloads::TaskIdentity::local("collector", None).attempt_id);
         fs::create_dir_all(&root).unwrap();
-        let mut session =
-            Session::start_with_adapters(&root, &[], None, None, vec![&FAILING, &SCOPED], false)
-                .unwrap();
+        let mut session = Session::start_with_adapters(
+            &root,
+            &[],
+            None,
+            None,
+            vec![&FAILING, &SCOPED],
+            false,
+            None,
+        )
+        .unwrap();
         if full {
             for _ in 0..256 {
                 session.event(LifecycleEvent::RunStarted).unwrap();

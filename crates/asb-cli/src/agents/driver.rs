@@ -41,6 +41,14 @@ pub(crate) fn namespace_id() -> Result<u64, Error> {
 #[serde(deny_unknown_fields)]
 pub(crate) struct GuestRequest {
     #[serde(default)]
+    pub owned_instrumentation: Option<crate::workloads::staging::Ownership>,
+    #[serde(default)]
+    pub task_identity: Option<crate::workloads::session::TaskIdentity>,
+    /// Workload-owned persistent shells keep their actual cwd, not a guessed
+    /// container default. The benchmark/project identities remain separate.
+    #[serde(default)]
+    pub inherit_working_directory: bool,
+    #[serde(default)]
     pub process_lifetime: crate::workloads::session::ProcessLifetime,
     #[serde(default)]
     pub workload_owner: Option<WorkloadOwner>,
@@ -64,6 +72,11 @@ fn default_timeout() -> f64 {
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct GuestResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owned_instrumentation: Option<crate::workloads::staging::Ownership>,
+    /// Exact effective directory selected before launch, not re-resolved later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_workspace: Option<PathBuf>,
     #[serde(default)]
     pub elapsed_ms: Option<u64>,
     #[serde(default)]
@@ -102,6 +115,59 @@ pub(crate) fn isolate_parent_state(command: &mut Command) {
     }
 }
 
+/// Allocate fresh conventional client state for one repeated native execution.
+///
+/// No parent files are copied. Adapter preparation may subsequently install its
+/// own selected-provider configuration inside this execution's private runtime.
+pub(crate) fn prepare_fresh_state(command: &mut Command, root: &Path) -> Result<(), Error> {
+    let mut parent = fs::DirBuilder::new();
+    parent.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        parent.mode(0o700);
+    }
+    parent
+        .create(
+            root.parent()
+                .ok_or_else(|| Error::Input("missing agent state parent".into()))?,
+        )
+        .map_err(crate::io_error)?;
+    let mut directory = fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        directory.mode(0o700);
+    }
+    // Existing state is never reused or cleaned on behalf of this attempt.
+    directory.create(root).map_err(crate::io_error)?;
+    for (variable, name) in [
+        ("HOME", "home"),
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_STATE_HOME", "state"),
+        ("XDG_RUNTIME_DIR", "runtime"),
+        ("TMPDIR", "tmp"),
+    ] {
+        let path = root.join(name);
+        directory.create(&path).map_err(crate::io_error)?;
+        command.env(variable, &path);
+        if variable == "TMPDIR" {
+            command.env("TMP", &path).env("TEMP", &path);
+        }
+    }
+    // Registry owners declare aliases; the generic runner has no agent-name
+    // branches. Remove enclosing-agent overrides too, not only the selected
+    // client's, before the selected adapter prepares fresh configuration.
+    for adapter in super::adapters::REGISTRY {
+        for variable in adapter.state_environment_vars() {
+            command.env_remove(variable);
+        }
+    }
+    Ok(())
+}
+
 fn absolute(path: &Path) -> bool {
     path.is_absolute()
         && !path
@@ -109,7 +175,33 @@ fn absolute(path: &Path) -> bool {
             .any(|part| matches!(part, Component::ParentDir))
 }
 
-fn prepare(request: &GuestRequest) -> Result<Command, Error> {
+fn execution_workspace(request: &GuestRequest) -> Result<PathBuf, Error> {
+    if request.inherit_working_directory {
+        std::env::current_dir()
+            .map_err(|_| Error::Input("cannot resolve inherited task shell directory".into()))
+    } else {
+        Ok(PathBuf::from(&request.config.workspace))
+    }
+}
+
+#[derive(Debug)]
+struct PreparedGuest {
+    command: Command,
+    instrumentation: Option<crate::workloads::staging::Guard>,
+}
+impl std::ops::Deref for PreparedGuest {
+    type Target = Command;
+    fn deref(&self) -> &Command {
+        &self.command
+    }
+}
+impl std::ops::DerefMut for PreparedGuest {
+    fn deref_mut(&mut self) -> &mut Command {
+        &mut self.command
+    }
+}
+
+fn prepare(request: &GuestRequest) -> Result<PreparedGuest, Error> {
     if !request.timeout_seconds.is_finite() || !(0.001..=86400.0).contains(&request.timeout_seconds)
     {
         return Err(Error::Input(
@@ -121,17 +213,45 @@ fn prepare(request: &GuestRequest) -> Result<Command, Error> {
             "guest execution requires one bounded task invocation".into(),
         ));
     }
-    let workspace = Path::new(&request.config.workspace);
+    let workspace = execution_workspace(request)?;
+    let instrumentation = request
+        .owned_instrumentation
+        .as_ref()
+        .map(|owner| {
+            if request.runtime_dir != Path::new(crate::workloads::staging::PRIVATE)
+                || request.run_dir != Path::new(crate::workloads::staging::PRIVATE).join("attempt")
+                || request.project_root != Path::new("/opt/asb-project")
+                || !request.task_identity.as_ref().is_some_and(|identity| {
+                    identity.attempt_id == owner.attempt
+                        && identity.workload == request.config.workload
+                })
+            {
+                return Err(Error::Input(
+                    "owned instrumentation does not match this task invocation".into(),
+                ));
+            }
+            crate::workloads::staging::verify(owner)
+        })
+        .transpose()?;
+    let instrumentation_overlap = if instrumentation.is_some() {
+        crate::workloads::staging::contains_workspace(&workspace)?
+            || crate::workloads::staging::contains_workspace(Path::new(&request.config.workspace))?
+    } else {
+        false
+    };
     if ![
-        workspace,
+        workspace.as_path(),
+        Path::new(&request.config.workspace),
         &request.project_root,
         &request.runtime_dir,
         &request.run_dir,
     ]
     .into_iter()
     .all(absolute)
-        || request.runtime_dir.starts_with(workspace)
-        || request.run_dir.starts_with(workspace)
+        || (instrumentation.is_none()
+            && (request.runtime_dir.starts_with(&workspace)
+                || request.run_dir.starts_with(&workspace)))
+        || instrumentation_overlap
         || !request.run_dir.starts_with(&request.runtime_dir)
     {
         return Err(Error::Input("guest workspace and private runtime paths must be absolute, separate and owned by this attempt".into()));
@@ -164,8 +284,13 @@ fn prepare(request: &GuestRequest) -> Result<Command, Error> {
     .ok_or_else(|| {
         Error::Run("selected agent is not installed in the guest tool project".into())
     })?;
+    let mut execution_config = request.config.clone();
+    execution_config.workspace = workspace
+        .to_str()
+        .ok_or_else(|| Error::Input("task shell directory must be valid UTF-8".into()))?
+        .to_owned();
     let specification = adapter.command(&super::CommandContext {
-        config: &request.config,
+        config: &execution_config,
         endpoint: Some(&request.connection.base_url),
         interface: Some(request.connection.interface),
         prompt: &request.prompt,
@@ -176,7 +301,7 @@ fn prepare(request: &GuestRequest) -> Result<Command, Error> {
         command.arg(&request.prompt);
     }
     command
-        .current_dir(workspace)
+        .current_dir(&workspace)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -195,7 +320,10 @@ fn prepare(request: &GuestRequest) -> Result<Command, Error> {
         runtime_dir: &request.runtime_dir,
         run_dir: &request.run_dir,
     })?;
-    Ok(command)
+    Ok(PreparedGuest {
+        command,
+        instrumentation,
+    })
 }
 
 fn run(request: GuestRequest) -> Result<u8, Error> {
@@ -222,6 +350,12 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
         ));
     }
     let mut command = prepare(&request)?;
+    // Keep the same launch identity even if a tool renames/deletes its cwd.
+    // Looking up current_dir again after execution can erase a valid outcome.
+    let workspace = command
+        .get_current_dir()
+        .ok_or_else(|| Error::Input("prepared guest command has no task directory".into()))?
+        .to_path_buf();
     fs::create_dir_all(&request.run_dir)
         .map_err(|error| Error::Io(format!("cannot create private guest artifacts: {error}")))?;
     let mut capture = if request.namespace_collectors.is_empty() {
@@ -236,6 +370,9 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
         session.attach_pid(std::process::id()).map_err(Error::Run)?;
         Some(session)
     };
+    if let (Some(guard), Some(owner)) = (&command.instrumentation, &request.owned_instrumentation) {
+        guard.revalidate(owner)?;
+    }
     // Preparation and command construction are complete before the outer
     // collector attaches. Credentials remain only in process memory/env.
     println!("__ASB_GATE__:{}", std::process::id());
@@ -304,7 +441,7 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let adapter = super::find(&request.config.agent).expect("validated agent");
     let artifacts = adapter.collect(&super::CollectionContext {
-        workspace: Path::new(&request.config.workspace),
+        workspace: &workspace,
         run_dir: &request.run_dir,
         interface: Some(request.connection.interface),
         anthropic_input_includes_cache: crate::providers::anthropic_input_includes_cache(
@@ -320,6 +457,8 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
     );
     let usage = crate::measurements::with_artifact_usage(usage, artifacts.token_usage);
     let result = GuestResult {
+        owned_instrumentation: request.owned_instrumentation.clone(),
+        execution_workspace: Some(workspace.clone()),
         #[cfg(target_os = "linux")]
         elapsed_ms: held.as_ref().map(|held| held.elapsed_ms),
         #[cfg(not(target_os = "linux"))]
@@ -331,11 +470,7 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
         workload_owner: request.workload_owner,
         schema_version: 1,
         exit_code: output.status.code(),
-        final_response: super::final_response(
-            &request.config.agent,
-            &stdout,
-            Path::new(&request.config.workspace),
-        ),
+        final_response: super::final_response(&request.config.agent, &stdout, &workspace),
         token_usage: usage,
         steps: artifacts
             .steps

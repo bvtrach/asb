@@ -14,6 +14,19 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+Current typed run-disposition integration is staged as **0.2.27**, on the
+independently source-reviewed selection-identity integration **0.2.26**, after
+independent main feature PR #250 consumed version 0.2.25 at
+`f48953476265e1f77373bb8623f65224c32cb047`. The selection-identity source merge
+was conflict-free;
+the TUI choice-key, named-pane and concurrency changes remain intact. This
+candidate additionally retains the private typed operational disposition and
+pending-evaluation failure repair while preserving main's repeated execution,
+fresh adapter preparation, workload transport and resource/artifact contracts.
+Earlier 1,066-test evidence predates that feature and does not qualify this new
+combined tree. Fresh independent integration review and full offline checks,
+exact-head hosted/package CI, merge, post-merge checks and release are pending.
+
 Integrated repair, released patch **0.2.21**: the independently reviewed
 launch-descriptor/one-shot admission repair (`b1a54fde`) is combined with the
 reviewed workload-wizard stack (`6af7939b`), retaining shared benchmark paths,
@@ -185,7 +198,7 @@ serialized representations and backwards reading. Add malformed/unknown
 protocol fixtures, round-trip and compatibility tests. Trial-set display
 suffixes should not serve as hidden identifiers. Pending.
 
-Run-disposition candidate, provisional patch **0.2.26**: an actual
+Run-disposition candidate, provisional patch **0.2.27**: an actual
 inconsistency allowed pending evaluator output to report `evaluation-pending`
 while collector/presentation errors recorded a primary failure. Private
 `RunDisposition::from_facts` now derives status, typed primary failure and
@@ -211,8 +224,20 @@ all-target/all-feature Clippy and formatting pass. Independent source review
 approved `5c4ed922`; its full offline all-target/all-feature suite
 passed 1,068 tests with 21 optional skips, followed by strict Clippy, formatting
 and build/docs/diagrams checks. Integration with the qualified `656aeed1`
-identity/provider/report/checkpoint stream preserves the typed disposition
-contract and recorded planning metadata. Fresh integration review and full
+identity/provider/report/checkpoint stream preserved the typed disposition
+contract and recorded planning metadata. The new integration with reviewed
+`381a653e` additionally retains main's fresh repeated execution, official material
+preparation and transport paths, independent resource settlement and artifact
+references. Its output-loss path retains the I/O class needed to stop later
+batches even when another failure has diagnostic priority. Earlier full evidence
+does not qualify this newly combined tree. New focused offline qualification
+passed 438 tests with five explicit optional skips: 91 runner, 145 workload,
+69 comparison, 68 sweep, 35 Python protocol wrappers, 14 actual guest-driver
+and 16 actual repeated-run tests. The actual binary was built first; strict
+all-target/all-feature Clippy and formatting passed. The twelve disposition
+full-entry fixtures also require agreement on resource disposition and artifact
+references across logs, measurements, summaries and private outcomes.
+Fresh integration review and full
 qualification, exact-head ordinary/package CI, merge, post-merge verification
 and release remain pending. No live-provider/host qualification is claimed.
 This is not a controller/dispatch protocol rewrite, workload-kind registry
@@ -518,15 +543,16 @@ slow TERM-resistant double-forked writers, unchanged unrelated sentinels and
 absence of writes after confirmed cleanup. Other fixtures cover install success
 and failure, helper framing, descriptor noninheritance, running-image pathname
 replacement, keeper failure and unwind custody. Existing trial-wizard regression
-coverage remains required. This candidate is not merged/released qualification,
+coverage remains required. This repair does not establish
 transactional installation rollback or bounded disappearance of unkillable
 kernel tasks. The user-confirmed removal of the CI coverage gate is retained.
 Independent source review approved the integrated `51e30654`; its full offline
 suite passed 1,062 tests with 21 optional skips, followed by strict Clippy,
 formatting and sequential build/private docs/diagrams/completions. Current main
 ancestry changes only this ledger, not that qualified production/test tree.
-Exact-head hosted/package CI, merge, both post-merge jobs and release remain
-pending for this **0.2.24** candidate.
+Exact-head hosted/package CI passed in run `39646000398`; PR #290 merged as
+`bb33f4007a6309c248239c6ee0080c1baeeddd3b`. Both post-merge jobs in run
+`39647416921` and the **0.2.24** release remain pending.
 
 ## 7. Limits, diagnostics and CLI consistency
 

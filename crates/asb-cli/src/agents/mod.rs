@@ -55,6 +55,10 @@ pub(crate) trait AgentAdapter: Sync {
     fn replay_credential_vars(&self) -> &'static [&'static str] {
         &[]
     }
+    /// Mutable client-state overrides, distinct from provider credentials.
+    fn state_environment_vars(&self) -> &'static [&'static str] {
+        &[]
+    }
     fn collect(&self, _context: &CollectionContext<'_>) -> AgentArtifacts {
         AgentArtifacts::default()
     }
@@ -234,6 +238,7 @@ pub(super) struct StaticAdapter {
     failure: Option<FailureHook>,
     response_failure: Option<ResponseFailureHook>,
     replay_credential_vars: &'static [&'static str],
+    state_environment_vars: &'static [&'static str],
     preferred_executables: Option<PreferredExecutablesHook>,
 }
 impl StaticAdapter {
@@ -260,6 +265,7 @@ impl StaticAdapter {
             failure: None,
             response_failure: None,
             replay_credential_vars: &[],
+            state_environment_vars: &[],
             preferred_executables: None,
         }
     }
@@ -314,8 +320,19 @@ impl StaticAdapter {
         self.replay_credential_vars = vars;
         self
     }
+
+    pub(super) const fn with_state_environment_vars(
+        mut self,
+        vars: &'static [&'static str],
+    ) -> Self {
+        self.state_environment_vars = vars;
+        self
+    }
 }
 impl AgentAdapter for StaticAdapter {
+    fn state_environment_vars(&self) -> &'static [&'static str] {
+        self.state_environment_vars
+    }
     fn id(&self) -> &'static str {
         self.id
     }
@@ -571,15 +588,25 @@ pub(crate) fn local_lookup(id: &str, tools_root: &Path) -> crate::executables::L
     )
 }
 
-pub(crate) fn resolve(id: &str, project_root: &Path, tools_dir: &str) -> Option<String> {
-    let adapter = find(id)?;
+pub(crate) fn execution_lookup(
+    id: &str,
+    project_root: &Path,
+    tools_dir: &str,
+) -> crate::executables::Lookup {
+    let Some(adapter) = find(id) else {
+        return crate::executables::Lookup::Missing;
+    };
     if let Some(directory) = std::env::var_os("ASB_TOOL_DIR") {
         match crate::executables::lookup([PathBuf::from(directory).join(adapter.executable())]) {
             crate::executables::Lookup::Missing => {}
-            other => return other.path().map(|path| path.to_string_lossy().into_owned()),
+            other => return other,
         }
     }
     local_lookup(id, &project::resolve(project_root, tools_dir))
+}
+
+pub(crate) fn resolve(id: &str, project_root: &Path, tools_dir: &str) -> Option<String> {
+    execution_lookup(id, project_root, tools_dir)
         .path()
         .map(|path| path.to_string_lossy().into_owned())
 }

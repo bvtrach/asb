@@ -13,6 +13,7 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     prepare_adapter,
 )
 .with_replay_credential_vars(&["ANTHROPIC_AUTH_TOKEN"])
+.with_state_environment_vars(&["CLAUDE_CONFIG_DIR"])
 .with_output_usage(output_usage)
 .with_step_count(step_count);
 
