@@ -118,6 +118,19 @@ release-head qualification and delivery remain pending. Main `398c36cc` removed
 the hosted coverage gate and the user explicitly confirmed keeping that removal;
 local measurements are optional diagnostics, not a required hosted check.
 
+Flamegraph cleanup candidate, staged patch **0.2.15**: the perf-script/stack-collapse/render pipeline
+owns every directly spawned stage. A failure, timeout or unwind signals all
+remaining stages before polling against one shared cleanup deadline, preserving
+the original error and retaining unconfirmed children in the shared private
+`OwnedReaper` established before any spawn. It no longer selects processes by
+parent PID or returns from an upstream failure while forgetting a downstream
+child. Offline real-child tests cover stage/file/spawn failures, timeout,
+unwind, fallback-custody handoff, actual reaping and unrelated sentinel survival.
+The reviewed source is integrated with main's benchmark planning changes;
+fresh ordinary/package qualification, post-merge checks and a patch release
+remain pending in PR #276. Coverage is optional, not a delivery gate. This does
+not claim arbitrary descendant or crash-persistent cleanup.
+
 ## 4. Typed domain and wire contracts
 
 Review run status/evaluation/failure categories, execution mode, result source,
