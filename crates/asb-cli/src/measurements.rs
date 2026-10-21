@@ -13,7 +13,7 @@ pub use cohort::ExecutionCohort;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -222,8 +222,8 @@ impl ProcessTreeSnapshot {
         root: ProcessIdentity,
         executable: PathBuf,
         arguments: TreeSnapshotArguments,
-        stdout_path: PathBuf,
-        stderr_path: PathBuf,
+        mut stdout_file: File,
+        mut stderr_file: File,
     ) -> Option<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
@@ -256,38 +256,26 @@ impl ProcessTreeSnapshot {
                             {
                                 continue;
                             }
-                            if let Ok(mut file) = OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open(&stdout_path)
                             {
                                 use std::io::Write;
                                 let _ = writeln!(
-                                    file,
+                                    stdout_file,
                                     "# asb-snapshot-elapsed-seconds {:.6}",
                                     started.elapsed().as_secs_f64()
                                 );
-                                let _ = file.write_all(&output.stdout);
+                                let _ = stdout_file.write_all(&output.stdout);
                             }
-                            if let Ok(mut file) = OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open(&stderr_path)
                             {
                                 use std::io::Write;
-                                let _ = file.write_all(&output.stderr);
+                                let _ = stderr_file.write_all(&output.stderr);
                             }
                         }
                         Err(error) => {
-                            if let Ok(mut file) = OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open(&stderr_path)
-                            {
-                                use std::io::Write;
-                                let _ =
-                                    writeln!(file, "process-tree sampler command failed: {error}");
-                            }
+                            use std::io::Write;
+                            let _ = writeln!(
+                                stderr_file,
+                                "process-tree sampler command failed: {error}"
+                            );
                         }
                     }
                     let interval = measurement_interval_ms();
@@ -445,8 +433,7 @@ pub(crate) struct Collector {
     pub(crate) adapter: &'static dyn collectors::CollectorAdapter,
     pub(crate) child: Child,
     pub(crate) started: Instant,
-    pub(crate) stdout_path: PathBuf,
-    pub(crate) stderr_path: PathBuf,
+    pub(crate) captures: [crate::evidence::Capture; 2],
 }
 
 impl Drop for Collector {
@@ -1045,37 +1032,37 @@ impl Session {
     fn process_stopped_collectors(&mut self) -> Result<(), String> {
         let mut errors = Vec::new();
         for StoppedCollector {
-            collector,
+            mut collector,
             status,
             elapsed_ms,
         } in std::mem::take(&mut self.stopped_collectors)
         {
-            // Pin sources before adapter processing. A pathname alone is not
-            // permission to delete a later replacement after publication.
-            let captures = [&collector.stdout_path, &collector.stderr_path]
-                .map(|path| crate::evidence::Capture::open(path));
+            // Admission owns exact source handles, not post-exit pathnames.
+            let captures = &mut collector.captures;
             let mut read_failed = false;
-            let mut diagnostic = |capture: Result<&crate::evidence::Capture, &String>| match capture
-                .map_err(Clone::clone)
-                .and_then(|capture| capture.diagnostic(MAX_CAPTURE))
-            {
-                Ok(text) => text,
-                Err(error) => {
+            for capture in captures.iter_mut() {
+                if let Err(error) = capture.freeze() {
                     read_failed = true;
                     errors.push(error);
-                    String::new()
                 }
-            };
-            let stdout = diagnostic(captures[0].as_ref());
-            let mut stderr = diagnostic(captures[1].as_ref());
-            let context = collectors::ProcessContext {
-                name: &collector.name,
-                status: &status,
-                stdout: &stdout,
-                stderr: &stderr,
-                stdout_path: &collector.stdout_path,
-                stderr_path: &collector.stderr_path,
-            };
+            }
+            let mut diagnostic =
+                |capture: &crate::evidence::Capture| match capture.diagnostic(MAX_CAPTURE) {
+                    Ok(text) => text,
+                    Err(error) => {
+                        read_failed = true;
+                        errors.push(error);
+                        String::new()
+                    }
+                };
+            let stdout = diagnostic(&captures[0]);
+            let mut stderr = diagnostic(&captures[1]);
+            let context = collectors::ProcessContext::new(
+                &collector.name,
+                &status,
+                [&stdout, &stderr],
+                [&captures[0], &captures[1]],
+            );
             let mut data = match collector.adapter.process(self, &context) {
                 Ok(data) => data,
                 Err(error) => {
@@ -1087,6 +1074,12 @@ impl Session {
                     data
                 }
             };
+            for capture in captures.iter() {
+                if let Err(error) = capture.verify_stopped() {
+                    read_failed = true;
+                    errors.push(error);
+                }
+            }
             if read_failed {
                 data.status = "failed".into();
                 data.metrics.clear();
@@ -1109,16 +1102,11 @@ impl Session {
             if let Err(error) =
                 write_json(&self.dir.join(format!("{}.json", collector.name)), &result)
             {
-                errors.push(format!("{error}; raw capture cleanup skipped; inspect {} and {}; do not repeat execution to repair reporting",collector.stdout_path.display(),collector.stderr_path.display()));
+                errors.push(format!("{error}; raw capture cleanup skipped; inspect {} and {}; do not repeat execution to repair reporting",captures[0].path().display(),captures[1].path().display()));
             } else if !read_failed {
-                for capture in captures {
-                    match capture {
-                        Ok(capture) => {
-                            if let Err(error) = capture.consume() {
-                                errors.push(error);
-                            }
-                        }
-                        Err(error) => errors.push(error),
+                for capture in captures.iter() {
+                    if let Err(error) = capture.consume() {
+                        errors.push(error);
                     }
                 }
             }
@@ -1143,6 +1131,10 @@ impl Session {
         }
         let stdout_path = self.dir.join(format!("{name}.stdout"));
         let stderr_path = self.dir.join(format!("{name}.stderr"));
+        let captures = [
+            crate::evidence::Capture::create(&stdout_path)?,
+            crate::evidence::Capture::create(&stderr_path)?,
+        ];
         {
             let executable = executable.to_path_buf();
             let sampler = ProcessTreeSnapshot::start(
@@ -1151,8 +1143,8 @@ impl Session {
                     .ok_or("process-tree sampler target has exited")?,
                 executable,
                 arguments,
-                stdout_path.clone(),
-                stderr_path.clone(),
+                captures[0].writer()?,
+                captures[1].writer()?,
             )
             .ok_or_else(|| format!("cannot start {name} process-tree sampler"))?;
             self.process_tree_snapshots.push(sampler);
@@ -1169,8 +1161,7 @@ impl Session {
                 adapter: collectors::find(name).expect("registered collector"),
                 child,
                 started: Instant::now(),
-                stdout_path,
-                stderr_path,
+                captures,
             });
             Ok(())
         }
@@ -1659,6 +1650,7 @@ fn clock_ticks_per_second() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     fn process_fixture(proc: &Path, pid: u32, parent: u32, start: u64, state: &str) {
         fs::create_dir_all(proc.join(pid.to_string())).unwrap();
@@ -1882,7 +1874,7 @@ mod tests {
                 _: &mut Session,
                 context: &collectors::ProcessContext<'_>,
             ) -> Result<collectors::ProcessData, String> {
-                assert!(context.stderr_path.is_file());
+                assert!(context.stderr_reader().is_ok());
                 if self.0 {
                     std::thread::sleep(Duration::from_millis(150));
                 }
@@ -1907,15 +1899,21 @@ mod tests {
             for adapter in [&SCOPED, &WHOLE] {
                 let stdout_path = dir.join(format!("{}.stdout", adapter.id()));
                 let stderr_path = dir.join(format!("{}.stderr", adapter.id()));
-                fs::write(&stdout_path, "bounded fixture counter\n").unwrap();
-                fs::write(&stderr_path, "").unwrap();
+                let captures = [
+                    crate::evidence::Capture::create(&stdout_path).unwrap(),
+                    crate::evidence::Capture::create(&stderr_path).unwrap(),
+                ];
+                captures[0]
+                    .writer()
+                    .unwrap()
+                    .write_all(b"bounded fixture counter\n")
+                    .unwrap();
                 session.collectors.push(Collector {
                     name: adapter.id().into(),
                     adapter,
                     child: Command::new("sleep").arg("86400").spawn().unwrap(),
                     started: Instant::now(),
-                    stdout_path,
-                    stderr_path,
+                    captures,
                 });
             }
             session.event(end).unwrap();
@@ -1981,7 +1979,7 @@ mod tests {
                 _: &mut Session,
                 context: &collectors::ProcessContext<'_>,
             ) -> Result<collectors::ProcessData, String> {
-                assert!(context.stderr_path.is_file());
+                assert!(context.stderr_reader().is_ok());
                 Err("fixture SVG export failed".into())
             }
         }
@@ -1992,15 +1990,21 @@ mod tests {
         let mut session = Session::start_with_collectors(&dir, &[], None).unwrap();
         let stdout_path = dir.join("failing-export.stdout");
         let stderr_path = dir.join("failing-export.stderr");
-        fs::write(&stdout_path, "bounded counter\n").unwrap();
-        fs::write(&stderr_path, "").unwrap();
+        let captures = [
+            crate::evidence::Capture::create(&stdout_path).unwrap(),
+            crate::evidence::Capture::create(&stderr_path).unwrap(),
+        ];
+        captures[0]
+            .writer()
+            .unwrap()
+            .write_all(b"bounded counter\n")
+            .unwrap();
         session.collectors.push(Collector {
             name: "failing-export".into(),
             adapter: &FAILING,
             child: Command::new("sleep").arg("86400").spawn().unwrap(),
             started: Instant::now(),
-            stdout_path,
-            stderr_path,
+            captures,
         });
         session
             .event(collectors::LifecycleEvent::AgentExecuteEnd)

@@ -85,7 +85,8 @@ fn process(
 ) -> Result<ProcessData, String> {
     let mut result = ProcessData::from_output(context);
     if context.name == "perf-stat" {
-        let file = File::open(context.stderr_path)
+        let file = context
+            .stderr_reader()
             .map_err(|error| format!("cannot read complete perf stat output: {error}"))?;
         let parsed = parse_perf_stat(std::io::BufReader::new(file))?;
         if parsed.metrics.is_empty() {
@@ -181,7 +182,6 @@ fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
 use crate::collectors;
 use crate::measurements::{Collector, env_true, measurement_interval_ms, write_unavailable};
 use std::collections::BTreeMap;
-use std::fs::File;
 use std::io::{BufRead, Read};
 use std::time::Instant;
 
@@ -197,11 +197,13 @@ impl measurements::Session {
         }
         let data = self.dir.join("perf.data");
         let stderr_path = self.dir.join("perf.stderr");
-        let output =
-            File::create(&stderr_path).map_err(|e| format!("cannot create perf output: {e}"))?;
         let stdout_path = self.dir.join("perf.stdout");
-        let stdout = File::create(&stdout_path)
-            .map_err(|e| format!("cannot create perf standard output: {e}"))?;
+        let captures = [
+            crate::evidence::Capture::create(&stdout_path)?,
+            crate::evidence::Capture::create(&stderr_path)?,
+        ];
+        let output = captures[1].writer()?;
+        let stdout = captures[0].writer()?;
         // Attach to the runner root and inherit counters into every child.
         // Unlike a one-time comma-separated PID snapshot, perf's inheritance
         // follows helpers forked after attachment as well as descendants of
@@ -235,15 +237,16 @@ impl measurements::Session {
             adapter: collectors::find("perf").expect("registered collector"),
             child,
             started: Instant::now(),
-            stdout_path,
-            stderr_path,
+            captures,
         });
         let stat_stdout_path = self.dir.join("perf-stat.stdout");
         let stat_stderr_path = self.dir.join("perf-stat.stderr");
-        let stat_stdout = File::create(&stat_stdout_path)
-            .map_err(|e| format!("cannot create perf stat output: {e}"))?;
-        let stat_stderr = File::create(&stat_stderr_path)
-            .map_err(|e| format!("cannot create perf stat error output: {e}"))?;
+        let captures = [
+            crate::evidence::Capture::create(&stat_stdout_path)?,
+            crate::evidence::Capture::create(&stat_stderr_path)?,
+        ];
+        let stat_stdout = captures[0].writer()?;
+        let stat_stderr = captures[1].writer()?;
         let stat_args = stat_args(pid, measurement_interval_ms());
         let stat = self
             .command("perf")
@@ -257,8 +260,7 @@ impl measurements::Session {
                 adapter: collectors::find("perf").expect("registered collector"),
                 child,
                 started: Instant::now(),
-                stdout_path: stat_stdout_path,
-                stderr_path: stat_stderr_path,
+                captures,
             }),
             Err(error) => write_unavailable(
                 &self.dir.join("perf-stat.json"),
@@ -513,16 +515,15 @@ mod tests {
         let mut session =
             crate::measurements::Session::start_with_collectors(&dir, &[], None).unwrap();
         let status = std::process::Command::new("true").status().unwrap();
+        let capture = crate::evidence::Capture::open(&path).unwrap();
         let data = super::process(
             &mut session,
-            &crate::collectors::ProcessContext {
-                name: "perf-stat",
-                status: &status,
-                stdout: "",
-                stdout_path: &path,
-                stderr: "diagnostic prefix only",
-                stderr_path: &path,
-            },
+            &crate::collectors::ProcessContext::new(
+                "perf-stat",
+                &status,
+                ["", "diagnostic prefix only"],
+                [&capture, &capture],
+            ),
         )
         .unwrap();
         assert_eq!(data.status, "completed");
@@ -534,21 +535,23 @@ mod tests {
         );
         assert_eq!(data.timestamps["perf.task_clock_ms"][499], 50_100.0);
         std::fs::remove_file(&path).unwrap();
-        assert!(
-            super::process(
-                &mut session,
-                &crate::collectors::ProcessContext {
-                    name: "perf-stat",
-                    status: &status,
-                    stdout: "",
-                    stdout_path: &path,
-                    stderr: "1,,cycles,1,",
-                    stderr_path: &path,
-                }
-            )
-            .err()
-            .unwrap()
-            .contains("cannot read complete")
+        // A removed/replaced name cannot redirect the admitted source.
+        std::fs::write(&path, "0.1,999,,cycles,1,\n").unwrap();
+        let retained = super::process(
+            &mut session,
+            &crate::collectors::ProcessContext::new(
+                "perf-stat",
+                &status,
+                ["", "1,,cycles,1,"],
+                [&capture, &capture],
+            ),
+        )
+        .unwrap();
+        assert_eq!(retained.metrics, data.metrics);
+        assert_eq!(retained.timestamps, data.timestamps);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "0.1,999,,cycles,1,\n"
         );
         drop(session);
         std::fs::remove_dir_all(&dir).unwrap();

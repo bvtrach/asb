@@ -19,6 +19,7 @@ fn actual_entry_publication_faults_preserve_grades_identity_and_independent_fina
         "disposition-false-publication-log-scratch-client-output",
         "disposition-native-publication-capture-rename",
         "disposition-pending-publication-capture-sync-output",
+        "disposition-native-publication-capture-admission-output",
     ]);
 }
 
@@ -49,11 +50,15 @@ pub(super) fn prepare(case: &str, root: &Path) -> Scope {
     } else if case.contains("capture") {
         (
             root.join("measurements/capture-fixture.json"),
-            Some(if case.contains("sync") {
-                FaultPoint::DirectorySync
+            if case.contains("admission") {
+                None
             } else {
-                FaultPoint::Rename
-            }),
+                Some(if case.contains("sync") {
+                    FaultPoint::DirectorySync
+                } else {
+                    FaultPoint::Rename
+                })
+            },
             Vec::new(),
         )
     } else if case.contains("run-short") {
@@ -119,7 +124,31 @@ pub(super) fn check(
     );
     assert_eq!(completions, 0);
     assert!(!root.join(".asb-completions").exists());
-    if case.contains("capture") {
+    if case.contains("admission") {
+        assert!(error.contains("raw path changed"), "{error}");
+        assert_eq!(
+            std::fs::read(root.join("measurements/admission.stdout")).unwrap(),
+            b"A=99\n"
+        );
+        assert_eq!(
+            std::fs::read(root.join("measurements/admission.saved")).unwrap(),
+            b"A=17\n"
+        );
+        let capture: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join("measurements/admission.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(capture["stdout"], "A=17\n");
+        assert_eq!(capture["metrics"]["value"], 17.0);
+        for name in ["stdout", "stderr"] {
+            assert!(
+                !root
+                    .join(format!("measurements/capture-sibling.{name}"))
+                    .exists()
+            );
+        }
+        assert!(root.join("measurements/capture-sibling.json").is_file());
+    } else if case.contains("capture") {
         for (name, expected) in [
             ("stdout", b"complete raw stdout".as_slice()),
             ("stderr", b"complete raw stderr".as_slice()),

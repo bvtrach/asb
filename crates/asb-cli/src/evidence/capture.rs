@@ -5,8 +5,101 @@ pub(crate) struct Capture {
     path: PathBuf,
     file: File,
     metadata: Metadata,
+    stopped: Option<Metadata>,
 }
 impl Capture {
+    /// Establish identity before any child/worker receives its output handle.
+    /// Existing sources are never silently truncated/re-adopted as this attempt.
+    pub(crate) fn create(path: &Path) -> Result<Self, String> {
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let file = options.open(path).map_err(|error| {
+            format!(
+                "cannot create owned raw capture {}: {error}; preserve existing capture evidence",
+                path.display()
+            )
+        })?;
+        let metadata = file.metadata().map_err(|error| error.to_string())?;
+        Ok(Self {
+            path: path.into(),
+            file,
+            metadata,
+            stopped: None,
+        })
+    }
+    pub(crate) fn writer(&self) -> Result<File, String> {
+        self.file.try_clone().map_err(|error| {
+            format!(
+                "cannot prepare raw capture writer {}: {error}",
+                self.path.display()
+            )
+        })
+    }
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+    pub(crate) fn freeze(&mut self) -> Result<(), String> {
+        self.stopped = Some(self.file.metadata().map_err(|error| {
+            format!(
+                "cannot freeze admitted raw source {}: {error}",
+                self.path.display()
+            )
+        })?);
+        Ok(())
+    }
+    pub(crate) fn reader(&self) -> Result<CaptureReader<'_>, String> {
+        let length = self
+            .stopped
+            .as_ref()
+            .ok_or("raw capture has not reached its stopped boundary")?
+            .len();
+        Ok(CaptureReader {
+            file: &self.file,
+            offset: 0,
+            length,
+        })
+    }
+    /// Startup acknowledgements also come from the admitted handle, while its
+    /// producer is still running. This prefix is not a complete result reader.
+    pub(crate) fn startup_diagnostic(&self, limit: usize) -> Result<String, String> {
+        let length = self
+            .file
+            .metadata()
+            .map_err(|error| error.to_string())?
+            .len();
+        let mut bytes = Vec::new();
+        CaptureReader {
+            file: &self.file,
+            offset: 0,
+            length,
+        }
+        .take(limit as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+    pub(crate) fn verify_stopped(&self) -> Result<(), String> {
+        let previous = self
+            .stopped
+            .as_ref()
+            .ok_or("raw capture has not reached its stopped boundary")?;
+        let now = self.file.metadata().map_err(|error| error.to_string())?;
+        if previous.len() != now.len() || previous.modified().ok() != now.modified().ok() {
+            return Err(format!(
+                "admitted raw source {} changed after stop; no complete measurements or cleanup confirmed",
+                self.path.display()
+            ));
+        }
+        Ok(())
+    }
+    #[cfg(test)]
     pub(crate) fn open(path: &Path) -> Result<Self, String> {
         let file = open_regular(path)
             .map_err(|error| format!("cannot retain raw capture {}: {error}", path.display()))?
@@ -22,12 +115,13 @@ impl Capture {
         Ok(Self {
             path: path.into(),
             file,
+            stopped: Some(metadata.clone()),
             metadata,
         })
     }
     pub(crate) fn diagnostic(&self, limit: usize) -> Result<String, String> {
         let mut bytes = Vec::new();
-        (&self.file)
+        self.reader()?
             .take(limit as u64)
             .read_to_end(&mut bytes)
             .map_err(|error| {
@@ -43,6 +137,10 @@ impl Capture {
             return Ok(false);
         };
         let now = file.metadata()?;
+        let stopped = self
+            .stopped
+            .as_ref()
+            .ok_or_else(|| io::Error::other("raw capture was not frozen after stop"))?;
         #[cfg(unix)]
         let same = {
             use std::os::unix::fs::MetadataExt;
@@ -52,11 +150,9 @@ impl Capture {
         // deleting a same-sized replacement. Publication itself remains usable.
         #[cfg(not(unix))]
         let same = false;
-        Ok(same
-            && self.metadata.len() == now.len()
-            && self.metadata.modified()? == now.modified()?)
+        Ok(same && stopped.len() == now.len() && stopped.modified()? == now.modified()?)
     }
-    pub(crate) fn consume(self) -> Result<(), String> {
+    pub(crate) fn consume(&self) -> Result<(), String> {
         let operation = || -> io::Result<()> {
             if !self.matches(&self.path)? {
                 return Err(io::Error::other(
@@ -129,5 +225,50 @@ impl Capture {
             })
         };
         operation().map_err(|error| format!("raw capture {}: {error}", self.path.display()))
+    }
+}
+
+/// Independent positional reads never seek a cloned stdio/sampler description.
+/// The stopped length bounds EOF even if a descendant keeps an output open.
+pub(crate) struct CaptureReader<'a> {
+    file: &'a File,
+    offset: u64,
+    length: u64,
+}
+impl Read for CaptureReader<'_> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let count = bytes.len().min(
+            self.length
+                .saturating_sub(self.offset)
+                .min(usize::MAX as u64) as usize,
+        );
+        if count == 0 {
+            return Ok(0);
+        }
+        #[cfg(unix)]
+        let read = {
+            use std::os::unix::fs::FileExt;
+            self.file.read_at(&mut bytes[..count], self.offset)?
+        };
+        #[cfg(windows)]
+        let read = {
+            use std::os::windows::fs::FileExt;
+            self.file.seek_read(&mut bytes[..count], self.offset)?
+        };
+        #[cfg(not(any(unix, windows)))]
+        return Err(io::Error::other(
+            "positional capture reads are unsupported on this platform",
+        ));
+        #[cfg(any(unix, windows))]
+        {
+            if read == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "admitted capture shortened after stop",
+                ));
+            }
+            self.offset += read as u64;
+            Ok(read)
+        }
     }
 }

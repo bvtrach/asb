@@ -5,6 +5,31 @@ use serde_json::{Value, json};
 
 struct Fixture(PathBuf);
 
+#[cfg(target_os = "linux")]
+#[test]
+fn capture_creation_failure_precedes_any_sampler_or_lifecycle_child() {
+    let fixture = Fixture::new();
+    let mut session = Session::start_with_collectors(&fixture.0, &[], None).unwrap();
+    let sentinel = session.dir.join("agent-memory.stderr");
+    fs::write(&sentinel, "previous capture sentinel").unwrap();
+    let error = session
+        .start_tree_snapshot(
+            "agent-memory",
+            true,
+            Path::new("/bin/false"),
+            std::process::id(),
+            Box::new(|_| panic!("capture failure must precede worker admission")),
+        )
+        .unwrap_err();
+    assert!(error.contains("cannot create owned raw capture"), "{error}");
+    assert!(session.collectors.is_empty());
+    assert!(session.process_tree_snapshots.is_empty());
+    assert_eq!(
+        fs::read_to_string(&sentinel).unwrap(),
+        "previous capture sentinel"
+    );
+}
+
 #[test]
 fn prepared_typed_collector_data_reaches_configure_without_cross_session_sharing() {
     #[derive(Default)]
@@ -61,6 +86,16 @@ fn process_tree_snapshots_record_owned_target_output_and_command_failures() {
         let root = ProcessIdentity::read(child.0.id()).unwrap();
         let output = fixture.0.join("stdout");
         let errors = fixture.0.join("stderr");
+        let captures = [
+            crate::evidence::Capture::create(&output).unwrap(),
+            crate::evidence::Capture::create(&errors).unwrap(),
+        ];
+        let admitted_output = fixture.0.join("admitted-stdout");
+        fs::rename(&output, &admitted_output).unwrap();
+        fs::write(&output, "foreign stdout sentinel").unwrap();
+        let admitted_errors = fixture.0.join("admitted-stderr");
+        fs::rename(&errors, &admitted_errors).unwrap();
+        fs::write(&errors, "foreign stderr sentinel").unwrap();
         let snapshot = ProcessTreeSnapshot::start(
             root,
             if executable_exists {
@@ -72,11 +107,15 @@ fn process_tree_snapshots_record_owned_target_output_and_command_failures() {
                 assert_eq!(pids.len(), 1);
                 vec!["owned-process-observation".into()]
             }),
-            output.clone(),
-            errors.clone(),
+            captures[0].writer().unwrap(),
+            captures[1].writer().unwrap(),
         )
         .unwrap();
-        let wanted = if executable_exists { &output } else { &errors };
+        let wanted = if executable_exists {
+            &admitted_output
+        } else {
+            &admitted_errors
+        };
         let deadline = Instant::now() + Duration::from_secs(5);
         while fs::read_to_string(wanted).map_or(true, |text| text.is_empty())
             && Instant::now() < deadline
@@ -84,6 +123,14 @@ fn process_tree_snapshots_record_owned_target_output_and_command_failures() {
             std::thread::sleep(Duration::from_millis(10));
         }
         snapshot.stop();
+        assert_eq!(
+            fs::read_to_string(&output).unwrap(),
+            "foreign stdout sentinel"
+        );
+        assert_eq!(
+            fs::read_to_string(&errors).unwrap(),
+            "foreign stderr sentinel"
+        );
         let text = fs::read_to_string(wanted).unwrap();
         if executable_exists {
             assert!(text.contains("# asb-snapshot-elapsed-seconds"));

@@ -99,6 +99,22 @@ is rechecked after moving a candidate into private custody, before deletion;
 a racing foreign entry is restored without replacement or retained with its
 exact inspection path. Missing native identity retains scratch explicitly.
 
+Further admission review reproduced a distinct ownership gap: opening a raw
+path only after child exit adopted a replacement placed between capture
+creation and processing. The real stopped-collector repro wrote A=17, renamed
+that capture and installed foreign B=99 before finalization; the old parser
+reported 99. Captures now retain their original read/write file at creation,
+before any child/sampler admission. After stopping, diagnostics and complete
+adapter parsers use independent positional readers with the frozen source
+length, retaining all existing adapter-specific bounds and errors. A renamed
+original can still supply evidence; the replacement is never parsed or deleted.
+Cleanup requires the admitted identity at its current path, otherwise the
+original/foreign entries remain and the diagnostic names the uncertain path.
+No owned-reader seek perturbs an inherited writer's shared offset. Non-Unix
+raw deletion remains conservatively unconfirmed where native identity cannot
+be proven; positional parsing uses Unix read_at or Windows seek_read (source
+qualified only, no Windows runtime claim).
+
 Offline tests: short writes, EINTR, WriteZero, ENOSPC, serialization, rename and
 sync faults; good-old-file sentinels; malformed historical summary; two real
 process writers; symlink/FIFO refusal; one successful publication followed by

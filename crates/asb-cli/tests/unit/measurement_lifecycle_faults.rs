@@ -53,14 +53,17 @@ fn failing_adapter_and_full_journal_still_stop_process_collectors_before_evaluat
             }
         }
         let mut sentinel = Command::new("/bin/sleep").arg("20").spawn().unwrap();
+        let captures = [
+            crate::evidence::Capture::create(&root.join("stdout")).unwrap(),
+            crate::evidence::Capture::create(&root.join("stderr")).unwrap(),
+        ];
         let child = Command::new("/bin/sleep").arg("20").spawn().unwrap();
         session.collectors.push(Collector {
             name: "fixture-scoped".into(),
             adapter: &SCOPED,
             child,
             started: Instant::now(),
-            stdout_path: root.join("stdout"),
-            stderr_path: root.join("stderr"),
+            captures,
         });
         let error = session.event(LifecycleEvent::AgentExecuteEnd).unwrap_err();
         assert!(error.contains("fixture marker write failed"));

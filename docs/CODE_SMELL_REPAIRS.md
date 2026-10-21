@@ -138,14 +138,28 @@ rewrite an explicitly settled lifecycle artifact. Extended independent review
 also reproduced an unterminated exact-limit log and raw collector-source loss
 before failed/unconfirmed result publication. Raw cleanup now follows confirmed
 publication and opened-file/private-move identity checks; foreign replacements
-and cleanup failures retain safe diagnostics/inspection paths. Sibling exports
-and independent run records still finalize once. Offline low-level and eleven
-actual replay-entry cases cover these obligations. Focused checks passed twelve
-publication tests, 69 measurement tests, 73 runner tests, 73 sweep tests,
-67 comparison tests and ten tests across three actual CLI targets (five
-optional skips), with strict Clippy/formatting and an unchanged actual binary
-hash. Intermediate fixture setup/report expectations and a test-only Clippy
-style failure remain recorded alongside the four original red reproductions.
+and cleanup failures retain safe diagnostics/inspection paths. Further review
+of immutable `a365070c` reproduced post-admission capture replacement: the
+old parser adopted foreign B=99 instead of originally written A=17. Capture
+identity/handles now originate before child/worker admission and remain owned
+through stopping, bounded positional parsing, publication and conditional
+consumption. Complete adapter parsers never reopen a mutable pathname, and
+their previous bounds remain intact. Renamed originals supply evidence;
+foreign replacements survive with cleanup uncertainty disclosed. Sibling
+exports and independent run records still finalize once. Twelve actual replay
+entry cases cover publication faults, grades and a native-grade capture
+replacement with broken presentation. Latest focused qualification passed
+**431 tests**: 13 publication, 72 measurement, 123 collector, 73 runner,
+73 sweep, 67 comparison and ten across three actual CLI targets (**10 optional
+skips**), plus strict Clippy/formatting. The actual ASB binary SHA-256 stayed
+`c78958dbe083d84dbab857960d62689d74cdc1700ced23971b6fd43eb3e6e914`
+before/after runtime tests; no binary rebuild occurred during testing.
+Prior 304-test qualification, original/red admission reproduction logs,
+fixture setup/numeric/lifecycle expectations and test-only compile/Clippy
+failures remain recorded. Expanded collector qualification also exposed an
+old flamegraph fixture expecting File::create wording; it now requires the
+precise regular-file publication refusal while retaining reaping assertions
+and adding preservation of the obstructing directory.
 Independent source review, full qualification and all hosted delivery remain
 pending. This does not close
 the separate adapter-artifact, transport, installer or broader residual classes

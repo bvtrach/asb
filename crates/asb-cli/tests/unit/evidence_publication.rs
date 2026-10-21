@@ -6,6 +6,54 @@ use std::time::{Duration, Instant};
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
+
+#[test]
+fn admitted_capture_readers_have_independent_offsets_and_a_frozen_length() {
+    use std::io::{Read, Seek, Write};
+    let root = std::env::temp_dir().join(format!(
+        "asb-capture-offset-{}",
+        crate::tools::runtime::unique_id()
+    ));
+    fs::create_dir(&root).unwrap();
+    let path = root.join("stdout");
+    let mut capture = Capture::create(&path).unwrap();
+    let mut writer = capture.writer().unwrap();
+    writer.write_all(b"A=17\n").unwrap();
+    assert!(
+        capture.reader().is_err(),
+        "complete parser must wait for stop"
+    );
+    capture.freeze().unwrap();
+    let mut first = capture.reader().unwrap();
+    let mut prefix = [0; 2];
+    first.read_exact(&mut prefix).unwrap();
+    assert_eq!(&prefix, b"A=");
+    let mut second = String::new();
+    capture
+        .reader()
+        .unwrap()
+        .read_to_string(&mut second)
+        .unwrap();
+    assert_eq!(second, "A=17\n");
+    assert_eq!(capture.diagnostic(3).unwrap(), "A=1");
+    assert_eq!(
+        writer.stream_position().unwrap(),
+        5,
+        "readers must not seek stdio"
+    );
+    writer.write_all(b"later\n").unwrap();
+    let mut remainder = String::new();
+    first.read_to_string(&mut remainder).unwrap();
+    assert_eq!(
+        remainder, "17\n",
+        "known stopped EOF excludes later appends"
+    );
+    assert!(capture.verify_stopped().is_err());
+    assert_eq!(fs::read(&path).unwrap(), b"A=17\nlater\n");
+    drop(writer);
+    drop(capture);
+    fs::remove_dir_all(root).unwrap();
+}
 #[derive(Clone, Copy)]
 pub(crate) enum WriteAction {
     Short(usize),

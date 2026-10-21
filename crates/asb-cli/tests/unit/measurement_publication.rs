@@ -1,6 +1,84 @@
 use super::*;
 use serde::ser::{Error as _, SerializeMap};
 
+#[cfg(target_os = "linux")]
+#[test]
+fn later_collector_admission_failure_retains_sources_and_finalizes_admitted_sibling() {
+    let root = std::env::temp_dir().join(format!(
+        "asb-capture-startup-{}",
+        crate::tools::runtime::unique_id()
+    ));
+    let mut session = Session::start_with_collectors(&root, &[], None).unwrap();
+    session
+        .event(collectors::LifecycleEvent::RunStarted)
+        .unwrap();
+    stopped_fixture(&mut session, "admission");
+    // Both new captures are established, then target validation fails before
+    // any sampler or placeholder child. Existing admitted evidence survives.
+    let error = session
+        .start_tree_snapshot(
+            "agent-memory",
+            true,
+            Path::new("/bin/false"),
+            0,
+            Box::new(|_| panic!("invalid target must not admit a sampler")),
+        )
+        .unwrap_err();
+    assert!(error.contains("target has exited"), "{error}");
+    assert!(session.collectors.is_empty());
+    assert!(session.process_tree_snapshots.is_empty());
+    assert_eq!(fs::read(root.join("admission.stdout")).unwrap(), b"A=17\n");
+    session.finish(fixture_measurement()).unwrap();
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("admission.json")).unwrap()).unwrap();
+    assert_eq!(record["metrics"]["value"], 17.0);
+    assert!(!root.join("admission.stdout").exists());
+    for name in ["stdout", "stderr"] {
+        assert_eq!(
+            fs::read(root.join(format!("agent-memory.{name}"))).unwrap(),
+            b""
+        );
+    }
+    for file in [
+        "run.json",
+        "lifecycle.json",
+        "summary.json",
+        "components.json",
+    ] {
+        assert!(root.join(file).is_file());
+    }
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn admitted_capture_not_foreign_path_supplies_diagnostics_and_full_metrics() {
+    let root = std::env::temp_dir().join(format!(
+        "asb-admitted-capture-{}",
+        crate::tools::runtime::unique_id()
+    ));
+    let mut session = Session::start_with_collectors(&root, &[], None).unwrap();
+    stopped_fixture(&mut session, "admission");
+    stopped_fixture(&mut session, "sibling");
+    fs::rename(root.join("admission.stdout"), root.join("admission.saved")).unwrap();
+    fs::write(root.join("admission.stdout"), b"A=99\n").unwrap();
+    let outcome = session.finish(fixture_measurement());
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("admission.json")).unwrap()).unwrap();
+    assert_eq!(
+        record["metrics"]["value"], 17.0,
+        "adapter parsed a replacement instead of its admitted source"
+    );
+    assert_eq!(record["stdout"], "A=17\n");
+    assert!(outcome.unwrap_err().contains("raw path changed"));
+    assert_eq!(fs::read(root.join("admission.stdout")).unwrap(), b"A=99\n");
+    assert_eq!(fs::read(root.join("admission.saved")).unwrap(), b"A=17\n");
+    assert!(root.join("sibling.json").is_file());
+    assert!(root.join("run.json").is_file());
+    assert!(root.join("summary.json").is_file());
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[cfg(unix)]
 #[test]
 fn capture_changed_between_identity_check_and_move_is_restored_not_deleted() {
@@ -145,34 +223,51 @@ pub(crate) fn stopped_fixture(session: &mut Session, name: &str) {
         }
         fn process(
             &self,
-            _: &mut Session,
+            session: &mut Session,
             context: &collectors::ProcessContext<'_>,
         ) -> Result<collectors::ProcessData, String> {
             if context.name == "foreign" {
                 fs::rename(
-                    context.stdout_path,
-                    context.stdout_path.with_extension("saved"),
+                    session.dir.join("foreign.stdout"),
+                    session.dir.join("foreign.saved"),
                 )
                 .unwrap();
-                fs::write(context.stdout_path, b"foreign replacement sentinel").unwrap();
+                fs::write(
+                    session.dir.join("foreign.stdout"),
+                    b"foreign replacement sentinel",
+                )
+                .unwrap();
             }
-            Ok(collectors::ProcessData::from_output(context))
+            let mut data = collectors::ProcessData::from_output(context);
+            if context.name == "admission" {
+                let full = crate::collectors::read_complete_output(context.stdout_reader()?)?;
+                let value = full
+                    .trim()
+                    .strip_prefix("A=")
+                    .unwrap()
+                    .parse::<f64>()
+                    .unwrap();
+                data.metrics.insert("value".into(), value);
+            }
+            Ok(data)
         }
     }
     static ADAPTER: Adapter = Adapter;
     let stdout_path = session.dir.join(format!("{name}.stdout"));
     let stderr_path = session.dir.join(format!("{name}.stderr"));
+    let captures = [
+        crate::evidence::Capture::create(&stdout_path).unwrap(),
+        crate::evidence::Capture::create(&stderr_path).unwrap(),
+    ];
+    let script = if name == "admission" {
+        "printf 'A=17\\n'; printf 'complete raw stderr' >&2"
+    } else {
+        "printf 'complete raw stdout'; printf 'complete raw stderr' >&2"
+    };
     let mut child = Command::new("sh")
-        .args([
-            "-c",
-            "printf 'complete raw stdout'; printf 'complete raw stderr' >&2",
-        ])
-        .stdout(std::process::Stdio::from(
-            File::create(&stdout_path).unwrap(),
-        ))
-        .stderr(std::process::Stdio::from(
-            File::create(&stderr_path).unwrap(),
-        ))
+        .args(["-c", script])
+        .stdout(std::process::Stdio::from(captures[0].writer().unwrap()))
+        .stderr(std::process::Stdio::from(captures[1].writer().unwrap()))
         .spawn()
         .unwrap();
     let status = child.wait().unwrap();
@@ -182,8 +277,7 @@ pub(crate) fn stopped_fixture(session: &mut Session, name: &str) {
             adapter: &ADAPTER,
             child,
             started: Instant::now(),
-            stdout_path,
-            stderr_path,
+            captures,
         },
         status,
         elapsed_ms: 1,

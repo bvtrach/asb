@@ -13,6 +13,7 @@ struct Hook {
     grader_error: bool,
     cleanup_error: bool,
     capture_publication: bool,
+    admission_replacement: bool,
 }
 thread_local! { static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) }; }
 
@@ -31,6 +32,7 @@ impl Scope {
                 grader_error: false,
                 cleanup_error: false,
                 capture_publication: false,
+                admission_replacement: false,
             });
         });
         Self
@@ -54,6 +56,7 @@ impl Scope {
                 grader_error: false,
                 cleanup_error: false,
                 capture_publication: false,
+                admission_replacement: false,
             });
         });
         Self
@@ -74,6 +77,7 @@ impl Scope {
                 grader_error: case.contains("grader"),
                 cleanup_error: case.contains("cleanup"),
                 capture_publication: case.contains("capture"),
+                admission_replacement: case.contains("admission"),
             });
         });
         Self
@@ -93,8 +97,23 @@ pub(crate) fn configure_measurements(root: &Path, session: Option<&mut measureme
         {
             session.test_event_failure = hook.event;
             if hook.capture_publication {
-                crate::measurements::publication_tests::stopped_fixture(session, "capture-fixture");
+                crate::measurements::publication_tests::stopped_fixture(
+                    session,
+                    if hook.admission_replacement {
+                        "admission"
+                    } else {
+                        "capture-fixture"
+                    },
+                );
                 crate::measurements::publication_tests::stopped_fixture(session, "capture-sibling");
+                if hook.admission_replacement {
+                    std::fs::rename(
+                        session.dir.join("admission.stdout"),
+                        session.dir.join("admission.saved"),
+                    )
+                    .unwrap();
+                    std::fs::write(session.dir.join("admission.stdout"), "A=99\n").unwrap();
+                }
             }
         }
     });
