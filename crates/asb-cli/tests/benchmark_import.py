@@ -205,11 +205,36 @@ class GradeImportTests(unittest.TestCase):
             (artifacts/"selected-evaluation.json").write_text(json.dumps({"schema_version":1,
                 "scope":"selected-retained-evaluator-not-agent-retry","attempt_id":identity["attempt_id"],"directory":directory}))
             originals.append(original)
+        def flip_derived(index):
+            target = originals[index].parent/("recovered-evaluation-"+"d"*32)
+            before = {target/name:(target/name).read_bytes() for name in ["report.json","summary.json","evaluation.json"]}
+            report = json.loads((target/"report.json").read_text())
+            report["case-1"]["resolved"] = True
+            (target/"report.json").write_text(json.dumps(report))
+            summary = json.loads((target/"summary.json").read_text())
+            summary["resolved_ids"] = ["case-1"]
+            (target/"summary.json").write_text(json.dumps(summary))
+            result = json.loads((target/"evaluation.json").read_text())
+            result.update(resolved=True,outcome="resolved",reason=None)
+            (target/"evaluation.json").write_text(json.dumps(result))
+            return before
+        source_bytes = {path:path.read_bytes() for directory in originals for path in directory.rglob("*") if path.is_file()}
+        edited = flip_derived(2)
+        rejected = fixture.run("sweep","sweep.toml","--import-grades","--json")
+        self.assertNotEqual(rejected.returncode,0,"a consistent copied-grade flip must fail original-source validation")
+        self.assertEqual(fixture.imports(),[],"late invalid copy cannot publish earlier imports")
+        for path,body in edited.items():path.write_bytes(body)
         imported = fixture.run("sweep","sweep.toml","--import-grades","--json")
         self.assertEqual(imported.returncode,0,imported.stderr.decode())
         compared = fixture.run("compare","sweep.toml")
         self.assertEqual(compared.returncode,0,compared.stderr.decode())
         before = {path:path.read_bytes() for path in fixture.imports()}
+        for index in range(3):
+            edited = flip_derived(index)
+            self.assertNotEqual(fixture.run("compare","sweep.toml").returncode,0)
+            self.assertEqual(before,{path:path.read_bytes() for path in fixture.imports()})
+            self.assertEqual(source_bytes,{path:path.read_bytes() for path in source_bytes})
+            for path,body in edited.items():path.write_bytes(body)
         (originals[0]/"report.json").write_text("{}")
         compared = fixture.run("compare","sweep.toml")
         self.assertNotEqual(compared.returncode,0)

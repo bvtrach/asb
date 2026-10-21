@@ -7,6 +7,7 @@ tests can run entirely offline using Python's standard library.
 """
 
 import argparse
+import contextlib
 import fcntl
 import hashlib
 import importlib.metadata
@@ -393,7 +394,7 @@ def retained_evaluation_prefix(retained):
     return directories[0] + "/"
 
 
-def reconstruct_evaluation(retained, source, catalog, row, cancelled):
+def reconstruct_evaluation(retained, source, catalog, row, cancelled, owner_lock=None):
     """Normalize already-completed official reports, never run tests again.
 
     Keep every original byte (including a failed/missing wrapper) unchanged.
@@ -405,9 +406,15 @@ def reconstruct_evaluation(retained, source, catalog, row, cancelled):
     prefix = source+"/"
     descriptor, lock = open_directory(retained.child(source)),None
     try:
-        lock = private_file(descriptor,"resources.lock",os.O_RDWR)
-        try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        except BlockingIOError:require(False,"official evaluator still has an active owner; no tests or reconstruction were started")
+        if owner_lock is None:
+            lock = private_file(descriptor,"resources.lock",os.O_RDWR)
+            try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            except BlockingIOError:require(False,"official evaluator still has an active owner; no tests or reconstruction were started")
+        else:
+            expected = os.stat("resources.lock",dir_fd=descriptor,follow_symlinks=False)
+            held = os.fstat(owner_lock)
+            require((held.st_dev,held.st_ino) == (expected.st_dev,expected.st_ino),
+                    "reconstruction does not hold the original evaluator exclusion lock")
         journal = retained.object(prefix+"resources.json")
         run_id = journal.get("attempt", "")
         require(journal.get("schema_version") == 1 and re.fullmatch(r"asb-[a-f0-9]{32}",str(run_id))
@@ -492,9 +499,9 @@ def reconstruct_evaluation(retained, source, catalog, row, cancelled):
         os.close(descriptor)
 
 
-def grade_retained(retained, catalog_path, cancelled):
+def grade_retained(retained, catalog_path, cancelled, _excluded=None):
     """Grade the frozen patch, not a new client attempt or restarted workspace."""
-    from asb_retained import require
+    from asb_retained import RetainedOutcome, require
     require(retained.task.get("sdk") == sdk_identity(), "retained SWE-bench SDK identity differs")
     catalog, row = read_task(catalog_path, retained.identity["task_id"])
     require(catalog.get("workload") == retained.identity["workload"]
@@ -512,6 +519,10 @@ def grade_retained(retained, catalog_path, cancelled):
     candidates = []
     completed = []
     raw = []
+    # A preliminary absence scan must not freeze an old failed wrapper into
+    # the final evidence reader: the independently owned grader may complete
+    # while it is being excluded. Only the post-exclusion scan decides retry.
+    probe = RetainedOutcome({"reference":retained.reference},inspect=True)
     for index,path in enumerate(retained.root.iterdir()):
         require(index < 256, "retained attempt has excessive top-level artifacts")
         if path.name.startswith(("evaluation-","recovered-evaluation-")):
@@ -522,7 +533,7 @@ def grade_retained(retained, catalog_path, cancelled):
             result_path = retained.child(path.name+"/evaluation.json")
             result = {}
             if result_path.exists():
-                result = retained.object(path.name+"/evaluation.json")
+                result = probe.object(path.name+"/evaluation.json")
                 if result.get("outcome") in ["resolved","unresolved"]:
                     require(type(result.get("resolved")) is bool, "completed retained grade is malformed")
                     completed.append(path.name)
@@ -536,11 +547,15 @@ def grade_retained(retained, catalog_path, cancelled):
                 reports = [result["official_report"]] if isinstance(result.get("official_report"),str) else []
                 run_id = result.get("run_id")
                 if not run_id and retained.child(path.name+"/resources.json").exists():
-                    run_id = retained.object(path.name+"/resources.json").get("attempt")
+                    run_id = probe.object(path.name+"/resources.json").get("attempt")
                 if isinstance(run_id,str) and re.fullmatch(r"asb-[a-f0-9]{32}",run_id):
                     reports.append("logs/evaluation/"+run_id+"/asb/"+retained.identity["task_id"]+"/report.json")
                     reports.append("logs/evaluation/"+run_id+"/results.json")
                 if any(retained.child(path.name+"/"+relative).exists() for relative in reports):raw.append(path.name)
+    if _excluded is not None:
+        require({path.name for path in candidates} == _excluded[2]
+                and all(path.name in _excluded[1] for path in candidates if (path/"resources.json").exists()),
+                "old evaluator ownership population changed during exclusion; no evaluator was started")
     require(len(raw) <= 1,"multiple raw official grades cannot be replaced or guessed")
     if raw and len(completed) == 1:
         receipt = retained.object(completed[0]+"/evaluation.json").get("reconstruction",{})
@@ -549,7 +564,8 @@ def grade_retained(retained, catalog_path, cancelled):
         if isinstance(receipt,dict) and receipt.get("source") == raw[0]:raw = []
     require(not (raw and completed),"multiple completed or raw official grades cannot be replaced or guessed")
     if raw:
-        reconstruct_evaluation(retained,raw[0],catalog,row,cancelled)
+        reconstruct_evaluation(retained,raw[0],catalog,row,cancelled,
+            owner_lock=None if _excluded is None else _excluded[1].get(raw[0]))
         return
     require(len(completed) <= 1, "multiple completed retained evaluations cannot be replaced or guessed")
     if completed:
@@ -567,10 +583,28 @@ def grade_retained(retained, catalog_path, cancelled):
     # grader must finish or be quiesced; a root lock alone is not sufficient.
     from asb_docker import DockerSession
     from asb_resources import quiesce
-    with DockerSession() as client:
-        for path in candidates:
-            if (path/"resources.json").exists():
-                quiesce(client,path)
+    if _excluded is None:
+        from asb_resources import open_directory, private_file
+        with DockerSession() as client, contextlib.ExitStack() as exclusions:
+            for path in candidates:
+                if (path/"resources.json").exists():
+                    quiesce(client,path)
+            owners = {}
+            for path in candidates:
+                if not (path/"resources.json").exists():continue
+                descriptor = open_directory(path)
+                exclusions.callback(os.close,descriptor)
+                lock = private_file(descriptor,"resources.lock",os.O_RDWR)
+                exclusions.callback(os.close,lock)
+                try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                except BlockingIOError:require(False,"old evaluator still has an active owner; no evaluator was started")
+                owners[path.name] = lock
+            # Re-read all normalized/raw outcomes while every old evaluator is
+            # excluded. A grade published during quiescence is reused, never
+            # replaced by another evaluation (including an unresolved grade).
+            return grade_retained(retained,catalog_path,cancelled,
+                _excluded=(client,owners,{path.name for path in candidates}))
+    with contextlib.nullcontext(_excluded[0]) as client:
         image = retained.task["image"]
         require(re.fullmatch(r"sha256:[0-9a-f]{64}",image.get("image_id","")),
                 "retained task has no immutable evaluator image")
@@ -671,6 +705,10 @@ def verify_retained(retained, prefix=None, result=None):
                 body = retained.bytes(relative)
                 require(expected == {"sha256":hashlib.sha256(body).hexdigest(),"bytes":len(body)},
                         "original official evaluator artifacts changed after reconstruction")
+                if relative != receipt["source"]+"/evaluation.json":
+                    copied = retained.bytes(prefix+relative.removeprefix(receipt["source"]+"/"))
+                    require(expected == {"sha256":hashlib.sha256(copied).hexdigest(),"bytes":len(copied)},
+                            "reconstructed evaluator copy differs from its original artifact")
         journal = retained.object(receipt["source"]+"/resources.json")
         name = f"sweb.eval.{task.lower()}.{result.get('run_id')}"
         require(journal.get("schema_version") == 1 and re.fullmatch(r"asb-[a-f0-9]{32}",str(result.get("run_id","")))

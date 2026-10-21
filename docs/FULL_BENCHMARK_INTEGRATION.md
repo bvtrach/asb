@@ -2577,3 +2577,40 @@ hosted, merge/main-CI and publication checks remain required. Signed pre-release
 head 923ffa28 passed hosted run 39546156258 before these final setup/docs changes.
 The two delivery boxes intentionally remain open until those hosted actions
 are verified; implementation checks alone do not authorize a release claim.
+
+### Final SWE retained-grading integrity repairs
+
+Independent review of the release-preparation candidate found two outstanding
+integrity defects not covered by its green checks. Reconstructed reports could
+be edited consistently with the derived summary/wrapper while original source
+hashes stayed unchanged. Also, an independently owned old evaluator could
+publish after the preliminary absence scan but before quiescence, permitting
+another evaluation without rescanning. Merge/release was held for these real
+defects; no authorization/signing requirement was introduced.
+
+Verification now binds each copied original artifact to its corresponding
+original source-manifest entry. The intentionally derived normalized evaluation
+is not required to equal its original failed/missing wrapper. Tests reject
+semantically identical edits to all eight copied inputs/reports/journal/cleanup,
+and a consistent three-file false-to-true grade flip for all three populations
+with either a missing or failed original wrapper. Original bytes/manifests stay
+unchanged. Import rejects a late invalid copy before publishing any candidate;
+comparison rejects edited copies without replacing prior imports or sources.
+
+Before starting another evaluator, retained grading now excludes all prior
+evaluator owners, holds their exact private journal locks, and re-reads both
+normalized and raw outcomes. A separate preliminary reader avoids freezing an
+old incomplete wrapper into final evidence. Newly completed false/true outcomes
+are reused or reconstructed under the held exclusion, never rerun. Candidate
+population/ownership changes and lock reacquisition refuse a new evaluation.
+All descriptors are scoped through teardown, and reconstruction validates its
+borrowed source descriptor against the actual lock inode.
+
+Sixteen retained-grading contracts and twelve import/compare cases pass with no
+agent, Docker, evaluator or provider calls for the new race/copy regressions.
+Complete source tests, strict Clippy and `make build` pass. The real SDK retained
+grading qualification and exact source-package/hosted gates follow. The five
+0.2.0 scripted-setup measured sweeps also passed before this retained-only
+change: 61.715/62.257/63.485/42.849/49.320 seconds in Full/Lite/Verified/1.0/2.1
+order, including official grades, lifecycle/usage, SVG/HTML and actual scoped
+container removal. These remain deterministic fixture repairs, not AI scores.

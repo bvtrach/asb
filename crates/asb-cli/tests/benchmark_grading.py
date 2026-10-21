@@ -170,6 +170,92 @@ class RetainedGradingTests(unittest.TestCase):
             with self.subTest(mutation=mutation),patch.object(swe,"sdk_identity",return_value=fixture.sdk):
                 with self.assertRaises(retained.RetainedError):fixture.inspect()
 
+    def test_reconstructed_copies_bind_every_original_input_even_for_semantically_identical_edits(self):
+        for relative in ["dataset.json","submission.jsonl","sdk-identity.json","image-identity.json",
+                         "resources.json","cleanup.json","report","summary"]:
+            fixture,value,directory = self.raw(missing=True)
+            self.reconstruct(fixture,value)
+            result = value.object(value.selected_evaluation()+"evaluation.json")
+            actual = result["official_report"] if relative == "report" else result["official_summary"] if relative == "summary" else relative
+            copied = fixture.root/value.selected_evaluation()/actual
+            source = directory/actual
+            original = source.read_bytes()
+            copied.write_bytes(copied.read_bytes()+b"\n")
+            with self.subTest(artifact=relative),patch.object(swe,"sdk_identity",return_value=fixture.sdk):
+                with self.assertRaisesRegex(retained.RetainedError,"copy differs"):
+                    fixture.inspect()
+            self.assertEqual(source.read_bytes(),original)
+
+    def test_consistent_derived_grade_flip_cannot_replace_an_unchanged_official_false_grade(self):
+        for workload in ["swe-bench","swe-bench-lite","swe-bench-verified"]:
+            for missing in [False,True]:
+                fixture,value,directory = self.raw(workload,False,missing)
+                self.reconstruct(fixture,value)
+                original = {path:path.read_bytes() for path in directory.rglob("*") if path.is_file()}
+                target = fixture.root/value.selected_evaluation()
+                result = json.loads((target/"evaluation.json").read_text())
+                manifest = result["reconstruction"]
+                report = target/result["official_report"]
+                summary = target/result["official_summary"]
+                report.write_text(json.dumps({"case-1":{"resolved":True,"patch_successfully_applied":True}}))
+                body = json.loads(summary.read_text()); body["resolved_ids"] = ["case-1"]
+                summary.write_text(json.dumps(body))
+                result.update(resolved=True,outcome="resolved",reason=None)
+                (target/"evaluation.json").write_text(json.dumps(result))
+                with self.subTest(workload=workload,missing=missing),patch.object(swe,"sdk_identity",return_value=fixture.sdk):
+                    with self.assertRaisesRegex(retained.RetainedError,"copy differs"):
+                        fixture.inspect()
+                self.assertEqual(original,{path:path.read_bytes() for path in original})
+                self.assertEqual(manifest,json.loads((target/"evaluation.json").read_text())["reconstruction"])
+
+    def test_old_grader_publication_during_quiescence_is_reused_under_exclusion_for_both_grades(self):
+        for workload in ["swe-bench","swe-bench-lite","swe-bench-verified"]:
+            for resolved in [False,True]:
+                for publication in ["normalized","raw"]:
+                    fixture,value,directory = self.raw(workload,resolved)
+                    report = next(directory.glob("logs/evaluation/*/asb/case-1/report.json"))
+                    summary = next(directory.glob("logs/evaluation/*/results.json"))
+                    pending = {report:report.read_bytes(),summary:summary.read_bytes()}
+                    for path in pending:path.unlink()
+                    completed = json.loads((directory/"evaluation.json").read_text())
+                    completed.update(outcome="resolved" if resolved else "unresolved",
+                                     reason=None if resolved else "official_tests_not_resolved")
+                    published = {}
+                    def publish_old(_client,path):
+                        self.assertEqual(path,directory)
+                        for target,body in pending.items():target.write_bytes(body)
+                        if publication == "normalized":
+                            (directory/"evaluation.json").write_text(json.dumps(completed))
+                        published.update({path:path.read_bytes() for path in directory.rglob("*") if path.is_file()})
+                    with self.subTest(workload=workload,resolved=resolved,publication=publication), \
+                         patch.object(swe,"sdk_identity",return_value=fixture.sdk), \
+                         patch.object(swe,"read_task",return_value=self.catalog(fixture)), \
+                         patch("asb_docker.DockerSession",return_value=contextlib.nullcontext(MagicMock())), \
+                         patch("asb_resources.quiesce",side_effect=publish_old) as quiesce, \
+                         patch.object(swe,"evaluate_submission") as evaluator:
+                        swe.grade_retained(value,"unused",threading.Event())
+                        quiesce.assert_called_once()
+                        evaluator.assert_not_called()
+                        self.assertEqual(value.inspected_grade()["workload_success"],resolved)
+                        self.assertEqual(fixture.inspect()["workload_success"],resolved)
+                    self.assertEqual(published,{path:path.read_bytes() for path in published})
+
+    def test_old_grader_reacquiring_its_lock_after_quiescence_prevents_new_evaluation(self):
+        fixture,value,directory = self.raw()
+        for path in directory.glob("logs/evaluation/*/asb/case-1/report.json"):path.unlink()
+        for path in directory.glob("logs/evaluation/*/results.json"):path.unlink()
+        descriptor = os.open(directory/"resources.lock",os.O_RDWR)
+        try:
+            with patch.object(swe,"sdk_identity",return_value=fixture.sdk), \
+                 patch.object(swe,"read_task",return_value=self.catalog(fixture)), \
+                 patch("asb_docker.DockerSession",return_value=contextlib.nullcontext(MagicMock())), \
+                 patch("asb_resources.quiesce",side_effect=lambda *_: fcntl.flock(descriptor,fcntl.LOCK_EX|fcntl.LOCK_NB)), \
+                 patch.object(swe,"evaluate_submission") as evaluator:
+                with self.assertRaisesRegex(retained.RetainedError,"active owner"):
+                    swe.grade_retained(value,"unused",threading.Event())
+                evaluator.assert_not_called()
+        finally:os.close(descriptor)
+
     def test_reconstruction_publication_before_selection_is_reconciled_without_new_tests(self):
         fixture,value,directory = self.raw()
         self.reconstruct(fixture,value)

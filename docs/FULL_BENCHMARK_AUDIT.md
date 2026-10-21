@@ -49,3 +49,29 @@ uses the public setup command before execution. The Terminal runtime fixture's
 old pre-evaluation quiescence assertion was corrected to require the adapter's
 service handoff followed by actual SDK-owned container removal, not to accept
 an unverified cleanup claim.
+
+### Retained-grading integrity review follow-up
+
+The independent review of release candidate `2d0220bc` correctly identified
+two cases absent from the earlier verification scope. They are product bugs,
+not authorization or signing requirements: copied reconstructed reports were
+not individually bound to their original manifest entries, and an original
+grader could publish between an absence scan and quiescence.
+
+Both have targeted repairs. Every copied original input/report/journal/cleanup
+now must match its source entry; only the intentionally derived normalized
+wrapper is exempt from copy equality. The new-evaluation decision now follows
+a fresh scan while all prior evaluator journals remain exclusively locked.
+The preliminary scanner is separate from final evidence collection, so a
+legitimate late publication is preserved rather than mistaken for corruption.
+Reconstruction borrows and checks the same held source lock.
+
+Sixteen provider-free retained-grading tests pass, including a consistent
+three-file false-to-true edit with unchanged original bytes/manifests, individual
+copied-artifact edits, both true/false normalized and raw late publications in
+all three populations, and an owner reacquiring its lock during exclusion.
+Twelve import/compare tests pass, including late-candidate rejection before any
+publication and unchanged imports/source bytes after rejection. Complete source
+tests, strict Clippy and build pass. Real SDK retained-grading, exact package
+and hosted verification follow this repair before merge or release. Earlier
+green candidate checks are not treated as proof that these cases were covered.
