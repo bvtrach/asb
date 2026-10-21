@@ -134,6 +134,25 @@ working tracefs permissions: set `ASB_TEST_PERFETTO_TOOLS` to the project's
 tools directory and run the ignored `live_perfetto` tests serially. They use an
 offline replay fixture, not a live provider; ordinary CI does not require
 privileged tracing.
+Concurrent Perfetto captures use one manual `traced`/`traced_probes` service per
+ASB process and exclusively lease a delegated named tracefs instance. All client
+commands use the explicit `perfetto` applet; neither preflight nor capture uses
+Tracebox autostart or `--reset-ftrace`. Configure optional delegation with
+`asb init --configure-host` (existing project data is preserved). Init prints
+every privileged command and requires y/N, or explicit `--yes` approval.
+Two project-specific instances allow two independent ASB processes; replicas
+inside one process share a service without serializing benchmark execution.
+Install util-linux `unshare` and enable unprivileged user/mount namespaces for
+the instance-only bootstrap. No permission to read the primary trace snapshot
+is required. For ignored library tracing tests, first `cargo build --locked`
+and set `ASB_TEST_PERFETTO_HELPER` to that built ASB executable: libtest itself
+cannot execute ASB's hidden recursive helper. Production uses its own executable.
+Private-service registration queries are bounded and use no provider/network.
+Reconfigure after reboot. No tracing privileges or host mutation are needed by
+ordinary CI: service fixtures use local Unix sockets and mock daemons, check
+creator-thread exit, owner-process death, failed-client isolation, lease lifetime,
+and bounded log draining. Actual overlapping captures remain an opt-in local
+qualification; mock ownership tests do not prove real scheduler coverage.
 The separate ignored `real_trace_processor_verifies_synthetic_marker_capture`
 test uses the same tool path but only reads a synthetic trace; it does not
 start tracing or require tracing privileges.

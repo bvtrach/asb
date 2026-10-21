@@ -6,6 +6,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub(crate) mod perfetto;
+
 thread_local! {
     static NETWORK_PROJECT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
@@ -53,6 +55,9 @@ pub struct ProjectConfig {
     /// This is populated by `asb init` only when the host permits safe setup.
     #[serde(default)]
     pub cgroup_parent: Option<String>,
+    /// Explicitly delegated tracefs instances for concurrent Perfetto capture.
+    #[serde(default)]
+    pub perfetto_instances: Vec<String>,
     #[serde(default)]
     pub proxy: NetworkProxy,
 }
@@ -218,6 +223,7 @@ impl Default for ProjectConfig {
             workloads_dir: "workloads".into(),
             workspace_dir: "asb-workspace".into(),
             cgroup_parent: None,
+            perfetto_instances: Vec::new(),
             proxy: NetworkProxy::default(),
         }
     }
@@ -254,9 +260,11 @@ pub fn init(
         .map_err(|error| Error::Io(format!("cannot create project configuration: {error}")))?;
     let (proxy, omitted_credentials) = NetworkProxy::detect(&|name| std::env::var(name).ok());
     let cgroup_parent = configure_host_capabilities(output, yes)?;
+    let perfetto_instances = perfetto::configure(&root, output, yes)?;
     let config = ProjectConfig {
         proxy,
         cgroup_parent,
+        perfetto_instances,
         ..ProjectConfig::default()
     };
     fs::create_dir_all(resolve(&root, &config.tools_dir))
@@ -306,6 +314,31 @@ pub fn init(
     #[cfg(target_os = "linux")]
     writeln!(output, "For complete CPU accounting across short-lived child processes, use writable cgroup-v2 delegation. On systemd Linux, run:\n  systemd-run --user --scope -p Delegate=yes -- asb run CONFIG.toml\nFor a sweep, replace `asb run CONFIG.toml` with `asb sweep SWEEP.toml`. Other delegated setups can set ASB_CGROUP_PARENT to a writable cgroup-v2 directory. Without delegation, ASB uses sampled process accounting.").map_err(super::io_error)?;
     Ok(())
+}
+
+/// Recheck optional host capabilities without resetting an existing project.
+pub fn configure_host(
+    root: Option<PathBuf>,
+    yes: bool,
+    output: &mut dyn std::io::Write,
+) -> Result<(), Error> {
+    let start = root.unwrap_or_else(|| PathBuf::from("."));
+    let (root, mut config) = load(&start)?;
+    let path = root.join(CONFIG_DIR).join(CONFIG_FILE);
+    if !path.is_file() {
+        return Err(Error::Input(
+            "no initialized project found; run `asb init` first".into(),
+        ));
+    }
+    config.cgroup_parent = configure_host_capabilities(output, yes)?.or(config.cgroup_parent);
+    let instances = perfetto::configure(&root, output, yes)?;
+    if !instances.is_empty() {
+        config.perfetto_instances = instances;
+    }
+    let text = toml::to_string_pretty(&config).map_err(|error| Error::Input(error.to_string()))?;
+    fs::write(&path, text)
+        .map_err(|error| Error::Io(format!("cannot update project capabilities: {error}")))?;
+    writeln!(output, "Updated host capability configuration; existing tools, workloads, configurations and results were preserved.").map_err(super::io_error)
 }
 
 /// Apply host-wide collector prerequisites after explicit user consent. Init
@@ -673,6 +706,9 @@ fn reset_project(root: &Path, config_path: &Path) -> Result<(), Error> {
     let state = root.join(CONFIG_DIR);
     reject_symlink(&state)?;
     reject_symlink(config_path)?;
+    // Stable admission coordination excludes new slots throughout deletion;
+    // existing instance leases additionally exclude active/crash-cleanup services.
+    let _tracing_leases = perfetto::lock_for_reset(root)?;
     let existing = fs::read_to_string(config_path)
         .map_err(|error| Error::Io(format!("cannot read {}: {error}", config_path.display())))?;
     let config: ProjectConfig = toml::from_str(&existing).map_err(|error| {
