@@ -34,6 +34,39 @@ pub(super) fn recorded_object(
     Ok(value.cloned())
 }
 
+/// Called only after current-slot identity and measurement agreement checks.
+/// An omitted optional observation must not hide its matching retained fact.
+pub(super) fn recorded_observation(
+    measured: &Value,
+    outcome: Option<&Recorded>,
+) -> Result<crate::process_termination::Observation, Error> {
+    use crate::process_termination::{Observation, recorded};
+    let primary = recorded(measured).map_err(|error| Error::Input(error.into()))?;
+    let retained = outcome
+        .map(|record| recorded(&record.summary))
+        .transpose()
+        .map_err(|error| Error::Input(error.into()))?
+        .flatten();
+    if primary.zip(retained).is_some_and(|(a, b)| a != b) {
+        return Err(Error::Input(
+            "current-attempt termination facts disagree".into(),
+        ));
+    }
+    if let Some(termination) = primary.or(retained) {
+        return Ok(Observation {
+            process_termination: Some(termination),
+            ..Default::default()
+        });
+    }
+    let mut observation = Observation::from_record(measured);
+    if observation.process_termination_diagnostic.is_none() {
+        observation.process_termination_diagnostic = outcome.and_then(|record| {
+            Observation::from_record(&record.summary).process_termination_diagnostic
+        });
+    }
+    Ok(observation)
+}
+
 pub(crate) struct Recorded {
     pub path: PathBuf,
     pub summary: Value,
@@ -44,6 +77,8 @@ pub(crate) struct Recorded {
 
 impl Recorded {
     pub fn check_measurement(&self, measured: &Value) -> Result<(), Error> {
+        crate::process_termination::agree(&self.summary, measured)
+            .map_err(|error| invalid(&self.path, error))?;
         if matches!(
             self.source,
             "imported-official-grade" | "recovered-official-grade"
@@ -577,6 +612,42 @@ mod log_boundary_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn known_termination_conflicts_reject_but_legacy_carriers_and_unknown_do_not() {
+        let mut record = super::Recorded {
+            path: "outcome.json".into(),
+            summary: serde_json::json!({"exit_code":1,"process_termination":{"kind":"signal","signal":15}}),
+            workload_cleanup: true,
+            proxy_cleanup: true,
+            source: "task-outcome",
+        };
+        assert!(
+            record
+                .check_measurement(&serde_json::json!({"exit_code":143}))
+                .is_ok()
+        );
+        assert!(record.check_measurement(&serde_json::json!({"exit_code":143,"process_termination":{"kind":"signal","signal":15}})).is_ok());
+        assert!(
+            record
+                .check_measurement(
+                    &serde_json::json!({"process_termination":{"kind":"code","code":143}})
+                )
+                .is_err()
+        );
+        assert!(
+            record
+                .check_measurement(
+                    &serde_json::json!({"process_termination":{"kind":"signal","signal":0}})
+                )
+                .is_err()
+        );
+        record.summary = serde_json::json!({});
+        assert!(
+            record
+                .check_measurement(&serde_json::json!({"process_termination":null}))
+                .is_ok()
+        );
+    }
     #[test]
     fn measurements_preserve_settlement_and_artifact_agreement() {
         let mut record = super::Recorded {
@@ -1150,6 +1221,82 @@ mod tests {
                     .unwrap();
             assert!(html.contains("optional measurements unavailable"));
             assert!(html.contains("metric-success_rate.svg"));
+        }
+    }
+
+    #[test]
+    fn termination_report_selects_only_agreed_current_attempt_facts_without_metric_graphs() {
+        let known = json!({"kind":"signal","signal":15});
+        for (retained_fact, measured_fact, diagnostic) in [
+            (known.clone(), Value::Null, false),
+            (Value::Null, known.clone(), false),
+            (known.clone(), Value::Null, true),
+            (Value::Null, Value::Null, false),
+        ] {
+            let fixture = Fixture::new("swe-bench-lite", 1);
+            let mut record = fixture.record(1, json!(false), true, true);
+            record["summary"]["process_termination"] = retained_fact.clone();
+            let outcome = fixture.publish(1, &record);
+            let directory = fixture.directory().join("measurements");
+            fs::create_dir(&directory).unwrap();
+            let measured = directory.join("run.json");
+            let mut measurement = record["summary"].clone();
+            measurement["status"] = json!("completed");
+            measurement["success"] = json!(true);
+            measurement["process_termination"] = measured_fact.clone();
+            if diagnostic {
+                measurement["process_termination_diagnostic"] = json!("malformed");
+            }
+            fs::write(&measured, measurement.to_string()).unwrap();
+            let original_outcome = fs::read(&outcome).unwrap();
+            let original_measurement = fs::read(&measured).unwrap();
+            let report = fixture.compare().unwrap();
+            let row = &report["benchmarks"][0];
+            assert_eq!(
+                row["process_termination"],
+                if retained_fact.is_null() && measured_fact.is_null() {
+                    Value::Null
+                } else {
+                    known.clone()
+                }
+            );
+            assert_eq!(row["metrics"]["success_rate"], 0.0);
+            assert!(
+                !row["metrics"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .any(|key| key.starts_with("process_termination"))
+            );
+            let graphs = fixture.root.join("results/sweep-comparison");
+            assert!(!fs::read_dir(graphs).unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("process_termination")
+            }));
+            assert_eq!(fs::read(&outcome).unwrap(), original_outcome);
+            assert_eq!(fs::read(&measured).unwrap(), original_measurement);
+            if !retained_fact.is_null() {
+                let report_dir = fixture.root.join("results/sweep-comparison");
+                let html = fs::read(report_dir.join("report.html")).unwrap();
+                let json = fs::read(report_dir.join("comparison.json")).unwrap();
+                let mut older_attempt = measurement.clone();
+                older_attempt["process_termination"] = Value::Null;
+                older_attempt
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("process_termination_diagnostic");
+                older_attempt["task"]["attempt_id"] = json!("different-older-attempt");
+                let bytes = serde_json::to_vec(&older_attempt).unwrap();
+                fs::write(&measured, &bytes).unwrap();
+                assert!(fixture.compare().is_err());
+                assert_eq!(fs::read(&outcome).unwrap(), original_outcome);
+                assert_eq!(fs::read(&measured).unwrap(), bytes);
+                assert_eq!(fs::read(report_dir.join("report.html")).unwrap(), html);
+                assert_eq!(fs::read(report_dir.join("comparison.json")).unwrap(), json);
+            }
         }
     }
 

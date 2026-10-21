@@ -124,13 +124,22 @@ impl Owner {
             }
             if let Some(status) = child.try_wait()? {
                 if let Some(control) = control.as_mut() {
-                    control.exited(status)?;
+                    // Optional observation cannot replace an observed wait
+                    // status or independently valid base cleanup evidence.
+                    let _ = control.exited(status);
                 }
                 return Ok(status);
             }
-            if let Some(control) = control.as_mut()
-                && control.take_interrupt()?
-            {
+            let interrupt = match control.as_mut().map(|control| control.take_interrupt()) {
+                Some(Ok(interrupt)) => interrupt,
+                Some(Err(_)) => {
+                    control = None;
+                    descriptors[3].fd = -1;
+                    false
+                }
+                None => false,
+            };
+            if interrupt {
                 // Only the exact directly owned principal pinned before this
                 // wait can receive this fixed operation. The guardian remains
                 // uncancelled to permit graceful target flush and quiescence.
@@ -144,7 +153,9 @@ impl Owner {
                     )
                 };
                 if result == 0 {
-                    control.acknowledge()?;
+                    if let Some(control) = control.as_mut() {
+                        let _ = control.acknowledge();
+                    }
                 } else if io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
                     return Err(io::Error::last_os_error());
                 }

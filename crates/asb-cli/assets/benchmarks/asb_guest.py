@@ -15,7 +15,7 @@ import tempfile
 import time
 import threading
 
-from asb_execution import ExecutionError
+from asb_execution import ExecutionError, principal_observation
 from asb_runtime import bundle
 from asb_staging import upload, stage_runtime, root_execute, prepare_guest_roots
 from asb_relay import HostRelay, ForwardingCancellation, forward_request
@@ -329,6 +329,12 @@ def _execute_agent(task, request, before_resume, on_output, cancelled, resources
         observation["agent_tree_cleanup"] = "owned-container-reset"
     else:
         observation["agent_tree_cleanup"] = "supervisor-confirmed"
+    # Metadata is available only after the existing quiescence/owner boundary.
+    # A reset or carrier code alone never supplies an exact principal fact.
+    exact = principal_observation(result["metadata"])
+    result["metadata"].update(exact)
+    result.update(exact)
+    observation.update(exact)
     journal = task.artifacts / "execution.json"
     journal.write_text(json.dumps(observation))
     journal.chmod(0o600)

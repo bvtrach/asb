@@ -652,57 +652,64 @@ impl<'a> ReadyAttempt<'a> {
                 output,
             );
             let mut issues = AttemptIssues::default();
-            let (child, run_dir, guest, execution_elapsed_ms, runtime_output, artifact_owner) =
-                if let Some(result) = isolated {
-                    let result = result.map_err(Error::Run)?;
-                    issues.collector_errors = result.collector_errors;
-                    issues.output_error = result.output_error;
-                    (
-                        result.output,
-                        PathBuf::new(),
-                        Some(result.metadata),
-                        result
-                            .elapsed_ms
-                            .unwrap_or_else(|| started.elapsed().as_millis()),
-                        None,
-                        None,
-                    )
-                } else {
-                    let native = native::NativePlan {
-                        config_path,
-                        config,
-                        project_root,
-                        project_config,
-                        invocation: prepared.workload.invocation(),
-                        fresh_state: options.batch.is_some(),
-                        route: native::NativeRoute {
-                            connection: connection.as_ref(),
-                            provider_endpoint,
-                            provider_credentials,
-                            tape_url,
-                            tape_mode,
-                        },
-                    }
-                    .prepare(prepared.measurements.as_mut())?;
-                    let (evidence, native_issues) = native.execute(
-                        prepared.measurements.as_mut(),
-                        show_output,
-                        output,
-                        launch,
-                    )?;
-                    issues = native_issues;
-                    (
-                        evidence.output,
-                        evidence.run_dir,
-                        evidence.guest,
-                        evidence.elapsed_ms,
-                        evidence.runtime_output,
-                        evidence.artifact_owner,
-                    )
-                };
+            let (
+                child,
+                run_dir,
+                guest,
+                execution_elapsed_ms,
+                runtime_output,
+                artifact_owner,
+                observation,
+            ) = if let Some(result) = isolated {
+                let result = result.map_err(Error::Run)?;
+                issues.collector_errors = result.collector_errors;
+                issues.output_error = result.output_error;
+                let observation = result.metadata.observation;
+                (
+                    result.output,
+                    PathBuf::new(),
+                    Some(result.metadata),
+                    result
+                        .elapsed_ms
+                        .unwrap_or_else(|| started.elapsed().as_millis()),
+                    None,
+                    None,
+                    observation,
+                )
+            } else {
+                let native = native::NativePlan {
+                    config_path,
+                    config,
+                    project_root,
+                    project_config,
+                    invocation: prepared.workload.invocation(),
+                    fresh_state: options.batch.is_some(),
+                    route: native::NativeRoute {
+                        connection: connection.as_ref(),
+                        provider_endpoint,
+                        provider_credentials,
+                        tape_url,
+                        tape_mode,
+                    },
+                }
+                .prepare(prepared.measurements.as_mut())?;
+                let (evidence, native_issues) =
+                    native.execute(prepared.measurements.as_mut(), show_output, output, launch)?;
+                issues = native_issues;
+                (
+                    evidence.output,
+                    evidence.run_dir,
+                    evidence.guest,
+                    evidence.elapsed_ms,
+                    evidence.runtime_output,
+                    evidence.artifact_owner,
+                    evidence.observation,
+                )
+            };
 
             Ok((
                 ExecutionEvidence {
+                    observation,
                     output: child,
                     run_dir,
                     guest,
@@ -918,6 +925,7 @@ impl ResultFacts {
             measurements: measurement_session,
             evidence:
                 ExecutionEvidence {
+                    observation,
                     artifact_owner: _,
                     capture_complete,
                     output: child,
@@ -1084,6 +1092,7 @@ impl ResultFacts {
             adapter_smoke_success: (evaluation_kind == "adapter-smoke").then_some(success),
             elapsed_ms: run_metrics.elapsed_ms,
             exit_code: child.status.code(),
+            observation,
             token_usage,
             steps,
             cassette: tape_cassette

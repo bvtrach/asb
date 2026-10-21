@@ -20,6 +20,7 @@ mod parser;
 mod planning;
 mod process_cleanup;
 mod process_gate;
+mod process_termination;
 mod project;
 mod providers;
 mod proxy;

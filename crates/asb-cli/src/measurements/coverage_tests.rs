@@ -437,6 +437,7 @@ fn summary_retention_is_bounded_and_unscored_success_is_not_a_resolved_task() {
         .collect::<Vec<_>>();
     fs::write(&path, serde_json::to_vec(&json!({"runs":runs})).unwrap()).unwrap();
     let run = RunMeasurement {
+        observation: Default::default(),
         workload_resource_disposition: None,
         workload_artifacts: &[],
         execution_plan_fingerprint: None,
@@ -475,6 +476,13 @@ fn summary_retention_is_bounded_and_unscored_success_is_not_a_resolved_task() {
     assert_eq!(runs.len(), MAX_RUNS);
     assert_eq!(runs[0]["run_id"], "1");
     assert_eq!(runs.last().unwrap()["run_id"], "latest");
+    assert!(
+        runs.last()
+            .unwrap()
+            .get("process_termination")
+            .unwrap()
+            .is_null()
+    );
     assert_eq!(summary["task_count"], 0);
     assert_eq!(summary["unscored_count"], MAX_RUNS);
     assert!(summary["success_rate"].is_null());

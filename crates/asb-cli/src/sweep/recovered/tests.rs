@@ -92,6 +92,14 @@ fn report_import_removes_private_evidence_without_fabricating_execution_metrics(
         source.get("evidence").is_some(),
         "source must remain untouched"
     );
+    assert!(report["process_termination"].is_null());
+    let mut extended = source.clone();
+    extended["process_termination"] = json!({"kind":"signal","signal":15});
+    extended["process_termination_diagnostic"] = json!("unavailable");
+    let grade_only = reporting_summary(&fixture.entry(), &extended);
+    assert!(grade_only["process_termination"].is_null());
+    assert!(grade_only.get("process_termination_diagnostic").is_none());
+    assert_eq!(extended["process_termination"]["signal"], 15);
 }
 
 #[test]

@@ -102,6 +102,76 @@ fn guest_uses_registered_adapter_prepares_before_gate_and_preserves_output_usage
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn actual_guest_metadata_preserves_code_versus_signal_without_changing_carrier() {
+    for (script, exact, carrier) in [
+        (
+            "exit 137",
+            serde_json::json!({"kind":"code","code":137}),
+            137,
+        ),
+        (
+            "exit 143",
+            serde_json::json!({"kind":"code","code":143}),
+            143,
+        ),
+        (
+            "kill -KILL $$",
+            serde_json::json!({"kind":"signal","signal":9}),
+            1,
+        ),
+        (
+            "kill -TERM $$",
+            serde_json::json!({"kind":"signal","signal":15}),
+            1,
+        ),
+    ] {
+        let project = Project::new();
+        std::fs::write(
+            project.0.join(".asb-tools/pi/bin/pi"),
+            format!("#!/bin/sh\nprintf 'fixture submission\\n'\n{script}\n"),
+        )
+        .unwrap();
+        let mut process = Process(
+            Command::new(env!("CARGO_BIN_EXE_asb"))
+                .arg("__asb-agent")
+                .isolated_env()
+                .env("PATH", std::env::var_os("PATH").unwrap())
+                .env("HOME", &project.0)
+                .env("ASB_GUEST_AGENT_REQUEST", project.request().to_string())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        resume_fixture(&mut process);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while process.0.try_wait().unwrap().is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "guest completion exceeded fixture bound"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let metadata: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(project.0.join("private/attempt/agent-result.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(metadata["process_termination"], exact);
+        assert_eq!(metadata["tree_quiesced"], true);
+        assert_eq!(
+            metadata["exit_code"],
+            if exact["kind"] == "signal" {
+                serde_json::Value::Null
+            } else {
+                serde_json::json!(carrier)
+            }
+        );
+        assert_eq!(process.0.try_wait().unwrap().unwrap().code(), Some(carrier));
+    }
+}
+
+#[test]
 fn guest_preserves_inherited_shell_directory_and_environment_without_changing_project_authority() {
     qualify_guest_directory(true, false);
 }

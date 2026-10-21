@@ -94,6 +94,8 @@ struct RunResult<'a> {
     adapter_smoke_success: Option<bool>,
     elapsed_ms: u128,
     exit_code: Option<i32>,
+    #[serde(flatten)]
+    observation: crate::process_termination::Observation,
     token_usage: measurements::TokenUsage,
     steps: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -593,11 +595,13 @@ fn run_measured_agent_with_launch(
             .validate_gate(command)
             .map_err(|error| Error::Run(format!("cannot validate ASB gate launch: {error}")))?;
         Some(
-            crate::process_gate::Admission::new(validated).map_err(|error| {
-                Error::Run(format!(
-                    "cannot establish ASB process gate custody: {error}"
-                ))
-            })?,
+            crate::process_gate::Admission::with_principal_observation(validated).map_err(
+                |error| {
+                    Error::Run(format!(
+                        "cannot establish ASB process gate custody: {error}"
+                    ))
+                },
+            )?,
         )
     } else {
         None
@@ -736,6 +740,7 @@ fn run_measured_agent_with_launch(
                 issues.run_error(error);
             }
             Ok(MeasuredOutput {
+                observation: captured.observation,
                 output: captured.output,
                 elapsed_ms,
                 issues,
@@ -877,6 +882,7 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
         "model": result.model,
         "task": result.task,
         "process_success": result.process_success,
+        "process_termination": result.observation.process_termination,
         "workload_success": result.workload_success,
         "workload_resource_disposition": result.workload_resource_disposition,
         "workload_artifacts": result.workload_artifacts,
@@ -892,6 +898,10 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
         "steps": result.steps,
         "token_usage": result.token_usage,
     });
+    if let Some(diagnostic) = result.observation.process_termination_diagnostic {
+        summary["process_termination_diagnostic"] =
+            serde_json::to_value(diagnostic).map_err(|error| Error::Io(error.to_string()))?;
+    }
     if let Some(recording) = &result.recording {
         summary["recording"] =
             serde_json::to_value(recording).map_err(|error| Error::Io(error.to_string()))?;
@@ -1554,6 +1564,7 @@ mod tests {
             .unwrap();
         session
             .finish(crate::measurements::RunMeasurement {
+                observation: Default::default(),
                 workload_resource_disposition: None,
                 workload_artifacts: &[],
                 execution_plan_fingerprint: None,
@@ -1877,6 +1888,7 @@ mod tests {
 
     fn result<'a>() -> RunResult<'a> {
         RunResult {
+            observation: Default::default(),
             recording: None,
             execution: None,
             planning: crate::planning::resolve(

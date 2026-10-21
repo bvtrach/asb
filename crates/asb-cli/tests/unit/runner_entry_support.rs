@@ -137,7 +137,11 @@ impl Scope {
                 admission_replacement: case.contains("admission"),
                 capture_grade: case
                     .starts_with("capture-")
-                    .then_some(!case.contains("false")),
+                    .then_some(!case.contains("false"))
+                    .or_else(|| {
+                        (case.starts_with("termination-") && !case.contains("pending"))
+                            .then_some(!case.contains("false"))
+                    }),
                 observe_original_provider: false,
                 phase_fault: None,
             });

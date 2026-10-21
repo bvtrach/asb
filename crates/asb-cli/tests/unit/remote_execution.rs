@@ -108,6 +108,14 @@ closed()
         }
     }
     fn actual_task_server(&self, grades: &[Value]) -> Session {
+        self.actual_task_server_observation(grades, &json!({}), 7)
+    }
+    fn actual_task_server_observation(
+        &self,
+        grades: &[Value],
+        observation: &Value,
+        carrier: i32,
+    ) -> Session {
         // Actual Python task-loop producer paired with the actual Rust transport.
         // Only the SDK/agent implementation is an inert, process-local fixture.
         let script = r#"
@@ -116,7 +124,7 @@ from pathlib import Path
 sys.path.insert(0,sys.argv[1])
 from asb_task_server import serve
 from asb_execution import ExecutionError
-log=Path(sys.argv[2]);grades=json.loads(sys.argv[3])
+log=Path(sys.argv[2]);grades=json.loads(sys.argv[3]);observation=json.loads(sys.argv[4]);carrier=int(sys.argv[5])
 def record(op):
  with log.open('a') as output: output.write(op+'\n')
 def execute_agent(task,request,attach,output,cancelled,on_ended,**options):
@@ -125,8 +133,9 @@ def execute_agent(task,request,attach,output,cancelled,on_ended,**options):
  assert request['request']['config']['workspace']=='/fixture-task'
  attach(dict(exec_id='owned-execution'));record('resume')
  output('stdout',b'live\x00output')
- result=dict(exit_code=7,stdout=b'complete\x00output',stderr=b'diagnostic',elapsed_seconds=.125,
-  metadata=dict(schema_version=1,exit_code=7,final_response='fixture',token_usage={},steps=2,tree_quiesced=True))
+ result=dict(exit_code=carrier,stdout=b'complete\x00output',stderr=b'diagnostic',elapsed_seconds=.125,
+  metadata=dict(schema_version=1,exit_code=carrier,final_response='fixture',token_usage={},steps=2,tree_quiesced=True))
+ result['metadata'].update(observation)
  on_ended(result)
  return result
 guest=types.ModuleType('asb_guest');guest.execute_agent=execute_agent;guest.PreparationBudget=lambda seconds:None;sys.modules['asb_guest']=guest
@@ -149,7 +158,9 @@ raise SystemExit(serve(Task(),sys.stdin,sys.stdout))
             .args(["-I", "-S", "-B", "-u", "-c", script])
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/benchmarks"))
             .arg(self.0.join("operations"))
-            .arg(serde_json::to_string(grades).unwrap());
+            .arg(serde_json::to_string(grades).unwrap())
+            .arg(serde_json::to_string(observation).unwrap())
+            .arg(carrier.to_string());
         let mut controller = Controller::spawn(&mut command).unwrap();
         let ready = controller
             .receive(Instant::now() + Duration::from_secs(3))
@@ -227,6 +238,101 @@ fn actual_python_producer_and_rust_session_keep_both_grades_and_consume_close_pe
             fixture.operations(),
             ["agent", "resume", "evaluate", "normal-close"]
         );
+    }
+}
+
+#[test]
+fn actual_python_task_loop_forwards_declared_termination_without_changing_grade_or_settlement() {
+    // These are declared protocol facts, not actual signal/exit executions.
+    // Real code137/143 versus signal9/15 are qualified by the guest/gate tests.
+    use crate::process_termination::Observation;
+    for (observation, carrier) in [
+        (
+            json!({"process_termination":{"kind":"code","code":137}}),
+            137,
+        ),
+        (
+            json!({"process_termination":{"kind":"code","code":143}}),
+            143,
+        ),
+        (
+            json!({"process_termination":{"kind":"signal","signal":9}}),
+            1,
+        ),
+        (
+            json!({"process_termination":{"kind":"signal","signal":15}}),
+            1,
+        ),
+        (json!({}), 1),
+        (
+            json!({"process_termination":{"kind":"signal","signal":0}}),
+            1,
+        ),
+    ] {
+        for resolved in [Some(true), Some(false), None] {
+            let fixture = Fixture::new();
+            let grade = json!({"workload":"fixture","task_id":"task","dataset":null,
+                "outcome":match resolved {Some(true)=>"resolved",Some(false)=>"unresolved",None=>"pending"},
+                "resolved":resolved});
+            let mut session =
+                fixture.actual_task_server_observation(&[grade], &observation, carrier);
+            let config = configuration();
+            let project = crate::project::ProjectConfig::default();
+            let connection = connection();
+            let mut context = ExecutionContext {
+                config: &config,
+                connection: Some(&connection),
+                project_root: &fixture.0,
+                project_config: &project,
+                replay: true,
+                measurements: None,
+                show_output: false,
+                launch: None,
+            };
+            let result = session.run_prepared(
+                &mut context,
+                &mut Vec::new(),
+                &connection,
+                fixture.prepared(),
+            );
+            let result = session.settle_execution(&mut context, result).unwrap();
+            assert!(result.metadata.tree_quiesced);
+            assert_eq!(
+                result.metadata.observation,
+                Observation::from_record(&observation)
+            );
+            assert_eq!(result.output.status.code(), Some(carrier));
+            let evaluated = session.evaluate("");
+            match resolved {
+                Some(true) => assert!(matches!(evaluated.unwrap(), Evaluation::Passed)),
+                Some(false) => assert!(matches!(evaluated.unwrap(), Evaluation::Failed(_))),
+                None => assert!(evaluated.is_err()),
+            }
+            assert_eq!(session.completed_grade.is_some(), resolved.is_some());
+            let settlement = session.finish().unwrap();
+            assert_eq!(
+                settlement.disposition,
+                if resolved.is_some() {
+                    ResourceDisposition::Removed
+                } else {
+                    ResourceDisposition::StoppedPreserved
+                }
+            );
+            assert_eq!(session.finish().unwrap(), settlement);
+            assert_eq!(
+                fixture.operations(),
+                [
+                    "agent",
+                    "resume",
+                    "evaluate",
+                    if resolved.is_some() {
+                        "normal-close"
+                    } else {
+                        "preserve"
+                    }
+                ]
+            );
+        }
     }
 }
 

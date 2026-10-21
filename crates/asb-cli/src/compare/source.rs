@@ -61,12 +61,14 @@ pub(super) fn read_benchmark_text(path: &Path) -> Result<String, Error> {
     read_text_limit(path, "benchmark configuration", 64 * 1024)
 }
 pub(super) fn read_json(path: &Path) -> Result<Value, Error> {
-    serde_json::from_str(&read_text(path, "measurement file")?).map_err(|error| {
+    let value = serde_json::from_str(&read_text(path, "measurement file")?).map_err(|error| {
         Error::Input(format!(
             "invalid measurement JSON {}: {error}",
             path.display()
         ))
-    })
+    })?;
+    crate::process_termination::recorded(&value).map_err(|error| Error::Input(error.into()))?;
+    Ok(value)
 }
 pub(super) fn read_svg(path: &Path, artifact: &str) -> Result<String, Error> {
     let svg = read_text(path, "embedded SVG artifact").map_err(|error| {
@@ -416,6 +418,7 @@ fn load_attempt(
             |selection| selection.evaluation_kind.clone(),
         );
         return Ok(BenchmarkData {
+            observation: Default::default(),
             id: RowId {
                 configuration: context.index,
                 replica,
@@ -646,6 +649,13 @@ fn load_attempt(
     let (series, host_metadata, components) =
         load_collectors(&measurement_dir, measured, &mut metrics)?;
     Ok(BenchmarkData {
+        observation: if grade_only_closed
+            || outcome.is_some_and(|record| record.source == "imported-official-grade")
+        {
+            Default::default()
+        } else {
+            outcomes::recorded_observation(&run_value, outcome)?
+        },
         id: RowId {
             configuration: index,
             replica,
