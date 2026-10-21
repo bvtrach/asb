@@ -891,6 +891,8 @@ fn native_postexecution_event_failure_retains_actual_child_output_and_grade() {
     }
 }
 
+#[path = "runner_bundle_publication.rs"]
+mod bundle_publication;
 #[path = "runner_publication.rs"]
 mod publication;
 
@@ -1476,6 +1478,10 @@ fn repeated_provider_finish_child(
 }
 
 fn full_entry_child(case: &str) {
+    if case.starts_with("bundle-publication-") {
+        bundle_publication::run(case);
+        return;
+    }
     use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Observer {

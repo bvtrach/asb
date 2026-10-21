@@ -246,6 +246,42 @@ Delivery of earlier queued classes does not close these residual obligations.
 
 ## Independent matrix and official-engine follow-up
 
+### Recording raw-cleanup replacement window: separate observed-red repair
+
+Independent review of peer recording main
+`cabaa57668d3a03c2ef922d24edf420446c613d7` / recording source
+`06c47a9e7237da0637ab491bb5ff93003b14355f` identified a separate residual in
+`runner/recording.rs::cleanup_raw`:
+after the final pathname metadata verification (line 467 in that baseline),
+`remove_file` at line 468 re-resolves the pathname. A replacement in that window
+could therefore remove a foreign entry. Existing `raw_cleanup` tests replace
+the entry before function admission, not after the last verification. This is a
+source finding; the later separate observed-red evidence is below. It is not a
+hostile-same-UID sandbox claim.
+
+A separate follow-up must first add a deterministic private after-final-check
+fault and actually reproduce regular-file, symlink and parent replacements.
+Proposed repair: pin the parent, move the relative entry into a private owned
+stage, recheck the moved identity, then delete only the matched entry; restore
+or retain/report a foreign entry without overwrite. Preserve archive commit,
+immutable producer/attempt association and confirmed producer-cleanup
+prerequisites. Keep a post-unlink directory-sync failure distinct from an
+unchanged pre-unlink failure. No recording production change is included in
+the publication34 cross-feature test checkpoint.
+
+Later evidence, kept outside publication34: the dedicated
+`asb-recording-raw-custody` source checkpoint `248bf2ab` and docs checkpoint
+`d0abb112d640c67265342efbb1c1d4c758abcc3e` actually exercised all three regular,
+symlink and replaced-parent variants. Every variant unlinked the foreign entry
+and returned `Ok(())`; the test exited 101, zero passed/one failed/zero skipped
+in 0.03 seconds. Libtest SHA-256 remained
+`2c1c8eab1aef2fa03d9c1cd8e2761e84b84a412fdcc1728783be5fb0bd4c5849`.
+That worktree retains `target/recording-raw-red.log`,
+`target/recording-raw-red-build-final.log` and before/after hashes. Independent
+review approved the red/design; a separate implementation is in progress.
+No production fix, green qualification or delivery of that repair is claimed
+by this publication34 documentation update.
+
 A separate agent reviewed exact main `1bcc8253`, the original report, setup
 callers and downstream readers. The later peer main `cabaa576` leaves
 `config/matrix.rs` unchanged. No reachable empty-index panic was found: required
