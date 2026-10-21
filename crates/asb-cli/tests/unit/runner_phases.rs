@@ -1952,7 +1952,8 @@ fn full_entry_child(case: &str) {
         mode: Some(tape::Mode::Replay),
         cassette: Some(cassette.to_str().unwrap()),
         on_completion: Some(&observer),
-        execution_cohort: (provider_case || disposition_case || capture_case).then_some(&cohort),
+        execution_cohort: (provider_case || disposition_case || capture_case || termination_case)
+            .then_some(&cohort),
         ..Default::default()
     };
     #[cfg(target_os = "linux")]

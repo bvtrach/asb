@@ -601,6 +601,7 @@ fn load_attempt(
             "module.",
             "planning.",
             "effective_budgets.",
+            "process_termination.",
         ]
         .iter()
         .any(|prefix| key.starts_with(prefix))
@@ -654,9 +655,7 @@ fn load_attempt(
         {
             Default::default()
         } else {
-            crate::process_termination::recorded(&run_value)
-                .map_err(|error| Error::Input(error.into()))?;
-            crate::process_termination::Observation::from_record(&run_value)
+            outcomes::recorded_observation(&run_value, outcome)?
         },
         id: RowId {
             configuration: index,
