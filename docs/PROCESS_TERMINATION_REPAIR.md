@@ -64,3 +64,99 @@ client, SDK, Docker, privilege or host setting change is required. Native
 Windows and other Unix kernels remain unqualified. Independent source review,
 focused/strict-lint evidence and explicit full-suite authorization precede
 hosted/package CI, main ancestry, merge, post-merge jobs and release.
+
+## Focused checkpoint (not full qualification)
+
+Signed implementation checkpoint `bcdeda35` and its signed follow-ups culminate
+in source `1a9a445b41e657d17d5e082cac0b39a99af6e14f`. The last commit is solely
+the approved Python-task-loop/Rust-session fixture extension. Production bytes
+are unchanged from `7c4af151`; no source was changed during runtime tests.
+Actual ASB was built first. Its SHA-256 before/after the broad runtime sequence,
+after the final fixture sequence, and after strict lint is consistently:
+
+`a73287e4d0c2883f73b7d66d6d2f32c94ef70f5cad6de5473d1927c511e9b3a2`.
+
+Logs are under this source checkout's `target`, not the stale cache-anchor
+checkout. `termination42-matrix-{before,after}.sha256` and
+`termination42-final-{before,after,lint-after}.sha256` retain the hashes.
+`termination42-matrix-build.log` and `termination42-final-build.log` both
+finished successfully; the latter correctly reused the unchanged production
+binary after a test-only edit.
+
+| Focused log suffix | Passed | Ignored |
+| --- | ---: | ---: |
+| matrix-core | 7 | 0 |
+| focus-process_gate | 26 | 0 |
+| focus-runner-capture | 12 | 0 |
+| focus-runner-phases | 34 | 0 |
+| focus-measurements | 95 | 0 |
+| focus-compare | 75 | 1 |
+| focus-sweep-checkpoint | 34 | 0 |
+| focus-sweep-recovered | 6 | 0 |
+| focus-workloads-remote | 25 | 0 |
+| focus-workloads-task_protocol | 7 | 0 |
+| focus-guest_agent | 15 | 0 |
+| focus-benchmark_protocol | 35 | 0 |
+| focus-repeated_run | 30 | 0 |
+| focus-capture_session | 2 | 0 |
+| focus-agent_artifact_ownership | 2 | 0 |
+| final-remote | 26 | 0 |
+| final-collectors | 131 | 5 |
+| final-workloads-controller | 29 | 0 |
+
+Each filename is `termination42-<suffix>.log`. These total 591 passing test
+executions, zero failures and six ignored executions; filters overlap, so this
+is not a count of unique tests or a full-suite result. The artifact target's two
+outer tests include ten Python scenarios. Native termination exercises 22
+isolated full-entry/repeat cases; actual guest execution composed with grade
+phases exercises 12 cases. The final actual Python task-loop/Rust-session test
+has 18 declared-metadata cases, not 18 actual child terminations. It confirms
+true/false and pending-grade preservation/settlement without claiming a real
+SDK/container/verifier. Actual code/signal execution is independently checked
+by native and guest fixtures. The collector family includes actual requested
+SIGINT, strict exit130/control-fact requirements and offline decoder failures.
+
+Strict `cargo clippy --locked --offline --workspace --all-targets --all-features
+-- -D warnings`, formatting check and diff check all terminated successfully;
+see `termination42-final-{clippy,fmt,diffcheck}.log`. All compilations used the
+exclusive allocated root-filesystem target, one job, incremental disabled and
+at least 3 GiB available. The latest check had approximately 208 GiB available.
+Generated untracked `crates/asb-cli/target` fixture directories are retained as
+owning test evidence; they are not source changes or an additional build cache.
+
+### Projection review and failure provenance
+
+The first actual `bcdeda35` core run failed at its code137 streamed-summary
+assertion: manually built `render_json` omitted the new sidecar. Its four
+other outer tests passed. The exact original failed log
+`termination42-bcd-core.log` and before hash are retained; actual binary hash
+`9ef39a1f68b5d5333b5589e874f162b7533e07c21fcbe85027eeefdef6e217ba`
+was verified unchanged after failure. Signed `e2b07db3` fixes the renderer used
+by both streamed and private completion summaries. The next owning native test
+then reached comparison and correctly rejected its missing fixture cohort;
+`termination42-focused-core.log` preserves that failure (four passed, one
+failed), with unchanged actual hash
+`2424dda81f8b3076438c455c592b0a71eeb52f82b503f1c2e534337c10cdaa14`.
+Its fixture now supplies the same valid single-replica cohort as other owning
+report tests. `termination42-report-fix-core.log` separately preserves a test
+compilation failure from moved fixture Values, corrected by explicit clones.
+These are diagnosed corrections, not unmodified retries or skipped assertions.
+
+Manual projection review covered streamed/private completion, serialized
+RunResult logs, full RunMeasurement/history records, guest pending/final
+metadata, repeated outcome references and compare JSON/HTML. Tests now assert
+private completion summary equality with streamed output. Grade-only import
+and closed-slot projection explicitly null exact termination and drop its
+observation diagnostic without mutating the original official-grade document.
+Comparison coalesces known facts only from already-matched/agreed current
+attempt records; unknown observations do not hide matching retained facts.
+Known conflicts, malformed present facts and a different attempt object reject
+updates while preserving both source bytes and existing JSON/HTML. Reserved
+termination sidecars are excluded from generic numeric flattening at every
+root, including host/component collector metadata, so codes/signals do not
+become performance metrics or graphs. None of these changes adds a receipt,
+status, grade, capture or continuation condition.
+
+Independent final source/focused review and explicit authorization are still
+required before any full suite. No make/package/hosted/full/new-main integration
+qualification, native Windows execution or release is claimed here.
