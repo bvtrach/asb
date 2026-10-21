@@ -265,6 +265,22 @@ sys.exit(int(case[4:]) if case.startswith('exit') else 0)
                 .unwrap()
                 .contains(SECRET)
         );
+        let arguments: Vec<String> =
+            serde_json::from_str(&fs::read_to_string(root.join("arguments")).unwrap()).unwrap();
+        for (flag, expected) in [
+            ("--max-filesize", transport::MAX_RESPONSE.to_string()),
+            ("--max-time", transport::IO_TIMEOUT.as_secs().to_string()),
+        ] {
+            let index = arguments
+                .iter()
+                .position(|argument| argument == flag)
+                .unwrap();
+            assert_eq!(
+                arguments[index + 1],
+                expected,
+                "curl and reader/watchdog must share one limit"
+            );
+        }
         return;
     }
     let error = result.unwrap_err().to_string();

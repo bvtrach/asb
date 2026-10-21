@@ -548,6 +548,16 @@ Model discovery reads the selected credential only long enough to send a catalog
 request; it sends it through curl's stdin configuration, never includes it in
 arguments or output, and never stores it. Authenticated requests do not follow
 redirects, which prevents a catalog redirect from forwarding a provider key.
+The generic catalog transport polls all three Unix pipes concurrently rather
+than blocking on request writes or stream-reader joins. Its absolute budget is
+35 seconds, with I/O ending by 30 seconds and cleanup consuming only the reserved
+remainder. The 16 MiB body and 8 KiB diagnostic-tail limits apply independently
+of curl's own limits. A privately owned direct child is stopped/reaped on errors;
+uncertain exit transfers to pre-established reaper custody and cannot produce a
+successful catalog. Inherited descendant pipe handles do not prolong the caller.
+This is not descendant supervision or a guarantee about uninterruptible kernel
+operations. Non-Unix discovery explicitly fails before spawn until a cancellable
+transport is implemented; no blocking compatibility fallback remains.
 For replay, ASB removes known provider and registered agent credential
 environment variables and supplies dummy values where needed before launching
 the agent. Replay is not a security sandbox:
