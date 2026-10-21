@@ -165,8 +165,11 @@ impl Drop for Release {
         wake.notify_all();
     }
 }
-struct Dependency(Arc<AtomicBool>);
+struct Dependency(Arc<AtomicBool>, ProducerState);
 impl ProducerOwner for Dependency {
+    fn producer_state(&self) -> &ProducerState {
+        &self.1
+    }
     fn producer_started(&self) {}
 }
 impl Drop for Dependency {
@@ -229,7 +232,7 @@ fn blocked_log_writer_cannot_hold_cancellation_or_producer_tree_custody() {
     let release_on_failure = Release(Arc::clone(&release));
     let reached = Arc::new(AtomicBool::new(false));
     let dropped = Arc::new(AtomicBool::new(false));
-    let dependency = Arc::new(Dependency(Arc::clone(&dropped)));
+    let dependency = Arc::new(Dependency(Arc::clone(&dropped), ProducerState::default()));
     let lease = ProducerLease::new(dependency, &root);
     let mut step = shell(
         &context,
@@ -339,7 +342,10 @@ fn parent_wait_expiry_retains_the_real_dependency_until_matching_quiescence() {
     let held = Arc::new(AtomicBool::new(true));
     let release_on_failure = ObserveRelease(Arc::clone(&held));
     let dropped = Arc::new(AtomicBool::new(false));
-    let lease = ProducerLease::new(Arc::new(Dependency(Arc::clone(&dropped))), &root);
+    let lease = ProducerLease::new(
+        Arc::new(Dependency(Arc::clone(&dropped), ProducerState::default())),
+        &root,
+    );
     let mut step = shell(&context, "printf ready > ready; sleep 30");
     step.hold_observation = Some(Arc::clone(&held));
     let (send, receive) = mpsc::sync_channel(1);

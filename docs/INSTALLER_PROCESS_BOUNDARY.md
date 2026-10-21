@@ -663,3 +663,39 @@ See `installer44-owner-binding-red-before.sha256`. The fixture writes
 cleanup. This is an observed prototype authority gap; no production installer
 repair, full qualification or historical user failure is inferred. This
 checkpoint adds the regression/evidence ONLY, before repairing the constructor.
+
+### Intrinsic actual-owner state correction
+
+The observed-red checkpoint03812155 remains immutable. ProducerOwner now exposes
+a borrowed reference to its own fixed ProducerState; the owning Stage returns its
+private stored state. ProducerLease::new derives its state ONLY from that owner.
+The arbitrary-state with_state constructor has been removed, and Stage's scope
+constructor uses the same sole owner-bearing lease constructor as every other
+caller. Test dependency owners likewise contain a fixed state instead of asking
+the lease to allocate one. Pointer identity is still only one necessary check,
+not a substitute for the actual owner's admission/settlement generation.
+
+The SAME actual Stage alternate-constructor regression now rejects its old
+permission during admission. Actual helper settlement, unrelated sentinel
+survival/separate stop, preserved old destination and retained source are checked
+before the final rejection assertion. All previous19 focused cases remain green.
+This is the narrow constructor correction, not broad caller migration approval.
+
+| Fresh evidence | Actual result |
+| --- | --- |
+| `target/installer44-owner-binding-repair-build.log` | Actual build FIRST,14.34s,exit0 |
+| `target/installer44-owner-binding-repair-focus.log` | Core20/0/0ignored,25.80s compile,25.27s runtime |
+| `target/installer44-owner-binding-repair-clippy.log` | Strict workspace/all-targets/all-features `-D warnings` PASS,16.77s |
+| `target/installer44-owner-binding-repair-fmt.log` | Formatting PASS; git diff check also PASS |
+
+Actual binary before/after the complete matrix and frozen copy:
+`35f8fb9200b77cab02ed09943b49885a86027c68350a4fb080a09fb3705762b1`.
+Final libtest post-run/frozen copy:
+`9b81fbc91cbc8a8008443b3af3e27e411aeefefda3d6495417e4f120a9dc815e`.
+See `target/installer44-owner-binding-repair-before.sha256` and
+`target/installer44-owner-binding-repair-final.sha256`, plus preserved
+`target/qualification/installer44-owner-binding-{asb,libtests}`. Original baaf
+and earlier frozen binaries/logs remain untouched. No pre-run final libtest hash,
+full suite, production installer qualification, PR, push or release is claimed.
+All handles are terminal; the API awaits independent review before broad callers
+depend on it. Prior read/panic/start/fallback and all-caller obligations still hold.

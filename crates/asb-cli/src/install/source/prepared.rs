@@ -568,6 +568,9 @@ impl Drop for Staging {
 
 #[cfg(all(test, target_os = "linux"))]
 impl crate::install::process::ProducerOwner for Staging {
+    fn producer_state(&self) -> &crate::install::process::ProducerState {
+        &self.producer
+    }
     fn producer_started(&self) {
         self.producer_quiet
             .store(false, std::sync::atomic::Ordering::Release);
@@ -592,9 +595,8 @@ impl Staging {
         self: &std::sync::Arc<Self>,
         context: &crate::install::process::OperationContext,
     ) -> crate::install::process::ProcessScope {
-        let lease = crate::install::process::ProducerLease::with_state(
+        let lease = crate::install::process::ProducerLease::new(
             std::sync::Arc::clone(self),
-            self.producer.clone(),
             &self.directory,
         );
         crate::install::process::ProcessScope::new(context, lease)

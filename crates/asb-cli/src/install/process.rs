@@ -172,6 +172,9 @@ impl std::fmt::Display for AbortInstallation {
 /// Actual producer dependencies, held by the worker until matching quiescence.
 /// The owner must move its real staging guard here, not a copy of its pathname.
 pub(crate) trait ProducerOwner: Send + Sync {
+    /// The immutable state belonging to this actual owner. A lease cannot
+    /// substitute fresh state while retaining the same producer resources.
+    fn producer_state(&self) -> &ProducerState;
     /// Disable destructive settlement before any potentially admitted producer.
     fn producer_started(&self);
 }
@@ -312,13 +315,7 @@ pub(crate) struct ProducerLease {
 }
 impl ProducerLease {
     pub(crate) fn new<T: ProducerOwner + 'static>(owner: Arc<T>, evidence: &Path) -> Self {
-        Self::with_state(owner, ProducerState::default(), evidence)
-    }
-    pub(crate) fn with_state<T: ProducerOwner + 'static>(
-        owner: Arc<T>,
-        state: ProducerState,
-        evidence: &Path,
-    ) -> Self {
+        let state = owner.producer_state().clone();
         Self {
             _owner: Some(owner),
             state,
