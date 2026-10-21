@@ -3435,8 +3435,81 @@ fn reset_rejects_symlinked_default_directories_before_changing_state() {
 fn install_fake_bridge(project: &Project, source: &str) {
     use std::os::unix::fs::PermissionsExt;
     let name = ".asb-tools/cli2key/node_modules/.bin/codex-bridge";
-    project.write(name, source);
+    let body = source.strip_prefix("#!/usr/bin/env node\n").unwrap();
+    // Only these inert fixture scripts retain stderr. Production intentionally
+    // does not print bridge output, which may contain provider credentials.
+    let diagnostic = serde_json::to_string(&project.0.join("bridge.stderr")).unwrap();
+    let prelude = format!(
+        r#"#!/usr/bin/env node
+const __asbFixtureFs = require('fs');
+const __asbFixtureErrorFd = __asbFixtureFs.openSync({diagnostic}, 'w', 0o600);
+let __asbFixtureErrorRemaining = 8192;
+function __asbFixtureRetain(chunk) {{
+  if (__asbFixtureErrorRemaining <= 0) return;
+  const bytes = (Buffer.isBuffer(chunk) ? chunk.subarray(0, __asbFixtureErrorRemaining)
+    : Buffer.from(String(chunk).slice(0, __asbFixtureErrorRemaining)))
+    .subarray(0, __asbFixtureErrorRemaining);
+  __asbFixtureFs.writeSync(__asbFixtureErrorFd, bytes);
+  __asbFixtureErrorRemaining -= bytes.length;
+}}
+const __asbFixtureStderrWrite = process.stderr.write.bind(process.stderr);
+process.stderr.write = (...args) => {{ __asbFixtureRetain(args[0]); return __asbFixtureStderrWrite(...args); }};
+process.on('uncaughtExceptionMonitor', error => {{
+  __asbFixtureRetain('uncaught ' + String(error.code).slice(0,128) + ': ' + String(error.message).slice(0,2048) + '\n');
+}});
+"#
+    );
+    project.write(name, &format!("{prelude}{body}"));
     std::fs::set_permissions(project.0.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+fn fixture_stderr(project: &Project) -> String {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    if let Ok(file) = std::fs::File::open(project.0.join("bridge.stderr")) {
+        file.take(8192).read_to_end(&mut bytes).unwrap();
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cli2key_mock_keeps_selected_listener_reserved_through_startup() {
+    let project = Project::new();
+    project.init();
+    install_fake_bridge(
+        &project,
+        r##"#!/usr/bin/env node
+const http = require('http'), fs = require('fs');
+fs.writeFileSync(process.env.ASB_TEST_PIDFILE, String(process.pid));
+http.createServer((req,res) => {
+  res.writeHead(200, {'content-type':'application/json'});
+  res.end(JSON.stringify({data:[{id:'fixture-model'}]}));
+}).listen(Number(process.env.CODEX_BRIDGE_PORT), '127.0.0.1', () => console.log('Codex Bridge API key: fixture-key'));
+"##,
+    );
+    let reserved = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reserved.local_addr().unwrap().port().to_string();
+    let pidfile = project.0.join("bridge.pid");
+    let result = project.command_with_env(
+        &["provider", "models", "cli2key"],
+        &[
+            ("CODEX_BRIDGE_PORT", &port),
+            ("ASB_TEST_PIDFILE", pidfile.to_str().unwrap()),
+        ],
+    );
+    assert_eq!(reserved.local_addr().unwrap().port().to_string(), port);
+    let pid: u32 = std::fs::read_to_string(pidfile).unwrap().parse().unwrap();
+    let _wait = wait_for_fixture(&project, pid);
+    assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    assert!(
+        result.status.success(),
+        "stdout={} stderr={} fixture_stderr={}",
+        stdout(&result),
+        stderr(&result),
+        fixture_stderr(&project)
+    );
 }
 
 #[cfg(target_os = "linux")]
