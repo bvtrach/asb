@@ -135,9 +135,10 @@ impl Track {
         format!("tracks/{}.jsonl", self.id)
     }
 
-    /// Automatic selection includes failed attempts with complete nonempty traces.
+    /// Complete failed attempts remain eligible, but known probe-only captures do
+    /// not supply inference traces. Missing legacy request statistics stay unknown.
     pub fn automatically_selectable(&self) -> bool {
-        self.complete && self.bytes > 0
+        self.complete && self.bytes > 0 && self.statistics.requests != Some(0)
     }
 }
 

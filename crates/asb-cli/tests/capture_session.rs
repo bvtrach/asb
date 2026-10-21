@@ -6,8 +6,10 @@ use support::IsolatedEnvironment;
 fn recorder_accounting_and_publication_fault_matrix() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let output = std::process::Command::new("node")
-        .args(["--test"])
+        .arg("--test")
         .arg(root.join("tests/capture_session.mjs"))
+        .arg(root.join("tests/capture_http.mjs"))
+        .arg(root.join("tests/tape_normalization.mjs"))
         .current_dir(root)
         .isolated_env()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())

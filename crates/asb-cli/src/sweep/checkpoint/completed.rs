@@ -31,6 +31,8 @@ struct Outcome {
     #[serde(default)]
     proxy_evidence: Vec<PathBuf>,
     #[serde(default)]
+    capture_evidence: Vec<crate::proxy::capture::CaptureEvidence>,
+    #[serde(default)]
     replica: Option<crate::runner::replica::Identity>,
     #[serde(default)]
     outputs: Vec<PathBuf>,
@@ -297,6 +299,7 @@ fn outcome_state(
 }
 
 fn validate_outcome(record: &Outcome, entry: &PlannedBenchmark) -> Result<TaskIdentity, Error> {
+    validate_captures(record)?;
     let summary = &record.summary;
     let structured = crate::workloads::outcome::BenchmarkOutcome::read(summary)
         .map_err(|_| invalid("malformed structured benchmark outcome"))?;
@@ -406,6 +409,23 @@ fn validate_outcome(record: &Outcome, entry: &PlannedBenchmark) -> Result<TaskId
         // Bind that absence too, rather than retrying a graded false task.
     }
     Ok(task)
+}
+
+fn validate_captures(record: &Outcome) -> Result<(), Error> {
+    if record.capture_evidence.len() > 64 {
+        return Err(invalid("capture evidence population exceeds its bound"));
+    }
+    for capture in &record.capture_evidence {
+        capture
+            .validate()
+            .map_err(|_| invalid("capture evidence metadata is malformed"))?;
+        if !record.proxy_evidence.contains(&capture.output) {
+            return Err(invalid(
+                "capture output is absent from declared proxy evidence",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn measurement_matches(measured: &Value, summary: &Value) -> bool {

@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { CaptureSession } from "../assets/scripts/capture-session.mjs";
+import { CaptureSession, responseDelivery } from "../assets/scripts/capture-session.mjs";
+import { Writable } from "node:stream";
+import { EventEmitter } from "node:events";
 
 function fixture(t, overrides = {}) {
   const parent = join(process.cwd(), "target/capture-session-fixtures");
@@ -179,4 +181,39 @@ test("plain close retains uncertainty without retrying a possibly reused descrip
   assert.equal(capture.outputCleanupConfirmed, false);
   assert.throws(() => capture.close(), (error) => error === capture.outputCloseError);
   assert.equal(closes, 1);
+});
+
+test("full append with a held transport write remains pending until destroy and incomplete", async (t) => {
+  const { capture, receipt } = fixture(t);
+  let held;
+  const response = new Writable({ write(_bytes, _encoding, callback) { held = callback; } });
+  response.on("error", () => {});
+  const delivered = responseDelivery(response);
+  let settled = false;
+  delivered.then(() => { settled = true; });
+  const token = capture.begin();
+  capture.append(token, { response: "fully recorded before transport handoff" }, true);
+  response.end("blocked transport");
+  await new Promise(setImmediate);
+  assert.equal(typeof held, "function");
+  assert.equal(response.writableFinished, false);
+  assert.equal(settled, false);
+  assert.equal(capture.pending.size, 1);
+  response.destroy();
+  capture.end(token, await delivered);
+  const value = capture.finalize(receipt);
+  assert.equal(value.recorded, 1);
+  assert.equal(value.failed, 1);
+  assert.equal(value.complete, false);
+});
+
+test("only finish is positive even when a detached response claims writableFinished", async () => {
+  for (const finish of [false, true]) {
+    const response = new EventEmitter();
+    response.writableFinished = true;
+    const delivered = responseDelivery(response);
+    if (finish) response.emit("finish");
+    response.emit("close");
+    assert.equal(await delivered, finish);
+  }
 });

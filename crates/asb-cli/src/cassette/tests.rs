@@ -95,6 +95,34 @@ fn manifest(count: u64) -> Manifest {
 }
 
 #[test]
+fn probe_only_capture_is_inspectable_but_not_automatically_selected() {
+    let mut catalogue = manifest(2);
+    catalogue.tracks[0].statistics.requests = Some(0);
+    catalogue.tracks[1].process_success = Some(false);
+    catalogue.tracks[1].workload_success = Some(false);
+    let plan = SelectionPlan::build(&catalogue, 5, 2, 42, None, 20).unwrap();
+    assert_eq!(plan.tracks, vec![2; 10]);
+    assert_eq!(Selector::Id(1).resolve(&catalogue).unwrap(), 1);
+    assert_eq!(
+        "min:requests"
+            .parse::<Selector>()
+            .unwrap()
+            .resolve(&catalogue)
+            .unwrap(),
+        2
+    );
+    catalogue.tracks[1].statistics.requests = Some(0);
+    assert!(SelectionPlan::build(&catalogue, 1, 1, 42, None, 20).is_err());
+    catalogue.tracks[0].statistics.requests = None;
+    assert_eq!(
+        SelectionPlan::build(&catalogue, 1, 1, 42, None, 20)
+            .unwrap()
+            .tracks,
+        vec![1]
+    );
+}
+
+#[test]
 fn schema_identity_bounds_order_and_checked_slot_mapping() {
     let limits = Limits::default();
     let original = manifest(3);

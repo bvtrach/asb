@@ -3,6 +3,16 @@
 import * as fs from "node:fs";
 import { createHash } from "node:crypto";
 
+// Positive local transport handoff is the finish event, not peer application
+// consumption. Socket detachment can make writableFinished misleading on close.
+export function responseDelivery(response) {
+  return new Promise((resolve) => {
+    response.once("finish", () => resolve(true));
+    response.once("close", () => resolve(false));
+    response.once("error", () => resolve(false));
+  });
+}
+
 export class CaptureSession {
   constructor(output, identity, io = fs) {
     this.io = io;

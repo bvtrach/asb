@@ -171,7 +171,12 @@ mod adapter_layout_tests {
                     "target.rs",
                 ],
             ),
-            ("proxy", super::proxy::names().collect(), &["mod.rs"]),
+            (
+                "proxy",
+                super::proxy::names().collect(),
+                // Category-wide capture evidence, not a provider/target adapter.
+                &["mod.rs", "capture.rs"],
+            ),
             (
                 "collectors",
                 super::collectors::names().collect(),

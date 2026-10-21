@@ -2643,6 +2643,7 @@ mod tests {
                 true,
                 &evidence,
                 &crate::proxy::Evidence {
+                    captures: Vec::new(),
                     output_files: Vec::new(),
                     cleanup_confirmed: true,
                 },
@@ -2715,6 +2716,7 @@ mod tests {
                     true,
                     &[],
                     &crate::proxy::Evidence {
+                        captures: Vec::new(),
                         output_files: Vec::new(),
                         cleanup_confirmed: true
                     },

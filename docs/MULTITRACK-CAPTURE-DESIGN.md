@@ -1,16 +1,39 @@
 # Recording finalization and run integration
 
-Status: reviewed implementation design, not a claim of available CLI behavior.
-The archive/journal backend is implemented; recorder evidence and run integration
-are the next feature boundary. See MULTITRACK.md for the full delivery scope.
+Status: recorder lifecycle and receipt integration implemented on the feature
+branch; final qualification and bundle coordinator integration remain unfinished.
+This is not a claim that bundled run/sweep/viewer commands are available.
+See MULTITRACK.md for the full delivery scope.
 
 The separate `capture-session.mjs` component now implements create-new output,
 exact-byte and handler accounting, sticky uncertain finalization/close state, and
 atomic no-clobber receipt publication with separate cleanup evidence. Its
-`capture_session` Cargo integration runs the extensible Node fault matrix. This
-does not yet qualify HTTP upload/fetch/delivery lifetime handling: the component
-is not yet wired into the proxy. Its caller must bound input before serialization;
-the post-serialization byte limit does not prevent that initial allocation.
+`capture_session` Cargo integration runs the extensible Node fault matrix. The
+embedded HTTP owner now counts uploads before reading, permits accepted requests
+to finish during drain, and confirms local response handoff using the finish
+event. This does not prove peer application consumption. A controlled writable
+holds the actual observer's write completion to qualify append-before-finish
+interruption; real HTTP fixtures separately qualify body and connection errors.
+Its caller bounds input before serialization; the post-serialization byte limit
+does not prevent that initial allocation.
+
+The 32 Node cases include ledger/publication faults, real sidecar loopback HTTP,
+actual curl and a TERM-resistant curl fixture, repeated shutdown, an unrelated
+sentinel, and 77,576 bounded differential normalization inputs. Long non-path and
+20,000-component responses exercise the path normalizer without its former
+quadratic unanchored searches. These are synthetic/provider-free qualifications,
+not installed-client or live-provider solving evidence.
+
+Rust validates bounded regular no-follow receipt/payload files, exact PID/nonce
+and shared destination identity, handler counts, complete line counts and actual
+streamed length/SHA-256. The existing parent is filesystem-canonicalized once,
+including symlink/parent traversal semantics; Node receives the same unchanged
+absolute destination. External overrides receive no private capture variables
+and remain unknown. Generic per-hop capture observations enter completion
+metadata separately from cleanup; checkpoint readers accept the additive optional
+field and validate its metadata and declared output membership. Invalid capture
+or uncertain teardown retains private recorder diagnostics. Publication and
+cleanup failures cannot erase an independently valid capture observation.
 
 ## Authority and separation
 

@@ -84,6 +84,7 @@ pub(super) fn persist(
         "workload_resource_disposition":result.workload_resource_disposition,
         "proxy_cleanup_confirmed":proxy.cleanup_confirmed,
         "proxy_evidence":proxy_outputs,
+        "capture_evidence":proxy.captures,
         "summary":summary,"workload_evidence":evidence}))
     .map_err(|_| Error::Io("cannot encode private task completion evidence".into()))?;
     let id = crate::workloads::TaskIdentity::local("completion-file", None).attempt_id;
