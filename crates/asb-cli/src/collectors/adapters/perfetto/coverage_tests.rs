@@ -143,6 +143,7 @@ fn complete_capture_processes_metrics_series_and_exact_per_thread_timeline() {
                 status: &status,
                 stdout: "",
                 stderr: "",
+                stderr_path: &fixture.0.join("perfetto.stderr"),
             },
         )
         .unwrap();
@@ -216,6 +217,7 @@ fn failed_capture_and_ambiguous_scope_never_publish_unscoped_scheduler_metrics()
                 status: &status,
                 stdout: "",
                 stderr: "",
+                stderr_path: &fixture.0.join("perfetto.stderr"),
             },
         )
         .unwrap();
@@ -236,6 +238,7 @@ fn failed_capture_and_ambiguous_scope_never_publish_unscoped_scheduler_metrics()
                 status: &status,
                 stdout: "",
                 stderr: "FtraceController unavailable",
+                stderr_path: &fixture.0.join("perfetto.stderr"),
             },
         )
         .unwrap();
@@ -330,6 +333,7 @@ fn missing_capture_context_remains_diagnostic_and_owned_svg_errors_propagate() {
                 status: &status,
                 stdout: "",
                 stderr: "",
+                stderr_path: &fixture.0.join("perfetto.stderr"),
             },
         )
         .unwrap();

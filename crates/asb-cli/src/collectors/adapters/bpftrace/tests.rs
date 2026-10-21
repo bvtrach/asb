@@ -146,6 +146,7 @@ fn process_hook_exports_profile_results_without_attaching_a_collector() {
         status: &status,
         stdout: "@asb_events: 2\n@asb_events: 7\n",
         stderr: "",
+        stderr_path: &fixture.0.join("bpftrace-custom.stderr"),
     };
     let result = ADAPTER.process(&mut session, &context).unwrap();
     assert_eq!(result.status, "completed");
@@ -158,6 +159,7 @@ fn process_hook_exports_profile_results_without_attaching_a_collector() {
         status: &failed,
         stdout: "@asb_events: 9",
         stderr: "error",
+        stderr_path: &fixture.0.join("unrelated.stderr"),
     };
     let result = ADAPTER.process(&mut session, &context).unwrap();
     assert_eq!(result.status, "failed");
