@@ -254,8 +254,7 @@ impl Inputs {
                             "partial replica outcome population is excessive or unfinished",
                         ));
                     }
-                    let record: Outcome = read_private(&file.path())?;
-                    validate_outcome(&record, entry)?;
+                    let record = ValidatedOutcome::read(&file.path(), entry)?;
                     let replica = record.replica.ok_or_else(|| {
                         invalid("partial replica outcomes require explicit slot identities")
                     })?;
@@ -457,8 +456,7 @@ pub(super) fn state(
             "replica outcome is outside the selected configuration",
         ));
     }
-    let outcome: Outcome = read_private(record)?;
-    validate_outcome(&outcome, entry)?;
+    let outcome = ValidatedOutcome::read(record, entry)?;
     if outcome.schema_version != 2 || outcome.replica != Some(replica) || outcome.outputs.is_empty()
     {
         return Err(invalid(

@@ -213,6 +213,168 @@ fetch(base+'/responses',{method:'POST',headers:{'content-type':'application/json
         2
     );
     assert_eq!(std::fs::read(root.join("launches")).unwrap(), launches);
+    // Exercise actual continuation admission against invalid completed groups.
+    // A valid earlier group cannot cause scheduling or receipt publication
+    // before a later malformed member has been checked.
+    let outcomes = root.join("sweep-results/001-disabled/.asb-completions");
+    let outcome = std::fs::read_dir(&outcomes)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let original = std::fs::read(&outcome).unwrap();
+    let raw_outcomes: Vec<_> = ["000-default", "001-disabled"]
+        .into_iter()
+        .flat_map(|group| {
+            std::fs::read_dir(
+                root.join("sweep-results")
+                    .join(group)
+                    .join(".asb-completions"),
+            )
+            .unwrap()
+            .map(|entry| {
+                let path = entry.unwrap().path();
+                let bytes = std::fs::read(&path).unwrap();
+                (path, bytes)
+            })
+        })
+        .collect();
+    let checkpoint = root.join("sweep-results/.checkpoint");
+    let receipt_files: Vec<_> = [
+        "completed/000000.json",
+        "completed/000001.json",
+        "replicas/000000/001.json",
+        "replicas/000000/002.json",
+        "replicas/000001/001.json",
+        "replicas/000001/002.json",
+    ]
+    .into_iter()
+    .map(|path| {
+        let path = checkpoint.join(path);
+        let bytes = std::fs::read(&path).unwrap();
+        (path, bytes)
+    })
+    .collect();
+    let slot = read(&outcome)["replica"]["index"].as_u64().unwrap();
+    let unsealed_paths = [
+        checkpoint.join("completed/000001.json"),
+        checkpoint.join(format!("replicas/000001/{slot:03}.json")),
+    ];
+    for (pointer, replacement, diagnostic) in [
+        (
+            "/summary/workload_success",
+            Value::Null,
+            "structured outcome resolution differs from its summary",
+        ),
+        (
+            "/summary/process_success",
+            json!("unknown"),
+            "outcome grade, evaluator or baseline is incomplete",
+        ),
+        (
+            "/workload_cleanup_confirmed",
+            json!(false),
+            "outcome workload or proxy cleanup is unconfirmed",
+        ),
+        (
+            "/replica/total",
+            json!(3),
+            "outcome replica does not match the selected population",
+        ),
+        (
+            "/outputs/0",
+            json!("relative"),
+            "declared execution output path is relative",
+        ),
+    ] {
+        let mut changed: Value = serde_json::from_slice(&original).unwrap();
+        *changed.pointer_mut(pointer).unwrap() = replacement;
+        let changed = serde_json::to_vec(&changed).unwrap();
+        std::fs::write(&outcome, &changed).unwrap();
+        for reconcile in [false, true] {
+            let mut invalid_args = resume.clone();
+            if reconcile {
+                invalid_args.push("--reconcile-completed");
+            }
+            let rejected = asb(root, &invalid_args);
+            assert!(
+                !rejected.status.success(),
+                "{pointer}, reconciliation={reconcile}"
+            );
+            assert!(
+                String::from_utf8_lossy(&rejected.stderr)
+                    .contains("completed task cannot be reused"),
+                "{}",
+                String::from_utf8_lossy(&rejected.stderr)
+            );
+            assert_eq!(std::fs::read(root.join("launches")).unwrap(), launches);
+            assert_eq!(std::fs::read(&outcome).unwrap(), changed);
+            for (path, bytes) in &raw_outcomes {
+                assert_eq!(
+                    &std::fs::read(path).unwrap(),
+                    if path == &outcome { &changed } else { bytes }
+                );
+            }
+            for (path, bytes) in &receipt_files {
+                assert_eq!(&std::fs::read(path).unwrap(), bytes);
+            }
+        }
+        // Native tasks have no allocated official environment to reconcile.
+        // Retain the already-valid earlier group and sibling seals, removing
+        // only this late member's replica seal and its enclosing group seal.
+        // The invalid raw outcome must reject before allocation inspection or
+        // receipt publication, rather than merely failing an existing hash.
+        // Unknown process observations and malformed populations are already
+        // rejected by the earlier report-only grade-closure precheck.
+        if matches!(pointer, "/summary/process_success" | "/replica/total") {
+            continue;
+        }
+        for path in &unsealed_paths {
+            std::fs::remove_file(path).unwrap();
+        }
+        for reconcile in [false, true] {
+            let mut invalid_args = resume.clone();
+            if reconcile {
+                invalid_args.push("--reconcile-completed");
+            }
+            let rejected = asb(root, &invalid_args);
+            assert!(
+                !rejected.status.success(),
+                "unsealed {pointer}, reconciliation={reconcile}"
+            );
+            assert!(
+                String::from_utf8_lossy(&rejected.stderr).contains(diagnostic),
+                "unsealed {pointer}: {}",
+                String::from_utf8_lossy(&rejected.stderr)
+            );
+            assert_eq!(std::fs::read(root.join("launches")).unwrap(), launches);
+            assert_eq!(std::fs::read(&outcome).unwrap(), changed);
+            for (path, bytes) in &raw_outcomes {
+                assert_eq!(
+                    &std::fs::read(path).unwrap(),
+                    if path == &outcome { &changed } else { bytes }
+                );
+            }
+            for (path, bytes) in &receipt_files {
+                if unsealed_paths.contains(path) {
+                    assert!(
+                        !path.exists(),
+                        "no newly published receipt: {}",
+                        path.display()
+                    );
+                } else {
+                    assert_eq!(&std::fs::read(path).unwrap(), bytes);
+                }
+            }
+        }
+        for (path, bytes) in &receipt_files {
+            if unsealed_paths.contains(path) {
+                std::fs::write(path, bytes).unwrap();
+            }
+        }
+    }
+    std::fs::write(&outcome, original).unwrap();
     let html = std::fs::read_to_string(root.join("results/sweep-comparison/report.html")).unwrap();
     assert!(html.contains("optional measurements unavailable"));
     assert!(html.contains("metric-success_rate.svg"));

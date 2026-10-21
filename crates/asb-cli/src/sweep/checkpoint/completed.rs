@@ -34,6 +34,19 @@ struct Outcome {
     outputs: Vec<PathBuf>,
 }
 
+/// Only this representation may enter completion sealing or continuation.
+/// Raw wire records keep compatibility defaults; construction discharges the
+/// protocol, identity, grade, cleanup and evidence obligations together.
+struct ValidatedOutcome {
+    schema_version: u32,
+    task: TaskIdentity,
+    summary: Value,
+    replica: Option<crate::runner::replica::Identity>,
+    workload_evidence: Vec<PathBuf>,
+    proxy_evidence: Vec<PathBuf>,
+    outputs: Vec<PathBuf>,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(in crate::sweep) struct Completion {
@@ -223,8 +236,8 @@ fn outcome_state(
     let mut proxy_outputs = BTreeSet::new();
     let mut replica_attempts = BTreeMap::new();
     for file in files {
-        let record: Outcome = read_private(&file)?;
-        let task = validate_outcome(&record, entry)?;
+        let record = ValidatedOutcome::read(&file, entry)?;
+        let task = record.task;
         if !attempts.insert(task.attempt_id.clone()) {
             return Err(invalid("outcome contains duplicate attempt identities"));
         }
@@ -287,111 +300,231 @@ fn outcome_state(
     Ok((roots, summaries.into_values().collect()))
 }
 
-fn validate_outcome(record: &Outcome, entry: &PlannedBenchmark) -> Result<TaskIdentity, Error> {
-    let summary = &record.summary;
-    let structured = crate::workloads::outcome::BenchmarkOutcome::read(summary)
-        .map_err(|_| invalid("malformed structured benchmark outcome"))?;
-    let config = &entry.configuration;
-    if !summary["execution_cohort"].is_null() {
-        let cohort: crate::measurements::ExecutionCohort =
-            serde_json::from_value(summary["execution_cohort"].clone())
-                .map_err(|_| invalid("outcome execution cohort is malformed"))?;
-        let replica = record
-            .replica
-            .ok_or_else(|| invalid("outcome cohort has no replica identity"))?;
-        if summary["replica_index"].as_u64() != Some(replica.index as u64)
-            || !cohort.admits(replica.index, replica.total)
+impl ValidatedOutcome {
+    fn read(path: &Path, entry: &PlannedBenchmark) -> Result<Self, Error> {
+        let record: Outcome = read_private(path)?;
+        Self::validate(record, entry)
+    }
+
+    fn validate(record: Outcome, entry: &PlannedBenchmark) -> Result<Self, Error> {
+        record.validate_protocol(entry)?;
+        record.validate_cohort()?;
+        let task = record.validate_identity(entry)?;
+        let structured = crate::workloads::outcome::BenchmarkOutcome::read(&record.summary)
+            .map_err(|_| invalid("malformed structured benchmark outcome"))?;
+        record.validate_module_policy(entry, structured.as_ref())?;
+        record.validate_grade(entry, structured.as_ref())?;
+        if let Some(outcome) = &structured {
+            record.validate_lineage(outcome, &task)?;
+            record.validate_structured_cleanup(outcome)?;
+        }
+        record.validate_evidence(entry)?;
+        Ok(Self {
+            schema_version: record.schema_version,
+            task,
+            summary: record.summary,
+            replica: record.replica,
+            workload_evidence: record.workload_evidence,
+            proxy_evidence: record.proxy_evidence,
+            outputs: record.outputs,
+        })
+    }
+}
+
+impl Outcome {
+    fn validate_protocol(&self, entry: &PlannedBenchmark) -> Result<(), Error> {
+        if !matches!(self.schema_version, 1 | 2)
+            || self.scope != "task-outcome-not-yet-a-resume-receipt"
+            || self.summary["schema_version"] != 2
+        {
+            return Err(invalid("outcome protocol or summary schema is unsupported"));
+        }
+        // Schema 1 predates stable replica slots and remains group-readable.
+        if self.schema_version == 2
+            && self.replica.is_none_or(|replica| {
+                !replica.valid() || replica.total != entry.configuration.concurrency
+            })
         {
             return Err(invalid(
-                "outcome cohort does not match its selected replica",
+                "outcome replica does not match the selected population",
             ));
         }
-    } else if !summary["replica_index"].is_null() {
-        return Err(invalid("outcome replica has no execution cohort"));
+        if !self.workload_cleanup_confirmed || !self.proxy_cleanup_confirmed {
+            return Err(invalid("outcome workload or proxy cleanup is unconfirmed"));
+        }
+        Ok(())
     }
-    let task: TaskIdentity = serde_json::from_value(summary["task"].clone())
-        .map_err(|_| invalid("outcome task identity is missing or malformed"))?;
-    if let Some(outcome) = &structured {
-        let selected = entry.selection.module.as_ref();
-        if selected.map_or_else(
-            || outcome.policy != crate::workloads::outcome::MetricPolicy::default(),
-            |module| !outcome.policy.matches_module(module),
-        ) {
+
+    fn validate_cohort(&self) -> Result<(), Error> {
+        let summary = &self.summary;
+        if !summary["execution_cohort"].is_null() {
+            let cohort: crate::measurements::ExecutionCohort =
+                serde_json::from_value(summary["execution_cohort"].clone())
+                    .map_err(|_| invalid("outcome execution cohort is malformed"))?;
+            let replica = self
+                .replica
+                .ok_or_else(|| invalid("outcome cohort has no replica identity"))?;
+            if summary["replica_index"].as_u64() != Some(replica.index as u64)
+                || !cohort.admits(replica.index, replica.total)
+            {
+                return Err(invalid(
+                    "outcome cohort does not match its selected replica",
+                ));
+            }
+        } else if !summary["replica_index"].is_null() {
+            return Err(invalid("outcome replica has no execution cohort"));
+        }
+        Ok(())
+    }
+
+    fn validate_identity(&self, entry: &PlannedBenchmark) -> Result<TaskIdentity, Error> {
+        let summary = &self.summary;
+        let config = &entry.configuration;
+        let task: TaskIdentity = serde_json::from_value(summary["task"].clone())
+            .map_err(|_| invalid("outcome task identity is missing or malformed"))?;
+        if !entry.selection.matches(&task)
+            || task.attempt_id.is_empty()
+            || task.attempt_id.len() > 256
+        {
+            return Err(invalid(
+                "outcome task, dataset or attempt differs from its selection",
+            ));
+        }
+        if summary["agent"] != config.agent
+            || summary["workload"] != config.workload
+            || summary["provider"] != config.provider
+            || summary["model"] != config.model
+        {
+            return Err(invalid("outcome configuration identity does not match"));
+        }
+        Ok(task)
+    }
+
+    fn validate_module_policy(
+        &self,
+        entry: &PlannedBenchmark,
+        structured: Option<&crate::workloads::outcome::BenchmarkOutcome>,
+    ) -> Result<(), Error> {
+        if let Some(outcome) = structured
+            && entry.selection.module.as_ref().map_or_else(
+                || outcome.policy != crate::workloads::outcome::MetricPolicy::default(),
+                |module| !outcome.policy.matches_module(module),
+            )
+        {
             return Err(invalid(
                 "outcome metric policy differs from selected protocol",
             ));
         }
-    }
-    if !summary["module"].is_null() {
-        let module: crate::workloads::contracts::ModuleDescriptor =
-            serde_json::from_value(summary["module"].clone())
-                .map_err(|_| invalid("malformed recorded module"))?;
-        if !module.valid()
-            || entry.selection.module.as_ref() != Some(&module)
-            || structured
-                .as_ref()
-                .is_some_and(|outcome| !outcome.policy.matches_module(&module))
-        {
-            return Err(invalid("recorded module differs from selected protocol"));
+        if !self.summary["module"].is_null() {
+            let module: crate::workloads::contracts::ModuleDescriptor =
+                serde_json::from_value(self.summary["module"].clone())
+                    .map_err(|_| invalid("malformed recorded module"))?;
+            if !module.valid()
+                || entry.selection.module.as_ref() != Some(&module)
+                || structured.is_some_and(|outcome| !outcome.policy.matches_module(&module))
+            {
+                return Err(invalid("recorded module differs from selected protocol"));
+            }
         }
+        Ok(())
     }
-    let baseline: BaselineEvidence =
-        serde_json::from_value(summary["workload_baseline"].clone())
-            .map_err(|_| invalid("outcome baseline evidence is missing or malformed"))?;
-    if !matches!(record.schema_version, 1 | 2)
-        || (record.schema_version == 2
-            && record
-                .replica
-                .is_none_or(|replica| !replica.valid() || replica.total != config.concurrency))
-        || record.scope != "task-outcome-not-yet-a-resume-receipt"
-        || !record.workload_cleanup_confirmed
-        || !record.proxy_cleanup_confirmed
-        || summary["schema_version"] != 2
-        || !entry.selection.matches(&task)
-        || task.attempt_id.is_empty()
-        || task.attempt_id.len() > 256
-        || summary["agent"] != config.agent
-        || summary["workload"] != config.workload
-        || summary["provider"] != config.provider
-        || summary["model"] != config.model
-        || structured.as_ref().map_or_else(
-            || summary["workload_success"].as_bool().is_none(),
-            |outcome| {
-                !outcome.evaluation.completed()
-                    || outcome.cleanup_confirmed != Some(true)
-                    || outcome.lineage.execution_attempt != task.attempt_id
-                    || outcome.execution_success != summary["process_success"].as_bool()
-                    || outcome.evaluation.resolution() != summary["workload_success"].as_bool()
-            },
-        )
-        || summary["process_success"].as_bool().is_none()
-        || summary["workload_evaluation"] != entry.selection.evaluation_kind
-        || !baseline.supports(&entry.selection.evaluation_kind)
-        || record.workload_evidence.len() > 64
-        || record.proxy_evidence.len() > 64
-        || record.outputs.len() > 64
-        || record.outputs.iter().any(|path| !path.is_absolute())
-        || (entry.selection.dataset.is_some() && record.workload_evidence.is_empty())
-    {
-        return Err(invalid(
-            "outcome identity, grade, baseline or cleanup is incomplete",
-        ));
-    }
-    for path in &record.workload_evidence {
-        if !path.is_absolute() || !path.exists() {
+
+    fn validate_grade(
+        &self,
+        entry: &PlannedBenchmark,
+        structured: Option<&crate::workloads::outcome::BenchmarkOutcome>,
+    ) -> Result<(), Error> {
+        let summary = &self.summary;
+        let baseline: BaselineEvidence =
+            serde_json::from_value(summary["workload_baseline"].clone())
+                .map_err(|_| invalid("outcome baseline evidence is missing or malformed"))?;
+        // Legacy outcomes require a Boolean grade; a completed native reward
+        // instead carries its policy's numeric grade with nullable resolution.
+        let completed_grade = structured.map_or_else(
+            || summary["workload_success"].as_bool().is_some(),
+            |outcome| outcome.evaluation.completed(),
+        );
+        if !completed_grade
+            || summary["process_success"].as_bool().is_none()
+            || summary["workload_evaluation"] != entry.selection.evaluation_kind
+            || !baseline.supports(&entry.selection.evaluation_kind)
+        {
             return Err(invalid(
-                "declared evaluator evidence is missing or relative",
+                "outcome grade, evaluator or baseline is incomplete",
             ));
         }
+        Ok(())
     }
-    for path in &record.proxy_evidence {
-        if !path.is_absolute() {
-            return Err(invalid("declared proxy output path is relative"));
+
+    fn validate_lineage(
+        &self,
+        outcome: &crate::workloads::outcome::BenchmarkOutcome,
+        task: &TaskIdentity,
+    ) -> Result<(), Error> {
+        if outcome.lineage.execution_attempt != task.attempt_id
+            || outcome.execution_success != self.summary["process_success"].as_bool()
+        {
+            return Err(invalid(
+                "structured outcome execution lineage does not match its task",
+            ));
         }
-        // A failed agent may have made no calls and produced no recording.
-        // Bind that absence too, rather than retrying a graded false task.
+        let resolution = &self.summary["workload_success"];
+        if (!resolution.is_null() && !resolution.is_boolean())
+            || outcome.evaluation.resolution() != resolution.as_bool()
+        {
+            return Err(invalid(
+                "structured outcome resolution differs from its summary",
+            ));
+        }
+        Ok(())
     }
-    Ok(task)
+
+    fn validate_structured_cleanup(
+        &self,
+        outcome: &crate::workloads::outcome::BenchmarkOutcome,
+    ) -> Result<(), Error> {
+        if outcome.cleanup_confirmed != Some(true) {
+            return Err(invalid("structured outcome cleanup is unconfirmed"));
+        }
+        let declared: BTreeSet<_> = self.workload_evidence.iter().collect();
+        let evaluated: BTreeSet<_> = outcome.evidence.iter().collect();
+        if evaluated != declared {
+            return Err(invalid(
+                "structured outcome evidence differs from declared evaluator roots",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_evidence(&self, entry: &PlannedBenchmark) -> Result<(), Error> {
+        if self.workload_evidence.len() > 64
+            || self.proxy_evidence.len() > 64
+            || self.outputs.len() > 64
+        {
+            return Err(invalid("outcome evidence population exceeds its bound"));
+        }
+        if entry.selection.dataset.is_some() && self.workload_evidence.is_empty() {
+            return Err(invalid("outcome dataset has no evaluator evidence"));
+        }
+        if self.outputs.iter().any(|path| !path.is_absolute()) {
+            return Err(invalid("declared execution output path is relative"));
+        }
+        for path in &self.workload_evidence {
+            if !path.is_absolute() || !path.exists() {
+                return Err(invalid(
+                    "declared evaluator evidence is missing or relative",
+                ));
+            }
+        }
+        for path in &self.proxy_evidence {
+            if !path.is_absolute() {
+                return Err(invalid("declared proxy output path is relative"));
+            }
+            // A failed agent may have made no calls and produced no recording.
+            // Bind that absence too, rather than retrying a graded false task.
+        }
+        Ok(())
+    }
 }
 
 fn measurement_matches(measured: &Value, summary: &Value) -> bool {
@@ -620,22 +753,56 @@ mod tests {
             }
             fixture
         }
+
+        fn native() -> Self {
+            let mut fixture = Self::new(false);
+            let mut module = crate::workloads::contracts::ModuleDescriptor::local(
+                "fixture-suite",
+                "fixture-grader",
+            );
+            module.protocol.score_policy = "metric:accuracy@1".into();
+            fixture.entry.selection.module = Some(module.clone());
+            fixture.entry.selection.dataset = None;
+            fixture.entry.selection.population_size = None;
+            fixture.entry.selection.evaluation_kind = "fixture-grader".into();
+            assert!(fixture.entry.selection.valid());
+            for index in 0..2 {
+                let mut record = fixture.read(index);
+                record["schema_version"] = json!(2);
+                record["replica"] = json!({"index":index + 1,"total":2});
+                record["summary"]["module"] = json!(module);
+                record["summary"]["task"]["dataset"] = Value::Null;
+                record["summary"]["workload_success"] = Value::Null;
+                record["summary"]["workload_evaluation"] = json!("fixture-grader");
+                record["summary"]["workload_baseline"] = json!({"kind":"measured","passed":false});
+                record["summary"]["benchmark_outcome"] = json!({
+                    "schema_version":1,"execution_success":true,
+                    "evaluation":{"status":"completed","resolution":null,"rewards":{"accuracy":0.5}},
+                    "cleanup_confirmed":true,"evidence":[fixture.evidence],
+                    "policy":{"id":"accuracy","version":1,"reward":"accuracy","aggregation":"attempt-mean","missing_rewards":"exclude",
+                        "rewards":{"accuracy":{"unit":"ratio","range":[0,1]},"secondary":{"unit":"ratio","range":[0,1]}}},
+                    "lineage":{"execution_attempt":record["summary"]["task"]["attempt_id"],"evaluation_id":format!("eval-fixture-{index}"),"supersedes":null}
+                });
+                fixture.write(index, &record);
+            }
+            fixture
+        }
         fn outcome_path(&self, index: usize) -> PathBuf {
             self.directory
                 .join(".asb-completions")
                 .join(format!("{index}.json"))
         }
-        fn read(&self, index: usize) -> Value {
+        pub(super) fn read(&self, index: usize) -> Value {
             read_private(&self.outcome_path(index)).unwrap()
         }
-        fn write(&self, index: usize, record: &Value) {
+        pub(super) fn write(&self, index: usize, record: &Value) {
             std::fs::write(
                 self.outcome_path(index),
                 serde_json::to_vec(record).unwrap(),
             )
             .unwrap();
         }
-        fn seal(&self) -> Result<(), Error> {
+        pub(super) fn seal(&self) -> Result<(), Error> {
             self.inputs.completed(0, &self.directory, &self.entry)
         }
         fn verify(&self) -> Result<(Completion, Vec<Value>), Error> {
@@ -681,6 +848,69 @@ mod tests {
                         & 0o777,
                     0o700
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn wire_compatibility_keeps_legacy_groups_and_rejects_unknown_or_incomplete_records() {
+        for case in [
+            "legacy",
+            "process-false",
+            "unknown-field",
+            "unknown-task-field",
+            "unknown-baseline-field",
+            "missing-proxy-cleanup",
+            "legacy-grade-only",
+            "missing-process",
+            "malformed-json",
+            "cohort-without-slot",
+        ] {
+            let fixture = Fixture::new(false);
+            let mut record = fixture.read(0);
+            match case {
+                "legacy" => (),
+                "process-false" => record["summary"]["process_success"] = json!(false),
+                "unknown-field" => record["unknown"] = json!(true),
+                "unknown-task-field" => record["summary"]["task"]["unknown"] = json!(true),
+                "unknown-baseline-field" => {
+                    record["summary"]["workload_baseline"]["unknown"] = json!(true)
+                }
+                "missing-proxy-cleanup" => {
+                    record
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("proxy_cleanup_confirmed");
+                }
+                "legacy-grade-only" => {
+                    record["summary"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("workload_baseline");
+                    record["summary"]["workload_baseline_passed"] = json!(false);
+                }
+                "missing-process" => {
+                    record["summary"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("process_success");
+                }
+                "malformed-json" => (),
+                "cohort-without-slot" => {
+                    record["summary"]["execution_cohort"] =
+                        json!({"id":"abc-123","selected_replicas":2,"admitted_slots":[1,2]})
+                }
+                _ => unreachable!(),
+            }
+            fixture.write(0, &record);
+            if case == "malformed-json" {
+                std::fs::write(fixture.outcome_path(0), b"{unfinished").unwrap();
+            }
+            let valid = matches!(case, "legacy" | "process-false");
+            assert_eq!(fixture.seal().is_ok(), valid, "{case}");
+            assert_eq!(fixture.inputs.completion_path(0).exists(), valid, "{case}");
+            if valid {
+                fixture.verify().unwrap();
             }
         }
     }
@@ -755,24 +985,230 @@ mod tests {
 
     #[test]
     fn completed_native_evaluation_without_primary_reward_cannot_be_sealed() {
-        use crate::workloads::outcome::*;
         for rewards in [json!({}), json!({"secondary":0.5})] {
-            let fixture = Fixture::new(false);
+            let fixture = Fixture::native();
             let mut record = fixture.read(0);
-            record["summary"]["benchmark_outcome"] = json!({
-                "schema_version":1,"execution_success":true,
-                "evaluation":{"status":"completed","resolution":null,"rewards":rewards},
-                "cleanup_confirmed":true,"evidence":[fixture.evidence],
-                "policy":{"id":"accuracy","version":1,"reward":"accuracy","aggregation":"attempt-mean","missing_rewards":"exclude",
-                    "rewards":{"accuracy":{"unit":"ratio","range":[0,1]},"secondary":{"unit":"ratio","range":[0,1]}}},
-                "lineage":{"execution_attempt":record["summary"]["task"]["attempt_id"],"evaluation_id":"eval-fixture","supersedes":null}
-            });
-            let parsed: BenchmarkOutcome =
-                serde_json::from_value(record["summary"]["benchmark_outcome"].clone()).unwrap();
-            assert!(parsed.validate().unwrap_err().contains("primary reward"));
+            record["summary"]["benchmark_outcome"]["evaluation"]["rewards"] = rewards;
             fixture.write(0, &record);
+            assert!(ValidatedOutcome::read(&fixture.outcome_path(0), &fixture.entry).is_err());
             assert!(fixture.seal().is_err());
             assert!(!fixture.inputs.completion_path(0).exists());
+        }
+    }
+
+    #[test]
+    fn completed_native_rewards_keep_null_resolution_and_both_process_results() {
+        for process_success in [false, true] {
+            for recorded_module in [false, true] {
+                let fixture = Fixture::native();
+                for index in 0..2 {
+                    let mut record = fixture.read(index);
+                    record["summary"]["process_success"] = json!(process_success);
+                    record["summary"]["benchmark_outcome"]["execution_success"] =
+                        json!(process_success);
+                    if !recorded_module {
+                        record["summary"].as_object_mut().unwrap().remove("module");
+                    }
+                    fixture.write(index, &record);
+                    let validated =
+                        ValidatedOutcome::read(&fixture.outcome_path(index), &fixture.entry)
+                            .unwrap();
+                    assert!(validated.summary["workload_success"].is_null());
+                }
+                fixture.seal().unwrap();
+                let (_, summaries) = fixture.verify().unwrap();
+                assert_eq!(summaries.len(), 2);
+                for summary in summaries {
+                    assert!(summary["workload_success"].is_null());
+                    assert_eq!(summary["process_success"], process_success);
+                    assert_eq!(
+                        summary["benchmark_outcome"]["evaluation"]["rewards"]["accuracy"],
+                        0.5
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn structured_binary_outcomes_retain_legacy_schema_one_false_and_true_grades() {
+        use crate::workloads::outcome::{EvaluationOutcome, MetricPolicy};
+        for resolved in [false, true] {
+            let fixture = Fixture::new(resolved);
+            for index in 0..2 {
+                let mut record = fixture.read(index);
+                record["summary"]["benchmark_outcome"] = json!({
+                    "schema_version":1,"execution_success":true,
+                    "evaluation":EvaluationOutcome::binary(resolved),
+                    "cleanup_confirmed":true,"evidence":[fixture.evidence],
+                    "policy":MetricPolicy::default(),
+                    "lineage":{"execution_attempt":record["summary"]["task"]["attempt_id"],
+                        "evaluation_id":format!("binary-fixture-{index}"),"supersedes":null}
+                });
+                fixture.write(index, &record);
+                ValidatedOutcome::read(&fixture.outcome_path(index), &fixture.entry).unwrap();
+            }
+            fixture.seal().unwrap();
+            assert!(
+                fixture
+                    .verify()
+                    .unwrap()
+                    .1
+                    .iter()
+                    .all(|summary| summary["workload_success"] == resolved)
+            );
+        }
+    }
+
+    #[test]
+    fn structured_native_invariant_mutations_cannot_publish_completion_receipts() {
+        for (name, pointer, replacement) in [
+            ("malformed", "/summary/benchmark_outcome", json!({})),
+            (
+                "schema",
+                "/summary/benchmark_outcome/schema_version",
+                json!(2),
+            ),
+            (
+                "pending",
+                "/summary/benchmark_outcome/evaluation",
+                json!({"status":"pending","reason":"queued"}),
+            ),
+            (
+                "error",
+                "/summary/benchmark_outcome/evaluation",
+                json!({"status":"error","reason":"unavailable"}),
+            ),
+            (
+                "unknown evaluation",
+                "/summary/benchmark_outcome/evaluation",
+                json!({"status":"unknown"}),
+            ),
+            (
+                "primary missing",
+                "/summary/benchmark_outcome/evaluation/rewards",
+                json!({"secondary":0.5}),
+            ),
+            (
+                "reward range",
+                "/summary/benchmark_outcome/evaluation/rewards/accuracy",
+                json!(1.5),
+            ),
+            (
+                "policy id",
+                "/summary/benchmark_outcome/policy/id",
+                json!("other"),
+            ),
+            (
+                "policy version",
+                "/summary/benchmark_outcome/policy/version",
+                json!(2),
+            ),
+            (
+                "policy invalid",
+                "/summary/benchmark_outcome/policy/aggregation",
+                json!("unknown"),
+            ),
+            ("module malformed", "/summary/module", json!({})),
+            ("module invalid", "/summary/module/schema_version", json!(2)),
+            (
+                "module mismatch",
+                "/summary/module/suite_version",
+                json!("other"),
+            ),
+            (
+                "module policy",
+                "/summary/module/protocol/score_policy",
+                json!("metric:other@1"),
+            ),
+            (
+                "lineage attempt",
+                "/summary/benchmark_outcome/lineage/execution_attempt",
+                json!("other"),
+            ),
+            (
+                "lineage evaluation",
+                "/summary/benchmark_outcome/lineage/evaluation_id",
+                json!(""),
+            ),
+            (
+                "lineage supersession",
+                "/summary/benchmark_outcome/lineage/supersedes",
+                json!("eval-fixture-1"),
+            ),
+            (
+                "process mismatch",
+                "/summary/benchmark_outcome/execution_success",
+                json!(false),
+            ),
+            (
+                "process unknown",
+                "/summary/benchmark_outcome/execution_success",
+                Value::Null,
+            ),
+            (
+                "resolution mismatch",
+                "/summary/workload_success",
+                json!(true),
+            ),
+            (
+                "resolution malformed",
+                "/summary/workload_success",
+                json!("unknown"),
+            ),
+            (
+                "structured resolution",
+                "/summary/benchmark_outcome/evaluation/resolution",
+                json!(false),
+            ),
+            (
+                "cleanup false",
+                "/summary/benchmark_outcome/cleanup_confirmed",
+                json!(false),
+            ),
+            (
+                "cleanup unknown",
+                "/summary/benchmark_outcome/cleanup_confirmed",
+                Value::Null,
+            ),
+            (
+                "evidence absent",
+                "/summary/benchmark_outcome/evidence",
+                json!([]),
+            ),
+            (
+                "evidence relative",
+                "/summary/benchmark_outcome/evidence",
+                json!(["relative"]),
+            ),
+            (
+                "evidence mismatch",
+                "/summary/benchmark_outcome/evidence",
+                Value::Null,
+            ),
+            (
+                "evidence bound",
+                "/summary/benchmark_outcome/evidence",
+                json!(vec!["/missing"; 65]),
+            ),
+        ] {
+            let fixture = Fixture::native();
+            let mut record = fixture.read(1);
+            *record.pointer_mut(pointer).unwrap() = if name == "evidence mismatch" {
+                json!([fixture.directory])
+            } else {
+                replacement
+            };
+            fixture.write(1, &record);
+            assert!(
+                ValidatedOutcome::read(&fixture.outcome_path(1), &fixture.entry).is_err(),
+                "constructor: {name}"
+            );
+            assert!(fixture.seal().is_err(), "seal: {name}");
+            assert!(
+                !fixture.inputs.completion_path(0).exists(),
+                "receipt: {name}"
+            );
         }
     }
 
@@ -875,7 +1311,16 @@ mod tests {
 
     #[test]
     fn enabled_measurements_must_match_each_unique_outcome() {
-        for case in ["matching", "missing", "grade", "duplicate", "tokens"] {
+        for case in [
+            "matching",
+            "missing",
+            "grade",
+            "duplicate",
+            "tokens",
+            "module",
+            "fingerprint",
+            "benchmark-outcome",
+        ] {
             let mut fixture = Fixture::new(true);
             fixture.entry.configuration.measurements = Some(crate::benchmark::MeasurementConfig {
                 enabled: true,
@@ -894,6 +1339,11 @@ mod tests {
                         "grade" => summary["workload_success"] = json!(false),
                         "duplicate" => summary = fixture.read(0)["summary"].clone(),
                         "tokens" => summary["token_usage"] = json!({"total_tokens":999}),
+                        "module" => summary["module"] = json!({"id":"different"}),
+                        "fingerprint" => summary["execution_plan_fingerprint"] = json!("different"),
+                        "benchmark-outcome" => {
+                            summary["benchmark_outcome"] = json!({"schema_version":1})
+                        }
                         _ => (),
                     }
                 }
