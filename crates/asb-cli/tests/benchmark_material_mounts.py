@@ -164,7 +164,15 @@ class BindDeclarationTests(unittest.TestCase):
                 self.assertTrue(journal.material_binds["available"])
                 container = SimpleNamespace(name=attempt)
                 self.assertEqual(binds.verify(journal,container)["/input"]["source"],str(source))
+                original_receipt = (root/"material-binds.json").read_bytes()
                 source.rename(root/"original")
+                source.mkdir()
+                journal.compose(configuration)
+                self.assertEqual((root/"material-binds.json").read_bytes(),original_receipt,
+                    "later Compose operations cannot authorize a replacement bind inode")
+                with self.assertRaises(MaterialError):
+                    binds.verify(journal,container)
+                source.rmdir()
                 source.symlink_to(root/"original",target_is_directory=True)
                 with self.assertRaises(MaterialError):
                     binds.verify(journal,container)

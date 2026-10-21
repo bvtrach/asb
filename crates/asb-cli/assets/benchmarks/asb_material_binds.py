@@ -83,17 +83,8 @@ def declare(directory, configuration, record):
 
 def verify(journal, container):
     """Validate the exact durable creation declaration before using source aliases."""
-    value = getattr(journal,"material_binds",None)
-    if value is None or not value.get("available"):
-        raise MaterialError("prepared bind inputs lack an owned creation declaration")
-    from asb_resources import private_file
-    descriptor = private_file(journal.directory,"material-binds.json",os.O_RDONLY)
-    with os.fdopen(descriptor,"rb") as source:
-        content = source.read(1024**2+1)
-    if len(content) > 1024**2 or json.loads(content) != value:
-        raise MaterialError("durable prepared bind declaration changed")
-    if any(value[key] != journal.record[key] for key in ["attempt","daemon","token"]):
-        raise MaterialError("prepared bind declaration belongs to a different resource owner")
+    from asb_material_declarations import read
+    value = read(journal,"material_binds","material-binds.json")
     if witness(value["root"]) != value["root_chain"]:
         raise MaterialError("prepared bind artifact root changed")
     result = {}

@@ -24,7 +24,7 @@ class MountedMaterialQualification(unittest.TestCase):
     def test_owned_bind_nested_tmpfs_and_volume_observation(self):
         from docker.types import Mount
         from asb_docker import DockerSession
-        from asb_material_root import capture
+        from asb_material import capture_task
         from asb_resources import ResourceJournal, owned_resource
         root = Path(os.environ["ASB_TEST_SWECATALOG_ROOT"]).absolute()
         artifacts = Path(tempfile.mkdtemp(prefix="mounted-material-",dir=root))
@@ -45,10 +45,11 @@ class MountedMaterialQualification(unittest.TestCase):
                 container = volume = None
                 success = False
                 try:
+                    volume_name = attempt+"-data"
                     journal.compose({"services":{"main":{"container_name":attempt,"volumes":[
                         {"type":"bind","source":str(source),"target":"/fixture-input"},
-                        {"type":"bind","source":str(source/"child"),"target":"/fixture-alias"}]}}})
-                    volume_name = attempt+"-data"
+                        {"type":"bind","source":str(source/"child"),"target":"/fixture-alias"}]}},
+                        "volumes":{"data":{"name":volume_name}}})
                     volume = client.volumes.create(name=volume_name,labels=journal.declare("volumes",volume_name))
                     container = client.containers.run(image.id,["sleep","infinity"],detach=True,
                         name=attempt,labels=journal.labels,network_mode="none",mem_limit="1g",pids_limit=64,
@@ -61,8 +62,8 @@ class MountedMaterialQualification(unittest.TestCase):
                     task = SimpleNamespace(client=client,journal=journal,artifacts=directory,
                         cancelled=threading.Event(),workspace=SimpleNamespace(container=container,workdir="/"))
                     def observe():
-                        return capture(task,{"fixture":"owned-mounted-material"},[],
-                            os.environ["ASB_TEST_BENCHMARK_ASB"],time.monotonic()+420)
+                        return capture_task(task,{"fixture":"owned-mounted-material"},
+                            binary=os.environ["ASB_TEST_BENCHMARK_ASB"],deadline=time.monotonic()+420)
                     first = observe()
                     observations.append(first)
                     self.assertEqual(first,observe())

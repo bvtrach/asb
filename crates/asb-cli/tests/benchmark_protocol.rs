@@ -1,6 +1,11 @@
 //! Provider-free tests of the upstream workload protocol's pure data layer.
 
 #[test]
+fn prepared_service_roles_bind_the_complete_live_owned_set() {
+    python_protocol("benchmark_material_services.py");
+}
+
+#[test]
 fn mounted_material_topology_uses_owned_inputs_and_global_guest_roots() {
     python_protocol("benchmark_material_mounts.py");
 }

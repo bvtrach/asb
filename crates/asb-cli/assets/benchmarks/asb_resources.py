@@ -157,9 +157,16 @@ class ResourceJournal:
                 if resource.get("external"):
                     raise RecoveryError("cannot journal an external task resource")
                 resource.setdefault("labels", {}).update(self.declare(kind, resource["name"]))
-        from asb_material_binds import declare
-        self.material_binds = declare(self.directory,configuration,self.record)
-        publish(self.directory,"material-binds.json",self.material_binds)
+        # Harbor reuses this hook for later pull/cp/down operations. Historical
+        # creation witnesses must never be silently re-authorized after startup.
+        if not hasattr(self,"material_binds"):
+            from asb_material_binds import declare
+            self.material_binds = declare(self.directory,configuration,self.record)
+            publish(self.directory,"material-binds.json",self.material_binds)
+        if not hasattr(self,"material_services"):
+            from asb_material_services import declare as declare_services
+            self.material_services = declare_services(configuration,self.record)
+            publish(self.directory,"material-services.json",self.material_services)
         return configuration
 
     def cleanup_images(self, client):

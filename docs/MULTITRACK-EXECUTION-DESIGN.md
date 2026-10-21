@@ -305,6 +305,31 @@ not sweep resume receipts or permission to retry started attempts.
 
 ## Remaining integration
 
+### Pre-creation service authority
+
+Compose preparation writes private, bounded `material-services.json` beside
+the recovery journal. It maps stable original service/network/volume roles to
+exact attempt-owned resource names and retains hostname/network intent. Nested
+intent data is copied, not aliased to mutable SDK configuration. Both service
+and bind receipts are frozen on the first Compose hook: Harbor invokes that
+hook again for later lifecycle commands, which must not authorize replacement
+bind inodes or rewrite historical intent. Unsupported declarations remain
+unavailable rather than blocking legacy Compose preparation.
+
+Verified material capture checks the private durable receipt against its cached
+copy and active owner, then resolves exactly the complete declared container
+set without daemon inventory listing. Each role needs a distinct live owned
+container; paused, restarting, missing or replaced resources fail. Ownership
+and exact name are rechecked after reload, and the primary role is identified
+by the task container ID rather than assuming a service named `main` or
+`client`. Resolver results are not evidence that content/topology was observed.
+Multiple services remain refused until the whole-environment composer exists.
+
+The shared receipt reader is also used for bind declarations, sanitizes corrupt
+or unavailable receipt errors, bounds input to 1 MiB and returns independent
+copies. These local consistency checks introduce no signatures, credentials or
+production authorization prerequisite.
+
 - Official workload identity must bind adapter-owned environment material. Image
   ownership labels and attempt tags differ per execution, so raw source-build
   image IDs cannot by themselves represent stable material equality. Stable
