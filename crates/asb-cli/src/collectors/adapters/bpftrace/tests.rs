@@ -291,14 +291,14 @@ fn isolated_profile_and_custom_program_selection() {
 #[cfg(unix)]
 #[test]
 fn profile_probe_obeys_executable_outcome_without_kernel_collection() {
-    use std::os::unix::fs::PermissionsExt;
     let fixture = Fixture::new();
-    let executable = fixture.0.join("mock-bpftrace");
-    fs::write(&executable, "#!/bin/sh\n[ \"$1\" = '-e' ] || exit 3\ncase \"$2\" in *'@asb_tree[0] = 1;'*'interval:ms:1 { exit(); }'*) ;; *) exit 4;; esac\n[ \"$3\" = '0' ]\n").unwrap();
-    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
-    assert!(bpftrace_profile_probe(&executable, BPFTRACE_PROFILES[0], false).unwrap());
-    fs::write(&executable, "#!/bin/sh\nexit 2\n").unwrap();
-    assert!(!bpftrace_profile_probe(&executable, BPFTRACE_PROFILES[0], false).unwrap());
+    let program = profile_probe_program(BPFTRACE_PROFILES[0]);
+    assert!(program.contains("@asb_tree[0] = 1;"));
+    assert!(program.contains("interval:ms:1 { exit(); }"));
+    // Immutable host fixtures avoid transient ETXTBSY when another libtest
+    // thread forks while a newly-created script's writer is still inherited.
+    assert!(bpftrace_profile_probe(Path::new("/bin/true"), BPFTRACE_PROFILES[0], false).unwrap());
+    assert!(!bpftrace_profile_probe(Path::new("/bin/false"), BPFTRACE_PROFILES[0], false).unwrap());
     let error = bpftrace_profile_probe(&fixture.0.join("missing"), BPFTRACE_PROFILES[0], false)
         .unwrap_err();
     assert!(error.contains("cannot probe bpftrace profile sched-latency"));
