@@ -2524,3 +2524,19 @@ zero evaluated attempts and null full-population scores. No agent, provider,
 Docker or evaluator was executed. Final disposition review, source/package/
 hosted verification, PR merge, exact-main CI and the minor release remain
 delivery gates; full-population selection is not full-population AI performance.
+
+The corresponding measurements-disabled public mixed-task qualification passed
+in 99.966 seconds at `parallel-original-tasks-zfsvemmi`, including grade-only
+closure, repeat resume and comparison without new provider requests. The
+packaged crate passed 454 unit tests, 87 offline CLI tests, 21 benchmark protocol
+suites and 10 guest/lifecycle checks plus remaining integrations. These are
+provider-free tests, not full-population scores.
+
+The enlarged function graph exposed Graphviz 2.43's clustered hierarchical
+`init_rank` failure during the final build. That failed renderer was stopped;
+the build was not counted as successful. Function-flow diagrams now use packed
+module layout, preserving every node, module box, directed edge and label;
+the trait/UML renderer is unchanged. Complete-source graph regressions pass in
+under two seconds and `make build` succeeds. Absolute/relative source paths are
+normalized identically so the regression exercises the actual build graph.
+Final source/hosted checks and delivery remain to be recorded.

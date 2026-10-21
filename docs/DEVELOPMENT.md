@@ -28,6 +28,13 @@ diagram explicitly shows trait implementation edges and never publishes local
 paths or branch names. It supplements the maintained architecture overview;
 review both when changing public or private type relationships.
 
+Function-level dataflow/control diagrams use Graphviz's packed `osage` layout.
+This keeps module boxes and every directed call/label, including cross-module
+cycles, without the clustered hierarchical-ranking failure in Graphviz 2.43.
+The trait/UML renderer remains unchanged. Diagram regressions verify all node,
+edge and label counts against the complete current source and normalize paths
+so absolute-path tests exercise the same graph as relative-path build commands.
+
 `make build` writes its generated diagrams and interactive views under `target/`,
 leaving the tracked documentation unchanged. Run `make uml` and
 `make interactive` explicitly when updating the published diagrams in `docs/`.

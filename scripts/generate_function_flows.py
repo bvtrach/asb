@@ -60,6 +60,7 @@ def brace_body(lines: list[str], start: int) -> str:
 
 
 def collect(source_root: Path) -> list[Function]:
+    source_root = source_root.resolve()
     functions: list[Function] = []
     for path in sorted(source_root.rglob("*.rs")):
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -76,7 +77,7 @@ def collect(source_root: Path) -> list[Function]:
                     ident=f"F{len(functions):04d}",
                     name=match.group(1),
                     module=module,
-                    file=str(path.relative_to(source_root.parent.parent)),
+                    file=str(path.relative_to(source_root.parent)),
                     line=index + 1,
                     body=brace_body(lines, index),
                     public=public,
@@ -113,12 +114,12 @@ def render(functions: list[Function], relations: set[tuple[str, str, str]], kind
         groups[function.module].append(function)
     lines = [
         f"digraph ASB_{kind.title()}_Flow {{",
-        '    graph [bgcolor="white", compound=false, fontname="Helvetica", '
+        '    graph [bgcolor="white", compound=false, layout=osage, fontname="Helvetica", '
         f'fontsize=18, label="ASB {kind} flow (Rust functions)", labelloc=t, '
-        # Ordinary cluster-local ranking preserves every call and module box.
-        # Compound/global cluster ranking fails init_rank in Graphviz 2.43
-        # for the complete project graph. No edges use lhead/ltail, so compound
-        # routing is neither needed nor useful here.
+        # Packed module layout handles arbitrary inter-module call cycles.
+        # Graphviz 2.43's hierarchical dot ranking can fail init_rank and spin
+        # indefinitely on the full graph. Preserve every node, module box,
+        # directed edge and label instead of pruning the graph to fit dot.
         'newrank=false, nodesep=0.18, pad=0.25, rankdir=LR, ranksep=0.8, forcelabels=true, '
         # Edge concentration can corrupt clustered layouts in Graphviz 2.43
         # (contain_nodes/rebuild_vlists errors and a segmentation fault).
@@ -154,8 +155,8 @@ def render(functions: list[Function], relations: set[tuple[str, str, str]], kind
         # External labels do not create synthetic nodes in rank assignment.
         # Ordinary edge labels made the complete clustered graph time out or
         # fail init_rank on Graphviz 2.43 as a few adapter functions were added.
-        # Keep every relation/rank constraint and force all labels to remain
-        # visible; neither graph pruning nor a longer timeout is necessary.
+        # Keep every relation and force all labels to remain visible; neither
+        # graph pruning nor a longer timeout is necessary.
         lines.append(f'    {source} -> {target} [xlabel="{label}", style="{style}"];')
 
     if kind == "control":
