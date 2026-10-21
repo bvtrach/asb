@@ -196,6 +196,29 @@ explicitly unclassified lower bound, not a guessed count.
 Run `asb run` with credentials only as an explicit local
 smoke/benchmark operation.
 
+CI's `coverage-90-percent` check requires at least 90% executable-line coverage.
+Run the same offline check locally with:
+
+```sh
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --version 0.9.0 --locked
+bash scripts/check-coverage.sh
+```
+
+Both LLVM's complete aggregate and production-only coverage must pass. The
+production denominator comes from LLVM's non-test `asb` executable map, without
+excluding any production modules; unit and integration tests contribute the
+execution counts, but adding test-body lines cannot inflate that denominator.
+Isolated test subprocesses discard inherited state and credentials while
+retaining only LLVM's coverage-output setting. Reports and uncovered-file
+summaries are retained under `target/coverage/`, including on CI failures.
+Each invocation removes only its four generated report files before checking or
+building, so an early failure cannot leave a stale green summary; unrelated
+evidence files remain intact. Workspace coverage objects and raw profiles are
+cleaned while dependency compilation caches are retained. This also prevents
+obsolete test-binary maps from distorting totals after version or feature changes.
+No live provider, real agent installation, or privileged collector is necessary.
+
 Token accounting has synthetic, provider-free regression fixtures for all
 registered agent families, plus replay CLI checks for JSON, logs, and
 measurement files. Run the focused checks with `cargo test --offline --locked
@@ -339,6 +362,12 @@ test separately checks default/disabled collection, nonzero agent exits with
 valid grades, unresolved tasks, comparison regeneration and cached resume.
 Ordinary CI
 uses synthetic provider-free protocol tests.
+The remote execution unit tests use a private prepared-bootstrap fixture to
+exercise controller dispatch, output, metadata, lifecycle failures, deadlines and
+preserving cancellation independently of installation. This fixture does not
+qualify an installed runtime, SDK or workload container. Production execution
+always validates the runtime and performs checksum-pinned bootstrap preparation;
+there is no CLI, configuration or environment switch to bypass that phase.
 `benchmark_live_resources.py` additionally checks actual abrupt controller
 SIGKILL with an installed SWE-bench task image: the durable ownership journal
 quiesces only its recorded container, retains a partial output file and an

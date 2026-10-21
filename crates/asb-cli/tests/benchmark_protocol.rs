@@ -1,5 +1,13 @@
 //! Provider-free tests of the upstream workload protocol's pure data layer.
 
+mod support;
+use support::IsolatedEnvironment;
+
+#[test]
+fn python_subprocess_isolation_retains_only_coverage_instrumentation() {
+    python_protocol("test_environment.py");
+}
+
 #[test]
 fn routed_runtime_preserves_explicit_settings_and_requires_owned_topology() {
     python_protocol("benchmark_material_network_runtime.py");
@@ -157,7 +165,7 @@ fn python_protocol(test: &str) {
                 .join("tests")
                 .join(test),
         )
-        .env_clear()
+        .isolated_env()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("ASB_TEST_HOST_ASB", env!("CARGO_BIN_EXE_asb"))

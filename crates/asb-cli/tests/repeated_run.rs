@@ -1,9 +1,11 @@
 //! Provider-free real CLI qualification of fresh repeated execution.
 #![cfg(unix)]
+mod support;
 use serde_json::{Value, json};
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Output};
+use support::IsolatedEnvironment;
 
 struct Project(PathBuf);
 impl Project {
@@ -84,7 +86,7 @@ sys.exit(7 if (root/'fail-first').exists() and batch == 1 and replica == 1 else 
     fn run_extra(&self, repeat: &str, extra: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_asb"))
             .current_dir(&self.0)
-            .env_clear()
+            .isolated_env()
             .env("HOME", &self.0)
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .args([
@@ -391,7 +393,7 @@ fn closed_output_stops_admission_after_joining_the_current_batch() {
     project.config(2);
     let mut child = Command::new(env!("CARGO_BIN_EXE_asb"))
         .current_dir(&project.0)
-        .env_clear()
+        .isolated_env()
         .env("HOME", &project.0)
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .args([

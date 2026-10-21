@@ -1,11 +1,13 @@
 //! Actual private census CLI: bounded, read-only and independent of providers.
 #![cfg(target_os = "linux")]
 
+mod support;
 use serde_json::{Value, json};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
+use support::IsolatedEnvironment;
 
 struct Fixture(PathBuf);
 impl Fixture {
@@ -33,7 +35,7 @@ fn invoke(input: &[u8], args: &[&str]) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_asb"))
         .arg("__asb-material")
         .args(args)
-        .env_clear()
+        .isolated_env()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

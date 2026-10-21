@@ -628,6 +628,10 @@ fn safe_component(value: &str) -> String {
         .collect()
 }
 
+#[cfg(all(test, unix))]
+#[path = "../tests/unit/sweep_boundaries.rs"]
+mod boundary_tests;
+
 #[cfg(test)]
 mod tests {
     use super::{run, write_progress};

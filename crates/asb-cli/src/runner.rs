@@ -1790,6 +1790,10 @@ fn bounded(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/runner_boundaries.rs"]
+mod boundary_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         RunResult, command_for, render_human, render_json, replica_cassette, resolve_log_path,

@@ -1793,6 +1793,10 @@ fn safe_name_str(value: &str) -> String {
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/compare_boundaries.rs"]
+mod boundary_tests;
+
+#[cfg(test)]
 mod tests {
     use super::run;
     use serde_json::{Value, json};

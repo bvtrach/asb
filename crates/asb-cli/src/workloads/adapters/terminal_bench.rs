@@ -1,6 +1,10 @@
 use super::StaticExternalAdapter;
 mod catalog;
 
+#[cfg(test)]
+#[path = "terminal_bench/adapter_tests.rs"]
+mod adapter_tests;
+
 pub(super) struct TerminalBenchAdapter {
     pub id: &'static str,
     pub source: &'static str,
