@@ -532,22 +532,23 @@ fn benchmark_snapshot_limits_apply_to_actual_growth_and_max_plus_one() {
 #[test]
 fn standalone_identity_and_configuration_share_the_initial_opened_inode() {
     let fixture = Fixture::new();
-    let path=fixture.write("single.toml","agent='fixture'\nprovider='fixture'\nmodel='fixture'\nworkload='bug-fix'\nlog_file='original.log'\n");
+    let path=fixture.write("single.toml","agent='fixture'\nprovider='fixture'\nmodel='fixture'\nworkload='bug-fix'\nlog_file='original/attempt.log'\n");
     fixture.write(
         ".asb/project.toml",
         "tools_dir='tools'\nworkloads_dir='workloads'\nworkspace_dir='workspaces'\n",
     );
     READ_HOOK.set(Some(Box::new(|_,path|{
         fs::rename(path,path.with_extension("original")).unwrap();
-        fs::write(path,"agent='changed'\nprovider='changed'\nmodel='changed'\nworkload='bug-fix'\nlog_file='changed.log'\n").unwrap();
+        fs::write(path,"agent='changed'\nprovider='changed'\nmodel='changed'\nworkload='bug-fix'\nlog_file='changed/attempt.log'\n").unwrap();
     })));
     let loaded = source::load(path.to_str().unwrap()).unwrap();
     assert_eq!(loaded.rows[0].agent, "fixture");
+    assert_eq!(loaded.rows[0].directory, fixture.0.join("original"));
     assert!(
         loaded.rows[0]
             .artifacts
             .iter()
-            .all(|path| !path.contains("changed.log"))
+            .all(|path| !path.contains("changed/attempt.log"))
     );
     assert!(
         fs::read_to_string(path)
@@ -584,6 +585,305 @@ fn retained_configuration_budget_is_bounded_before_loading_results_or_writing_ou
         "{error}"
     );
     assert!(!fixture.0.join("results").exists());
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct RecoverableBackend {
+    destination: PathBuf,
+    stage: PathBuf,
+    backup: std::cell::RefCell<Option<PathBuf>>,
+    no_replace_unsupported: bool,
+    fail_forward: bool,
+    race_foreign: bool,
+    fail_restore: bool,
+    fail_preserve_sync: std::cell::Cell<bool>,
+    fail_final_sync: bool,
+    published: std::cell::Cell<bool>,
+}
+#[cfg(target_os = "linux")]
+impl publication::RenameBackend for RecoverableBackend {
+    fn rename(
+        &self,
+        from: &Path,
+        to: &Path,
+        operation: publication::RenameOperation,
+    ) -> io::Result<()> {
+        use publication::RenameOperation;
+        if operation == RenameOperation::Exchange {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "fixture filesystem has no exchange",
+            ));
+        }
+        if self.no_replace_unsupported {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "fixture filesystem has no no-replace",
+            ));
+        }
+        if from == self.destination {
+            *self.backup.borrow_mut() = Some(to.to_path_buf());
+        }
+        if from == self.stage && to == self.destination {
+            if self.race_foreign {
+                fs::create_dir(to)?;
+                fs::write(to.join("foreign-user-file"), "never overwrite")?;
+            }
+            if self.fail_forward {
+                return Err(io::Error::other("fixture forward rename failed"));
+            }
+        }
+        if self.backup.borrow().as_deref() == Some(from) && self.fail_restore {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "fixture restore denied",
+            ));
+        }
+        publication::native_rename(from, to, operation)?;
+        if from == self.stage && to == self.destination {
+            self.published.set(true);
+        }
+        Ok(())
+    }
+    fn synchronize(&self, parent: &Path) -> io::Result<()> {
+        if self.backup.borrow().is_some()
+            && !self.published.get()
+            && self.fail_preserve_sync.replace(false)
+        {
+            return Err(io::Error::other("fixture backup durability failed"));
+        }
+        if self.published.get() && self.fail_final_sync {
+            return Err(io::Error::other("fixture postcommit durability failed"));
+        }
+        fs::File::open(parent).and_then(|file| file.sync_all())
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn native_initial_publication_and_forced_recoverable_replacement_preserve_complete_generations() {
+    let fixture = Fixture::new();
+    let destination = fixture.0.join("report");
+    fixture.write("unrelated-sentinel", "untouched");
+    let first = publication::Publisher::begin(&destination, vec!["report.html".into()]).unwrap();
+    fs::write(first.stage().join("report.html"), "first").unwrap();
+    let initial_backend = RecoverableBackend {
+        destination: destination.clone(),
+        stage: first.stage().into(),
+        ..Default::default()
+    };
+    let initial = first.commit_with(&initial_backend).unwrap();
+    assert!(!initial.recoverable_fallback && initial.backup.is_none());
+    fs::write(destination.join("user-added"), "keep user data").unwrap();
+    let old = Fixture::snapshot(&destination);
+    let second = publication::Publisher::begin(&destination, vec!["report.html".into()]).unwrap();
+    fs::write(second.stage().join("report.html"), "second").unwrap();
+    let backend = RecoverableBackend {
+        destination: destination.clone(),
+        stage: second.stage().into(),
+        ..Default::default()
+    };
+    let replaced = second.commit_with(&backend).unwrap();
+    assert!(replaced.recoverable_fallback);
+    assert_eq!(Fixture::snapshot(replaced.backup.as_ref().unwrap()), old);
+    assert_eq!(
+        fs::read_to_string(destination.join("report.html")).unwrap(),
+        "second"
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.0.join("unrelated-sentinel")).unwrap(),
+        "untouched"
+    );
+    assert!(
+        replaced
+            .confirmation_error("writer refused")
+            .to_string()
+            .contains("recoverable non-atomic replacement")
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unsupported_no_replace_is_probed_only_on_owned_stage_before_moving_any_previous_report() {
+    let fixture = Fixture::new();
+    let destination = fixture.0.join("report");
+    fixture.write("report/report.html", "old");
+    fixture.write("report/user-added", "keep");
+    let old = Fixture::snapshot(&destination);
+    let publisher =
+        publication::Publisher::begin(&destination, vec!["report.html".into()]).unwrap();
+    let stage = publisher.stage().to_path_buf();
+    fs::write(stage.join("report.html"), "new").unwrap();
+    let backend = RecoverableBackend {
+        destination: destination.clone(),
+        stage: stage.clone(),
+        no_replace_unsupported: true,
+        ..Default::default()
+    };
+    let error = publisher.commit_with(&backend).err().unwrap().to_string();
+    assert!(
+        error.contains("not published") && error.contains("no-replace"),
+        "{error}"
+    );
+    assert_eq!(Fixture::snapshot(&destination), old);
+    assert!(backend.backup.borrow().is_none());
+    assert!(!stage.exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn capability_probe_rejects_a_backend_that_overwrites_existing_private_targets() {
+    struct UnsafeBackend;
+    impl publication::RenameBackend for UnsafeBackend {
+        fn rename(
+            &self,
+            from: &Path,
+            to: &Path,
+            operation: publication::RenameOperation,
+        ) -> io::Result<()> {
+            if operation == publication::RenameOperation::Exchange {
+                return Err(io::Error::new(io::ErrorKind::Unsupported, "no swap"));
+            }
+            // Intentionally wrong implementation, exercised ONLY inside the
+            // disposable stage. The probe must reject it before user data moves.
+            fs::rename(from, to)
+        }
+    }
+    let fixture = Fixture::new();
+    let destination = fixture.0.join("report");
+    fixture.write("report/user-added", "preserve user bytes");
+    let old = Fixture::snapshot(&destination);
+    let publisher =
+        publication::Publisher::begin(&destination, vec!["report.html".into()]).unwrap();
+    let stage = publisher.stage().to_path_buf();
+    fs::write(stage.join("report.html"), "new").unwrap();
+    let error = publisher
+        .commit_with(&UnsafeBackend)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("did not enforce no-replace"), "{error}");
+    assert_eq!(Fixture::snapshot(&destination), old);
+    assert!(!stage.exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn recoverable_precommit_failures_restore_old_report_and_keep_original_reason() {
+    for preserve_sync_failure in [false, true] {
+        let fixture = Fixture::new();
+        let destination = fixture.0.join("report");
+        fixture.write("report/report.html", "old");
+        fixture.write("report/user-added", "keep");
+        let old = Fixture::snapshot(&destination);
+        let publisher =
+            publication::Publisher::begin(&destination, vec!["report.html".into()]).unwrap();
+        let stage = publisher.stage().to_path_buf();
+        fs::write(stage.join("report.html"), "new").unwrap();
+        let backend = RecoverableBackend {
+            destination: destination.clone(),
+            stage: stage.clone(),
+            fail_forward: !preserve_sync_failure,
+            fail_preserve_sync: std::cell::Cell::new(preserve_sync_failure),
+            ..Default::default()
+        };
+        let error = publisher.commit_with(&backend).err().unwrap().to_string();
+        assert!(error.contains("previous report restored"), "{error}");
+        assert!(
+            error.contains(if preserve_sync_failure {
+                "backup durability failed"
+            } else {
+                "forward rename failed"
+            }),
+            "{error}"
+        );
+        assert_eq!(Fixture::snapshot(&destination), old);
+        assert!(!stage.exists());
+        assert!(!backend.backup.borrow().as_ref().unwrap().exists());
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn rollback_failure_retains_old_backup_without_overwriting_racing_foreign_destination() {
+    for foreign_race in [false, true] {
+        let fixture = Fixture::new();
+        let destination = fixture.0.join("report");
+        fixture.write("report/report.html", "old");
+        fixture.write("report/user-added", "keep");
+        fixture.write("unrelated", "sentinel");
+        let old = Fixture::snapshot(&destination);
+        let publisher =
+            publication::Publisher::begin(&destination, vec!["report.html".into()]).unwrap();
+        let stage = publisher.stage().to_path_buf();
+        fs::write(stage.join("report.html"), "new").unwrap();
+        let backend = RecoverableBackend {
+            destination: destination.clone(),
+            stage: stage.clone(),
+            fail_forward: !foreign_race,
+            fail_restore: !foreign_race,
+            race_foreign: foreign_race,
+            ..Default::default()
+        };
+        let error = publisher.commit_with(&backend).err().unwrap().to_string();
+        let backup = backend.backup.borrow();
+        let backup = backup.as_ref().unwrap();
+        assert!(
+            error.contains("recoverable backup")
+                && error.contains("automatic restore")
+                && error.contains("mv --"),
+            "{error}"
+        );
+        assert!(error.contains(backup.to_str().unwrap()));
+        assert_eq!(Fixture::snapshot(backup), old);
+        assert!(!stage.exists());
+        if foreign_race {
+            assert_eq!(
+                fs::read_to_string(destination.join("foreign-user-file")).unwrap(),
+                "never overwrite"
+            );
+            assert!(!destination.join("report.html").exists());
+        } else {
+            assert!(!destination.exists());
+        }
+        assert_eq!(
+            fs::read_to_string(fixture.0.join("unrelated")).unwrap(),
+            "sentinel"
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn recoverable_commit_sync_failure_reports_new_publication_and_retained_old_backup() {
+    let fixture = Fixture::new();
+    let destination = fixture.0.join("report");
+    fixture.write("report/report.html", "old");
+    let old = Fixture::snapshot(&destination);
+    let publisher =
+        publication::Publisher::begin(&destination, vec!["report.html".into()]).unwrap();
+    let stage = publisher.stage().to_path_buf();
+    fs::write(stage.join("report.html"), "new").unwrap();
+    let backend = RecoverableBackend {
+        destination: destination.clone(),
+        stage,
+        fail_final_sync: true,
+        ..Default::default()
+    };
+    let error = publisher.commit_with(&backend).err().unwrap().to_string();
+    assert!(
+        error.contains("Report was published") && error.contains("durability is unconfirmed"),
+        "{error}"
+    );
+    assert_eq!(
+        fs::read_to_string(destination.join("report.html")).unwrap(),
+        "new"
+    );
+    assert_eq!(
+        Fixture::snapshot(backend.backup.borrow().as_ref().unwrap()),
+        old
+    );
 }
 
 #[cfg(target_os = "linux")]

@@ -123,13 +123,23 @@ and provide nearest observed-sample hover text. Opened-once bounded source reads
 reject nonregular files and growth; retained physical SVG paths prevent
 symlink-parent components from being misread as logical output links.
 Generation-specific private staging and a separate persistent report lock
-publish whole generations with Linux atomic exchange and preserve the old tree
+publish whole generations with Linux/macOS native atomic exchange and preserve the old tree
 as a recoverable backup. Pre-commit failures leave old bytes unchanged;
 post-commit sync/output errors truthfully report published-but-unconfirmed.
 Offline source/DOM/publication regressions require no provider or privileged
 collector. Real browser qualification remains opt-in and host-dependent. This
 candidate still requires exact-head independent review and ordinary hosted
 verification; it is not a release or a universal non-Linux atomicity claim.
+When the filesystem lacks exchange, a private no-replace probe precedes the
+recoverable backup/commit/rollback fallback. This path honestly discloses a
+temporary absent-destination/crash window, retains the old backup on failed
+restore and never overwrites a racing foreign destination. Missing safe native
+no-replace support fails closed without first moving user data. MacOS native
+calls are selected explicitly; Linux fixtures do not qualify a macOS runtime.
+Separate confirmed follow-up: bar charts still clamp signed values to zero.
+The signed-domain repair above covers line-series axes only; bar baselines,
+rectangles, signed ticks and labels need their own offline coordinate tests
+and repair before claiming all chart families faithfully display negatives.
 The custom BPF scope validator is also a small function (about sixty lines),
 not the reported 533; its confirmed correctness defect is tracked below.
 

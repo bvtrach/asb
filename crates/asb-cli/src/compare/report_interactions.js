@@ -87,4 +87,3 @@ document.querySelectorAll('.interactive-chart').forEach(chart=>{
   backdrop.addEventListener('click',()=>setExpanded(false));
   document.addEventListener('keydown',event=>{if(event.key==='Escape'&&chart.classList.contains('expanded'))setExpanded(false)});
 });
-

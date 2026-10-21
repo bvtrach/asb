@@ -1,4 +1,4 @@
-//! Report-specific ownership and coherent Linux generation publication.
+//! Report ownership, native atomic publication and explicitly recoverable fallback.
 use super::*;
 use crate::output_lock::OutputLock;
 
@@ -12,12 +12,35 @@ pub(super) struct Publisher {
 pub(super) struct Published {
     pub report: PathBuf,
     pub backup: Option<PathBuf>,
+    pub recoverable_fallback: bool,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RenameOperation {
+    Exchange,
+    NoReplace,
+}
+pub(super) trait RenameBackend {
+    fn rename(&self, from: &Path, to: &Path, operation: RenameOperation) -> std::io::Result<()>;
+    fn synchronize(&self, parent: &Path) -> std::io::Result<()> {
+        fs::File::open(parent).and_then(|file| file.sync_all())
+    }
+}
+struct NativeRename;
+impl RenameBackend for NativeRename {
+    fn rename(&self, from: &Path, to: &Path, operation: RenameOperation) -> std::io::Result<()> {
+        native_rename(from, to, operation)
+    }
 }
 impl Published {
     pub(super) fn confirmation_error(&self, error: impl std::fmt::Display) -> Error {
         Error::Io(format!(
-            "Report was published at {}, but confirmation output failed: {error}. Previous report backup: {}",
+            "Report was published at {}, but confirmation output failed: {error}. Publication method: {}. Previous report backup: {}",
             self.report.display(),
+            if self.recoverable_fallback {
+                "recoverable non-atomic replacement (destination absence/crash window possible)"
+            } else {
+                "native atomic rename/exchange"
+            },
             self.backup.as_ref().map_or_else(
                 || "none (first report)".into(),
                 |path| path.display().to_string()
@@ -91,7 +114,10 @@ impl Publisher {
     pub(super) fn stage(&self) -> &Path {
         &self.stage
     }
-    pub(super) fn commit(mut self) -> Result<Published, Error> {
+    pub(super) fn commit(self) -> Result<Published, Error> {
+        self.commit_with(&NativeRename)
+    }
+    pub(super) fn commit_with(mut self, backend: &impl RenameBackend) -> Result<Published, Error> {
         // Synchronize every known generated file before making the generation
         // visible. Unknown entries are never removed by cleanup.
         for name in &self.files {
@@ -107,17 +133,36 @@ impl Publisher {
             .and_then(|file| file.sync_all())
             .map_err(crate::io_error)?;
         let previous = check_destination(&self.destination)?;
-        exchange(&self.stage, &self.destination, previous)?;
+        let (backup, recoverable_fallback) = if previous {
+            match backend.rename(&self.stage, &self.destination, RenameOperation::Exchange) {
+                Ok(()) => (Some(self.stage.clone()), false),
+                Err(error) if unsupported(&error) => {
+                    (Some(self.replace_recoverably(backend)?), true)
+                }
+                Err(error) => return Err(self.unpublished(error)),
+            }
+        } else {
+            backend
+                .rename(&self.stage, &self.destination, RenameOperation::NoReplace)
+                .map_err(|error| self.unpublished(error))?;
+            (None, false)
+        };
         self.committed = true;
         let published = Published {
             report: self.destination.join("report.html"),
-            backup: previous.then(|| self.stage.clone()),
+            backup,
+            recoverable_fallback,
         };
         let parent = self.destination.parent().expect("validated report parent");
-        if let Err(error) = synchronize_published_parent(parent) {
+        if let Err(error) = synchronize_published_parent(parent, backend) {
             return Err(Error::Io(format!(
-                "Report was published at {}, but directory durability is unconfirmed: {error}. Previous report remains at {}",
+                "Report was published at {}, but directory durability is unconfirmed: {error}. Publication method: {}. Previous report backup: {}",
                 published.report.display(),
+                if published.recoverable_fallback {
+                    "recoverable non-atomic replacement (destination absence/crash window possible)"
+                } else {
+                    "native atomic rename/exchange"
+                },
                 published.backup.as_ref().map_or_else(
                     || "no previous generation".into(),
                     |path| path.display().to_string()
@@ -125,6 +170,56 @@ impl Publisher {
             )));
         }
         Ok(published)
+    }
+    fn unpublished(&self, error: impl std::fmt::Display) -> Error {
+        Error::Io(format!(
+            "report was not published; existing report at {} is preserved: {error}. Use a filesystem supporting native no-replace rename or preserve/move the old report before retrying",
+            self.destination.display()
+        ))
+    }
+    fn replace_recoverably(&self, backend: &impl RenameBackend) -> Result<PathBuf, Error> {
+        // Prove no-replace support on private, disposable directories BEFORE
+        // moving any user report. Never probe an operation on user data.
+        probe_no_replace(&self.stage, backend).map_err(|error| self.unpublished(error))?;
+        let parent = self.destination.parent().expect("validated report parent");
+        let backup = parent.join(format!(
+            ".asb-report-previous-{}",
+            crate::tools::runtime::unique_id()
+        ));
+        backend
+            .rename(&self.destination, &backup, RenameOperation::NoReplace)
+            .map_err(|error| self.unpublished(error))?;
+        let forward = backend.synchronize(parent).and_then(|()| {
+            backend.rename(&self.stage, &self.destination, RenameOperation::NoReplace)
+        });
+        if let Err(error) = forward {
+            return Err(
+                match backend.rename(&backup, &self.destination, RenameOperation::NoReplace) {
+                    Ok(()) => {
+                        let durability =
+                            backend
+                                .synchronize(parent)
+                                .err()
+                                .map_or_else(String::new, |sync| {
+                                    format!(
+                                        "; restored directory durability is unconfirmed: {sync}"
+                                    )
+                                });
+                        Error::Io(format!(
+                            "report was not published; previous report restored at {} after recoverable replacement failed: {error}{durability}",
+                            self.destination.display()
+                        ))
+                    }
+                    Err(restore) => Error::Io(format!(
+                        "report was not published; previous report remains at recoverable backup {}, but automatic restore to {} failed: {restore}; replacement failed: {error}. Preserve both locations, move any conflicting destination aside, then {}",
+                        backup.display(),
+                        self.destination.display(),
+                        restore_instruction(&backup, &self.destination)
+                    )),
+                },
+            );
+        }
+        Ok(backup)
     }
 }
 impl Drop for Publisher {
@@ -138,31 +233,112 @@ impl Drop for Publisher {
         let _ = fs::remove_dir(&self.stage);
     }
 }
-fn synchronize_published_parent(parent: &Path) -> std::io::Result<()> {
+fn synchronize_published_parent(
+    parent: &Path,
+    backend: &impl RenameBackend,
+) -> std::io::Result<()> {
     #[cfg(test)]
     if super::pipeline_tests::fail_post_commit_sync() {
         return Err(std::io::Error::other(
             "fixture parent synchronization failed",
         ));
     }
-    fs::File::open(parent).and_then(|file| file.sync_all())
+    backend.synchronize(parent)
 }
-#[cfg(target_os = "linux")]
+fn restore_instruction(backup: &Path, destination: &Path) -> String {
+    match (backup.to_str(), destination.to_str()) {
+        (Some(backup), Some(destination)) => format!(
+            "restore the backup with: mv -- '{}' '{}'",
+            backup.replace('\'', "'\\''"),
+            destination.replace('\'', "'\\''")
+        ),
+        _ => {
+            "restore the backup with filesystem-safe tooling (these paths contain non-UTF-8 bytes)"
+                .into()
+        }
+    }
+}
+fn unsupported(error: &std::io::Error) -> bool {
+    if error.kind() == std::io::ErrorKind::Unsupported {
+        return true;
+    }
+    #[cfg(unix)]
+    if matches!(
+        error.raw_os_error(),
+        Some(libc::EINVAL | libc::ENOSYS | libc::EOPNOTSUPP)
+    ) {
+        return true;
+    }
+    false
+}
+fn probe_no_replace(stage: &Path, backend: &impl RenameBackend) -> std::io::Result<()> {
+    let root = stage.join(format!(
+        ".rename-probe-{}",
+        crate::tools::runtime::unique_id()
+    ));
+    fs::create_dir(&root)?;
+    let from = root.join("from");
+    let to = root.join("to");
+    let result = (|| {
+        fs::create_dir(&from)?;
+        fs::create_dir(&to)?;
+        match backend.rename(&from, &to, RenameOperation::NoReplace) {
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+            Ok(()) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "native rename did not enforce no-replace semantics",
+                ));
+            }
+        }
+        fs::remove_dir(&to)?;
+        backend.rename(&from, &to, RenameOperation::NoReplace)
+    })();
+    let cleanup = (|| {
+        for path in [&from, &to] {
+            match fs::remove_dir(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+        fs::remove_dir(&root)
+    })();
+    result.and(cleanup)?;
+    fs::File::open(stage).and_then(|file| file.sync_all())
+}
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[allow(unsafe_code)]
-fn exchange(stage: &Path, destination: &Path, previous: bool) -> Result<(), Error> {
+pub(super) fn native_rename(
+    stage: &Path,
+    destination: &Path,
+    operation: RenameOperation,
+) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
-    let stage = std::ffi::CString::new(stage.as_os_str().as_bytes())
-        .map_err(|_| Error::Input("report staging path contains a NUL byte".into()))?;
-    let destination_c = std::ffi::CString::new(destination.as_os_str().as_bytes())
-        .map_err(|_| Error::Input("report destination contains a NUL byte".into()))?;
-    let flags = if previous {
+    let stage = std::ffi::CString::new(stage.as_os_str().as_bytes()).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "report staging path contains a NUL byte",
+        )
+    })?;
+    let destination_c =
+        std::ffi::CString::new(destination.as_os_str().as_bytes()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "report destination contains a NUL byte",
+            )
+        })?;
+    #[cfg(target_os = "linux")]
+    let flags = if operation == RenameOperation::Exchange {
         libc::RENAME_EXCHANGE
     } else {
         libc::RENAME_NOREPLACE
     };
     // SAFETY: both C strings are live, NUL-terminated owned filesystem paths;
     // the report lock serializes ASB writers. Neither path is a broad root.
-    if unsafe {
+    #[cfg(target_os = "linux")]
+    let result = unsafe {
         libc::renameat2(
             libc::AT_FDCWD,
             stage.as_ptr(),
@@ -170,20 +346,30 @@ fn exchange(stage: &Path, destination: &Path, previous: bool) -> Result<(), Erro
             destination_c.as_ptr(),
             flags,
         )
-    } == 0
-    {
+    };
+    #[cfg(target_os = "macos")]
+    // SAFETY: the same owned live C strings above; platform flags preserve
+    // exchange/no-replace semantics, rather than ordinary overwriting rename.
+    let result = unsafe {
+        libc::renamex_np(
+            stage.as_ptr(),
+            destination_c.as_ptr(),
+            if operation == RenameOperation::Exchange {
+                libc::RENAME_SWAP
+            } else {
+                libc::RENAME_EXCL
+            },
+        )
+    };
+    if result == 0 {
         return Ok(());
     }
-    let error = std::io::Error::last_os_error();
-    Err(Error::Io(format!(
-        "report was not published; existing report at {} is preserved: atomic report replacement failed: {error}. If this filesystem lacks atomic exchange, manually back up/move the existing report directory before retrying",
-        destination.display()
-    )))
+    Err(std::io::Error::last_os_error())
 }
-#[cfg(not(target_os = "linux"))]
-fn exchange(_: &Path, destination: &Path, _: bool) -> Result<(), Error> {
-    Err(Error::Input(format!(
-        "report was not published; existing report at {} is preserved. Coherent report publication currently requires Linux atomic rename/exchange support; copy the raw results to a supported host. No non-atomic replacement was attempted",
-        destination.display()
-    )))
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(super) fn native_rename(_: &Path, _: &Path, _: RenameOperation) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "this platform has no configured native no-replace/exchange report backend",
+    ))
 }

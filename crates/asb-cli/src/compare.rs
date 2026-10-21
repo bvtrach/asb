@@ -83,6 +83,9 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
         writeln!(output, "Previous report preserved at {}", backup.display())
             .map_err(|error| published.confirmation_error(error))?;
     }
+    if published.recoverable_fallback {
+        writeln!(output,"Report published using recoverable replacement, not atomic exchange; a brief destination-absence/crash window was possible. The previous report backup was retained.").map_err(|error|published.confirmation_error(error))?;
+    }
     Ok(published.report)
 }
 /// Invoke the platform opener without a shell; report paths are never commands.

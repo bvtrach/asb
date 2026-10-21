@@ -51,9 +51,15 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   and extrema, never bridge unknown gaps, and distinguish sample indices from
   measured milliseconds. Raw state/event timelines are not downsampled.
   A separate persistent report lock guards private same-filesystem staging;
-  Linux atomic rename/exchange publishes a whole generation only after rendering
+  Linux and macOS native rename/exchange publish a whole generation after rendering
   and synchronization. Replaced generations, including user-added files, remain
-  recoverable backups. Unsupported atomic exchange fails closed; post-commit
+  recoverable backups. If exchange is unsupported, a no-replace capability probe
+  runs only in the private stage before moving the old report. A documented
+  recoverable backup/commit/rollback path then has a brief destination-absence
+  and crash window; it never overwrites a foreign destination. Failed rollback
+  retains the old backup and prints a restore command. Missing safe no-replace
+  support fails closed before moving user data. No native macOS runtime
+  qualification is implied by Linux tests. Post-commit
   durability or confirmation errors explicitly report that publication occurred;
 - `measurements`: opt-in process-scoped runtime collection. It writes bounded JSON
   records for host facts, elapsed time, success rate, and normalized input,
