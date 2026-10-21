@@ -261,6 +261,11 @@ broken presentation stops writes while already-admitted work completes; losing
 the owner transport still cancels/preserves. A final measurement-publication
 error leaves the immutable task outcome available and prevents a completion
 receipt, so an incomplete measurement cannot silently authorize continuation.
+Run-log publication is a separate typed obligation: a failed log write never
+skips final measurement publication or hides the grade from terminal rendering.
+Both log and measurement publication must be confirmed before a completion
+record/observer receipt is permitted. Original run failures precede ancillary
+log/measurement diagnostics; repairing reporting does not repeat the agent.
 
 `WorkloadAdapter` creates a distinct mutable `WorkloadSession` for each
 attempt. The session owns its task invocation, prepared workspace, initial

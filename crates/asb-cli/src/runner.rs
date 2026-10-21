@@ -842,7 +842,7 @@ fn run_mode(
         stdout: bounded(&child.stdout),
         stderr,
     };
-    write_log(config_path, &config.log_file, &result)?;
+    let log_publication = phases::LogPublication::publish(config_path, &config.log_file, &result);
     let measurement_completion = phases::finish_measurements(measurement_session, &result, success);
     // This private record preserves evaluator outcomes, including unresolved
     // tasks. Its absence never changes a benchmark grade or blocks execution;
@@ -854,7 +854,8 @@ fn run_mode(
     if let Some(path) = runtime_output {
         completion_outputs.push(path);
     }
-    if measurement_completion.confirmed()
+    if log_publication.confirmed()
+        && measurement_completion.confirmed()
         && let Ok(record) = completion::persist(
             config_path,
             &config.log_file,
@@ -876,12 +877,7 @@ fn run_mode(
     } else {
         render_human(&result, output)?;
     }
-    match (failure, measurement_completion.into_error()) {
-        (Some((_, primary)), Some(secondary)) => Err(Error::Run(format!("{primary}; {secondary}"))),
-        (Some((_, primary)), None) => Err(Error::Run(primary)),
-        (None, Some(secondary)) => Err(secondary),
-        (None, None) => Ok(()),
-    }
+    phases::final_outcome(failure, log_publication, measurement_completion)
 }
 
 /// Prevent replayed agents from contacting any live provider, updater, or

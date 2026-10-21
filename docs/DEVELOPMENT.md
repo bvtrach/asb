@@ -189,9 +189,12 @@ For a focused library-only invocation, run `cargo build --locked --offline`
 first: the full-entry regression executes the actual ASB binary beside the
 test executable as its native process gate. Ordinary full `cargo test` builds
 that binary as part of its CLI integration targets. The full-entry fixture
-runs two isolated attempts through the real bundled grader, saved logs,
+runs isolated attempts through the real bundled grader, saved logs,
 measurements and completion policy; the larger outcome matrix tests consuming
 phase transitions with synthetic execution evidence, not full benchmark runs.
+Its real blocked-log-directory cases retain JSON and measurement grades,
+evaluate/finish exactly once, preserve primary and ancillary diagnostics and
+publish no completion receipt. Existing directories are never overwritten.
 They exercise independent client exit/grade/cleanup outcomes, failing lifecycle
 markers before and after execution, actual child-output retention, native and
 guest terminal-answer policy, incomplete recording/replay, explicit preservation

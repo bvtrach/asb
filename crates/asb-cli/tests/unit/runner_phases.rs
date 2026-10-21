@@ -577,6 +577,54 @@ fn result() -> RunResult<'static> {
 }
 
 #[test]
+fn postgrade_log_publication_is_independent_and_diagnostics_keep_primary_order() {
+    let fixture = Fixture::new();
+    let config = fixture.0.join("benchmark.toml");
+    let result = result();
+    let before = serde_json::to_vec(&result).unwrap();
+    let published = LogPublication::publish(&config, "nested/run.jsonl", &result);
+    assert!(published.confirmed());
+    assert!(final_outcome(None, published, MeasurementCompletion::Confirmed).is_ok());
+    let logged: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(fixture.0.join("nested/run.jsonl")).unwrap())
+            .unwrap();
+    assert_eq!(logged["workload_success"], true);
+    std::fs::create_dir(fixture.0.join("blocked.jsonl")).unwrap();
+    for primary in [None, Some(("run_error", "original proxy failure".into()))] {
+        let failed = LogPublication::publish(&config, "blocked.jsonl", &result);
+        assert!(!failed.confirmed());
+        let error = final_outcome(
+            primary.clone(),
+            failed,
+            MeasurementCompletion::Incomplete(vec!["measurement write failure".into()]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("cannot open log file"));
+        assert!(error.contains(fixture.0.join("blocked.jsonl").to_str().unwrap()));
+        assert!(error.contains("measurement write failure"));
+        if primary.is_some() {
+            assert!(
+                error.find("original proxy failure").unwrap()
+                    < error.find("run log publication failed").unwrap()
+            );
+        }
+        assert!(
+            error.find("run log publication failed").unwrap()
+                < error.find("measurement finalization failed").unwrap()
+        );
+    }
+    let failed = LogPublication::publish(&config, "blocked.jsonl", &result);
+    assert!(
+        final_outcome(None, failed, MeasurementCompletion::Confirmed)
+            .unwrap_err()
+            .to_string()
+            .contains("run log publication failed after task evaluation")
+    );
+    assert_eq!(serde_json::to_vec(&result).unwrap(), before);
+}
+
+#[test]
 fn final_measurement_errors_preserve_grade_and_disallow_completion_receipts() {
     for fault in [
         "run-failed",
@@ -647,7 +695,12 @@ fn full_runner_entry_keeps_real_fixture_grade_and_primary_error_after_lifecycle_
         runtime.is_file(),
         "build the actual ASB binary before this full-entry test"
     );
-    for case in ["execution-end", "run-finishing"] {
+    for case in [
+        "execution-end",
+        "run-finishing",
+        "blocked-log",
+        "blocked-log-and-measurements",
+    ] {
         let child = Command::new(&executable)
             .args(["--exact", "runner::phases::tests::full_runner_entry_keeps_real_fixture_grade_and_primary_error_after_lifecycle_failure", "--nocapture"])
             .isolated_env()
@@ -715,8 +768,12 @@ fn full_entry_child(case: &str) {
     let config: BenchmarkConfig = toml::from_str("agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='repository-navigation'\nworkspace='workspace'\nlog_file='run.jsonl'\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n").unwrap();
     let config_path = root.join("benchmark.toml");
     std::fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
+    let blocked_log = case.starts_with("blocked-log");
+    if blocked_log {
+        std::fs::create_dir(root.join("run.jsonl")).unwrap();
+    }
     let calls = Rc::new(RefCell::new(Vec::new()));
-    let event = if case == "execution-end" {
+    let event = if matches!(case, "execution-end" | "blocked-log") {
         LifecycleEvent::AgentExecuteEnd
     } else {
         LifecycleEvent::RunFinishing
@@ -747,11 +804,34 @@ fn full_entry_child(case: &str) {
         error.contains("replay consumed 0 of 1"),
         "primary proxy validation must not be replaced: {error}"
     );
-    if case == "run-finishing" {
+    if matches!(case, "run-finishing" | "blocked-log-and-measurements") {
         assert!(
             error.contains("measurement finalization failed after task evaluation"),
             "secondary finalization diagnostic must remain available: {error}"
         );
+    }
+    if blocked_log {
+        assert!(
+            error.contains("run log publication failed after task evaluation"),
+            "{error}"
+        );
+        assert!(error.contains("cannot open log file"), "{error}");
+        assert!(
+            error.contains(root.join("run.jsonl").to_str().unwrap()),
+            "{error}"
+        );
+        assert!(
+            error.find("replay consumed 0 of 1").unwrap()
+                < error.find("run log publication failed").unwrap(),
+            "primary error must precede ancillary publication failure: {error}"
+        );
+        if case == "blocked-log-and-measurements" {
+            assert!(
+                error.find("run log publication failed").unwrap()
+                    < error.find("measurement finalization failed").unwrap(),
+                "both independent publication failures must be retained: {error}"
+            );
+        }
     }
     assert_eq!(std::fs::read_to_string(counter).unwrap(), "called\n");
     assert_eq!(calls.borrow().as_slice(), ["evaluate", "finish"]);
@@ -762,10 +842,10 @@ fn full_entry_child(case: &str) {
         usize::from(complete)
     );
     assert_eq!(root.join(".asb-completions").exists(), complete);
-    let log: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(root.join("run.jsonl")).unwrap()).unwrap();
+    let log: Option<serde_json::Value> = (!blocked_log)
+        .then(|| serde_json::from_slice(&std::fs::read(root.join("run.jsonl")).unwrap()).unwrap());
     let summary: serde_json::Value = serde_json::from_slice(&output).unwrap();
-    for value in [&log, &summary] {
+    for value in log.iter().chain(std::iter::once(&summary)) {
         assert_eq!(
             value["workload_success"], true,
             "real bundled evaluator grade is independent of proxy/collector failure"
@@ -778,5 +858,11 @@ fn full_entry_child(case: &str) {
         serde_json::from_slice(&std::fs::read(root.join("measurements/run.json")).unwrap())
             .unwrap();
     assert_eq!(measured["workload_success"], true);
-    assert_eq!(measured["failure_reason"], log["failure_reason"]);
+    assert_eq!(measured["failure_reason"], summary["failure_reason"]);
+    if blocked_log {
+        assert!(
+            root.join("run.jsonl").is_dir(),
+            "never replace the blocking user directory"
+        );
+    }
 }
