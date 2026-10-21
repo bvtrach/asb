@@ -16,13 +16,13 @@ pub(crate) struct ProcessContext<'a> {
     pub name: &'a str,
     pub status: Option<std::process::ExitStatus>,
     pub capture_complete: bool,
-    pub stdout: &'a str,
     pub stderr: &'a str,
     /// Opened admitted sources, not mutable filesystem names. Only positional
     /// readers are exposed to processing; prefixes above are diagnostics.
     sources: [&'a crate::evidence::Capture; 2],
 }
 impl<'a> ProcessContext<'a> {
+    #[cfg(test)]
     pub fn new(
         name: &'a str,
         status: &'a std::process::ExitStatus,
@@ -33,13 +33,23 @@ impl<'a> ProcessContext<'a> {
             name,
             status: Some(*status),
             capture_complete: true,
-            stdout: diagnostics[0],
             stderr: diagnostics[1],
             sources,
         }
     }
-    pub fn from_completion(name: &'a str, completion: &crate::measurements::ProducerCompletion, diagnostics: [&'a str; 2], sources: [&'a crate::evidence::Capture; 2]) -> Self {
-        Self { name, status: completion.exit, capture_complete: completion.capture_complete, stdout: diagnostics[0], stderr: diagnostics[1], sources }
+    pub fn from_completion(
+        name: &'a str,
+        completion: &crate::measurements::ProducerCompletion,
+        diagnostics: [&'a str; 2],
+        sources: [&'a crate::evidence::Capture; 2],
+    ) -> Self {
+        Self {
+            name,
+            status: completion.exit,
+            capture_complete: completion.capture_complete,
+            stderr: diagnostics[1],
+            sources,
+        }
     }
     pub fn stdout_reader(&self) -> Result<impl std::io::Read + '_, String> {
         self.sources[0].reader()
@@ -60,7 +70,8 @@ pub(crate) struct ProcessData {
 
 impl ProcessData {
     pub fn from_output(context: &ProcessContext<'_>) -> Self {
-        let completed = context.capture_complete && context.status.is_none_or(|status| status.success());
+        let completed =
+            context.capture_complete && context.status.is_none_or(|status| status.success());
         Self {
             status: if completed { "completed" } else { "failed" }.into(),
             metrics: BTreeMap::new(),
@@ -312,8 +323,14 @@ pub(crate) trait CollectorAdapter: Sync {
     fn graph_section(&self, _name: &str) -> Option<GraphSection> {
         None
     }
-    fn graceful_shutdown(&self, _name: &str) -> bool {
-        false
+    fn producer_policy(&self, _name: &str) -> crate::measurements::ProducerPolicy {
+        crate::measurements::ProducerPolicy {
+            stream_bytes: 256 * 1024 * 1024,
+            graceful: None,
+        }
+    }
+    fn accepts_termination(&self, _name: &str, status: Option<std::process::ExitStatus>) -> bool {
+        status.is_none_or(|status| status.success())
     }
     fn process(
         &self,
@@ -482,7 +499,7 @@ mod tests {
                 let graceful = matches!(id, "perfetto" | "bpftrace")
                     || (id == "perf" && matches!(process, "perf" | "perf-stat"));
                 assert_eq!(
-                    adapter.graceful_shutdown(process),
+                    adapter.producer_policy(process).graceful.is_some(),
                     graceful,
                     "{id}/{process}"
                 );
@@ -504,7 +521,7 @@ mod tests {
         assert!(adapter.dependencies().is_empty());
         assert!(!adapter.requires_pid());
         assert!(!adapter.stop_at_execution_end());
-        assert!(!adapter.graceful_shutdown("process"));
+        assert!(adapter.producer_policy("process").graceful.is_none());
         assert!(!adapter.prioritizes_artifact("artifact.svg"));
         assert!(adapter.display_artifact("artifact.svg").is_none());
         assert!(adapter.graph_section("metric").is_none());

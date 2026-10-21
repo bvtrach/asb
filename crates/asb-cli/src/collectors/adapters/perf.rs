@@ -64,8 +64,12 @@ impl CollectorAdapter for PerfCollector {
             super::super::selected_or_environment("perf", selected);
         Ok(())
     }
-    fn graceful_shutdown(&self, name: &str) -> bool {
-        matches!(name, "perf" | "perf-stat")
+    fn producer_policy(&self, name: &str) -> measurements::ProducerPolicy {
+        measurements::ProducerPolicy {
+            stream_bytes: 256 * 1024 * 1024,
+            graceful: matches!(name, "perf" | "perf-stat")
+                .then_some(std::time::Duration::from_secs(5)),
+        }
     }
     fn process(
         &self,
@@ -112,24 +116,11 @@ fn process(
             }),
         )?;
         result.artifact = Some("perf-stat-quality.json".into());
-        if context.status.code().is_none() && !context.stderr.is_empty() {
-            result.status = "completed".into();
-        }
     } else {
         result.artifact = session
             .artifact(SharedArtifact::StackSamples)
             .filter(|path| path.is_file())
             .map(measurements::file_name);
-        let exists = session
-            .artifact(SharedArtifact::StackSamples)
-            .is_some_and(|path| path.metadata().is_ok_and(|metadata| metadata.len() > 0));
-        result.status =
-            if context.status.success() || (context.status.code().is_none() && exists) {
-                "completed"
-            } else {
-                "failed"
-            }
-            .into();
     }
     Ok(result)
 }
@@ -179,11 +170,9 @@ fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
     Ok(())
 }
 
-use crate::collectors;
 use crate::measurements::{Collector, env_true, measurement_interval_ms, write_unavailable};
 use std::collections::BTreeMap;
 use std::io::{BufRead, Read};
-use std::time::Instant;
 
 #[derive(Default)]
 struct PerfState {
@@ -202,25 +191,20 @@ impl measurements::Session {
             crate::evidence::Capture::create(&stdout_path)?,
             crate::evidence::Capture::create(&stderr_path)?,
         ];
-        let output = captures[1].writer()?;
-        let stdout = captures[0].writer()?;
         // Attach to the runner root and inherit counters into every child.
         // Unlike a one-time comma-separated PID snapshot, perf's inheritance
         // follows helpers forked after attachment as well as descendants of
         // those helpers, while remaining scoped to this benchmark tree.
         let record_args = record_args(pid);
-        let child = match self
-            .command("perf")
+        let (mut command, route) = self.collector_command("perf")?;
+        command
             // Keep perf data bounded enough for the offline flamegraph
             // renderer while retaining process-scoped call samples.
             .args(&record_args)
             .args(["-o"])
-            .arg(&data)
-            .stderr(Stdio::from(output))
-            .stdout(Stdio::from(stdout))
-            .spawn()
-        {
-            Ok(child) => child,
+            .arg(&data);
+        let collector = match Collector::spawn("perf", &ADAPTER, command, route, captures) {
+            Ok(collector) => collector,
             Err(error) if !env_true("ASB_MEASURE_PERF") => {
                 write_unavailable(&self.dir.join("perf.json"), "perf", error.to_string())?;
                 return Ok(());
@@ -232,36 +216,19 @@ impl measurements::Session {
             }
         };
         self.set_artifact(SharedArtifact::StackSamples, data);
-        self.collectors.push(Collector {
-            name: "perf".into(),
-            adapter: collectors::find("perf").expect("registered collector"),
-            child,
-            started: Instant::now(),
-            captures,
-        });
+        self.collectors.push(collector);
         let stat_stdout_path = self.dir.join("perf-stat.stdout");
         let stat_stderr_path = self.dir.join("perf-stat.stderr");
         let captures = [
             crate::evidence::Capture::create(&stat_stdout_path)?,
             crate::evidence::Capture::create(&stat_stderr_path)?,
         ];
-        let stat_stdout = captures[0].writer()?;
-        let stat_stderr = captures[1].writer()?;
         let stat_args = stat_args(pid, measurement_interval_ms());
-        let stat = self
-            .command("perf")
-            .args(&stat_args)
-            .stdout(Stdio::from(stat_stdout))
-            .stderr(Stdio::from(stat_stderr))
-            .spawn();
+        let (mut command, route) = self.collector_command("perf")?;
+        command.args(&stat_args);
+        let stat = Collector::spawn("perf-stat", &ADAPTER, command, route, captures);
         match stat {
-            Ok(child) => self.collectors.push(Collector {
-                name: "perf-stat".into(),
-                adapter: collectors::find("perf").expect("registered collector"),
-                child,
-                started: Instant::now(),
-                captures,
-            }),
+            Ok(collector) => self.collectors.push(collector),
             Err(error) => write_unavailable(
                 &self.dir.join("perf-stat.json"),
                 "perf-stat",

@@ -64,7 +64,6 @@ fn later_collector_admission_failure_retains_sources_and_finalizes_admitted_sibl
         .unwrap_err();
     assert!(error.contains("target has exited"), "{error}");
     assert!(session.collectors.is_empty());
-    assert!(session.process_tree_snapshots.is_empty());
     assert_eq!(fs::read(root.join("admission.stdout")).unwrap(), b"A=17\n");
     session.finish(fixture_measurement()).unwrap();
     let record: serde_json::Value =
@@ -315,11 +314,11 @@ pub(crate) fn stopped_fixture(session: &mut Session, name: &str) {
         collector: Collector {
             name: name.into(),
             adapter: &ADAPTER,
-            child,
+            producer: Producer::completed(status),
             started: Instant::now(),
             captures,
         },
-        status,
+        completion: ProducerCompletion::test_completed(status),
         elapsed_ms: 1,
     });
 }

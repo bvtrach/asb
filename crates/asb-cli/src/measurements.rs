@@ -9,6 +9,7 @@ use crate::collectors;
 mod cohort;
 mod producer;
 mod snapshot;
+pub(crate) use producer::command as producer_command;
 pub(crate) use producer::{Completion as ProducerCompletion, Policy as ProducerPolicy, Producer};
 use snapshot::ProcessTreeSnapshot;
 pub(crate) use snapshot::SnapshotCommand;
@@ -21,7 +22,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+#[cfg(test)]
+use std::process::Child;
+use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -352,10 +355,75 @@ pub(crate) struct Collector {
     pub(crate) captures: [crate::evidence::Capture; 2],
 }
 impl Collector {
-    pub(crate) fn spawn(name: &str, adapter: &'static dyn collectors::CollectorAdapter, mut command: Command, route: crate::launch::CommandRoute, captures: [crate::evidence::Capture; 2]) -> Result<Self, String> {
+    pub(crate) fn spawn(
+        name: &str,
+        adapter: &'static dyn collectors::CollectorAdapter,
+        command: Command,
+        route: crate::launch::CommandRoute,
+        captures: [crate::evidence::Capture; 2],
+    ) -> Result<Self, String> {
+        Self::spawn_with_dependency(name, adapter, command, route, captures, None)
+    }
+    pub(crate) fn spawn_with_dependency(
+        name: &str,
+        adapter: &'static dyn collectors::CollectorAdapter,
+        mut command: Command,
+        route: crate::launch::CommandRoute,
+        captures: [crate::evidence::Capture; 2],
+        dependency: Option<std::sync::Arc<dyn Send + Sync>>,
+    ) -> Result<Self, String> {
         let files = [captures[0].writer()?, captures[1].writer()?];
-        let producer = Producer::spawn(&mut command, route, adapter.producer_policy(name), files)?;
-        Ok(Self { name: name.into(), adapter, producer, started: Instant::now(), captures })
+        let producer = Producer::spawn_with_dependency(
+            &mut command,
+            route,
+            adapter.producer_policy(name),
+            files,
+            dependency,
+        )?;
+        Ok(Self {
+            name: name.into(),
+            adapter,
+            producer,
+            started: Instant::now(),
+            captures,
+        })
+    }
+    pub(crate) fn startup_failure(mut self, reason: String) -> String {
+        let completion = self.producer.stop();
+        let raw = format!(
+            "raw captures retained at {} and {}",
+            self.captures[0].path().display(),
+            self.captures[1].path().display()
+        );
+        match completion.error {
+            Some(cleanup) => format!("{reason}; {cleanup}; {raw}"),
+            None => format!("{reason}; {raw}"),
+        }
+    }
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn fixture(
+        name: &str,
+        adapter: &'static dyn collectors::CollectorAdapter,
+        captures: [crate::evidence::Capture; 2],
+    ) -> Self {
+        let mut launch = crate::launch::ProcessLaunch::new("python3");
+        launch.arg("-I").arg("-S").arg("-u").arg("-c").arg("import signal,sys\nsignal.signal(signal.SIGINT,lambda *_: sys.exit(0))\nprint('ASB_FIXTURE_READY',flush=True)\nsignal.pause()\n");
+        let (command, route) = producer_command(&mut launch).unwrap();
+        let mut collector = Self::spawn(name, adapter, command, route, captures).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !collector.captures[0]
+            .startup_diagnostic(4096)
+            .unwrap()
+            .contains("ASB_FIXTURE_READY")
+        {
+            assert!(collector.producer.poll().unwrap().is_none());
+            assert!(
+                Instant::now() < deadline,
+                "owned fixture did not become ready"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        collector
     }
 }
 
@@ -408,6 +476,19 @@ impl Drop for Session {
         }
         // Each producer owns its single stop operation and fallback custody.
         // Dropping one failed producer cannot bypass its siblings.
+        let deadline = Instant::now()
+            + self
+                .collectors
+                .iter()
+                .map(|collector| collector.producer.stop_budget())
+                .max()
+                .unwrap_or_default();
+        for collector in &self.collectors {
+            collector.producer.request_stop();
+        }
+        for collector in &mut self.collectors {
+            let _ = collector.producer.stop_before(deadline);
+        }
         self.collectors.clear();
         self.stop_process_sampler();
         if self.run_started && !self.run_finishing {
@@ -416,7 +497,7 @@ impl Drop for Session {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, target_os = "linux"))]
 #[path = "../tests/unit/measurement_lifecycle_faults.rs"]
 mod lifecycle_fault_tests;
 
@@ -905,15 +986,35 @@ impl Session {
                 !execution_only || collector.adapter.stop_at_execution_end()
             });
         self.collectors = remaining;
+        let deadline = Instant::now()
+            + collectors
+                .iter()
+                .map(|collector| collector.producer.stop_budget())
+                .max()
+                .unwrap_or_default();
+        for collector in &collectors {
+            collector.producer.request_stop();
+        }
         for mut collector in collectors {
-            let mut completion = collector.producer.stop();
-            if completion.capture_complete && !collector.adapter.accepts_termination(&collector.name, completion.exit) {
+            let mut completion = collector.producer.stop_before(deadline);
+            if completion.capture_complete
+                && !collector
+                    .adapter
+                    .accepts_termination(&collector.name, completion.exit)
+            {
                 completion.capture_complete = false;
-                completion.error = Some(format!("collector principal terminated unexpectedly: {:?}", completion.exit));
+                completion.error = Some(format!(
+                    "collector principal terminated unexpectedly: {:?}",
+                    completion.exit
+                ));
             }
             if let Some(error) = &completion.error {
-                errors.push(format!("cannot finish {} collector: {error}", collector.name));
-                self.incomplete_collectors.insert(collector.name.clone(), error.clone());
+                errors.push(format!(
+                    "cannot finish {} collector: {error}",
+                    collector.name
+                ));
+                self.incomplete_collectors
+                    .insert(collector.name.clone(), error.clone());
             }
             let elapsed_ms = finished_at.duration_since(collector.started).as_millis();
             self.stopped_collectors.push(StoppedCollector {
@@ -941,7 +1042,9 @@ impl Session {
         {
             // Admission owns exact source handles, not post-exit pathnames.
             let captures = &mut collector.captures;
-            let producer_incomplete = self.incomplete_collectors.contains_key(&collector.name);
+            let producer_incomplete = self.incomplete_collectors.contains_key(&collector.name)
+                || !completion.capture_complete
+                || completion.guardian_cleanup_confirmed == Some(false);
             let mut read_failed = producer_incomplete;
             // An unfinished worker can still own these exact writer handles.
             // Neither freeze nor parse that evidence as a stopped capture.
@@ -1080,6 +1183,7 @@ impl Session {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn command(&self, name: &str) -> Command {
         let executable = self.executable(name);
         if self.sudo_collectors.contains(name) {
@@ -1090,13 +1194,18 @@ impl Session {
         Command::new(executable)
     }
 
-    pub(crate) fn collector_command(&self, name: &str) -> Result<(Command, crate::launch::CommandRoute), String> {
+    pub(crate) fn collector_command(
+        &self,
+        name: &str,
+    ) -> Result<(Command, crate::launch::CommandRoute), String> {
         let executable = self.executable(name);
         let mut launch = if self.sudo_collectors.contains(name) {
             let mut launch = crate::launch::ProcessLaunch::new("sudo");
             launch.arg("-n").arg("--").arg(executable);
             launch
-        } else { crate::launch::ProcessLaunch::new(executable) };
+        } else {
+            crate::launch::ProcessLaunch::new(executable)
+        };
         producer::command(&mut launch)
     }
 
@@ -1114,7 +1223,6 @@ impl Session {
         }
         PathBuf::from(tool_binary_name(name))
     }
-
 }
 
 fn check_measurement_directory(dir: &Path) -> Result<(), String> {
@@ -1745,11 +1853,17 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn execution_end_finalizes_only_scoped_collectors_before_grading() {
         use crate::collectors::CollectorAdapter;
         struct Fixture(bool);
         impl collectors::CollectorAdapter for Fixture {
+            fn producer_policy(&self, _: &str) -> ProducerPolicy {
+                ProducerPolicy {
+                    stream_bytes: 1024 * 1024,
+                    graceful: Some(Duration::from_secs(1)),
+                }
+            }
             fn id(&self) -> &'static str {
                 if self.0 {
                     "execution-fixture"
@@ -1799,25 +1913,19 @@ mod tests {
                     .unwrap()
                     .write_all(b"bounded fixture counter\n")
                     .unwrap();
-                session.collectors.push(Collector {
-                    name: adapter.id().into(),
-                    adapter,
-                    child: Command::new("sleep").arg("86400").spawn().unwrap(),
-                    started: Instant::now(),
-                    captures,
-                });
+                session
+                    .collectors
+                    .push(Collector::fixture(adapter.id(), adapter, captures));
             }
             session.event(end).unwrap();
             assert_eq!(session.collectors.len(), 1);
-            assert!(session.collectors[0].child.try_wait().unwrap().is_none());
+            assert!(session.collectors[0].producer.poll().unwrap().is_none());
             assert_eq!(session.stopped_collectors.len(), 1);
-            assert!(
+            assert_eq!(
                 session.stopped_collectors[0]
-                    .collector
-                    .child
-                    .try_wait()
-                    .unwrap()
-                    .is_some()
+                    .completion
+                    .guardian_cleanup_confirmed,
+                Some(true)
             );
             assert!(!dir.join("execution-fixture.json").exists());
             assert!(!dir.join("whole-run-fixture.json").exists());
@@ -1855,10 +1963,16 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn failing_optional_collector_processing_does_not_preempt_grading() {
         struct Failing;
         impl collectors::CollectorAdapter for Failing {
+            fn producer_policy(&self, _: &str) -> ProducerPolicy {
+                ProducerPolicy {
+                    stream_bytes: 1024 * 1024,
+                    graceful: Some(Duration::from_secs(1)),
+                }
+            }
             fn id(&self) -> &'static str {
                 "failing-export"
             }
@@ -1890,25 +2004,19 @@ mod tests {
             .unwrap()
             .write_all(b"bounded counter\n")
             .unwrap();
-        session.collectors.push(Collector {
-            name: "failing-export".into(),
-            adapter: &FAILING,
-            child: Command::new("sleep").arg("86400").spawn().unwrap(),
-            started: Instant::now(),
-            captures,
-        });
+        session
+            .collectors
+            .push(Collector::fixture("failing-export", &FAILING, captures));
         session
             .event(collectors::LifecycleEvent::AgentExecuteEnd)
             .unwrap();
         assert!(!dir.join("failing-export.json").exists());
         assert!(session.collectors.is_empty());
-        assert!(
+        assert_eq!(
             session.stopped_collectors[0]
-                .collector
-                .child
-                .try_wait()
-                .unwrap()
-                .is_some()
+                .completion
+                .guardian_cleanup_confirmed,
+            Some(true)
         );
         // Evaluation can complete before the intentionally failing export is
         // even invoked. Its report must fail honestly, not erase that grade.

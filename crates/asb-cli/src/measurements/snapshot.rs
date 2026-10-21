@@ -74,8 +74,15 @@ impl ProcessTreeSnapshot {
             handle: Some(handle),
         })
     }
+    #[cfg(test)]
     pub(super) fn stop(mut self) -> Result<(), String> {
         self.settle()
+    }
+    pub(super) fn request_stop(&self) {
+        self.stop.store(true, Ordering::Release);
+    }
+    pub(super) fn stop_before(mut self, deadline: Instant) -> Result<(), String> {
+        self.settle_before(deadline)
     }
     #[cfg(test)]
     pub(super) fn is_finished(&self) -> bool {
@@ -84,11 +91,13 @@ impl ProcessTreeSnapshot {
             .is_none_or(|handle| handle.is_finished())
     }
     fn settle(&mut self) -> Result<(), String> {
-        self.stop.store(true, Ordering::Release);
+        self.settle_before(Instant::now() + Duration::from_secs(6))
+    }
+    fn settle_before(&mut self, deadline: Instant) -> Result<(), String> {
+        self.request_stop();
         let Some(handle) = self.handle.take() else {
             return Ok(());
         };
-        let deadline = Instant::now() + Duration::from_secs(6);
         while !handle.is_finished() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(5));
         }

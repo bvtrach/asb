@@ -23,7 +23,6 @@ fn capture_creation_failure_precedes_any_sampler_or_lifecycle_child() {
         .unwrap_err();
     assert!(error.contains("cannot create owned raw capture"), "{error}");
     assert!(session.collectors.is_empty());
-    assert!(session.process_tree_snapshots.is_empty());
     assert_eq!(
         fs::read_to_string(&sentinel).unwrap(),
         "previous capture sentinel"

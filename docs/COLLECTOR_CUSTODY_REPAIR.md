@@ -4,7 +4,7 @@ This is the class-35 design, observed-red evidence and partial implementation,
 based on publication source `f8139463`. No complete qualification, PR or release is claimed.
 The retained version remains 0.2.32 until its later reviewed stack integration.
 
-## Confirmed current gaps
+## Confirmed gaps at the original design baseline
 
 - `ProcessTreeSnapshot` calls `Command::output`, with no deadline or output bound,
   then unconditionally joins that worker. A stopped benchmark cannot interrupt
@@ -236,3 +236,52 @@ off), with all test handles now terminal. This is not full class qualification:
 ordinary producer ownership/graceful concurrent draining, snapshot placeholder
 removal and bounded Perfetto readiness still require coherent implementation,
 new focused source review and later full/hosted/package/post-merge gates.
+
+## Ordinary producer migration checkpoint (not full qualification)
+
+The preserved WIP `33833221` is followed by an owned process producer using the
+typed launch route, optional principal-control guardian, simultaneous bounded
+stdout/stderr pumping and adapter-supplied stream/grace limits. Snapshots are
+actual producer variants, not sleeping placeholder processes or invented exit
+statuses. Session stop broadcasts cancellation to every selected sibling before
+joining under one shared absolute budget. Unknown cleanup retains the existing
+worker rather than creating another one or releasing its guardian.
+
+Raw files, pipe handles, guardian and optional generic dependency lease live
+outside the pump unwind scope. Perfetto supplies its service lease through this
+generic interface; no collector ID is inspected centrally. On read/write/panic
+failure, the worker requests fixed guardian cancellation and retains these
+resources until actual matching quiescence, with bounded backoff. Failure-only
+pipe draining prevents guardian diagnostics from hitting prematurely closed
+pipes; it never validates a discarded prefix. Parent timeout remains unknown
+even after later worker settlement. Incomplete captures are never frozen,
+parsed or consumed; independent grades and sibling publication remain intact.
+
+Perfetto startup observes retained readiness bytes with bounded polling instead
+of a detached blocking reader. Existing service/tracefs policy is unchanged.
+Typed pre-admission executable lookup preserves optional missing-tool behavior;
+failed readiness or an exec race after lookup remain real failures. An exec
+failure has no fabricated principal exit and retains its bounded diagnostics.
+
+Actual offline focused evidence at this checkpoint: measurements **87/0/0**,
+collectors **123/0/5** (the five existing opt-in fixture skips), guardian protocol
+**23/0/0**, strict all-target/all-feature Clippy passed. The actual ASB binary was
+built first and remained at SHA-256
+`647cf4bb06628a8613bd37a4ca28bf6081c087cd4a91e5dbcbeb112ea0d8f8e2`.
+Logs use `target/collector35-migration-*`: actual build eighth, measurements
+fourth, collectors third, gate second and Clippy first. Earlier failed build,
+producer, adapter and protocol transcripts are preserved. New actual cases
+include 192 KiB flush per pipe, dev-full/read/panic dependency retention past a
+30 ms parent wait, actual grace expiry without fault hooks, invalid admission,
+exec removal after precheck and unrelated-process survival. The duplicate-control
+fixture now waits under a fixed deadline for actual BrokenPipe after owner drop,
+instead of assuming immediate EOF despite concurrent fork/exec descriptor copies.
+
+This is an intermediate source checkpoint: normal deliberate perf SIGINT exit
+compatibility still needs the owning adapter's explicit validated-data contract.
+Upstream perf can flush and then restore/re-raise SIGINT; simply rejecting all
+signal exits would regress normal use. No full suite, PR, push, release or final
+class claim is authorized yet. Further preflight/postprocessor subprocesses,
+platform qualification and integration with newer main remain separate review
+obligations. The file-syscall policy bounds caller settlement and retains an
+uncertain worker; it does not invent a hard deadline on kernel file writes.

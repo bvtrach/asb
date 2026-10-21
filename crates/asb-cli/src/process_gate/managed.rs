@@ -209,6 +209,24 @@ impl ManagedGate {
         self.stop_before(Instant::now() + CLEANUP)
     }
 
+    /// Request cancellation without surrendering proof-aware custody. Only an
+    /// established current-ABI guardian may receive this fixed protocol signal.
+    /// The caller must retain this gate until `try_wait` confirms quiescence.
+    pub(crate) fn request_cancel(&mut self) -> io::Result<()> {
+        if self.complete.is_some() || self.observed.is_some() {
+            return Ok(());
+        }
+        if !self.admitted {
+            self.wait_stopped()?;
+        }
+        for signal in [libc::SIGTERM, libc::SIGCONT] {
+            if unsafe { libc::kill(self.id() as i32, signal) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(())
+    }
+
     /// A request acknowledgement is not completion. Callers still need the
     /// existing guardian exit plus quiescence proof before parsing captures.
     pub(crate) fn interrupt_principal(&mut self, deadline: Instant) -> io::Result<()> {

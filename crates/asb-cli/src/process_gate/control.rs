@@ -345,7 +345,23 @@ mod tests {
         parent.write_all(&request).unwrap();
         assert!(child.take_interrupt().is_err());
         drop(parent);
-        assert!(child.take_interrupt().is_err());
+        // Parallel process fixtures can briefly inherit a writer between fork
+        // and exec despite CLOEXEC. Require actual owner-channel EOF within a
+        // fixed bound, not an immediate scheduler-dependent observation.
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            match child.take_interrupt() {
+                Err(error) => {
+                    assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+                    break;
+                }
+                Ok(false) => {
+                    assert!(Instant::now() < deadline, "owner channel did not close");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok(true) => panic!("owner loss admitted another interruption"),
+            }
+        }
     }
     #[test]
     fn elapsed_write_budget_and_truncated_reply_are_not_success() {
