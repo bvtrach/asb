@@ -673,7 +673,14 @@ The first frozen-binary owned Docker qualification passed in 170.273 seconds
 fixtures normalized equally, source mutation changed identity, and independent
 equal copies differed from shared regular/symlink inodes. A subsequent lifecycle
 repair invalidates stale coverage after failed sampling; its new frozen binary
-`788b25ad...` is undergoing final alias and nested-view qualification. These
+`788b25adb9a1b692ba2bf97a4175f7dddb6e1874539ab89dff7e75b3dfe4bb3d`
+passed both final alias and nested-view qualifications in 331.252 seconds
+(`environment-material-84w3d476` and `environment-material-0v31d4z0`), with an
+unchanged executable hash. Hidden-from-every-view source mutation preserved
+identity, while material visible in either view changed it. The retained
+shared-view fixture's older generic bind flag is not evidence of disjoint
+sources; its named test and nested-view flag identify that scope, and subsequent
+fixture output labels disjoint sources only for the disjoint case. These
 checks start no agent, provider or grader; successful declared resources are
 removed and failed fixtures are stopped/preserved.
 
