@@ -2,7 +2,8 @@
 //!
 //! User paths are traversed through pinned O_PATH descriptors without following
 //! symlinks. Proc descriptor references reopen only already-verified regular
-//! inodes or directories. Numeric inode identities never leave this process.
+//! inodes or directories. Optional private bind witnesses authorize exact root
+//! identities; numeric inode identities never enter the returned observation.
 #![allow(unsafe_code)]
 
 use super::attributes::{self, stable};
@@ -38,6 +39,9 @@ struct Root {
     content_paths: Option<Vec<String>>,
     #[serde(default)]
     image_sha256: Option<String>,
+    /// Private source witness, checked in the guest but never hashed or returned.
+    #[serde(default)]
+    expected_identity: Option<[u64; 3]>,
 }
 
 impl Root {
@@ -561,6 +565,16 @@ fn observe(
         exclusions.insert(&root.name, declared);
         let pinned = locate_root(&root.path)?;
         let before = pinned.file.metadata().map_err(|_| invalid())?;
+        if root.expected_identity.is_some_and(|expected| {
+            expected
+                != [
+                    before.dev(),
+                    before.ino(),
+                    u64::from(before.mode() & libc::S_IFMT),
+                ]
+        }) {
+            return Err(invalid());
+        }
         let locator = pinned
             .parent
             .as_ref()
@@ -703,6 +717,7 @@ mod tests {
                         exclusions: vec![],
                         content_paths: None,
                         image_sha256: None,
+                        expected_identity: None,
                     })
                     .collect(),
             }

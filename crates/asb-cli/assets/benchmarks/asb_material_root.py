@@ -26,9 +26,40 @@ def capture(task, definition, exclusions, binary, deadline):
     def checked(arguments):
         return run([*command, *arguments], deadline=deadline, cancelled=cancelled)
 
+    from asb_material_binds import beneath, verify as verify_binds
+    from asb_material_mounts import plan as mount_plan, targets, require_local_kernel
+    kernel_identity = None
+
+    def mounted(validate_kernel=True):
+        from asb_resources import owned_resource, RecoveryError
+        mounts = targets(container.attrs,RUNTIME)
+        binds, volumes = {}, {}
+        if any(item["Type"] == "bind" for item in mounts):
+            if validate_kernel:
+                if kernel_identity is None:
+                    raise MaterialError("prepared bind topology changed before local daemon verification")
+                require_local_kernel(container.attrs,kernel_identity)
+            binds = verify_binds(task.journal,container)
+        for item in mounts:
+            if item["Type"] != "volume":
+                continue
+            matches = [entry for entry in task.journal.record["resources"]
+                if entry.get("kind") == "volumes" and entry.get("name") == item.get("Name")]
+            if len(matches) != 1:
+                raise MaterialError("prepared mounted volume is not declared by its task owner")
+            check()
+            try:
+                volume = owned_resource(task.client,matches[0],task.journal.labels)
+            except RecoveryError:
+                raise MaterialError("prepared mounted volume ownership changed") from None
+            check()
+            if volume is None:
+                raise MaterialError("prepared mounted volume disappeared")
+            volumes[item["Name"]] = volume.attrs
+        return mount_plan(container.attrs,binds,volumes,RUNTIME)
+
     check(); container.reload(); check()
-    if container.attrs.get("Mounts") != []:
-        raise MaterialError("mounted root material still requires explicit topology coverage")
+    initial_mounts = mounted(False)
     state = getattr(task, "_material_runtime", None)
     if state is None:
         # Both ancestors and destination are checked before the first write.
@@ -67,43 +98,58 @@ def capture(task, definition, exclusions, binary, deadline):
         workdir = "/"
     if not workdir.startswith("/") or (workdir != "/" and path_name(workdir[1:]) != workdir[1:]):
         raise MaterialError("prepared material workspace is invalid")
-    hidden = sorted({*RUNTIME_ROOTS, *RUNTIME_FILES, RUNTIME,
-        *(workdir.rstrip("/")+"/"+path_name(name) for name in exclusions)})
-
-    def excluded(path):
-        return any(path == name or path.startswith(name+"/") for name in hidden)
+    policy = [workdir.rstrip("/")+"/"+path_name(name) for name in exclusions]
 
     def snapshot():
         check(); container.reload(); check()
-        if container.attrs.get("Mounts") != []:
-            raise MaterialError("prepared root mount coverage changed")
+        topology = mounted()
+        hidden = sorted({*RUNTIME_ROOTS, *RUNTIME_FILES, RUNTIME, *policy,
+            *(item["target"] for item in topology["mounts"])})
         image = container.image
         check(); image.reload(); check()
         anchor = image_digest(image.attrs, container.attrs.get("Config", {}))
-        changes = [[path, kind] for path, kind in change_inventory(container.diff()) if not excluded(path)]
+        changes = [[path, kind] for path, kind in change_inventory(container.diff())
+            if not any(beneath(path,name) for name in hidden)]
         check()
-        return anchor, changes
+        return {"image":anchor,"changes":changes,"topology":topology,"hidden":hidden}
 
     rounds = []
     for _ in range(2):
         verify_runtime()
+        if kernel_identity is None and any(item["kind"] == "bind" for item in initial_mounts["mounts"]):
+            kernel_identity = checked(["/bin/sh","-c",'exec /opt/asb-runtime/asb __asb-target "$$"'])
         before = snapshot()
-        roots = [{"name":"filesystem", "path":"/", "image_sha256":before[0],
-            "content_paths":[path[1:] for path, kind in before[1] if kind != 2],
-            "exclusions":[name[1:] for name in hidden]},
-            {"name":"shared-memory", "path":"/dev/shm"}]
+        roots = [{"name":"filesystem", "path":"/", "image_sha256":before["image"],
+            "content_paths":[path[1:] for path, kind in before["changes"] if kind != 2],
+            "exclusions":[name[1:] for name in before["hidden"]]}]
+        for root in before["topology"]["roots"]:
+            root = dict(root,exclusions=list(root.get("exclusions",[])))
+            if any(item["kind"] == "bind" and item["target"] == root["path"]
+                    for item in before["topology"]["mounts"]):
+                # Same-kernel evidence alone does not prove the daemon's mount
+                # namespace resolves Source like the controller. The guest's
+                # pinned census root must match the pre-creation source inode.
+                root["expected_identity"] = verify_binds(task.journal,container)[root["path"]]["chain"][-1]
+            for path in policy:
+                if beneath(root["path"],path):
+                    raise MaterialError("semantic material exclusion hides a mounted root")
+                if beneath(path,root["path"]):
+                    root["exclusions"].append(path[len(root["path"].rstrip("/"))+1:])
+            roots.append(root)
         result = observe([*command, RUNTIME+"/asb", "__asb-material"], roots,
             deadline=min(deadline, time.monotonic()+90), cancelled=cancelled)
         after = snapshot()
         verify_runtime()
         if before != after:
             raise MaterialError("prepared image or change inventory changed during root observation")
-        rounds.append({"image_sha256":before[0], "changes":before[1], "files":result})
+        topology = {key:value for key,value in before["topology"].items() if key != "raw_sha256"}
+        rounds.append({"image_sha256":before["image"], "changes":before["changes"],
+            "topology":topology,"files":result})
     if rounds[0] != rounds[1]:
         raise MaterialError("prepared filesystem changed between complete root observations")
     # Helper staging is instrumentation, not workload content. Its implementation
     # is the versioned observation protocol; root exclusions are exact.
-    sha256 = canonical_digest({"scope":"single-owned-container-root-v1", "definition":definition,
+    sha256 = canonical_digest({"scope":"single-owned-container-root-mounts-v2", "definition":definition,
         "runtime_exclusions":[*RUNTIME_ROOTS, *RUNTIME_FILES], "instrumentation_root":RUNTIME,
         "observation":rounds[0]}, "asb-prepared-workload-material-v1")
     return {"schema_version":1, "scope":"prepared-workload-material-v1", "sha256":sha256}

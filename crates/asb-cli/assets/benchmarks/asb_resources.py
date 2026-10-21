@@ -157,6 +157,9 @@ class ResourceJournal:
                 if resource.get("external"):
                     raise RecoveryError("cannot journal an external task resource")
                 resource.setdefault("labels", {}).update(self.declare(kind, resource["name"]))
+        from asb_material_binds import declare
+        self.material_binds = declare(self.directory,configuration,self.record)
+        publish(self.directory,"material-binds.json",self.material_binds)
         return configuration
 
     def cleanup_images(self, client):

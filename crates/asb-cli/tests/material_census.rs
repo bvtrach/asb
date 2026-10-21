@@ -74,6 +74,33 @@ fn private_census_returns_only_bounded_observations_without_files_or_provider_se
 }
 
 #[test]
+fn private_root_witness_authorizes_exact_inode_without_changing_public_identity() {
+    use std::os::unix::fs::MetadataExt;
+    let fixture = Fixture::new();
+    fs::write(fixture.0.join("input"), b"fixture").unwrap();
+    let metadata = fs::symlink_metadata(&fixture.0).unwrap();
+    let baseline = invoke(fixture.request().to_string().as_bytes(), &[]);
+    assert!(baseline.status.success());
+    let mut request = fixture.request();
+    request["roots"][0]["expected_identity"] = json!([
+        metadata.dev(),
+        metadata.ino(),
+        metadata.mode() & libc::S_IFMT
+    ]);
+    let matching = invoke(request.to_string().as_bytes(), &[]);
+    assert!(matching.status.success(), "{matching:?}");
+    assert_eq!(baseline.stdout, matching.stdout);
+    for field in 0..3 {
+        let mut wrong = request.clone();
+        wrong["roots"][0]["expected_identity"][field] = json!(0);
+        let rejected = invoke(wrong.to_string().as_bytes(), &[]);
+        assert!(!rejected.status.success());
+        assert!(rejected.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&rejected.stderr).contains(fixture.0.to_str().unwrap()));
+    }
+}
+
+#[test]
 fn malformed_oversized_or_unknown_requests_never_echo_input_or_paths() {
     let fixture = Fixture::new();
     let mut unknown = fixture.request();

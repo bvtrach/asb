@@ -1,6 +1,11 @@
 //! Provider-free tests of the upstream workload protocol's pure data layer.
 
 #[test]
+fn mounted_material_topology_uses_owned_inputs_and_global_guest_roots() {
+    python_protocol("benchmark_material_mounts.py");
+}
+
+#[test]
 fn owned_root_material_composes_complete_rounds_without_definition_fallbacks() {
     python_protocol("benchmark_material_root.py");
 }

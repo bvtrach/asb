@@ -62,7 +62,7 @@ class RootTests(unittest.TestCase):
         self.assertEqual(roots[0]["path"],"/")
         self.assertEqual(roots[0]["content_paths"],["outside/workdir"])
         self.assertIn("task/.git/index",roots[0]["exclusions"])
-        self.assertEqual(roots[1],{"name":"shared-memory","path":"/dev/shm"})
+        self.assertEqual(roots[1],{"name":"shared-memory","path":"/dev/shm","exclusions":[]})
         self.assertEqual((staged,uploaded),(9,1))
         repeated,_,staged,uploaded = self.capture(task)
         self.assertEqual(result,repeated)
@@ -78,6 +78,21 @@ class RootTests(unittest.TestCase):
         with self.assertRaisesRegex(MaterialError,"between complete root"):
             self.capture(self.fixture(),[{"sha256":"a"*64},{"sha256":"b"*64}])
 
+    def test_bind_source_witness_is_sent_privately_to_each_guest_census(self):
+        task = self.fixture()
+        task.journal = SimpleNamespace()
+        task.workspace.container.attrs["Mounts"] = [{"Type":"bind","Source":"/owned/input",
+            "Destination":"/input","RW":True,"Mode":"","Propagation":"rprivate"}]
+        declaration = {"/input":{"source":"/owned/input","chain":[[12,34,16384]]}}
+        with patch("asb_material_binds.verify",return_value=declaration), \
+             patch("asb_material_mounts.require_local_kernel") as local:
+            result,calls,_,_ = self.capture(task)
+        self.assertEqual(local.call_count,4)
+        for call in calls:
+            root = next(root for root in call.args[1] if root["path"] == "/input")
+            self.assertEqual(root["expected_identity"],[12,34,16384])
+        self.assertEqual(set(result),{"schema_version","scope","sha256"})
+
     def test_inventory_change_and_unsupported_mounts_never_fall_back(self):
         task = self.fixture()
         counter = [0]
@@ -90,7 +105,7 @@ class RootTests(unittest.TestCase):
         task = self.fixture()
         task.workspace.container.attrs["Mounts"] = [{"Destination":"/task"}]
         with patch.object(subject,"run") as run:
-            with self.assertRaisesRegex(MaterialError,"topology coverage"):
+            with self.assertRaises(MaterialError):
                 self.capture(task)
             run.assert_not_called()
 
@@ -104,6 +119,18 @@ class RootTests(unittest.TestCase):
         task._material_runtime = {"container":"another-container","binary":"/private/asb"}
         with self.assertRaisesRegex(MaterialError,"ownership changed"):
             self.capture(task)
+
+    def test_actual_tmpfs_and_nested_mounts_join_the_same_root_observation(self):
+        task = self.fixture()
+        task.workspace.container.attrs["HostConfig"] = {"IpcMode":"private","ShmSize":67108864,
+            "Tmpfs":{"/scratch":"size=1m","/scratch/child":"size=2m"}}
+        first,calls,_,_ = self.capture(task)
+        roots = calls[0].args[1]
+        self.assertEqual([root["path"] for root in roots],["/","/scratch","/scratch/child","/dev/shm"])
+        self.assertEqual(roots[1]["exclusions"],["child"])
+        self.assertIn("scratch",roots[0]["exclusions"])
+        task.workspace.container.attrs["HostConfig"]["Tmpfs"]["/scratch"] = "size=3m"
+        self.assertNotEqual(first,self.capture(task)[0])
 
     def test_reuse_verifies_bytes_modes_and_no_extra_entries_before_execution(self):
         task = self.fixture()

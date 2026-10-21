@@ -1974,6 +1974,7 @@ classDiagram
         -exclusions: Vec~String~
         -content_paths: Option~Vec<String>~
         -image_sha256: Option~String~
+        -expected_identity: Option~[u64; 3]~
         +selected(relative: &str) bool
     }
     class C260["workloads_Session"] {

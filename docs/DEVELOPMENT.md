@@ -1,5 +1,16 @@
 # Development
 
+`benchmark_live_material_mounts.py` is an opt-in mounted-root qualification.
+Set `ASB_TEST_MATERIAL_IMAGE` to an already cached Linux image ID,
+`ASB_TEST_BENCHMARK_ASB` to the built binary and `ASB_TEST_SWECATALOG_ROOT` to
+an existing project artifact parent; run with the installed Docker SDK Python.
+It creates two journal-owned containers with local binds, a named volume and
+both tmpfs option forms, checks stable fresh material and volume mutation,
+then removes only successful owned fixtures. Failed fixtures are stopped and
+preserved for inspection. No image download, provider, agent or evaluator runs.
+Do not rebuild the selected binary while qualification is running. This checks
+single-container mount composition, not multiple services or complete networks.
+
 Keep the project small and offline-buildable after dependencies are installed.
 New behavior belongs in one of the three CLI modules and should preserve the
 existing `setup` and `run` command forms.

@@ -210,6 +210,37 @@ Ordinary regressions cover mixed full/selective hardlinks in either root order,
 exact directory and symlink selectors and deterministic replacement between walk
 and deferred read. No timing sleeps or privileged fixtures are needed.
 
+## Single-container mounted material
+
+The root composer now declares full-content roots for owned local volumes,
+private tmpfs (both Docker option representations), and attempt-local binds.
+Nested roots exclude descendants from parent walks. A single guest census
+observes all roots together, retaining cross-root inode equivalence. Canonical
+storage groups distinguish even disjoint subpaths of shared versus independent
+volumes; overlap edges preserve parent/subdirectory aliasing. Mount access,
+propagation, subpath and tmpfs options enter the identity, while generated source
+paths, volume names and numeric inode values do not.
+
+Bind declarations pin nofollow ancestor/source inode identities before container
+creation. Capture checks the durable declaration and a local-kernel/container
+mapping, then requires the actual guest census root to match the source's
+device/inode/type. Same-kernel locality alone does not establish source namespace
+authority. Private expected identities authorize traversal but neither change
+the public content digest nor appear in its output. Volume inspection requires
+the exact declared resource name and ownership labels on every snapshot.
+
+Two complete environment rounds compare topology, image/change inventory and
+all observed roots. This is bounded observation, not an atomic snapshot or proof
+against concurrent malicious writers. The opt-in
+`benchmark_live_material_mounts.py` exercises two fresh owned mounted fixtures,
+repeat observations and a volume mutation. Local qualification passed against a
+cached original SWE-bench image: both independently created fixtures produced
+the same identity, repeated observations were stable, and changing a writable
+volume changed that identity. Both successful fixtures removed only their owned
+containers/volumes. No agent, provider or evaluator ran. This representative
+qualification does not cover multi-service/network composition or complete
+runtime equivalence, which remain separate unfinished work.
+
 ## Implemented native repeated execution
 
 Explicit repetition, including `--repeat 1`, allocates a new project-local
@@ -244,7 +275,7 @@ not sweep resume receipts or permission to retry started attempts.
   ownership labels and attempt tags differ per execution, so raw source-build
   image IDs cannot by themselves represent stable material equality. Stable
   definition/content identity must remain distinct from actual-image provenance.
-  Extend root integration to declared mounts, multiple services and complete
+  Qualify declared mount integration, then extend to multiple services and complete
   runtime/network topology, then qualify real installed
   SDK environments. Do not replace missing coverage with definition-only hashes.
 - Integrate durable recording journals and saved bundle replay selections with
