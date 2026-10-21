@@ -150,7 +150,8 @@ def guest(scenario="normal"):
             (root / f"invocation-{index}.stderr").write_bytes(stderr)
             if scenario == "publication" and index == 0:
                 assert child.returncode != 0, "publication blocker must fail"
-                assert not (run / "mini-swe/trajectory.json").exists(), "owned settlement attempted before failed publication"
+                raw = json.loads((run / "mini-swe/trajectory.json").read_text())
+                assert raw["info"]["model_stats"]["api_calls"] == 4, "failed publication must retain raw evidence"
                 return
             assert child.returncode == 0, stderr
             records.append(json.loads((run / "agent-result.json").read_text()))

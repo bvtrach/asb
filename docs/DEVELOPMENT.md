@@ -58,12 +58,33 @@ confirmed process quiescence. Native execution uses only the embedded loopback
 replay; guest execution uses an inert local client, never a container/provider.
 `cargo test --locked --offline --lib agents::artifacts` checks single bounded
 snapshots, namespace collisions, file/symlink/in-place replacements, absent-then-
-created files, explicit settlement failure and unwind cleanup. Shared identity
+created files, explicit settlement failure and unwind cleanup. Deterministic
+per-owner unit hooks replace the namespace after its pathname check but before
+the relative open, and replace the source after its identity check but before
+the custody move. Both regular and symlink replacements retain foreign bytes;
+the hooks do not exist in production builds. Frozen evidence survives publication
+unwind. `agents::driver::artifact_publication_tests` uses the actual OS publisher
+with first/final write blockers: first failure retains raw JSON, final failure
+retains the durable pending record and its answer/steps/quiescence facts. This
+publisher unit seam is not an original-SDK retained-service qualification.
+The actual guest-entry first-publication fixture also verifies retained raw JSON.
+Production managed-transport seams separately admit one fake grader callback for
+pending/failed ancillary scratch status with matching retained owner evidence,
+and none for missing first metadata. The non-retained guest fallback confirms
+reset before one fake grader callback and never fabricates answer/usage. These
+are deterministic admission seams, not original-SDK or installed-client claims.
+Shared identity
 decision tests reject unknown and mismatched IDs, including high 128-bit changes.
 Windows handle identity is source-only qualification here; identity-unavailable
 hosts retain isolated evidence with a diagnostic instead of guessing deletion
 ownership or disabling execution. Build the current ASB binary before focused
 actual-entry tests and never relink while they are running.
+The ownership-window follow-up passed 61 adapter tests (including the snapshot,
+custody-window and OS-publisher seams), the exact adapter-layout guard, actual
+artifact/guest/completion tests, the existing 24 protocol harness tests, the
+updated 21 execution and 10 guest Python cases, strict all-target/all-feature
+Clippy and formatting. This old-base checkpoint has no full-suite or integrated
+current-main qualification yet; Windows remains source-qualified only.
 `cargo test --locked --offline --test tui_install` exercises the actual ASB
 install helper and real terminal backend with local fake npm/node executables.
 Closing the backend's output pipe forces EPIPE while the input PTY stays open:

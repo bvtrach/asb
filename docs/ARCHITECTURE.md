@@ -770,18 +770,36 @@ branch for file answers. After execution, each bounded regular JSON file is
 opened without following symlinks and frozen once. Answer, usage and steps use
 that same document rather than independently refreshing a workspace pathname.
 Existing workspace trajectories are neither interpreted nor deleted.
-Explicit consuming scratch settlement checks namespace/file identity and frozen
-size/time observations before removal. Replacements, symlinks and changed files
-are retained with a fixed diagnostic. This is checked attempt ownership after
-owned process settlement, not an atomic conditional-unlink security sandbox
-against a hostile external writer racing the final check. Unwinding retains a
-best-effort guard; explicit failed settlement is never retried by Drop.
+The namespace handle stays pinned from preparation. Unix `openat` and Windows
+rooted `NtCreateFile` resolve the child relative to that handle, not a second
+full-path traversal after checking the namespace. Explicit consuming scratch
+settlement checks file identity and frozen size/time observations. On Unix it
+atomically moves the source entry into a create-new, owner-only custody directory
+before rechecking and unlinking the custody entry; a replacement in the source
+check-to-move window is retained there, never deleted. Windows disposition acts
+on the checked open file handle. Replaced namespace paths and foreign source
+entries are never path-deleted. Empty private namespaces/custody directories can
+remain intentionally. This is normal concurrency protection, not an atomic
+conditional-unlink sandbox against a hostile same-UID actor invading the private
+custody directory itself. Fixed per-artifact reasons identify only declared
+namespace/filename and failure class, never file contents or raw OS/JSON errors.
+Malformed/oversized/unreadable snapshots are retained. Before freezing, unwind
+has a best-effort guard; after freezing, unwind retains evidence for inspection.
+Explicit failed settlement is never retried by Drop, which never prints.
 Scratch retention is ancillary run failure, not unconfirmed workload/container
 quiescence: official grading and independent workload/provider cleanup and
 publication still run once. Guest metadata carries a separate optional artifact
 diagnostic while retaining the existing process/namespace ownership facts.
+Guest publication first synchronizes a usable result marked scratch-settlement
+pending, then consumes settlement and publishes its final ancillary status.
+Failed first publication retains raw source. Failed final publication leaves
+the honest pending result available for grading; it never asserts cleanup.
+These two publications are not a multi-file transaction. A retained-service
+workload still requires the existing durable result/owner/READY authorization;
+missing first publication does not fabricate that authority.
 Unix file identity is qualified with offline fixtures. Windows retains a
-handle-based volume/128-bit-file-ID implementation with reparse-point refusal;
+handle-based volume/128-bit-file-ID implementation with reparse-point refusal,
+root-relative access and handle-based disposition;
 its source is reviewed but Linux execution does not qualify Windows runtime.
 An identity-unavailable filesystem/platform still runs and freezes isolated
 evidence, but refuses destructive settlement and reports retained scratch.

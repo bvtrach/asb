@@ -14,8 +14,14 @@ pub(crate) struct ArtifactSpec {
 
 struct OwnedFile {
     path: PathBuf,
+    namespace: File,
     directory: Observation,
     observed: Option<Observation>,
+    retain: bool,
+    #[cfg(test)]
+    before_open: Option<Box<dyn FnOnce() + Send>>,
+    #[cfg(test)]
+    before_move: Option<Box<dyn FnOnce() + Send>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -121,16 +127,21 @@ pub(crate) struct ArtifactOwner {
 pub(crate) struct FrozenArtifacts {
     documents: BTreeMap<String, serde_json::Value>,
     pub error: bool,
+    diagnostics: Vec<String>,
 }
 impl FrozenArtifacts {
     pub fn document(&self, filename: &str) -> Option<&serde_json::Value> {
         self.documents.get(filename)
+    }
+    pub fn diagnostic(&self) -> Option<String> {
+        (!self.diagnostics.is_empty()).then(|| self.diagnostics.join("; "))
     }
     #[cfg(test)]
     pub(crate) fn for_test(filename: &str, value: serde_json::Value) -> Self {
         Self {
             documents: [(filename.into(), value)].into_iter().collect(),
             error: false,
+            diagnostics: Vec::new(),
         }
     }
 }
@@ -152,10 +163,26 @@ fn unchanged(a: &Observation, b: &Observation) -> bool {
 }
 
 impl ArtifactOwner {
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
     pub fn prepare(run_dir: &Path, specs: &[ArtifactSpec]) -> Result<Self, crate::Error> {
+        assert!(specs.len() <= 16);
         let mut owner = Self::default();
         for spec in specs {
-            assert!(!spec.namespace.contains(['/', '\\']) && !spec.filename.contains(['/', '\\']));
+            for component in [spec.namespace, spec.filename] {
+                assert!(
+                    !component.is_empty()
+                        && component.len() <= 128
+                        && component != "."
+                        && component != ".."
+                );
+                assert!(
+                    component
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+                );
+            }
             fs::create_dir_all(run_dir).map_err(crate::io_error)?;
             let directory = run_dir.join(spec.namespace);
             let mut builder = fs::DirBuilder::new();
@@ -170,13 +197,18 @@ impl ArtifactOwner {
                         .into(),
                 )
             })?;
-            let metadata =
-                Observation::read(&open_regular_or_directory(&directory).map_err(crate::io_error)?)
-                    .map_err(crate::io_error)?;
+            let namespace = open_regular_or_directory(&directory).map_err(crate::io_error)?;
+            let metadata = Observation::read(&namespace).map_err(crate::io_error)?;
             owner.files.push(OwnedFile {
                 path: directory.join(spec.filename),
+                namespace,
                 directory: metadata,
                 observed: None,
+                retain: false,
+                #[cfg(test)]
+                before_open: None,
+                #[cfg(test)]
+                before_move: None,
             });
         }
         Ok(owner)
@@ -202,7 +234,11 @@ impl ArtifactOwner {
                 {
                     return Err(std::io::Error::other("artifact namespace replaced"));
                 }
-                let file = match open_regular_or_directory(&owned.path) {
+                #[cfg(test)]
+                if let Some(hook) = owned.before_open.take() {
+                    hook();
+                }
+                let file = match open_owned(owned, false) {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
                     other => other?,
                 };
@@ -227,7 +263,7 @@ impl ArtifactOwner {
                 }
                 serde_json::from_slice(&bytes)
                     .map(Some)
-                    .map_err(std::io::Error::other)
+                    .map_err(|_| std::io::Error::other("malformed artifact JSON"))
             })();
             match result {
                 Ok(Some(document)) => {
@@ -242,7 +278,20 @@ impl ArtifactOwner {
                     );
                 }
                 Ok(None) => (),
-                Err(_) => frozen.error = true,
+                Err(error) => {
+                    owned.retain = true;
+                    frozen.error = true;
+                    // Only locally selected fixed reasons cross this boundary;
+                    // OS errors and JSON contents are never included.
+                    let reason = match error.to_string().as_str() {
+                        "artifact namespace replaced" => "namespace replaced",
+                        "artifact exceeds bound" => "size bound exceeded",
+                        "artifact changed or exceeds bound" => "snapshot changed or exceeded bound",
+                        "malformed artifact JSON" => "malformed JSON",
+                        _ => "regular snapshot unavailable",
+                    };
+                    frozen.diagnostics.push(owned.diagnostic(reason));
+                }
             }
         }
         frozen
@@ -255,45 +304,65 @@ impl ArtifactOwner {
 
     fn settle_inner(&mut self) -> Result<(), String> {
         self.settled = true;
-        let mut failed = false;
-        for owned in &self.files {
+        let mut failures = Vec::new();
+        for owned in &mut self.files {
             let result = (|| {
+                if owned.retain {
+                    return Err(std::io::Error::other("snapshot unavailable"));
+                }
                 let parent = owned.path.parent().expect("artifact directory");
                 let directory = Observation::read(&open_regular_or_directory(parent)?)?;
                 if !directory.metadata.is_dir() || !same_identity(&directory, &owned.directory) {
                     return Err(std::io::Error::other("artifact directory changed"));
                 }
-                match open_regular_or_directory(&owned.path)
-                    .and_then(|file| Observation::read(&file))
+                match open_owned(owned, true)
+                    .and_then(|file| Observation::read(&file).map(|metadata| (file, metadata)))
                 {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-                    Ok(metadata)
+                    Ok((file, metadata))
                         if metadata.metadata.is_file()
                             && owned
                                 .observed
                                 .as_ref()
                                 .map_or(!self.frozen, |before| unchanged(before, &metadata)) =>
                     {
-                        fs::remove_file(&owned.path)?;
+                        #[cfg(test)]
+                        if let Some(hook) = owned.before_move.take() {
+                            hook();
+                        }
+                        dispose_child(owned, &file, &metadata)?;
                     }
                     _ => return Err(std::io::Error::other("foreign artifact retained")),
                 }
-                fs::remove_dir(parent)
+                // Do not path-delete the namespace: a replacement can arrive
+                // after any identity check. Empty private namespaces are retained.
+                Ok(())
             })();
-            failed |= result.is_err();
-        }
-        if failed {
-            Err(
-                if self
-                    .files
-                    .iter()
-                    .any(|file| file.directory.identity.is_none())
-                {
-                    "agent scratch settlement unavailable without stable file identity; isolated artifacts retained".into()
+            if let Err(error) = result {
+                let reason = if owned.directory.identity.is_none() {
+                    "scratch settlement failed: stable file identity unavailable"
                 } else {
-                    "agent scratch settlement failed; retained artifacts require inspection".into()
-                },
-            )
+                    match error.to_string().as_str() {
+                        "snapshot unavailable" => "scratch settlement failed: snapshot unavailable",
+                        "artifact directory changed" => {
+                            "scratch settlement failed: namespace changed"
+                        }
+                        "foreign artifact retained" => {
+                            "scratch settlement failed: file changed or nonregular"
+                        }
+                        "foreign artifact moved to custody; retained" => {
+                            "scratch settlement failed: raced replacement retained in custody"
+                        }
+                        _ => {
+                            "scratch settlement failed: ownership or filesystem operation unavailable"
+                        }
+                    }
+                };
+                failures.push(owned.diagnostic(reason));
+            }
+        }
+        if !failures.is_empty() {
+            Err(failures.join("; "))
         } else {
             Ok(())
         }
@@ -301,11 +370,232 @@ impl ArtifactOwner {
 }
 impl Drop for ArtifactOwner {
     fn drop(&mut self) {
-        if !self.settled {
+        if !self.settled && !self.frozen {
             // Fallback only; never print or retry a completed explicit settlement.
             let _ = self.settle_inner();
         }
     }
+}
+
+impl OwnedFile {
+    fn diagnostic(&self, reason: &str) -> String {
+        format!(
+            "agent artifact {}/{}: {reason}; inspect source or custody (which may remain)",
+            self.path
+                .parent()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy(),
+            self.path.file_name().unwrap().to_string_lossy()
+        )
+    }
+}
+
+fn open_owned(owned: &OwnedFile, delete: bool) -> std::io::Result<File> {
+    #[cfg(any(unix, windows))]
+    {
+        open_child(&owned.namespace, owned.path.file_name().unwrap(), delete)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = delete;
+        open_regular_or_directory(&owned.path)
+    }
+}
+
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn open_child(directory: &File, name: &std::ffi::OsStr, _delete: bool) -> std::io::Result<File> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(name.as_bytes())?;
+    // SAFETY: the pinned directory and NUL-terminated single component live
+    // across the call. The returned descriptor is uniquely owned by File.
+    let fd = unsafe {
+        libc::openat(
+            directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn dispose_child(owned: &OwnedFile, _file: &File, expected: &Observation) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::ffi::OsStrExt;
+    let name = std::ffi::CString::new(owned.path.file_name().unwrap().as_bytes())?;
+    let custody = format!(
+        ".custody-{}",
+        crate::workloads::TaskIdentity::local("artifact", None).attempt_id
+    );
+    let custody_name = std::ffi::CString::new(custody)?;
+    let fd = owned.namespace.as_raw_fd();
+    // Create a fresh private destination, not a shared or pre-existing scratch
+    // path. Its pinned descriptor remains our custody authority after renames.
+    if unsafe { libc::mkdirat(fd, custody_name.as_ptr(), 0o700) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let directory = open_child(
+        &owned.namespace,
+        std::ffi::OsStr::new(custody_name.to_str().unwrap()),
+        false,
+    )?;
+    let destination = c"source";
+    // The destination is absent in our newly created custody directory. No
+    // original pathname is ever unlinked after a separate identity check.
+    if unsafe {
+        libc::renameat(
+            fd,
+            name.as_ptr(),
+            directory.as_raw_fd(),
+            destination.as_ptr(),
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    let moved = open_child(&directory, std::ffi::OsStr::new("source"), false)?;
+    let actual = Observation::read(&moved)?;
+    if !actual.metadata.is_file() || !unchanged(expected, &actual) {
+        // A raced replacement is now retained, not deleted or restored over
+        // another file. The fixed custody name remains discoverable locally.
+        return Err(std::io::Error::other(
+            "foreign artifact moved to custody; retained",
+        ));
+    }
+    // Only our fresh private custody entry is removed. Foreign entries at the
+    // original source or namespace pathname are never addressed again.
+    if unsafe { libc::unlinkat(directory.as_raw_fd(), destination.as_ptr(), 0) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn open_child(directory: &File, name: &std::ffi::OsStr, delete: bool) -> std::io::Result<File> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    #[repr(C)]
+    struct Unicode {
+        length: u16,
+        maximum_length: u16,
+        buffer: *mut u16,
+    }
+    #[repr(C)]
+    struct Attributes {
+        length: u32,
+        root: *mut std::ffi::c_void,
+        name: *mut Unicode,
+        attributes: u32,
+        security: *mut std::ffi::c_void,
+        qos: *mut std::ffi::c_void,
+    }
+    #[repr(C)]
+    struct Status {
+        status: usize,
+        information: usize,
+    }
+    #[link(name = "ntdll")]
+    unsafe extern "system" {
+        fn NtCreateFile(
+            handle: *mut *mut std::ffi::c_void,
+            access: u32,
+            attributes: *mut Attributes,
+            status: *mut Status,
+            allocation: *mut i64,
+            file_attributes: u32,
+            share: u32,
+            disposition: u32,
+            options: u32,
+            ea: *mut std::ffi::c_void,
+            ea_length: u32,
+        ) -> i32;
+        fn RtlNtStatusToDosError(status: i32) -> u32;
+    }
+    let mut text: Vec<u16> = name.encode_wide().collect();
+    let length = u16::try_from(text.len() * 2).map_err(std::io::Error::other)?;
+    let mut name = Unicode {
+        length,
+        maximum_length: length,
+        buffer: text.as_mut_ptr(),
+    };
+    let mut attributes = Attributes {
+        length: std::mem::size_of::<Attributes>() as u32,
+        root: directory.as_raw_handle(),
+        name: &mut name,
+        attributes: 0x40,
+        security: std::ptr::null_mut(),
+        qos: std::ptr::null_mut(),
+    };
+    let mut status = Status {
+        status: 0,
+        information: 0,
+    };
+    let mut handle = std::ptr::null_mut();
+    // RootDirectory is the pinned namespace, not a re-resolved full path.
+    // FILE_OPEN_REPARSE_POINT prevents traversal; identity() rejects reparse
+    // handles before reading. Synchronous read handles are owned by std File.
+    let result = unsafe {
+        NtCreateFile(
+            &mut handle,
+            0x8010_0000 | if delete { 0x10000 } else { 0 },
+            &mut attributes,
+            &mut status,
+            std::ptr::null_mut(),
+            0,
+            7,
+            1,
+            0x0020_0020,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if result < 0 {
+        return Err(std::io::Error::from_raw_os_error(
+            unsafe { RtlNtStatusToDosError(result) } as i32,
+        ));
+    }
+    Ok(unsafe { File::from_raw_handle(handle) })
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn dispose_child(_owned: &OwnedFile, file: &File, _expected: &Observation) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn SetFileInformationByHandle(
+            handle: *mut std::ffi::c_void,
+            class: i32,
+            information: *const std::ffi::c_void,
+            size: u32,
+        ) -> i32;
+    }
+    // FILE_DISPOSITION_INFO marks the opened, identity-checked file object,
+    // never a new file at its former name. Deletion completes on handle close.
+    let delete: u8 = 1;
+    if unsafe {
+        SetFileInformationByHandle(file.as_raw_handle(), 4, (&delete as *const u8).cast(), 1)
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn dispose_child(_owned: &OwnedFile, _file: &File, _expected: &Observation) -> std::io::Result<()> {
+    Err(std::io::Error::other(
+        "stable artifact settlement unavailable",
+    ))
 }
 
 #[cfg(test)]
@@ -417,7 +707,10 @@ mod tests {
                     .document("evidence.json")
                     .is_none_or(|value| value.get("answer").is_none())
             );
-            assert_eq!(owner.settle().is_err(), content == "symlink");
+            assert_eq!(
+                owner.settle().is_err(),
+                matches!(content, "{" | "large" | "symlink")
+            );
             assert_eq!(
                 fs::read_to_string(fixture.0.join("legacy.json")).unwrap(),
                 r#"{"answer":"old"}"#
@@ -430,7 +723,7 @@ mod tests {
         let fixture = Fixture::new();
         fs::create_dir(fixture.0.join("scratch")).unwrap();
         assert!(ArtifactOwner::prepare(&fixture.0, SPEC).is_err());
-        fs::remove_dir(fixture.0.join("scratch")).unwrap();
+        fs::remove_dir_all(fixture.0.join("scratch")).unwrap();
         let mut owner = ArtifactOwner::prepare(&fixture.0, SPEC).unwrap();
         fs::rename(fixture.0.join("scratch"), fixture.0.join("owned.saved")).unwrap();
         fs::create_dir(fixture.0.join("scratch")).unwrap();
@@ -459,6 +752,110 @@ mod tests {
         });
         assert!(result.is_err());
         assert!(!fixture.file().exists());
-        assert!(!fixture.0.join("scratch").exists());
+        assert!(
+            fixture.0.join("scratch").is_dir(),
+            "never path-delete a namespace"
+        );
+    }
+
+    #[test]
+    fn replacement_in_namespace_check_to_open_window_cannot_redirect_snapshot() {
+        let fixture = Fixture::new();
+        let mut owner = ArtifactOwner::prepare(&fixture.0, SPEC).unwrap();
+        fs::write(fixture.file(), r#"{"answer":"owned"}"#).unwrap();
+        let root = fixture.0.clone();
+        owner.files[0].before_open = Some(Box::new(move || {
+            fs::rename(root.join("scratch"), root.join("owned.saved")).unwrap();
+            fs::create_dir(root.join("scratch")).unwrap();
+            fs::write(
+                root.join("scratch/evidence.json"),
+                r#"{"answer":"foreign"}"#,
+            )
+            .unwrap();
+        }));
+        let frozen = owner.freeze();
+        assert!(!frozen.error);
+        assert_eq!(frozen.document("evidence.json").unwrap()["answer"], "owned");
+        assert!(owner.settle().is_err());
+        assert_eq!(
+            fs::read_to_string(fixture.file()).unwrap(),
+            r#"{"answer":"foreign"}"#
+        );
+        assert!(fixture.0.join("owned.saved/evidence.json").is_file());
+    }
+
+    #[test]
+    fn replacement_in_check_to_move_window_is_retained_in_custody_not_unlinked() {
+        for symlink_replacement in [false, true] {
+            let fixture = Fixture::new();
+            let mut owner = ArtifactOwner::prepare(&fixture.0, SPEC).unwrap();
+            fs::write(fixture.file(), r#"{"answer":"owned"}"#).unwrap();
+            assert!(!owner.freeze().error);
+            let root = fixture.0.clone();
+            owner.files[0].before_move = Some(Box::new(move || {
+                fs::rename(root.join("scratch/evidence.json"), root.join("owned.saved")).unwrap();
+                if symlink_replacement {
+                    fs::write(root.join("foreign"), "foreign target").unwrap();
+                    symlink(root.join("foreign"), root.join("scratch/evidence.json")).unwrap();
+                } else {
+                    fs::write(root.join("scratch/evidence.json"), "foreign replacement").unwrap();
+                }
+            }));
+            let error = owner.settle().unwrap_err();
+            assert!(error.contains("scratch/evidence.json"), "{error}");
+            let custody = fs::read_dir(fixture.0.join("scratch"))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with(".custody-")
+                })
+                .unwrap();
+            assert_eq!(
+                fs::read_to_string(custody.join("source")).unwrap(),
+                if symlink_replacement {
+                    "foreign target"
+                } else {
+                    "foreign replacement"
+                }
+            );
+            if symlink_replacement {
+                assert!(
+                    fs::symlink_metadata(custody.join("source"))
+                        .unwrap()
+                        .file_type()
+                        .is_symlink()
+                );
+                assert_eq!(
+                    fs::read_to_string(fixture.0.join("foreign")).unwrap(),
+                    "foreign target"
+                );
+            }
+            assert_eq!(
+                fs::read_to_string(fixture.0.join("owned.saved")).unwrap(),
+                r#"{"answer":"owned"}"#
+            );
+        }
+    }
+
+    #[test]
+    fn frozen_evidence_is_retained_on_publication_unwind_and_reasons_are_specific() {
+        let fixture = Fixture::new();
+        let result = std::panic::catch_unwind(|| {
+            let mut owner = ArtifactOwner::prepare(&fixture.0, SPEC).unwrap();
+            fs::write(fixture.file(), "{secret malformed bytes").unwrap();
+            let frozen = owner.freeze();
+            let reason = frozen.diagnostic().unwrap();
+            assert!(reason.contains("scratch/evidence.json: malformed JSON"));
+            assert!(!reason.contains("secret"));
+            panic!("publication failed");
+        });
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(fixture.file()).unwrap(),
+            "{secret malformed bytes"
+        );
     }
 }

@@ -140,7 +140,8 @@ mod adapter_layout_tests {
             (
                 "agents",
                 super::agents::names().collect(),
-                &["mod.rs", "driver.rs"],
+                // Attempt artifact ownership is generic adapter infrastructure.
+                &["mod.rs", "driver.rs", "artifacts.rs"],
             ),
             (
                 "providers",

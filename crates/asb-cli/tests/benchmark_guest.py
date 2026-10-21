@@ -107,6 +107,28 @@ class GuestBootstrapTests(unittest.TestCase):
                     execute_agent(task, {}, None, None, None)
             self.assertFalse((root / "execution.json").exists())
 
+    def test_missing_first_result_keeps_nonretained_workspace_eligible_after_confirmed_reset(self):
+        # Production guest fallback with a fake task's consuming grader seam;
+        # no Docker daemon, original SDK verifier or live provider.
+        with tempfile.TemporaryDirectory() as directory:
+            calls = []
+            def unavailable(_argv, **_kwargs):
+                raise ExecutionError("first result publication unavailable")
+            def execute(*_args, **_kwargs):
+                calls.append("client")
+                return {"stdout":b"", "stderr":b"", "exit_code":1}
+            task = SimpleNamespace(artifacts=Path(directory), agent_timeout=15,
+                checked=unavailable, workspace=SimpleNamespace(container=Container(),
+                    execute=execute, quiesce_unconfirmed_agent=lambda:calls.append("confirmed-reset")),
+                evaluate=lambda:calls.append("grade"))
+            with patch("asb_guest.prepare_agent", return_value=({}, {})):
+                result = execute_agent(task, {}, None, None, None)
+            self.assertTrue(result["metadata"]["tree_quiesced"])
+            self.assertIsNone(result["metadata"]["final_response"])
+            self.assertEqual(result["metadata"]["token_usage"], {})
+            task.evaluate()
+            self.assertEqual(calls, ["client", "confirmed-reset", "grade"])
+
     def test_local_forwarding_precedes_install_and_is_closed_on_install_failure_or_success(self):
         for failure in (False, True):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:

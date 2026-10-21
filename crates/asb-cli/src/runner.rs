@@ -762,7 +762,9 @@ fn run_mode(
             .unwrap_or_default();
         if frozen.error {
             settled.issues.run_error(
-                "agent artifact evidence unavailable; retained scratch requires inspection".into(),
+                frozen
+                    .diagnostic()
+                    .unwrap_or_else(|| "agent artifact snapshot unavailable".into()),
             );
         }
         let adapter_artifacts = if settled.evidence.guest.is_none() {
