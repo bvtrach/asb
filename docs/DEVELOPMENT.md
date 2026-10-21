@@ -29,6 +29,22 @@ two provider calls, exact package identity, unchanged original SDK parent and a
 resolved original grade. Failed attempts are retained, not silently retried or
 promoted into successful qualification evidence.
 
+`benchmark_live_repeated_original.py` exercises the public `asb run --repeat 2`
+path at concurrency two. With `ASB_TEST_BENCHMARK_SUITE=terminal-bench-1.0`, its
+default hello-world task qualifies normal completion and the explicit
+`ASB_TEST_BENCHMARK_FAULT=block-verifier-once` continuation case. Select
+`ASB_TEST_BENCHMARK_TASK=jupyter-notebook-server` for the original true same-shell
+task with an installed Pi client, four official grades and a retained background
+service. Only this qualification creates a dedicated owned egress bridge for the
+reference solution's real Debian/PyPI dependencies; inference stays synthetic.
+It reads the unchanged upstream solution, captures verbose installs privately,
+checks per-attempt client context/log identity and compares baseline, admission,
+planning and fingerprint evidence across both batches. Successful resources are
+removed; failed resources are stopped/preserved, with the owned network retained
+when still attached. It does not claim live LLM task solving or all SDK/client
+context combinations. Use the same frozen-binary/project opt-ins and original
+SDK Python interpreter as the single-client qualification above.
+
 Real workload qualifications must use a separate frozen executable, not
 `target/debug/asb`. Cargo package verification can replace the ordinary build
 output even though the extracted packaged-crate tests use another target tree.

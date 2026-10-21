@@ -837,13 +837,23 @@ bounded streamed stdout/stderr and exact child exit, and exercise cancellation
 at launch/gate/execution/return. Test shell replacement/death, malformed or
 duplicate receipts, blocked channels, sibling preparation failure and teardown
 uncertainty. Qualify an actual installed client on a true same-shell original
-task with repeat-two/concurrency-two. Repeated installed-client context parity,
-configured non-root runtime accessibility, live post-preparation batch rendezvous
-and full cancellation/release-race qualification remain outstanding; the
-successful separate-shell and fixture-client qualifications do not close them.
-The existing private-runtime prefix rule also needs an explicit owned-path
-solution for valid root (`/`) working directories; changing the shell cwd to
-evade that limitation is not an acceptable solution.
+task with repeat-two/concurrency-two. The opt-in repeated-original qualification
+now includes the pinned Pi client on the original Jupyter task with
+`run_tests_in_same_shell: true`: four fresh attempts, equal prepared baselines,
+two sequential concurrent batches, eight synthetic inference calls, four official
+resolved grades, client UID/cwd/HOME observations and confirmed settlement.
+The original grader requires the surviving original agent session; a new grading
+shell cannot replace it. Saved pane existence is an artifact check, not an
+independent proof of every parent-shell variable. Separate installed-Pi and SDK
+fixtures explicitly compare parent identity and environment before/after grading.
+An actual networkless numeric-nonroot Docker fixture verifies runtime reuse,
+protected material observation, real guest-driver root cwd and unchanged user/
+HOME/environment; it does not qualify all installed clients under nonroot SDKs.
+The private-runtime root-cwd exception now requires attempt-bound owned-prefix
+receipts and pinned directory descriptors, rejecting lexical and symlink aliases
+into instrumentation. No workaround changes the original SDK shell cwd.
+Cancellation/release races have synthetic and real-local-process coverage;
+these live task runs do not claim every SDK/kernel race or every client version.
 The resource journal's ownership lock spans all transport-finalization attempts
 and is released last; releasing that lock is not itself confirmation of
 launcher settlement.
@@ -906,8 +916,12 @@ immediately, then retains the bounded final adapter diagnostic rather than
 discarding it during cancellation. Failure notification is idempotent and may
 not replace resource settlement if its output channel is broken. Guards notify
 peers before dropping prepared resources or a stopped native child. These paths
-have synthetic/real-local-process coverage; fresh original-SDK repeat-two by
-concurrency-two qualification remains outstanding.
+have synthetic/real-local-process coverage. Fresh original-SDK repeat-two by
+concurrency-two qualification now covers both the separate-shell hello-world and
+true same-shell Jupyter tasks with actual installed Pi. The explicit hello-world
+verifier-failure qualification preserves the failed attempt, completes later
+fresh batches without retry and returns a nonzero overall result. These task
+qualifications supplement, not replace, deterministic cancellation/race tests.
 
 Gate tests cover delayed siblings, early return, panic, identity mismatch,
 duplicate admission, bounded timeout, expired single/multi-slot arrivals and
@@ -918,8 +932,11 @@ cancellation and preserves its cleanup error. Material tests cover root/order
 independence, names/content/empty directories/executable bits, resource bounds,
 symlink refusal, evaluator side effects and immutable pre-agent identity.
 
-All fixtures are provider-free. These tests do not yet qualify fresh repeated
-official environments, bundled CLI replay or sweep resume. `repeated_run` uses
+The deterministic fixtures are provider-free; alone they do not qualify original
+SDK environments. The explicit local qualifications above supplement them with
+fresh repeated official tasks and installed clients using synthetic inference.
+Bundled CLI replay and repeated sweep resume remain pending separate features.
+`repeated_run` uses
 the actual CLI, fake clients and loopback replay to qualify native exact counts,
 within-batch overlap, sequential batches, fresh fixtures/runtime paths, preserved
 user material, failure continuation, initial preparation diagnostics, cross-batch

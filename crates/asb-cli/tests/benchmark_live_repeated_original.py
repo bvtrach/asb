@@ -17,6 +17,7 @@ import time
 import unittest
 
 sys.dont_write_bytecode = True
+sys.path.insert(0,str(Path(__file__).parents[1]/"assets/benchmarks"))
 
 
 def verify_cleanup(campaign,failed_batches=0):
@@ -63,6 +64,12 @@ class RepeatedOriginalQualification(unittest.TestCase):
             self.assertEqual(suite,"terminal-bench-1.0","fault fixture targets the original Terminal1 test-directory injection")
         instance = {"swe-bench-lite":"astropy__astropy-12907",
             "terminal-bench-1.0":"hello-world","terminal-bench-2.1":"cancel-async-tasks"}[suite]
+        selected_task = os.environ.get("ASB_TEST_BENCHMARK_TASK")
+        if selected_task is not None:
+            self.assertEqual(suite,"terminal-bench-1.0")
+            self.assertIn(selected_task,["hello-world","jupyter-notebook-server"])
+            instance = selected_task
+        same_shell = instance == "jupyter-notebook-server"
         artifacts = Path(tempfile.mkdtemp(prefix="repeated-original-",dir=root))
         print(f"Retained repeated original-task qualification: {artifacts}",flush=True)
         provider.root = artifacts
@@ -72,6 +79,18 @@ class RepeatedOriginalQualification(unittest.TestCase):
         command = "python -c "+shlex.quote(fix)
         if suite == "terminal-bench-1.0":
             command = "printf 'Hello, world!\\n' > hello.txt"
+            if same_shell:
+                import yaml
+                catalog_path = root/"workloads/terminal-bench-1.0/catalog.json"
+                catalog = json.loads(catalog_path.read_bytes())
+                selected = next(item for item in catalog["tasks"] if item["id"] == instance)
+                definition = catalog_path.parent/selected["definition"]
+                self.assertIs(yaml.safe_load((definition/"task.yaml").read_text())["run_tests_in_same_shell"],True)
+                solution = (definition/"solution.sh").read_text()
+                command = ("printf 'ASB_QUAL_CONTEXT=%s|%s|%s\\n' \"$(id -u)\" \"$PWD\" \"$HOME\"; "
+                    "if /bin/bash -c "+shlex.quote(solution)+" > /tmp/asb-reference-install.log 2>&1; "
+                    "then printf 'Reference installation completed.\\n'; "
+                    "else tail -c 8192 /tmp/asb-reference-install.log >&2; exit 1; fi")
         elif suite == "terminal-bench-2.1":
             solution = ("import asyncio\nasync def run_tasks(tasks, max_concurrent):\n"
                 "    semaphore = asyncio.Semaphore(max_concurrent)\n"
@@ -111,7 +130,14 @@ class RepeatedOriginalQualification(unittest.TestCase):
         server = http.server.ThreadingHTTPServer(("127.0.0.1",0),Handler)
         thread = threading.Thread(target=server.serve_forever,daemon=True)
         thread.start()
+        network_session,network = None,None
         try:
+            if same_shell:
+                from asb_docker import DockerSession
+                network_session = DockerSession()
+                docker_client = network_session.__enter__()
+                network = docker_client.networks.create("asb-repeat-fixture-"+artifacts.name,
+                    internal=False,labels={"asb.owner":"asb"})
             config = artifacts/"benchmark.toml"
             config.write_text("agent='pi'\nprovider='openrouter'\nmodel='fixture-model'\n"
                 f"workload='{suite}'\ntrial='{instance}'\nconcurrency=2\n"
@@ -121,6 +147,7 @@ class RepeatedOriginalQualification(unittest.TestCase):
             environment = {"PATH":os.environ["PATH"],"HOME":str(artifacts),
                 "OPENROUTER_API_KEY":"fixture-token","OPENROUTER_BASE_URL":base,
                 "OPENROUTER_MODELS_URL":base+"/models","NO_PROXY":"*","no_proxy":"*"}
+            if network is not None:environment["ASB_BENCHMARK_NETWORK"] = network.name
             try:
                 result = subprocess.run([binary,"run",config,"--repeat","2","--json"],
                     cwd=root,env=environment,capture_output=True,timeout=600)
@@ -156,6 +183,23 @@ class RepeatedOriginalQualification(unittest.TestCase):
                 if not fault:
                     self.assertTrue(row["workload_success"],row)
                 attempts.add(row["task"]["attempt_id"])
+                if same_shell:
+                    directory = Path(row["workload_artifacts"][0])
+                    execution = json.loads((directory/"execution.json").read_bytes())
+                    self.assertEqual(execution["agent_tree_cleanup"],"delegated-owned-workload")
+                    self.assertFalse(execution["output_truncated"])
+                    self.assertFalse(execution["timed_out"])
+                    self.assertFalse(execution["cancelled"])
+                    log_path = Path(plan["slots"][slot-1]["log"])
+                    if not log_path.is_absolute():log_path = campaign/log_path
+                    logged_rows = [json.loads(line) for line in log_path.read_text().splitlines() if line.strip()]
+                    matching = [value for value in logged_rows
+                        if value.get("task",{}).get("attempt_id") == row["task"]["attempt_id"]
+                        and value.get("execution",{}).get("slot") == slot]
+                    self.assertEqual(len(matching),1,"the context observation must belong to this exact execution")
+                    logged = matching[0]
+                    self.assertIn("ASB_QUAL_CONTEXT=0|/app|/root",logged["stdout"])
+                    self.assertTrue((directory/"official"/instance/row["task"]["attempt_id"]/"panes/post-test.txt").is_file())
             self.assertEqual(len(attempts),4)
             if fault:
                 self.assertEqual(injected_faults,[0])
@@ -187,6 +231,8 @@ class RepeatedOriginalQualification(unittest.TestCase):
             (artifacts/"qualification.json").write_text(json.dumps({"campaign":str(campaign),
                 "binary_sha256":binary_hash,"source_hashes":source_hashes,
                 "workload":suite,"task":instance,
+                "original_same_shell":same_shell,
+                "task_tool_network":"owned-bridge-with-package-egress" if same_shell else "original-task-network",
                 "executions":4,"distinct_original_attempts":4,
                 "official_resolved":sum(row["workload_success"] is True for row in rows[1:]),
                 "expected_verifier_fault":fault,
@@ -196,6 +242,14 @@ class RepeatedOriginalQualification(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+            try:
+                if network is not None:
+                    network.reload()
+                    if not network.attrs.get("Containers"):network.remove()
+                    else:(artifacts/"network-preserved.json").write_text(json.dumps(dict(
+                        network=network.name,scope="owned-failed-qualification",status="preserved"))+"\n")
+            finally:
+                if network_session is not None:network_session.__exit__(None,None,None)
 
 
 if __name__ == "__main__":
