@@ -132,3 +132,37 @@ logs. This is an observed transport defect, not proof of a historical user hang.
 No provider, Docker, credentials, privileged collector or host setting was used.
 There is no pre-run libtest stability claim. No full suite, PR, version
 allocation or release is claimed by this baseline.
+
+## Signed implementation and focused review
+
+Source `ba165bd2` reuses the moved bounded runtime transport in the generic
+`helper_exchange` module. Both callers supply their own original limits. The
+checkpoint request borrows context and ordered root views; it stops encoding at
+16 MiB rather than cloning a Value tree before checking. Unsupported non-UTF8
+paths now return a private encoding error instead of panicking in `json!`.
+Unix stderr is null/discarded, preserving legacy nonempty-stderr success.
+The non-Unix legacy route remains explicit and unqualified here.
+
+The independent reviewer read the entire implementation, runtime wrapper and
+all owning fixtures and approved fresh qualification. Required shared gate
+`resume_when` and its exact delayed-readiness fixture from reviewed installer
+source `1a2eb7f2` are present in checkpoint source `738656ac`; no installer
+budgets, permissions or callback changes are imported.
+
+Actual build FIRST of `738656ac`:13.97s, offline/locked, jobs1/incremental0.
+Actual/frozen `target/qualification/checkpoint49-738656ac-asb` SHA256:
+`993904a3adf217823db4f0641b7191964b2de2dd762f35ac481f4506563088f3`.
+Before/after runtime hashes agree. Focused results: checkpoint41/0/0 (15.79s),
+runtime8/0/0 (2.09s), managed gate14/0/0 (6.44s):63 distinct tests.
+The new seven-test family turns all three observed REDs green and additionally
+checks exact 16 MiB request delivery, excess refusal before helper start, exact
+2048-byte response acceptance, oversize/status/schema/early-input failures,
+known private data redaction, unchanged request bytes for both environment
+settings, an independent literal HMAC, keeper refusal, read/unwind/lost-receipt
+custody and non-UTF8 encoding failure. Strict all-target/all-feature Clippy
+(15.91s), fmt and diff-check pass. No runtime fixture failed in this phase.
+
+Staging package0.2.43 for fresh full qualification follows this independent
+review. This is not yet a PR, merge or release claim. Full and hosted results
+will be recorded separately; the proxy repair and held PR308 remain independent
+unfinished work rather than being implicitly cleared by these tests.
