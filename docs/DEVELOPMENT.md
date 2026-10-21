@@ -106,6 +106,11 @@ execution counts, but adding test-body lines cannot inflate that denominator.
 Isolated test subprocesses discard inherited state and credentials while
 retaining only LLVM's coverage-output setting. Reports and uncovered-file
 summaries are retained under `target/coverage/`, including on CI failures.
+Each invocation removes only its four generated report files before checking or
+building, so an early failure cannot leave a stale green summary; unrelated
+evidence files remain intact. Workspace coverage objects and raw profiles are
+cleaned while dependency compilation caches are retained. This also prevents
+obsolete test-binary maps from distorting totals after version or feature changes.
 No live provider, real agent installation, or privileged collector is necessary.
 
 Token accounting has synthetic, provider-free regression fixtures for all

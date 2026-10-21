@@ -7,10 +7,15 @@ export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-2}"
 export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0
 output=target/coverage
 mkdir -p "$output"
+# A failed checker/build must never leave an earlier green result looking current.
+# Preserve unrelated evidence stored alongside these four generated reports.
+rm -f -- "$output/all.json" "$output/all-lines.txt" \
+  "$output/production-lines.txt" "$output/summary.json"
 python3 scripts/test_check_coverage.py
-# Explicitly discard prior executions while retaining compilation caches. A
-# previously covered branch must not pass after its tests stop executing it.
-cargo llvm-cov clean --profraw-only
+# Discard execution profiles AND old workspace object maps. Version/feature
+# changes create new binary hashes; retaining obsolete maps distorts coverage
+# even with fresh profiles. Dependency compilation caches remain reusable.
+cargo llvm-cov clean --workspace
 cargo llvm-cov --locked --workspace --all-targets --no-report
 cargo llvm-cov report --json --output-path "$output/all.json"
 cargo llvm-cov report --text --output-path "$output/all-lines.txt"

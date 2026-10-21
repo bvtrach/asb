@@ -20,6 +20,92 @@ def aggregate(covered=90, count=100):
 
 
 class CoverageGateTests(unittest.TestCase):
+    def test_failed_checker_cannot_leave_stale_green_reports(self):
+        repository = Path(__file__).resolve().parent.parent
+        target = repository / "target"
+        target.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="coverage-failed-checker-", dir=target) as name:
+            root = Path(name)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            script = scripts / "check-coverage.sh"
+            script.write_text((repository / "scripts/check-coverage.sh").read_text())
+            output = root / "target/coverage"
+            output.mkdir(parents=True)
+            reports = ["all.json","all-lines.txt","production-lines.txt","summary.json"]
+            for filename in reports:
+                (output / filename).write_text("stale green result")
+            proof = output / "required-main-checks.json"
+            proof.write_text("unrelated proof must survive")
+            binaries = root / "bin"
+            binaries.mkdir()
+            for name in ("dirname","mkdir","rm"):
+                (binaries / name).symlink_to(Path("/usr/bin") / name)
+            (binaries / "python3").symlink_to("/bin/false")
+            completed = subprocess.run(
+                ["/bin/bash",str(script)], cwd=root,
+                env={"PATH":str(binaries),"HOME":str(root)},
+                capture_output=True,text=True,timeout=10,
+            )
+            self.assertNotEqual(completed.returncode,0)
+            self.assertFalse(any((output / filename).exists() for filename in reports))
+            self.assertEqual(proof.read_text(),"unrelated proof must survive")
+
+    def test_workspace_clean_removes_old_version_instrumented_objects(self):
+        repository = Path(__file__).resolve().parent.parent
+        target = repository / "target"
+        target.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="coverage-clean-", dir=target) as name:
+            root = Path(name)
+            (root / "src").mkdir()
+            (root / "home").mkdir()
+            (root / "src/lib.rs").write_text(
+                "pub fn answer() -> u64 { 42 }\n"
+                "#[test] fn works() { assert_eq!(answer(),42); }\n"
+            )
+            original_home = Path.home()
+            environment = {
+                "PATH": os.environ["PATH"],
+                "HOME": str(root / "home"),
+                "CARGO_HOME": str(root / "cargo-home"),
+                "RUSTUP_HOME": os.environ.get("RUSTUP_HOME",str(original_home / ".rustup")),
+                "CARGO_TARGET_DIR": str(root / "normal-build"),
+                "CARGO_LLVM_COV_TARGET_DIR": str(root / "coverage-build"),
+                "CARGO_BUILD_JOBS": "2",
+                "CARGO_PROFILE_DEV_DEBUG": "0",
+                "CARGO_PROFILE_TEST_DEBUG": "0",
+                "CARGO_INCREMENTAL": "0",
+                "CARGO_TERM_COLOR": "never",
+                "LLVM_PROFILE_FILE": str(root / "own-profile-%p-%m.profraw"),
+            }
+            if "RUSTUP_TOOLCHAIN" in os.environ:
+                environment["RUSTUP_TOOLCHAIN"] = os.environ["RUSTUP_TOOLCHAIN"]
+            manifest = root / "Cargo.toml"
+            def package(version):
+                manifest.write_text(
+                    f"[package]\nname='coverage_clean_fixture'\nversion='{version}'\n"
+                    "edition='2024'\n[workspace]\n"
+                )
+            def run(*arguments):
+                completed = subprocess.run(
+                    ["cargo","llvm-cov",*arguments,"--manifest-path",str(manifest),"--offline"],
+                    cwd=root, env=environment, capture_output=True, text=True, timeout=60,
+                )
+                self.assertEqual(completed.returncode,0,completed.stdout+completed.stderr)
+            package("0.0.1")
+            run("--no-report")
+            objects = list((root / "coverage-build/debug/deps").glob("coverage_clean_fixture-*"))
+            old_binaries = [path for path in objects if path.is_file() and os.access(path,os.X_OK)]
+            self.assertTrue(old_binaries,"fixture must create an actual instrumented test executable")
+            package("0.0.2")
+            run("clean","--workspace")
+            self.assertFalse(any(path.exists() for path in old_binaries),
+                             "old versioned coverage maps must not remain eligible for reports")
+            run("--no-report")
+            self.assertTrue(list((root / "coverage-build/debug/deps").glob("coverage_clean_fixture-*")))
+            self.assertFalse(any(path.exists() for path in old_binaries),
+                             "fresh version must not recreate the old instrumented binary hashes")
+
     def test_real_compiler_preserves_never_called_production_function_in_map(self):
         # Test LLVM's actual dead-code-map behavior, not just file presence or a
         # hand-written report. This fixture is outside the product coverage map.
