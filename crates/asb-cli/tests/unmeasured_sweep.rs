@@ -73,7 +73,7 @@ fetch(base+'/responses',{method:'POST',headers:{'content-type':'application/json
             "[measurements]\nenabled=false\ndirectory='measurements'\ncollectors=[]\n",
         ),
     ] {
-        std::fs::write(root.join(format!("{name}.toml")),format!("agent='pi'\nprovider='cli2key'\nmodel='test-model'\nworkload='bug-fix'\nconcurrency=2\n{settings}")).unwrap();
+        std::fs::write(root.join(format!("{name}.toml")),format!("agent='pi'\nprovider='cli2key'\nmodel='test-model'\nworkload='bug-fix'\nconcurrency=2\n[planning.repetition]\nindex={}\ntotal=2\n{settings}", index + 1)).unwrap();
         let directory = root.join(format!("tapes/{index:03}-{name}/cassettes"));
         std::fs::create_dir_all(&directory).unwrap();
         let interaction = json!({"request":{"method":"POST","url":"/v1/responses",
@@ -108,6 +108,24 @@ fetch(base+'/responses',{method:'POST',headers:{'content-type':'application/json
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(rows.len(), 4, "{}", String::from_utf8_lossy(&output.stderr));
+    let fingerprint = rows[0]["execution_plan_fingerprint"].as_str().unwrap();
+    assert!(fingerprint.starts_with("asb-protocol-v1:"));
+    assert!(
+        rows.iter()
+            .all(|row| row["execution_plan_fingerprint"] == fingerprint)
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row["planning"]["repetition"]["index"] == 1)
+            .count(),
+        2
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row["planning"]["repetition"]["index"] == 2)
+            .count(),
+        2
+    );
     assert_eq!(
         rows.iter()
             .filter(|row| row["workload_success"] == true)
@@ -122,6 +140,7 @@ fetch(base+'/responses',{method:'POST',headers:{'content-type':'application/json
     let report_path = root.join("results/sweep-comparison/comparison.json");
     let report = read(&report_path);
     assert_eq!(report["evaluation_coverage"]["evaluated_attempts"], 4);
+    assert_eq!(report["resolution_groups"].as_object().unwrap().len(), 1);
     let group = report["resolution_groups"]
         .as_object()
         .unwrap()
@@ -130,6 +149,11 @@ fetch(base+'/responses',{method:'POST',headers:{'content-type':'application/json
         .unwrap();
     assert_eq!(group["success_rate"], 0.5);
     let compared = report["benchmarks"].as_array().unwrap();
+    assert!(
+        compared
+            .iter()
+            .all(|row| row["execution_plan_fingerprint"] == fingerprint)
+    );
     assert!(
         compared
             .iter()
@@ -176,6 +200,11 @@ fetch(base+'/responses',{method:'POST',headers:{'content-type':'application/json
         String::from_utf8_lossy(&resumed.stderr)
     );
     assert!(reused.iter().all(|row| row["reused"] == true));
+    assert!(
+        reused
+            .iter()
+            .all(|row| row["execution_plan_fingerprint"] == fingerprint)
+    );
     assert_eq!(
         reused
             .iter()

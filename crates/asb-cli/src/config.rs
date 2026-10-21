@@ -77,6 +77,7 @@ fn configuration(options: SetupOptions) -> Result<BenchmarkConfig, Error> {
         )));
     }
     let config = BenchmarkConfig {
+        planning: None,
         agent,
         workload: required(workload.into_iter().next())?,
         provider,
@@ -144,6 +145,7 @@ fn validate_selection(
         validated.trial_set = None;
     }
     crate::workloads::describe_selection(&validated, directory, catalog).map_err(Error::Input)?;
+    crate::planning::resolve(config)?;
     Ok(())
 }
 

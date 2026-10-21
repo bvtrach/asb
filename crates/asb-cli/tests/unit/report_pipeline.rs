@@ -528,6 +528,51 @@ fn generated_line_coordinates_share_index_domain_and_preserve_constant_time_and_
 }
 
 #[test]
+fn saved_resource_capacity_is_checked_before_replacing_a_published_report() {
+    let fixture = Fixture::new();
+    let manifest = fixture.seed("", 1);
+    let config_text = "agent='pi'\nprovider='fixture'\nmodel='fixture'\nworkload='bug-fix'\n[planning.reservation]\ncpu_millis=1000\nmemory_mib=512\ndisk_mib=1024\n";
+    fixture.write("0.toml", config_text);
+    let config: crate::benchmark::BenchmarkConfig = toml::from_str(config_text).unwrap();
+    let policy = crate::planning::resolve(&config).unwrap();
+    let resources = json!({"cpu_millis":2000,"memory_mib":1024,"disk_mib":2048});
+    fixture.write(
+        "sweep-results/plan.json",
+        json!({
+            "schema_version":1,"run_id":"abc123","resources":resources,
+            "entries":[{
+                "reference":"0.toml","configuration":config,"policy":policy,
+                "selection":{"module":null,"workload":"bug-fix","task_id":"bug-fix",
+                    "dataset":null,"evaluation_kind":"local-structural","population_size":null}
+            }]
+        })
+        .to_string(),
+    );
+    fs::remove_file(fixture.0.join("sweep-results/000-0/measurements/run.json")).unwrap();
+    let manifest_text =
+        "configs=['0.toml']\n[resources]\ncpu_millis=2000\nmemory_mib=1024\ndisk_mib=2048\n";
+    fs::write(&manifest, manifest_text).unwrap();
+    let report = generate(manifest.to_str().unwrap(), &mut Vec::new()).unwrap();
+    let before = Fixture::snapshot(report.parent().unwrap());
+    for changed in [
+        manifest_text.replace("cpu_millis=2000", "cpu_millis=3000"),
+        "configs=['0.toml']\n".to_owned(),
+    ] {
+        fs::write(&manifest, changed).unwrap();
+        let error = generate(manifest.to_str().unwrap(), &mut Vec::new()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("resource capacity no longer matches saved plan")
+        );
+        assert_eq!(Fixture::snapshot(report.parent().unwrap()), before);
+    }
+    fs::write(&manifest, manifest_text).unwrap();
+    generate(manifest.to_str().unwrap(), &mut Vec::new()).unwrap();
+    assert_eq!(Fixture::snapshot(report.parent().unwrap()), before);
+}
+
+#[test]
 fn manifest_and_benchmark_snapshots_preserve_plan_identity_across_path_replacement() {
     let fixture = Fixture::new();
     let manifest = fixture.seed("", 1);
@@ -546,6 +591,7 @@ fn manifest_and_benchmark_snapshots_preserve_plan_identity_across_path_replaceme
     let plan_path = fixture.write("sweep-results/plan.json", &bytes);
     fs::remove_file(fixture.0.join("sweep-results/000-0/measurements/run.json")).unwrap();
     let sweep = crate::sweep::SweepFile {
+        resources: None,
         configs: vec!["0.toml".into()],
     };
     let disk = crate::sweep::plan::SweepPlan::load(plan_path.parent().unwrap(), &fixture.0, &sweep)
@@ -697,6 +743,7 @@ fn retained_configuration_budget_is_bounded_before_loading_results_or_writing_ou
     let manifest = fixture.write(
         "sweep.toml",
         toml::to_string(&crate::sweep::SweepFile {
+            resources: None,
             configs: references,
         })
         .unwrap(),

@@ -235,6 +235,7 @@ mod tests {
     #[test]
     fn trial_all_uses_enabled_subset_or_original_catalog_and_never_synthetic_ids() {
         let catalog = crate::workloads::PlanningCatalog {
+            requirements: Default::default(),
             dataset: crate::workloads::session::DatasetIdentity {
                 source: "fixture".into(),
                 revision: "a".repeat(40),
