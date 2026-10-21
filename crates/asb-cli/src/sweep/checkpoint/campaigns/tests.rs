@@ -2,6 +2,9 @@ use super::*;
 use crate::sweep::{Options, SweepFile, campaigns, plan};
 use std::{fs, path::PathBuf};
 
+#[path = "reservations_tests.rs"]
+mod reservations_tests;
+
 struct Fixture(PathBuf);
 impl Drop for Fixture {
     fn drop(&mut self) {

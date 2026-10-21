@@ -227,6 +227,9 @@ impl Inputs {
     ) -> Result<Self, Error> {
         let state = Self::build(parent, results, plan, mode, replay_sources)?;
         state.publish("pending", None)?;
+        if plan.execution.is_some() {
+            state.reserve_campaigns(results, plan)?;
+        }
         Ok(state)
     }
 
@@ -308,6 +311,9 @@ impl Inputs {
             return Err(resume_error(
                 "the executable, configuration, runtime, environment or replay inputs changed",
             ));
+        }
+        if plan.execution.is_some() {
+            current.verify_campaign_reservations(results, plan)?;
         }
         Ok(current)
     }

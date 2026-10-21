@@ -413,6 +413,26 @@ remained unchanged across qualification; the fixture repair changes tests only.
 This does not substitute for the remaining modern resume implementation or
 final feature-five package/install/hosted delivery gates.
 
+Fresh modern input sealing now publishes compact per-campaign reservations,
+then one final admission marker. Each manifest binds its original configuration
+index, campaign, exact retained plan reference, repeat, concurrency, slot count,
+run ID and input digest. All metadata is bounded before any publication. The
+marker fingerprints the complete expected manifest population; its input digest
+already binds the exact saved sweep index. Neither growing outputs nor the
+marker enter the input digest, avoiding a digest cycle. All publication is
+create-new and synced. Verification derives membership from saved references,
+never a caller-supplied roots list or directory scan, and never recreates a
+missing manifest. Unknown diagnostic files cannot add slots.
+
+Eight focused input/reservation tests pass, including reload, all manifest
+fields, cross-campaign substitution, missing/reordered membership, corrupt
+markers, aliases and partial publication. Actual sweep fault cases block the
+first/last manifest or final marker: all four fresh grades and report rows
+remain, the blocker is preserved, exactly one warning is emitted and no clients
+are retried. Strict Clippy and binary build pass. This is reservation evidence
+only: modern continuation must still consume typed validated admission and
+check original starts, cohorts, allocations, outputs and completed receipts.
+
 Independent continuation review identified a required distinction before modern
 resume can be enabled. A published campaign plan is intended work, not positive
 proof that a missing slot was never attempted. Initial publication must retain

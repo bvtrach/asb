@@ -10,6 +10,7 @@ thread_local! {static FAIL_INITIAL: std::cell::Cell<bool> = const {std::cell::Ce
 thread_local! {static FAIL_COMPARE: std::cell::Cell<bool> = const {std::cell::Cell::new(false)};}
 thread_local! {static ACTIVE: std::cell::Cell<bool> = const {std::cell::Cell::new(false)};}
 thread_local! {static FAIL_FINAL: std::cell::Cell<bool> = const {std::cell::Cell::new(false)};}
+thread_local! {static RESERVATION_FAULT: std::cell::Cell<Option<&'static str>> = const {std::cell::Cell::new(None)};}
 pub(super) fn before_input_finish(results: &Path) {
     if FAIL_FINAL.get() {
         let input = results.join(".checkpoint/inputs.json");
@@ -36,6 +37,11 @@ pub(super) fn before_comparison(source: &Path) {
     }
 }
 pub(super) fn before_initial_seal(results: &Path) {
+    if let Some(relative) = RESERVATION_FAULT.get() {
+        let path = results.join(".checkpoint").join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "owned fixture reservation blocker").unwrap();
+    }
     if FAIL_INITIAL.get() {
         std::fs::create_dir(results.join(".checkpoint")).unwrap();
         std::fs::write(results.join(".checkpoint/key"), "invalid owned fixture key").unwrap();
@@ -98,6 +104,9 @@ fn actual_sweeps_stop_after_presentation_failure_but_settle_groups_and_partial_r
             "json-final-seal",
             "campaign-initial",
             "campaign-final",
+            "campaign-reservation-first",
+            "campaign-reservation-last",
+            "campaign-admission",
         ] {
             let child=Command::new(&executable)
                 .args(["--exact","sweep::phases::tests::actual_sweeps_stop_after_presentation_failure_but_settle_groups_and_partial_reports","--nocapture"])
@@ -174,9 +183,15 @@ fn actual_sweeps_stop_after_presentation_failure_but_settle_groups_and_partial_r
         cassette_root: Some(&inputs),
         ..Default::default()
     };
-    if matches!(case, "campaign-initial" | "campaign-final") {
+    if case.starts_with("campaign-") {
         FAIL_INITIAL.set(case == "campaign-initial");
         FAIL_FINAL.set(case == "campaign-final");
+        RESERVATION_FAULT.set(match case {
+            "campaign-reservation-first" => Some("campaign-reservations/000000.json"),
+            "campaign-reservation-last" => Some("campaign-reservations/000001.json"),
+            "campaign-admission" => Some("campaign-admission.json"),
+            _ => None,
+        });
         let mut output = Vec::new();
         run_with_options(
             manifest.to_str().unwrap(),
@@ -196,10 +211,10 @@ fn actual_sweeps_stop_after_presentation_failure_but_settle_groups_and_partial_r
             .lines()
             .map(|line| serde_json::from_str::<Value>(line).unwrap())
             .collect::<Vec<_>>();
-        let code = if case == "campaign-initial" {
-            "initial_input_seal_unavailable"
-        } else {
+        let code = if case == "campaign-final" {
             "input_seal_unavailable"
+        } else {
+            "initial_input_seal_unavailable"
         };
         assert_eq!(
             rows.iter()
@@ -221,12 +236,22 @@ fn actual_sweeps_stop_after_presentation_failure_but_settle_groups_and_partial_r
                 "invalid owned fixture key"
             );
             assert!(!root.join("sweep-results/.checkpoint/inputs.json").exists());
-        } else {
+        } else if case == "campaign-final" {
             assert!(root.join("sweep-results/.checkpoint/inputs.json").is_dir());
             assert_eq!(
                 read(root.join("sweep-results/.checkpoint/initial-inputs.saved"))["status"],
                 "pending"
             );
+        } else {
+            let checkpoint = root.join("sweep-results/.checkpoint");
+            assert_eq!(read(checkpoint.join("inputs.json"))["status"], "pending");
+            assert_eq!(
+                std::fs::read_to_string(checkpoint.join(RESERVATION_FAULT.get().unwrap())).unwrap(),
+                "owned fixture reservation blocker"
+            );
+            if case != "campaign-admission" {
+                assert!(!checkpoint.join("campaign-admission.json").exists());
+            }
         }
         assert!(lock::OutputLock::acquire(root, "sweep").is_ok());
         return;

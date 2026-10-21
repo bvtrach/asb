@@ -3,6 +3,8 @@ use super::Root;
 use crate::{Error, runner::repeated::InputCost, sweep::plan::SweepPlan};
 use std::path::Path;
 
+mod reservations;
+
 pub(super) fn input_roots(results: &Path, plan: &SweepPlan) -> Result<Vec<Root>, Error> {
     // Share the exact index/configuration/selection/capacity binding used by
     // comparison. No outcome, growing journal or recording payload is read.
