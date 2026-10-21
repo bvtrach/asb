@@ -61,6 +61,7 @@ closed()
         Session {
             evaluation_seconds: EVALUATION_TIMEOUT_SECONDS,
             preparation_seconds: WORKLOAD_READY_TIMEOUT.as_secs(),
+            task_default_execution_seconds: 1.0,
             process_lifetime: super::super::session::ProcessLifetime::Quiesce,
             controller: Controller::spawn(&mut command).unwrap(),
             invocation: TaskInvocation {
@@ -122,6 +123,7 @@ fn prepared_protocol_preserves_output_exit_time_and_grades_only_after_completion
         let mut session = fixture.session(&events, "removed");
         let caps = session.effective_budgets();
         assert_eq!(caps.execution_seconds, Some(1.0));
+        assert_eq!(caps.task_default_execution_seconds, Some(1.0));
         assert_eq!(caps.evaluation_seconds, Some(EVALUATION_TIMEOUT_SECONDS));
         assert_eq!(caps.agent_preparation_seconds, None);
         let config = configuration();

@@ -11,12 +11,13 @@ use std::time::{Duration, Instant};
 
 const CANCELLATION_TIMEOUT: Duration = Duration::from_secs(240);
 const AGENT_TRANSPORT_ALLOWANCE: Duration = Duration::from_secs(1820);
-const EVALUATION_TIMEOUT_SECONDS: u64 = 1800;
+const EVALUATION_TIMEOUT_SECONDS: u64 = crate::planning::DEFAULT_EVALUATION_SECONDS;
 const EVALUATION_PROTOCOL_ALLOWANCE: Duration = Duration::from_secs(30);
 const INSPECTION_TIMEOUT: Duration = Duration::from_secs(60);
 const RETAINED_GRADING_TIMEOUT: Duration = Duration::from_secs(1980);
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(180);
-const WORKLOAD_READY_TIMEOUT: Duration = Duration::from_secs(900);
+const WORKLOAD_READY_TIMEOUT: Duration =
+    Duration::from_secs(crate::planning::DEFAULT_ENVIRONMENT_PREPARATION_SECONDS);
 const DEFAULT_AGENT_TIMEOUT_SECONDS: f64 = 900.0;
 
 /// Project paths/proxies cross the workload boundary, host capabilities do not.
@@ -312,6 +313,7 @@ pub(crate) fn runtime_inputs(
 struct Session {
     evaluation_seconds: u64,
     preparation_seconds: u64,
+    task_default_execution_seconds: f64,
     process_lifetime: super::session::ProcessLifetime,
     controller: Controller,
     invocation: TaskInvocation,
@@ -547,6 +549,7 @@ pub(crate) fn launch(
             .budgets
             .environment_preparation_seconds
             .unwrap_or(WORKLOAD_READY_TIMEOUT.as_secs()),
+        task_default_execution_seconds: agent_timeout,
         process_lifetime: super::adapters::find(workload)
             .ok_or("workload adapter disappeared before execution")?
             .process_lifetime(),
@@ -872,6 +875,7 @@ impl WorkloadSession for Session {
             agent_preparation_seconds: None,
             execution_seconds: Some(self.agent_timeout.as_secs_f64()),
             evaluation_seconds: Some(self.evaluation_seconds),
+            task_default_execution_seconds: Some(self.task_default_execution_seconds),
         }
     }
     fn checkpoint_evidence(&self) -> Vec<PathBuf> {
@@ -1137,6 +1141,7 @@ sys.stdout.write(result['project_configuration'])
         Session {
             evaluation_seconds: EVALUATION_TIMEOUT_SECONDS,
             preparation_seconds: WORKLOAD_READY_TIMEOUT.as_secs(),
+            task_default_execution_seconds: 1.0,
             process_lifetime: super::super::session::ProcessLifetime::Quiesce,
             controller,
             invocation: TaskInvocation {

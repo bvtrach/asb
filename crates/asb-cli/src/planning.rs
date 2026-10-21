@@ -3,6 +3,10 @@
 use crate::{Error, benchmark::BenchmarkConfig, collectors, workloads};
 use serde::{Deserialize, Serialize};
 
+pub(crate) const DEFAULT_NATIVE_EXECUTION_SECONDS: u64 = 900;
+pub(crate) const DEFAULT_ENVIRONMENT_PREPARATION_SECONDS: u64 = 900;
+pub(crate) const DEFAULT_EVALUATION_SECONDS: u64 = 1800;
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Resources {
@@ -56,6 +60,9 @@ pub(crate) struct EffectiveBudgets {
     pub agent_preparation_seconds: Option<u64>,
     pub execution_seconds: Option<f64>,
     pub evaluation_seconds: Option<u64>,
+    /// Authoritative ready-invocation default, retained even when the operator
+    /// selects a different execution cap.
+    pub task_default_execution_seconds: Option<f64>,
 }
 
 /// Module-owned hints from a pinned task definition. Missing values remain
@@ -128,6 +135,8 @@ pub(crate) struct ResolvedPlan {
     pub input_modalities: Vec<String>,
     pub enforced_policies: Vec<String>,
     pub budgets: PhaseBudgets,
+    #[serde(default)]
+    pub default_budgets: PhaseBudgets,
     pub reservation: Option<Resources>,
     pub collectors: Vec<CollectorPlan>,
     pub repetition: Repetition,
@@ -170,6 +179,13 @@ pub(crate) fn protocol_fingerprint(
 ) -> Result<ExecutionPlanFingerprint, Error> {
     use sha2::{Digest, Sha256};
     resolve_snapshot(config, !policy.collectors.is_empty(), Some(policy))?;
+    let task_default = effective.task_default_execution_seconds;
+    let selected_execution = policy
+        .budgets
+        .execution_seconds
+        .or(policy.default_budgets.execution_seconds)
+        .map(|n| n as f64)
+        .or(task_default);
     if !(1..=crate::benchmark::MAX_CONCURRENCY).contains(&replica_concurrency)
         || effective
             .execution_seconds
@@ -182,18 +198,25 @@ pub(crate) fn protocol_fingerprint(
         .flatten()
         .any(|n| !(1..=86400).contains(&n))
         || effective.agent_preparation_seconds.is_some()
+        || effective.execution_seconds != selected_execution
+        || effective.environment_preparation_seconds
+            != policy
+                .budgets
+                .environment_preparation_seconds
+                .or(policy.default_budgets.environment_preparation_seconds)
+        || effective.evaluation_seconds
+            != policy
+                .budgets
+                .evaluation_seconds
+                .or(policy.default_budgets.evaluation_seconds)
+        || (policy.backend == "local-docker"
+            && task_default.is_none_or(|n| !n.is_finite() || !(0.001..=86400.0).contains(&n)))
+        || (policy.backend == "native" && task_default.is_some())
         || policy
-            .budgets
-            .execution_seconds
-            .is_some_and(|n| effective.execution_seconds != Some(n as f64))
-        || policy
-            .budgets
-            .environment_preparation_seconds
-            .is_some_and(|n| effective.environment_preparation_seconds != Some(n))
-        || policy
-            .budgets
-            .evaluation_seconds
-            .is_some_and(|n| effective.evaluation_seconds != Some(n))
+            .task_requirements
+            .as_ref()
+            .and_then(|requirements| requirements.execution_seconds)
+            .is_some_and(|n| task_default != Some(n))
     {
         return Err(Error::Input(
             "effective controller caps do not match validated execution policy".into(),
@@ -202,6 +225,12 @@ pub(crate) fn protocol_fingerprint(
     // Occurrence identity belongs in the attempt record. Cohort compatibility
     // retains the declared repetition total, without splitting occurrences.
     let mut cohort = serde_json::to_value(policy).map_err(|error| Error::Io(error.to_string()))?;
+    // A pinned suite defines different requirements/defaults for each task.
+    // Their realized values are provenance, not a different scoring protocol.
+    cohort
+        .as_object_mut()
+        .expect("serialized policy object")
+        .remove("task_requirements");
     cohort["repetition"]
         .as_object_mut()
         .expect("serialized repetition object")
@@ -210,7 +239,7 @@ pub(crate) fn protocol_fingerprint(
         "schema_version":1,
         "module": workloads::descriptor(&config.workload),
         "policy":cohort,
-        "effective_controller_caps":effective,
+        "execution_default_rule":if policy.backend == "local-docker" { "pinned-module-ready-invocation" } else { "native-controller-default" },
         "replica_concurrency":replica_concurrency,
     });
     let bytes = serde_json::to_vec(&identity).map_err(|error| Error::Io(error.to_string()))?;
@@ -427,6 +456,18 @@ pub(crate) fn resolve_for_run(
         input_modalities: modalities,
         enforced_policies: enforced,
         budgets: policy.budgets,
+        default_budgets: if backend == "native" {
+            PhaseBudgets {
+                execution_seconds: Some(DEFAULT_NATIVE_EXECUTION_SECONDS),
+                ..Default::default()
+            }
+        } else {
+            PhaseBudgets {
+                environment_preparation_seconds: Some(DEFAULT_ENVIRONMENT_PREPARATION_SECONDS),
+                evaluation_seconds: Some(DEFAULT_EVALUATION_SECONDS),
+                ..Default::default()
+            }
+        },
         reservation: policy.reservation,
         collectors: plans,
         repetition: policy.repetition,
@@ -484,10 +525,13 @@ mod tests {
             execution_seconds: Some(901.0),
             ..caps
         };
+        assert!(protocol_fingerprint(&config, &resolve(&config).unwrap(), changed, 2).is_err());
+        config.planning.as_mut().unwrap().budgets.execution_seconds = Some(901);
         assert_ne!(
             first,
             protocol_fingerprint(&config, &resolve(&config).unwrap(), changed, 2).unwrap()
         );
+        config.planning.as_mut().unwrap().budgets.execution_seconds = None;
         config.planning.as_mut().unwrap().repetition.total = 4;
         assert_ne!(
             first,

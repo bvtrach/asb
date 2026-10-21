@@ -28,7 +28,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 const MAX_OUTPUT: usize = 1024 * 1024;
-const MAX_AGENT_RUNTIME: Duration = Duration::from_secs(15 * 60);
+const MAX_AGENT_RUNTIME: Duration =
+    Duration::from_secs(crate::planning::DEFAULT_NATIVE_EXECUTION_SECONDS);
 
 fn emit_warning(
     warnings: &Mutex<BTreeSet<String>>,

@@ -562,27 +562,74 @@ mod tests {
     }
 
     #[test]
-    fn validated_protocol_cohorts_aggregate_repeat_occurrences_and_separate_changed_caps() {
-        let fixture = Fixture::new("terminal-bench-2.1", 3);
+    fn validated_protocol_cohorts_aggregate_upstream_task_defaults_and_separate_operator_overrides()
+    {
+        let fixture = Fixture::new("terminal-bench-2.1", 1);
         let mut fingerprints = Vec::new();
-        for slot in 1..=3 {
-            let config: crate::benchmark::BenchmarkConfig = toml::from_str(&format!("agent='pi'\nprovider='fixture-provider'\nmodel='fixture-model'\nworkload='terminal-bench-2.1'\n[planning.repetition]\nindex={slot}\ntotal=3\n")).unwrap();
-            let policy = crate::planning::resolve(&config).unwrap();
+        let mut entries = Vec::new();
+        fs::write(
+            fixture.root.join("sweep.toml"),
+            "configs=['one.toml','two.toml','three.toml']",
+        )
+        .unwrap();
+        for (index, name) in ["one", "two", "three"].into_iter().enumerate() {
+            let slot = index + 1;
+            let task = format!("task-{slot}");
+            let mut config: crate::benchmark::BenchmarkConfig = toml::from_str(&format!("agent='pi'\nprovider='fixture-provider'\nmodel='fixture-model'\nworkload='terminal-bench-2.1'\ntrial='{task}'\n[planning.repetition]\nindex=1\ntotal=1\n")).unwrap();
+            if slot == 3 {
+                config.planning.as_mut().unwrap().budgets.execution_seconds = Some(1200);
+            }
+            let mut policy = crate::planning::resolve(&config).unwrap();
+            let task_default = 900.0 + slot as f64;
+            policy.task_requirements = Some(crate::planning::TaskRequirements {
+                source: "pinned-task-definition".into(),
+                cpu_millis: Some(slot as u64 * 1000),
+                memory_mib: Some(slot as u64 * 1024),
+                execution_seconds: Some(task_default),
+                ..Default::default()
+            });
             let caps = crate::planning::EffectiveBudgets {
                 environment_preparation_seconds: Some(900),
                 agent_preparation_seconds: None,
-                execution_seconds: Some(if slot == 3 { 901.0 } else { 900.0 }),
+                execution_seconds: Some(if slot == 3 { 1200.0 } else { task_default }),
                 evaluation_seconds: Some(1800),
+                task_default_execution_seconds: Some(task_default),
             };
             let fingerprint =
                 crate::planning::protocol_fingerprint(&config, &policy, caps, 1).unwrap();
+            let altered = crate::planning::EffectiveBudgets {
+                execution_seconds: Some(caps.execution_seconds.unwrap() + 1.0),
+                ..caps
+            };
+            assert!(crate::planning::protocol_fingerprint(&config, &policy, altered, 1).is_err());
             fingerprints.push(fingerprint.clone());
-            let mut record = fixture.record(slot, json!(true), true, true);
+            let mut record = fixture.record(1, json!(true), true, true);
+            record["summary"]["task"]["task_id"] = json!(task);
+            record["summary"]["task"]["attempt_id"] = json!(format!("ab123-{slot}"));
+            record["summary"]["execution_cohort"]["id"] = json!(format!("ab123{slot}"));
             record["summary"]["execution_plan_fingerprint"] = json!(fingerprint);
             record["summary"]["planning"] = json!(policy);
             record["summary"]["effective_budgets"] = json!(caps);
-            fixture.publish(slot, &record);
+            fs::write(
+                fixture.root.join(format!("{name}.toml")),
+                toml::to_string(&config).unwrap(),
+            )
+            .unwrap();
+            entries.push(json!({"reference":format!("{name}.toml"), "configuration":config, "policy":policy,
+                "selection":{"workload":"terminal-bench-2.1","task_id":task,"dataset":fixture.dataset,
+                    "evaluation_kind":"upstream-harness","population_size":3}}));
+            let directory = fixture
+                .root
+                .join(format!("sweep-results/{index:03}-{name}/.asb-completions"));
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join("001.json"), record.to_string()).unwrap();
         }
+        fs::write(
+            fixture.root.join("sweep-results/plan.json"),
+            json!({"schema_version":1,"run_id":"a123","execution_mode":"replay","entries":entries})
+                .to_string(),
+        )
+        .unwrap();
         assert_eq!(fingerprints[0], fingerprints[1]);
         assert_ne!(fingerprints[1], fingerprints[2]);
         let report = fixture.compare().unwrap();
