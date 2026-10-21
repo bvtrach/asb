@@ -145,6 +145,25 @@ impl Snapshotter {
         environment: bool,
         exclude: &[&str],
     ) -> Result<Fingerprint, Error> {
+        self.fingerprint_with_timeout(
+            roots,
+            context,
+            environment,
+            exclude,
+            Duration::from_secs(130),
+        )
+    }
+
+    // Keep the existing implementation and production allowance intact while
+    // real-child tests exercise its complete transport with a short budget.
+    fn fingerprint_with_timeout(
+        &self,
+        roots: &[Root],
+        context: &Value,
+        environment: bool,
+        exclude: &[&str],
+        timeout: Duration,
+    ) -> Result<Fingerprint, Error> {
         let key: String = self.key.iter().map(|byte| format!("{byte:02x}")).collect();
         let request = serde_json::to_vec(&json!({"key":key,"roots":roots,"context":context,"environment":environment,"exclude":exclude}))
             .map_err(|_| Error::Input("cannot encode private checkpoint inputs".into()))?;
@@ -174,7 +193,7 @@ impl Snapshotter {
                 "cannot send private checkpoint input description".into(),
             ));
         }
-        let deadline = Instant::now() + Duration::from_secs(130);
+        let deadline = Instant::now() + timeout;
         loop {
             match child.try_wait() {
                 Ok(Some(_)) => break,
@@ -206,6 +225,10 @@ impl Snapshotter {
         Ok(fingerprint)
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../../tests/unit/checkpoint_transport.rs"]
+mod transport_tests;
 
 pub(super) struct Inputs {
     directory: PathBuf,
