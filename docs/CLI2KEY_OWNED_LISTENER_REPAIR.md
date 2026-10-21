@@ -228,3 +228,95 @@ The only new untracked source-tree artifact was exact empty
 crates/asb-cli/.asb/install.log from the existing tool adapter-hook test; it is
 recoverably moved into target/fixture-preservation after all runtime handles
 are terminal. No user file, old evidence or unrelated directory is removed.
+
+## Full qualification STOP and controlled high-FD RED
+
+The earlier focused proof is NOT full qualification. Authorized full command at
+b399b353 stopped exit101 in the library:1182passed/3failed/13ignored,20.96s,
+`target/cli2key43-full.log`. Two assertions attempted immediate numeric port
+rebind after finish and observed EADDRINUSE; those alone cannot distinguish the
+original socket from a different parallel actor reacquiring that ephemeral port
+or TIME_WAIT. The third failure was stronger: actual owned curl's FD table
+contained the exact original listener socket inode148678075. That invalidates
+the production inheritance claim. No unchanged full retry was performed.
+Actual/frozen63c8c0a0 stayed unchanged, recorded after failure.
+
+Signed TEST-ONLY `76be20424f13743476180f4cbab52a83c6d8d77c` extends the actual
+bundled Node/curl fixture: acquire256 owned inert /dev/null FDs, reserve a high
+listener, release those inert FDs, then admit actual Node. It observes the exact
+listener in curl, but defers the intended assertion until AFTER cooperative
+Node exit, pinned curl exit, connection and reservation cleanup. No foreign
+descriptor, shared flag or process is closed/killed by the test.
+`target/cli2key43-high-fd-red-v2.log`:exit101,0passed/1intendedfailed/0ignored,
+0.19s; parent listener FD260, curl_inherited=true. This is a deterministic real
+Linux defect, not speculation about the historical PR308 CI failure (still
+unknown). The first short-name --exact selector accidentally ran0tests; its
+`high-fd-red.log` is preserved as selector failure, NOT proof. The corrected
+selector executed the named1test. Actual/frozen63c8 remained unchanged; the
+post-run libtest hash is recorded with no pre-run libtest claim.
+
+Local Nodev26.3.0 reports libuv1.52.1. Primary libuv source shows inherited TCP
+adoption sets nonblocking but not CLOEXEC, and startup's inheritance scan stops
+at the first invalid descriptor above15. These explain why low-FD focused
+cases passed while a high descriptor above a hole can escape to curl:
+https://github.com/libuv/libuv/blob/v1.52.1/src/unix/core.c and
+https://github.com/libuv/libuv/blob/v1.52.1/src/unix/tcp.c . This source explanation
+is not a promise that undocumented startup scanning is a safe handoff API.
+
+## Revised handoff proposal BEFORE implementation
+
+Do NOT clobber fixedFD3 in pre_exec (it may be Rust's exec-error transport),
+close guessed ranges, rely on Node's startup scan, add an addon, or change global
+host FD limits/settings. Native parent CLOEXEC remains correct; the missing
+boundary is the Node→curl exec AFTER Node has adopted a deliberately inheritable
+listener. Node has no documented JavaScript fcntl API to set that flag directly.
+
+Preferred generic private utility: `__asb-owned-fd-exec` receives at most a
+small bounded list of `(fd,dev,ino,kind)` plus delimiter and ORIGINAL command/
+argv. Node obtains full-width identity using fstatSync with bigint:true and
+decimal strings, never Number inode conversion. In the same tracked child PID,
+the helper validates bounded decimal syntax, fd>=3, nonduplicate FDs and known
+object kind; fstat compares exact dev/inode/kind. EBADF or a mismatching reused
+FD is NOT closed and does not become a new authentication/permission refusal.
+Only an exact admitted owned object receives CLOEXEC (or exact close) before
+Unix exec of the original raw command/argv with inherited cwd/env/stdio. Other
+I/O errors/malformed control data fail with fixed bounded diagnostics, no raw
+payload/key/program echo. No retry or foreign-object cleanup occurs. Same PID
+preserves Node's existing exact child cancellation and close accounting.
+
+The cli2key adapter supplies this launch prefix; a generic OPTIONAL launch
+specification in network-fetch's curl path selects program+prefix. All other
+users keep existing direct curl behavior, default fetch behavior, stdin private
+config, scratch ownership, children Set, cancellation and redirects unchanged.
+Redirect recursion must retain the exact supplied launch context. The generic
+helper and shared HTTP module contain no provider-ID branch or provider policy.
+The listener is not delegated to curl; the helper exists only to remove its
+exact inherited reference before curl executes.
+
+Runtime identity needs explicit review, not `/proc/self/exe` evaluated from
+Node (that is Node, not ASB). Proposed normal Linux path: Rust opens/pins its
+actual /proc/self/exe ELF, inherits that exact file into Node, and Node executes
+/proc/self/fd/N. Include that owned regular image FD in the helper's bounded
+identity list so curl cannot retain it either. Executing the ELF opens its image
+before CLOEXEC takes effect; helper safely tolerates the image FD already gone.
+Parent image/listener refs remain CLOEXEC; only the intended Node child inherits
+them. Node holds them until its normal/uncertain cleanup, not until a guessed
+pathname is deleted. Existing loader-bundled ASB_RUNTIME_EXECUTABLE is a script
+that must retain its explicit launcher contract: raw /proc/self/exe may be the
+loader and a CLOEXEC fd script path can disappear before the interpreter reads
+it. Proposal is to preserve that existing explicit launcher path/ownership
+contract rather than invent a stronger immutable copy/authentication policy.
+NonLinux Unix retains existing current-executable/explicit launcher behavior
+with honest source-only scope. Root must approve that runtime distinction before
+new production code; no silent raw-binary fallback for bundled loader runs.
+
+Additional mandatory checks: exact socket match removed in helper child,
+already-CLOEXEC/EBADF tolerated, reused unrelated socket/file preserved, huge
+bigint identities and malformed/duplicate/std-FD arguments rejected without
+secret echo; actual high-FD Node→helper→curl preserves tracked PID, bytes and
+cancel/quiescence; pinned ASB image and explicit launcher paths execute helper
+correctly; normal low-FD paths and all existing proxy consumers remain intact.
+Replace only ambiguous immediate numeric rebind assertions with exact original
+socket-inode disappearance/custody proof plus sentinel survival. Do NOT weaken
+the actual curl FD-table inheritance assertion. Any future full requires fresh
+source review and actual build/freeze/focused evidence first.
