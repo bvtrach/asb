@@ -23,7 +23,6 @@ fn capture_creation_failure_precedes_any_sampler_or_lifecycle_child() {
         .unwrap_err();
     assert!(error.contains("cannot create owned raw capture"), "{error}");
     assert!(session.collectors.is_empty());
-    assert!(session.process_tree_snapshots.is_empty());
     assert_eq!(
         fs::read_to_string(&sentinel).unwrap(),
         "previous capture sentinel"
@@ -118,7 +117,11 @@ fn process_tree_snapshots_record_owned_target_output_and_command_failures() {
             },
             Box::new(|pids| {
                 assert_eq!(pids.len(), 1);
-                vec!["owned-process-observation".into()]
+                SnapshotCommand {
+                    arguments: vec!["owned-process-observation".into()],
+                    runtime: Duration::from_secs(3),
+                    stream_bytes: 1024 * 1024,
+                }
             }),
             captures[0].writer().unwrap(),
             captures[1].writer().unwrap(),
@@ -130,12 +133,15 @@ fn process_tree_snapshots_record_owned_target_output_and_command_failures() {
             &admitted_errors
         };
         let deadline = Instant::now() + Duration::from_secs(5);
-        while fs::read_to_string(wanted).map_or(true, |text| text.is_empty())
-            && Instant::now() < deadline
+        while (if executable_exists {
+            fs::read_to_string(wanted).map_or(true, |text| text.is_empty())
+        } else {
+            !snapshot.is_finished()
+        }) && Instant::now() < deadline
         {
             std::thread::sleep(Duration::from_millis(10));
         }
-        snapshot.stop();
+        let completion = snapshot.stop();
         assert_eq!(
             fs::read_to_string(&output).unwrap(),
             "foreign stdout sentinel"
@@ -146,10 +152,14 @@ fn process_tree_snapshots_record_owned_target_output_and_command_failures() {
         );
         let text = fs::read_to_string(wanted).unwrap();
         if executable_exists {
+            assert!(completion.is_ok(), "{completion:?}");
             assert!(text.contains("# asb-snapshot-elapsed-seconds"));
             assert!(text.contains("owned-process-observation"));
         } else {
-            assert!(text.contains("process-tree sampler command failed"));
+            assert!(
+                completion.is_err(),
+                "missing executable must fail the observation"
+            );
         }
         assert!(
             root.matches(),

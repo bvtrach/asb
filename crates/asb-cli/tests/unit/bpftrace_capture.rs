@@ -10,11 +10,21 @@ fn isolated_bpftrace_preflight_and_attachment_failures() {
     const CASE: &str = "ASB_BPFTRACE_CAPTURE_CASE";
     fn finish_fake_capture(session: &mut measurements::Session, root: &Path) {
         assert!(
-            session.collectors[0].child.try_wait().unwrap().is_none(),
+            session.collectors[0].producer.poll().unwrap().is_none(),
             "the fake tracer must remain active until attachment has returned"
         );
         fs::write(root.join("release"), "attachment observed").unwrap();
-        assert!(session.collectors[0].child.wait().unwrap().success());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Some(completion) = session.collectors[0].producer.poll().unwrap() {
+                assert!(completion.capture_complete, "{:?}", completion.error);
+                assert!(completion.exit.unwrap().success());
+                assert_eq!(completion.guardian_cleanup_confirmed, Some(true));
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
     let Ok(case) = std::env::var(CASE) else {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
