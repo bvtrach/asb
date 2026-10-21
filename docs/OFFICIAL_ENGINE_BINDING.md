@@ -1,8 +1,9 @@
 # Official workload engine binding: source and focused qualification
 
 This is a narrow ownership/duplication repair, not a new benchmark, evaluator,
-protocol, grade or runtime qualification. Full current-stack qualification,
-independent final review, hosted CI, publication and release remain outstanding.
+protocol or grade. Independent source review approved the focused checkpoint;
+its full local offline qualification is recorded below. Independent final review,
+hosted CI, publication and release remain outstanding.
 Version 0.2.41 is reserved for later coordinated integration, not released here.
 
 ## Provenance and baseline first
@@ -114,6 +115,64 @@ compile is retained as `workloads.log`: ten stale nested Terminal test-fixture
 field references were converted to the new binding. It was a fixture migration
 failure, not a claimed new production defect. No blind retry or baseline rewrite.
 
-No full workspace test run, live environment qualification, PR, push, main merge
-or release is claimed by this checkpoint. Independent source review must precede
-the next qualification stage.
+The focused checkpoint did not claim full qualification. Root independently
+reviewed its production extraction, owning replacements, all new tests and actual
+logs before authorizing the following full run. No live environment, native-ARM,
+PR, push, main merge or release is claimed here.
+
+## Independently approved source: full local qualification
+
+Exact source: signed `453898c0b4282c8fa1cb6a42e5a83c9097051abe`.
+No source edits occurred during any runtime qualification. After root verified
+the old BPF cache idle, it copied that cache to the roomy exclusive
+`/home/martin/projects/asb-build-cache-official41/target` and created only this
+worktree's previously absent `target/debug` symlink. The owning source's locked
+offline build was invoked first and revalidated the exact cached artifacts;
+`asb --version` reported 0.2.41. A copied binary alone was not treated as testing.
+All fresh runtime tests below then ran from that owning source/new cache.
+
+| Gate | Actual result at source 453898c0 |
+| --- | --- |
+| Locked/offline workspace all-target/all-feature tests | **1401 passed / 0 failed / 21 existing opt-in skips**, 24 outer targets |
+| Library portion | 1166 passed / 0 failed / 13 ignored, 22.21s |
+| Other outer targets | 235 passed / 0 failed / 8 ignored |
+| Benchmark protocol integration in full run | 35 passed / 0 failed / 0 ignored, 119.66s |
+| Separate workspace all-feature doctests | 0 tests / 0 failures |
+| Strict workspace all-target/all-feature Clippy, `-D warnings` | passed |
+| Formatting and whitespace diff checks | passed |
+| Sequential offline `make -j1 build` | passed |
+| Private Rustdoc, pinned AutoUML 0.7.2 DOT/Mermaid/SVG, flows and interactive HTML | passed |
+| Generated Bash/Zsh completions and separate Bash/Zsh syntax checks | passed |
+
+The 24-target summary retains only each outer target's final summary; nested
+one-test child summaries are not counted again. No skip was enabled or removed.
+Build/test/doc/lint used one job, `CARGO_INCREMENTAL=0` and the new exclusive
+cache; make also used `CARGO_NET_OFFLINE=true` and the verified existing pinned
+AutoUML executable, without installing anything. Graphviz emitted two ordinary
+straight-line-edge fallback warnings, not failed graph generation.
+
+Actual ASB before full tests, after full tests, after make and the separately
+preserved frozen binary all matched SHA256:
+`a11c58a9665470810b7d8b3a7b6d8390c39827774812b8c2473d92effc5a2ff2`.
+Frozen copy: `target/qualification/official-engine41-asb`.
+
+Fresh evidence under this worktree's `target/`:
+`official41-full-build.log`, `official41-full.log`,
+`official41-full-summary.log`, `official41-doctests.log`,
+`official41-full-clippy.log`, `official41-full-fmt.log`, `official41-make.log`,
+`official41-bash-syntax.log`, `official41-zsh-syntax.log`,
+`official41-before.sha256`, `official41-after-full.sha256`,
+`official41-final.sha256`, and `official41-frozen.sha256`.
+
+All handles are terminal with exit zero. No failure occurred in this fresh full
+qualification. The earlier failed focused fixture compile remains preserved.
+Generated untracked `crates/asb-cli/.asb/` (initially only a zero-byte install log)
+and `crates/asb-cli/target/` are preserved, not deleted or silently staged. Root
+separately reclaimed only verified-idle old package outputs after preserving and
+verifying the frozen binary; the active home cache and evidence were untouched.
+No other cache or user data was cleaned by this worker.
+
+This is local offline Linux x86-64 source qualification, not live-SDK/container
+or native-ARM qualification, full-population benchmark performance, hosted CI,
+actual-main integration, publication or release approval. Stage 0.2.41 remains
+queued pending root's final review and coordinated delivery ancestry.
