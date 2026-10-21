@@ -184,12 +184,21 @@ fn build_perf(
     stage: &Path,
     progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
 ) -> Result<PathBuf, Error> {
+    build_perf_from_source(stage, progress, SOURCE, SOURCE_SHA256)
+}
+
+fn build_perf_from_source(
+    stage: &Path,
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
+    location: &str,
+    checksum: &str,
+) -> Result<PathBuf, Error> {
     let archive = stage.join("perf.tar.gz");
     install_verified_source(
-        SOURCE,
+        location,
         &archive,
         "Linux perf source",
-        SOURCE_SHA256,
+        checksum,
         false,
         |_| Ok(()),
     )?;
@@ -275,3 +284,7 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "../../tests/unit/perf_source_install.rs"]
+mod source_install_tests;
