@@ -247,6 +247,7 @@ else: raise AssertionError('unrecognized fixture role')
     test_support::set_creation_failure(matches!(FAULT.get(), Some(Fault::WorkerCreation)));
     if case.starts_with("preflight-") {
         let mut sudo = std::collections::BTreeSet::new();
+        let mut states = crate::collectors::CollectorStates::default();
         let selected = vec!["flamegraph".to_owned()];
         let tools = root.join("tools");
         let mut context = crate::collectors::PreflightContext {
@@ -254,6 +255,7 @@ else: raise AssertionError('unrecognized fixture role')
             selected: &selected,
             tool_dir: Some(&tools),
             sudo_collectors: &mut sudo,
+            states: &mut states,
         };
         let observer = Observer::new();
         let result = ADAPTER.preflight(&mut context);
