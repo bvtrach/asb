@@ -33,8 +33,11 @@ and completions passed. Executable SHA-256 remained
 `1267b651841334b513585b948e3759ca50625345dded2f10c71a90b866c3ba30`
 before/after tests and final build. Independent source review also approved the
 typed-disposition **0.2.27** integration `0d7cf8a3`; its own fresh full offline
-qualification remains pending. Exact-head hosted/package CI, merge, post-merge
-checks and release remain pending for both candidates.
+qualification at ledger-aligned `e3c39f6e` passed 1,172 tests with no failures
+and 21 explicit optional skips across 22 targets. Strict Clippy, formatting and
+sequential build/private docs/pinned AutoUML/flows/interactive views/completions
+passed. Exact-head hosted/package CI, merge, post-merge checks and release
+remain pending for both candidates.
 
 Integrated repair, released patch **0.2.21**: the independently reviewed
 launch-descriptor/one-shot admission repair (`b1a54fde`) is combined with the
@@ -246,9 +249,16 @@ and 16 actual repeated-run tests. The actual binary was built first; strict
 all-target/all-feature Clippy and formatting passed. The twelve disposition
 full-entry fixtures also require agreement on resource disposition and artifact
 references across logs, measurements, summaries and private outcomes.
-Fresh integration review and full
-qualification, exact-head ordinary/package CI, merge, post-merge verification
-and release remain pending. No live-provider/host qualification is claimed.
+Independent source review approved `0d7cf8a3`. The subsequent parent-evidence
+merge `e3c39f6e` changes only this ledger; all production, tests and Cargo files
+remain identical to that reviewed source. Its fresh all-target/all-feature
+offline suite passed 1,172 tests, zero failures and 21 explicit optional skips
+across 22 targets. Strict Clippy, formatting and sequential build/private Rust
+docs/pinned AutoUML 0.7.2/flows/interactive views/completions passed. Executable
+SHA-256 was unchanged before/after tests and final build:
+`b65b52f105980cc7d1cd74953c9e04f418c36d2e95eda35abc52c5ccc3464c5d`.
+Exact-head ordinary/package CI, merge, post-merge verification and release remain
+pending. No live-provider/host qualification is claimed.
 This is not a controller/dispatch protocol rewrite, workload-kind registry
 closure, live-provider qualification or delivery of every string-typing item.
 
