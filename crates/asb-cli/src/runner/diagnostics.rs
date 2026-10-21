@@ -41,6 +41,10 @@ impl Stage {
 fn safe_reason(error: &Error) -> &'static str {
     let text = error.to_string();
     for (needle, reason) in [
+        (
+            "output capture is incomplete",
+            "agent output capture is incomplete; preserve results for inspection",
+        ),
         ("Permission denied", "permission denied"),
         ("No space left", "storage is full"),
         ("Read-only file system", "storage is read-only"),

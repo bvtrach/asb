@@ -135,15 +135,14 @@ fn gate_target_checks_absolute_interpreters_without_launching_anything() {
 
 #[cfg(unix)]
 fn child(script: &str) -> OwnedChild {
-    OwnedChild::Direct(
+    OwnedChild::spawn_direct(
         Command::new("/bin/sh")
             .args(["-c", script])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap(),
+            .stderr(Stdio::piped()),
     )
+    .unwrap()
 }
 
 #[cfg(unix)]
@@ -196,26 +195,6 @@ fn both_streams_are_forwarded_and_captured_without_losing_exit_status() {
     assert_eq!(result.stderr, b"err");
     let text = String::from_utf8(combined).unwrap();
     assert!(text == "outerr" || text == "errout", "{text}");
-}
-
-#[test]
-fn stream_read_errors_and_dropped_receivers_are_bounded() {
-    struct BrokenRead;
-    impl Read for BrokenRead {
-        fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::other("fixture read failure"))
-        }
-    }
-    let (sender, receiver) = mpsc::channel();
-    read_stream(BrokenRead, OutputStream::Stdout, sender);
-    assert!(matches!(receiver.recv().unwrap(), OutputChunk::Finished));
-    let (sender, receiver) = mpsc::channel();
-    drop(receiver);
-    read_stream(
-        std::io::Cursor::new(b"unconsumed"),
-        OutputStream::Stderr,
-        sender,
-    );
 }
 
 #[test]

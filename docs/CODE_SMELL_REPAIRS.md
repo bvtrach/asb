@@ -155,6 +155,26 @@ The reviewed source is integrated with current main; fresh ordinary/package
 qualification, coverage, a PR, post-merge checks and a patch release remain
 pending. This does not claim arbitrary descendant or crash-persistent cleanup.
 
+Bounded child-capture candidate (independent review and full qualification
+pending; no version/release claim): the common runner no longer accumulates an
+unbounded channel/transcript, treats read failures as EOF, eagerly waits after
+pipe closure, or leaves blocking reader threads behind. Owned nonblocking pipe
+pumping caps evidence during capture, preserves the confirmed child-exit clock
+(including the existing native-gate quiescence boundary), and separately bounds
+execution, post-exit drain and direct-child cleanup.
+Pre-established fallback custody retains an unconfirmed direct child. Native
+presentation failure preserves evidence; Unix quiescent-guest controller pipes
+use owned deadline-aware transport and cancel on failure. Independent official
+grades, adapter-file metrics and validated cassette usage survive capture
+uncertainty, while transcript-derived claims and continuation receipts do not.
+Borrowed writers cannot be made generically cancellable; non-Unix guest writes
+retain that limitation. Windows pipe pumping is source-only here, not native
+runtime qualification. Non-Unix/non-Windows direct execution fails before spawn
+until a platform backend exists. Real-child, fault, custody and replay full-entry
+regressions cover these boundaries. Retained ThroughEvaluation services and
+ancillary adapter-file deletion diagnostics remain separate classes. This
+candidate does not close the overall cleanup or driver/orchestration audit.
+
 ## 4. Typed domain and wire contracts
 
 Review run status/evaluation/failure categories, execution mode, result source,

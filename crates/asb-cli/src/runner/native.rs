@@ -213,6 +213,7 @@ impl PreparedNative {
         )?;
         Ok((
             ExecutionEvidence {
+                capture_complete: child.issues.capture_error.is_none(),
                 output: child.output,
                 run_dir: self.run_dir,
                 guest: None,

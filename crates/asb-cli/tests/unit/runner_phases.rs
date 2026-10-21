@@ -156,6 +156,7 @@ fn prepared(
 fn evidence(exit: i32, guest: bool) -> ExecutionEvidence {
     use std::os::unix::process::ExitStatusExt;
     ExecutionEvidence {
+        capture_complete: true,
         output: Output {
             status: std::process::ExitStatus::from_raw(exit << 8),
             stdout: b"submission".to_vec(),
@@ -947,6 +948,17 @@ fn full_runner_entry_disposition_keeps_pending_and_operational_failures_consiste
     ]);
 }
 
+#[test]
+fn full_runner_entry_bounded_capture_preserves_independent_file_grades_without_receipts() {
+    isolated_full_entry_cases(&[
+        "capture-true-limit",
+        "capture-false-limit",
+        "capture-native-limit",
+        "capture-true-read-failure",
+        "capture-mini-swe-read-failure",
+    ]);
+}
+
 fn isolated_full_entry_cases(cases: &[&str]) {
     use support::IsolatedEnvironment;
     let executable = std::env::current_exe().unwrap();
@@ -1003,6 +1015,7 @@ fn full_entry_child(case: &str) {
     }
     let provider_case = case.starts_with("provider-");
     let disposition_case = case.starts_with("disposition-");
+    let capture_case = case.starts_with("capture-");
     let fixture = Fixture::new();
     let root = fixture.0.canonicalize().unwrap();
     let project = project::ProjectConfig {
@@ -1019,7 +1032,13 @@ fn full_entry_child(case: &str) {
     .unwrap();
     std::fs::create_dir(root.join("workloads")).unwrap();
     workloads::populate(&root.join("workloads")).unwrap();
-    let agent = root.join("tools/pi/bin/pi");
+    let mini_swe_case = case == "capture-mini-swe-read-failure";
+    let agent_id = if mini_swe_case { "mini-swe" } else { "pi" };
+    let agent = root.join(if mini_swe_case {
+        "tools/mini-swe/bin/mini"
+    } else {
+        "tools/pi/bin/pi"
+    });
     std::fs::create_dir_all(agent.parent().unwrap()).unwrap();
     let counter = root.join("agent-executions");
     let quoted_counter = counter.to_string_lossy().replace('\'', "'\\''");
@@ -1027,9 +1046,14 @@ fn full_entry_child(case: &str) {
     std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o700)).unwrap();
     let cassette = root.join("cassette.jsonl");
     let body = serde_json::json!({"model":"fixture","tools":[{"type":"function","function":{"name":"fixture","parameters":{"type":"object"}}}],"messages":[]});
-    let row = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body.to_string()},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{}"}});
+    let response_body = if capture_case && !case.contains("read-failure") {
+        r#"{"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}"#
+    } else {
+        "{}"
+    };
+    let row = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body.to_string()},"response":{"status":200,"headers":{"content-type":"application/json"},"body":response_body}});
     std::fs::write(&cassette, format!("{row}\n")).unwrap();
-    if provider_case || (disposition_case && !case.contains("run")) {
+    if provider_case || capture_case || (disposition_case && !case.contains("run")) {
         let node = crate::tools::host_executable(Path::new("node")).unwrap();
         let answer = if case == "provider-false-failed-finish" || case.contains("false") {
             "incorrect"
@@ -1043,12 +1067,25 @@ fn full_entry_child(case: &str) {
             0
         };
         let counter_js = serde_json::to_string(&counter).unwrap();
-        std::fs::write(&agent, format!("#!{}\nrequire('node:fs').appendFileSync({counter_js},'called\\n');fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw new Error('fixture request failed');await r.text();console.log(JSON.stringify({response}));process.exitCode={exit};}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
+        let artifact_js = if mini_swe_case {
+            "require('node:fs').writeFileSync('.asb-mini-swe.traj.json',JSON.stringify({trajectory_format:'mini-swe-agent-1.1',info:{model_stats:{api_calls:4}},messages:[{extra:{response:{usage:{prompt_tokens:11,completion_tokens:13}}}}]}));"
+        } else {
+            ""
+        };
+        let capture_js = if capture_case {
+            format!(
+                "require('node:fs').writeFileSync('fixture-file-grade','{}');{artifact_js}console.log(JSON.stringify({{usage:{{prompt_tokens:499,completion_tokens:500,total_tokens:999}}}}));process.stdout.write('x'.repeat(9*1024*1024));",
+                !case.contains("false")
+            )
+        } else {
+            String::new()
+        };
+        std::fs::write(&agent, format!("#!{}\nrequire('node:fs').appendFileSync({counter_js},'called\\n');fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw new Error('fixture request failed');await r.text();{capture_js}console.log(JSON.stringify({response}));process.exitCode={exit};}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
     }
     if case == "provider-early-failed-finish" {
         std::fs::write(root.join("workspace"), "blocking fixture file").unwrap();
     }
-    let config: BenchmarkConfig = toml::from_str("agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='repository-navigation'\nworkspace='workspace'\nlog_file='run.jsonl'\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n").unwrap();
+    let config: BenchmarkConfig = toml::from_str(&format!("agent='{agent_id}'\nprovider='openrouter'\nmodel='fixture'\nworkload='repository-navigation'\nworkspace='workspace'\nlog_file='run.jsonl'\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n")).unwrap();
     let config_path = root.join("benchmark.toml");
     std::fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
     let blocked_log = case.starts_with("blocked-log");
@@ -1068,7 +1105,10 @@ fn full_entry_child(case: &str) {
     } else {
         LifecycleEvent::RunFinishing
     };
-    let _scope = if disposition_case {
+    let _capture_scope = case
+        .contains("read-failure")
+        .then(super::capture::test_support::Scope::read_failure);
+    let _scope = if disposition_case || capture_case {
         entry_test_support::Scope::disposition(&root, calls.clone(), case)
     } else if provider_case {
         entry_test_support::Scope::provider(
@@ -1131,7 +1171,7 @@ fn full_entry_child(case: &str) {
         mode: Some(tape::Mode::Replay),
         cassette: Some(cassette.to_str().unwrap()),
         on_completion: Some(&observer),
-        execution_cohort: (provider_case || disposition_case).then_some(&cohort),
+        execution_cohort: (provider_case || disposition_case || capture_case).then_some(&cohort),
         ..Default::default()
     };
     let result = run_mode(
@@ -1141,6 +1181,81 @@ fn full_entry_child(case: &str) {
         &mut output,
         &Mutex::new(BTreeSet::new()),
     );
+    if capture_case {
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains(if case.contains("read-failure") {
+                    "capture failed"
+                } else {
+                    "capture limit"
+                })
+        );
+        assert_eq!(std::fs::read_to_string(counter).unwrap(), "called\n");
+        assert_eq!(
+            calls.borrow().as_slice(),
+            ["evaluate", "finish", "provider-finish"]
+        );
+        let log: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("run.jsonl")).unwrap()).unwrap();
+        let measured: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("measurements/run.json")).unwrap())
+                .unwrap();
+        for record in [&log, &measured] {
+            assert_eq!(record["status"], "failed");
+            assert_eq!(record["failure_kind"], "run_error");
+            assert_eq!(
+                record["benchmark_outcome"]["evaluation"]["status"],
+                "completed"
+            );
+            if case.contains("native") {
+                assert!(record["workload_success"].is_null());
+                assert_eq!(
+                    record["benchmark_outcome"]["evaluation"]["rewards"]["accuracy"],
+                    0.5
+                );
+            } else {
+                assert_eq!(record["workload_success"], !case.contains("false"));
+            }
+            if mini_swe_case {
+                assert_eq!(record["token_usage"]["total_tokens"], 24);
+                assert_eq!(record["steps"], 4);
+            } else if case.contains("read-failure") {
+                assert!(record["token_usage"]["total_tokens"].is_null());
+                assert!(record["steps"].is_null());
+            } else {
+                assert_eq!(record["token_usage"]["total_tokens"], 7);
+                assert!(
+                    record["token_usage"]["source"]
+                        .as_str()
+                        .unwrap()
+                        .contains("cassette")
+                );
+            }
+        }
+        assert_eq!(observer.completed.load(Ordering::SeqCst), 0);
+        assert!(!root.join(".asb-completions").exists());
+        let lines = std::str::from_utf8(&output.bytes)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].get("status").is_none());
+        assert_eq!(lines[1]["event"], "continuation_warning");
+        let report =
+            crate::compare::generate(config_path.to_str().unwrap(), &mut Vec::new()).unwrap();
+        let comparison: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(report.with_file_name("comparison.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            comparison["benchmarks"][0]["benchmark_outcome"],
+            log["benchmark_outcome"]
+        );
+        return;
+    }
     if disposition_case {
         check_full_entry_disposition(
             case,
