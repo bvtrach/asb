@@ -166,3 +166,36 @@ Staging package0.2.43 for fresh full qualification follows this independent
 review. This is not yet a PR, merge or release claim. Full and hosted results
 will be recorded separately; the proxy repair and held PR308 remain independent
 unfinished work rather than being implicitly cleared by these tests.
+
+## Fresh complete local qualification of staged0.2.43
+
+Exact source `5f5b2183483791341e042959cac12fb20c30399f` differs from the reviewed
+source only in the release version and proof documentation. Actual ASB built
+FIRST in12.97s and was frozen before full execution. Actual/frozen
+`target/qualification/checkpoint49-v43-asb` SHA256:
+`2c3771913debbe876d39cd2a075ebfa28ab16c93c003a4c04e55f7ec25f0ee7d`.
+Full-before, full-after and final hashes agree; no source edits or relinking took
+place while runtime qualification was active.
+
+`target/checkpoint49-full.log`: locked/offline workspace/all-target/all-feature
+suite passed1421/0failed/21existing opt-in ignored across24 Cargo targets.
+Library1185/0/13ignored; other targets236/0/8ignored. Nested fixture subprocess
+summaries are not double-counted. The complete protocol target35/0 took43.28s.
+Existing offline CLI94/0/5ignored, repeated-run30/0, replay-sweep2/0,
+parallel-sweep2/0, unmeasured-sweep2/0 and actual TUI targets passed. These are
+offline synthetic/owned process tests, not live provider/SDK/kernel qualification.
+
+Doctests0, strict workspace/all-target/all-feature Clippy, fmt, whitespace check,
+sequential `make build`, private Rustdoc, pinned AutoUML0.7.2 SVGs, data/control
+flows and interactive graph pages, generated Bash/Zsh completions and both shell
+syntax checks all passed. Checkout-update tests7/0 passed. Graphviz emitted a
+layout warning about touching nodes and used straight edges; generation exited0.
+
+All logs are retained under this worktree's ignored target. Test-generated
+`crates/asb-cli/target` (622 MiB artifact regression fixtures) and `.asb` (empty
+tool-hook install log) were verified idle and moved intact to
+`target/fixture-preservation/checkpoint49-full/{crate-target,crate-asb}` before
+packaging. Nothing was deleted, no unrelated checkout was cleaned, and fixture
+evidence remains recoverable. Packaging and exact-head hosted results are
+recorded separately; this local qualification does not claim merge or release.
+The required hosted check remains `checks`; the removed90% gate is not restored.
