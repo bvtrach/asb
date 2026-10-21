@@ -370,3 +370,31 @@ adapters and publication remains unchanged. No version bump, ordinary full
 suite, production repair, external installation or release is claimed. The
 intentional failing tests are preserved for implementation after independent
 design/red review; do not skip, weaken or silently regenerate them.
+
+## Approved implementation: configuration foundation (partial)
+
+The pre-code independent-cancellation/private-log invariants were signed in
+`a1655ade`; signed merge `137c8e7c` brought qualified43 `e71a3b62` without
+conflicts. Against that parent the integration had only this design, the red
+fixture and its three cfg-test inclusion lines: runner43 and termination42
+production paths were exact. Version is now staged 0.2.44, not released.
+
+`ProjectConfig.installation` now deserializes absent sections/keys with approved
+defaults, is emitted by normal project serialization, and validates nonzero,
+checked-Instant durations with precise config path/key in the existing reader.
+Three focused tests cover defaults, all malformed/zero fields plus direct
+overflow, and fresh reads after edits while retaining prior loaded values.
+The existing exhaustive remote host-config fixture needed only the default new
+field; its four-field guest projection and all old host fields are unchanged.
+
+Owning actual build first: `target/installer44-config-build.log`, exit0.
+Initial libtest compile failed E0063 on that exhaustive fixture, preserved in
+`target/installer44-config-tests.log`; no test ran. After the narrow fixture
+correction v2 passed2/0, then the added reload/path-key case passed in fresh v3
+`target/installer44-config-tests-v3.log`:3/0/0ignored,24.27s compile and0.00s
+runtime. Actual ASB before/after focused tests remained SHA256
+`db2f725fe7708d51b1679de14e9332c28ac4a6f2ca9db1c0d408d5d4597c6060`.
+This is configuration-only partial proof: operation deadline freezing,
+supervision/leases, typed all-caller propagation and the approved fault matrix
+remain implementation work. The old process APIs remain unchanged and the four
+observed-red tests have not been weakened or declared repaired. No full/PR/push.

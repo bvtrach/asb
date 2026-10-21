@@ -62,7 +62,13 @@ pub struct ProjectConfig {
     pub perfetto_instances: Vec<String>,
     #[serde(default)]
     pub proxy: NetworkProxy,
+    /// Project-local installer execution budgets; frozen for each operation.
+    #[serde(default)]
+    pub installation: InstallationConfig,
 }
+
+mod installation;
+pub use installation::InstallationConfig;
 
 /// Network proxies are separate from ASB's record/replay proxy adapters.
 /// Credentials must stay in the environment, not in project files.
@@ -227,6 +233,7 @@ impl Default for ProjectConfig {
             cgroup_parent: None,
             perfetto_instances: Vec::new(),
             proxy: NetworkProxy::default(),
+            installation: InstallationConfig::default(),
         }
     }
 }
@@ -729,9 +736,13 @@ pub fn load(start: &Path) -> Result<(PathBuf, ProjectConfig), Error> {
             let text = fs::read_to_string(&path).map_err(|error| {
                 Error::Input(format!("cannot read {}: {error}", path.display()))
             })?;
-            let config = toml::from_str(&text).map_err(|error| {
+            let config: ProjectConfig = toml::from_str(&text).map_err(|error| {
                 Error::Input(format!("cannot parse {}: {error}", path.display()))
             })?;
+            config
+                .installation
+                .validate()
+                .map_err(|error| Error::Input(format!("invalid {}: {error}", path.display())))?;
             return Ok((directory, config));
         }
         if !directory.pop() {
