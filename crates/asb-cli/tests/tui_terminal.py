@@ -134,6 +134,17 @@ def main():
         assert not (root / ".asb-tools/perf/bin/perf").exists(), "failed dependency must not be marked installed"
         assert len(list(root.glob("asb-sweep-*.toml"))) == 1
 
+        # Exercise the workload trial tree and actual persisted subset. The
+        # extra back-navigation is harmless when the finish action exits first.
+        (root / "workloads/custom.txt").write_text("Offline custom task.\n")
+        code, transcript = session(binary, root, ["workload", "tui"],
+            b"custom \t \t\t\x1b[Z\t", str(fixture_bin))
+        assert code == 0, transcript
+        selection = tomllib.loads((root / "workloads/custom.workload.toml").read_text())
+        assert selection["workload"] == "custom"
+        assert [trial["id"] for trial in selection["trials"]] == ["smoke"]
+        assert not (root / "invoked-agent").exists()
+
 
 if __name__ == "__main__":
     main()
