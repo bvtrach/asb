@@ -142,8 +142,10 @@ fixtures for duplex pipe pressure, blocked stdin, oversized output, inherited
 stdout/stderr, deadlines, setup errors, uncertain cleanup and unwinding. Linux
 pidfd observations verify original direct-child exit/reaping and unrelated
 sentinel survival. Existing fake-curl fixtures retain HTTP/proxy/JSON/error and
-credential-redaction checks. No real curl request, installed agent or provider
-is used by these tests.
+credential-redaction checks, and require curl's actual size/time arguments to
+match the shared reader/watchdog contract. Real subprocess fixtures accept an
+exactly 16 MiB JSON body and reject one extra byte. No real curl request,
+installed agent or provider is used by these tests.
 
 CI's `coverage-90-percent` check requires at least 90% executable-line coverage.
 Run the same offline check locally with:

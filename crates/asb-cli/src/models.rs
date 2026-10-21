@@ -391,6 +391,8 @@ fn fetch_authenticated(spec: providers::ModelSpec, url: &str, key: &str) -> Resu
 pub(crate) fn fetch_config(config: String, provider: &str) -> Result<Vec<u8>, Error> {
     let mut command = Command::new("curl");
     crate::project::apply_network_proxy(&mut command, std::path::Path::new("."))?;
+    let io_timeout = transport::IO_TIMEOUT.as_secs().to_string();
+    let max_response = transport::MAX_RESPONSE.to_string();
     command.args([
         "--disable",
         "--config",
@@ -401,9 +403,9 @@ pub(crate) fn fetch_config(config: String, provider: &str) -> Result<Vec<u8>, Er
         "--connect-timeout",
         "10",
         "--max-time",
-        "30",
+        &io_timeout,
         "--max-filesize",
-        "16777216",
+        &max_response,
         "--proto",
         "=http,https",
         "--write-out",

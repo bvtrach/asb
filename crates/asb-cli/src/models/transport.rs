@@ -1,9 +1,16 @@
 //! Bounded model-catalog subprocess transport; never stores request credentials.
 use crate::Error;
 use std::process::{Command, ExitStatus};
+use std::time::Duration;
 
+// The curl argv and in-process reader/watchdog share this contract. Body and
+// I/O limits exist on every platform, even where bounded transport is absent.
+pub(super) const MAX_RESPONSE: usize = 16 * 1024 * 1024;
+pub(super) const IO_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(unix)]
-const MAX_RESPONSE: usize = 16 * 1024 * 1024;
+const CLEANUP_RESERVE: Duration = Duration::from_secs(5);
+#[cfg(unix)]
+const STDERR_LIMIT: usize = 8192;
 
 pub(super) struct Captured {
     pub status: ExitStatus,
@@ -32,9 +39,8 @@ mod unix {
     use std::io::{self, Read, Write};
     use std::os::fd::AsRawFd;
     use std::process::Child;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
-    const STDERR_LIMIT: usize = 8192;
     const QUANTUM: usize = 65536;
     pub(super) struct Budget {
         pub io: Duration,
@@ -42,8 +48,8 @@ mod unix {
     }
     impl Budget {
         pub(super) const PRODUCTION: Self = Self {
-            io: Duration::from_secs(30),
-            total: Duration::from_secs(35),
+            io: IO_TIMEOUT,
+            total: Duration::from_secs(IO_TIMEOUT.as_secs() + CLEANUP_RESERVE.as_secs()),
         };
     }
 
@@ -68,7 +74,7 @@ mod unix {
                 return Ok(());
             }
             let _ = child.kill();
-            let deadline = self.deadline.min(Instant::now() + Duration::from_secs(5));
+            let deadline = self.deadline.min(Instant::now() + CLEANUP_RESERVE);
             loop {
                 let reason = match cleanup_poll(&mut child) {
                     Ok(Some(_)) => return Ok(()),

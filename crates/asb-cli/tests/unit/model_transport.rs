@@ -233,6 +233,49 @@ os.write(2,b'\nASB_HTTP_STATUS=200\nASB_PROXY_STATUS=0\nASB_CONTENT_TYPE=applica
 }
 
 #[test]
+fn exact_body_limit_succeeds_and_one_additional_byte_is_rejected() {
+    assert_eq!(MAX_RESPONSE, 16 * 1024 * 1024);
+    for extra in [0, 1] {
+        let fixture = Fixture::new();
+        #[cfg(target_os = "linux")]
+        let admissions = Admissions::new();
+        let mut command = fixture.command(
+            r#"
+import os,sys
+sys.stdin.buffer.read()
+length=int(os.environ['BODY_BYTES'])
+sys.stdout.buffer.write(b'['+b' '*(length-2)+b']')
+sys.stdout.buffer.flush()
+"#,
+        );
+        command.env("BODY_BYTES", (MAX_RESPONSE + extra).to_string());
+        let result = unix::capture(
+            &mut command,
+            b"",
+            "fixture",
+            unix::Budget {
+                io: Duration::from_secs(3),
+                total: Duration::from_secs(4),
+            },
+        );
+        if extra == 0 {
+            let captured = result.unwrap();
+            assert!(captured.status.success());
+            assert_eq!(captured.stdout.len(), MAX_RESPONSE);
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&captured.stdout).unwrap(),
+                serde_json::json!([])
+            );
+        } else {
+            let error = result.err().unwrap().to_string();
+            assert!(error.contains("16 MiB response limit"), "{error}");
+        }
+        #[cfg(target_os = "linux")]
+        admissions.assert_reaped(1);
+    }
+}
+
+#[test]
 fn blocked_stdin_and_never_ending_output_return_before_the_absolute_deadline() {
     #[cfg(target_os = "linux")]
     let admissions = Admissions::new();
