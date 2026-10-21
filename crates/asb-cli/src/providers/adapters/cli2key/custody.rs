@@ -60,10 +60,18 @@ impl Local {
 
     pub(super) fn spawn_proxy(
         &mut self,
-        mut command: Command,
+        command: Command,
     ) -> Result<std::net::SocketAddrV4, String> {
         let reservation = super::proxy::Reservation::new()
             .map_err(|_| "cannot reserve cli2key compatibility listener".to_owned())?;
+        self.spawn_reserved_proxy(command, reservation)
+    }
+
+    fn spawn_reserved_proxy(
+        &mut self,
+        mut command: Command,
+        reservation: super::proxy::Reservation,
+    ) -> Result<std::net::SocketAddrV4, String> {
         let watch = super::proxy::Watch::new(reservation.address());
         reservation.configure(&mut command);
         self.reservation = Some(reservation);

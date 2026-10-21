@@ -707,3 +707,143 @@ while True: time.sleep(1)
     assert!(std::net::TcpListener::bind(address).is_ok());
     readers_finished();
 }
+
+#[test]
+fn proxy_preparation_errors_unwind_and_uncertain_handoff_release_the_reservation() {
+    use std::net::{TcpListener, TcpStream};
+    let sentinel = TcpListener::bind("127.0.0.1:0").unwrap();
+    let sentinel_address = sentinel.local_addr().unwrap();
+    for failure in ["reader", "spawn", "startup", "unwind", "handoff"] {
+        let scope = crate::process_cleanup::test_support::Scope::new();
+        let reservation = super::super::proxy::Reservation::new().unwrap();
+        let address = reservation.address();
+        READER_FAIL.set(failure == "reader");
+        AFTER_SPAWN.set(match failure {
+            "unwind" => 2,
+            "startup" | "handoff" => 1,
+            _ => 0,
+        });
+        POLL_FAIL.set(u8::from(failure == "handoff"));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut local = Local::new().unwrap();
+            let mut command = if failure == "spawn" {
+                Command::new("/definitely-absent-offline-fixture")
+            } else {
+                command(
+                    "import socket,sys,json,threading,os,time;listener=socket.socket(fileno=int(sys.argv[sys.argv.index('--listen-fd')+1]));threading.Thread(target=lambda:(sys.stdin.buffer.read(),os._exit(0)),daemon=True).start();print('ASB cli2key proxy ready '+json.dumps({'schema_version':1,'host':'127.0.0.1','port':listener.getsockname()[1]}),flush=True);time.sleep(30)",
+                )
+            };
+            command.stdin(Stdio::piped());
+            let error = local
+                .spawn_reserved_proxy(command, reservation)
+                .unwrap_err();
+            let no_child = local.children.is_empty();
+            let combined = local.failure(error);
+            if failure == "handoff" {
+                assert!(combined.contains("owned reaper retains"), "{combined}");
+            }
+            if failure == "reader" || failure == "spawn" {
+                assert!(no_child);
+                assert!(
+                    !combined.contains("cleanup was not confirmed"),
+                    "{combined}"
+                );
+            }
+        }));
+        READER_FAIL.set(false);
+        AFTER_SPAWN.set(0);
+        POLL_FAIL.set(0);
+        scope.wait_finished();
+        readers_finished();
+        assert_eq!(result.is_err(), failure == "unwind");
+        // This checks BOTH the child reference and the parent's Command
+        // pre_exec closure/reference, after exact reaper settlement if needed.
+        let reclaimed = TcpListener::bind(address)
+            .unwrap_or_else(|error| panic!("{failure} retained reservation {address}: {error}"));
+        drop(reclaimed);
+        IDENTITIES.with_borrow_mut(|identities| {
+            for (_, identity) in identities.drain(..) {
+                let mut poll = libc::pollfd {
+                    fd: identity.as_raw_fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                };
+                assert_eq!(unsafe { libc::poll(&mut poll, 1, 0) }, 1);
+            }
+        });
+        assert!(TcpStream::connect(sentinel_address).is_ok());
+    }
+}
+
+#[test]
+fn builtin_proxy_rejects_invalid_or_nonsocket_fd_without_rebinding_a_foreign_listener() {
+    use std::net::{TcpListener, TcpStream};
+    use std::os::unix::process::CommandExt;
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/cli2key-invalid-listener")
+        .join(crate::workloads::TaskIdentity::local("invalid", None).attempt_id);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("proxy.mjs"), super::super::BUILTIN_COMPAT_PROXY).unwrap();
+    std::fs::write(root.join("network-fetch.mjs"), super::super::NETWORK_FETCH).unwrap();
+    std::fs::write(root.join("not-a-socket"), "preserve owned file bytes").unwrap();
+    let root = root.canonicalize().unwrap();
+    let node = crate::tools::host_executable(std::path::Path::new("node")).unwrap();
+    let sentinel = TcpListener::bind("127.0.0.1:0").unwrap();
+    let sentinel_address = sentinel.local_addr().unwrap();
+    for nonsocket in [false, true] {
+        let file = File::open(root.join("not-a-socket")).unwrap();
+        let fd = file.as_raw_fd();
+        let mut command = Command::new(&node);
+        command
+            .env_clear()
+            .current_dir(&root)
+            .args([
+                "proxy.mjs",
+                "--listen-fd",
+                &if nonsocket {
+                    fd.to_string()
+                } else {
+                    "999999".into()
+                },
+                "--upstream",
+                &format!("http://{sentinel_address}/v1"),
+            ])
+            .stdin(Stdio::piped())
+            .stderr(Stdio::null());
+        if nonsocket {
+            // SAFETY: isolated child-only inheritance of this owned regular
+            // file. No parent flags, foreign path or socket are changed.
+            unsafe {
+                command.pre_exec(move || {
+                    let flags = libc::fcntl(file.as_raw_fd(), libc::F_GETFD);
+                    if flags < 0
+                        || libc::fcntl(file.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC)
+                            < 0
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        let reservation = super::super::proxy::Reservation::new().unwrap();
+        let address = reservation.address();
+        let mut local = Local::new().unwrap();
+        let error = local
+            .spawn_reserved_proxy(command, reservation)
+            .unwrap_err();
+        let pids: Vec<_> = local.children.iter().map(Child::id).collect();
+        let combined = local.failure(error);
+        readers_finished();
+        assert!(combined.contains("did not become ready"), "{combined}");
+        for pid in pids {
+            assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        }
+        assert!(TcpListener::bind(address).is_ok());
+        assert!(TcpStream::connect(sentinel_address).is_ok());
+        assert_eq!(
+            std::fs::read_to_string(root.join("not-a-socket")).unwrap(),
+            "preserve owned file bytes"
+        );
+    }
+}
