@@ -22,6 +22,8 @@ const Y_TICKS: usize = 5;
 
 #[derive(Debug)]
 struct BenchmarkData {
+    planning: Option<Value>,
+    effective_budgets: Option<Value>,
     legacy_evaluation_provenance: Option<crate::workloads::outcome::LegacyEvaluationProvenance>,
     execution_plan_fingerprint: Option<String>,
     module: Option<crate::workloads::contracts::ModuleDescriptor>,
@@ -228,6 +230,8 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
                     |selection| selection.evaluation_kind.clone(),
                 );
                 benchmark_data.push(BenchmarkData {
+                    planning: None,
+                    effective_budgets: None,
                     legacy_evaluation_provenance: None,
                     execution_plan_fingerprint: None,
                     module: selection.as_ref().and_then(|s| s.module.clone()),
@@ -543,7 +547,19 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
                     |outcome| outcome.evaluation.completed(),
                 );
             flatten_numbers("", &run_value, &mut metrics)?;
-            metrics.retain(|key, _| !key.starts_with("benchmark_outcome."));
+            metrics.retain(|key, _| {
+                ![
+                    "benchmark_outcome.",
+                    "module.",
+                    "planning.",
+                    "effective_budgets.",
+                ]
+                .iter()
+                .any(|prefix| key.starts_with(prefix))
+            });
+            let planning = outcomes::recorded_object(&run_value, outcome, "planning")?;
+            let effective_budgets =
+                outcomes::recorded_object(&run_value, outcome, "effective_budgets")?;
             if let Some(outcome) = &benchmark_outcome
                 && crate::workloads::resolution_eligible(&workload_evaluation)
                 && let crate::workloads::outcome::EvaluationOutcome::Completed { rewards, .. } =
@@ -660,6 +676,8 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
                 }
             }
             benchmark_data.push(BenchmarkData {
+                planning,
+                effective_budgets,
                 legacy_evaluation_provenance,
                 execution_plan_fingerprint,
                 module,
@@ -797,22 +815,10 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
     }
     let evaluation_coverage = coverage::evaluation_summary(&benchmark_data);
     let population_coverage = coverage::populations(&benchmark_data)?;
-    let summary = json!({
-        "schema_version": 2,
-        "success_rate_definition": "resolved task attempts / all selected task attempts, including failures; not process exit rate or pass@k; smoke checks excluded",
-        "resolution_groups": resolution_groups,
-        "selection_plan": plan.as_ref().map(|plan| json!({"run_id":plan.run_id,"configuration_match":true,"execution_mode":plan.execution_mode,"respect_record_timings":plan.respect_record_timings,"scheduling":plan.scheduling})),
-        "evaluation_coverage":evaluation_coverage,
-        "population_coverage":population_coverage,
-        "metric_groups":coverage::metric_groups(&benchmark_data)?,
-        "input": sweep_path,
-        "input_kind": if single { "benchmark" } else { "sweep" },
-        "sweep": if single { Value::Null } else { json!(sweep_path) },
-        "results_directory": if single { json!(parent) } else { json!(sweep_results) },
-        "comparison_directory": comparison_dir,
-        "report": "report.html",
-        "benchmarks": benchmark_data.iter().map(|benchmark| json!({
+    let benchmark_rows = benchmark_data.iter().map(|benchmark| json!({
             "name": benchmark.label,
+            "planning": benchmark.planning,
+            "effective_budgets": benchmark.effective_budgets,
             "module": benchmark.module,
             "legacy_evaluation_provenance": benchmark.legacy_evaluation_provenance,
             "execution_plan_fingerprint": benchmark.execution_plan_fingerprint,
@@ -837,7 +843,22 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
             "series_timestamps": benchmark.series.iter().filter_map(|(name, series)| series.timestamps_ms.as_ref().map(|timestamps| (name, timestamps))).collect::<BTreeMap<_, _>>(),
             "status": benchmark.status,
             "artifacts": benchmark.artifacts,
-        })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>();
+    let summary = json!({
+        "schema_version": 2,
+        "success_rate_definition": "resolved task attempts / all selected task attempts, including failures; not process exit rate or pass@k; smoke checks excluded",
+        "resolution_groups": resolution_groups,
+        "selection_plan": plan.as_ref().map(|plan| json!({"run_id":plan.run_id,"configuration_match":true,"execution_mode":plan.execution_mode,"respect_record_timings":plan.respect_record_timings,"scheduling":plan.scheduling})),
+        "evaluation_coverage":evaluation_coverage,
+        "population_coverage":population_coverage,
+        "metric_groups":coverage::metric_groups(&benchmark_data)?,
+        "input": sweep_path,
+        "input_kind": if single { "benchmark" } else { "sweep" },
+        "sweep": if single { Value::Null } else { json!(sweep_path) },
+        "results_directory": if single { json!(parent) } else { json!(sweep_results) },
+        "comparison_directory": comparison_dir,
+        "report": "report.html",
+        "benchmarks": benchmark_rows,
         "graphs": graphs,
     });
     let summary_path = comparison_dir.join("comparison.json");
@@ -1166,6 +1187,7 @@ fn write_html_report(
     }
     html.push_str("<header class=\"hero\"><p class=\"eyebrow\">ASB BENCHMARK REPORT</p><h1>Benchmark comparison</h1><p>Explore recorded benchmark results and measurements. Use the filters to focus the report without rerunning anything.</p></header>");
     let coverage = coverage::evaluation_summary(benchmarks);
+    html.push_str("<p>Declared planning and controller caps are recorded separately in comparison.json, not plotted as measurements. Missing policy metadata remains unknown.</p>");
     html.push_str(&format!("<section class=\"explain\"><strong>Evaluation coverage</strong><p>Execution mode: {}.</p><p>{}/{} eligible selected attempts evaluated; {} have no completed evaluation. {} attempts are unscored. {}</p><p>Partial results are not a complete-population benchmark score. See population_coverage in comparison.json for dataset selection, unique tasks and complete one-attempt-per-task scores.</p></section>",
         escape(selection_mode.unwrap_or("unknown")),
         coverage.evaluated_attempts, coverage.eligible_selected_attempts, coverage.unevaluated_attempts, coverage.unscored_attempts,
