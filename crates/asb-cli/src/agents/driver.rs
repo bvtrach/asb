@@ -40,6 +40,10 @@ pub(crate) fn namespace_id() -> Result<u64, Error> {
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GuestRequest {
+    /// Workload-owned persistent shells keep their actual cwd, not a guessed
+    /// container default. The benchmark/project identities remain separate.
+    #[serde(default)]
+    pub inherit_working_directory: bool,
     #[serde(default)]
     pub process_lifetime: crate::workloads::session::ProcessLifetime,
     #[serde(default)]
@@ -64,6 +68,9 @@ fn default_timeout() -> f64 {
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct GuestResult {
+    /// Exact effective directory selected before launch, not re-resolved later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_workspace: Option<PathBuf>,
     #[serde(default)]
     pub elapsed_ms: Option<u64>,
     #[serde(default)]
@@ -162,6 +169,15 @@ fn absolute(path: &Path) -> bool {
             .any(|part| matches!(part, Component::ParentDir))
 }
 
+fn execution_workspace(request: &GuestRequest) -> Result<PathBuf, Error> {
+    if request.inherit_working_directory {
+        std::env::current_dir()
+            .map_err(|_| Error::Input("cannot resolve inherited task shell directory".into()))
+    } else {
+        Ok(PathBuf::from(&request.config.workspace))
+    }
+}
+
 fn prepare(request: &GuestRequest) -> Result<Command, Error> {
     if !request.timeout_seconds.is_finite() || !(0.001..=86400.0).contains(&request.timeout_seconds)
     {
@@ -174,17 +190,18 @@ fn prepare(request: &GuestRequest) -> Result<Command, Error> {
             "guest execution requires one bounded task invocation".into(),
         ));
     }
-    let workspace = Path::new(&request.config.workspace);
+    let workspace = execution_workspace(request)?;
     if ![
-        workspace,
+        workspace.as_path(),
+        Path::new(&request.config.workspace),
         &request.project_root,
         &request.runtime_dir,
         &request.run_dir,
     ]
     .into_iter()
     .all(absolute)
-        || request.runtime_dir.starts_with(workspace)
-        || request.run_dir.starts_with(workspace)
+        || request.runtime_dir.starts_with(&workspace)
+        || request.run_dir.starts_with(&workspace)
         || !request.run_dir.starts_with(&request.runtime_dir)
     {
         return Err(Error::Input("guest workspace and private runtime paths must be absolute, separate and owned by this attempt".into()));
@@ -217,8 +234,13 @@ fn prepare(request: &GuestRequest) -> Result<Command, Error> {
     .ok_or_else(|| {
         Error::Run("selected agent is not installed in the guest tool project".into())
     })?;
+    let mut execution_config = request.config.clone();
+    execution_config.workspace = workspace
+        .to_str()
+        .ok_or_else(|| Error::Input("task shell directory must be valid UTF-8".into()))?
+        .to_owned();
     let specification = adapter.command(&super::CommandContext {
-        config: &request.config,
+        config: &execution_config,
         endpoint: Some(&request.connection.base_url),
         interface: Some(request.connection.interface),
         prompt: &request.prompt,
@@ -229,7 +251,7 @@ fn prepare(request: &GuestRequest) -> Result<Command, Error> {
         command.arg(&request.prompt);
     }
     command
-        .current_dir(workspace)
+        .current_dir(&workspace)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -275,6 +297,12 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
         ));
     }
     let mut command = prepare(&request)?;
+    // Keep the same launch identity even if a tool renames/deletes its cwd.
+    // Looking up current_dir again after execution can erase a valid outcome.
+    let workspace = command
+        .get_current_dir()
+        .ok_or_else(|| Error::Input("prepared guest command has no task directory".into()))?
+        .to_path_buf();
     fs::create_dir_all(&request.run_dir)
         .map_err(|error| Error::Io(format!("cannot create private guest artifacts: {error}")))?;
     let mut capture = if request.namespace_collectors.is_empty() {
@@ -357,7 +385,7 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let adapter = super::find(&request.config.agent).expect("validated agent");
     let artifacts = adapter.collect(&super::CollectionContext {
-        workspace: Path::new(&request.config.workspace),
+        workspace: &workspace,
         run_dir: &request.run_dir,
         interface: Some(request.connection.interface),
         anthropic_input_includes_cache: crate::providers::anthropic_input_includes_cache(
@@ -373,6 +401,7 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
     );
     let usage = crate::measurements::with_artifact_usage(usage, artifacts.token_usage);
     let result = GuestResult {
+        execution_workspace: Some(workspace.clone()),
         #[cfg(target_os = "linux")]
         elapsed_ms: held.as_ref().map(|held| held.elapsed_ms),
         #[cfg(not(target_os = "linux"))]
@@ -384,11 +413,7 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
         workload_owner: request.workload_owner,
         schema_version: 1,
         exit_code: output.status.code(),
-        final_response: super::final_response(
-            &request.config.agent,
-            &stdout,
-            Path::new(&request.config.workspace),
-        ),
+        final_response: super::final_response(&request.config.agent, &stdout, &workspace),
         token_usage: usage,
         steps: artifacts
             .steps

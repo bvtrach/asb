@@ -1,4 +1,4 @@
-"""SDK-shell launch transport; not enabled by the production task dispatcher yet.
+"""Workload-owned SDK-shell launch transport for persistent parent sessions.
 
 The parent SDK shell survives a foreground launcher and failed coding client.
 Private FIFO IO is bridged separately; only the stopped child can be measured.
@@ -22,7 +22,19 @@ def _publish_receipt(root, name, nonce, *variables):
         " "+fields+" >"+temporary+") && ln -T -- "+temporary+" "+final)
 
 
+def _receive_release(root, nonce):
+    """Bound raw input before Bash read (which otherwise ignores NUL bytes)."""
+    q = shlex.quote
+    staged = q(root+"/release-input.tmp")
+    return ("(umask 077; set -C; head -c 34 <"+q(root+"/release")+" >"+staged+") && "
+        "test \"$(wc -c <"+staged+")\" -eq 33 && IFS= read -r asb_release_token <"+staged+
+        " && test \"$asb_release_token\" = "+q(nonce)+" && "+
+        _publish_receipt(root,"released",nonce,"asb_child_pid"))
+
+
 class SDKSessionLauncher:
+    inherit_working_directory = True
+
     def __init__(self, session, host_binary, artifacts, *, require_host_target=True):
         self.session,self.host_binary,self.artifacts = session,str(host_binary),artifacts
         self.require_host_target,self.transports = require_host_target,[]
@@ -54,6 +66,7 @@ class SessionTransport:
         self.channel = "asb-return-"+self.nonce
         self.bridge,self.worker,self.worker_error = None,None,None
         self.namespace_pid,self.parent_pid,self.closed,self.close_error = None,None,False,None
+        self.parent_released = False
         self.deadline = time.monotonic()+90
 
     @property
@@ -79,7 +92,7 @@ class SessionTransport:
             if result.exit_code != 0 or not re.fullmatch(rb"[0-9]{1,10}\n",result.output):
                 raise ExecutionError("cannot identify configured SDK session user")
             identities.append(int(result.output))
-        result = self._run(["/bin/sh","-c",'umask 077; mkdir "$1" && mkfifo "$1/out" "$1/err" "$1/control"',
+        result = self._run(["/bin/sh","-c",'umask 077; mkdir "$1" && mkfifo "$1/out" "$1/err" "$1/control" "$1/release"',
             "asb-session",self.root])
         if result.exit_code != 0:raise ExecutionError("cannot create private SDK launch channels")
         q = shlex.quote
@@ -90,15 +103,24 @@ class SessionTransport:
             "\n) >"+q(self.root+"/out")+" 2>"+q(self.root+"/err")+" < /dev/null &\n"
             "asb_child_pid=$!\n"
             +_publish_receipt(self.root,"started",self.nonce,"asb_child_pid")+
-            " || exit 1\nif wait \"$asb_child_pid\"; then asb_child_status=0; else asb_child_status=$?; fi\n"
+            " || exit 1\n( "+_receive_release(self.root,self.nonce)+" ) &\n"
+            "asb_release_pid=$!\n"
+            "wait -n \"$asb_child_pid\" \"$asb_release_pid\"\n"
+            "if test -f "+q(self.root+"/released")+"; then kill -0 \"$asb_child_pid\" 2>/dev/null || exit 1; exit 0; fi\n"
+            # An invalid release must not masquerade as client termination.
+            "if kill -0 \"$asb_child_pid\" 2>/dev/null; then exit 1; fi\n"
+            # wait -n is only notification. Explicit wait retains the exact
+            # child's status even if the release reader failed concurrently.
+            "if wait \"$asb_child_pid\"; then asb_child_status=0; else asb_child_status=$?; fi\n"
+            "kill \"$asb_release_pid\" 2>/dev/null; wait \"$asb_release_pid\" 2>/dev/null\n"
             +_publish_receipt(self.root,"exit",self.nonce,"asb_child_pid","asb_child_status")+" || exit 1\n"
             "printf '%s\\n' "+q(self.nonce)+" >"+q(self.root+"/control")+"\nexit 0\n")
         if len(script.encode()) > 2*1024**2:raise ExecutionError("SDK session launcher exceeds its bound")
         upload(self.container,self.root,[("launch.sh",script.encode(),0o600)],
             temporary_dir=self.owner.artifacts,owner=tuple(identities))
         keys = [_publish_receipt(self.root,"parent",self.nonce,"$")+
-            " && { bash "+q(self.root+"/launch.sh")+"; "+
-            _publish_receipt(self.root,"returned",self.nonce,"$")+" && tmux wait -S "+q(self.channel)+"; }","Enter"]
+            " && { if bash "+q(self.root+"/launch.sh")+"; then asb_launcher_status=0; else asb_launcher_status=$?; fi; "+
+            _publish_receipt(self.root,"returned",self.nonce,"$","asb_launcher_status")+" && tmux wait -S "+q(self.channel)+"; }","Enter"]
         def launch():
             try:session.send_keys(keys,block=False,min_timeout_sec=0)
             except BaseException as error:
@@ -172,12 +194,26 @@ class SessionTransport:
         pid,status = self._frame("exit",3,time.monotonic()+5)
         if pid != self.namespace_pid or not 0 <= status <= 255:
             raise ExecutionError("SDK session child status contradicts its stopped gate")
+        self._parent_return()
+        return status
+
+    def release_workload_parent(self):
+        """The owned supervisor may persist, but its SDK parent must grade now."""
+        if self.parent_released:
+            raise ExecutionError("SDK session parent release was already attempted")
+        self.parent_released = True
+        result = self._run(["timeout","5s","/bin/sh","-c",'printf "%s\\n" "$1" > "$2"',
+            "asb-session-release",self.nonce,self.root+"/release"])
+        if result.exit_code != 0 or self._frame("released",2,time.monotonic()+5) != [self.namespace_pid]:
+            raise ExecutionError("SDK session could not release its owned workload parent")
+        self._parent_return()
+
+    def _parent_return(self):
         if not self.owner.session.is_session_alive():raise ExecutionError("SDK parent shell did not survive the client")
         returned = self._run(["timeout","5s","tmux","wait",self.channel])
         if returned.exit_code != 0:raise ExecutionError("SDK parent shell did not confirm foreground command return")
-        if self._frame("returned",2,time.monotonic()+5) != [self.parent_pid]:
+        if self._frame("returned",3,time.monotonic()+5) != [self.parent_pid,0]:
             raise ExecutionError("SDK parent shell identity changed during client execution")
-        return status
 
     def close(self):
         if self.close_error:raise ExecutionError("SDK session transport closure remains unconfirmed")

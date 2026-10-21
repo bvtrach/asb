@@ -357,6 +357,9 @@ class ManagedDockerWorkspace:
                             or metadata["elapsed_ms"] != round(frames.result["elapsed_seconds"] * 1000)
                             or metadata.get("timed_out") is not frames.result["timed_out"]):
                         raise ExecutionError("retained workload metadata contradicts its supervisor")
+                    release_parent = getattr(stream,"release_workload_parent",None)
+                    if release_parent is not None:
+                        release_parent()
                     result = dict(frames.result, stdout=bytes(stdout), stderr=bytes(stderr), cancelled=False,
                                   output_truncated=truncated, preparation_seconds=execution_started-started,
                                   target=target, workload_processes_retained=True, metadata=metadata)

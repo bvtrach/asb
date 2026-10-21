@@ -180,6 +180,12 @@ def execute_agent(task, request, before_resume, on_output, cancelled, on_ended=N
 
 def _execute_agent(task, request, before_resume, on_output, cancelled, resources, relays, on_ended):
     guest,environment = prepare_agent(task,request,cancelled,resources,relays)
+    # Only final client execution uses a workload-owned launcher. Install and
+    # bootstrap commands remain ordinary managed Docker executions.
+    prepare_transport = getattr(task,"prepare_agent_transport",None)
+    transport = prepare_transport(request) if prepare_transport is not None else None
+    if transport is not None:
+        guest = dict(guest,inherit_working_directory=transport.inherit_working_directory)
     container = task.workspace.container
     network = request.get("network")
     if network:
@@ -243,6 +249,7 @@ def _execute_agent(task, request, before_resume, on_output, cancelled, resources
                                     gate="application", before_resume=attach,
                                     preparation_timeout=90,
                                     on_output=on_output, cancelled=ForwardingCancellation(cancelled, relays),
+                                    transport_factory=transport,
                                     **lifetime_options)
     finish_execution(result)
     for relay in relays:

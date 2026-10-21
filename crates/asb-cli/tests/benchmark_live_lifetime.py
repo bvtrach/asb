@@ -3,9 +3,10 @@
 The known upstream reference is deliberately supplied only to a synthetic
 client fixture. This checks the real guest adapter/supervisor and original
 verifier, not whether an AI agent can solve the task.
-It does not establish that the coding client launched from the SDK parent shell.
+It uses the task-owned SDK launcher for this true same-shell declaration.
 """
 import json
+import hashlib
 import os
 from pathlib import Path
 import sys
@@ -25,6 +26,11 @@ class WorkloadServiceQualification(unittest.TestCase):
         from asb_guest import execute_agent, upload
         from asb_runtime import bundle
         from asb_terminal_bench_1 import TerminalBenchTask
+        import asb_execution,asb_guest,asb_terminal_bench_1,asb_terminal_session
+        sources = [Path(module.__file__) for module in [asb_execution,asb_guest,asb_terminal_bench_1,asb_terminal_session]]
+        source_hashes = {path.name:hashlib.sha256(path.read_bytes()).hexdigest() for path in sources}
+        binary = Path(os.environ["ASB_TEST_BENCHMARK_ASB"])
+        binary_hash = hashlib.sha256(binary.read_bytes()).hexdigest()
         root = Path(os.environ["ASB_TEST_SWECATALOG_ROOT"]).absolute()
         artifacts = Path(tempfile.mkdtemp(prefix="original-service-lifetime-", dir=root))
         print(f"Retained original service-lifetime qualification: {artifacts}", flush=True)
@@ -42,6 +48,7 @@ class WorkloadServiceQualification(unittest.TestCase):
                     (task.definition / "solution.sh").read_bytes(), 0o700)], temporary_dir=artifacts)
                 fixture = b'''#!/bin/sh
 set -eu
+test "$ASB_SDK_SERVICE_CONTEXT" = original-parent-context
 /bin/bash /opt/asb-private/fixture-solution.sh
 printf '%s\\n' '{"type":"result","result":"known service fixture prepared"}'
 '''
@@ -54,8 +61,20 @@ printf '%s\\n' '{"type":"result","result":"known service fixture prepared"}'
                         "base_url":"http://127.0.0.1:1/v1", "credential":"unused-fixture"},
                     "prompt":"explicit known service-lifetime fixture, no AI solving claim"}
                 ended = []
-                with patch("asb_guest.prepare_agent", return_value=(guest, {"PATH":"/usr/local/bin:/usr/bin:/bin"})):
-                    result = execute_agent(task, {}, None, None, None, on_ended=ended.append)
+                parents = []
+                def observe_parent():
+                    task.agent_session.send_keys(["printf '%s|%s|%s|%s\\n' \"$$\" \"$(id -u)\" \"$PWD\" "
+                        "\"$ASB_SDK_SERVICE_CONTEXT\" > /tmp/asb-lifetime-parent","Enter"],block=True,max_timeout_sec=10)
+                    return task.checked(["cat","/tmp/asb-lifetime-parent"])
+                create_session = task.prepare_agent_session
+                def prepare_session():
+                    create_session()
+                    task.agent_session.send_keys(["export ASB_SDK_SERVICE_CONTEXT=original-parent-context","Enter"],
+                        block=True,max_timeout_sec=10)
+                    parents.append(observe_parent())
+                with patch.object(task,"prepare_agent_session",side_effect=prepare_session), \
+                        patch("asb_guest.prepare_agent", return_value=(guest, {"PATH":"/usr/local/bin:/usr/bin:/bin"})):
+                    result = execute_agent(task, {"binary":os.environ["ASB_TEST_BENCHMARK_ASB"]}, None, None, None, on_ended=ended.append)
                 (artifacts / "driver.stdout").write_bytes(result["stdout"])
                 (artifacts / "driver.stderr").write_bytes(result["stderr"])
                 self.assertEqual(result["exit_code"], 0, result["stderr"].decode(errors="replace"))
@@ -63,17 +82,25 @@ printf '%s\\n' '{"type":"result","result":"known service fixture prepared"}'
                 self.assertFalse(result["metadata"]["tree_quiesced"])
                 self.assertEqual(len(ended), 1)
                 self.assertTrue(task.workspace.held_executions[0][1].is_alive())
+                self.assertEqual(len(parents),1)
+                self.assertEqual(observe_parent(),parents[0],"original SDK parent must return before grading")
                 task.checked(["python3", "-c", "import socket; s=socket.create_connection(('127.0.0.1',8888),5); s.close()"])
                 observation = json.loads((task.artifacts / "execution.json").read_bytes())
                 self.assertEqual(observation["agent_tree_cleanup"], "delegated-owned-workload")
                 report = task.evaluate()
                 self.assertTrue(report["resolved"], report)
                 self.assertEqual(report["outcome"], "resolved")
+                self.assertEqual(observe_parent(),parents[0],"official grading must use the original persistent shell")
                 attempt = task.attempt
                 workspace = task.workspace
             self.assertEqual(workspace.held_executions, [])
             self.assertEqual(json.loads((artifacts / "task/task-cleanup.json").read_text())["status"], "removed")
             self.assertEqual(client.containers.list(all=True, filters={"label":"asb.attempt=" + attempt}), [])
+        self.assertEqual(source_hashes,{path.name:hashlib.sha256(path.read_bytes()).hexdigest() for path in sources})
+        self.assertEqual(binary_hash,hashlib.sha256(binary.read_bytes()).hexdigest())
+        (artifacts/"qualification.json").write_text(json.dumps({"scope":"original-sdk-same-shell-fixture-client-service-grading",
+            "source_hashes":source_hashes,"binary_sha256":binary_hash,"parent":parents[0].decode().strip(),
+            "official_resolved":True,"cleanup":"removed","coding_agent_started":False,"provider_called":False},sort_keys=True)+"\n")
 
 
 if __name__ == "__main__":

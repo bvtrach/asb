@@ -261,6 +261,7 @@ class TerminalBenchTask:
         self.attempt = "asb-" + uuid.uuid4().hex
         self.workspace, self.terminal, self.invocation = None, None, None
         self.agent_session = None
+        self.agent_launcher = None
         self.cancelled = None
         self.interrupted = False
         self.journal = None
@@ -269,6 +270,18 @@ class TerminalBenchTask:
         """Create an SDK shell only when the task actually requires sharing it."""
         if self.handler.task.run_tests_in_same_shell:
             self.agent_session = self.terminal.create_session("agent", as_configured_user=True)
+
+    def prepare_agent_transport(self, request):
+        """Activate the original SDK shell after material capture/bootstrap."""
+        if not self.handler.task.run_tests_in_same_shell:
+            return None
+        if self.agent_launcher is not None:
+            raise ExecutionError("this task's original agent shell was already initialized")
+        from asb_terminal_session import SDKSessionLauncher
+        self.prepare_agent_session()
+        self.agent_launcher = SDKSessionLauncher(self.agent_session,request["binary"],self.artifacts,
+            require_host_target=request.get("measure_target",False))
+        return self.agent_launcher
 
     @quiet_sdk
     def __enter__(self):
@@ -389,7 +402,6 @@ class TerminalBenchTask:
             self.original_networks = original_networks(container)
             self.workspace = ManagedDockerWorkspace.attach(self.client, container, self.attempt,
                 container.attrs["Config"].get("WorkingDir") or "/")
-            self.prepare_agent_session()
             definition_sha = hashlib.sha256(json.dumps(tree_manifest(self.definition), sort_keys=True).encode()).hexdigest()
             self.invocation = {"identity":{"workload":"terminal-bench-1.0", "task_id":self.task_id,
                 "attempt_id":self.attempt, "dataset":self.catalog["dataset"]}, "prompt":self.handler.instruction,
@@ -430,6 +442,9 @@ class TerminalBenchTask:
         from terminal_bench.agents.failure_mode import FailureMode
         identity = self.invocation["identity"] if getattr(self,"invocation",None) else {
             "workload":"terminal-bench-1.0","task_id":self.task_id,"attempt_id":self.attempt,"dataset":self.catalog["dataset"]}
+        if self.handler.task.run_tests_in_same_shell and (
+                self.agent_session is None or not self.agent_session.is_session_alive()):
+            raise ExecutionError("original same-shell agent session is missing; a new grader shell cannot replace it")
         record_grading_start(self.artifacts,identity)
         session = self.agent_session if self.handler.task.run_tests_in_same_shell else self.terminal.create_session(getattr(self,"test_session_name","tests"), as_configured_user=False)
         failure = self.evaluator._run_tests(self.terminal, session, self.handler)
@@ -481,17 +496,34 @@ class TerminalBenchTask:
                 if self.workspace:
                     self.workspace.container = None
         finally:
-            self.cleanup_status = status
+            namespace_status = status
+            failures = []
+            # Namespace removal alone does not settle launcher workers/bridges.
+            # Keep the control acknowledgement unconfirmed until ALL owners join.
+            self.cleanup_status = "cleanup_failed"
             if self.workspace:
-                self.workspace.cleanup_status = status
+                self.workspace.cleanup_status = "cleanup_failed"
             if hasattr(self, "original_client"):
                 docker.from_env, terminal_module.DockerComposeManager = self.original_client, self.original_manager
-            if self.artifacts.is_dir():
-                write_json(self.artifacts / "task-cleanup.json", {"attempt_id":self.attempt,"status":status})
-            if self.journal is not None:
-                self.journal.close()
-            if self.workspace:
-                self.workspace.join_held_executions()
+            finalizers = [self.journal.close if self.journal is not None else None,
+                self.workspace.join_held_executions if self.workspace is not None else None,
+                self.agent_launcher.close if self.agent_launcher is not None else None]
+            for finalize in finalizers:
+                if finalize is not None:
+                    try:finalize()
+                    except BaseException as error:failures.append(type(error).__name__)
+            if failures:status = "cleanup_failed"
+            try:
+                if self.artifacts.is_dir():
+                    write_json(self.artifacts / "task-cleanup.json", {"attempt_id":self.attempt,
+                        "status":status,"namespace_status":namespace_status})
+            except BaseException as error:
+                failures.append(type(error).__name__)
+                status = "cleanup_failed"
+            self.cleanup_status = status
+            if self.workspace:self.workspace.cleanup_status = status
+            if failures:
+                raise ExecutionError("official task owner finalization remains unconfirmed: "+", ".join(failures))
 
 
 def main():

@@ -17,6 +17,7 @@ impl Fixture {
         )
         .unwrap();
         GuestRequest {
+            inherit_working_directory: false,
             process_lifetime: Default::default(),
             workload_owner: None,
             config: BenchmarkConfig {

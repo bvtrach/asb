@@ -201,6 +201,29 @@ class ExecutionTests(unittest.TestCase):
                     self.assertEqual(workspace.held_executions, [])
                     self.assertTrue(api.stream.closed)
 
+    def test_workload_parent_release_follows_validated_metadata_and_preserves_transport_ownership(self):
+        for fault in [None,"metadata","release"]:
+            with self.subTest(fault=fault):
+                workspace,container,api = self.retained_workspace({"tree_quiesced":True} if fault == "metadata" else None)
+                released = []
+                class Transport(RUNTIME.DockerExecTransport):
+                    def release_workload_parent(self):
+                        released.append(True)
+                        if fault == "release":raise RUNTIME.ExecutionError("parent return unconfirmed")
+                with workspace:
+                    if fault is None:
+                        result = workspace.execute(["asb"],gate="application",workload_owner=self.owner(),transport_factory=Transport)
+                        self.assertTrue(result["workload_processes_retained"])
+                        self.assertFalse(result["metadata"]["tree_quiesced"])
+                        self.assertFalse(api.stream.closed)
+                        self.assertEqual(len(workspace.held_executions),1)
+                    else:
+                        with self.assertRaises(RUNTIME.ExecutionError):
+                            workspace.execute(["asb"],gate="application",workload_owner=self.owner(),transport_factory=Transport)
+                        self.assertIn("kill",container.events)
+                        self.assertEqual(workspace.held_executions,[])
+                self.assertEqual(released,[] if fault == "metadata" else [True])
+
     def test_invalid_retention_never_launches_an_execution(self):
         for owner in [{}, dict(self.owner(), guest_namespace=100), dict(self.owner(), token="bad")]:
             workspace, _, api, _ = self.workspace()

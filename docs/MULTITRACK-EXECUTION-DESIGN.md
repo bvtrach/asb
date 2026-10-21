@@ -733,8 +733,12 @@ controller's cancellation reader. Own and join every launcher worker and bridge;
 uncertainty requires stopped preservation. The SDK parent shell persists through
 evaluation independently of the measured client process tree.
 
-The SDK-session vertical slice now implements that transport, but is not enabled
-by the production task dispatcher. It stages a configured-user-owned private
+The SDK-session transport is now wired through a workload-owned final-client
+launch hook. Terminal 1.0 true same-shell declarations lazily initialize their
+original session after initial material capture and agent bootstrap; false
+declarations and installation commands retain the default transport. The task
+owns the launcher through removed/stopped namespace and held-stream cleanup.
+It stages a configured-user-owned private
 launcher and FIFOs; tmux keystrokes contain only private paths and receipt
 metadata, never the provider environment. Parent, started, exit and return
 receipts are staged privately and published with exact-target no-clobber links;
@@ -753,6 +757,41 @@ agent, provider or grader. Ordinary protocol tests separately cover non-root
 upload ownership, atomic receipt publication, existing final file/directory/
 symlink refusal, malformed frames/resolver output and partial-launch ownership.
 This is transport evidence, not production installed-client or verifier parity.
+
+The real guest driver now has a private, default-false inherited-directory
+contract. It resolves that directory once before launch, uses the same value
+for adapter command arguments, actual cwd, artifact collection and final-response
+extraction, and records it in private result metadata. Logical benchmark and
+project/runtime authority are not rewritten. Non-UTF-8 directory identities are
+refused rather than silently transformed; a renamed launch directory does not
+cause a second lookup or discard the process outcome.
+
+Retained-service execution has a distinct parent-release handshake. Only the
+existing validated principal-completion frames plus matching ownership/result
+metadata authorize it. A nonce/PID-bound release receipt and original parent
+PID/launcher-status return free the exact SDK shell for grading while retaining
+the supervisor, services and full bridge transport through namespace teardown.
+Release is not supervisor exit, quiescence or a grade. Raw release input is
+bounded before shell parsing; normal completion explicitly waits the exact
+child for its status and reaps the release reader. Failed/duplicate/uncertain
+release prevents grading; a missing or dead original shell is never replaced.
+All journal/held-stream/launcher finalizers are attempted even if another one
+fails. The task's overall cleanup acknowledgement stays unconfirmed until
+transport settlement succeeds; separate namespace removal is not falsely
+reported as complete owner settlement. A missing/dead original shell is refused
+before publishing the durable verifier-start marker.
+
+Exact-source qualification passed with unchanged frozen binary SHA-256
+`dc3c0dfda78d67ff040bd0f797ca11ab44e8d0b70173ca072a4a1feb59bfebe5`:
+the original Jupyter service fixture and official same-shell SDK grader passed
+in 66.180 seconds (`original-service-lifetime-07m4b2sr`), retaining identical
+parent PID/user/cwd/environment before agent launch, before grading and after
+grading. Its service and supervisor remained owned through grading and declared
+resources were removed. The actual guest-driver/fixture-client transport passed
+in 16.251 seconds (`sdk-session-transport-1s4m6tus`), including deliberately
+different inherited cwd, private request handling, exact exit seven and parent
+survival. Both retain source hashes and frozen binary identity. Neither starts
+an installed coding client or contacts an LLM provider.
 
 The bridge's Docker exec PID is not the client PID. Keep transport exec identity
 separate from the real stopped application's namespace PID and start-time
@@ -775,10 +814,16 @@ bounded streamed stdout/stderr and exact child exit, and exercise cancellation
 at launch/gate/execution/return. Test shell replacement/death, malformed or
 duplicate receipts, blocked channels, sibling preparation failure and teardown
 uncertainty. Qualify an actual installed client on a true same-shell original
-task with repeat-two/concurrency-two. Production dispatcher wiring, actual-client
-context parity, configured non-root runtime accessibility, post-preparation
-batch rendezvous and full cancellation qualification remain outstanding; the
-successful separate-shell and fake-client fixtures do not close them.
+task with repeat-two/concurrency-two. Actual installed-client context parity,
+configured non-root runtime accessibility, post-preparation batch rendezvous
+and full cancellation/release-race qualification remain outstanding; the
+successful separate-shell and fixture-client qualifications do not close them.
+The existing private-runtime prefix rule also needs an explicit owned-path
+solution for valid root (`/`) working directories; changing the shell cwd to
+evade that limitation is not an acceptable solution.
+Keep the resource journal's ownership lock until transport-finalization attempts
+finish when tightening the remaining cleanup ordering; releasing that lock is
+not itself confirmation of launcher settlement.
 
 ## Current test coverage
 

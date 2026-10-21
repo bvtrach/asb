@@ -5,9 +5,13 @@ Docker, providers or installed clients. The opt-in
 `benchmark_live_sdk_session.py` instead needs the installed Terminal-Bench SDK
 Python interpreter, `ASB_TEST_BENCHMARK_ASB` pointing to a frozen executable and
 `ASB_TEST_SWECATALOG_ROOT` pointing to the owned benchmark project. It exercises
-the original SDK shell with fake clients only: parent identity/user/cwd/env,
-nonzero/zero status and real child-versus-bridge measurement target. It is not
-an actual-agent, verifier or production-dispatch qualification. Successful owned
+the original SDK shell with fake clients and the actual registered-adapter guest
+driver: parent identity/user/cwd/env, nonzero/zero status and real child-versus-
+bridge measurement target. `benchmark_live_lifetime.py` exercises the lazy
+same-shell production hook with a fixture executable, retained Jupyter service
+and original SDK grader, requiring the same parent before/after grading.
+Neither is an installed coding-client, non-root or full repeated-batch
+qualification. Successful owned
 resources are removed; failures are stopped/preserved with private evidence.
 
 Real workload qualifications must use a separate frozen executable, not

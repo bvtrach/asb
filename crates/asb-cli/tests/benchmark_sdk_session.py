@@ -1,5 +1,6 @@
 """Provider-free SDK launch protocol fixtures; not an installed-SDK proof."""
 import json
+import io
 from pathlib import Path
 import shlex
 import subprocess
@@ -8,14 +9,14 @@ import tarfile
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0,str(Path(__file__).parents[1]/"assets/benchmarks"))
 from benchmark_execution import Container as BaseContainer, API
 from asb_execution import ExecutionError, ManagedDockerWorkspace
 from asb_material import MaterialError
-from asb_terminal_session import SDKSessionLauncher, _publish_receipt
+from asb_terminal_session import SDKSessionLauncher, _publish_receipt, _receive_release
 
 
 class Container(BaseContainer):
@@ -31,7 +32,7 @@ class Container(BaseContainer):
         elif "asb-session" in argv:self.nonce = argv[-1].split("asb-session-")[-1]
         elif "asb-session-receipt" in argv:
             name = argv[-1].rsplit("/",1)[1]
-            fields = {"started":"42","parent":"9","exit":"42 7","returned":"9"}
+            fields = {"started":"42","parent":"9","exit":"42 7","returned":"9 0","released":"42"}
             result.output = self.frames.get(name,(self.nonce+" "+fields[name]+"\n").encode())
         elif argv[0] == "/opt/asb-runtime/asb":
             result.output = json.dumps({"boot_id":"01234567-89ab-cdef-0123-456789abcdef",
@@ -49,6 +50,99 @@ class Container(BaseContainer):
 
 
 class SDKSessionTests(unittest.TestCase):
+    def test_missing_or_dead_original_shell_cannot_mark_verifier_started(self):
+        import asb_terminal_bench_1 as terminal
+        for session in [None,SimpleNamespace(is_session_alive=lambda:False)]:
+            with self.subTest(session=session),tempfile.TemporaryDirectory() as root:
+                task = terminal.TerminalBenchTask(None,"catalog","task",root)
+                task.invocation = {"identity":{"task_id":"task"}}
+                task.handler = SimpleNamespace(task=SimpleNamespace(run_tests_in_same_shell=True))
+                task.agent_session = session
+                with patch.dict(sys.modules,{"terminal_bench.agents.failure_mode":SimpleNamespace(FailureMode=object())}), \
+                        patch.object(terminal,"record_grading_start") as started:
+                    with self.assertRaisesRegex(ExecutionError,"original same-shell agent session"):
+                        task.grade_environment()
+                started.assert_not_called()
+
+    def test_task_cleanup_settles_launcher_even_when_other_finalizers_fail(self):
+        import asb_terminal_bench_1 as terminal
+        from types import ModuleType
+        package,subpackage,module = [ModuleType(name) for name in
+            ["terminal_bench","terminal_bench.terminal","terminal_bench.terminal.terminal"]]
+        package.__path__,subpackage.__path__ = [],[]
+        package.terminal,subpackage.terminal = subpackage,module
+        for fault in ["held","journal","record","serve-held"]:
+            with self.subTest(fault=fault),tempfile.TemporaryDirectory() as root:
+                task = terminal.TerminalBenchTask(None,"catalog","task",root)
+                task.interrupted = True
+                task.workspace = SimpleNamespace(join_held_executions=Mock(
+                    side_effect=ExecutionError("held failure") if fault in ["held","serve-held"] else None))
+                task.journal = SimpleNamespace(preserve=Mock(),close=Mock(
+                    side_effect=ExecutionError("journal failure") if fault == "journal" else None))
+                task.agent_launcher = SimpleNamespace(close=Mock())
+                with patch.dict(sys.modules,{"docker":ModuleType("docker"),"terminal_bench":package,
+                        "terminal_bench.terminal":subpackage,"terminal_bench.terminal.terminal":module}), \
+                        patch.object(terminal,"write_json",side_effect=ExecutionError("record failure") if fault == "record" else None):
+                    if fault == "serve-held":
+                        from asb_task_server import serve
+                        task.invocation = {}
+                        output = io.StringIO()
+                        with patch.object(terminal.TerminalBenchTask,"__enter__",return_value=task):
+                            self.assertEqual(serve(task,io.StringIO(""),output,idle_timeout=.1),1)
+                        closed = [json.loads(line) for line in output.getvalue().splitlines()
+                            if json.loads(line).get("event") == "closed"]
+                        self.assertEqual(closed,[{"event":"closed","cleanup":"cleanup_failed"}])
+                    else:
+                        with self.assertRaises(ExecutionError):task.__exit__()
+                task.agent_launcher.close.assert_called_once_with()
+                task.workspace.join_held_executions.assert_called_once_with()
+                task.journal.close.assert_called_once_with()
+                self.assertEqual(task.cleanup_status,"cleanup_failed")
+                self.assertEqual(task.workspace.cleanup_status,"cleanup_failed")
+
+    def test_release_reader_bounds_raw_bytes_and_requires_exact_nonce_newline(self):
+        nonce = "a"*32
+        for frame in [nonce.encode()+b"\n",nonce.encode(),b"b"*32+b"\n",
+                nonce.encode()+b"\nextra",b"x"*100000,nonce.encode()+b"\0\n",b"\0"*100000]:
+            with self.subTest(frame=frame[:40]),tempfile.TemporaryDirectory() as root:
+                (Path(root)/"release").write_bytes(frame)
+                result = subprocess.run(["/bin/bash","-c",
+                    "asb_child_pid=42; "+_receive_release(root,nonce)],capture_output=True,timeout=3)
+                valid = frame == nonce.encode()+b"\n"
+                self.assertEqual(result.returncode == 0,valid)
+                self.assertLessEqual((Path(root)/"release-input.tmp").stat().st_size,34)
+                if valid:
+                    self.assertEqual((Path(root)/"released").read_bytes(),nonce.encode()+b" 42\n")
+                else:self.assertFalse((Path(root)/"released").exists())
+
+    def test_only_true_same_shell_tasks_lazily_own_the_original_sdk_launcher(self):
+        from asb_terminal_bench_1 import TerminalBenchTask
+        for same_shell in [False,True]:
+            with self.subTest(same_shell=same_shell):
+                task = TerminalBenchTask(None,"catalog","task","artifacts")
+                created = []
+                session = SimpleNamespace()
+                def create(name,*,as_configured_user):
+                    self.assertEqual((name,as_configured_user),("agent",True))
+                    created.append(name)
+                    return session
+                task.handler = SimpleNamespace(task=SimpleNamespace(run_tests_in_same_shell=same_shell))
+                task.terminal = SimpleNamespace(create_session=create)
+                self.assertIsNone(task.agent_session)
+                launcher = task.prepare_agent_transport({"binary":"/frozen/asb","measure_target":True})
+                if same_shell:
+                    self.assertIs(launcher,task.agent_launcher)
+                    self.assertIs(launcher.session,session)
+                    self.assertTrue(launcher.inherit_working_directory)
+                    self.assertTrue(launcher.require_host_target)
+                    with self.assertRaisesRegex(ExecutionError,"already initialized"):
+                        task.prepare_agent_transport({"binary":"/frozen/asb"})
+                    launcher.close()
+                    self.assertEqual(created,["agent"])
+                else:
+                    self.assertIsNone(launcher)
+                    self.assertEqual(created,[])
+
     def test_receipts_publish_complete_private_bytes_without_overwriting(self):
         with tempfile.TemporaryDirectory() as root:
             for name,variables,expected in [
@@ -139,6 +233,7 @@ class SDKSessionTests(unittest.TestCase):
         _,uid,gid,mode,script = container.archives[0]
         self.assertEqual((uid,gid,mode),(1001,1002,0o600))
         self.assertIn(b"private-key-value",script)
+        self.assertIn(b'wait -n "$asb_child_pid" "$asb_release_pid"',script)
         self.assertIn(b'if wait "$asb_child_pid"',script)
         self.assertTrue(script.endswith(b"exit 0\n"))
         self.assertTrue(launcher.transports[0].closed)
@@ -169,10 +264,25 @@ class SDKSessionTests(unittest.TestCase):
                 self.assertIn("kill",container.events)
                 launcher.close();workspace.close()
 
+    def test_parent_release_is_single_use_and_requires_original_parent_and_launcher_success(self):
+        for name,data in [(None,None),("released",b"{nonce} 43\n"),
+                ("released",b"wrong 42\n"),("returned",b"{nonce} 9 1\n")]:
+            with self.subTest(name=name,data=data):
+                workspace,container,launcher,_ = self.fixture()
+                transport = launcher(workspace.client.api,container,["agent"],{},"/task")
+                with patch("asb_material_exec.run",side_effect=self.resolve):transport.target(42)
+                if name:
+                    container.frames[name] = data.replace(b"{nonce}",container.nonce.encode())
+                    with self.assertRaises(ExecutionError):transport.release_workload_parent()
+                else:transport.release_workload_parent()
+                with self.assertRaisesRegex(ExecutionError,"already attempted"):transport.release_workload_parent()
+                launcher.close();workspace.close()
+
     def test_bad_nonce_pid_or_parent_identity_cannot_admit_or_complete(self):
         for name,data in [("started",b"wrong 42\n"),("started",b"x"*129),
                 ("parent",b"{nonce} 42\n"),("exit",b"{nonce} 43 7\n"),
-                ("exit",b"{nonce} 42 256\n"),("returned",b"{nonce} 10\n")]:
+                ("exit",b"{nonce} 42 256\n"),("returned",b"{nonce} 10 0\n"),
+                ("returned",b"{nonce} 9 1\n")]:
             with self.subTest(name=name,data=data):
                 workspace,container,launcher,_ = self.fixture()
                 run = container.exec_run
