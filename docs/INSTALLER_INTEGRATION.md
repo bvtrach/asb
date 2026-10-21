@@ -104,3 +104,11 @@ Root independently approved the exact test-only merge and `f57306b3` proof after
 reading the complete diff, both ten-scenario transcripts, restored-mode/removal
 checks and unchanged frozen-executable hash. The known owning-fixture promotion
 block is closed locally; actual-main ancestry and hosted/package CI remain due.
+
+Signed merge `eca2f9cf539f6660dac1db4c203814dd55623985` folds actual main after
+PR #301. It changes only the raw-recording proof/ledger documentation; installer
+production, all Rust/Python tests, Cargo 0.2.37 and workflows remain identical to
+reviewed `7cda4401`. Independent local qualification and the later owning
+checkout/package fixture proof therefore retain their stated exact sources.
+This ancestry update is not claimed as a new full run. PR #301's post-merge
+verification and v0.2.36 release must finish before this repair is merged.

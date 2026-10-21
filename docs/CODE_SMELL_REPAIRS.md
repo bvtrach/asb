@@ -14,6 +14,16 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+Latest verified delivery: agent-artifact repair [PR #300](https://github.com/martin-beck/asb/pull/300)
+merged as `8a115715e312b25b17385a0505c78d49994495b0`. Exact-head CI
+`39676012093` and both post-merge jobs `39677637820` passed. Signed tag
+`v0.2.35` targets that commit; GitHub reports its signature valid, and the
+release was published on 21 October at 21:29:24 UTC. Recording cleanup PR #301
+then merged as `574d9661f2211fb21e961312961c4b557c948833` after exact-head
+CI `39677762299` passed; post-merge run `39679248531` and release v0.2.36
+remain pending at this documentation checkpoint. Earlier staged/local proof
+below remains historical and does not replace these separate delivery checks.
+
 Recording raw-source custody, staged patch **0.2.36**: integrated source
 `05ebf11d` retains the exact reviewed raw core from `bd2dea5e` alongside artifact,
 publication and bounded controller stack `b25d9f11`. The fresh focused matrix
