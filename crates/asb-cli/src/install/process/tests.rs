@@ -462,3 +462,55 @@ fn core_review_step_preparation_uses_frozen_config_not_a_fresh_invalid_file() {
         "preparation reloaded a configuration that should be frozen for this operation"
     );
 }
+
+#[test]
+fn explicit_operation_proxy_snapshot_is_not_replaced_by_foreign_network_scope() {
+    let foreign = root();
+    fs::create_dir(foreign.join(".asb")).unwrap();
+    let mut invalid = ProjectConfig::default();
+    invalid.installation.download_timeout_seconds = 0;
+    fs::write(
+        foreign.join(".asb/project.toml"),
+        toml::to_string(&invalid).unwrap(),
+    )
+    .unwrap();
+    let root = root();
+    let config = ProjectConfig {
+        proxy: crate::project::NetworkProxy {
+            http: Some("http://127.0.0.1:3128".into()),
+            no_proxy: Some("frozen-operation.invalid".into()),
+            ..Default::default()
+        },
+        ..ProjectConfig::default()
+    };
+    let context = OperationContext::new(&root, &config).unwrap();
+    let mut expected = std::process::Command::new("/bin/true");
+    config
+        .proxy
+        .apply(&mut expected, &|name| std::env::var(name).ok());
+    let _foreign_scope = crate::project::network_project(&foreign);
+    let step = PreparedStep::new(
+        &context,
+        "/bin/true",
+        Purpose::Probe,
+        "explicit project fixture",
+    )
+    .unwrap();
+    let environments = |command: &std::process::Command| {
+        command
+            .get_envs()
+            .map(|(key, value)| (key.to_owned(), value.map(std::ffi::OsStr::to_owned)))
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        environments(&step.command) == environments(&expected),
+        "the explicit operation proxy snapshot was not used; values omitted to protect environment credentials"
+    );
+    assert!(
+        crate::project::load(&foreign)
+            .unwrap_err()
+            .to_string()
+            .contains("installation.download_timeout_seconds")
+    );
+    assert_eq!(context.root, root);
+}

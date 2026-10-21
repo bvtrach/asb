@@ -112,7 +112,7 @@ impl NetworkProxy {
         (config, omitted)
     }
 
-    fn apply(&self, command: &mut Command, get: &impl Fn(&str) -> Option<String>) {
+    pub(crate) fn apply(&self, command: &mut Command, get: &impl Fn(&str) -> Option<String>) {
         let select = |names: &[&str], configured: &Option<String>| {
             names
                 .iter()

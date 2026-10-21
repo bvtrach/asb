@@ -72,6 +72,7 @@ pub(crate) struct OperationContext {
     root: PathBuf,
     config_path: PathBuf,
     budgets: InstallationConfig,
+    proxy: crate::project::NetworkProxy,
     deadline: Instant,
     cancel: Arc<AtomicBool>,
 }
@@ -95,6 +96,7 @@ impl OperationContext {
             root: root.to_owned(),
             config_path,
             budgets: config.installation.clone(),
+            proxy: config.proxy.clone(),
             deadline,
             cancel: Arc::new(AtomicBool::new(false)),
         })
@@ -254,7 +256,9 @@ impl PreparedStep {
         let (mut command, route) = launch.native(Some(&runtime().map_err(crate::io_error)?));
         #[cfg(not(target_os = "linux"))]
         let (mut command, route) = launch.native(None);
-        crate::project::apply_network_proxy(&mut command, &context.root)?;
+        context
+            .proxy
+            .apply(&mut command, &|name| std::env::var(name).ok());
         Ok(Self {
             command,
             route: Some(route),

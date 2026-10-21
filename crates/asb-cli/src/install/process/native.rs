@@ -32,6 +32,7 @@ pub(crate) struct LogReport {
     pub(crate) discarded: usize,
     pub(crate) fault: Option<io::ErrorKind>,
     pub(crate) settled: bool,
+    pub(crate) truncated: bool,
 }
 
 struct LogSink {
@@ -115,9 +116,13 @@ impl LogSink {
         }
     }
     fn push(&self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
         let mut report = self.report.lock().unwrap();
         let count = bytes.len().min(LOG_BYTES.saturating_sub(report.accepted));
-        if count == 0 || self.queue.is_none() || report.fault.is_some() {
+        if report.truncated || count == 0 || self.queue.is_none() || report.fault.is_some() {
+            report.truncated = true;
             report.discarded = report.discarded.saturating_add(bytes.len());
             return;
         }
@@ -131,12 +136,15 @@ impl LogSink {
             Ok(()) => {
                 report.accepted += count;
                 report.discarded = report.discarded.saturating_add(bytes.len() - count);
+                report.truncated |= count != bytes.len();
             }
             Err(mpsc::TrySendError::Full(_)) => {
-                report.discarded = report.discarded.saturating_add(bytes.len())
+                report.discarded = report.discarded.saturating_add(bytes.len());
+                report.truncated = true;
             }
             Err(mpsc::TrySendError::Disconnected(_)) => {
                 report.fault.get_or_insert(io::ErrorKind::BrokenPipe);
+                report.truncated = true;
                 report.discarded = report.discarded.saturating_add(bytes.len());
             }
         }
@@ -361,6 +369,16 @@ fn supervise(
         #[cfg(test)]
         step.log_writer.take(),
     );
+    if let Some(reason) = interrupted(&step.context, deadline) {
+        let evidence = _lease
+            .evidence
+            .clone()
+            .or_else(|| log.report.lock().unwrap().path.clone());
+        let _ = send.send(Err(InstallFailure::Abort(abort(
+            &step, key, reason, true, true, evidence,
+        ))));
+        return; // No guardian/target was admitted; no invented exit status.
+    }
     step.command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let admitted = step
         .route
@@ -413,11 +431,18 @@ fn supervise(
         }
     }
     if cause.is_none() {
-        if gate.resume().is_err() {
-            cause = Some(AbortCause::Custody);
-        }
+        let resumed = match gate.resume_when(|| {
+            cause = interrupted(&step.context, deadline);
+            cause.is_none()
+        }) {
+            Ok(resumed) => resumed,
+            Err(_) => {
+                cause = Some(AbortCause::Custody);
+                false
+            }
+        };
         #[cfg(test)]
-        if let Some(pause) = &step.before_continue {
+        if resumed && let Some(pause) = &step.before_continue {
             // An observation-only scheduling hook ensures an already resumed
             // target can publish its marker before cancellation is polled.
             let until = Instant::now() + Duration::from_secs(2);
@@ -521,6 +546,16 @@ fn supervise(
             return;
         }
         std::thread::sleep(Duration::from_millis(if sent { 25 } else { 2 }));
+    }
+}
+
+fn interrupted(context: &OperationContext, deadline: Instant) -> Option<AbortCause> {
+    if Instant::now() >= deadline {
+        Some(AbortCause::Deadline)
+    } else if context.cancel.load(Ordering::Acquire) {
+        Some(AbortCause::Cancelled)
+    } else {
+        None
     }
 }
 

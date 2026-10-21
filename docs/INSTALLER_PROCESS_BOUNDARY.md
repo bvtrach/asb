@@ -500,3 +500,60 @@ as `target/qualification/installer44-review-red-libtests`; its post-run hash is
 recorded in `target/installer44-review-red.sha256`. This checkpoint contains
 tests/hooks/evidence only, not the fixes. Original legacy-API red tests remain
 unchanged. No broad caller migration, full suite, live tool installation or PR.
+
+## Narrow core-review repair and focused evidence
+
+Observed-red source `6f8ee9a796b3044c620f305c97974083834a1074` stays immutable.
+The test-scoped supervisor now checks cancel/deadline after log preparation and
+before admission. Private ManagedGate.resume_when checks its operation condition
+AFTER actual wait_stopped, immediately before existing CONT. False retains the
+stopped guardian for normal proof-aware cancellation; ordinary resume delegates
+with constant true, preserving signature/protocol/behavior. A private test-only
+readiness delay has no production representation. Its actual-native test delays
+readiness300ms across a100ms deadline, refuses execution, then observes actual
+guardian exit/quiescence without inventing an application exit status. Existing
+route validation and admission ownership are unchanged.
+
+Log truncation is sticky after the first lost byte: queue pressure, partial cap
+admission or writer loss cannot be followed by accepted later chunks. Earlier
+queued prefix bytes may finish. The held-writer test establishes accepted and
+retained17 bytes (`A`+16`B`), discarded8 (`LOST`+`LATE`), and exact contiguous
+contents after writer settlement. Independent held-writer cancellation remains
+green. OperationContext snapshots the SAME explicit ProjectConfig.proxy with
+its budgets; Step uses existing NetworkProxy.apply without project load or
+NETWORK_PROJECT. Its original environment/loopback/CGI/Node rules remain intact.
+A new invalid file does not affect the current operation; fresh public load
+still rejects it. A foreign invalid network scope cannot replace the explicitly
+frozen configuration. No proxy algorithm was copied or new policy added.
+
+| Repair evidence | Actual result |
+| --- | --- |
+| `target/installer44-core-repair-build.log` | Owning actual build FIRST,13.95s,exit0 |
+| `target/installer44-core-repair-focus.log` | Core15/0/0ignored,24.50s compile,19.15s runtime |
+| `target/installer44-core-repair-managed.log` | Actual ManagedGate14/0/0ignored,6.43s |
+| `target/installer44-core-repair-proxy.log` | Existing proxy/CGI/Node/scope/legacy-config6/0,0.00s |
+| `target/installer44-core-repair-clippy.log` | Strict workspace/all-targets/all-features `-D warnings` PASS,15.94s |
+| `target/installer44-core-repair-snapshot-final.log` | Refined foreign-scope case1/0,23.29s compile,0.00s runtime |
+
+These are35 distinct focused tests; the final case repeats a core15 member,
+not a36th distinct test. After15, only test initialization became a struct
+literal and its comparison failure became a static message protecting possible
+environment proxy credentials. That exact case passed again; no worker/guard
+logic changed after15/14/6. No new failing repair run or blind retry occurred.
+Original red transcripts and earlier frozen actual/libtests remain preserved.
+
+Actual ASB before/after all checks:
+`0f151fbb18460b5c05a047150b17631e0d58345bbd5de14171f6e6a061801b54`,
+preserved in `target/qualification/installer44-core-repair-asb`.
+Final libtest post-run hash:
+`2ac699f16f07070b0fa4af2d23150777f9b3de406a1cff3a917aab42eb57156d`,
+preserved in `target/qualification/installer44-core-repair-libtests`.
+See `target/installer44-core-repair-final.sha256`; no pre-run final libtest hash
+is claimed. Formatting/diff checks passed; all handles are terminal. Broad
+migration is paused for root's independent source/proof review.
+
+This repairs prototype-core gaps, NOT the production installer class. The
+supervisor stays cfg(test)-only; legacy APIs and their four red fixtures are
+unchanged. Actual Staging-bound consumed permission, typed all-caller abort/
+fallback migration, remaining offline faults and outer diagnostic rendering
+remain required. No full suite, external installation, PR, push or release.
