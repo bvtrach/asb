@@ -24,10 +24,18 @@ requests and preparation-failure events preserve the new material and launch
 gates; agent requests retain the shared preparation budget. Invalid later grades
 revoke normal-close permission, never confirmed preservation. The generic
 transport still permits untagged retained-inspection responses and drains unknown
-in-flight cancellation events. Source-only semantic integration and test-source
-updates are complete; independent review, all runtime qualification, strict
-Clippy, hosted/package CI, merge, post-merge verification and release remain
-pending for this new combined tree. The older pre-main full suite passed 1,100
+in-flight cancellation events. Independent source review approved `c9a21b26`;
+the subsequent `cf658ba2` merge adds only the qualified capture delivery ledger.
+Fresh all-target/all-feature offline qualification at that source passed
+**1,203 tests**, zero failures and 21 explicit optional skips across 22 targets.
+Focused protocol/controller/remote, actual Python task-server and repeated-run
+checks additionally passed 98 tests. Strict Clippy, formatting and sequential
+offline build/private Rust docs/pinned AutoUML 0.7.2/flows/interactive views/bash
+and zsh completions passed. The actual executable SHA-256 remained unchanged
+before/after runtime tests and the final build:
+`c489e15faa664c44df3201f8ddeff8738a6d8feecc3cd93b665efb6414115a41`.
+Hosted/package CI, PR merge, post-merge verification and release remain pending.
+The older pre-main full suite passed 1,100
 tests with 21 optional skips, but is historical, not qualification of this merge.
 Blocking controller request/cleanup transport is a separate pending class.
 
