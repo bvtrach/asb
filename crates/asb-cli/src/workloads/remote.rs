@@ -1,7 +1,8 @@
 //! Common execution/evaluation protocol for workload-owned official engines.
 use crate::workloads::controller::{Controller, decode_base64};
 use crate::workloads::session::{
-    BaselineEvidence, ExecutionContext, ExecutionResult, PreparationContext, TaskInvocation,
+    BaselineEvidence, ExecutionContext, ExecutionResult, PreparationContext, ResourceDisposition,
+    ResourceSettlement, TaskInvocation,
 };
 use crate::workloads::{Evaluation, TaskIdentity, WorkloadSession};
 use serde_json::{Value, json};
@@ -320,6 +321,7 @@ struct Session {
     measurement_active: bool,
     preparation_active: bool,
     cleanup_attempted: bool,
+    settlement: Option<ResourceSettlement>,
     evaluation_completed: bool,
     artifacts: PathBuf,
 }
@@ -538,7 +540,7 @@ pub(crate) fn launch(
             Ok(prepared) => prepared,
             Err(error) => {
                 return Err(match controller.cancel(CANCELLATION_TIMEOUT) {
-                    Ok(()) => error,
+                    Ok(_) => error,
                     Err(cleanup) => {
                         format!("{error}; workload cancellation cleanup failed: {cleanup}")
                     }
@@ -562,6 +564,7 @@ pub(crate) fn launch(
         measurement_active: false,
         preparation_active: false,
         cleanup_attempted: false,
+        settlement: None,
         evaluation_completed: false,
         artifacts,
     }))
@@ -605,9 +608,17 @@ fn validate_initial_material(value: &Value) -> Result<String, String> {
 }
 
 impl Session {
-    fn cancel(&mut self) -> Result<(), String> {
+    fn cancel(&mut self) -> Result<ResourceDisposition, String> {
+        if let Some(settlement) = &self.settlement {
+            return Ok(settlement.disposition);
+        }
         self.cleanup_attempted = true;
-        self.controller.cancel(CANCELLATION_TIMEOUT)
+        let disposition = self.controller.cancel(CANCELLATION_TIMEOUT)?;
+        self.settlement = Some(ResourceSettlement {
+            disposition,
+            diagnostic: None,
+        });
+        Ok(disposition)
     }
 
     fn begin_agent_preparation(
@@ -902,26 +913,41 @@ impl WorkloadSession for Session {
         self.initial_material.clone()
     }
     fn cancel_prepared(&mut self) -> Result<(), String> {
-        self.cancel()
+        self.cancel().map(|_| ())
     }
     fn checkpoint_evidence(&self) -> Vec<PathBuf> {
         vec![self.artifacts.clone()]
     }
-    fn finish(&mut self) -> Result<(), String> {
+    fn finish(&mut self) -> Result<ResourceSettlement, String> {
+        if let Some(settlement) = &self.settlement {
+            return Ok(settlement.clone());
+        }
         if !self.evaluation_completed {
             self.cancel()?;
-            return Err(format!(
-                "official evaluation is incomplete; task resources and partial work were stopped and preserved at {}; do not repeat the agent as the same attempt",
-                self.artifacts.display()
-            ));
+            return self
+                .settlement
+                .clone()
+                .ok_or("workload settlement was not confirmed".into());
         }
         self.cleanup_attempted = true;
         match self.controller.finish(CANCELLATION_TIMEOUT) {
-            Ok(()) => Ok(()),
-            Err(error) => Err(match self.cancel() {
-                Ok(()) => error,
-                Err(cleanup) => format!("{error}; workload cancellation cleanup failed: {cleanup}"),
-            }),
+            Ok(settlement) => {
+                self.settlement = Some(settlement.clone());
+                Ok(settlement)
+            }
+            Err(error) => match self.cancel() {
+                Ok(disposition) => {
+                    let settlement = ResourceSettlement {
+                        disposition,
+                        diagnostic: Some(error),
+                    };
+                    self.settlement = Some(settlement.clone());
+                    Ok(settlement)
+                }
+                Err(cleanup) => Err(format!(
+                    "{error}; workload cancellation cleanup failed: {cleanup}"
+                )),
+            },
         }
     }
     fn invocation(&self) -> &TaskInvocation {
@@ -1229,6 +1255,7 @@ sys.stdout.write(result['project_configuration'])
             measurement_active: false,
             preparation_active: false,
             cleanup_attempted: false,
+            settlement: None,
             evaluation_completed: false,
             artifacts: "retained-attempt".into(),
         }
@@ -1263,9 +1290,23 @@ sys.stdout.write(result['project_configuration'])
             let mut task = session(&[invalid], false);
             assert!(task.evaluate("").is_err());
             assert!(!task.evaluation_completed);
-            let error = task.finish().unwrap_err();
-            assert!(error.contains("stopped and preserved at retained-attempt"));
+            let settlement = task.finish();
+            assert!(
+                settlement.is_ok(),
+                "confirmed preservation is not uncertain cleanup: {settlement:?}"
+            );
             assert!(task.cleanup_attempted);
+            let settlement = settlement.unwrap();
+            assert_eq!(
+                settlement.disposition,
+                ResourceDisposition::StoppedPreserved
+            );
+            assert!(settlement.diagnostic.is_none());
+            assert_eq!(
+                task.finish().unwrap(),
+                settlement,
+                "settled finish must not repeat cancellation"
+            );
         }
     }
 
@@ -1282,6 +1323,37 @@ sys.stdout.write(result['project_configuration'])
         assert!(task.evaluation_completed);
         assert!(task.evaluate("").is_err());
         assert!(!task.evaluation_completed);
-        assert!(task.finish().unwrap_err().contains("preserved"));
+        assert!(
+            task.finish().is_ok(),
+            "later evaluator failure must preserve without authorizing removal"
+        );
+    }
+
+    #[test]
+    fn failed_close_keeps_its_diagnostic_after_confirmed_cached_preservation() {
+        let mut task = session(&[], false);
+        let script = "import json,sys\nprint(json.dumps(dict(event='ready')),flush=True)\nassert json.loads(sys.stdin.readline())['op']=='close'\nprint(json.dumps(dict(event='error',error_class='ExecutionError',reason='fixture close failure')),flush=True)\nassert sys.stdin.read()==''\nprint(json.dumps(dict(event='closed',cleanup='stopped-preserved')),flush=True)\nsys.exit(1)\n";
+        let mut command = Command::new("python3");
+        command.args(["-u", "-c", script]);
+        task.controller = Controller::spawn(&mut command).unwrap();
+        task.controller
+            .receive(Instant::now() + Duration::from_secs(3))
+            .unwrap();
+        task.evaluation_completed = true;
+        let settled = task.finish().unwrap();
+        assert_eq!(settled.disposition, ResourceDisposition::StoppedPreserved);
+        assert!(
+            settled
+                .diagnostic
+                .as_ref()
+                .unwrap()
+                .contains("fixture close failure")
+        );
+        assert_eq!(task.finish().unwrap(), settled);
+        assert_eq!(
+            task.cancel().unwrap(),
+            ResourceDisposition::StoppedPreserved
+        );
+        assert_eq!(task.finish().unwrap(), settled);
     }
 }

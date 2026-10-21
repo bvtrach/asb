@@ -12,6 +12,45 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static NEXT_ATTEMPT: AtomicU64 = AtomicU64::new(0);
 
+/// Confirmed disposition of adapter-owned execution resources, not a grade.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ResourceDisposition {
+    /// No adapter-owned execution resources required settlement.
+    NotRequired,
+    /// Owned execution resources were removed.
+    Removed,
+    /// No owned execution resources were created.
+    NotCreated,
+    /// Owned execution resources are stopped and retained for inspection.
+    StoppedPreserved,
+}
+
+impl ResourceDisposition {
+    /// Legacy records may omit disposition; present values must agree exactly.
+    pub(crate) fn matches_record(
+        disposition: Option<&serde_json::Value>,
+        confirmed: bool,
+        summary: &serde_json::Value,
+    ) -> bool {
+        match (disposition, summary.get("workload_resource_disposition")) {
+            (None, None) => true,
+            (Some(top), Some(value)) if top == value => {
+                serde_json::from_value::<Option<Self>>(value.clone())
+                    .is_ok_and(|recorded| confirmed == recorded.is_some())
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Positive settlement may retain a failed normal-teardown diagnostic.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResourceSettlement {
+    pub disposition: ResourceDisposition,
+    pub diagnostic: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ProcessLifetime {
@@ -187,9 +226,12 @@ pub(crate) trait WorkloadSession {
     fn checkpoint_evidence(&self) -> Vec<PathBuf> {
         Vec::new()
     }
-    /// Confirm owned resource cleanup before reporting the run as completed.
-    fn finish(&mut self) -> Result<(), String> {
-        Ok(())
+    /// Settle execution resources independently of grading. Err means unconfirmed.
+    fn finish(&mut self) -> Result<ResourceSettlement, String> {
+        Ok(ResourceSettlement {
+            disposition: ResourceDisposition::NotRequired,
+            diagnostic: None,
+        })
     }
     fn execute(
         &mut self,
@@ -270,6 +312,66 @@ impl WorkloadSession for FileSession {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn recorded_settlement_is_strict_without_inventing_legacy_removal() {
+        use super::ResourceDisposition as D;
+        use serde_json::json;
+        let fields = [
+            None,
+            Some(json!(null)),
+            Some(json!("removed")),
+            Some(json!("stopped-preserved")),
+            Some(json!("unknown")),
+        ];
+        for top in &fields {
+            for nested in &fields {
+                for confirmed in [false, true] {
+                    let mut summary = json!({});
+                    if let Some(value) = nested {
+                        summary["workload_resource_disposition"] = value.clone();
+                    }
+                    let expected = match (top, nested) {
+                        (None, None) => true,
+                        (Some(a), Some(b)) if a == b => {
+                            (a.is_null() && !confirmed)
+                                || ((a == "removed" || a == "stopped-preserved") && confirmed)
+                        }
+                        _ => false,
+                    };
+                    assert_eq!(
+                        D::matches_record(top.as_ref(), confirmed, &summary),
+                        expected,
+                        "top={top:?}, summary={nested:?}, confirmed={confirmed}"
+                    );
+                }
+            }
+        }
+        for disposition in [
+            D::NotRequired,
+            D::Removed,
+            D::NotCreated,
+            D::StoppedPreserved,
+        ] {
+            let record = json!({"workload_resource_disposition":disposition});
+            assert!(D::matches_record(
+                record.get("workload_resource_disposition"),
+                true,
+                &record
+            ));
+            assert!(!D::matches_record(
+                record.get("workload_resource_disposition"),
+                false,
+                &record
+            ));
+            assert!(!D::matches_record(None, true, &record));
+        }
+        assert!(!D::matches_record(
+            None,
+            true,
+            &json!({"workload_resource_disposition":"unknown"})
+        ));
+    }
+
     #[test]
     fn evaluator_side_effects_cannot_become_the_verified_initial_material() {
         use super::*;

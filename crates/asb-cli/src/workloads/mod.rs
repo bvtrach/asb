@@ -46,7 +46,9 @@ pub(crate) fn registered_sources() -> impl Iterator<Item = (&'static str, &'stat
 pub(crate) use selection::{PlanningCatalog, TaskSelection};
 pub(crate) use session::BaselineEvidence;
 pub use session::TaskIdentity;
-pub(crate) use session::{ExecutionContext, PreparationContext, WorkloadSession};
+pub(crate) use session::{
+    ExecutionContext, PreparationContext, ResourceDisposition, WorkloadSession,
+};
 
 pub(crate) fn planning_catalog(
     name: &str,

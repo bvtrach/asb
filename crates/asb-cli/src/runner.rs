@@ -61,6 +61,8 @@ struct RunResult<'a> {
     model: &'a str,
     process_success: bool,
     workload_success: Option<bool>,
+    workload_resource_disposition: Option<workloads::ResourceDisposition>,
+    workload_artifacts: Vec<PathBuf>,
     workload_evaluation: &'static str,
     workload_baseline_passed: Option<bool>,
     workload_baseline: workloads::BaselineEvidence,
@@ -927,7 +929,34 @@ fn run_mode(
         || workload_session.finish(),
     )?;
     let workload_cleanup_confirmed = cleanup.is_ok();
-    if let Err(error) = cleanup {
+    let workload_resource_disposition = cleanup.as_ref().ok().map(|settled| settled.disposition);
+    let cleanup_error = match cleanup {
+        Ok(settled) => settled.diagnostic,
+        Err(error) => Some(error),
+    };
+    let workload_artifacts = workload_session.checkpoint_evidence();
+    if workload_resource_disposition == Some(workloads::ResourceDisposition::StoppedPreserved)
+        && !json
+    {
+        emit_warning(
+            warnings,
+            output,
+            format!(
+                "Warning: workload resources were stopped and preserved; inspect {}; do not retry the same attempt implicitly",
+                workload_artifacts
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )?;
+    }
+    if let Some(error) = cleanup_error {
+        if workload_cleanup_confirmed && let Some(session) = measurement_session.as_mut() {
+            session
+                .event(LifecycleEvent::PhaseFailed(LifecyclePhase::WorkloadCleanup))
+                .map_err(Error::Run)?;
+        }
         let message = format!("workload cleanup failed: {error}");
         match run_error.as_mut() {
             Some(previous) => {
@@ -1037,17 +1066,17 @@ fn run_mode(
         model: &config.model,
         process_success,
         workload_success: resolution_eligible.then_some(workload_success).flatten(),
+        workload_resource_disposition,
+        workload_artifacts,
         workload_evaluation: evaluation_kind,
         workload_baseline_passed,
         workload_baseline,
         workload_failure,
         failure_kind: failure.as_ref().map(|(kind, _)| *kind),
         failure_reason: failure.as_ref().map(|(_, reason)| reason.clone()),
-        success_rate: resolution_eligible.then_some(if workload_success == Some(true) {
-            1.0
-        } else {
-            0.0
-        }),
+        success_rate: workload_success
+            .filter(|_| resolution_eligible)
+            .map(|passed| if passed { 1.0 } else { 0.0 }),
         adapter_smoke_success: (evaluation_kind == "adapter-smoke").then_some(success),
         elapsed_ms: run_metrics.elapsed_ms,
         exit_code: child.status.code(),
@@ -1076,6 +1105,8 @@ fn run_mode(
             .event(LifecycleEvent::RunFinishing)
             .map_err(Error::Run)?;
         let measured = measurements::RunMeasurement {
+            workload_resource_disposition: result.workload_resource_disposition,
+            workload_artifacts: &result.workload_artifacts,
             replica_index: result.replica_index,
             execution_cohort: result.execution_cohort,
             schema_version: 2,
@@ -1120,7 +1151,7 @@ fn run_mode(
         &config.log_file,
         &result,
         workload_cleanup_confirmed,
-        &workload_session.checkpoint_evidence(),
+        &result.workload_artifacts,
         &proxy_evidence,
         &completion::Context {
             replica: options.replica,
@@ -1398,6 +1429,8 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
         "task": result.task,
         "process_success": result.process_success,
         "workload_success": result.workload_success,
+        "workload_resource_disposition": result.workload_resource_disposition,
+        "workload_artifacts": result.workload_artifacts,
         "workload_evaluation": result.workload_evaluation,
         "workload_baseline_passed": result.workload_baseline_passed,
         "workload_baseline": result.workload_baseline,
@@ -2191,6 +2224,8 @@ mod tests {
             .unwrap();
         session
             .finish(crate::measurements::RunMeasurement {
+                workload_resource_disposition: None,
+                workload_artifacts: &[],
                 replica_index: None,
                 execution_cohort: None,
                 schema_version: 1,
@@ -2404,7 +2439,7 @@ mod tests {
                 &config,
                 "run.log",
                 &result,
-                resolved,
+                true,
                 &evidence,
                 &crate::proxy::Evidence {
                     output_files: Vec::new(),
@@ -2440,7 +2475,12 @@ mod tests {
                 evidence[0].to_str().unwrap()
             );
             let resolved = record["summary"]["workload_success"].as_bool().unwrap();
-            assert_eq!(record["workload_cleanup_confirmed"], resolved);
+            assert_eq!(record["workload_cleanup_confirmed"], true);
+            assert_eq!(record["workload_resource_disposition"], "not-required");
+            assert_eq!(
+                record["workload_resource_disposition"],
+                record["summary"]["workload_resource_disposition"]
+            );
             assert_eq!(record["proxy_cleanup_confirmed"], true);
             assert_eq!(record["proxy_evidence"], serde_json::json!([]));
             outcomes.push(resolved);
@@ -2500,6 +2540,8 @@ mod tests {
             model: "test-model",
             process_success: true,
             workload_success: Some(true),
+            workload_resource_disposition: Some(crate::workloads::ResourceDisposition::NotRequired),
+            workload_artifacts: Vec::new(),
             workload_evaluation: "bundled-fixture",
             workload_baseline_passed: Some(false),
             workload_baseline: crate::workloads::BaselineEvidence::Measured {

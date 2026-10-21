@@ -347,6 +347,8 @@ classDiagram
         +success: bool
         +process_success: bool
         +workload_success: Option~bool~
+        +workload_resource_disposition: Option~crate::workloads::ResourceDisposition~
+        +workload_artifacts: &'a [PathBuf]
         +failure_kind: Option~&'a str~
         +failure_reason: Option~&'a str~
         +success_rate: Option~f64~
@@ -395,6 +397,8 @@ classDiagram
         -model: &'a str
         -process_success: bool
         -workload_success: Option~bool~
+        -workload_resource_disposition: Option~workloads::ResourceDisposition~
+        -workload_artifacts: Vec~PathBuf~
         -workload_evaluation: &'static str
         -workload_baseline_passed: Option~bool~
         -workload_baseline: workloads_BaselineEvidence
@@ -1707,6 +1711,7 @@ classDiagram
         -schema_version: u32
         -scope: String
         -workload_cleanup_confirmed: bool
+        -workload_resource_disposition: Option~Value~
         -proxy_cleanup_confirmed: bool
         -summary: Value
         -workload_evidence: Vec~PathBuf~
@@ -1887,9 +1892,10 @@ classDiagram
         +send(request: &Value) cassette_Result~(), String~
         +receive(deadline: Instant) cassette_Result~Value, String~
         +receive_raw(deadline: Instant) cassette_Result~Value, String~
-        +cancel(timeout: Duration) cassette_Result~(), String~
+        +cancel(timeout: Duration) cassette_Result~workloads_ResourceDisposition, String~
         +request(request: Value, expected: &str, timeout: Duration) cassette_Result~Value, String~
-        +finish(timeout: Duration) cassette_Result~(), String~
+        +closed_disposition(event: &Value) cassette_Result~workloads_ResourceDisposition, String~
+        +finish(timeout: Duration) cassette_Result~workloads_ResourceSettlement, String~
         +complete_response(deadline: Instant) cassette_Result~(), String~
         +wait_for_exit(deadline: Instant, require_success: bool) cassette_Result~(), String~
     }
@@ -2054,11 +2060,18 @@ classDiagram
         +success_rate: Option~f64~
         +observe(kind: &str, resolved: bool) void
     }
-    class C276["workloads_RetainedOutcomeContext"] {
+    class C276["workloads_ResourceDisposition"] {
+        +matches_record(disposition: Option~&serde_json::Value~, confirmed: bool, summary: Value) bool
+    }
+    class C277["workloads_ResourceSettlement"] {
+        +disposition: workloads_ResourceDisposition
+        +diagnostic: Option~String~
+    }
+    class C278["workloads_RetainedOutcomeContext"] {
         +recovery: workloads_RecoveryContext~'a~
         +summary: Value
     }
-    class C277["workloads_Root"] {
+    class C279["workloads_Root"] {
         -name: String
         -path: String
         -exclusions: Vec~String~
@@ -2067,7 +2080,7 @@ classDiagram
         -expected_identity: Option~[u64; 3]~
         +selected(relative: &str) bool
     }
-    class C278["workloads_RuntimeFile"] {
+    class C280["workloads_RuntimeFile"] {
         -name: &'static str
         -text: String
         -mode: u32
@@ -2076,17 +2089,17 @@ classDiagram
         -inode_group: String
         -attributes_sha256: String
     }
-    class C279["workloads_RuntimeObservation"] {
+    class C281["workloads_RuntimeObservation"] {
         -files: Vec~workloads_RuntimeFile~
         -usage: workloads_Budget
     }
-    class C280["workloads_RuntimeVersion"] {
+    class C282["workloads_RuntimeVersion"] {
         -name: &'static str
         -metadata: Metadata
         -content: [u8; 32]
         -attributes: String
     }
-    class C281["workloads_Session"] {
+    class C283["workloads_Session"] {
         -process_lifetime: ProcessLifetime
         -controller: workloads_Controller
         -invocation: workloads_TaskInvocation
@@ -2097,9 +2110,10 @@ classDiagram
         -measurement_active: bool
         -preparation_active: bool
         -cleanup_attempted: bool
+        -settlement: Option~workloads_ResourceSettlement~
         -evaluation_completed: bool
         -artifacts: PathBuf
-        +cancel() cassette_Result~(), String~
+        +cancel() cassette_Result~workloads_ResourceDisposition, String~
         +begin_agent_preparation(context: &mut ExecutionContext~'_~) cassette_Result~(), String~
         +run(context: &mut ExecutionContext~'_~, output: sweep_Write) cassette_Result~workloads_ExecutionResult, String~
         +run_prepared(context: &mut ExecutionContext~'_~, output: sweep_Write, connection: Connection, prepared: workloads_PreparedBootstrap) cassette_Result~workloads_ExecutionResult, String~
@@ -2109,10 +2123,10 @@ classDiagram
         +completed_execution(context: &mut ExecutionContext~'_~, event: &Value) cassette_Result~workloads_ExecutionResult, String~
         +settle_execution(context: &mut ExecutionContext~'_~, result: cassette_Result~workloads_ExecutionResult, String~) cassette_Result~workloads_ExecutionResult, String~
     }
-    class C282["workloads_SourceExpectation"] {
+    class C284["workloads_SourceExpectation"] {
         -files: &'static [FileExpectation]
     }
-    class C283["workloads_State"] {
+    class C285["workloads_State"] {
         -output: Mutex~io::Stdout~
         -channels: Channels
         -stopping: AtomicBool
@@ -2127,7 +2141,7 @@ classDiagram
         -names: usize
         +visit(root: &Path, path: &Path, depth: usize) cassette_Result~(), String~
     }
-    class C284["workloads_Target"] {
+    class C286["workloads_Target"] {
         +metadata() cassette_Result~Metadata, &'static str~
         +link_path() cassette_Result~CString, &'static str~
         +verify() cassette_Result~(), &'static str~
@@ -2139,19 +2153,19 @@ classDiagram
         -pid_scope: String
         -process_identity: workloads_Identity
     }
-    class C285["workloads_TaskIdentity"] {
+    class C287["workloads_TaskIdentity"] {
         +workload: String
         +task_id: String
         +attempt_id: String
         +dataset: Option~workloads_DatasetIdentity~
         +local(workload: &str, task_id: Option~&str~) Self
     }
-    class C286["workloads_TaskInvocation"] {
+    class C288["workloads_TaskInvocation"] {
         +identity: workloads_TaskIdentity
         +prompt: String
         +workspace: PathBuf
     }
-    class C287["workloads_TaskSelection"] {
+    class C289["workloads_TaskSelection"] {
         +workload: String
         +task_id: String
         +dataset: Option~workloads_DatasetIdentity~
@@ -2160,19 +2174,19 @@ classDiagram
         +valid() bool
         +matches(actual: &TaskIdentity) bool
     }
-    class C288["workloads_Trial"] {
+    class C290["workloads_Trial"] {
         +id: String
         +description: String
     }
-    class C289["workloads_TrialSet"] {
+    class C291["workloads_TrialSet"] {
         +workload: String
         +trials: Vec~workloads_Trial~
     }
-    class C290["workloads_WorkloadSession"] {
+    class C292["workloads_WorkloadSession"] {
         +initial_material_sha256() cassette_Result~String, String~
         +cancel_prepared() cassette_Result~(), String~
         +checkpoint_evidence() Vec~PathBuf~
-        +finish() cassette_Result~(), String~
+        +finish() cassette_Result~workloads_ResourceSettlement, String~
         +invocation() &TaskInvocation
         +evaluation_kind() &'static str
         +baseline_passed() Option~bool~
@@ -2185,20 +2199,20 @@ classDiagram
         +baseline_passed() Option~bool~
         +evaluate(final_response: &str) cassette_Result~Evaluation, String~
     }
-    class C291["workloads::adapters::PromptAdapter"] {
+    class C293["workloads::adapters::PromptAdapter"] {
     }
-    class C292["workloads::adapters::StaticExternalAdapter"] {
+    class C294["workloads::adapters::StaticExternalAdapter"] {
         -id: &'static str
         -trials: &'static [(&'static str, &'static str)]
         +new(id: &'static str, trials: &'static [(&'static str, &'static str)]) Self
     }
-    class C293["workloads::adapters::SweBenchAdapter"] {
+    class C295["workloads::adapters::SweBenchAdapter"] {
         +id: &'static str
         +dataset: &'static str
         +revision: &'static str
         +expected_tasks: usize
     }
-    class C294["workloads::adapters::TerminalBenchAdapter"] {
+    class C296["workloads::adapters::TerminalBenchAdapter"] {
         +id: &'static str
         +source: &'static str
         +revision: &'static str
@@ -2225,7 +2239,7 @@ classDiagram
         +prepare_task(context: workloads_PreparationContext~'_~) cassette_Result~Box<dyn crate::workloads::WorkloadSession>, String~
         +prepare_source() cassette_Result~usize, String~
     }
-    class C295["«trait» workloads::adapters::WorkloadAdapter"] {
+    class C297["«trait» workloads::adapters::WorkloadAdapter"] {
         +grade_retained(context: workloads_RecoveryContext~'_~) cassette_Result~serde_json::Value, crate::Error~
         +inspect_grade(context: workloads_RecoveryContext~'_~) cassette_Result~serde_json::Value, crate::Error~
         +verify_retained(context: workloads_RetainedOutcomeContext~'_~) cassette_Result~(), crate::Error~
@@ -2253,13 +2267,13 @@ classDiagram
         +prepare_fixture(name: &str, workspace: &Path) cassette_Result~usize, String~
         +prepare_source(_workloads: &Path, _workspace: &Path) cassette_Result~usize, String~
     }
-    class C296["workloads::adapters::swe_bench_Catalog"] {
+    class C298["workloads::adapters::swe_bench_Catalog"] {
         -schema_version: u32
         -workload: String
         +dataset: workloads_DatasetIdentity
         +tasks: Vec~workloads::adapters::swe_bench_Task~
     }
-    class C297["workloads::adapters::swe_bench_Task"] {
+    class C299["workloads::adapters::swe_bench_Task"] {
         +id: String
         +description: String
         -repo: String
@@ -2267,17 +2281,17 @@ classDiagram
         -metadata: String
         -metadata_sha256: String
     }
-    class C298["workloads::adapters::swe_bench_catalog_Drop"] {
+    class C300["workloads::adapters::swe_bench_catalog_Drop"] {
         +drop() void
     }
-    class C299["workloads::adapters::swe_bench_catalog_Fixture"] {
+    class C301["workloads::adapters::swe_bench_catalog_Fixture"] {
         +new() Self
         +metadata() PathBuf
         +catalog_path() PathBuf
         +catalog() Value
         +write(value: &Value) void
     }
-    class C300["workloads::adapters::terminal_bench_Catalog"] {
+    class C302["workloads::adapters::terminal_bench_Catalog"] {
         -schema_version: u32
         -workload: String
         +dataset: workloads_DatasetIdentity
@@ -2286,36 +2300,36 @@ classDiagram
         -archive_sha256: String
         +tasks: Vec~workloads::adapters::terminal_bench_Task~
     }
-    class C301["workloads::adapters::terminal_bench_Drop"] {
+    class C303["workloads::adapters::terminal_bench_Drop"] {
         +drop() void
     }
-    class C302["workloads::adapters::terminal_bench_Fixture"] {
+    class C304["workloads::adapters::terminal_bench_Fixture"] {
         -root: PathBuf
         -project: ProjectConfig
         +new(adapter: &TerminalBenchAdapter) Self
         +reference(adapter: &TerminalBenchAdapter) workloads_AttemptReference
     }
-    class C303["workloads::adapters::terminal_bench_Sdk"] {
+    class C305["workloads::adapters::terminal_bench_Sdk"] {
         -package: String
         -version: String
     }
-    class C304["workloads::adapters::terminal_bench_Task"] {
+    class C306["workloads::adapters::terminal_bench_Task"] {
         +id: String
         +description: String
         -instruction: String
         -definition: String
     }
-    class C305["workloads::adapters::terminal_bench_catalog_Drop"] {
+    class C307["workloads::adapters::terminal_bench_catalog_Drop"] {
         +drop() void
     }
-    class C306["workloads::adapters::terminal_bench_catalog_Fixture"] {
+    class C308["workloads::adapters::terminal_bench_catalog_Fixture"] {
         +new() Self
         +directory() PathBuf
         +catalog() Value
         +write(value: &Value) void
         +mock_runtime(content: &str) PathBuf
     }
-    class C307["asb-cli_tests_Drop"] {
+    class C309["asb-cli_tests_Drop"] {
         +drop() void
         +drop() void
         +drop() void
@@ -2330,20 +2344,20 @@ classDiagram
         +drop() void
         +drop() void
     }
-    class C308["asb-cli_tests_Fixture"] {
+    class C310["asb-cli_tests_Fixture"] {
         +new() Self
         +request() Value
     }
-    class C309["asb-cli_tests_MockProvider"] {
+    class C311["asb-cli_tests_MockProvider"] {
         -endpoint: String
         -requests: Arc~Mutex<Vec<String>>~
         -done: Arc~AtomicBool~
         -thread: Option~std::thread::JoinHandle<()>~
         +start() Self
     }
-    class C310["asb-cli_tests_Process"] {
+    class C312["asb-cli_tests_Process"] {
     }
-    class C311["asb-cli_tests_Project"] {
+    class C313["asb-cli_tests_Project"] {
         +new() Self
         +write(path: &str, text: &str) void
         +command(args: &[&str]) sweep_Output
@@ -2366,14 +2380,14 @@ classDiagram
         +write(path: &str, text: &str) void
         +setup(workload: &str, extra: &[&str]) sweep_Output
     }
-    class C312["asb-cli_tests_WaitForFixtureExpiry"] {
+    class C314["asb-cli_tests_WaitForFixtureExpiry"] {
         -pid: u32
         -executable: PathBuf
     }
-    class C313["asb-cli_tests_support_IsolatedEnvironment"] {
+    class C315["asb-cli_tests_support_IsolatedEnvironment"] {
         +isolated_env() &mut Self
     }
-    class C314["asb-cli_tests_unit_AgentAdapter"] {
+    class C316["asb-cli_tests_unit_AgentAdapter"] {
         +id() &'static str
         +executable() &'static str
         +recipe() Recipe
@@ -2381,17 +2395,17 @@ classDiagram
         +command(context: &CommandContext~'_~) agents::CommandSpec
         +prepare(context: &mut PreparationContext~'_~) cassette_Result~(), Error~
     }
-    class C315["asb-cli_tests_unit_Broken"] {
+    class C317["asb-cli_tests_unit_Broken"] {
     }
-    class C316["asb-cli_tests_unit_BrokenOutput"] {
+    class C318["asb-cli_tests_unit_BrokenOutput"] {
     }
-    class C317["asb-cli_tests_unit_BrokenRead"] {
+    class C319["asb-cli_tests_unit_BrokenRead"] {
     }
-    class C318["asb-cli_tests_unit_Cleanup"] {
+    class C320["asb-cli_tests_unit_Cleanup"] {
     }
-    class C319["asb-cli_tests_unit_DefaultTool"] {
+    class C321["asb-cli_tests_unit_DefaultTool"] {
     }
-    class C320["asb-cli_tests_unit_Drop"] {
+    class C322["asb-cli_tests_unit_Drop"] {
         +drop() void
         +drop() void
         +drop() void
@@ -2404,11 +2418,11 @@ classDiagram
         +drop() void
         +drop() void
     }
-    class C321["asb-cli_tests_unit_FailingWriter"] {
+    class C323["asb-cli_tests_unit_FailingWriter"] {
     }
-    class C322["asb-cli_tests_unit_Failure"] {
+    class C324["asb-cli_tests_unit_Failure"] {
     }
-    class C323["asb-cli_tests_unit_Fixture"] {
+    class C325["asb-cli_tests_unit_Fixture"] {
         +new() Self
         +write(name: &str, bytes: impl AsRef~[u8]~) PathBuf
         -root: PathBuf
@@ -2437,19 +2451,20 @@ classDiagram
         +new() Self
         +prepared() workloads_PreparedBootstrap
         +session(events: &[Value], cleanup: &str) Session
+        +session_with_grade(events: &[Value], cleanup: &str, resolved: Value) Session
         +operations() Vec~String~
     }
-    class C324["asb-cli_tests_unit_MinimalAdapter"] {
+    class C326["asb-cli_tests_unit_MinimalAdapter"] {
     }
-    class C325["asb-cli_tests_unit_Read"] {
+    class C327["asb-cli_tests_unit_Read"] {
         +read() cassette_Result~usize~
     }
-    class C326["asb-cli_tests_unit_ToolAdapter"] {
+    class C328["asb-cli_tests_unit_ToolAdapter"] {
         +id() &'static str
         +recipe() Recipe
         +kind() ToolKind
     }
-    class C327["asb-cli_tests_unit_Write"] {
+    class C329["asb-cli_tests_unit_Write"] {
         +write(bytes: &[u8]) cassette_Result~usize~
         +flush() cassette_Result~()~
         +write() cassette_Result~usize~
@@ -2459,84 +2474,84 @@ classDiagram
         +write() cassette_Result~usize~
         +flush() cassette_Result~()~
     }
-    class C328["coverage_tests_asb-cli_src_BrokenWriter"] {
+    class C330["coverage_tests_asb-cli_src_BrokenWriter"] {
     }
-    class C329["coverage_tests_asb-cli_src_Write"] {
+    class C331["coverage_tests_asb-cli_src_Write"] {
         +write() cassette_Result~usize~
         +flush() cassette_Result~()~
     }
-    class C330["marker_tests_asb-cli_src_collectors_adapters_BadFile"] {
+    class C332["marker_tests_asb-cli_src_collectors_adapters_BadFile"] {
     }
-    class C331["marker_tests_asb-cli_src_collectors_adapters_Write"] {
+    class C333["marker_tests_asb-cli_src_collectors_adapters_Write"] {
         +write() cassette_Result~usize~
         +flush() cassette_Result~()~
     }
-    class C332["tests_asb-cli_src_Broken"] {
+    class C334["tests_asb-cli_src_Broken"] {
     }
-    class C333["tests_asb-cli_src_Capture"] {
+    class C335["tests_asb-cli_src_Capture"] {
         -bytes: Vec~u8~
         -flushed: bool
     }
-    class C334["tests_asb-cli_src_ChildGuard"] {
+    class C336["tests_asb-cli_src_ChildGuard"] {
         -child: Child
         -group: bool
     }
-    class C335["tests_asb-cli_src_Directory"] {
+    class C337["tests_asb-cli_src_Directory"] {
         +new() Self
     }
-    class C336["tests_asb-cli_src_Drop"] {
+    class C338["tests_asb-cli_src_Drop"] {
         +drop() void
         +drop() void
     }
-    class C337["tests_asb-cli_src_FailedIntent"] {
+    class C339["tests_asb-cli_src_FailedIntent"] {
         +starting(Option: Option~&crate::measurements::ExecutionCohort~) cassette_Result~(), crate::Error~
         +completed() cassette_Result~(), crate::Error~
     }
-    class C338["tests_asb-cli_src_Failing"] {
+    class C340["tests_asb-cli_src_Failing"] {
         +id() &'static str
         +requires_pid() bool
         +process(context: collectors_ProcessContext~'_~) cassette_Result~collectors::ProcessData, String~
     }
-    class C339["tests_asb-cli_src_FailingWriter"] {
+    class C341["tests_asb-cli_src_FailingWriter"] {
         +write() cassette_Result~usize~
         +flush() cassette_Result~()~
     }
-    class C340["tests_asb-cli_src_Fixture"] {
+    class C342["tests_asb-cli_src_Fixture"] {
         +id() &'static str
         +requires_pid() bool
         +process(context: collectors_ProcessContext~'_~) cassette_Result~collectors::ProcessData, String~
     }
-    class C341["tests_asb-cli_src_Write"] {
+    class C343["tests_asb-cli_src_Write"] {
         +write(bytes: &[u8]) cassette_Result~usize~
         +flush() cassette_Result~()~
         +write() cassette_Result~usize~
         +flush() cassette_Result~()~
     }
-    class C342["tests_asb-cli_src_collectors_CollectorAdapter"] {
+    class C344["tests_asb-cli_src_collectors_CollectorAdapter"] {
         +id() &'static str
     }
-    class C343["tests_asb-cli_src_collectors_Minimal"] {
+    class C345["tests_asb-cli_src_collectors_Minimal"] {
     }
-    class C344["tests_asb-cli_src_collectors_adapters_Drop"] {
+    class C346["tests_asb-cli_src_collectors_adapters_Drop"] {
         +drop() void
         +drop() void
     }
-    class C345["tests_asb-cli_src_collectors_adapters_Fails"] {
+    class C347["tests_asb-cli_src_collectors_adapters_Fails"] {
         +read() cassette_Result~usize~
     }
-    class C346["tests_asb-cli_src_collectors_adapters_Guard"] {
+    class C348["tests_asb-cli_src_collectors_adapters_Guard"] {
     }
-    class C347["tests_asb-cli_src_collectors_adapters_OwnedChild"] {
+    class C349["tests_asb-cli_src_collectors_adapters_OwnedChild"] {
     }
-    class C348["tests_asb-cli_src_collectors_adapters_perfetto_Drop"] {
+    class C350["tests_asb-cli_src_collectors_adapters_perfetto_Drop"] {
         +drop() void
     }
-    class C349["tests_asb-cli_src_collectors_adapters_perfetto_TestChild"] {
+    class C351["tests_asb-cli_src_collectors_adapters_perfetto_TestChild"] {
     }
-    class C350["tests_asb-cli_src_compare_Drop"] {
+    class C352["tests_asb-cli_src_compare_Drop"] {
         +drop() void
     }
-    class C351["tests_asb-cli_src_compare_Fixture"] {
+    class C353["tests_asb-cli_src_compare_Fixture"] {
         -root: PathBuf
         -total: usize
         -workload: String
@@ -2547,72 +2562,75 @@ classDiagram
         +publish(slot: usize, record: &Value) PathBuf
         +compare() cassette_Result~Value, Error~
     }
-    class C352["tests_asb-cli_src_project_Children"] {
+    class C354["tests_asb-cli_src_project_Children"] {
     }
-    class C353["tests_asb-cli_src_project_Drop"] {
+    class C355["tests_asb-cli_src_project_Drop"] {
         +drop() void
     }
-    class C354["tests_asb-cli_src_proxy_FixtureAdapter"] {
+    class C356["tests_asb-cli_src_proxy_FixtureAdapter"] {
         -name: &'static str
         -fail: bool
         -fail_finish: bool
         -events: Arc~Mutex<Vec<String>>~
     }
-    class C355["tests_asb-cli_src_proxy_FixtureSession"] {
+    class C357["tests_asb-cli_src_proxy_FixtureSession"] {
         -name: &'static str
         -url: String
         -active: bool
         -fail_finish: bool
         -events: Arc~Mutex<Vec<String>>~
     }
-    class C356["tests_asb-cli_src_proxy_ProxyAdapter"] {
+    class C358["tests_asb-cli_src_proxy_ProxyAdapter"] {
         +name() &'static str
         +start(upstream: Option~&str~, settings: Option~&dyn Any~) cassette_Result~Box<dyn ProxySession>, Error~
     }
-    class C357["tests_asb-cli_src_proxy_ProxySession"] {
+    class C359["tests_asb-cli_src_proxy_ProxySession"] {
         +cleanup_confirmed() bool
         +url() &str
         +finish() cassette_Result~(), Error~
         +abort() void
     }
-    class C358["tests_asb-cli_src_runner_FailedOutput"] {
+    class C360["tests_asb-cli_src_runner_FailedOutput"] {
     }
-    class C359["tests_asb-cli_src_runner_Session"] {
+    class C361["tests_asb-cli_src_runner_Session"] {
         +invocation() workloads_TaskInvocation
         +evaluation_kind() &'static str
         +baseline_passed() Option~bool~
         +evaluate() cassette_Result~crate::workloads::Evaluation, String~
         +cancel_prepared() cassette_Result~(), String~
     }
-    class C360["tests_asb-cli_src_runner_Write"] {
+    class C362["tests_asb-cli_src_runner_Write"] {
         +write() cassette_Result~usize~
         +flush() cassette_Result~()~
     }
-    class C361["tests_asb-cli_src_sweep_Broken"] {
+    class C363["tests_asb-cli_src_sweep_Broken"] {
     }
-    class C362["tests_asb-cli_src_sweep_Directory"] {
+    class C364["tests_asb-cli_src_sweep_Directory"] {
         +new() Self
         +new() Self
     }
-    class C363["tests_asb-cli_src_sweep_Drop"] {
+    class C365["tests_asb-cli_src_sweep_Drop"] {
         +drop() void
         +drop() void
         +drop() void
     }
-    class C364["tests_asb-cli_src_sweep_Project"] {
+    class C366["tests_asb-cli_src_sweep_Project"] {
         +new() Self
         +manifest() SweepFile
         +plan(manifest: &SweepFile) sweep_SweepPlan
         +grade(directory: &Path, task: &str, resolved: bool) void
     }
-    class C365["tests_asb-cli_src_sweep_Write"] {
+    class C367["tests_asb-cli_src_sweep_Write"] {
         +write() cassette_Result~usize~
         +flush() cassette_Result~()~
     }
-    class C366["tests_asb-cli_src_sweep_checkpoint_Drop"] {
+    class C368["tests_asb-cli_src_sweep_checkpoint_Drop"] {
         +drop() void
     }
-    class C367["tests_asb-cli_src_sweep_checkpoint_Fixture"] {
+    class C369["tests_asb-cli_src_sweep_checkpoint_Field"] {
+        -value: Option~serde_json::Value~
+    }
+    class C370["tests_asb-cli_src_sweep_checkpoint_Fixture"] {
         -root: PathBuf
         -directory: PathBuf
         -evidence: PathBuf
@@ -2625,18 +2643,18 @@ classDiagram
         +seal() cassette_Result~(), Error~
         +verify() cassette_Result~(Completion, Vec<Value>), Error~
     }
-    class C368["tests_asb-cli_src_tools_Drop"] {
+    class C371["tests_asb-cli_src_tools_Drop"] {
         +drop() void
     }
-    class C369["tests_asb-cli_src_tools_Fixture"] {
+    class C372["tests_asb-cli_src_tools_Fixture"] {
         +new() Self
     }
-    class C370["tests_asb-cli_src_workloads_Drop"] {
+    class C373["tests_asb-cli_src_workloads_Drop"] {
         +drop() void
         +drop() void
         +drop() void
     }
-    class C371["tests_asb-cli_src_workloads_Fixture"] {
+    class C374["tests_asb-cli_src_workloads_Fixture"] {
         +new() Self
         +request(names: &[&str]) workloads_Request
         +digest(names: &[&str]) String
@@ -2666,7 +2684,7 @@ classDiagram
     C029 ..> C099
     C038 ..> C099
     C039 ..> C099
-    C039 ..> C284
+    C039 ..> C286
     C040 --> C005
     C041 --> C043
     C041 ..> C043
@@ -2676,7 +2694,7 @@ classDiagram
     C051 --> C132
     C052 --> C151
     C052 --> C246
-    C052 --> C285
+    C052 --> C287
     C053 --> C008
     C053 --> C013
     C053 --> C027
@@ -2820,7 +2838,7 @@ classDiagram
     C216 ..> C021
     C216 ..> C099
     C218 --> C002
-    C218 --> C287
+    C218 --> C289
     C219 --> C224
     C220 ..> C021
     C220 ..> C099
@@ -2867,12 +2885,14 @@ classDiagram
     C248 --> C272
     C248 ..> C099
     C249 ..> C099
+    C249 ..> C276
+    C249 ..> C277
     C254 --> C002
     C254 --> C046
     C255 --> C081
     C255 --> C215
     C257 --> C099
-    C257 --> C286
+    C257 --> C288
     C259 --> C035
     C261 ..> C099
     C265 --> C247
@@ -2884,76 +2904,80 @@ classDiagram
     C270 ..> C099
     C273 --> C046
     C274 --> C247
-    C274 --> C277
-    C276 --> C273
-    C279 --> C247
-    C279 --> C278
-    C281 --> C099
-    C281 --> C246
-    C281 --> C249
-    C281 --> C286
-    C281 ..> C099
-    C281 ..> C255
+    C274 --> C279
+    C277 --> C276
+    C278 --> C273
+    C281 --> C247
+    C281 --> C280
+    C283 --> C099
+    C283 --> C246
+    C283 --> C249
+    C283 --> C277
+    C283 --> C288
     C283 ..> C099
-    C284 --> C260
-    C284 ..> C099
-    C285 --> C251
-    C286 --> C285
+    C283 ..> C255
+    C283 ..> C276
+    C285 ..> C099
+    C286 --> C260
+    C286 ..> C099
     C287 --> C251
-    C289 --> C288
-    C290 ..> C099
-    C290 ..> C246
-    C294 ..> C099
-    C295 ..> C099
-    C295 ..> C288
-    C296 --> C251
-    C296 --> C297
-    C300 --> C251
-    C300 --> C303
-    C300 --> C304
-    C302 --> C046
-    C302 ..> C244
-    C311 ..> C215
-    C314 ..> C021
-    C314 ..> C048
-    C314 ..> C079
-    C314 ..> C099
-    C323 --> C046
-    C323 --> C244
-    C323 ..> C053
-    C323 ..> C080
-    C323 ..> C161
-    C323 ..> C270
-    C323 ..> C273
-    C325 ..> C099
-    C326 ..> C048
+    C288 --> C287
+    C289 --> C251
+    C291 --> C290
+    C292 ..> C099
+    C292 ..> C246
+    C292 ..> C277
+    C296 ..> C099
+    C297 ..> C099
+    C297 ..> C290
+    C298 --> C251
+    C298 --> C299
+    C302 --> C251
+    C302 --> C305
+    C302 --> C306
+    C304 --> C046
+    C304 ..> C244
+    C313 ..> C215
+    C316 ..> C021
+    C316 ..> C048
+    C316 ..> C079
+    C316 ..> C099
+    C325 --> C046
+    C325 --> C244
+    C325 ..> C053
+    C325 ..> C080
+    C325 ..> C161
+    C325 ..> C270
+    C325 ..> C273
     C327 ..> C099
+    C328 ..> C048
     C329 ..> C099
     C331 ..> C099
-    C337 ..> C099
-    C338 ..> C099
+    C333 ..> C099
     C339 ..> C099
     C340 ..> C099
     C341 ..> C099
-    C345 ..> C099
-    C351 ..> C021
-    C351 ..> C099
-    C356 ..> C021
-    C356 ..> C099
-    C357 ..> C021
-    C357 ..> C099
+    C342 ..> C099
+    C343 ..> C099
+    C347 ..> C099
+    C353 ..> C021
+    C353 ..> C099
+    C358 ..> C021
+    C358 ..> C099
+    C359 ..> C021
     C359 ..> C099
-    C359 ..> C286
-    C360 ..> C099
-    C364 ..> C060
-    C364 ..> C225
-    C365 ..> C099
-    C367 --> C218
-    C367 --> C232
-    C367 ..> C021
+    C361 ..> C099
+    C361 ..> C288
+    C362 ..> C099
+    C366 ..> C060
+    C366 ..> C225
     C367 ..> C099
-    C371 --> C244
-    C371 ..> C274
+    C370 --> C218
+    C370 --> C232
+    C370 ..> C021
+    C370 ..> C099
+    C374 --> C244
+    C374 ..> C274
     C083 ..|> C075
     C120 ..|> C123
     C129 ..|> C123
@@ -2969,5 +2993,5 @@ classDiagram
     C190 ..|> C191
     C194 ..|> C193
     C240 ..|> C241
-    C291 ..|> C295
-    C292 ..|> C295
+    C293 ..|> C297
+    C294 ..|> C297

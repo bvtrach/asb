@@ -1,4 +1,5 @@
 //! Private, bounded JSON-lines transport to workload-owned execution engines.
+use super::session::{ResourceDisposition, ResourceSettlement};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -281,7 +282,7 @@ impl Controller {
     /// EOF interrupts active work; continue draining its bounded event stream
     /// until the owner confirms teardown. Cancellation's nonzero child exit
     /// is expected, but it never substitutes for confirmed resource quiescence.
-    pub(crate) fn cancel(&mut self, timeout: Duration) -> Result<(), String> {
+    pub(crate) fn cancel(&mut self, timeout: Duration) -> Result<ResourceDisposition, String> {
         let deadline = Instant::now() + timeout;
         self.input.take();
         loop {
@@ -290,13 +291,9 @@ impl Controller {
             }
             let event = self.receive_raw(deadline)?;
             if event["event"] == "closed" {
-                if !matches!(
-                    event["cleanup"].as_str(),
-                    Some("removed" | "not_created" | "stopped-preserved")
-                ) {
-                    return Err("cancelled workload cleanup did not confirm removal or stopped preservation; inspect private task cleanup artifacts".into());
-                }
-                return self.wait_for_exit(deadline, false);
+                let disposition = Self::closed_disposition(&event)?;
+                self.wait_for_exit(deadline, false)?;
+                return Ok(disposition);
             }
             // A command already in flight can produce output, an error or a
             // final result before the input reader observes EOF. No payload
@@ -318,17 +315,43 @@ impl Controller {
         Ok(response)
     }
 
-    pub(crate) fn finish(&mut self, timeout: Duration) -> Result<(), String> {
+    fn closed_disposition(event: &Value) -> Result<ResourceDisposition, String> {
+        if event["event"] != "closed" {
+            return Err("workload cleanup did not return a closed acknowledgement".into());
+        }
+        match event["cleanup"].as_str() {
+            Some("removed") => Ok(ResourceDisposition::Removed),
+            Some("not_created") => Ok(ResourceDisposition::NotCreated),
+            Some("stopped-preserved") => Ok(ResourceDisposition::StoppedPreserved),
+            _ => Err("workload cleanup did not confirm removal or stopped preservation; inspect private task cleanup artifacts".into()),
+        }
+    }
+
+    pub(crate) fn finish(&mut self, timeout: Duration) -> Result<ResourceSettlement, String> {
         let deadline = Instant::now() + timeout;
         self.send(&serde_json::json!({"op":"close"}))?;
         // Keep stdin open until cleanup acknowledges completion. EOF is
         // cancellation and is only the fallback for a failed caller.
         let response = self.receive(deadline)?;
-        if response["event"] != "closed" || response["cleanup"] != "removed" {
-            return Err("workload resource cleanup did not confirm removal; inspect private task cleanup artifacts".into());
-        }
+        let disposition = Self::closed_disposition(&response)?;
         self.input.take();
-        self.wait_for_exit(deadline, true)
+        self.wait_for_exit(deadline, false)?;
+        let success = self
+            .child
+            .try_wait()
+            .map_err(|_| "cannot check settled workload controller")?
+            .ok_or("settled workload controller was not reaped")?
+            .success();
+        Ok(ResourceSettlement {
+            disposition,
+            diagnostic: if disposition != ResourceDisposition::Removed {
+                Some("normal workload teardown did not remove resources; confirmed cancellation disposition retained".into())
+            } else if !success {
+                Some("workload controller failed after confirmed resource removal".into())
+            } else {
+                None
+            },
+        })
     }
 
     pub(crate) fn complete_response(&mut self, deadline: Instant) -> Result<(), String> {
@@ -449,7 +472,13 @@ mod tests {
             controller
                 .receive(Instant::now() + Duration::from_secs(3))
                 .unwrap();
-            assert!(controller.finish(Duration::from_secs(3)).is_err());
+            let result = controller.finish(Duration::from_secs(3));
+            if matches!(cleanup, "not_created" | "removed") && event == "closed" {
+                let settled = result.unwrap();
+                assert!(settled.diagnostic.is_some());
+            } else {
+                assert!(result.is_err());
+            }
         }
     }
 
@@ -512,9 +541,14 @@ mod tests {
                 .receive(Instant::now() + Duration::from_secs(3))
                 .unwrap();
             if normal {
-                assert!(controller.finish(Duration::from_secs(3)).is_err());
+                let settled = controller.finish(Duration::from_secs(3)).unwrap();
+                assert_eq!(settled.disposition, ResourceDisposition::StoppedPreserved);
+                assert!(settled.diagnostic.is_some());
             } else {
-                controller.cancel(Duration::from_secs(3)).unwrap();
+                assert_eq!(
+                    controller.cancel(Duration::from_secs(3)).unwrap(),
+                    ResourceDisposition::StoppedPreserved
+                );
             }
         }
     }
@@ -530,6 +564,51 @@ mod tests {
         let started = Instant::now();
         assert!(controller.cancel(Duration::from_millis(50)).is_err());
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn acknowledged_resources_do_not_settle_before_controller_reaping() {
+        for normal in [false, true] {
+            let mut command = Command::new("python3");
+            command.args(["-u","-c","import json,sys,time\nprint(json.dumps(dict(event='ready')),flush=True)\nsys.stdin.readline()\nprint(json.dumps(dict(event='closed',cleanup='stopped-preserved')),flush=True)\ntime.sleep(10)\n"]);
+            let mut controller = Controller::spawn(&mut command).unwrap();
+            controller
+                .receive(Instant::now() + Duration::from_secs(3))
+                .unwrap();
+            let failed = if normal {
+                controller.finish(Duration::from_millis(100)).unwrap_err()
+            } else {
+                controller.cancel(Duration::from_millis(100)).unwrap_err()
+            };
+            assert!(failed.contains("did not exit"), "{failed}");
+            assert!(controller.child.try_wait().unwrap().is_none());
+            controller.child.kill().unwrap();
+            controller.child.wait().unwrap();
+        }
+    }
+
+    #[test]
+    fn cancellation_reports_each_actual_disposition_only_after_reaping() {
+        for (status, expected) in [
+            ("removed", ResourceDisposition::Removed),
+            ("not_created", ResourceDisposition::NotCreated),
+            ("stopped-preserved", ResourceDisposition::StoppedPreserved),
+        ] {
+            let script = format!(
+                "import json,sys\nprint(json.dumps(dict(event='ready')),flush=True)\nassert sys.stdin.read()==''\nprint(json.dumps(dict(event='closed',cleanup='{status}')),flush=True)\nsys.exit(3)\n"
+            );
+            let mut command = Command::new("python3");
+            command.args(["-u", "-c", &script]);
+            let mut controller = Controller::spawn(&mut command).unwrap();
+            controller
+                .receive(Instant::now() + Duration::from_secs(3))
+                .unwrap();
+            assert_eq!(controller.cancel(Duration::from_secs(3)).unwrap(), expected);
+            assert_eq!(
+                controller.child.try_wait().unwrap().unwrap().code(),
+                Some(3)
+            );
+        }
     }
 
     #[test]

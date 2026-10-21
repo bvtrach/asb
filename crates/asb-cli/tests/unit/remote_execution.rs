@@ -22,10 +22,13 @@ impl Fixture {
         }
     }
     fn session(&self, events: &[Value], cleanup: &str) -> Session {
+        self.session_with_grade(events, cleanup, json!(false))
+    }
+    fn session_with_grade(&self, events: &[Value], cleanup: &str, resolved: Value) -> Session {
         let script = r#"
 import json,sys
 from pathlib import Path
-events=json.loads(sys.argv[1]); log=Path(sys.argv[2]); cleanup=sys.argv[3]
+events=json.loads(sys.argv[1]); log=Path(sys.argv[2]); cleanup=sys.argv[3]; resolved=json.loads(sys.argv[4])
 def record(op):
  with log.open('a') as stream: stream.write(op+'\n')
 def closed():
@@ -45,7 +48,7 @@ for event in events:
 for raw in sys.stdin:
  request=json.loads(raw);record(request['op'])
  if request['op']=='evaluate':
-  print(json.dumps(dict(event='evaluated',result=dict(workload='fixture',task_id='task',dataset=None,outcome='unresolved',resolved=False))),flush=True)
+  print(json.dumps(dict(event='evaluated',result=dict(workload='fixture',task_id='task',dataset=None,outcome='unresolved',resolved=resolved))),flush=True)
  elif request['op']=='close':
   print(json.dumps(dict(event='closed',cleanup=cleanup)),flush=True);sys.exit(0)
 closed()
@@ -55,7 +58,8 @@ closed()
             .args(["-I", "-S", "-B", "-u", "-c", script])
             .arg(serde_json::to_string(events).unwrap())
             .arg(self.0.join("operations"))
-            .arg(cleanup);
+            .arg(cleanup)
+            .arg(serde_json::to_string(&resolved).unwrap());
         Session {
             process_lifetime: super::super::session::ProcessLifetime::Quiesce,
             controller: Controller::spawn(&mut command).unwrap(),
@@ -73,6 +77,7 @@ closed()
             measurement_active: false,
             preparation_active: false,
             cleanup_attempted: false,
+            settlement: None,
             evaluation_completed: false,
             artifacts: self.0.join("attempt"),
         }
@@ -159,6 +164,41 @@ fn prepared_protocol_preserves_output_exit_time_and_grades_only_after_completion
 }
 
 #[test]
+fn unknown_grade_settlement_never_repeats_evaluation_or_cancellation() {
+    let fixture = Fixture::new();
+    let mut session = fixture.session_with_grade(&[completed()], "stopped-preserved", Value::Null);
+    let config = configuration();
+    let project = crate::project::ProjectConfig::default();
+    let connection = connection();
+    let mut context = ExecutionContext {
+        config: &config,
+        connection: Some(&connection),
+        project_root: &fixture.0,
+        project_config: &project,
+        replay: true,
+        measurements: None,
+        show_output: false,
+    };
+    session.begin_agent_preparation(&mut context).unwrap();
+    let result = session.run_prepared(
+        &mut context,
+        &mut Vec::new(),
+        &connection,
+        fixture.prepared(),
+    );
+    session.settle_execution(&mut context, result).unwrap();
+    assert!(session.evaluate("").is_err());
+    let settlement = session.finish().unwrap();
+    assert_eq!(
+        settlement.disposition,
+        crate::workloads::ResourceDisposition::StoppedPreserved
+    );
+    assert_eq!(session.finish().unwrap(), settlement);
+    drop(session);
+    assert_eq!(fixture.operations(), ["agent", "evaluate", "cancel"]);
+}
+
+#[test]
 fn protocol_errors_preserve_original_reason_and_cancel_instead_of_grading() {
     let bad_metadata = json!({"event":"completed","result":{"metadata":{}}});
     let mut live_tree = completed();
@@ -201,6 +241,19 @@ fn protocol_errors_preserve_original_reason_and_cancel_instead_of_grading() {
         assert!(error.contains(reason), "{error}");
         assert_eq!(fixture.operations(), ["agent", "cancel"]);
         assert!(!session.evaluation_completed);
+        assert_eq!(
+            session.finish().unwrap().disposition,
+            ResourceDisposition::StoppedPreserved
+        );
+        assert_eq!(
+            session.finish().unwrap().disposition,
+            ResourceDisposition::StoppedPreserved
+        );
+        assert_eq!(
+            fixture.operations(),
+            ["agent", "cancel"],
+            "settled finish must not send a second cancellation or evaluate request"
+        );
     }
 }
 

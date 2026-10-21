@@ -308,7 +308,14 @@ from an executable's pathname.
 After workload cleanup and measurement completion, the runner writes private
 `.asb-completions/` outcome records beside the run log, including unresolved
 outcomes, actual task identity, cleanup status and workload-owned evaluator
-evidence paths. These records omit agent stdout/stderr. When one replica
+evidence paths. These records omit agent stdout/stderr. Resource settlement
+remains independent of its grade: removed,
+not-created, not-required, or positively stopped-preserved resources may admit
+later fresh batches. Unknown settlement stops admission. Preserved resources
+retain their artifact locations and never authorize an implicit verifier retry.
+New outcome, log and measurement records agree on disposition and artifact
+references. Legacy handling requires both outcome disposition fields absent;
+explicit null denotes unknown settlement, not a legacy omission. When one replica
 finishes, a generic completion observer can independently bind its
 one-based slot, selected population, original input digest, private outcome
 record, workspace, log, native runtime state (if present), measurements and

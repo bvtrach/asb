@@ -387,6 +387,8 @@ pub struct RunMeasurement<'a> {
     pub success: bool,
     pub process_success: bool,
     pub workload_success: Option<bool>,
+    pub workload_resource_disposition: Option<crate::workloads::ResourceDisposition>,
+    pub workload_artifacts: &'a [PathBuf],
     pub failure_kind: Option<&'a str>,
     pub failure_reason: Option<&'a str>,
     pub success_rate: Option<f64>,
@@ -1972,6 +1974,8 @@ mod tests {
             ))
             .unwrap();
         let run = RunMeasurement {
+            workload_resource_disposition: None,
+            workload_artifacts: &[],
             replica_index: None,
             execution_cohort: None,
             schema_version: 1,

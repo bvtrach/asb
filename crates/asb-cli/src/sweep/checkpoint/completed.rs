@@ -22,6 +22,8 @@ struct Outcome {
     schema_version: u32,
     scope: String,
     workload_cleanup_confirmed: bool,
+    #[serde(default, deserialize_with = "present_value")]
+    workload_resource_disposition: Option<Value>,
     #[serde(default)]
     proxy_cleanup_confirmed: bool,
     summary: Value,
@@ -32,6 +34,13 @@ struct Outcome {
     replica: Option<crate::runner::replica::Identity>,
     #[serde(default)]
     outputs: Vec<PathBuf>,
+}
+
+// Unlike Option<Value>'s default deserializer, retain explicit null as present.
+fn present_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -319,6 +328,11 @@ fn validate_outcome(record: &Outcome, entry: &PlannedBenchmark) -> Result<TaskId
                 .is_none_or(|replica| !replica.valid() || replica.total != config.concurrency))
         || record.scope != "task-outcome-not-yet-a-resume-receipt"
         || !record.workload_cleanup_confirmed
+        || !crate::workloads::ResourceDisposition::matches_record(
+            record.workload_resource_disposition.as_ref(),
+            record.workload_cleanup_confirmed,
+            summary,
+        )
         || !record.proxy_cleanup_confirmed
         || summary["schema_version"] != 2
         || !entry.selection.matches(&task)
@@ -382,9 +396,20 @@ fn measurement_matches(measured: &Value, summary: &Value) -> bool {
         "failure_reason",
         "workload_failure",
         "adapter_smoke_success",
+        "workload_resource_disposition",
+        "workload_artifacts",
     ]
     .iter()
-    .all(|field| measured[*field] == summary[*field])
+    .all(|field| {
+        if matches!(
+            *field,
+            "workload_resource_disposition" | "workload_artifacts"
+        ) {
+            measured.get(*field) == summary.get(*field)
+        } else {
+            measured[*field] == summary[*field]
+        }
+    })
 }
 
 fn invalid(reason: &str) -> Error {
@@ -466,6 +491,43 @@ pub(in crate::sweep) fn publish(path: &Path, receipt: &impl Serialize) -> Result
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn settlement_presence_and_measurement_agreement_are_not_lost() {
+        #[derive(serde::Deserialize)]
+        struct Field {
+            #[serde(default, deserialize_with = "super::present_value")]
+            value: Option<serde_json::Value>,
+        }
+        assert!(
+            serde_json::from_value::<Field>(serde_json::json!({}))
+                .unwrap()
+                .value
+                .is_none()
+        );
+        assert_eq!(
+            serde_json::from_value::<Field>(serde_json::json!({"value":null}))
+                .unwrap()
+                .value,
+            Some(serde_json::Value::Null)
+        );
+        let summary = serde_json::json!({"workload_resource_disposition":"stopped-preserved",
+            "workload_artifacts":["/owned/attempt"]});
+        assert!(super::measurement_matches(&summary, &summary));
+        assert!(super::measurement_matches(
+            &serde_json::json!({}),
+            &serde_json::json!({})
+        ));
+        for field in ["workload_resource_disposition", "workload_artifacts"] {
+            let mut measured = summary.clone();
+            measured.as_object_mut().unwrap().remove(field);
+            assert!(!super::measurement_matches(&measured, &summary));
+            measured[field] = serde_json::Value::Null;
+            assert!(!super::measurement_matches(&measured, &summary));
+        }
+        let mut measured = summary.clone();
+        measured["workload_resource_disposition"] = serde_json::json!("removed");
+        assert!(!super::measurement_matches(&measured, &summary));
+    }
     use super::super::Snapshotter;
     use super::*;
     use crate::workloads::TaskSelection;

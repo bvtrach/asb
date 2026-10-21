@@ -593,7 +593,28 @@ artifact locator; unknown ownership, timeout, unreaped controllers or uncertain
 proxy cleanup must still stop admission. Never retry the same attempt's verifier
 automatically. Add a real-CLI failure matrix proving all four slots execute after
 a confirmed preserved grading error and no later batch launches on uncertainty.
-This disposition repair is still outstanding.
+The disposition repair is implemented with typed settlement independent of
+grading, cached positive acknowledgements and controller reaping. A frozen-binary
+Terminal 1.0 fault qualification (`repeated-original-v6ew5dxt`) completed four
+distinct attempts across both batches with eight loopback inference requests:
+the deliberately blocked verifier retained an unknown grade and stopped-preserved
+artifacts; the other three received official resolved grades. Overall command
+failure remained visible. Missing versus explicit-null disposition validation
+and measurement agreement now have dedicated regression coverage; the latest
+validation changes and strengthened fixture subsequently passed qualification
+with frozen binary SHA-256
+`91bea889cc8cb4bc2d04620d54a927c8a00ac4adc1725414a68c7e2617cacedd`
+(`repeated-original-9cz_cr5q`, 86.995 seconds). Its binary hash was unchanged
+after execution. The separate protocol test counts exactly one evaluate request
+and one cancellation across repeated finish calls and drop. The live fixture
+requires exactly one injected fault and attempt-bound exclusive grading-start
+evidence, with no recovered or selected replacement evaluation.
+The separate strict all-success Terminal 1.0 qualification also passed with the
+same binary (`repeated-original-08ju28jm`, 81.977 seconds): four distinct original
+attempts, four official resolved grades, eight inference requests and confirmed
+cleanup. This does not establish the remaining same-shell path or full catalog.
+The repaired source passes the full offline suite, strict Clippy and coverage:
+90.8313% production lines and 90.6212% aggregate lines.
 
 ### Remaining cross-service bind alias component
 

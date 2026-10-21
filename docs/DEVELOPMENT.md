@@ -19,6 +19,17 @@ build/package gates may then run without replacing the selected executable.
 Fresh per-campaign artifacts and actual running-process executable identities
 remain required; a frozen copy is not evidence that a workload or grader passed.
 
+The repeated-original qualification's normal test requires all four official
+grades to pass. Its separate opt-in Terminal 1.0 fault case uses
+`ASB_TEST_BENCHMARK_FAULT=block-verifier-once` and test method
+`RepeatedOriginalQualification.test_confirmed_preserved_grader_error_continues_new_batches_without_retry`.
+It modifies only the first fresh guest's `/tests` path, deliberately preventing
+verifier injection. It requires four distinct attempts, continued fresh batches,
+an overall failure and unknown grade with positively stopped-preserved artifacts.
+The exclusive grading-start marker binds the original attempt; protocol unit
+tests separately count the single evaluate request and cached cancellation.
+Neither test retries a retained verifier or converts a missing grade into zero.
+
 `benchmark_live_material_environment.py` uses the same explicit image/binary/
 artifact-parent opt-ins as the mounted-root qualification below. It prepares
 two network-none services per fixture, checks independent fresh generated

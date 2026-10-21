@@ -68,6 +68,7 @@ row = json.dumps({'batch':batch,'replica':replica,'workspace':str(workspace),'be
 fd = os.open(root/'attempts.jsonl',os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
 os.write(fd,row.encode()); os.close(fd)
 if batch == 1 and replica == 1:
+    if (root/'grader-error-first').exists(): (workspace/'src/parser.py').write_bytes(bytes([255]))
     if (root/'mutate-source').exists(): (root/'input.jsonl').write_text('changed after planning')
     if (root/'mutate-prompt').exists(): (root/'workloads/bug-fix.txt').write_text('Changed instructions must not launch another batch.')
 sys.exit(7 if (root/'fail-first').exists() and batch == 1 and replica == 1 else 0)
@@ -114,6 +115,43 @@ fn records(bytes: &[u8]) -> Vec<Value> {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+#[test]
+fn unknown_grading_outcome_remains_null_and_later_fresh_batches_continue() {
+    let project = Project::new();
+    project.config(2);
+    fs::write(
+        project.0.join("grader-error-first"),
+        "inject invalid evaluator input",
+    )
+    .unwrap();
+    let output = project.run("2");
+    assert!(!output.status.success());
+    let rows = records(&output.stdout);
+    assert_eq!(rows.len(), 5, "{}", String::from_utf8_lossy(&output.stderr));
+    let failed = &rows[1];
+    assert_eq!(failed["process_success"], true);
+    assert!(failed["workload_success"].is_null());
+    assert!(failed["success_rate"].is_null());
+    assert_eq!(failed["failure_kind"], "grader_error");
+    assert_eq!(failed["workload_resource_disposition"], "not-required");
+    let mut attempts = std::collections::BTreeSet::new();
+    for row in &rows[1..] {
+        assert!(attempts.insert(row["task"]["attempt_id"].as_str().unwrap()));
+        assert_eq!(row["process_success"], true);
+    }
+    assert_eq!(attempts.len(), 4);
+    assert!(rows[2..].iter().all(|row| row["workload_success"] == true));
+    let campaign = PathBuf::from(rows[0]["path"].as_str().unwrap())
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let finished: Value =
+        serde_json::from_slice(&fs::read(campaign.join("finished.json")).unwrap()).unwrap();
+    assert_eq!(finished["completed_batches"], 2);
+    assert_eq!(finished["failed_batches"], 1);
+    assert_eq!(finished["stopped"], false);
 }
 
 #[test]

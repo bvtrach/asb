@@ -19,10 +19,10 @@ import unittest
 sys.dont_write_bytecode = True
 
 
-def verify_cleanup(campaign):
+def verify_cleanup(campaign,failed_batches=0):
     finished = json.loads((campaign/"finished.json").read_bytes())
-    if finished.get("completed_batches") != 2 or finished.get("failed_batches") != 0 or finished.get("stopped") is not False:
-        raise AssertionError("campaign did not finish both batches without failures")
+    if finished.get("completed_batches") != 2 or finished.get("failed_batches") != failed_batches or finished.get("stopped") is not False:
+        raise AssertionError("campaign did not finish both batches with the expected failure count")
     for batch in [1,2]:
         for replica in [1,2]:
             link = json.loads((campaign/f"batch-{batch}/outcomes/{replica}.json").read_bytes())
@@ -35,17 +35,29 @@ def verify_cleanup(campaign):
             value = json.loads(payload)
             if value.get("workload_cleanup_confirmed") is not True or value.get("proxy_cleanup_confirmed") is not True:
                 raise AssertionError("execution cleanup was not confirmed")
+            if value.get("workload_resource_disposition") not in ["not-required","removed","not-created","stopped-preserved"] or value["workload_resource_disposition"] != value["summary"].get("workload_resource_disposition"):
+                raise AssertionError("resource disposition differs between outcome and summary")
 
 
 @unittest.skipUnless(os.environ.get("ASB_TEST_SWECATALOG_ROOT") and os.environ.get("ASB_TEST_BENCHMARK_ASB"),
                      "requires explicit ASB, original SWE SDK/catalog and installed Pi assets")
 class RepeatedOriginalQualification(unittest.TestCase):
     def test_public_repeat_prepares_isolated_original_tasks_before_real_client_execution(self):
+        self.qualify()
+
+    @unittest.skipUnless(os.environ.get("ASB_TEST_BENCHMARK_FAULT") == "block-verifier-once",
+                         "requires explicit owned-task verifier fault injection")
+    def test_confirmed_preserved_grader_error_continues_new_batches_without_retry(self):
+        self.qualify(fault=True)
+
+    def qualify(self,fault=False):
         import guest_provider_fixture as provider
         root = Path(os.environ["ASB_TEST_SWECATALOG_ROOT"]).resolve()
         binary = Path(os.environ["ASB_TEST_BENCHMARK_ASB"]).resolve()
         suite = os.environ.get("ASB_TEST_BENCHMARK_SUITE","swe-bench-lite")
         self.assertIn(suite,["swe-bench-lite","terminal-bench-1.0","terminal-bench-2.1"])
+        if fault:
+            self.assertEqual(suite,"terminal-bench-1.0","fault fixture targets the original Terminal1 test-directory injection")
         instance = {"swe-bench-lite":"astropy__astropy-12907",
             "terminal-bench-1.0":"hello-world","terminal-bench-2.1":"cancel-async-tasks"}[suite]
         artifacts = Path(tempfile.mkdtemp(prefix="repeated-original-",dir=root))
@@ -65,7 +77,23 @@ class RepeatedOriginalQualification(unittest.TestCase):
             command = "python3 -c "+shlex.quote("from pathlib import Path; Path('run.py').write_text("+repr(solution)+")")
         (artifacts/"command.txt").write_text(command)
         barrier, lock, arrivals = threading.Barrier(2),threading.Lock(),[]
+        tool_commands = [0]
+        injected_faults = []
         class Handler(provider.Handler):
+            def tool_command(self):
+                with lock:
+                    ordinal = tool_commands[0]
+                    tool_commands[0] += 1
+                selected = super().tool_command()
+                if fault and ordinal == 0:
+                    with lock:
+                        injected_faults.append(ordinal)
+                    # Only this fresh owned task is modified. A regular file
+                    # blocks verifier-directory injection deterministically,
+                    # before any private tests execute; nothing is regraded.
+                    selected += "\nprintf 'ASB explicit verifier fault\\n' > /tests"
+                return selected
+
             def do_POST(self):
                 with lock:
                     ordinal = len(arrivals)
@@ -99,12 +127,17 @@ class RepeatedOriginalQualification(unittest.TestCase):
                 raise
             (artifacts/"asb.stdout").write_bytes(result.stdout)
             (artifacts/"asb.stderr").write_bytes(result.stderr)
-            self.assertEqual(result.returncode,0,result.stderr.decode())
+            if fault:
+                self.assertNotEqual(result.returncode,0,"expected grader error must remain an overall command failure")
+            else:
+                self.assertEqual(result.returncode,0,result.stderr.decode())
             rows = [json.loads(line) for line in result.stdout.splitlines()]
             self.assertEqual(len(rows),5)
             self.assertGreaterEqual(len(arrivals),8,"each real client needs its tool call and completion")
             campaign = Path(rows[0]["path"]).parent
-            verify_cleanup(campaign)
+            failed_batches = sum(any(row["failure_kind"] is not None for row in rows[1:]
+                if row["execution"]["batch"] == batch) for batch in [1,2])
+            verify_cleanup(campaign,failed_batches if fault else 0)
             plan = json.loads((campaign/"plan.json").read_bytes())
             self.assertEqual(len(plan["slots"]),4)
             identities = [json.loads((campaign/f"batch-{batch}/prepared.json").read_bytes())["compatibility"]
@@ -114,19 +147,40 @@ class RepeatedOriginalQualification(unittest.TestCase):
             for slot,row in enumerate(rows[1:],1):
                 self.assertEqual(row["execution"]["slot"],slot)
                 self.assertTrue(row["process_success"],row)
-                self.assertTrue(row["workload_success"],row)
+                if not fault:
+                    self.assertTrue(row["workload_success"],row)
                 attempts.add(row["task"]["attempt_id"])
             self.assertEqual(len(attempts),4)
+            if fault:
+                self.assertEqual(injected_faults,[0])
+                preserved = [row for row in rows[1:] if row["workload_resource_disposition"] == "stopped-preserved"]
+                self.assertTrue(any(row["execution"]["batch"] == 1 for row in preserved))
+                for row in preserved:
+                    self.assertIsNone(row["workload_success"])
+                    self.assertIsNone(row["success_rate"])
+                    self.assertEqual(row["failure_kind"],"grader_error")
+                    self.assertTrue(row["workload_artifacts"])
+                    directory = Path(row["workload_artifacts"][0])
+                    self.assertEqual(json.loads((directory/"task-cleanup.json").read_bytes())["status"],"stopped-preserved")
+                    started = json.loads((directory/"evaluation-started.json").read_bytes())
+                    self.assertEqual(started["schema_version"],1)
+                    self.assertEqual(started["scope"],"official-verifier-started-not-a-grade")
+                    self.assertEqual(started["task"],row["task"])
+                    self.assertFalse(list(directory.glob("recovered-evaluation-*")))
+                    self.assertFalse((directory/"selected-evaluation.json").exists())
             for batch in [1,2]:
                 finished = json.loads((campaign/f"batch-{batch}/finished.json").read_bytes())
                 self.assertEqual(finished["completed_executions"],2)
                 self.assertFalse(finished["stopped"])
-                self.assertFalse(finished["failed"])
+                self.assertEqual(finished["failed"],fault and any(row["failure_kind"] is not None
+                    for row in rows[1:] if row["execution"]["batch"] == batch))
                 self.assertEqual(len(list((campaign/f"batch-{batch}/outcomes").glob("*.json"))),2)
             self.assertFalse((artifacts/"unused-workspace").exists())
             (artifacts/"qualification.json").write_text(json.dumps({"campaign":str(campaign),
                 "workload":suite,"task":instance,
-                "executions":4,"distinct_original_attempts":4,"official_resolved":4,
+                "executions":4,"distinct_original_attempts":4,
+                "official_resolved":sum(row["workload_success"] is True for row in rows[1:]),
+                "expected_verifier_fault":fault,
                 "loopback_inference_requests":len(arrivals),"live_llm_provider_called":False,
                 "material_identity":identities[0]["material_sha256"]},sort_keys=True)+"\n")
         finally:

@@ -565,6 +565,15 @@ impl replica::CompletionObserver for Observer {
                 "execution outcome identity differs from planned slot".into(),
             ));
         }
+        if !crate::workloads::ResourceDisposition::matches_record(
+            value.get("workload_resource_disposition"),
+            value["workload_cleanup_confirmed"] == true,
+            &value["summary"],
+        ) {
+            return Err(Error::Input(
+                "execution outcome resource disposition contradicts settlement evidence".into(),
+            ));
+        }
         publish(
             &self
                 .directory
@@ -666,6 +675,70 @@ fn publish_bytes(path: &Path, bytes: &[u8]) -> Result<(), Error> {
 mod tests {
     use super::super::replica::CompletionObserver;
     use super::*;
+
+    fn outcome_observer() -> (PathBuf, Observer, replica::Identity) {
+        let root = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("repeat-settlement", None).attempt_id);
+        private_directory(&root, false).unwrap();
+        private_directory(&root.join("outcomes"), false).unwrap();
+        let observer = Observer {
+            root: root.clone(),
+            directory: root.clone(),
+            identity: BatchIdentity {
+                campaign: "fixture".into(),
+                number: 1,
+                repeat: 2,
+                concurrency: 1,
+            },
+            completed: Mutex::new(BTreeSet::new()),
+            cleanup_confirmed: AtomicBool::new(true),
+        };
+        (root, observer, replica::Identity::default())
+    }
+
+    #[test]
+    fn grading_and_settlement_dispositions_are_independent_admission_evidence() {
+        for (disposition, confirmed, summary_disposition, accepted, continue_batch) in [
+            ("not-required", true, "not-required", true, true),
+            ("removed", true, "removed", true, true),
+            ("not-created", true, "not-created", true, true),
+            ("stopped-preserved", true, "stopped-preserved", true, true),
+            (
+                "stopped-preserved",
+                false,
+                "stopped-preserved",
+                false,
+                false,
+            ),
+            ("stopped-preserved", true, "removed", false, false),
+            ("unknown", true, "unknown", false, false),
+        ] {
+            let (root, observer, replica) = outcome_observer();
+            let value = json!({"summary":{"execution":observer.identity.execution(replica),
+                "task":{"attempt_id":"failed-attempt"},"workload_success":null,
+                "workload_failure":{"kind":"grader_error"},"workload_resource_disposition":summary_disposition},
+                "workload_resource_disposition":disposition,"workload_cleanup_confirmed":confirmed,"proxy_cleanup_confirmed":true});
+            publish(&root.join("record.json"), &value).unwrap();
+            assert_eq!(
+                observer
+                    .completed(replica, &root.join("record.json"))
+                    .is_ok(),
+                accepted,
+                "{disposition}"
+            );
+            assert_eq!(
+                !must_stop(
+                    &Err(Error::Run("grader failure".into())),
+                    observer.completed.lock().unwrap().len(),
+                    1,
+                    true,
+                    observer.cleanup_confirmed.load(Ordering::Acquire)
+                ),
+                continue_batch
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
 
     #[test]
     fn unconfirmed_cleanup_preserves_outcome_but_stops_new_admission() {
