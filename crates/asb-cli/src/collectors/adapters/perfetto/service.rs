@@ -307,9 +307,26 @@ fn producer_registered(command: &mut Command) -> Result<bool, String> {
 
 impl Drop for Service {
     fn drop(&mut self) {
-        if let Some(owner) = self.owner.take() {
+        let joined = if let Some(owner) = self.owner.take() {
             let _ = owner.stop.send(());
-            let _ = owner.thread.join();
+            owner.thread.join().is_ok()
+        } else {
+            true
+        };
+        let reaped = joined
+            && self.children.lock().is_ok_and(|mut children| {
+                children
+                    .iter_mut()
+                    .all(|child| matches!(child.try_wait(), Ok(Some(_))))
+            });
+        if reaped {
+            // A concurrent fork can retain this open file description even
+            // before exec closes its incidental copy. Once ALL owned daemons
+            // are confirmed reaped, normal shutdown explicitly releases the
+            // lease. SIGKILL never runs Drop: inherited daemon copies retain
+            // the lock throughout their crash shutdown as before. Failed or
+            // uncertain cleanup must not optimistically unlock a live service.
+            let _ = self._lease.unlock();
         }
     }
 }
@@ -570,6 +587,133 @@ else:
         fn drop(&mut self) {
             let _ = self.0.kill();
             let _ = self.0.wait();
+        }
+    }
+
+    #[test]
+    fn normal_shutdown_releases_lease_despite_an_incidental_inherited_descriptor() {
+        use std::os::fd::AsRawFd;
+        use std::os::unix::fs::MetadataExt;
+        let root = std::env::temp_dir().join(
+            crate::workloads::TaskIdentity::local("perfetto-inherited-lease", None).attempt_id,
+        );
+        let executable = fixture(&root);
+        let service = start_fixture(&root, &executable);
+        let descriptor = service._lease.as_raw_fd();
+        let metadata = service._lease.metadata().unwrap();
+        // An intentionally retained copy of the same open file description is
+        // deterministic evidence for the incidental fork-before-exec window.
+        let mut command = Command::new("python3");
+        command.args(["-c","import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('ready'); sys.stdin.buffer.read(1)"])
+            .arg(root.join("incidental-ready"))
+            .stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
+        inherit_lease(&mut command, &service._lease);
+        let mut incidental = TestChild(command.spawn().unwrap());
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !root.join("incidental-ready").is_file() && Instant::now() < deadline {
+            assert!(incidental.0.try_wait().unwrap().is_none());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(root.join("incidental-ready").is_file());
+        let retained =
+            fs::metadata(format!("/proc/{}/fd/{descriptor}", incidental.0.id())).unwrap();
+        assert_eq!(
+            (retained.dev(), retained.ino()),
+            (metadata.dev(), metadata.ino())
+        );
+        let other = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(root.join("slot.lease"))
+            .unwrap();
+        assert!(
+            other.try_lock().is_err(),
+            "live owned daemons must retain the lease"
+        );
+        let pids = service
+            .children
+            .lock()
+            .unwrap()
+            .iter()
+            .map(Child::id)
+            .collect::<Vec<_>>();
+        drop(service);
+        assert!(
+            pids.iter()
+                .all(|pid| !Path::new(&format!("/proc/{pid}")).exists())
+        );
+        assert!(
+            incidental.0.try_wait().unwrap().is_none(),
+            "incidental child must remain alive"
+        );
+        other
+            .try_lock()
+            .expect("confirmed normal shutdown must explicitly release the lease");
+        drop(incidental);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn uncertain_owner_cleanup_never_explicitly_unlocks_an_inherited_lease() {
+        for poison in [false, true] {
+            let root = std::env::temp_dir().join(
+                crate::workloads::TaskIdentity::local("perfetto-uncertain-lease", None).attempt_id,
+            );
+            fs::create_dir(&root).unwrap();
+            let lease = OpenOptions::new()
+                .create_new(true)
+                .read(true)
+                .write(true)
+                .open(root.join("slot.lease"))
+                .unwrap();
+            lease.try_lock().unwrap();
+            let incidental = lease.try_clone().unwrap();
+            let children = Arc::new(Mutex::new(Vec::new()));
+            let (stop, _receiver) = mpsc::channel();
+            let owner = if poison {
+                let shared = Arc::clone(&children);
+                assert!(
+                    std::thread::spawn(move || {
+                        let _guard = shared.lock().unwrap();
+                        panic!("fixture-only poisoned cleanup ownership");
+                    })
+                    .join()
+                    .is_err()
+                );
+                None
+            } else {
+                Some(Owner {
+                    stop,
+                    thread: std::thread::spawn(|| panic!("fixture-only owner join failure")),
+                })
+            };
+            let service = Service {
+                instance: "fixture".into(),
+                marker: root.join("trace_marker"),
+                executable: root.join("not-started"),
+                producer: String::new(),
+                consumer: String::new(),
+                children,
+                owner,
+                _lease: lease,
+            };
+            drop(service);
+            let other = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(root.join("slot.lease"))
+                .unwrap();
+            assert!(
+                other.try_lock().is_err(),
+                "uncertain cleanup must not clear inherited ownership"
+            );
+            // This fixture has no daemons: after checking the production
+            // fail-closed branch, explicitly release our synthetic ownership.
+            // Merely closing the clone can itself race an unrelated fork.
+            incidental.unlock().unwrap();
+            drop(incidental);
+            other.try_lock().unwrap();
+            fs::remove_dir_all(root).unwrap();
         }
     }
 
