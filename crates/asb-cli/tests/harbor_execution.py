@@ -141,7 +141,12 @@ class HarborTests(unittest.TestCase):
             task.workspace = SimpleNamespace(container=Mock())
             task.original_networks = ["original"]
             task.capture_submission = Mock()
-            task.catalog = {"dataset":{"revision":"pinned"},"sdk":{"version":"pinned"}}
+            task.catalog = {"workload":"terminal-bench-2.1","dataset":{"revision":"pinned"},"sdk":{"version":"pinned"}}
+            # Synthetic identity injection checks metadata plumbing, not support
+            # or qualification for an additional Harbor dataset.
+            identity = {"workload":"fixture-profile", "task_id":task.task_id,
+                        "attempt_id":task.attempt, "dataset":task.catalog["dataset"]}
+            task.invocation = {"identity":identity}
             task.task = SimpleNamespace(config=SimpleNamespace(verifier=SimpleNamespace(timeout_sec=60,user="verifier")))
             task.environment = SimpleNamespace(default_user=None)
             verifier_dir = root/"official/verifier"
@@ -169,6 +174,8 @@ class HarborTests(unittest.TestCase):
                     self.assertEqual(result["outcome"],expected)
                     self.assertEqual(result["task_id"],"instance")
                     self.assertEqual(result["dataset"],task.catalog["dataset"])
+                    self.assertEqual(result["workload"],identity["workload"])
+                    self.assertEqual(json.loads((root/"evaluation-started.json").read_bytes())["task"],identity)
                     verifier.assert_called_once_with(task.task,task.paths,task.environment)
                     restore.assert_called_once_with(task.client,task.workspace.container,["original"])
 

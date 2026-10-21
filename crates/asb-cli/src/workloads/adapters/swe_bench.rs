@@ -21,6 +21,27 @@ pub(super) static ADAPTER: SweBenchAdapter = SweBenchAdapter {
 };
 
 impl WorkloadAdapter for SweBenchAdapter {
+    fn source(&self) -> Option<&'static str> {
+        Some(
+            "https://raw.githubusercontent.com/SWE-bench/SWE-bench/02e7a74ffd0b707aab73d203fe87bdc7c76afc8e/README.md",
+        )
+    }
+    fn descriptor(&self, _name: &str) -> crate::workloads::contracts::ModuleDescriptor {
+        use crate::workloads::contracts::{EvaluationMode, ModuleDescriptor, SubmissionKind};
+        ModuleDescriptor::official(
+            self.id,
+            "swe-bench",
+            "original",
+            crate::workloads::session::DatasetIdentity {
+                source: self.dataset.into(),
+                revision: self.revision.into(),
+                split: "test".into(),
+            },
+            "swebench",
+            SubmissionKind::Patch,
+            EvaluationMode::FreshEnvironment,
+        )
+    }
     fn grade_retained(
         &self,
         context: &crate::workloads::recovery::RecoveryContext<'_>,
