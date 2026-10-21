@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{CString, OsString};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -34,6 +34,21 @@ struct Root {
     path: String,
     #[serde(default)]
     exclusions: Vec<String>,
+    #[serde(default)]
+    content_paths: Option<Vec<String>>,
+    #[serde(default)]
+    image_sha256: Option<String>,
+}
+
+impl Root {
+    fn selected(&self, relative: &str) -> bool {
+        let Some(paths) = &self.content_paths else {
+            return true;
+        };
+        paths
+            .binary_search_by(|path| path.as_str().cmp(relative))
+            .is_ok()
+    }
 }
 
 #[derive(Serialize)]
@@ -55,6 +70,7 @@ struct Coverage {
     visible_extended_attributes: bool,
     complete_namespace: bool,
     atomic_snapshot: bool,
+    image_anchored_selection: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -161,6 +177,48 @@ fn descriptor_path(file: &File) -> String {
     format!("/proc/self/fd/{}", file.as_raw_fd())
 }
 
+fn hash_payload(
+    file: &File,
+    before: &Metadata,
+    budget: &mut u64,
+    deadline: Instant,
+) -> Result<String, &'static str> {
+    if !before.is_file() {
+        return Err(invalid());
+    }
+    *budget = budget.checked_sub(before.len()).ok_or_else(invalid)?;
+    // Reopen only this already-pinned regular inode, never a mutable user path.
+    let mut reader = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(descriptor_path(file))
+        .map_err(|_| invalid())?;
+    if !stable(before, &reader.metadata().map_err(|_| invalid())?) {
+        return Err(invalid());
+    }
+    let mut hash = Sha256::new();
+    let mut left = before.len();
+    let mut buffer = [0; 65536];
+    while left > 0 {
+        if Instant::now() >= deadline {
+            return Err(invalid());
+        }
+        let bound = left.min(buffer.len() as u64) as usize;
+        let count = reader.read(&mut buffer[..bound]).map_err(|_| invalid())?;
+        if count == 0 {
+            return Err(invalid());
+        }
+        hash.update(&buffer[..count]);
+        left -= count as u64;
+    }
+    if reader.read(&mut buffer[..1]).map_err(|_| invalid())? != 0
+        || !stable(before, &reader.metadata().map_err(|_| invalid())?)
+    {
+        return Err(invalid());
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
 impl Census {
     fn check(&self) -> Result<(), &'static str> {
         if Instant::now() >= self.deadline {
@@ -253,37 +311,14 @@ impl Census {
                 before.ctime_nsec(),
                 before.nlink(),
             ));
-            self.bytes_left = self
-                .bytes_left
-                .checked_sub(before.len())
-                .ok_or_else(invalid)?;
-            // The proc reference targets this pinned, verified regular inode,
-            // not a user path that could be replaced by a symlink between calls.
-            let mut reader = OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
-                .open(descriptor_path(&file))
-                .map_err(|_| invalid())?;
-            if !stable(&before, &reader.metadata().map_err(|_| invalid())?) {
-                return Err(invalid());
+            if root.content_paths.is_none() {
+                record.sha256 = Some(hash_payload(
+                    &file,
+                    &before,
+                    &mut self.bytes_left,
+                    self.deadline,
+                )?);
             }
-            let mut hash = Sha256::new();
-            let mut left = before.len();
-            let mut buffer = [0u8; 65536];
-            while left > 0 {
-                self.check()?;
-                let bound = left.min(buffer.len() as u64) as usize;
-                let count = reader.read(&mut buffer[..bound]).map_err(|_| invalid())?;
-                if count == 0 {
-                    return Err(invalid());
-                }
-                hash.update(&buffer[..count]);
-                left -= count as u64;
-            }
-            if reader.read(&mut buffer[..1]).map_err(|_| invalid())? != 0 {
-                return Err(invalid());
-            }
-            record.sha256 = Some(format!("{:x}", hash.finalize()));
         } else if before.file_type().is_symlink() {
             record.kind = "symlink";
             let mut target = [0u8; 4097];
@@ -351,7 +386,6 @@ fn inode_groups(records: &[Record]) -> Result<BTreeMap<(u64, u64), usize>, &'sta
                     || record.uid != previous.uid
                     || record.gid != previous.gid
                     || record.bytes != previous.bytes
-                    || record.sha256 != previous.sha256
                     || record.attributes_sha256 != previous.attributes_sha256
                     || record.version != previous.version
                 {
@@ -365,11 +399,91 @@ fn inode_groups(records: &[Record]) -> Result<BTreeMap<(u64, u64), usize>, &'sta
             }
         }
     }
+    let mut payloads = BTreeMap::new();
+    for record in records {
+        if let (Some(inode), Some(payload)) = (record.inode, &record.sha256)
+            && payloads
+                .insert(inode, payload)
+                .is_some_and(|previous| previous != payload)
+        {
+            return Err(invalid());
+        }
+    }
     Ok(observed)
 }
 
+fn fill_selected(census: &mut Census, roots: &[Root]) -> Result<(), &'static str> {
+    let roles: BTreeMap<_, _> = roots
+        .iter()
+        .map(|root| (root.name.as_str(), root))
+        .collect();
+    let mut groups: BTreeMap<_, Vec<usize>> = BTreeMap::new();
+    for (index, record) in census.records.iter().enumerate() {
+        if let Some(inode) = record.inode {
+            groups.entry(inode).or_default().push(index);
+        }
+    }
+    for members in groups.values() {
+        census.check()?;
+        let mut needed = false;
+        let mut payload = None;
+        for index in members {
+            let record = &census.records[*index];
+            let (role, relative) = record.name.split_once('/').ok_or_else(invalid)?;
+            needed |= roles[role].selected(relative);
+            if let Some(hash) = &record.sha256 {
+                payload = Some(hash.clone());
+            }
+        }
+        if !needed {
+            continue;
+        }
+        if payload.is_none() {
+            let record = &census.records[members[0]];
+            let (role, relative) = record.name.split_once('/').ok_or_else(invalid)?;
+            let root = roles[role];
+            let length = root.path.len() + relative.len() + 1;
+            census.names_left = census.names_left.checked_sub(length).ok_or_else(invalid)?;
+            let path = if relative.is_empty() {
+                root.path.clone()
+            } else {
+                format!("{}/{relative}", root.path.trim_end_matches('/'))
+            };
+            let file = pin_root(&path)?;
+            let before = file.metadata().map_err(|_| invalid())?;
+            let version = (
+                before.mtime(),
+                before.mtime_nsec(),
+                before.ctime(),
+                before.ctime_nsec(),
+                before.nlink(),
+            );
+            if record.inode != Some((before.dev(), before.ino()))
+                || record.version != Some(version)
+                || record.mode != before.mode()
+                || record.uid != before.uid()
+                || record.gid != before.gid()
+                || record.bytes != Some(before.len())
+                || !before.is_file()
+            {
+                return Err(invalid());
+            }
+            payload = Some(hash_payload(
+                &file,
+                &before,
+                &mut census.bytes_left,
+                census.deadline,
+            )?);
+        }
+        for index in members {
+            census.records[*index].sha256 = payload.clone();
+        }
+    }
+    Ok(())
+}
+
 fn observe(
-    request: Request,
+    mut request: Request,
     entries: usize,
     names: usize,
     bytes: u64,
@@ -394,8 +508,25 @@ fn observe(
                 .exclusions
                 .iter()
                 .any(|name| !relative_name(name, false))
+            || root.image_sha256.as_ref().is_some_and(|value| {
+                value.len() != 64
+                    || !value
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+            || root.content_paths.as_ref().is_some_and(|paths| {
+                root.image_sha256.is_none()
+                    || paths.len() > 100_000
+                    || paths.iter().any(|path| !relative_name(path, true))
+            })
         {
             return Err(invalid());
+        }
+    }
+    for root in &mut request.roots {
+        if let Some(paths) = &mut root.content_paths {
+            paths.sort_unstable();
+            paths.dedup();
         }
     }
     let mut census = Census {
@@ -415,6 +546,18 @@ fn observe(
         for name in &declared {
             census.charge_name(name)?;
         }
+        if let Some(paths) = &root.content_paths {
+            for path in paths {
+                census.charge_name(path)?;
+                if root
+                    .exclusions
+                    .iter()
+                    .any(|excluded| path == excluded || path.starts_with(&format!("{excluded}/")))
+                {
+                    return Err(invalid());
+                }
+            }
+        }
         exclusions.insert(&root.name, declared);
         let pinned = locate_root(&root.path)?;
         let before = pinned.file.metadata().map_err(|_| invalid())?;
@@ -431,10 +574,33 @@ fn observe(
         }
     }
     census.records.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+    for root in &request.roots {
+        if let Some(paths) = &root.content_paths {
+            for path in paths {
+                let name = format!("{}/{path}", root.name);
+                census.charge_name(&name)?;
+                if census
+                    .records
+                    .binary_search_by(|record| record.name.cmp(&name))
+                    .is_err()
+                {
+                    return Err(invalid());
+                }
+            }
+        }
+    }
+    inode_groups(&census.records)?;
+    fill_selected(&mut census, &request.roots)?;
     let inodes = inode_groups(&census.records)?;
     let mut digest = Sha256::new();
-    digest.update(b"asb-declared-root-material-v2\0");
+    digest.update(b"asb-declared-root-material-v3\0");
     digest.update(serde_json::to_vec(&exclusions).map_err(|_| invalid())?);
+    let anchors: BTreeMap<_, _> = request
+        .roots
+        .iter()
+        .map(|root| (&root.name, (&root.content_paths, &root.image_sha256)))
+        .collect();
+    digest.update(serde_json::to_vec(&anchors).map_err(|_| invalid())?);
     for index in 0..census.records.len() {
         if Instant::now() >= census.deadline {
             return Err(invalid());
@@ -456,19 +622,26 @@ fn observe(
         digest.update(b"\0");
     }
     Ok(Observation {
-        schema_version: 2,
-        scope: "declared-root-material-observation-v2",
+        schema_version: 3,
+        scope: "declared-root-material-observation-v3",
         sha256: format!("{:x}", digest.finalize()),
         entries: census.records.len(),
         bytes: bytes - census.bytes_left,
         coverage: Coverage {
-            file_content: true,
+            file_content: request
+                .roots
+                .iter()
+                .all(|root| root.content_paths.is_none()),
             posix_metadata: true,
             visible_inode_equivalence: true,
             extended_attributes: false,
             visible_extended_attributes: true,
             complete_namespace: false,
             atomic_snapshot: false,
+            image_anchored_selection: request
+                .roots
+                .iter()
+                .any(|root| root.content_paths.is_some()),
         },
     })
 }
@@ -528,6 +701,8 @@ mod tests {
                         name: name.to_string(),
                         path: self.0.join(name).to_str().unwrap().into(),
                         exclusions: vec![],
+                        content_paths: None,
+                        image_sha256: None,
                     })
                     .collect(),
             }
@@ -739,5 +914,225 @@ mod tests {
             deadline: Instant::now() - Duration::from_secs(1),
         };
         assert!(census.check().is_err());
+    }
+
+    fn selective(fixture: &Fixture, paths: &[&str]) -> Request {
+        let mut request = fixture.request(&["workspace"]);
+        request.roots[0].image_sha256 = Some("a".repeat(64));
+        request.roots[0].content_paths = Some(paths.iter().map(|path| path.to_string()).collect());
+        request
+    }
+
+    #[test]
+    fn selective_content_is_anchored_canonical_bounded_and_explicit_about_unread_bytes() {
+        let fixture = Fixture::new();
+        fs::create_dir(fixture.0.join("workspace")).unwrap();
+        fs::write(fixture.0.join("workspace/a"), "selected").unwrap();
+        fs::write(fixture.0.join("workspace/b"), "unread00").unwrap();
+        let observed = |request| observe(request, 1000, 65536, 8).unwrap();
+        let first = observed(selective(&fixture, &["a", "a"]));
+        assert_eq!(first.bytes, 8);
+        assert!(!first.coverage.file_content);
+        assert!(first.coverage.image_anchored_selection);
+        assert_eq!(first.sha256, observed(selective(&fixture, &["a"])).sha256);
+        fs::write(fixture.0.join("workspace/b"), "unread11").unwrap();
+        assert_eq!(
+            first.sha256,
+            observed(selective(&fixture, &["a"])).sha256,
+            "unread content depends on the outer image/diff contract, not this component"
+        );
+        fs::write(fixture.0.join("workspace/a"), "changed!").unwrap();
+        assert_ne!(first.sha256, observed(selective(&fixture, &["a"])).sha256);
+        let mut changed = selective(&fixture, &["a"]);
+        changed.roots[0].image_sha256 = Some("b".repeat(64));
+        assert_ne!(
+            observed(changed).sha256,
+            observed(selective(&fixture, &["a"])).sha256
+        );
+        assert!(observe(selective(&fixture, &["a"]), 1000, 65536, 7).is_err());
+    }
+
+    #[test]
+    fn selective_hardlink_groups_read_once_across_roots_and_keep_copies_distinct() {
+        let fixture = Fixture::new();
+        fs::create_dir(fixture.0.join("left")).unwrap();
+        fs::create_dir(fixture.0.join("right")).unwrap();
+        fs::write(fixture.0.join("left/a"), "selected").unwrap();
+        fs::hard_link(fixture.0.join("left/a"), fixture.0.join("right/b")).unwrap();
+        let request = |reverse| {
+            let mut request = fixture.request(if reverse {
+                &["right", "left"]
+            } else {
+                &["left", "right"]
+            });
+            for root in &mut request.roots {
+                root.image_sha256 = Some("a".repeat(64));
+                root.content_paths = Some(if root.name == "right" {
+                    vec!["b".into()]
+                } else {
+                    vec![]
+                });
+            }
+            request
+        };
+        let first = observe(request(false), 1000, 65536, 8).unwrap();
+        assert_eq!(first.bytes, 8);
+        assert_eq!(
+            first.sha256,
+            observe(request(true), 1000, 65536, 8).unwrap().sha256
+        );
+        fs::write(fixture.0.join("left/a"), "changed!").unwrap();
+        assert_ne!(
+            first.sha256,
+            observe(request(false), 1000, 65536, 8).unwrap().sha256
+        );
+        fs::remove_file(fixture.0.join("right/b")).unwrap();
+        fs::write(fixture.0.join("right/b"), "selected").unwrap();
+        assert_ne!(
+            first.sha256,
+            observe(request(false), 1000, 65536, 8).unwrap().sha256
+        );
+    }
+
+    #[test]
+    fn mixed_full_and_selected_roots_share_payload_in_either_traversal_order() {
+        let fixture = Fixture::new();
+        fs::create_dir(fixture.0.join("left")).unwrap();
+        fs::create_dir(fixture.0.join("right")).unwrap();
+        fs::write(fixture.0.join("left/a"), "selected").unwrap();
+        fs::hard_link(fixture.0.join("left/a"), fixture.0.join("right/b")).unwrap();
+        for full_role in ["left", "right"] {
+            let request = |reverse| {
+                let mut request = fixture.request(if reverse {
+                    &["right", "left"]
+                } else {
+                    &["left", "right"]
+                });
+                for root in &mut request.roots {
+                    if root.name != full_role {
+                        root.content_paths = Some(vec![]);
+                        root.image_sha256 = Some("a".repeat(64));
+                    }
+                }
+                request
+            };
+            let first = observe(request(false), 1000, 65536, 8).unwrap();
+            assert_eq!(first.bytes, 8, "full root supplies the shared payload");
+            assert_eq!(
+                first.sha256,
+                observe(request(true), 1000, 65536, 8).unwrap().sha256
+            );
+            assert!(!first.coverage.file_content);
+        }
+    }
+
+    #[test]
+    fn directory_selection_is_exact_and_does_not_select_child_payloads() {
+        let fixture = Fixture::new();
+        fs::create_dir_all(fixture.0.join("workspace/directory")).unwrap();
+        fs::write(fixture.0.join("workspace/directory/file"), "unread00").unwrap();
+        let first = observe(selective(&fixture, &["directory"]), 1000, 65536, 0).unwrap();
+        assert_eq!(first.entries, 3, "children still contribute metadata");
+        assert_eq!(first.bytes, 0);
+        fs::write(fixture.0.join("workspace/directory/file"), "unread11").unwrap();
+        assert_eq!(
+            first.sha256,
+            observe(selective(&fixture, &["directory"]), 1000, 65536, 0)
+                .unwrap()
+                .sha256
+        );
+        assert!(observe(selective(&fixture, &["directory/file"]), 1000, 65536, 0).is_err());
+    }
+
+    #[test]
+    fn selected_symlink_never_reads_external_target_payload() {
+        let fixture = Fixture::new();
+        fs::create_dir(fixture.0.join("workspace")).unwrap();
+        fs::write(fixture.0.join("target"), "original").unwrap();
+        symlink("../target", fixture.0.join("workspace/link")).unwrap();
+        let first = observe(selective(&fixture, &["link"]), 1000, 65536, 0).unwrap();
+        assert_eq!(first.bytes, 0);
+        fs::write(fixture.0.join("target"), "changed target of another size").unwrap();
+        assert_eq!(
+            first.sha256,
+            observe(selective(&fixture, &["link"]), 1000, 65536, 0)
+                .unwrap()
+                .sha256
+        );
+        fs::remove_file(fixture.0.join("workspace/link")).unwrap();
+        symlink("../other", fixture.0.join("workspace/link")).unwrap();
+        assert_ne!(
+            first.sha256,
+            observe(selective(&fixture, &["link"]), 1000, 65536, 0)
+                .unwrap()
+                .sha256
+        );
+    }
+
+    #[test]
+    fn deferred_payload_refuses_replaced_or_mutated_walked_inode() {
+        for replace in [false, true] {
+            let fixture = Fixture::new();
+            fs::create_dir(fixture.0.join("workspace")).unwrap();
+            let path = fixture.0.join("workspace/file");
+            fs::write(&path, "original").unwrap();
+            let request = selective(&fixture, &["file"]);
+            let mut census = Census {
+                records: vec![],
+                entries_left: 1000,
+                names_left: 65536,
+                bytes_left: 1024,
+                attributes_left: 16 * 1024 * 1024,
+                deadline: Instant::now() + Duration::from_secs(60),
+            };
+            let root = &request.roots[0];
+            census
+                .visit(root, "", pin_root(&root.path).unwrap(), 0, None)
+                .unwrap();
+            if replace {
+                // Keep the old inode alive so replacement cannot reuse its ID.
+                fs::rename(&path, fixture.0.join("old-inode")).unwrap();
+                fs::write(&path, "original").unwrap();
+            } else {
+                // A mode change guarantees version/metadata disagreement without
+                // relying on filesystem timestamp resolution or sleeping.
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            assert!(fill_selected(&mut census, &request.roots).is_err());
+            assert_eq!(census.bytes_left, 1024, "reject before reading payload");
+        }
+    }
+
+    #[test]
+    fn selective_missing_anchors_paths_and_hidden_selections_are_rejected() {
+        let fixture = Fixture::new();
+        fs::create_dir(fixture.0.join("workspace")).unwrap();
+        fs::write(fixture.0.join("workspace/file"), "data").unwrap();
+        for anchor in [None, Some("tag:not-digest".into()), Some("A".repeat(64))] {
+            let mut request = selective(&fixture, &["file"]);
+            request.roots[0].image_sha256 = anchor;
+            assert!(observe(request, 1000, 65536, 1024).is_err());
+        }
+        for path in ["missing", "../file", "/file", "a//file"] {
+            assert!(observe(selective(&fixture, &[path]), 1000, 65536, 1024).is_err());
+        }
+        let mut request = selective(&fixture, &["file"]);
+        request.roots[0].exclusions = vec!["file".into()];
+        assert!(observe(request, 1000, 65536, 1024).is_err());
+    }
+
+    #[test]
+    fn deep_directory_limits_do_not_put_payload_buffers_on_recursive_stack_frames() {
+        let fixture = Fixture::new();
+        let mut path = fixture.0.join("workspace");
+        fs::create_dir(&path).unwrap();
+        for _ in 0..128 {
+            path.push("d");
+            fs::create_dir(&path).unwrap();
+        }
+        assert!(observe(fixture.request(&["workspace"]), 1000, 1024 * 1024, 1024).is_ok());
+        path.push("too-deep");
+        fs::create_dir(&path).unwrap();
+        assert!(observe(fixture.request(&["workspace"]), 1000, 1024 * 1024, 1024).is_err());
     }
 }

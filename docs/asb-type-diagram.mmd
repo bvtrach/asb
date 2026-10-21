@@ -1783,6 +1783,7 @@ classDiagram
         -visible_extended_attributes: bool
         -complete_namespace: bool
         -atomic_snapshot: bool
+        -image_anchored_selection: bool
     }
     class C230["workloads_DatasetIdentity"] {
         +source: String
@@ -1929,6 +1930,9 @@ classDiagram
         -name: String
         -path: String
         -exclusions: Vec~String~
+        -content_paths: Option~Vec<String>~
+        -image_sha256: Option~String~
+        +selected(relative: &str) bool
     }
     class C255["workloads_Session"] {
         -process_lifetime: ProcessLifetime

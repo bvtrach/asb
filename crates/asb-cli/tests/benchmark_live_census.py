@@ -23,6 +23,7 @@ class GuestCensusQualification(unittest.TestCase):
         from asb_guest import upload
         from asb_runtime import bundle
         from asb_swebench_task import SweBenchTask
+        from asb_material import change_inventory,image_digest
         root = Path(os.environ["ASB_TEST_SWECATALOG_ROOT"]).absolute()
         artifacts = Path(tempfile.mkdtemp(prefix="guest-material-census-",dir=root))
         print(f"Retained guest census qualification: {artifacts}",flush=True)
@@ -47,7 +48,7 @@ class GuestCensusQualification(unittest.TestCase):
                     self.assertEqual(result.returncode,0,result.stderr.decode(errors="replace"))
                     self.assertLess(len(result.stdout),4096)
                     value = json.loads(result.stdout)
-                    self.assertEqual(value["scope"],"declared-root-material-observation-v2")
+                    self.assertEqual(value["scope"],"declared-root-material-observation-v3")
                     self.assertTrue(value["coverage"]["visible_extended_attributes"])
                     self.assertFalse(value["coverage"]["complete_namespace"])
                     self.assertFalse(value["coverage"]["extended_attributes"])
@@ -68,10 +69,24 @@ class GuestCensusQualification(unittest.TestCase):
                 repository = observe([{"name":"workspace","path":"/testbed"}])
                 self.assertGreater(repository["entries"],1000)
                 self.assertEqual(repository,observe([{"name":"workspace","path":"/testbed"}]))
+                container = task.workspace.container
+                container.reload(); container.image.reload()
+                anchor = image_digest(container.image.attrs,container.attrs["Config"])
+                excluded = ["proc","sys","dev","etc/hostname","etc/hosts","etc/resolv.conf","opt/asb-runtime"]
+                changes = [path.lstrip("/") for path,kind in change_inventory(container.diff())
+                    if kind != 2 and not any(path.lstrip("/") == root or path.lstrip("/").startswith(root+"/") for root in excluded)]
+                full_roots = [{"name":"filesystem","path":"/","exclusions":excluded,
+                    "image_sha256":anchor,"content_paths":changes},
+                    {"name":"shared-memory","path":"/dev/shm"}]
+                namespace = observe(full_roots)
+                self.assertFalse(namespace["coverage"]["file_content"])
+                self.assertTrue(namespace["coverage"]["image_anchored_selection"])
+                self.assertGreater(namespace["entries"],repository["entries"])
+                self.assertEqual(namespace,observe(full_roots))
             self.assertEqual(json.loads((artifacts/"task/task-cleanup.json").read_bytes())["status"],"removed")
         (artifacts/"qualification.json").write_text(json.dumps({
             "scope":"declared-roots-not-complete-environment","runtime":receipt,
-            "linked":linked,"copied":copied,"attributed":attributed,"repository":repository,
+            "linked":linked,"copied":copied,"attributed":attributed,"repository":repository,"namespace":namespace,
             "agent_started":False,"provider_called":False,"evaluator_started":False,
         },sort_keys=True)+"\n")
 

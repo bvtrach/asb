@@ -102,12 +102,19 @@ for binary names/values, bounded probes, OverlayFS filtering, two-pass mutation,
 shared budgets and symlink replacement tests. The census additionally checks
 attribute changes and root-level symlink target isolation. ASB does not request
 extra privileges to enumerate hidden attributes; that coverage stays unclaimed.
+Selective v3 census tests additionally cover image-anchor/selector bounds,
+cross-root hardlink closure, mixed full/selective roots, exact directory and
+symlink selection and replacement before deferred reads. Selective mode still
+walks metadata/attributes but explicitly does not claim all file bytes were read;
+the enclosing adapter must validate the real image and complete change inventory.
 The opt-in `benchmark_live_census.py` needs the installed SWE SDK interpreter,
 `ASB_TEST_SWECATALOG_ROOT` and `ASB_TEST_BENCHMARK_ASB`. It stages the same ASB
 runtime in a newly owned original task, checks cross-root hardlinks versus copies,
 reads the original repository and verifies normal container removal. Its
 attribute mutation case changes only a new fixture file and confirms that binary
-values affect identity without appearing in output. Its declared
+values affect identity without appearing in output. The fixture also compares
+two actual image-anchored root observations plus full-content shared memory;
+it does not establish full mount/service/network equivalence. Its declared
 root subprocesses have a separate 90-second watchdog; the helper's own 60-second
 deadline is cooperative between filesystem operations. A subprocess timeout takes
 the enclosing owned workload's stopped-preservation path; killing a Docker CLI

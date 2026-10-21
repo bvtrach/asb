@@ -96,7 +96,7 @@ The private Linux `__asb-material` helper now accepts a bounded JSON declaration
 over stdin and returns only an observation digest, entry/byte counts and explicit
 coverage flags. It starts no provider, agent or evaluator. This is not the
 `prepared-workload-material-v1` response and must not replace that protocol's
-complete environment declaration. Version two additionally binds visible Linux
+complete environment declaration. Version three additionally binds visible Linux
 attributes, including visible ACL/capability bytes; it does not claim complete
 privileged attribute enumeration, namespace coverage or an atomic snapshot.
 
@@ -106,11 +106,30 @@ the private proc descriptor reference; symlink targets use `readlinkat` on the
 pinned symlink. Devices, FIFOs and other unsupported nodes fail without reading
 their payloads. Files/directories are checked before and after observation;
 root path replacement is additionally checked. Records bind logical names,
-modes/ownership, exact file content and symlink targets, not physical root paths
+modes/ownership, observed file content and symlink targets, not physical root paths
 or raw timestamps. Temporary numeric inode/device pairs only establish observed
 equivalence groups; canonical logical representatives enter the hash. Conflicting
 content, metadata or timestamp/link-count versions for the same inode are errors.
 Link counts are not treated as proof of namespace-wide alias completeness.
+
+Each root normally reads all regular-file payloads. An optional `content_paths`
+list instead selects exact relative entries (not subtrees), and requires a
+canonical `image_sha256` anchor. The helper binds both values but cannot validate
+that the caller supplied the actual image or a complete change inventory. An
+outer adapter must do so before this observation can contribute to environment
+equivalence. Every non-excluded entry still contributes names, metadata, visible
+attributes and inode relationships. Selected directories contribute metadata;
+selected symlinks contribute their own targets, never target file bytes.
+Missing or excluded selected paths are errors. Selectors are sorted/deduplicated.
+
+Payload selection closes over observed cross-root inode groups. A full-content
+root can supply a selected alias's already-read payload; otherwise a selected
+group is read once after traversal and its digest propagated to all aliases.
+Deferred reads re-resolve without following symlinks and reject changed inode,
+version, size, ownership or mode before reading. This is not an atomic snapshot.
+Selective output explicitly sets `file_content=false` and
+`image_anchored_selection=true`; unread bytes must not be described as measured.
+Protocol scope/domain are `declared-root-material-observation-v3` and v3.
 
 One invocation budgets 100,000 entries, 16 MiB retained/pending names, 2 GiB read
 content and depth 128 across all declared roots. The 60-second observation deadline
@@ -149,6 +168,16 @@ names only for the buffered read. The helper charges the full allocation but
 truncates to the actual successful result, then compares two complete visible
 observations. Oversized results, negative errors and changed actual observations
 still fail. Fixed local diagnostic classes expose no paths or attribute values.
+
+The opt-in original SWE-bench fixture also qualifies selective `/` traversal,
+excluding kernel pseudo-filesystems, Docker-managed host identity files and its
+positively owned helper runtime, with a separate full-content `/dev/shm` root.
+It binds the actual image/runtime digest and exact non-deleted Docker change
+paths and requires two identical observations. This is representative real-root
+qualification, not complete mount, network, service or full-population support.
+Ordinary regressions cover mixed full/selective hardlinks in either root order,
+exact directory and symlink selectors and deterministic replacement between walk
+and deferred read. No timing sleeps or privileged fixtures are needed.
 
 ## Implemented native repeated execution
 
