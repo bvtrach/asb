@@ -70,8 +70,10 @@ os.write(fd,row.encode()); os.close(fd)
 if batch == 1 and replica == 1:
     if (root/'block-outcome-first').exists(): (workspace.parent/'.asb-completions').write_text('retain this blocking fixture')
     if (root/'grader-error-first').exists(): (workspace/'src/parser.py').write_bytes(bytes([255]))
+    if (root/'false-grade-first').exists(): (workspace/'src/parser.py').write_text(before)
     if (root/'mutate-source').exists(): (root/'input.jsonl').write_text('changed after planning')
     if (root/'mutate-prompt').exists(): (root/'workloads/bug-fix.txt').write_text('Changed instructions must not launch another batch.')
+    if (root/'capture-overflow-first').exists(): sys.stdout.buffer.write(b'x'*(9*1024*1024)); sys.stdout.buffer.flush()
 sys.exit(7 if (root/'fail-first').exists() and batch == 1 and replica == 1 else 0)
 "##).unwrap();
         use std::os::unix::fs::PermissionsExt;
@@ -149,6 +151,87 @@ fn missing_optional_outcome_keeps_grade_but_stops_repeated_batch_admission() {
         1
     );
     assert!(!project.0.join("barrier-2-1").exists());
+}
+
+#[test]
+fn incomplete_capture_preserves_file_grades_but_cannot_admit_another_batch() {
+    for grade in [true, false] {
+        let project = Project::new();
+        project.config(2);
+        fs::write(
+            project.0.join("capture-overflow-first"),
+            "overflow one admitted slot",
+        )
+        .unwrap();
+        if !grade {
+            fs::write(
+                project.0.join("false-grade-first"),
+                "retain independently failed file grade",
+            )
+            .unwrap();
+        }
+        let output = project.run("2");
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("capture limit"));
+        let rows = records(&output.stdout);
+        let summaries: Vec<_> = rows
+            .iter()
+            .filter(|row| row.get("task").is_some())
+            .collect();
+        assert_eq!(summaries.len(), 2, "the admitted sibling must finish");
+        let failed = summaries
+            .iter()
+            .find(|row| row["execution"]["replica"] == 1)
+            .unwrap();
+        // Whole-stream agent success is unknown after incomplete capture even
+        // though the independent file evaluator still returns its own grade.
+        assert_eq!(failed["process_success"], false);
+        assert_eq!(failed["workload_success"], grade);
+        assert_eq!(failed["failure_kind"], "run_error");
+        assert_eq!(failed["workload_resource_disposition"], "not-required");
+        assert!(
+            failed["failure_reason"]
+                .as_str()
+                .unwrap()
+                .contains("capture limit")
+        );
+        let campaign = PathBuf::from(rows[0]["path"].as_str().unwrap())
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        assert!(!campaign.join("batch-2").exists());
+        assert!(!campaign.join("batch-1/outcomes/1.json").exists());
+        assert!(campaign.join("batch-1/outcomes/2.json").is_file());
+        assert!(!campaign.join(".checkpoint").exists());
+        let log: Value = serde_json::from_slice(
+            &fs::read(campaign.join("batch-1/run-concurrency-1.jsonl")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(log["workload_success"], grade);
+        assert_eq!(log["failure_kind"], "run_error");
+        assert_eq!(
+            log["workload_resource_disposition"],
+            failed["workload_resource_disposition"]
+        );
+        assert_eq!(log["workload_artifacts"], failed["workload_artifacts"]);
+        let finished: Value =
+            serde_json::from_slice(&fs::read(campaign.join("finished.json")).unwrap()).unwrap();
+        assert_eq!(finished["stopped"], true);
+        assert_eq!(
+            fs::read_to_string(project.0.join("attempts.jsonl"))
+                .unwrap()
+                .lines()
+                .count(),
+            2
+        );
+        assert!(!project.0.join("barrier-2-1").exists());
+        let private = campaign.join("batch-1/.asb-completions");
+        for entry in fs::read_dir(private).unwrap() {
+            let record: Value =
+                serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap();
+            assert_ne!(record["summary"]["execution"]["replica"], 1);
+        }
+    }
 }
 
 #[test]
