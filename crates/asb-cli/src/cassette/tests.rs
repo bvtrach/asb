@@ -597,3 +597,316 @@ fn nonregular_archive_paths_are_rejected_without_opening_a_blocking_stream() {
     value["unknown_manifest_field"] = true.into();
     assert!(serde_json::from_value::<Manifest>(value).is_err());
 }
+
+#[test]
+fn journal_publishes_out_of_order_and_recovers_failed_complete_attempts() {
+    let fixture = Fixture::new();
+    let destination = fixture.0.join("trials.asb.zip");
+    let mut journal =
+        RecordingJournal::create(&destination, manifest(0), 3, Limits::default()).unwrap();
+    assert_eq!(journal.begin(2, 1).unwrap(), 2);
+    assert_eq!(journal.begin(1, 1).unwrap(), 1);
+    assert!(journal.begin(1, 1).is_err());
+    let mut track = manifest(2).tracks[1].clone();
+    track.process_success = Some(false);
+    track.workload_success = Some(false);
+    journal.commit(track.clone(), &mut &b"{}\n"[..]).unwrap();
+    assert!(journal.commit(track, &mut &b"{}\n"[..]).is_err());
+    let expected = journal.snapshot().unwrap();
+    assert_eq!(
+        expected
+            .tracks
+            .iter()
+            .map(|track| track.id)
+            .collect::<Vec<_>>(),
+        [1, 2]
+    );
+    assert!(!expected.tracks[0].complete);
+    assert_eq!(expected.tracks[0].process_success, None);
+    assert!(expected.tracks[1].automatically_selectable());
+    assert_eq!(expected.tracks[1].process_success, Some(false));
+    // Never-started slot three is not fabricated as an attempted execution.
+    assert!(expected.track(3).is_err());
+    assert!(RecordingJournal::recover(&destination, Limits::default()).is_err());
+    drop(journal);
+    let recovered = RecordingJournal::recover(&destination, Limits::default()).unwrap();
+    assert_eq!(recovered.snapshot().unwrap(), expected);
+    drop(recovered);
+    assert_eq!(
+        RecordingJournal::recover(&destination, Limits::default())
+            .unwrap()
+            .snapshot()
+            .unwrap(),
+        expected
+    );
+    assert!(
+        !destination.exists(),
+        "journal must not pretend to publish a ZIP"
+    );
+}
+
+#[test]
+fn journal_retains_interrupted_copy_without_promoting_it_to_complete() {
+    struct BrokenReader(bool);
+    impl Read for BrokenReader {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            if self.0 {
+                return Err(std::io::Error::other("injected copy failure"));
+            }
+            self.0 = true;
+            bytes[..3].copy_from_slice(b"{}\n");
+            Ok(3)
+        }
+    }
+    let fixture = Fixture::new();
+    let destination = fixture.0.join("trials.asb.zip");
+    let mut journal =
+        RecordingJournal::create(&destination, manifest(0), 1, Limits::default()).unwrap();
+    journal.begin(1, 1).unwrap();
+    assert!(
+        journal
+            .commit(manifest(1).tracks[0].clone(), &mut BrokenReader(false))
+            .is_err()
+    );
+    fs::write(
+        journal.partial_directory().join(".pending-torn-diagnostic"),
+        "{torn",
+    )
+    .unwrap();
+    let expected = journal.snapshot().unwrap();
+    assert_eq!(expected.tracks[0].bytes, 3);
+    assert!(!expected.tracks[0].complete);
+    assert_eq!(expected.tracks[0].workload_success, None);
+    drop(journal);
+    let mut recovered = RecordingJournal::recover(&destination, Limits::default()).unwrap();
+    assert_eq!(recovered.snapshot().unwrap(), expected);
+    assert!(
+        recovered
+            .commit(manifest(1).tracks[0].clone(), &mut &b"{}\n"[..])
+            .is_err(),
+        "must not overwrite interrupted payload"
+    );
+    assert_eq!(
+        fs::read(
+            recovered
+                .partial_directory()
+                .join(".pending-torn-diagnostic")
+        )
+        .unwrap(),
+        b"{torn"
+    );
+}
+
+#[test]
+fn journal_refuses_existing_destinations_and_bounds_before_starting_slots() {
+    let fixture = Fixture::new();
+    let destination = fixture.0.join("trials.asb.zip");
+    let limits = Limits {
+        max_tracks: 2,
+        max_track_bytes: 3,
+        max_total_bytes: 3,
+        ..Limits::default()
+    };
+    assert!(RecordingJournal::create(&destination, manifest(0), 3, limits).is_err());
+    assert!(RecordingJournal::create(&destination, manifest(0), 0, limits).is_err());
+    assert!(RecordingJournal::create(&destination, manifest(0), u64::MAX, limits).is_err());
+    assert!(!fixture.0.join(".trials.asb.zip.partial").exists());
+    fs::write(&destination, b"user data").unwrap();
+    assert!(RecordingJournal::create(&destination, manifest(0), 1, limits).is_err());
+    assert_eq!(fs::read(&destination).unwrap(), b"user data");
+    let destination = fixture.0.join("new.zip");
+    let mut journal = RecordingJournal::create(&destination, manifest(0), 2, limits).unwrap();
+    assert!(journal.begin(0, 1).is_err());
+    assert!(journal.begin(1, 2).is_err());
+    assert!(journal.begin(3, 1).is_err());
+    journal.begin(1, 1).unwrap();
+    journal
+        .commit(manifest(1).tracks[0].clone(), &mut &b"{}\n"[..])
+        .unwrap();
+    journal.begin(2, 1).unwrap();
+    assert!(
+        journal
+            .commit(manifest(2).tracks[1].clone(), &mut &b"{}\n"[..])
+            .is_err()
+    );
+    assert!(!journal.partial_directory().join("track-2.jsonl").exists());
+    drop(journal);
+    assert!(RecordingJournal::create(&destination, manifest(0), 2, limits).is_err());
+    let recovered = RecordingJournal::recover(&destination, limits).unwrap();
+    assert_eq!(recovered.snapshot().unwrap().tracks.len(), 2);
+}
+
+#[test]
+fn journal_recovery_rejects_payload_and_committed_identity_tampering() {
+    for variant in 0..4 {
+        let fixture = Fixture::new();
+        let destination = fixture.0.join("trials.asb.zip");
+        let mut journal =
+            RecordingJournal::create(&destination, manifest(0), 1, Limits::default()).unwrap();
+        journal.begin(1, 1).unwrap();
+        journal
+            .commit(manifest(1).tracks[0].clone(), &mut &b"{}\n"[..])
+            .unwrap();
+        let root = journal.partial_directory().to_path_buf();
+        drop(journal);
+        match variant {
+            0 => fs::write(root.join("track-1.jsonl"), b"[]\n").unwrap(),
+            1 => fs::remove_file(root.join("started-1.json")).unwrap(),
+            2 => fs::write(root.join("committed-1.json"), b"{torn").unwrap(),
+            _ => {
+                let path = root.join("committed-1.json");
+                let mut record: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                record["recording_id"] = "another-recording".into();
+                fs::write(path, serde_json::to_vec(&record).unwrap()).unwrap();
+            }
+        }
+        assert!(
+            RecordingJournal::recover(&destination, Limits::default()).is_err(),
+            "accepted variant {variant}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn journal_rejects_replaced_partial_directory_and_payload_symlinks() {
+    use std::os::unix::fs::symlink;
+    let fixture = Fixture::new();
+    let destination = fixture.0.join("trials.asb.zip");
+    let mut journal =
+        RecordingJournal::create(&destination, manifest(0), 1, Limits::default()).unwrap();
+    journal.begin(1, 1).unwrap();
+    let root = journal.partial_directory().to_path_buf();
+    let unrelated = fixture.0.join("user-data");
+    fs::write(&unrelated, b"user data").unwrap();
+    symlink(&unrelated, root.join("track-1.jsonl")).unwrap();
+    assert!(journal.snapshot().is_err());
+    assert!(
+        journal
+            .commit(manifest(1).tracks[0].clone(), &mut &b"{}\n"[..])
+            .is_err()
+    );
+    assert_eq!(fs::read(&unrelated).unwrap(), b"user data");
+    let preserved = fixture.0.join("preserved-partial");
+    fs::rename(&root, &preserved).unwrap();
+    fs::create_dir(&root).unwrap();
+    assert!(journal.begin(1, 1).is_err());
+    assert!(journal.snapshot().is_err());
+    assert!(preserved.join("intent.json").is_file());
+}
+
+#[test]
+fn journal_publication_fault_matrix_requires_recovery_without_losing_real_state() {
+    let points = [
+        "before-write",
+        "before-file-sync",
+        "after-file-sync",
+        "before-link",
+        "after-link",
+        "before-directory-sync",
+        "after-directory-sync",
+        "before-temporary-removal",
+        "after-temporary-removal",
+    ];
+    for commit in [false, true] {
+        for point in points {
+            let fixture = Fixture::new();
+            let destination = fixture.0.join("fault.zip");
+            let mut journal =
+                RecordingJournal::create(&destination, manifest(0), 2, Limits::default()).unwrap();
+            if commit {
+                journal.begin(1, 1).unwrap();
+            }
+            journal.inject_publication_failure(point);
+            let failure = if commit {
+                journal
+                    .commit(manifest(1).tracks[0].clone(), &mut &b"{}\n"[..])
+                    .expect_err("fault must fire")
+            } else {
+                journal.begin(1, 1).expect_err("fault must fire")
+            };
+            assert!(
+                failure.to_string().contains(point),
+                "wrong failure: {failure}"
+            );
+            assert!(
+                journal.snapshot().is_err(),
+                "ambiguous publication must not downgrade/omit durable records"
+            );
+            assert!(
+                journal.begin(2, 1).is_err(),
+                "poisoned owner must not admit new work"
+            );
+            let root = journal.partial_directory().to_path_buf();
+            let started = root.join("started-1.json").exists();
+            let committed = root.join("committed-1.json").exists();
+            drop(journal);
+            let recovered = RecordingJournal::recover(&destination, Limits::default()).unwrap();
+            let actual = recovered.snapshot().unwrap();
+            assert_eq!(actual.tracks.len(), usize::from(started));
+            if started {
+                assert_eq!(actual.tracks[0].complete, committed);
+                assert_eq!(actual.tracks[0].process_success, committed.then_some(true));
+                assert_eq!(actual.tracks[0].bytes, if commit { 3 } else { 0 });
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn journal_recovery_checks_aggregate_budgets_before_reading_payloads() {
+    use std::os::unix::fs::symlink;
+    let fixture = Fixture::new();
+    let destination = fixture.0.join("budget.zip");
+    let mut journal =
+        RecordingJournal::create(&destination, manifest(0), 2, Limits::default()).unwrap();
+    for index in 1..=2 {
+        journal.begin(index, 1).unwrap();
+        journal
+            .commit(
+                manifest(2).tracks[(index - 1) as usize].clone(),
+                &mut &b"{}\n"[..],
+            )
+            .unwrap();
+    }
+    let root = journal.partial_directory().to_path_buf();
+    let metadata_bytes: u64 = [
+        "intent.json",
+        "started-1.json",
+        "started-2.json",
+        "committed-1.json",
+        "committed-2.json",
+    ]
+    .iter()
+    .map(|name| fs::metadata(root.join(name)).unwrap().len())
+    .sum();
+    drop(journal);
+    // If recovery attempted payload opens before checking declared totals it
+    // would fail with a symlink/I/O error, not the required aggregate error.
+    fs::remove_file(root.join("track-1.jsonl")).unwrap();
+    symlink(fixture.0.join("nonexistent"), root.join("track-1.jsonl")).unwrap();
+    let limits = Limits {
+        max_total_bytes: 5,
+        ..Limits::default()
+    };
+    let error = RecordingJournal::recover(&destination, limits)
+        .err()
+        .expect("aggregate must fail");
+    assert!(
+        error.to_string().contains("aggregate"),
+        "payload read preceded aggregate check: {error}"
+    );
+    let limits = Limits {
+        max_manifest_bytes: metadata_bytes - 1,
+        ..Limits::default()
+    };
+    let error = RecordingJournal::recover(&destination, limits)
+        .err()
+        .expect("metadata aggregate must fail");
+    assert!(
+        error.to_string().contains("bounded"),
+        "metadata bound was not enforced before payload read: {error}"
+    );
+}

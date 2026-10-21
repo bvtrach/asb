@@ -1,8 +1,39 @@
 # Durable recording publication implementation design
 
-Status: design reviewed independently; storage implementation remains pending.
-This branch first extracts persistent-inode output locking so cassette and sweep
-writers share the same no-follow, regular-file, explicit-unlock contract.
+Status: the recording journal is implemented and independently reviewed, but
+this feature is not merged or released. Final ZIP publication/cleanup remains
+pending. The reusable reader/selector foundation shipped through PR #247 in
+v0.2.1 after exact-head PR and both post-merge CI jobs passed.
+
+This branch extracts persistent-inode output locking so cassette and sweep
+writers share the same no-follow, regular-file, explicit-unlock contract. Its
+four existing ownership/process-death tests passed. Seven journal tests passed,
+including an 18-case atomic-publication failure matrix. All 23 cassette tests
+and strict all-target/all-feature Clippy passed. The independent reviewer
+approved only the implemented journal scope, not the unfinished ZIP finalizer.
+
+## Implemented journal decisions
+
+`RecordingJournal` publishes bounded immutable intent, start and commit records;
+out-of-order completions reconstruct in stable ID order. Interrupted copies stay
+incomplete with unknown outcomes, and never-started slots are not fabricated.
+Recovery checks aggregate metadata and declared payload sizes before payload
+reads; actual hashing consumes a remaining aggregate budget. Staging uses
+conservative incremental byte accounting instead of rehashing all older tracks
+on every commit. Explicit `snapshot()` verifies retained payloads; callers should
+not invoke it after every event merely for progress counters.
+
+An ambiguous metadata publication poisons the owner before the operation begins.
+After any publication error it refuses snapshots and further starts until dropped
+and explicitly recovered. This prevents a successful link followed by sync or
+cleanup failure from omitting a real start or downgrading a committed track.
+Test-only fault points have no environment/configuration surface in normal builds.
+
+The next implementation work is the final ZIP builder, no-clobber publication,
+durability-uncertainty reporting, explicit recovery after final publication and
+conservative cleanup. These need their own fault matrix and receipt-evidence
+contract before the publication feature PR. Runtime integration, repeated batches,
+sweep/checkpoint/report changes and the viewer remain separate later features.
 
 ## Durable state
 

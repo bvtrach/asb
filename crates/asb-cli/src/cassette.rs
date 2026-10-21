@@ -5,10 +5,12 @@
 //! detect corruption; they are not an authenticated provenance claim.
 
 mod archive;
+mod journal;
 mod metadata;
 mod selection;
 
 pub use archive::{Archive, Limits};
+pub use journal::RecordingJournal;
 pub use selection::{Metric, SelectionPlan, Selector};
 use serde::{Deserialize, Serialize};
 use std::fmt;
