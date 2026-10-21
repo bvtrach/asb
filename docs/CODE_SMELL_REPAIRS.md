@@ -14,6 +14,20 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+Current selection-identity integration is staged as **0.2.26** after independent
+main feature PR #250 consumed version 0.2.25 at
+`f48953476265e1f77373bb8623f65224c32cb047`. Its source merge was conflict-free;
+the TUI choice-key, named-pane and concurrency changes remain the repair scope.
+Earlier 1,066-test evidence predates that feature and does not qualify this new
+combined tree. Independent integration review approved `381a653e`; its fresh
+all-target/all-feature offline suite passed 1,167 tests with no failures and
+21 explicit optional skips across 22 targets. Strict Clippy, formatting and
+sequential build/private Rust docs/pinned AutoUML 0.7.2/flows/interactive views
+and completions passed. Executable SHA-256 remained
+`1267b651841334b513585b948e3759ca50625345dded2f10c71a90b866c3ba30`
+before/after tests and final build. Exact-head hosted/package CI, merge,
+post-merge checks and release remain pending.
+
 Integrated repair, released patch **0.2.21**: the independently reviewed
 launch-descriptor/one-shot admission repair (`b1a54fde`) is combined with the
 reviewed workload-wizard stack (`6af7939b`), retaining shared benchmark paths,
@@ -368,7 +382,9 @@ from `fbd0d69d`. Independent current-integration source review approved
 `c291a808`; its full offline suite passed 1,052 tests with 21 optional skips,
 followed by strict Clippy, formatting and build/docs checks. PR #289 merged as
 `73f3ce4768ef9f6dec06a25884c19228683bbe26` after exact-head hosted/package CI.
-Post-merge run `39644360265` and the **0.2.23** release remain pending.
+Post-merge run `39644360265` passed both `checks` and `local-host-checks`.
+Patch **0.2.23** is released at that merge commit; GitHub verifies annotated
+tag `a073a80e836aa4911c5a11931dcdde57a26926a0` as valid.
 
 ## 6. Shared implementation and lifecycle policies
 
@@ -483,15 +499,17 @@ slow TERM-resistant double-forked writers, unchanged unrelated sentinels and
 absence of writes after confirmed cleanup. Other fixtures cover install success
 and failure, helper framing, descriptor noninheritance, running-image pathname
 replacement, keeper failure and unwind custody. Existing trial-wizard regression
-coverage remains required. This candidate is not merged/released qualification,
+coverage remains required. This repair does not establish
 transactional installation rollback or bounded disappearance of unkillable
 kernel tasks. The user-confirmed removal of the CI coverage gate is retained.
 Independent source review approved the integrated `51e30654`; its full offline
 suite passed 1,062 tests with 21 optional skips, followed by strict Clippy,
 formatting and sequential build/private docs/diagrams/completions. Current main
 ancestry changes only this ledger, not that qualified production/test tree.
-Exact-head hosted/package CI, merge, both post-merge jobs and release remain
-pending for this **0.2.24** candidate.
+Exact-head hosted/package CI passed in run `39646000398`; PR #290 merged as
+`bb33f4007a6309c248239c6ee0080c1baeeddd3b`. Both post-merge jobs passed in run
+`39647416921`. Patch **0.2.24** is released at that exact commit; GitHub verifies
+annotated tag `effaad57f913077dc017eb5115e97606356a5c7c` as valid.
 
 ## 7. Limits, diagnostics and CLI consistency
 
@@ -511,9 +529,21 @@ source/package/install-smoke CI passed in run `39611418478`. Post-merge
 verification and the signed v0.2.8 release are tracked in the PR. Coverage is
 optional under the user-confirmed policy above, not a remaining release gate.
 
-Unify intended limits (including TUI concurrency versus benchmark maximum),
-replace positional pane access and scattered protocol deadlines with named
-contracts, and audit shell-completion drift. Preserve signal-exit information
+TUI choice-identity candidate: selections now bind typed agent/provider/model,
+prompt, trial-set filename, collector, concurrency and trial-ID keys rather than
+rendered labels. Colliding prompt/trial-set labels and literal repeated suffixes
+retain distinct identities; reserved `all` is checked against the actual name.
+Named pane kinds replace positional navigation/installation decisions, and the
+concurrency pane uses the shared benchmark maximum of 64. Local regressions
+cover every generated numeric concurrency, label changes across domain consumers,
+saved trial-ID reopen and actual PTY publication of 64. The source-approved
+identity/concurrency repair is integrated with the source-approved provider,
+report, checkpoint and TUI-custody stream at provisional patch **0.2.25**.
+Integration-specific source review and full delivery qualification remain
+pending; installer custody and recorded planning metadata are preserved.
+
+Replace remaining scattered protocol deadlines with named contracts and audit
+shell-completion drift. Preserve signal-exit information
 where the wire protocol can represent it. Check error-type consistency,
 shadowing and redundant display implementations in their owning classes.
 The report's `install::json_string` claim is incorrect: it serializes a string;

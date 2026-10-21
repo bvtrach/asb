@@ -218,6 +218,19 @@ def main():
         assert config["workload"] == "bug-fix" and config["concurrency"] == 2
         assert not (root / "invoked-agent").exists()
 
+        # End reaches the real public maximum; publication must retain numeric
+        # 64, and single-selection must replace the default rather than add it.
+        code, transcript = session(binary, root, ["setup", "tui"],
+            b"pi \tlocal \t \tbug-fix \t\t\x1b[F \t")
+        assert code == 0, transcript
+        next_sweeps = set(root.glob("asb-sweep-*.toml")) - set(sweep_files)
+        assert len(next_sweeps) == 1, transcript
+        manifest64 = tomllib.loads(next_sweeps.pop().read_text())
+        assert len(manifest64["configs"]) == 1
+        config64 = tomllib.loads((root / manifest64["configs"][0]).read_text())
+        assert config64["concurrency"] == 64 and isinstance(config64["concurrency"], int)
+        assert not (root / "invoked-agent").exists()
+
         # Both cancellation encodings exercise restoration and bounded exit.
         for arguments in [["setup", "tui"], ["workload", "tui"]]:
             for key in [b"\x03", b"\x1b"]:
@@ -245,7 +258,7 @@ def main():
         assert code != 0, transcript
         assert invoked.is_file(), "missing agent selection must attempt installation"
         assert not agent.exists(), "failed package install must not mark agent installed"
-        assert len(list(root.glob("asb-sweep-*.toml"))) == 1, "failed selection must not publish a sweep"
+        assert len(list(root.glob("asb-sweep-*.toml"))) == 2, "failed selection must not publish a sweep"
 
         (root / "workloads/custom.txt").unlink()
         invoked.unlink()
@@ -273,7 +286,7 @@ def main():
         assert code != 0, transcript
         assert invoked.is_file(), "missing collector dependency must attempt installation"
         assert not (root / ".asb-tools/perf/bin/perf").exists(), "failed dependency must not be marked installed"
-        assert len(list(root.glob("asb-sweep-*.toml"))) == 1
+        assert len(list(root.glob("asb-sweep-*.toml"))) == 2
 
         workload_sessions(binary, root, str(fixture_bin))
         assert not (root / "invoked-agent").exists()
