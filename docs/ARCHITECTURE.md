@@ -49,6 +49,17 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   Direct interpreter launches require the exact script, module, or inline-code
   entry point; unsupported launch forms remain unavailable instead of counting
   every interpreter task. Launch arguments are not written to artifacts.
+  Exact entry-point matching admits each PID/start-time lifetime once. Later
+  samples retain that admission across client process-title changes, but still
+  check the executable/interpreter and root ancestry before and after reading
+  memory. New PID lifetimes require fresh entry-point admission; an unrelated
+  process using the same interpreter cannot inherit another process's admission.
+  Active admission is separate from the historical worker census: observed
+  executable mismatches or disappearance revoke it and require fresh entry-point
+  validation on re-entry. Title changes before initial admission can still leave
+  the sampler unavailable; no initial executable-only fallback is guessed.
+  This is sampled identity, not detection of an exec that preserves both the
+  PID lifetime and identical interpreter executable between observations.
   Only matching descendants contribute to aggregate RSS or distinct PID/start-time
   worker totals; arbitrary tools and the ASB gate do not. Samples retain bounded
   aggregate state, never argv, prompts, or credentials. Lifecycle completion and
