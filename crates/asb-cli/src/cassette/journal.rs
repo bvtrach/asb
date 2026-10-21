@@ -1,6 +1,8 @@
 //! Immutable recording intent/start/commit records under one output owner.
+mod publication;
 use super::{Error, Limits, Manifest, Statistics, Track, digest};
 use crate::output_lock::OutputLock;
+pub use publication::Publication;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -54,6 +56,8 @@ pub struct RecordingJournal {
     recovery_required: bool,
     publication_fault: PublicationFault,
     root_identity: fs::Metadata,
+    finalization: Option<Manifest>,
+    allow_existing_destination: bool,
 }
 
 impl RecordingJournal {
@@ -112,6 +116,8 @@ impl RecordingJournal {
             recovery_required: false,
             publication_fault: PublicationFault::default(),
             root_identity,
+            finalization: None,
+            allow_existing_destination: false,
         })
     }
 
@@ -152,6 +158,8 @@ impl RecordingJournal {
             recovery_required: false,
             publication_fault: PublicationFault::default(),
             root_identity,
+            finalization: None,
+            allow_existing_destination: false,
         };
         // Known slots bound enumeration; unknown files remain diagnostic only.
         for id in 1..=count {
@@ -192,6 +200,7 @@ impl RecordingJournal {
             }
         }
         journal.metadata_bytes = limits.max_manifest_bytes - metadata_remaining;
+        journal.recover_finalization()?;
         journal.staged_bytes = journal
             .snapshot()?
             .tracks
@@ -205,6 +214,7 @@ impl RecordingJournal {
     /// A duplicate start is never interpreted as permission to retry.
     pub fn begin(&mut self, batch: u64, replica: u64) -> Result<u64, Error> {
         self.check_root()?;
+        self.ensure_recording()?;
         let id = self.slot(batch, replica)?;
         if self.starts.contains_key(&id) {
             return Err(Error(format!(
@@ -232,6 +242,7 @@ impl RecordingJournal {
     /// for inspection; another commit cannot overwrite it.
     pub fn commit(&mut self, track: Track, source: &mut dyn Read) -> Result<(), Error> {
         self.check_root()?;
+        self.ensure_recording()?;
         self.validate_track(&track)?;
         if self.commits.contains_key(&track.id) {
             return Err(Error(format!(
@@ -293,6 +304,10 @@ impl RecordingJournal {
     /// started but uncommitted slots are incomplete with unknown outcomes.
     pub fn snapshot(&self) -> Result<Manifest, Error> {
         self.check_root()?;
+        if let Some(manifest) = &self.finalization {
+            self.verify_finalization(manifest)?;
+            return Ok(manifest.clone());
+        }
         let declared = self
             .commits
             .values()
@@ -412,6 +427,10 @@ impl RecordingJournal {
         if self.recovery_required {
             return Err(Error("recording publication may have succeeded; drop this writer and explicitly recover before continuing".into()));
         }
+        self.check_root_identity()
+    }
+
+    fn check_root_identity(&self) -> Result<(), Error> {
         let current = fs::symlink_metadata(&self.root).map_err(io_error)?;
         if !current.is_dir() {
             return Err(Error("recording partial directory was replaced".into()));
@@ -424,6 +443,16 @@ impl RecordingJournal {
             {
                 return Err(Error("recording partial directory identity changed".into()));
             }
+        }
+        Ok(())
+    }
+
+    fn ensure_recording(&self) -> Result<(), Error> {
+        if self.finalization.is_some() {
+            return Err(Error(
+                "recording is frozen for final publication; no new starts or commits are allowed"
+                    .into(),
+            ));
         }
         Ok(())
     }
@@ -450,6 +479,12 @@ impl RecordingJournal {
     #[cfg(test)]
     pub(super) fn inject_publication_failure(&mut self, point: &'static str) {
         self.publication_fault.point = Some(point);
+    }
+
+    #[cfg(test)]
+    pub(super) fn inject_publication_failure_after(&mut self, point: &'static str, skip: usize) {
+        self.publication_fault.point = Some(point);
+        self.publication_fault.skip.set(skip);
     }
 }
 
@@ -566,12 +601,18 @@ fn hash_file(path: &Path, limit: u64) -> Result<(u64, String), Error> {
 struct PublicationFault {
     #[cfg(test)]
     point: Option<&'static str>,
+    #[cfg(test)]
+    skip: std::cell::Cell<usize>,
 }
 
 impl PublicationFault {
-    fn check(&self, _point: &'static str) -> Result<(), Error> {
+    fn check(&self, _point: &str) -> Result<(), Error> {
         #[cfg(test)]
         if self.point == Some(_point) {
+            if self.skip.get() > 0 {
+                self.skip.set(self.skip.get() - 1);
+                return Ok(());
+            }
             return Err(Error(format!("injected publication failure at {_point}")));
         }
         Ok(())
@@ -584,6 +625,10 @@ fn publish_new(
     bytes: &[u8],
     fault: &PublicationFault,
 ) -> Result<(), Error> {
+    let check = |point: &str| -> Result<(), Error> {
+        fault.check(point)?;
+        fault.check(&format!("{name}:{point}"))
+    };
     let mut temporary = None;
     for _ in 0..256 {
         let path = root.join(format!(
@@ -593,11 +638,11 @@ fn publish_new(
         ));
         match create_private(&path) {
             Ok(mut file) => {
-                fault.check("before-write")?;
+                check("before-write")?;
                 file.write_all(bytes).map_err(io_error)?;
-                fault.check("before-file-sync")?;
+                check("before-file-sync")?;
                 file.sync_all().map_err(io_error)?;
-                fault.check("after-file-sync")?;
+                check("after-file-sync")?;
                 temporary = Some(path);
                 break;
             }
@@ -610,15 +655,15 @@ fn publish_new(
     }
     let temporary = temporary
         .ok_or_else(|| Error("too many private recording publication collisions".into()))?;
-    fault.check("before-link")?;
+    check("before-link")?;
     fs::hard_link(&temporary, root.join(name)).map_err(io_error)?;
-    fault.check("after-link")?;
-    fault.check("before-directory-sync")?;
+    check("after-link")?;
+    check("before-directory-sync")?;
     sync_directory(root)?;
-    fault.check("after-directory-sync")?;
-    fault.check("before-temporary-removal")?;
+    check("after-directory-sync")?;
+    check("before-temporary-removal")?;
     fs::remove_file(&temporary).map_err(io_error)?;
-    fault.check("after-temporary-removal")?;
+    check("after-temporary-removal")?;
     sync_directory(root)
 }
 

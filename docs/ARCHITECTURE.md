@@ -868,7 +868,19 @@ The reusable `cassette` backend defines multi-track manifests, compatibility
 identities, bounded selective ZIP reading and reproducible selection plans.
 It neither starts providers nor changes workloads. Metadata parsing uses a
 validated bounded central-directory snapshot before enabling payload reads;
-selected entries receive CRC, length and SHA-256 validation. This backend is a
+selected entries receive CRC, length and SHA-256 validation. Its single-owner
+`RecordingJournal` publishes immutable recording intent, started slots and track
+commits into a private partial directory. Frozen publication binds those records
+to a bounded, fully verified Deflate ZIP. A durable prepared receipt precedes
+no-clobber final linking and parent-directory sync; interrupted owners recover
+the exact prepared bytes rather than rebuilding a different archive. Publication
+confirmation is separate from resumable staging cleanup. Missing published
+archives are never silently recreated. Per-track evidence binds immutable
+metadata and selected entry bytes, not staging paths that cleanup removes;
+batch evidence verification reuses one archive index. Sweep and cassette output
+owners share a private persistent-inode lock implementation, with domain-owned
+paths and diagnostics. Finalization requires the caller to stop/join recording
+producers; freezing the journal does not drain a proxy itself. This backend is a
 delivery foundation, not yet a change to run/sweep's JSONL CLI behavior. See
 [multi-track delivery contracts](MULTITRACK.md) for the integration sequence.
 

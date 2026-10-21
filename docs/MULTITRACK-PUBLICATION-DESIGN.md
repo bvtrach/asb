@@ -1,16 +1,18 @@
 # Durable recording publication implementation design
 
-Status: the recording journal is implemented and independently reviewed, but
-this feature is not merged or released. Final ZIP publication/cleanup remains
-pending. The reusable reader/selector foundation shipped through PR #247 in
-v0.2.1 after exact-head PR and both post-merge CI jobs passed.
+Status: the journal, final ZIP publication, recovery and cleanup backend are
+implemented and independently reviewed. The reusable reader/selector foundation
+shipped through PR #247 in v0.2.1. Runtime and CLI integration remain separate;
+this document does not claim the user-facing multi-track flow is available.
 
 This branch extracts persistent-inode output locking so cassette and sweep
 writers share the same no-follow, regular-file, explicit-unlock contract. Its
 four existing ownership/process-death tests passed. Seven journal tests passed,
 including an 18-case atomic-publication failure matrix. All 23 cassette tests
 and strict all-target/all-feature Clippy passed. The independent reviewer
-approved only the implemented journal scope, not the unfinished ZIP finalizer.
+approved that journal scope. Final publication review additionally covered the
+freeze/prepare/link/confirm/cleanup phases and all 35 cassette tests, including
+actual owner death at four stages and selected-entry versus group verification.
 
 ## Implemented journal decisions
 
@@ -29,11 +31,20 @@ and explicitly recovered. This prevents a successful link followed by sync or
 cleanup failure from omitting a real start or downgrading a committed track.
 Test-only fault points have no environment/configuration surface in normal builds.
 
-The next implementation work is the final ZIP builder, no-clobber publication,
-durability-uncertainty reporting, explicit recovery after final publication and
-conservative cleanup. These need their own fault matrix and receipt-evidence
-contract before the publication feature PR. Runtime integration, repeated batches,
-sweep/checkpoint/report changes and the viewer remain separate later features.
+The finalizer freezes a verified manifest, builds a bounded ZIP and syncs it and
+its directory before publishing a prepared receipt with the exact archive digest,
+length and candidate name. Recovery preserves those bytes. Final linking never
+replaces a destination; even a recovered linked target is parent-directory-synced
+before confirmation. Confirmed publication and incomplete cleanup are distinct
+successful-publication observations. A lost published target is an error on both
+live and recovered guards, not permission to recreate it.
+
+Selected-track evidence verification is available in a batch form: validate global
+metadata once, parse one ZIP index and decode each requested unique track once.
+It intentionally does not replace the final group's whole-archive identity seal.
+Runtime integration, repeated batches, sweep/checkpoint/report changes and the
+viewer remain separate later features. Integration must stop/join recording
+producers before finalization; backend freezing is not proxy quiescence.
 
 ## Durable state
 

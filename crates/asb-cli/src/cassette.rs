@@ -10,7 +10,7 @@ mod metadata;
 mod selection;
 
 pub use archive::{Archive, Limits};
-pub use journal::RecordingJournal;
+pub use journal::{Publication, RecordingJournal};
 pub use selection::{Metric, SelectionPlan, Selector};
 use serde::{Deserialize, Serialize};
 use std::fmt;
