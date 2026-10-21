@@ -1003,6 +1003,7 @@ impl Session {
                 status: &status,
                 stdout: &stdout,
                 stderr: &stderr,
+                stdout_path: &collector.stdout_path,
                 stderr_path: &collector.stderr_path,
             };
             let data = match collector.adapter.process(self, &context) {

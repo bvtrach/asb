@@ -4,14 +4,15 @@ Scope: the supplied ASB CLI code-smell report, independently checked against
 main `19033110543252063d27c495584caa6f982cef7c` (21 October 2026). This ledger
 tracks work, not a claim that the whole audit is complete. Each repair class
 needs an independently reviewed PR, ordinary and packaged offline CI tests,
-post-merge verification, and a patch release. Coverage additionally needs a
-required 90% production-code gate; excluded production files or lowered
-thresholds are not acceptable substitutes for tests. That coverage prerequisite
-is now delivered by PR #264, merged as
-`cbfaa4c1ebc2ea3880916f7767ed08bd64b6c2f7`: the required
-`coverage-90-percent` check independently gates both aggregate and production
-coverage, without production-file exclusions or reduced thresholds. Individual
-repair classes still need their own exact-head validation and release.
+post-merge verification, and a patch release. PR #264 originally introduced
+a required 90% production/aggregate coverage gate at
+`cbfaa4c1ebc2ea3880916f7767ed08bd64b6c2f7`. Main commit `398c36cc` later removed
+that hosted job and branch-protection requirement. The user explicitly
+confirmed keeping the newer removal on 21 October: do not restore the gate or
+treat a local percentage as a delivery threshold. Local coverage remains
+informational, not a substitute for meaningful offline regressions. Required
+functional CI, independent review, exact-head validation and patch releases
+still apply to each repair class.
 
 Subsequent policy change: main commit `398c36cc` removed the hosted coverage
 job and its branch-protection requirement. The current request in this thread
