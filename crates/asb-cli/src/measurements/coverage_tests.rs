@@ -4,6 +4,60 @@ use collectors::{CollectorAdapter, LifecycleEvent};
 use serde_json::{Value, json};
 
 struct Fixture(PathBuf);
+
+#[cfg(target_os = "linux")]
+#[test]
+fn process_tree_snapshots_record_owned_target_output_and_command_failures() {
+    struct OwnedChild(std::process::Child);
+    impl Drop for OwnedChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    for executable_exists in [true, false] {
+        let fixture = Fixture::new();
+        let child = OwnedChild(Command::new("/bin/sleep").arg("30").spawn().unwrap());
+        let root = ProcessIdentity::read(child.0.id()).unwrap();
+        let output = fixture.0.join("stdout");
+        let errors = fixture.0.join("stderr");
+        let snapshot = ProcessTreeSnapshot::start(
+            root,
+            if executable_exists {
+                "/bin/echo".into()
+            } else {
+                fixture.0.join("missing-sampler")
+            },
+            Box::new(|pids| {
+                assert_eq!(pids.len(), 1);
+                vec!["owned-process-observation".into()]
+            }),
+            output.clone(),
+            errors.clone(),
+        )
+        .unwrap();
+        let wanted = if executable_exists { &output } else { &errors };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while fs::read_to_string(wanted).map_or(true, |text| text.is_empty())
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        snapshot.stop();
+        let text = fs::read_to_string(wanted).unwrap();
+        if executable_exists {
+            assert!(text.contains("# asb-snapshot-elapsed-seconds"));
+            assert!(text.contains("owned-process-observation"));
+        } else {
+            assert!(text.contains("process-tree sampler command failed"));
+        }
+        assert!(
+            root.matches(),
+            "snapshot must not terminate its observed target"
+        );
+        drop(child);
+    }
+}
 impl Fixture {
     fn new() -> Self {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
