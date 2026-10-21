@@ -43,10 +43,20 @@ requests and preparation-failure events preserve the new material and launch
 gates; agent requests retain the shared preparation budget. Invalid later grades
 revoke normal-close permission, never confirmed preservation. The generic
 transport still permits untagged retained-inspection responses and drains unknown
-in-flight cancellation events. Source-only semantic integration and test-source
-updates are complete; independent review, all runtime qualification, strict
-Clippy, hosted/package CI, merge, post-merge verification and release remain
-pending for this new combined tree. The older pre-main full suite passed 1,100
+in-flight cancellation events. Independent source review approved `c9a21b26`;
+the subsequent `cf658ba2` merge adds only the qualified capture delivery ledger.
+Fresh all-target/all-feature offline qualification at that source passed
+**1,203 tests**, zero failures and 21 explicit optional skips across 22 targets.
+Focused protocol/controller/remote, actual Python task-server and repeated-run
+checks additionally passed 98 tests. Strict Clippy, formatting and sequential
+offline build/private Rust docs/pinned AutoUML 0.7.2/flows/interactive views/bash
+and zsh completions passed. The actual executable SHA-256 remained unchanged
+before/after runtime tests and the final build:
+`c489e15faa664c44df3201f8ddeff8738a6d8feecc3cd93b665efb6414115a41`.
+Hosted/package CI, PR merge, post-merge verification and release remain pending.
+Signed merge `889702ed` retains actual main `b12d8488` with a tree identical
+to qualified `64e7c45e`; no production, tests or Cargo bytes changed.
+The older pre-main full suite passed 1,100
 tests with 21 optional skips, but is historical, not qualification of this merge.
 Blocking controller request/cleanup transport is a separate pending class.
 
@@ -72,9 +82,11 @@ Strict Clippy, formatting and sequential build/private Rust docs/pinned AutoUML
 0.7.2/flows/interactive views/bash and zsh completions passed. Actual executable
 SHA-256 stayed unchanged before/after tests and final build:
 `3acc60d2381d4f6037159d1a7c41fb5f6ae6d0ed2b9acd64183de388934d59a6`.
-Exact-head hosted/package CI, main-ancestry publication review, merge, post-merge
-verification and release remain pending. This does not qualify optional skipped
-host/provider tests, runtime discovery, or the remaining overall audit.
+Exact-head hosted/package CI passed in runs `39655735876` and `39655737318`;
+PR #295 merged as `b12d84882609aae00d16dabd497126348e9ef1ef` after independent
+main-ancestry publication review. Post-merge run `39657490808` and release
+remain pending. This does not qualify optional skipped host/provider tests,
+runtime discovery, or the remaining overall audit.
 The subsequent signed ancestry merge retains actual main
 `46d20e382b7781c3fb3bf48216e6090ca4b37998` with a tree identical to qualified
 `650b3944`; production, tests, Cargo files and the qualified executable are
@@ -107,9 +119,10 @@ passed 1,178 tests with zero failures and 21 explicit optional skips across
 22 targets. Strict Clippy, formatting and sequential build/private docs/pinned
 AutoUML/flows/interactive views/completions passed. Exact-head hosted/package CI
 passed in runs `39653948153` and `39653949094`; PR #293 merged as
-`46d20e382b7781c3fb3bf48216e6090ca4b37998`. Post-merge run `39655443641` and
-release remain pending. The earlier 1,077-test sweep evidence is not substituted
-for these checks.
+`46d20e382b7781c3fb3bf48216e6090ca4b37998`. Both post-merge jobs passed in
+run `39655443641`; **0.2.28** is released with GitHub-verified valid annotated
+SSH tag `69af3fc8d835876856ff3a19bcd7af30a3b7e326` targeting that exact merge.
+The earlier 1,077-test sweep evidence is not substituted for these checks.
 
 The parent typed run-disposition integration is staged as **0.2.27**, on the
 independently source-reviewed selection-identity integration **0.2.26**, after
