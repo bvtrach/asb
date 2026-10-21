@@ -20,6 +20,7 @@ const EVALUATION_PROTOCOL_ALLOWANCE: Duration = Duration::from_secs(30);
 const INSPECTION_TIMEOUT: Duration = Duration::from_secs(60);
 const RETAINED_GRADING_TIMEOUT: Duration = Duration::from_secs(1980);
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(180);
+const INITIAL_MATERIAL_TIMEOUT: Duration = Duration::from_secs(600);
 const WORKLOAD_READY_TIMEOUT: Duration =
     Duration::from_secs(crate::planning::DEFAULT_ENVIRONMENT_PREPARATION_SECONDS);
 
@@ -67,10 +68,14 @@ pub(crate) fn verify_retained(
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .stderr(std::process::Stdio::null());
     let mut controller = Controller::spawn(&mut command).map_err(crate::Error::Run)?;
-    controller
-        .send(&json!({"reference":recovery.reference,"summary":context.summary}))
-        .map_err(crate::Error::Run)?;
     let deadline = Instant::now() + INSPECTION_TIMEOUT;
+    controller.limit_cleanup_to(deadline);
+    controller
+        .send(
+            &json!({"reference":recovery.reference,"summary":context.summary}),
+            deadline,
+        )
+        .map_err(crate::Error::Run)?;
     let result = controller.receive(deadline).map_err(crate::Error::Run)?;
     if result["ok"] != true
         || result["scope"] != "retained-artifact-consistency-not-historical-attestation"
@@ -136,15 +141,19 @@ fn retained_grade_request(
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .stderr(std::process::Stdio::null());
     let mut controller = Controller::spawn(&mut command).map_err(crate::Error::Run)?;
-    controller
-        .send(&json!({"reference":context.reference,"catalog":grading_catalog}))
-        .map_err(crate::Error::Run)?;
     let deadline = Instant::now()
         + if grading_catalog.is_some() {
             RETAINED_GRADING_TIMEOUT
         } else {
             INSPECTION_TIMEOUT
         };
+    controller.limit_cleanup_to(deadline);
+    controller
+        .send(
+            &json!({"reference":context.reference,"catalog":grading_catalog}),
+            deadline,
+        )
+        .map_err(crate::Error::Run)?;
     let report = controller.receive(deadline).map_err(crate::Error::Run)?;
     if report["ok"] == false {
         let error_class = report["error_class"]
@@ -362,6 +371,7 @@ pub(crate) fn recover(
     crate::project::apply_network_proxy(&mut command, context.project_root)?;
     let mut controller = Controller::spawn(&mut command).map_err(crate::Error::Run)?;
     let deadline = Instant::now() + RECOVERY_TIMEOUT;
+    controller.limit_cleanup_to(deadline);
     let report = controller.receive(deadline).map_err(crate::Error::Run)?;
     if report["ok"] == false {
         let reason = if report["error_class"] == "RecoveryError" {
@@ -563,13 +573,21 @@ pub(crate) fn launch(
 }
 
 fn request_initial_material(controller: &mut Controller) -> Result<String, String> {
+    request_initial_material_until(controller, Instant::now() + INITIAL_MATERIAL_TIMEOUT)
+}
+
+fn request_initial_material_until(
+    controller: &mut Controller,
+    deadline: Instant,
+) -> Result<String, String> {
     controller.send(
         &Request::InitialMaterial {
             binary: &runtime_binary()?,
         }
         .value()?,
+        deadline,
     )?;
-    let response = controller.receive(Instant::now() + Duration::from_secs(600))?;
+    let response = controller.receive(deadline)?;
     if EventKind::of(&response) != Some(EventKind::InitialMaterial) {
         return Err(
             "official workload did not establish prepared material coverage; no agent was started"
@@ -651,7 +669,6 @@ impl Session {
         connection: &crate::endpoint::Connection,
         prepared: PreparedBootstrap,
     ) -> Result<ExecutionResult, String> {
-        self.dispatch_agent(context, connection, prepared)?;
         let preparation = context
             .launch
             .map(|launch| launch.remaining())
@@ -662,7 +679,14 @@ impl Session {
         } else {
             AGENT_TRANSPORT_ALLOWANCE
         };
-        let deadline = Instant::now() + preparation + self.agent_timeout + allowance;
+        let now = Instant::now();
+        let deadline = now + preparation + self.agent_timeout + allowance;
+        let dispatch_deadline = if context.launch.is_some() {
+            now + preparation
+        } else {
+            deadline
+        };
+        self.dispatch_agent(context, connection, prepared, dispatch_deadline)?;
         self.receive_execution(context, output, deadline)
     }
 
@@ -671,6 +695,7 @@ impl Session {
         context: &mut ExecutionContext<'_>,
         connection: &crate::endpoint::Connection,
         prepared: PreparedBootstrap,
+        deadline: Instant,
     ) -> Result<(), String> {
         let PreparedBootstrap {
             binary,
@@ -722,7 +747,8 @@ impl Session {
                 "project_root":"/opt/asb-project","runtime_dir":"/opt/asb-private","run_dir":"/opt/asb-private/attempt","replay":context.replay,
                 "namespace_collectors":namespace_collectors}),
         };
-        self.controller.send(&Request::Agent { payload }.value()?)
+        self.controller
+            .send(&Request::Agent { payload }.value()?, deadline)
     }
 
     fn receive_execution(
@@ -747,7 +773,7 @@ impl Session {
                     if launched {
                         return Err("isolated execution returned a second launch target".into());
                     }
-                    self.resume_measured_target(context, &event)?;
+                    self.resume_measured_target(context, &event, deadline)?;
                     launched = true;
                 }
                 Some(EventKind::PreparationFailed) => {
@@ -808,6 +834,7 @@ impl Session {
         &mut self,
         context: &mut ExecutionContext<'_>,
         event: &Value,
+        deadline: Instant,
     ) -> Result<(), String> {
         if context.launch.is_some() {
             let target = &event["target"];
@@ -869,6 +896,7 @@ impl Session {
                 exec_id: &event["target"]["exec_id"],
             }
             .value()?,
+            deadline,
         )
     }
 

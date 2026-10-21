@@ -2,7 +2,6 @@
 
 use super::ProcessData;
 use std::io::{Read, Write};
-use std::path::Path;
 
 const MAX_INPUT_BYTES: u64 = 16 * 1024 * 1024;
 // Leave 4 MiB beneath comparison's 16 MiB record bound: two 256 KiB raw
@@ -10,9 +9,7 @@ const MAX_INPUT_BYTES: u64 = 16 * 1024 * 1024;
 // ample space for outer fields. Count without another serialized buffer.
 const MAX_PROCESSED_BYTES: usize = 12 * 1024 * 1024;
 
-pub(crate) fn read_complete_output(path: &Path) -> Result<String, String> {
-    let file = std::fs::File::open(path)
-        .map_err(|error| format!("cannot read complete collector output: {error}"))?;
+pub(crate) fn read_complete_output(file: impl Read) -> Result<String, String> {
     let mut bytes = Vec::new();
     file.take(MAX_INPUT_BYTES + 1)
         .read_to_end(&mut bytes)
@@ -79,19 +76,19 @@ pub(crate) fn process_output_fixture(
     let stderr_path = root.join("stderr");
     std::fs::write(&stdout_path, full).unwrap();
     std::fs::write(&stderr_path, "").unwrap();
+    let stdout = crate::evidence::Capture::open(&stdout_path).unwrap();
+    let stderr = crate::evidence::Capture::open(&stderr_path).unwrap();
     let status = std::process::Command::new("true").status().unwrap();
     let mut session =
         crate::measurements::Session::start_with_collectors(&root, &[], None).unwrap();
     let result = adapter.process(
         &mut session,
-        &super::ProcessContext {
+        &super::ProcessContext::new(
             name,
-            status: &status,
-            stdout: "diagnostic prefix is not measurement input",
-            stderr: "",
-            stdout_path: &stdout_path,
-            stderr_path: &stderr_path,
-        },
+            &status,
+            ["diagnostic prefix is not measurement input", ""],
+            [&stdout, &stderr],
+        ),
     );
     drop(session);
     std::fs::remove_dir_all(&root).unwrap();
@@ -108,21 +105,21 @@ mod tests {
             .join(crate::workloads::TaskIdentity::local("complete-output", None).attempt_id);
         std::fs::create_dir(&root).unwrap();
         let path = root.join("output");
-        assert!(read_complete_output(&path).is_err());
-        assert!(read_complete_output(&root).is_err());
+        assert!(crate::evidence::Capture::open(&path).is_err());
+        assert!(crate::evidence::Capture::open(&root).is_err());
+        let read = || {
+            let capture = crate::evidence::Capture::open(&path)?;
+            read_complete_output(capture.reader()?)
+        };
         std::fs::write(&path, b"final row without newline").unwrap();
-        assert!(
-            read_complete_output(&path)
-                .unwrap_err()
-                .contains("incomplete")
-        );
+        assert!(read().unwrap_err().contains("incomplete"));
         std::fs::write(&path, [0xff, b'\n']).unwrap();
-        assert!(read_complete_output(&path).unwrap_err().contains("UTF-8"));
+        assert!(read().unwrap_err().contains("UTF-8"));
         let file = std::fs::File::create(&path).unwrap();
         file.set_len(MAX_INPUT_BYTES + 1).unwrap();
-        assert!(read_complete_output(&path).unwrap_err().contains("16 MiB"));
+        assert!(read().unwrap_err().contains("16 MiB"));
         std::fs::write(&path, b"").unwrap();
-        assert_eq!(read_complete_output(&path).unwrap(), "");
+        assert_eq!(read().unwrap(), "");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

@@ -9,6 +9,7 @@ mod compare;
 mod completion;
 mod config;
 mod endpoint;
+mod evidence;
 mod executables;
 mod install;
 mod launch;
@@ -142,25 +143,34 @@ pub(crate) use CliError as Error;
 mod adapter_layout_tests {
     use std::path::Path;
 
+    struct CategoryLayout<'a> {
+        category: &'a str,
+        ids: Vec<&'a str>,
+        root_modules: &'a [&'a str],
+        root_directories: &'a [&'a str],
+    }
+
     #[test]
     fn registered_adapters_have_consistent_paths() {
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let categories: [(&str, Vec<&str>, &[&str]); 5] = [
-            (
-                "agents",
-                super::agents::names().collect(),
-                &["mod.rs", "driver.rs"],
-            ),
-            (
-                "providers",
-                super::providers::names().to_vec(),
-                &["mod.rs", "preparation.rs"],
-            ),
-            (
-                "workloads",
-                super::workloads::external_adapter_names().collect(),
+        let categories = [
+            CategoryLayout {
+                category: "agents",
+                ids: super::agents::names().collect(),
+                root_modules: &["mod.rs", "driver.rs"],
+                root_directories: &[],
+            },
+            CategoryLayout {
+                category: "providers",
+                ids: super::providers::names().to_vec(),
+                root_modules: &["mod.rs", "preparation.rs"],
+                root_directories: &[],
+            },
+            CategoryLayout {
+                category: "workloads",
+                ids: super::workloads::external_adapter_names().collect(),
                 // Task/session contracts are category-wide, not adapters.
-                &[
+                root_modules: &[
                     "mod.rs",
                     "session.rs",
                     "material.rs",   // Generic bounded initial-file material identity.
@@ -177,21 +187,30 @@ mod adapter_layout_tests {
                     "relay.rs",
                     "target.rs",
                 ],
-            ),
-            (
-                "proxy",
-                super::proxy::names().collect(),
+                root_directories: &["controller"], // Generic Unix/legacy protocol transports.
+            },
+            CategoryLayout {
+                category: "proxy",
+                ids: super::proxy::names().collect(),
                 // Category-wide capture evidence, not a provider/target adapter.
-                &["mod.rs", "capture.rs"],
-            ),
-            (
-                "collectors",
-                super::collectors::names().collect(),
+                root_modules: &["mod.rs", "capture.rs"],
+                root_directories: &[],
+            },
+            CategoryLayout {
+                category: "collectors",
+                ids: super::collectors::names().collect(),
                 // Category-wide bounded output codec, not a target adapter.
-                &["mod.rs", "output.rs"],
-            ),
+                root_modules: &["mod.rs", "output.rs"],
+                root_directories: &[],
+            },
         ];
-        for (category, ids, root_modules) in categories {
+        for CategoryLayout {
+            category,
+            ids,
+            root_modules,
+            root_directories,
+        } in categories
+        {
             let root = source.join(category);
             let adapters = root.join("adapters");
             assert!(
@@ -203,9 +222,10 @@ mod adapter_layout_tests {
                 let entry = entry.unwrap();
                 let path = entry.path();
                 if path.is_dir() {
-                    assert_eq!(
-                        entry.file_name(),
-                        "adapters",
+                    let name = entry.file_name();
+                    assert!(
+                        name == "adapters"
+                            || root_directories.iter().any(|allowed| name == *allowed),
                         "unexpected adapter directory: {}",
                         path.display()
                     );
@@ -221,6 +241,10 @@ mod adapter_layout_tests {
             }
             for id in ids {
                 let stem = id.replace(['-', '.'], "_");
+                assert!(
+                    !root_directories.contains(&stem.as_str()),
+                    "registered {category} adapter {id} cannot be a category-wide directory"
+                );
                 // A new generic module must not accidentally allow an owning
                 // target adapter back into the category root.
                 for filename in [format!("{stem}.rs"), format!("{stem}_agent.rs")] {
