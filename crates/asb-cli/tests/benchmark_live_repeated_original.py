@@ -149,6 +149,9 @@ class RepeatedOriginalQualification(unittest.TestCase):
             attempts = set()
             for slot,row in enumerate(rows[1:],1):
                 self.assertEqual(row["execution"]["slot"],slot)
+                self.assertEqual(row["planning"]["repetition"],dict(index=(slot-1)//2+1,total=2))
+                self.assertEqual(row["execution"]["admission"],plan["admission"])
+                self.assertEqual(row["execution_plan_fingerprint"],rows[1]["execution_plan_fingerprint"])
                 self.assertTrue(row["process_success"],row)
                 if not fault:
                     self.assertTrue(row["workload_success"],row)

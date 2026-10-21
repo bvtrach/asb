@@ -55,6 +55,13 @@ impl Drop for Leaf {
 }
 
 impl CollectorAdapter for CpuAccounting {
+    fn target_scope(&self, backend: &str) -> crate::collectors::TargetScope {
+        if backend == "local-docker" {
+            crate::collectors::TargetScope::Container
+        } else {
+            crate::collectors::TargetScope::AgentProcess
+        }
+    }
     fn id(&self) -> &'static str {
         "cpu-accounting"
     }

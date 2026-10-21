@@ -471,7 +471,10 @@ pub(super) fn finish_measurements(
     let measured = measurements::RunMeasurement {
         workload_resource_disposition: result.workload_resource_disposition,
         workload_artifacts: &result.workload_artifacts,
-        execution_plan_fingerprint: result.execution_plan_fingerprint,
+        execution_plan_fingerprint: result
+            .execution_plan_fingerprint
+            .as_ref()
+            .map(|fingerprint| fingerprint.as_str()),
         module: result.module.as_ref(),
         benchmark_outcome: result.benchmark_outcome.as_ref(),
         replica_index: result.replica_index,

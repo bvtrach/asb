@@ -157,6 +157,7 @@ fn preparation_checks_selection_runtime_and_allocation_before_any_task_launch() 
         };
         let mut context = PreparationContext {
             verify_initial_material: false,
+            budgets: Default::default(),
             on_allocation: Some(&observer),
             workload: adapter.id,
             trial: None,

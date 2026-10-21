@@ -47,6 +47,18 @@ without changing established result/workspace identities unintentionally.
 Also review duplicated manifest reference validation and executable resolution;
 same names alone do not prove equivalent semantics. Pending.
 
+Shared benchmark-path candidate, staged patch **0.2.13**: all five equivalent legacy normalizers now
+use one component/stem policy, and both sweep execution and comparison use the
+same checked TOML-reference contract. Filename prefixes, Unicode-per-character
+replacement, non-UTF-8 fallback and existing symlink behavior are unchanged.
+The graph allocator still owns collision-free identities; the shared lossy
+normalizer is not a uniqueness or confinement mechanism. Tests preserve those
+boundaries and exercise actual CLI rejection in both commands before artifact
+creation. Independent source review found no blocker. Ordinary source tests
+and strict Clippy passed; release-head functional package/hosted checks, PR,
+post-merge validation and a patch release remain pending. This does not close
+the separate executable-resolution or orchestration classes.
+
 Candidate report repair: flatten numeric paths with escaped object separators
 and empty-key identities; reserve bounded portable SVG names, using digest
 suffixes for unsafe/long/colliding metric or series names. Shared series names
@@ -85,8 +97,10 @@ admitted configuration's failure after parallel-sweep output breaks, without
 further writes or retries. Independent source and fixture review approved
 candidate `16528073`; exact-head ordinary/package checks and both mandatory
 coverage gates passed before integration with newer main. The integrated
-candidate stages patch **0.2.9**, after the shell-completion repair; fresh
-release-head qualification and delivery remain pending. Other subprocess/publication cleanup
+candidate shipped as **v0.2.9** after independently reviewed PR #269 merged as
+`3211d1bf330cbc81731e10cc83e7843f58152707`. Exact-head hosted/package CI and
+both post-merge jobs passed in run `39614537662`; GitHub verified its signed
+release tag. Other subprocess/publication cleanup
 items in this class are not claimed complete.
 
 Model-catalog transport candidate, staged patch **0.2.11**: replace blocking curl stdin/stdout operations,
@@ -103,6 +117,19 @@ cancellable non-Unix transport remains a separate portability contract. Full
 release-head qualification and delivery remain pending. Main `398c36cc` removed
 the hosted coverage gate and the user explicitly confirmed keeping that removal;
 local measurements are optional diagnostics, not a required hosted check.
+
+Flamegraph cleanup candidate, staged patch **0.2.15**: the perf-script/stack-collapse/render pipeline
+owns every directly spawned stage. A failure, timeout or unwind signals all
+remaining stages before polling against one shared cleanup deadline, preserving
+the original error and retaining unconfirmed children in the shared private
+`OwnedReaper` established before any spawn. It no longer selects processes by
+parent PID or returns from an upstream failure while forgetting a downstream
+child. Offline real-child tests cover stage/file/spawn failures, timeout,
+unwind, fallback-custody handoff, actual reaping and unrelated sentinel survival.
+The reviewed source is integrated with main's benchmark planning changes;
+fresh ordinary/package qualification, post-merge checks and a patch release
+remain pending in PR #276. Coverage is optional, not a delivery gate. This does
+not claim arbitrary descendant or crash-persistent cleanup.
 
 ## 4. Typed domain and wire contracts
 
@@ -126,7 +153,7 @@ Simplify checkpoint validation into named invariants without losing checks.
 Review broad parameter lists, result structs, visibility, dead API surface and
 module names in those owning boundaries. Pending.
 
-Runner candidate, staged patch **0.2.10** (not yet merged/released): private consuming admission,
+Runner repair, released patch **0.2.10**: private consuming admission,
 preparation, execution-evidence, proxy-settlement, evaluation and finalization
 states now separate owned resources and independent outcomes. It repairs the
 verified path where collector lifecycle errors discarded client output or an
@@ -142,7 +169,10 @@ observer redaction and exact-once execution/evaluation/cleanup survive the
 combined failure paths. The larger phase matrix uses synthetic execution
 evidence, not full benchmark runs. This does not close the remaining comparison/sweep/driver structural
 work, stream-memory limits, blocking child-wait class or exact inner-principal
-native timing. Hosted and full final verification remain required.
+native timing. Independently reviewed PR #273 merged as
+`f2c8d7819d8f79e11c398f2a87ab6b938fa6c9ab` after exact-head hosted/package checks
+passed. Both post-merge jobs passed in run `39619889953`; **v0.2.10** was
+released from that exact commit with a GitHub-verified signed tag.
 
 Audit correction: current `perfetto_instance_config` is seven lines, not the
 reported 630. Comparison's filter JavaScript is already a separate asset.

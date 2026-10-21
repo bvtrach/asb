@@ -1,5 +1,6 @@
 //! Offline HTML/SVG reports for benchmark configurations and sweeps.
 
+use crate::benchmark_paths::{benchmark_stem, checked_benchmark_reference};
 use crate::{Error, read_config};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -68,6 +69,7 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
         .is_some_and(|table| table.contains_key("configs"));
     let sweep = if single {
         crate::sweep::SweepFile {
+            resources: None,
             configs: vec![
                 sweep_path
                     .file_name()
@@ -101,8 +103,8 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
     let mut benchmark_data = Vec::new();
     let mut actual_attempts = BTreeSet::new();
     for (index, reference) in sweep.configs.iter().enumerate() {
-        let config = checked_reference(parent, reference, path)?;
-        let mut result_dir = sweep_results.join(format!("{index:03}-{}", safe_name(&config)));
+        let config = checked_benchmark_reference(parent, reference, path)?;
+        let mut result_dir = sweep_results.join(format!("{index:03}-{}", benchmark_stem(&config)));
         let (agent, workload, provider, model, concurrency) = benchmark_identity(&config)?;
         let standalone = if single {
             Some(
@@ -169,9 +171,12 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
         }
         for replica in 1..=concurrency {
             let label = if concurrency == 1 {
-                format!("{index:03}-{}", safe_name(&config))
+                format!("{index:03}-{}", benchmark_stem(&config))
             } else {
-                format!("{index:03}-{}-concurrency-{replica}", safe_name(&config))
+                format!(
+                    "{index:03}-{}-concurrency-{replica}",
+                    benchmark_stem(&config)
+                )
             };
             let measurement_dir = if let Some(configuration) = &standalone {
                 let selected = crate::runner::replica::configuration(
@@ -1473,32 +1478,6 @@ const HTML_SCRIPT: &str = concat!(
     "\n</script></body></html>"
 );
 
-fn checked_reference(parent: &Path, reference: &str, sweep: &str) -> Result<PathBuf, Error> {
-    let path = Path::new(reference);
-    if path.is_absolute()
-        || path
-            .components()
-            .any(|component| component == std::path::Component::ParentDir)
-    {
-        return Err(Error::Input(format!(
-            "sweep {sweep} contains unsafe benchmark path {reference}"
-        )));
-    }
-    if path.extension().and_then(|value| value.to_str()) != Some("toml") {
-        return Err(Error::Input(format!(
-            "sweep {sweep} entry {reference} is not a .toml benchmark"
-        )));
-    }
-    let resolved = parent.join(path);
-    if !resolved.is_file() {
-        return Err(Error::Input(format!(
-            "sweep {sweep} references missing benchmark {}",
-            resolved.display()
-        )));
-    }
-    Ok(resolved)
-}
-
 fn read_json(path: &Path) -> Result<Value, Error> {
     let metadata = fs::metadata(path)
         .map_err(|error| Error::Input(format!("cannot read {}: {error}", path.display())))?;
@@ -1903,27 +1882,6 @@ fn escape(value: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
-}
-
-fn safe_name(path: &Path) -> String {
-    safe_name_str(
-        path.file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or("benchmark"),
-    )
-}
-
-fn safe_name_str(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 pub(crate) struct PlanningCatalog {
+    pub requirements: std::collections::BTreeMap<String, crate::planning::TaskRequirements>,
     pub dataset: DatasetIdentity,
     pub task_ids: BTreeSet<String>,
     pub evaluation_kind: &'static str,
@@ -133,6 +134,7 @@ mod tests {
     fn official_catalog_mismatch_cannot_discard_the_protocol_binding() {
         let profile = super::super::descriptor("swe-bench-lite").unwrap();
         let mut catalog = PlanningCatalog {
+            requirements: Default::default(),
             dataset: profile.dataset.unwrap(),
             task_ids: ["task-1".into()].into_iter().collect(),
             evaluation_kind: "upstream-harness",
@@ -163,6 +165,7 @@ mod tests {
     #[test]
     fn selected_instances_are_validated_without_inventing_attempts_or_baselines() {
         let catalog = PlanningCatalog {
+            requirements: Default::default(),
             dataset: DatasetIdentity {
                 source: "official-source".into(),
                 revision: "a".repeat(40),

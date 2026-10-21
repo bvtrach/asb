@@ -17,6 +17,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub(crate) trait AgentAdapter: Sync {
+    /// Invocation inputs actually supported by this ASB adapter's transport.
+    fn input_modalities(&self) -> &'static [&'static str] {
+        &["text"]
+    }
     fn id(&self) -> &'static str;
     fn executable(&self) -> &'static str;
     /// Project-local installation recipe for this exact adapter executable.
@@ -701,6 +705,7 @@ mod tests {
     #[test]
     fn every_registered_adapter_builds_a_noninteractive_command() {
         let config = BenchmarkConfig {
+            planning: None,
             agent: "unused".into(),
             workload: "bug-fix".into(),
             provider: "cli2key".into(),

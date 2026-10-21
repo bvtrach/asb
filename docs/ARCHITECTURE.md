@@ -1,5 +1,12 @@
 # Architecture
 
+Benchmark cassette/result labels and manifest references share the private
+`benchmark_paths` policy. Its legacy component normalization is lossy and keeps
+existing artifact names stable; it must not be used as a uniqueness allocator
+or standalone path sandbox. Comparison retains its collision-free graph-name
+allocator. Sweep execution and comparison share the relative-TOML reference
+checks, including existing symlink behavior and actionable path diagnostics.
+
 The versioned [benchmark module contracts](BENCHMARK_MODULES.md) separate suite,
 dataset, harness and evaluation protocol. Owning adapters expose descriptors
 through `asb workload describe`; new selection snapshots bind the same metadata.

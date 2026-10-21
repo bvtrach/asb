@@ -353,6 +353,7 @@ mod tests {
             fixture.reference.dataset.clone(),
             &super::super::PreparationContext {
                 verify_initial_material: false,
+                budgets: Default::default(),
                 on_allocation: Some(&refused),
                 workload: &fixture.reference.workload,
                 trial: Some(&fixture.reference.task_id),

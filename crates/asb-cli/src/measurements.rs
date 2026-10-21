@@ -551,22 +551,29 @@ impl Session {
         )
     }
 
-    /// Start collectors under explicit benchmark-project authority. Output paths
-    /// may be external or inside another project; they never select capabilities.
-    /// The delegated cgroup remains optional.
-    pub fn start_with_collectors_and_parent(
+    /// Use exactly the negotiated adapter set. Later environment changes cannot
+    /// activate an adapter omitted from the saved plan.
+    /// Project authority is explicit; output paths never select capabilities.
+    pub(crate) fn start_with_resolved_collectors_and_parent(
         project_root: &Path,
         dir: &Path,
         selected: &[String],
+        active: &[String],
         tool_dir: Option<&Path>,
         cgroup_parent: Option<&Path>,
     ) -> Result<Self, String> {
+        let adapters = active
+            .iter()
+            .map(|name| {
+                collectors::find(name).ok_or_else(|| format!("unknown resolved collector {name}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         Self::start_with_adapters(
             dir,
             selected,
             tool_dir,
             cgroup_parent,
-            collectors::all().to_vec(),
+            adapters,
             false,
             Some(project_root),
         )

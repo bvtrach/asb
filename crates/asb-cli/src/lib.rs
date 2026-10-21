@@ -2,6 +2,7 @@
 
 mod agents;
 mod benchmark;
+mod benchmark_paths;
 pub mod cassette;
 mod collectors;
 mod compare;
@@ -13,6 +14,7 @@ mod measurements;
 mod models;
 mod output_lock;
 mod parser;
+mod planning;
 mod process_cleanup;
 mod process_gate;
 mod project;

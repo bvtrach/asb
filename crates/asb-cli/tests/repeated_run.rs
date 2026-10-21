@@ -449,7 +449,20 @@ fn repeats_fresh_batches_preserve_users_collect_all_outcomes_and_continue_ordina
         assert_eq!(row["execution"]["slot"], index + 1);
         assert_eq!(row["workload_success"], true);
         assert_eq!(row["execution"]["total"], 6);
+        assert_eq!(row["planning"]["repetition"]["index"], index / 2 + 1);
+        assert_eq!(row["planning"]["repetition"]["total"], 3);
+        assert_eq!(row["execution"]["admission"], plan["admission"]);
+        assert_eq!(
+            row["execution_plan_fingerprint"],
+            rows[1]["execution_plan_fingerprint"]
+        );
+        let policy: Value =
+            serde_json::from_slice(&fs::read(row["execution_plan"].as_str().unwrap()).unwrap())
+                .unwrap();
+        assert_eq!(policy["policy"], row["planning"]);
     }
+    assert_eq!(plan["admission"]["material_seconds"], 1800);
+    assert_eq!(plan["admission"]["launch_seconds"], 1800);
     for batch in 1..=3 {
         assert!(root.join(format!("batch-{batch}/prepared.json")).is_file());
         assert_eq!(
@@ -468,6 +481,74 @@ fn repeats_fresh_batches_preserve_users_collect_all_outcomes_and_continue_ordina
         1
     );
     assert!(!project.0.join("original.log").exists());
+}
+
+#[test]
+fn repeated_execution_rejects_conflicting_manual_identity_and_invalid_policy_before_publication() {
+    for extra in [
+        "[planning.repetition]\nindex=2\ntotal=3\n",
+        "[planning]\nrequired_policies=['not-enforceable']\n",
+    ] {
+        let project = Project::new();
+        project.config(2);
+        let config = project.0.join("benchmark.toml");
+        fs::write(
+            &config,
+            format!("{}{extra}", fs::read_to_string(&config).unwrap()),
+        )
+        .unwrap();
+        let output = project.run("2");
+        assert!(!output.status.success());
+        assert!(
+            output.stdout.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(!project.0.join("results").exists());
+        assert!(!project.0.join("attempts.jsonl").exists());
+        assert!(!project.0.join(".asb/execution-plans").exists());
+    }
+}
+
+#[test]
+fn repeated_native_clients_obey_selected_execution_cap_without_stopping_later_batches() {
+    let project = Project::new();
+    project.config(2);
+    let config = project.0.join("benchmark.toml");
+    fs::write(
+        &config,
+        format!(
+            "{}[planning.budgets]\nexecution_seconds=1\n",
+            fs::read_to_string(&config).unwrap()
+        ),
+    )
+    .unwrap();
+    let client = project.0.join("fixture-agent");
+    fs::write(
+        &client,
+        fs::read_to_string(&client)
+            .unwrap()
+            .replace("time.sleep(.06)", "time.sleep(5)"),
+    )
+    .unwrap();
+    let output = project.run("2");
+    assert!(!output.status.success());
+    let rows = records(&output.stdout);
+    assert_eq!(rows.len(), 5, "{}", String::from_utf8_lossy(&output.stderr));
+    for row in &rows[1..] {
+        assert_eq!(row["planning"]["budgets"]["execution_seconds"], 1);
+        assert_eq!(row["effective_budgets"]["execution_seconds"], 1.0);
+        assert_eq!(row["process_success"], false);
+        assert_eq!(row["workload_success"], false);
+        assert!(row["elapsed_ms"].as_u64().unwrap() < 5000);
+    }
+    let campaign = PathBuf::from(rows[0]["path"].as_str().unwrap());
+    let finished: Value = serde_json::from_slice(
+        &fs::read(campaign.parent().unwrap().join("finished.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(finished["completed_batches"], 2);
+    assert_eq!(finished["stopped"], false);
 }
 
 #[test]

@@ -163,7 +163,26 @@ impl LifecyclePhase {
 ///
 /// Adapters override their supported operations and keep mutable run state in
 /// `Session`. Defaults leave unsupported capabilities absent or do no work.
+#[derive(Clone, Copy, Debug, serde::Deserialize, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum TargetScope {
+    AgentProcess,
+    HostContext,
+    RunObservation,
+    Container,
+}
+
 pub(crate) trait CollectorAdapter: Sync {
+    fn target_scope(&self, _backend: &str) -> TargetScope {
+        if self.requires_pid() {
+            TargetScope::AgentProcess
+        } else {
+            TargetScope::RunObservation
+        }
+    }
+    fn supports_backend(&self, backend: &str) -> bool {
+        matches!(backend, "native" | "local-docker")
+    }
     fn id(&self) -> &'static str;
     fn runtime_inputs(
         &self,

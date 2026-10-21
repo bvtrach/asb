@@ -106,7 +106,7 @@ fn references_reject_escape_wrong_extension_and_missing_file_without_creating_it
         ("missing.toml", "references missing benchmark"),
     ] {
         assert!(
-            checked_reference(&root.0, reference, "fixture-sweep")
+            checked_benchmark_reference(&root.0, reference, "fixture-sweep")
                 .unwrap_err()
                 .to_string()
                 .contains(reason)
@@ -114,7 +114,7 @@ fn references_reject_escape_wrong_extension_and_missing_file_without_creating_it
     }
     let path = root.write("nested/valid.toml", "agent='fixture'\n");
     assert_eq!(
-        checked_reference(&root.0, "nested/valid.toml", "fixture-sweep").unwrap(),
+        checked_benchmark_reference(&root.0, "nested/valid.toml", "fixture-sweep").unwrap(),
         path
     );
     assert_eq!(fs::read_dir(&root.0).unwrap().count(), 1);

@@ -10,7 +10,6 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 const MAX_EXECUTIONS: u64 = 65_533;
 const MAX_PLAN_BYTES: usize = 16 * 1024 * 1024;
@@ -18,6 +17,7 @@ const MAX_OUTCOME_BYTES: u64 = 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ExecutionIdentity {
+    admission: crate::planning::BatchAdmissionPolicy,
     campaign: String,
     batch: u64,
     replica: usize,
@@ -34,8 +34,12 @@ pub(crate) struct BatchIdentity {
 }
 
 impl BatchIdentity {
+    pub(crate) fn admission(&self) -> crate::planning::BatchAdmissionPolicy {
+        crate::planning::BatchAdmissionPolicy::current()
+    }
     pub(crate) fn execution(&self, replica: replica::Identity) -> ExecutionIdentity {
         ExecutionIdentity {
+            admission: self.admission(),
             campaign: self.campaign.clone(),
             batch: self.number,
             replica: replica.index,
@@ -66,6 +70,7 @@ struct ReplayInput {
 
 #[derive(Serialize)]
 struct Plan<'a> {
+    admission: crate::planning::BatchAdmissionPolicy,
     schema_version: u32,
     scope: &'static str,
     campaign: &'a str,
@@ -114,6 +119,15 @@ pub(super) fn run(
             "repeated recording requires the pending bundle integration".into(),
         ));
     }
+    crate::planning::resolve_snapshot(&config, options.measurement_dir.is_some(), options.policy)?;
+    if config
+        .planning
+        .as_ref()
+        .is_some_and(|planning| planning.repetition != crate::planning::Repetition::default())
+    {
+        return Err(Error::Input("--repeat cannot combine with a nondefault planning.repetition; choose automated batches or manually identified configurations".into()));
+    }
+    let admission = crate::planning::BatchAdmissionPolicy::current();
     let (project_root, _) = crate::project::load(config_path)?;
     let project_root = project_root.canonicalize().map_err(io_error)?;
     let campaign = crate::workloads::TaskIdentity::local("execution-campaign", None).attempt_id;
@@ -136,6 +150,7 @@ pub(super) fn run(
         .transpose()
         .map_err(io_error)?;
     let plan = Plan {
+        admission,
         schema_version: 1,
         scope: "intended-executions-not-attempt-evidence",
         campaign: &campaign,
@@ -214,11 +229,23 @@ pub(super) fn run(
             cleanup_confirmed: AtomicBool::new(true),
         });
         let prepared = batch_root.join("prepared.json");
-        let gate = batch::Gate::new(config.concurrency, reference.clone(), Duration::from_secs(1800))?.observe(Arc::new(move |compatibility| {
+        let gate = batch::Gate::new(config.concurrency, reference.clone(), admission.material_timeout())?.observe(Arc::new(move |compatibility| {
             publish(&prepared, &json!({"schema_version":1,"scope":"verified-prepared-material","compatibility":compatibility}))
         }));
         let mut selected = config.clone();
-        let launch_gate = batch::Gate::deferred(config.concurrency, Duration::from_secs(1800))?;
+        selected
+            .planning
+            .get_or_insert_with(Default::default)
+            .repetition = crate::planning::Repetition {
+            index: number as usize,
+            total: repeat as usize,
+        };
+        let mut policy =
+            crate::planning::resolve_for_run(&selected, options.measurement_dir.is_some())?;
+        if let Some(saved) = options.policy {
+            policy.task_requirements = saved.task_requirements.clone();
+        }
+        let launch_gate = batch::Gate::deferred(config.concurrency, admission.launch_timeout())?;
         selected.workspace = path_text(&batch_root.join("workspace"))?;
         selected.log_file = path_text(&batch_root.join("run.jsonl"))?;
         let measures = measurement_root
@@ -240,6 +267,7 @@ pub(super) fn run(
             selected,
             RunOptions {
                 repeat: None,
+                policy: Some(&policy),
                 batch: Some(&identity),
                 preparation_gate: Some(&gate),
                 launch_gate: Some(&launch_gate),
