@@ -11,10 +11,9 @@ const ADAPTER: TerminalBenchAdapter = TerminalBenchAdapter {
     revision: "pinned",
     split: "test",
     archive: "https://must-never-contact.invalid/archive",
-    tool: "terminal-bench",
+    engine: crate::workloads::adapters::terminal_bench::ORIGINAL_ENGINE,
     version: "fixture-sdk",
     expected_tasks: 1,
-    runtime: "asb_terminal_bench_1.py",
 };
 #[cfg(unix)]
 #[test]
@@ -94,14 +93,14 @@ done
     };
     let root = PathBuf::from(std::env::var_os("HOME").unwrap());
     let tools = root.join("tools");
-    let tool = tools.join(ADAPTER.tool);
+    let tool = tools.join(ADAPTER.engine.tool());
     let workloads = root.join("workloads");
     let dataset = workloads.join(ADAPTER.id);
     fs::create_dir_all(dataset.join("source/tasks/task-1")).unwrap();
     fs::write(dataset.join("source-manifest.json"), "{}").unwrap();
     let catalog = json!({"schema_version":1,"workload":ADAPTER.id,
         "dataset":{"source":ADAPTER.source,"revision":ADAPTER.revision,"split":ADAPTER.split},
-        "sdk":{"package":ADAPTER.tool,"version":ADAPTER.version},"source_sha256":"a".repeat(64),"archive_sha256":"b".repeat(64),
+        "sdk":{"package":ADAPTER.engine.tool(),"version":ADAPTER.version},"source_sha256":"a".repeat(64),"archive_sha256":"b".repeat(64),
         "tasks":[{"id":"task-1","description":"fixture task","instruction":"fixture instruction","definition":"source/tasks/task-1"}]});
     fs::write(
         dataset.join("catalog.json"),
@@ -113,7 +112,7 @@ done
     fs::write(&marker, "fixture SDK presence only").unwrap();
     fs::set_permissions(marker, fs::Permissions::from_mode(0o700)).unwrap();
     assert!(
-        install::tool_installed_locally(ADAPTER.tool, &tools),
+        install::tool_installed_locally(ADAPTER.engine.tool(), &tools),
         "must not install an SDK"
     );
     let python = PathBuf::from(std::env::var_os("ASB_TERMINAL_FIXTURE_PYTHON").unwrap());
@@ -154,11 +153,15 @@ raise AssertionError('unrecognized fixture operation')
     let mut output = Vec::new();
     let mut stages = Vec::new();
     let missing = TerminalBenchAdapter {
-        tool: "nonexistent-fixture-tool",
+        engine: crate::workloads::adapters::official_engine::EngineBinding::new(
+            "nonexistent-fixture-tool",
+            "asb_terminal_bench_1",
+            super::ensure_helpers,
+        ),
         ..ADAPTER
     };
     if case == "missing-tool" {
-        assert!(crate::tools::find(missing.tool).is_none());
+        assert!(crate::tools::find(missing.engine.tool()).is_none());
     }
     let adapter = if case == "missing-tool" {
         &missing

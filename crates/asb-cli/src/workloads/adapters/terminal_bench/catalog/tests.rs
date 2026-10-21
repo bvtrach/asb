@@ -9,10 +9,9 @@ const ADAPTER: TerminalBenchAdapter = TerminalBenchAdapter {
     revision: "pinned",
     split: "test",
     archive: "https://must-not-be-contacted.invalid/source.tar.gz",
-    tool: "terminal-bench",
+    engine: crate::workloads::adapters::terminal_bench::ORIGINAL_ENGINE,
     version: "fixture-version",
     expected_tasks: 2,
-    runtime: "asb_terminal_bench_1.py",
 };
 struct Fixture(PathBuf);
 impl Fixture {
@@ -38,7 +37,7 @@ impl Fixture {
     fn catalog(&self) -> Value {
         json!({"schema_version":1,"workload":ADAPTER.id,
         "dataset":{"source":ADAPTER.source,"revision":ADAPTER.revision,"split":ADAPTER.split},
-        "sdk":{"package":ADAPTER.tool,"version":ADAPTER.version},
+        "sdk":{"package":ADAPTER.engine.tool(),"version":ADAPTER.version},
         "source_sha256":"a".repeat(64),"archive_sha256":"b".repeat(64),
         "tasks":[
             {"id":"first","description":"First task","instruction":"private instruction A","definition":"source/tasks/first"},
