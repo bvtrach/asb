@@ -33,11 +33,15 @@ tree; they do not qualify this new stack. The earlier source, observed-red and
 failed intermediate transcripts remain in the original collector worktree.
 
 No build, test, cache relink, package/host mutation, push, PR or release accompanies
-this source-only integration. The new combined source needs independent review
-before qualification. Runtime38 focused qualification is running separately;
-the PR #300 packaged-fixture post-test read-only-directory cleanup correction
-also remains pending its reviewed delivery head. Do not start full qualification
-until the parent explicitly clears these boundaries and assigns an idle cache.
+the initial source-only integration. Root independently approved `1d409705`.
+The next source-only merge folds PR #300's reviewed fixture teardown/ledger head
+`e284b2b7`: only the owned journaled directory permissions are restored after
+scenario assertions; no recursive chmod, production, Cargo or workflow policy
+changes are introduced. The staged version remains 0.2.39. Runtime38 full
+qualification runs separately. Fresh combined focused proof is now authorized
+in the exclusive diagnostics cache, with the historical collector executable
+preserved first. Full execution still requires a subsequent parent review and
+explicit clearance.
 
 Linux offline normal-producer custody is the reviewed scope. This does not
 claim live privileged collector qualification, native Windows/other kernels,
