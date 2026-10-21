@@ -570,6 +570,7 @@ mod tests {
                 fs::remove_dir_all(&self.0).unwrap();
             }
         }
+        let mut failures = Vec::new();
         for mode in ["regular", "symlink", "parent"] {
             let root = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../target/raw-cleanup-race-fixtures")
@@ -614,20 +615,20 @@ mod tests {
                 }));
             });
             let cleaned = cleanup_raw(&output, &track, Some(&original));
-            assert!(
-                fs::symlink_metadata(&output).is_ok(),
-                "{mode}: removed a foreign pathname after validating the original: {cleaned:?}"
-            );
-            assert_eq!(fs::read(&output).unwrap(), b"foreign content", "{mode}");
-            if mode == "symlink" {
-                assert!(
-                    fs::symlink_metadata(&output)
-                        .unwrap()
-                        .file_type()
-                        .is_symlink()
-                );
+            let Ok(metadata) = fs::symlink_metadata(&output) else {
+                failures.push(format!(
+                    "{mode}: removed a foreign pathname after validating the original: {cleaned:?}"
+                ));
+                continue;
+            };
+            if fs::read(&output).unwrap() != b"foreign content" {
+                failures.push(format!("{mode}: changed foreign bytes"));
+            }
+            if mode == "symlink" && !metadata.file_type().is_symlink() {
+                failures.push("symlink: replaced the foreign link".into());
             }
         }
+        assert!(failures.is_empty(), "{}", failures.join("; "));
     }
 
     #[test]
