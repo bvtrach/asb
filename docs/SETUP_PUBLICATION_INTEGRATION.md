@@ -65,3 +65,11 @@ qualification, not Windows runtime, optional/live-provider or whole-audit
 qualification. Independent final evidence review, current-main coordination,
 hosted/package CI, merge, post-merge verification and release remain pending;
 no push or PR accompanies this evidence-only checkpoint.
+
+Root independently approved final proof `f3883ca8` after checking all 24 outer
+Cargo summaries, the docs-only delta from qualified source `24d7a880`, all
+focused/full/lint/build hash brackets, doctest/lint and completed build/
+documentation evidence. It preserved the current exact executable as
+`target/qualification/setup40-24d7a880-asb` and verified the same SHA-256.
+The original historical executable and retained failures remain separate.
+This approval does not substitute for current-main ancestry or hosted delivery.
