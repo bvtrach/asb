@@ -49,6 +49,47 @@ Changing verifier semantics requires a new evaluation identity. Changing the
 agent environment or inputs requires a new execution. Neither a successful
 process nor successful installation establishes a task grade.
 
+## Ownership and extension points
+
+| Concern | Existing implementation | Module boundary and required extension |
+| --- | --- | --- |
+| Discovery and setup | Workload registry, generic CLI/TUI configuration | Owning adapters publish versioned descriptors; setup consumes capabilities rather than a family-name switch. |
+| Dataset and tasks | Pinned catalogs and saved task selections | The module owns provenance, population, splits, task interpretation and structured inputs. Saved selections bind the descriptor. |
+| Environment and harness | Native sessions, local Docker controllers, SWE SDK, original Terminal SDK and Harbor | The module chooses a qualified protocol; neutral harness helpers implement reusable machinery. Harbor is not a family identity. |
+| Execution planning | Generic run/sweep and replica scheduling | ASB negotiates backend, input support, policies, phase caps, repetitions, resources and collector scopes before admission. |
+| Evaluation | Binary family evaluators and retained grading | Modules return structured completion, native rewards, optional resolution and evidence; execution and cleanup remain separate facts. |
+| Measurement | Collector registry, lifecycle phases and verified target attachment | ASB selects and operates collectors against supported targets. A capability declaration is not a successful observation. |
+| Results and presentation | Run artifacts, completion receipts, compare JSON/HTML | ASB preserves recorded identities and metric policies, reports coverage, and separates incompatible experiments without consulting today's registry. |
+
+A new benchmark family should therefore register an owning adapter and its
+qualified dataset/protocol, not add special cases to the generic runner,
+installer, measurement UI or report renderer. Reuse a harness only when its
+environment, submission and evaluator contracts actually match. New backend,
+modality, metric algorithm or artifact transport capabilities need their own
+generic implementation and qualification before a module can require them.
+
+## Full-family support versus architectural readiness
+
+These contracts do not establish support for every suite sharing a family name.
+The qualified official profiles remain SWE-bench Full, Lite and Verified,
+original Terminal-Bench and Terminal-Bench 2.1. Other registered reference
+profiles, including SWE-bench Pro, remain smoke/reference profiles unless their
+own descriptor and runtime qualification say otherwise.
+
+Additional SWE/Terminal variants need pinned sources and licenses, population
+and split validation, environment/platform requirements, agent input and
+submission support, official evaluator parity, native metric policies, artifact
+integrity, interruption/recovery tests, and known-correct/incorrect submission
+qualification. Multimodal payload transport, additional execution backends,
+custom official metric algorithms, automatic repetition/seed planning and a new
+asynchronous regrading API are extensions, not consequences of adding a suite
+name. ASB remains the orchestrator for all of them.
+
+Implementation details and current limits are documented in
+[harness extraction](HARNESS_EXTRACTION_STEP2.md),
+[outcomes and metrics](BENCHMARK_OUTCOMES.md), and
+[planning and measurements](BENCHMARK_PLANNING.md).
+
 Use provider-free Rust and Python contract tests, public setup/run/sweep/compare
 fixtures, packaging tests and hosted CI. Real SDK/container qualification uses
 the documented opt-in fixtures and known submissions, with no live model calls.

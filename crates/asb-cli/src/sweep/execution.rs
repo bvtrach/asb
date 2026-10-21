@@ -146,6 +146,7 @@ impl Execution<'_> {
         let result = runner::run_with_diagnostics(
             isolated_path.to_string_lossy().as_ref(),
             runner::RunOptions {
+                policy: entry.policy.as_ref(),
                 json: self.options.json,
                 show_output: self.options.show_output,
                 measurement_dir: None,

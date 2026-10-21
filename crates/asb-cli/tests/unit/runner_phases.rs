@@ -139,7 +139,7 @@ fn prepared(
             workload: Box::new(Workload {
                 invocation: workloads::session::TaskInvocation {
                     identity: workloads::TaskIdentity::local("fixture", None),
-                    prompt: "fixture".into(),
+                    input: "fixture".into(),
                     workspace: fixture.0.clone(),
                 },
                 operations: operations.clone(),
@@ -644,6 +644,13 @@ fn native_postexecution_event_failure_retains_actual_child_output_and_grade() {
 
 fn result() -> RunResult<'static> {
     RunResult {
+        planning: crate::planning::resolve(
+            &toml::from_str("agent='pi'\nprovider='fixture'\nmodel='fixture'\nworkload='fixture'")
+                .unwrap(),
+        )
+        .unwrap(),
+        effective_budgets: Default::default(),
+        execution_plan: None,
         execution_plan_fingerprint: None,
         module: None,
         benchmark_outcome: None,
