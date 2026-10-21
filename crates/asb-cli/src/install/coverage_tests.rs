@@ -187,8 +187,130 @@ fn installation_fixture_child() {
         "diagnostics" => diagnostics_contract(&root),
         "download" => download_contract(&root),
         "guest-bootstrap" => guest_bootstrap_contract(&root),
+        "workload-errors" => workload_error_contract(&root),
+        "host-recipe" => host_recipe_contract(&root),
         other => panic!("unknown fixture case {other}"),
     }
+}
+
+#[test]
+fn custom_workload_installation_preserves_prompts_and_names_failed_paths() {
+    Fixture::new().run("workload-errors");
+}
+
+fn workload_error_contract(root: &Path) {
+    let source = root.join("custom.md");
+    fs::write(&source, "fixture workload prompt").unwrap();
+    let directory = root.join("custom-workloads");
+    let options = |name: &str| WorkloadInstallOptions {
+        source: source.to_string_lossy().into_owned(),
+        name: Some(name.into()),
+        dir: Some(directory.clone()),
+    };
+    let mut output = Vec::new();
+    workload(options("custom"), &mut output).unwrap();
+    assert_eq!(
+        fs::read_to_string(directory.join("custom.txt")).unwrap(),
+        "fixture workload prompt"
+    );
+    assert!(
+        String::from_utf8(output)
+            .unwrap()
+            .contains("Installed workload custom")
+    );
+    fs::write(directory.join("custom.txt"), "preserved user prompt").unwrap();
+    workload(options("custom"), &mut Vec::new()).unwrap();
+    assert_eq!(
+        fs::read_to_string(directory.join("custom.txt")).unwrap(),
+        "preserved user prompt"
+    );
+    fs::create_dir(directory.join("blocked.txt")).unwrap();
+    let error = workload(options("blocked"), &mut Vec::new())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("cannot create workload prompt"), "{error}");
+    assert!(error.contains("blocked.txt"));
+    let error = workload(options("bad name"), &mut Vec::new())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("workload name"), "{error}");
+    let error = workload(options("all"), &mut Vec::new())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("reserved"), "{error}");
+    let error = workload_source("https://fixture.invalid/a%20b.md")
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("simple file name"), "{error}");
+    fs::write(root.join("blocked-parent"), "not a directory").unwrap();
+    let error = workload(
+        WorkloadInstallOptions {
+            source: source.to_string_lossy().into_owned(),
+            name: Some("custom".into()),
+            dir: Some(root.join("blocked-parent/nested")),
+        },
+        &mut Vec::new(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("cannot create") && error.contains("blocked-parent"),
+        "{error}"
+    );
+}
+
+#[test]
+fn host_recipe_materializes_only_its_project_destination() {
+    let fixture = Fixture::new();
+    symlink("/bin/true", fixture.0.join("bin/fixture-host")).unwrap();
+    fixture.run("host-recipe");
+}
+
+fn host_recipe_contract(root: &Path) {
+    let destination = root.join("tools/fixture-host");
+    let mut stages = Vec::new();
+    let path = install_recipe(
+        Recipe::Host {
+            executable: "fixture-host",
+        },
+        &destination,
+        root,
+        &mut Vec::new(),
+        &mut |percent, stage| stages.push((percent, stage.to_owned())),
+    )
+    .unwrap();
+    assert_eq!(path, destination.join("bin/fixture-host"));
+    assert_eq!(fs::read(&path).unwrap(), fs::read("/bin/true").unwrap());
+    assert!(executable_file(&path));
+    assert!(stages.iter().any(|(percent, _)| *percent == 55));
+    let blocked = root.join("tools/blocked");
+    fs::create_dir_all(&blocked).unwrap();
+    fs::write(blocked.join("bin"), "block destination").unwrap();
+    let error = install_recipe(
+        Recipe::Host {
+            executable: "fixture-host",
+        },
+        &blocked,
+        root,
+        &mut Vec::new(),
+        &mut |_, _| {},
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("cannot create"), "{error}");
+    let missing = install_recipe(
+        Recipe::Host {
+            executable: "missing-fixture",
+        },
+        &root.join("tools/missing"),
+        root,
+        &mut Vec::new(),
+        &mut |_, _| {},
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(missing.contains("missing-fixture"), "{missing}");
 }
 
 fn guest_bootstrap_contract(root: &Path) {
