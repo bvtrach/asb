@@ -37,6 +37,7 @@ impl Inputs {
         plan: &crate::sweep::plan::SweepPlan,
         verify: impl Fn(&RetainedOutcomeContext<'_>) -> Result<(), Error>,
     ) -> Result<(), Error> {
+        let closed = self.prepare_closed_slots(parent, results, plan)?;
         let mut candidates = Vec::new();
         let mut groups = Vec::new();
         for (index, entry) in plan.entries.iter().enumerate() {
@@ -149,7 +150,7 @@ impl Inputs {
         }
         // No receipt is published until every candidate and existing receipt
         // passed validation. Publication never replaces historical metadata.
-        for candidate in candidates {
+        for candidate in &candidates {
             if self
                 .snapshotter
                 .fingerprint(&candidate.roots, &candidate.context, false, &[])?
@@ -159,6 +160,9 @@ impl Inputs {
                     "retained artifacts changed before receipt publication",
                 ));
             }
+        }
+        self.publish_closed_slots(closed)?;
+        for candidate in candidates {
             self.publish_reconciled(
                 candidate.index,
                 candidate.replica,
@@ -191,12 +195,12 @@ impl Inputs {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::runner::replica::CompletionObserver;
     use std::sync::Mutex;
 
-    fn retained_fixture() -> (
+    pub(in crate::sweep::checkpoint::completed) fn retained_fixture() -> (
         super::super::tests::Fixture,
         PathBuf,
         crate::sweep::plan::SweepPlan,

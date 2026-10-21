@@ -272,6 +272,85 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    #[ignore = "requires explicit installed original catalogs; no agent, provider or Docker execution"]
+    fn installed_original_populations_plan_and_report_all_instances_without_execution() {
+        let root = PathBuf::from(
+            std::env::var_os("ASB_TEST_SWECATALOG_ROOT").expect("installed original project"),
+        );
+        let (project_root, settings) = project::load(&root.join("qualification.toml")).unwrap();
+        let workloads = project::resolve(&project_root, &settings.workloads_dir);
+        let directory =
+            root.join(workloads::TaskIdentity::local("full-population-plan", None).attempt_id);
+        std::fs::create_dir(&directory).unwrap();
+        let populations = [
+            ("swe-bench", 2294),
+            ("swe-bench-lite", 300),
+            ("swe-bench-verified", 500),
+            ("terminal-bench-1.0", 80),
+            ("terminal-bench-2.1", 89),
+        ];
+        let mut manifest = SweepFile {
+            configs: Vec::new(),
+        };
+        for (workload, expected) in populations {
+            let catalog = workloads::planning_catalog(workload, &workloads)
+                .unwrap()
+                .unwrap();
+            assert_eq!(catalog.task_ids.len(), expected, "{workload}");
+            for task in &catalog.task_ids {
+                let reference = format!("task-{:05}.toml", manifest.configs.len());
+                let config: BenchmarkConfig = toml::from_str(&format!(
+                    "agent='pi'\nprovider='openrouter'\nmodel='population-planning-fixture'\nworkload='{workload}'\ntrial={task:?}\n"
+                )).unwrap();
+                std::fs::write(
+                    directory.join(&reference),
+                    toml::to_string(&config).unwrap(),
+                )
+                .unwrap();
+                manifest.configs.push(reference);
+            }
+        }
+        assert_eq!(manifest.configs.len(), 3263);
+        let manifest_path = directory.join("population.toml");
+        std::fs::write(&manifest_path, toml::to_string(&manifest).unwrap()).unwrap();
+        let plan = build(&directory, &manifest).unwrap();
+        assert_eq!(plan.entries.len(), 3263);
+        let results = fresh_results(&directory, "population", &plan).unwrap();
+        let loaded = SweepPlan::load(&results, &directory, &manifest)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.entries.len(), 3263);
+        crate::compare::run(manifest_path.to_str().unwrap(), &mut Vec::new()).unwrap();
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(directory.join("results/population-comparison/comparison.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["benchmarks"].as_array().unwrap().len(), 3263);
+        assert_eq!(report["evaluation_coverage"]["selected_attempts"], 3263);
+        assert_eq!(report["evaluation_coverage"]["evaluated_attempts"], 0);
+        assert_eq!(report["evaluation_coverage"]["unevaluated_attempts"], 3263);
+        let groups = report["population_coverage"].as_object().unwrap();
+        assert_eq!(groups.len(), 5);
+        for (workload, expected) in populations {
+            let entry = groups
+                .values()
+                .find(|group| group["label"].as_str().unwrap().ends_with(workload))
+                .unwrap();
+            assert_eq!(entry["population_size"], expected);
+            assert_eq!(entry["selected_tasks"], expected);
+            assert_eq!(entry["selection_coverage"], 1.0);
+            assert_eq!(entry["evaluated_attempts"], 0);
+            assert_eq!(entry["complete_population_evaluation"], false);
+            assert!(entry["full_population_resolution_rate"].is_null());
+        }
+        eprintln!(
+            "Full original population planning/reporting qualification (no execution): {}",
+            directory.display()
+        );
+    }
+
     struct Project(PathBuf);
     impl Project {
         fn new() -> Self {

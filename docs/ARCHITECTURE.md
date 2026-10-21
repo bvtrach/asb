@@ -686,8 +686,23 @@ and explicit selection preserve every original artifact; inspection/import/compa
 revalidate the original observation, raw files, wrapper bytes/absence and cleanup.
 An interrupted metadata copy or missed selection can be reconciled without tests.
 Missing trustworthy SDK-return evidence remains unknown; raw logs alone are not
-permission to infer success or repeat a side-effecting verifier. Complete
-interrupted-slot continuation and final delivery qualification remain unfinished.
+permission to infer success or repeat a side-effecting verifier.
+
+Explicit sweep reconciliation can also close an allocated, started slot whose
+ordinary run record was lost, provided adapter-owned inspection confirms its
+official grade. This creates a separate grade-only closure, not an ordinary
+execution completion receipt. It binds the original selection/start/allocation,
+current declared input digest and preserved per-slot artifacts. Resume validates
+that seal and does not rerun the client. Comparison independently checks the
+official grade without requiring today's executable to match the old one.
+Timing, process status, tokens, steps and execution cohort remain unknown;
+reused output returns a non-success status disclosing that uncertainty, even
+for a resolved grade. Partial collector files remain diagnostic downloads,
+not final measurements or inline performance graphs. Compatible report-only
+imports remain preserved and are deduplicated only in presentation.
+Unobserved grades, conflicting ordinary outcomes and changed preservation
+evidence still cannot authorize silent retry. Final continuation/disposition
+review and delivery qualification remain unfinished.
 See the full benchmark delivery
 checklist before claiming complete upstream benchmark support.
 Their shared installer also downloads a checksum-pinned original

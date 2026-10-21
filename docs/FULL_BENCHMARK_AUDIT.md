@@ -10,7 +10,7 @@ claims that an AI solved a complete population.
 | Requirement | Current evidence | Remaining delivery verification |
 | --- | --- | --- |
 | Workload-owned catalogs/lifecycle | `WorkloadAdapter` installed/planning/preparation hooks; `WorkloadSession`; owning SWE/Terminal adapters | Final full-diff boundary review |
-| Exact populations | Pinned catalog installers; installed Full/Lite/Verified 2294/300/500, original Terminal 1.0/2.1 80/89 | Final population-scale planning/reporting qualification |
+| Exact populations | Pinned catalog installers; installed Full/Lite/Verified 2294/300/500, original Terminal 1.0/2.1 80/89; complete installed-catalog 3263-entry planning/reporting qualification passed | Final release regression |
 | Functioning local SDK/tool installs | Separate `tools/swebench.rs`, `terminal_bench.rs`, `harbor.rs`; fresh-project public install qualification | Verify final release packaging/install |
 | Task/submission/evaluator identity | Dataset/task/attempt records, baseline provenance, captured patch/environment and SDK/image identity | Final cross-path contract review |
 | Original SWE execution/evaluation | Shared family engine, private evaluator inputs, clean isolated task, official harness; real correct/incorrect SDK qualifications | Final release regression set |
@@ -20,18 +20,19 @@ claims that an AI solved a complete population.
 | Measurement/tape targeting | Generic execution target and lifecycle boundaries; isolated collectors, scoped relay/tape; mixed original-task SVG/HTML qualification | Final measured/disabled-collection regressions |
 | Population selection and scheduling | Installed IDs, planning catalogs, bounded full manifests; jobs distinct from replicas; weighted admission | Final full-population format/report qualification |
 | Accurate resolution semantics | Official task grade separate from process exit; explicit selected denominators, missing/infra outcomes and unscored legacy smoke | Final population reporting review |
-| Freshness and completed continuation | Input snapshots, per-slot intent/allocation, completion evidence, explicit reconciliation, grade imports | Started unsealed slots still need a safe continuation disposition |
+| Freshness and completed continuation | Input snapshots, per-slot intent/allocation, completion evidence, explicit reconciliation, grade imports; separate grade-only closure for started slots with known official grades and missing ordinary run records | Final mixed-runtime qualification; review ungraded/incomplete-outcome disposition |
 | Failure/cancellation resource safety | Owned journals, scoped stop/preserve, inactive-owner recovery, no host-wide prune; actual interrupted fixtures | Final failure/cleanup regression audit |
 | Existing result recovery | SWE official-report reconstruction and Terminal SDK-return observations; imports/compare bind source bytes | Unknown unobserved grades must remain explicit, never guessed |
 | Provider-free tests | Unit/offline CLI, protocol, guest lifecycle, parallel/partial/replay/unmeasured suites | Exact final source/package/hosted runs |
 | Delivery | Draft PR #227; signed incremental commits and hosted CI | Full review, merge, exact-main CI, minor release |
 
-The next implementation target is started-slot continuation. Existing grade
-imports are reporting-only and must not be treated as completion receipts or as
-permission to repeat a client. Lost execution metrics cannot be invented to make
-a recovered grade look like an ordinary completed run. Full-population
-qualification must exercise actual catalogs/selection/report semantics, not
-rename a small smoke exercise as the original benchmark.
+Started-slot continuation now has an explicit grade-only closure path. Existing
+grade imports remain reporting-only and are never completion receipts or
+permission to repeat a client. Lost execution metrics remain unknown, not an
+ordinary completed run. Complete-population planning/reporting qualification
+exercised the actual installed catalogs and all 3263 selection entries, reporting
+every attempt unevaluated and no full-population score. It did not execute all
+instances or establish AI benchmark performance.
 
 No amount of metadata recovery can infer an unobserved verifier result. Safe
 handling means preserving the attempt, reporting unknown/missing evidence and

@@ -42,7 +42,7 @@ fn original_binding(
     Ok((reference, json!({"allocation":allocation,"intent":intent})))
 }
 
-fn reporting_summary(entry: &PlannedBenchmark, report: &Value) -> Value {
+pub(super) fn reporting_summary(entry: &PlannedBenchmark, report: &Value) -> Value {
     let mut value = report.clone();
     let object = value.as_object_mut().expect("validated inspected grade");
     object.remove("evidence");

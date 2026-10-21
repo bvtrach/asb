@@ -17,6 +17,15 @@ mod resume;
 pub(crate) mod scheduler;
 mod spool;
 
+pub(crate) fn closed_slot_reports(
+    checkpoint: &Path,
+    directory: &Path,
+    index: usize,
+    entry: &plan::PlannedBenchmark,
+) -> Result<std::collections::BTreeMap<usize, (PathBuf, serde_json::Value)>, Error> {
+    checkpoint::completed::retained::reporting(checkpoint, directory, index, entry)
+}
+
 const MAX_SWEEP_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const MAX_CONFIGS: usize = 65536;
 

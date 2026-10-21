@@ -2480,3 +2480,47 @@ eleven import/compare checks pass. Strict Clippy, formatting and `make build`
 including rustdoc, complete diagrams, interactive views and completions passed.
 Package and exact-head hosted verification follow. The audit's remaining
 continuation, population qualification and final delivery gates stay open.
+
+### Started-slot grade-only closure and complete-population planning
+
+Explicit `sweep --resume --reconcile-completed` can now close an allocated,
+started slot with a known official grade but no ordinary run record. This is a
+separate immutable grade-only receipt, not a normal execution completion. It
+binds the original intent/allocation/selection, current declared inputs and
+preserved per-slot outputs; adapter-owned inspection independently confirms
+the official outcome. Both false and true grades are reused without another
+client, provider request or evaluator. Unknown process/timing/token/step/cohort
+observations stay null. Reuse returns a non-success status disclosing unknown
+execution, rather than inventing process success for a resolved task.
+
+Comparison revalidates the original SDK grade and presents its explicit source.
+Partial measurement files are preserved and downloadable, but are not parsed
+as final measurements or embedded as final execution charts. Compatible
+report-only imports remain intact and are deduplicated only for presentation.
+Resume additionally rechecks current inputs and preserved outputs; reporting
+does not claim historical integrity or current-executable equivalence. Changed
+bindings/grades/outputs, duplicate attempts, conflicting ordinary outcomes and
+unknown grades cannot silently authorize another attempt. Candidates are all
+validated before any new closure is published. Tests also check a closed false
+grade alongside a positively reserved unstarted sibling; possibly-used sibling
+outputs still reject admission.
+
+Provider-free contracts cover this state separately from real SDK qualification.
+All five reporting adapters pass both grades with two slots each and incomplete
+execution measurements. The public mixed-original-task qualification initially
+caught an omitted null cohort field; that JSON consistency issue was repaired.
+Its repeat passed in 108.767 seconds at `parallel-original-tasks-84_4idxm`:
+real Pi clients, synthetic provider, original SWE-bench Lite and Terminal-Bench
+1.0 official graders, measured execution, loss of fixture run records, explicit
+closure, repeated resume and regenerated comparison. No further provider
+requests occurred during recovery. It is not an AI-solving score or exhaustive
+environment execution.
+
+The complete-population planning/reporting qualification also passed in 1.15
+seconds at `18e07187c984c27d-a26f2-0`. It loaded the actual installed pinned
+catalogs through their adapters, built/reloaded all 3263 selected instances
+(2294/300/500/80/89), generated comparison and verified complete selection with
+zero evaluated attempts and null full-population scores. No agent, provider,
+Docker or evaluator was executed. Final disposition review, source/package/
+hosted verification, PR merge, exact-main CI and the minor release remain
+delivery gates; full-population selection is not full-population AI performance.

@@ -9,6 +9,8 @@ pub(crate) fn render_reused(
     output: &mut dyn Write,
 ) -> Result<(), Error> {
     let mut failed = 0;
+    let mut unknown = 0;
+    let mut unresolved_grades = 0;
     for summary in summaries {
         if json {
             let mut summary = summary.clone();
@@ -22,7 +24,9 @@ pub(crate) fn render_reused(
             writeln!(
                 output,
                 "Reused {}task {safe}: {}.",
-                if summary["reconciled"] == true {
+                if summary["recovered_grade_only"] == true {
+                    "official grade only (execution unavailable) for "
+                } else if summary["reconciled"] == true {
                     "reconciled retained outcome for "
                 } else {
                     "completed "
@@ -35,12 +39,20 @@ pub(crate) fn render_reused(
             )
             .map_err(io_error)?;
         }
-        if summary["process_success"] != true
+        if summary["recovered_grade_only"] == true && summary["process_success"].is_null() {
+            unknown += 1;
+            unresolved_grades += usize::from(summary["workload_success"] == false);
+        } else if summary["process_success"] != true
             || summary["workload_success"] != true
             || !summary["failure_reason"].is_null()
         {
             failed += 1;
         }
+    }
+    if unknown > 0 {
+        return Err(Error::Run(format!(
+            "{unknown} reused official grade(s) have unknown execution status ({unresolved_grades} unresolved); grades were preserved without rerunning clients; {failed} other reused outcome(s) remain failed"
+        )));
     }
     if failed > 0 {
         Err(Error::Run(format!(
@@ -55,6 +67,37 @@ pub(crate) fn render_reused(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn grade_only_reuse_reports_false_grades_and_never_invents_process_success() {
+        let summaries = [false, true].map(|resolved| {
+            json!({
+                "task":{"task_id":"retained-task"}, "workload_success":resolved,
+                "process_success":null, "recovered_grade_only":true, "reconciled":true
+            })
+        });
+        for json in [false, true] {
+            let mut output = Vec::new();
+            let error = render_reused(&summaries, json, &mut output)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(
+                "2 reused official grade(s) have unknown execution status (1 unresolved)"
+            ));
+            let text = String::from_utf8(output).unwrap();
+            assert_eq!(text.lines().count(), 2);
+            if json {
+                for line in text.lines() {
+                    let value: Value = serde_json::from_str(line).unwrap();
+                    assert!(value["process_success"].is_null());
+                    assert_eq!(value["reused"], true);
+                }
+            } else {
+                assert!(text.contains("execution unavailable"));
+                assert!(text.contains("unresolved"));
+            }
+        }
+    }
 
     #[test]
     fn reused_false_grades_and_failed_clients_remain_failures_in_jsonl() {

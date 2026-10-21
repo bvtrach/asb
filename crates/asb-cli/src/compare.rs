@@ -77,16 +77,38 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             .map(|plan| plan.entries[index].selection.clone());
         let mut outcomes = outcomes::load(&result_dir, concurrency)?;
         if let Some(plan) = &plan {
-            let imports = crate::sweep::recovered::load(
+            let mut imports = crate::sweep::recovered::load(
                 &sweep_results.join(".checkpoint"),
                 &result_dir,
                 index,
                 &plan.entries[index],
             )?;
+            let closed = crate::sweep::closed_slot_reports(
+                &sweep_results.join(".checkpoint"),
+                &result_dir,
+                index,
+                &plan.entries[index],
+            )?;
+            for (slot, (_, value)) in &closed {
+                if let Some((_, imported)) = imports.get(slot) {
+                    if imported["task"] != value["task"]
+                        || imported["workload_success"] != value["workload_success"]
+                    {
+                        return Err(Error::Input(
+                            "closed slot conflicts with its imported grade; preserve both records"
+                                .into(),
+                        ));
+                    }
+                    imports.remove(slot);
+                }
+            }
             outcomes::add_imports(&mut outcomes, imports)?;
-        } else if result_dir.join(".asb-imported-grades").exists() {
+            outcomes::add_closed(&mut outcomes, closed)?;
+        } else if result_dir.join(".asb-imported-grades").exists()
+            || sweep_results.join(".checkpoint/closed-slots").exists()
+        {
             return Err(Error::Input(
-                "imported grades require their original saved sweep plan".into(),
+                "retained grades require their original saved sweep plan".into(),
             ));
         }
         for replica in 1..=concurrency {
@@ -102,8 +124,10 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
             });
             let mut run_path = measurement_dir.join("run.json");
             let artifacts = artifact_links(parent, &measurement_dir);
-            let measured = run_path.is_file();
             let outcome = outcomes.get(&replica);
+            let grade_only_closed =
+                outcome.is_some_and(|record| record.source == "recovered-official-grade");
+            let measured = run_path.is_file() && !grade_only_closed;
             if !measured && outcome.is_none() {
                 let workload_evaluation = selection.as_ref().map_or_else(
                     || crate::workloads::evaluation_kind(&workload, Path::new("")).into(),
@@ -390,8 +414,9 @@ pub fn run(path: &str, output: &mut dyn Write) -> Result<(), Error> {
                 } else {
                     outcome.expect("recorded outcome").source
                 },
-                reconciled: if outcome
-                    .is_some_and(|outcome| outcome.source == "imported-official-grade")
+                reconciled: if grade_only_closed {
+                    true
+                } else if outcome.is_some_and(|outcome| outcome.source == "imported-official-grade")
                 {
                     false
                 } else {
@@ -900,6 +925,11 @@ fn write_html_report(
                 .collect::<String>();
             let mut previews = String::new();
             for artifact in &benchmark.artifacts {
+                if benchmark.result_source == "recovered-official-grade" {
+                    // Preserved partial collectors are diagnostic downloads,
+                    // never final execution charts for a grade-only closure.
+                    continue;
+                }
                 let name = artifact.rsplit('/').next().unwrap_or(artifact);
                 match crate::collectors::display_artifact(name) {
                     Some(crate::collectors::ArtifactDisplay::Svg { class, label }) => {

@@ -319,6 +319,61 @@ class ParallelOriginalTaskQualification(unittest.TestCase):
                             self.assertNotIn("token_usage.total_tokens",row["metrics"])
                         self.assertIn("metric-success_rate.svg",(comparison / "report.html").read_text())
                         self.assertEqual(len(arrivals),original_calls,"grade import/reporting must not rerun clients")
+                        # Explicitly close the same started slots with official
+                        # grades, not invented execution observations. Preserve
+                        # real partial measurements, but never graph them as
+                        # final data after the ordinary outcomes are lost.
+                        seals = []
+                        for index in range(2):
+                            for relative in [f"replicas/{index:06}/001.json",f"completed/{index:06}.json"]:
+                                source = checkpoint / relative
+                                destination = import_archive / ("seal-" + relative.replace("/","-"))
+                                source.rename(destination)
+                                seals.append((source,destination))
+                        partials = []
+                        for source,destination in moved:
+                            if source.name == "measurements":
+                                destination.rename(source)
+                                partials.append((source,destination))
+                        try:
+                            closed = subprocess.run([binary,"sweep",manifest,"--jobs","2","--max-active-attempts","2",
+                                "--resume","--reconcile-completed","--json"],cwd=root,env=environment,capture_output=True,timeout=120)
+                            (import_archive / "close.stdout").write_bytes(closed.stdout)
+                            (import_archive / "close.stderr").write_bytes(closed.stderr)
+                            self.assertNotEqual(closed.returncode,0,"unknown process status must remain explicit")
+                            rows = [json.loads(line) for line in closed.stdout.splitlines()]
+                            self.assertEqual(len(rows),2,closed.stderr.decode())
+                            for row in rows:
+                                self.assertTrue(row["reused"])
+                                self.assertTrue(row["recovered_grade_only"])
+                                self.assertTrue(row["workload_success"])
+                                for field in ["process_success","elapsed_ms","steps","token_usage","execution_cohort"]:
+                                    self.assertIsNone(row[field])
+                            receipts = sorted((checkpoint / "closed-slots").rglob("*.json"))
+                            self.assertEqual(len(receipts),2)
+                            before = {path:path.read_bytes() for path in receipts}
+                            again = subprocess.run([binary,"sweep",manifest,"--jobs","2","--max-active-attempts","2",
+                                "--resume","--json"],cwd=root,env=environment,capture_output=True,timeout=120)
+                            self.assertNotEqual(again.returncode,0)
+                            self.assertEqual(before,{path:path.read_bytes() for path in receipts})
+                            compared = subprocess.run([binary,"compare",manifest],cwd=root,env=environment,capture_output=True,timeout=120)
+                            self.assertEqual(compared.returncode,0,compared.stderr.decode())
+                            report = json.loads((comparison / "comparison.json").read_bytes())
+                            for row in report["benchmarks"]:
+                                self.assertEqual(row["result_source"],"recovered-official-grade")
+                                self.assertTrue(row["reconciled"])
+                                self.assertEqual(row["metrics"]["success_rate"],1)
+                                self.assertNotIn("elapsed_ms",row["metrics"])
+                                self.assertNotIn("token_usage.total_tokens",row["metrics"])
+                            html = (comparison / "report.html").read_text()
+                            self.assertIn("partial execution artifacts preserved",html)
+                            self.assertNotIn("metric-agent-memory.peak_rss_mib.svg",html)
+                            self.assertEqual(len(arrivals),original_calls,"closure/resume cannot rerun either client")
+                        finally:
+                            closed_dir = checkpoint / "closed-slots"
+                            if closed_dir.exists():closed_dir.rename(import_archive / "closed-slots")
+                            for source,destination in reversed(partials):source.rename(destination)
+                            for source,destination in reversed(seals):destination.rename(source)
                     finally:
                         if comparison.exists():comparison.rename(import_archive / "imported-grade-comparison")
                         (import_archive / "original-comparison").rename(comparison)

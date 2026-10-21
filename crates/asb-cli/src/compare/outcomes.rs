@@ -18,10 +18,13 @@ pub(crate) struct Recorded {
 
 impl Recorded {
     pub fn check_measurement(&self, measured: &Value) -> Result<(), Error> {
-        if self.source == "imported-official-grade" {
+        if matches!(
+            self.source,
+            "imported-official-grade" | "recovered-official-grade"
+        ) {
             return Err(invalid(
                 &self.path,
-                "an imported grade and a measurement claim the same slot; preserve both and inspect the conflict",
+                "a grade-only result and a measurement claim the same slot; preserve both and inspect the conflict",
             ));
         }
         for field in [
@@ -61,6 +64,16 @@ impl Recorded {
     }
 
     pub fn status(&self) -> String {
+        if self.source == "recovered-official-grade" {
+            return format!(
+                "recovered official task {}; execution timing, tokens, steps and process status unknown; partial execution artifacts preserved, not used as final measurements",
+                if self.summary["workload_success"] == true {
+                    "resolved"
+                } else {
+                    "unresolved"
+                }
+            );
+        }
         if self.source == "imported-official-grade" {
             return format!(
                 "imported official task {}; execution timing, tokens, steps and process status unknown; recorded cleanup: {}; not execution recovery or resume evidence",
@@ -219,6 +232,21 @@ pub(super) fn add_imports(
     outcomes: &mut BTreeMap<usize, Recorded>,
     imports: BTreeMap<usize, (PathBuf, Value)>,
 ) -> Result<(), Error> {
+    add_retained(outcomes, imports, "imported-official-grade")
+}
+
+pub(super) fn add_closed(
+    outcomes: &mut BTreeMap<usize, Recorded>,
+    closed: BTreeMap<usize, (PathBuf, Value)>,
+) -> Result<(), Error> {
+    add_retained(outcomes, closed, "recovered-official-grade")
+}
+
+fn add_retained(
+    outcomes: &mut BTreeMap<usize, Recorded>,
+    imports: BTreeMap<usize, (PathBuf, Value)>,
+    source: &'static str,
+) -> Result<(), Error> {
     for (slot, (path, summary)) in imports {
         if outcomes.contains_key(&slot) {
             return Err(invalid(
@@ -233,7 +261,7 @@ pub(super) fn add_imports(
                 summary,
                 workload_cleanup: false,
                 proxy_cleanup: false,
-                source: "imported-official-grade",
+                source,
             },
         );
     }

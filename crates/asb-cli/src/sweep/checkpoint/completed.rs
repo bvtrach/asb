@@ -14,6 +14,7 @@ const SCOPE: &str = "outcome-evidence-only-not-complete-input-closure";
 pub(in crate::sweep) mod allocations;
 mod reconcile;
 pub(super) mod replicas;
+pub(in crate::sweep) mod retained;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -87,7 +88,12 @@ impl Inputs {
                                     ))
                                 })?;
                             if summaries.len() == entry.configuration.concurrency {
-                                outcome_state(&directory, entry)?;
+                                if !summaries
+                                    .values()
+                                    .any(|summary| summary["recovered_grade_only"] == true)
+                                {
+                                    outcome_state(&directory, entry)?;
+                                }
                                 reused
                                     .groups
                                     .insert(index, summaries.into_values().collect());

@@ -97,6 +97,45 @@ class SweepFixture:
 
 @unittest.skipUnless(os.environ.get("ASB_TEST_HOST_ASB"), "requires compiled ASB")
 class GradeImportTests(unittest.TestCase):
+    def test_closed_slot_reports_all_five_grades_without_using_partial_execution_measurements(self):
+        # Synthetic reporting receipts only: actual creation and resume are
+        # qualified separately against the checkpoint input snapshot.
+        for resolved in [False, True]:
+            with self.subTest(resolved=resolved):
+                fixture = SweepFixture(resolved=resolved,concurrency=2)
+                self.addCleanup(fixture.temporary.cleanup)
+                imported = fixture.run("sweep","sweep.toml","--import-grades","--json")
+                self.assertEqual(imported.returncode,0,imported.stderr.decode())
+                for source in fixture.imports():
+                    value = json.loads(source.read_bytes())
+                    value["scope"] = "closed-slot-official-grade-only"
+                    value["input_digest"] = "f"*64
+                    value["roots"] = []
+                    value["fingerprint"] = {"schema_version":1,"digest":"e"*64,"bytes":0,"nodes":0}
+                    target = fixture.checkpoint / f"closed-slots/{value['configuration']:06}/{value['replica']['index']:03}.json"
+                    target.parent.mkdir(parents=True,exist_ok=True)
+                    target.write_text(json.dumps(value))
+                    measurement = source.parent.parent / f"measurements-concurrency-{value['replica']['index']}"
+                    measurement.mkdir()
+                    (measurement / "run.json").write_text("unfinished execution record: never parse as final data")
+                compared = fixture.run("compare","sweep.toml")
+                self.assertEqual(compared.returncode,0,compared.stderr.decode())
+                report = json.loads((fixture.root / "results/sweep-comparison/comparison.json").read_bytes())
+                self.assertEqual(len(report["benchmarks"]),10)
+                for row in report["benchmarks"]:
+                    self.assertEqual(row["result_source"],"recovered-official-grade")
+                    self.assertTrue(row["reconciled"])
+                    self.assertEqual(row["metrics"]["success_rate"],int(resolved))
+                    self.assertNotIn("elapsed_ms",row["metrics"])
+                    self.assertNotIn("token_usage.total_tokens",row["metrics"])
+                    self.assertIsNone(row["execution_cohort"])
+                html = (fixture.root / "results/sweep-comparison/report.html").read_text()
+                self.assertIn("partial execution artifacts preserved",html)
+                # Losing the original plan cannot silently hide the closures.
+                plan = fixture.results / "plan.json"
+                plan.rename(fixture.root / "saved-plan.json")
+                self.assertNotEqual(fixture.run("compare","sweep.toml").returncode,0)
+
     def test_terminal_sdk_return_reconstruction_imports_both_versions_and_binds_sources(self):
         fixture = SweepFixture()
         self.addCleanup(fixture.temporary.cleanup)

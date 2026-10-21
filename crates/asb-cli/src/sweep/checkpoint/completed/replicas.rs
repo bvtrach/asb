@@ -209,6 +209,18 @@ impl Inputs {
         directory: &Path,
         entry: &PlannedBenchmark,
     ) -> Result<BTreeMap<usize, Value>, Error> {
+        self.partial_replicas_with(index, directory, entry, |replica| {
+            self.closed_slot(index, replica, directory, entry)
+        })
+    }
+
+    pub(super) fn partial_replicas_with(
+        &self,
+        index: usize,
+        directory: &Path,
+        entry: &PlannedBenchmark,
+        closed: impl Fn(Identity) -> Result<Option<Value>, Error>,
+    ) -> Result<BTreeMap<usize, Value>, Error> {
         let directory = std::path::absolute(directory).map_err(io_error)?;
         if !std::fs::symlink_metadata(&directory).is_ok_and(|metadata| metadata.is_dir()) {
             return Err(invalid("partial replica results are not a real directory"));
@@ -262,6 +274,15 @@ impl Inputs {
                 index: slot,
                 total: entry.configuration.concurrency,
             };
+            if let Some(summary) = closed(replica)? {
+                if self.has_replica(index, slot)? || claims.contains_key(&slot) {
+                    return Err(invalid(
+                        "closed grade-only slot conflicts with an execution outcome",
+                    ));
+                }
+                completed.insert(slot, summary);
+                continue;
+            }
             if self.has_replica(index, slot)? {
                 let summary = self.verify_replica(index, replica, &directory, entry)?;
                 if claims.get(&slot) != Some(&summary) {

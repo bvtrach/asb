@@ -241,6 +241,31 @@ changed reports/inputs, changed SDK/image, interrupted metadata publication,
 and source changes after reconstruction. This path never starts Docker or an
 evaluator. Import/compare additionally binds reconstructed outcomes to the
 original raw bytes, not just copied reports.
+
+Grade-only closure contracts are tested in `sweep::checkpoint::completed::retained`
+and `runner::reuse`: both grades, unknown execution observations, duplicate
+attempts, changed original bindings, changed preserved outputs and validation
+of all candidates before publication. Reporting fixtures cover all five
+adapters and ignore incomplete execution measurements after explicit closure.
+The mixed original-task qualification also archives only its own ordinary
+completion records and seals, then closes both slots through public
+`--resume --reconcile-completed`, checks unchanged repeats without new provider
+requests and regenerates honest grade-only comparison output. These tests
+must not promote a recovered grade to measured process success.
+
+An opt-in complete-catalog planning/reporting check runs with no agent,
+provider, Docker or evaluator execution:
+
+```sh
+ASB_TEST_SWECATALOG_ROOT=/absolute/installed/benchmark-project cargo test --locked --offline --lib installed_original_populations_plan_and_report_all_instances_without_execution -- --ignored --nocapture
+```
+
+It validates installed catalogs through owning adapters, writes and reloads a
+3,263-entry selection plan, generates the comparison and checks all five exact
+population denominators. Every attempt is reported unevaluated and every full
+population resolution score remains null. The printed project-local directory
+retains its artifacts. This proves scale/selection/reporting, not AI task solving
+or exhaustive evaluation of all upstream task environments.
 The opt-in `benchmark_live_grading.py` uses the installed original catalogs/SDK,
 Docker and `ASB_TEST_BENCHMARK_ASB`/`ASB_TEST_SWECATALOG_ROOT`. It captures and
 preserves actual patches without grading, then invokes public `--grade` for
