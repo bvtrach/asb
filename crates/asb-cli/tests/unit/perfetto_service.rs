@@ -239,6 +239,33 @@ fn daemon_identity_checks_require_inherited_owned_lease_and_a_live_child() {
 }
 #[test]
 fn abstract_socket_readiness_is_scoped_to_the_owned_listener() {
+    // CLOEXEC listeners remain inherited in unrelated parallel-test children
+    // between fork and exec. Check immediate last-close semantics in an exact
+    // libtest child, not a process concurrently spawning unrelated children.
+    const ISOLATED: &str = "ASB_TEST_ISOLATED_ABSTRACT_SOCKET";
+    if std::env::var_os(ISOLATED).is_none() {
+        let name = format!(
+            "{}::abstract_socket_readiness_is_scoped_to_the_owned_listener",
+            module_path!().split_once("::").unwrap().1
+        );
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", &name, "--nocapture"])
+            .env_clear()
+            .env(ISOLATED, "1");
+        if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+            command.env("LLVM_PROFILE_FILE", profile);
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        return;
+    }
     use std::os::linux::net::SocketAddrExt;
     use std::os::unix::net::{SocketAddr, UnixListener};
     let name = format!(
@@ -254,4 +281,54 @@ fn abstract_socket_readiness_is_scoped_to_the_owned_listener() {
     drop(listener);
     assert!(!socket_ready(&format!("@{name}")));
     assert!(!socket_ready(&"x".repeat(200)));
+}
+
+#[test]
+fn cloexec_abstract_listener_survives_in_owned_child_only_until_exec() {
+    // Deterministic kernel-contract witness: a pipe holds only our child
+    // before exec; there are no timing sleeps, retry loops, or foreign PIDs.
+    let source = r#"
+import os,fcntl,socket
+listener=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+address='\0asb-fork-socket-'+str(os.getpid())
+listener.bind(address)
+listener.listen(4)
+assert fcntl.fcntl(listener,fcntl.F_GETFD)&fcntl.FD_CLOEXEC
+read_fd,write_fd=os.pipe()
+pid=os.fork()
+if pid==0:
+    os.close(write_fd)
+    os.read(read_fd,1)
+    os.execv('/bin/true',['true'])
+os.close(read_fd)
+listener.close()
+try:
+    probe=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+    probe.connect(address)
+    probe.close()
+finally:
+    os.write(write_fd,b'x')
+    os.close(write_fd)
+    _,status=os.waitpid(pid,0)
+assert os.waitstatus_to_exitcode(status)==0
+probe=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+try:
+    probe.connect(address)
+except ConnectionRefusedError:
+    pass
+else:
+    raise AssertionError('abstract listener survived its final exec-time close')
+finally:
+    probe.close()
+"#;
+    let output = Command::new("/usr/bin/python3")
+        .args(["-I", "-S", "-B", "-c", source])
+        .env_clear()
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
