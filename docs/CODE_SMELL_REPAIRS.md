@@ -37,6 +37,15 @@ without changing established result/workspace identities unintentionally.
 Also review duplicated manifest reference validation and executable resolution;
 same names alone do not prove equivalent semantics. Pending.
 
+Candidate report repair: flatten numeric paths with escaped object separators
+and empty-key identities; reserve bounded portable SVG names, using digest
+suffixes for unsafe/long/colliding metric or series names. Shared series names
+and cross-source metric conflicts fail explicitly instead of last-writer-wins.
+Tests verify real summary values, distinct SVG titles/data and HTML references,
+repeat generation and repeated configuration stems. Existing safe unique
+artifact names stay unchanged; unusual keys use escaped path notation and
+consumers should obtain graph filenames from `comparison.json`.
+
 ## 3. Completion persistence, subprocess and cleanup failures
 
 Completion-observer and checkpoint errors must not erase an already determined
@@ -108,3 +117,10 @@ ordinary suite and extracted package. Maintain honest null/unavailable
 measurements and preserve existing original-task evaluation evidence. A green
 focused test does not establish completion of a whole repair class or the
 90% coverage requirement.
+
+Additional safety finding from coverage tests: custom BPFTrace scope validation
+can skip multiline probe headers and accepts an OR-true predicate containing
+the process-tree variable. This contradicts the documented fail-closed scope
+contract. It needs a separate repair class with supported probe/predicate
+parsing, multiline/OR regressions, and preservation of valid process-tree
+profiles; it must not be hidden as a test-only cleanup. Pending.
