@@ -1643,20 +1643,7 @@ fn write_log(
             ))
         })?;
     }
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|error| Error::Run(format!("cannot open log file {}: {error}", path.display())))?;
-    serde_json::to_writer(&mut file, result).map_err(|error| {
-        Error::Run(format!("cannot write log file {}: {error}", path.display()))
-    })?;
-    writeln!(file).map_err(|error| {
-        Error::Run(format!(
-            "cannot finish log file {}: {error}",
-            path.display()
-        ))
-    })
+    crate::evidence::append_json(&path, result).map_err(Error::Run)
 }
 
 pub(crate) fn resolve_log_path(config_path: &Path, configured_path: &str) -> PathBuf {

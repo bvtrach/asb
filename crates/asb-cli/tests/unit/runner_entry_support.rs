@@ -12,7 +12,10 @@ struct Hook {
     pending: bool,
     grader_error: bool,
     cleanup_error: bool,
+    capture_publication: bool,
+    admission_replacement: bool,
     capture_grade: Option<bool>,
+    observe_original_provider: bool,
 }
 thread_local! { static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) }; }
 
@@ -48,7 +51,10 @@ impl Scope {
                 pending: false,
                 grader_error: false,
                 cleanup_error: false,
+                capture_publication: false,
+                admission_replacement: false,
                 capture_grade: None,
+                observe_original_provider: false,
             });
         });
         Self
@@ -71,7 +77,10 @@ impl Scope {
                 pending: false,
                 grader_error: false,
                 cleanup_error: false,
+                capture_publication: false,
+                admission_replacement: false,
                 capture_grade: None,
+                observe_original_provider: false,
             });
         });
         Self
@@ -91,12 +100,20 @@ impl Scope {
                 pending: case.contains("pending"),
                 grader_error: case.contains("grader"),
                 cleanup_error: case.contains("cleanup"),
+                capture_publication: case.contains("publication-") && case.contains("capture"),
+                admission_replacement: case.contains("admission"),
                 capture_grade: case
                     .starts_with("capture-")
                     .then_some(!case.contains("false")),
+                observe_original_provider: false,
             });
         });
         Self
+    }
+    pub fn recording(root: &Path, calls: Rc<RefCell<Vec<&'static str>>>, native: bool) -> Self {
+        let scope = Self::provider(root, calls, false, native);
+        HOOK.with_borrow_mut(|slot| slot.as_mut().unwrap().observe_original_provider = true);
+        scope
     }
 }
 impl Drop for Scope {
@@ -112,6 +129,25 @@ pub(crate) fn configure_measurements(root: &Path, session: Option<&mut measureme
             && let Some(session) = session
         {
             session.test_event_failure = hook.event;
+            if hook.capture_publication {
+                crate::measurements::publication_tests::stopped_fixture(
+                    session,
+                    if hook.admission_replacement {
+                        "admission"
+                    } else {
+                        "capture-fixture"
+                    },
+                );
+                crate::measurements::publication_tests::stopped_fixture(session, "capture-sibling");
+                if hook.admission_replacement {
+                    std::fs::rename(
+                        session.dir.join("admission.stdout"),
+                        session.dir.join("admission.saved"),
+                    )
+                    .unwrap();
+                    std::fs::write(session.dir.join("admission.stdout"), "A=99\n").unwrap();
+                }
+            }
         }
     });
 }
@@ -137,11 +173,10 @@ pub(crate) fn observe_provider(
         else {
             return original;
         };
-        assert!(
-            original.is_none(),
-            "provider fixture requires replay, never a live bridge"
-        );
+        assert!(original.is_none() || hook.observe_original_provider,
+            "provider fixture requires replay unless explicitly observing the synthetic recording provider");
         Some(Box::new(Provider {
+            original,
             calls: hook.calls.clone(),
             fail: hook.provider_finish.unwrap(),
             finished: false,
@@ -189,21 +224,29 @@ impl providers::ProviderSession for SharedProvider {
     }
 }
 struct Provider {
+    original: Option<Box<dyn providers::ProviderSession>>,
     calls: Rc<RefCell<Vec<&'static str>>>,
     fail: bool,
     finished: bool,
 }
 impl providers::ProviderSession for Provider {
     fn api_key(&self) -> &str {
-        "fixture-key"
+        self.original
+            .as_ref()
+            .map_or("fixture-key", |inner| inner.api_key())
     }
     fn base_url(&self) -> &str {
-        "http://127.0.0.1:1/v1"
+        self.original
+            .as_ref()
+            .map_or("http://127.0.0.1:1/v1", |inner| inner.base_url())
     }
     fn finish(&mut self) -> Result<(), Error> {
         assert!(!self.finished, "finish called twice");
         self.finished = true;
         self.calls.borrow_mut().push("provider-finish");
+        if let Some(inner) = self.original.as_mut() {
+            inner.finish()?;
+        }
         if self.fail {
             Err(Error::Run("fixture provider cleanup uncertain".into()))
         } else {
@@ -262,6 +305,9 @@ struct Observed {
     capture_grade: Option<bool>,
 }
 impl workloads::WorkloadSession for Observed {
+    fn initial_material_sha256(&self) -> Result<String, String> {
+        self.inner.initial_material_sha256()
+    }
     fn invocation(&self) -> &workloads::session::TaskInvocation {
         self.inner.invocation()
     }

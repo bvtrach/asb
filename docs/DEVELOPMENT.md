@@ -746,6 +746,60 @@ unrelated-process survival despite an earlier failing adapter or full journal.
 The native-plan fixture verifies wrapper/endpoint/replay preparation without
 executing an installed client. All fixtures are provider-free and unprivileged;
 controller fixtures do not qualify Docker, SDK installation or a live benchmark.
+`cargo test --locked --offline --lib evidence::` checks private staged writes,
+short/Interrupted/zero/ENOSPC writes, serializer failures, file/directory sync
+and rename faults, regular-file restrictions and coordinated real-process
+writers. Measurement publication fixtures preserve malformed summary bytes and
+unknown history metadata. `runner::phases::tests::publication` drives eleven
+actual replay-only attempts with Boolean/native/pending grades, client and
+presentation failure, partial log/measurement writes and post-commit durability
+uncertainty. Client/evaluation/cleanup counts, identities, independent final
+outputs and withheld receipts are checked together. Reports refuse stale or
+malformed retained evidence instead of presenting it as the current attempt.
+The pre-fix serializer, malformed-history and two-process interleaving failures
+were observed before implementation; logs remain local qualification evidence.
+Extended review fixtures reproduce the exact-bound unterminated log and raw
+collector deletion before failed/unconfirmed publication. Stopped local child
+fixtures require raw-byte retention, sibling exports and independent run/
+lifecycle/summary finalization. Success consumes only identity-bound sources;
+an adapter replacement, a deterministic check/move race and refused cleanup
+retain foreign/owned bytes with actionable paths. Two additional actual entry
+cases retain native/pending grades and exact-once evaluation/cleanup through
+collector-result staging and post-commit sync failure, including broken output.
+Platform-confirmation regressions exercise all three policy decisions on Linux:
+only Unix invokes the directory-sync callback, Windows move flags exclude
+copy/deferred operations, and a missing/uninspectable private source is never
+called an unchanged precommit failure. A real Linux rename followed by an
+injected native-outcome failure retains its staging directory without a Drop
+cleanup/retry or a false published/unpublished claim. Existing short/zero/ENOSPC,
+file-sync, postcommit confirmation and cleanup tests remain required. Windows
+API declarations/semantics are source-reviewed only: no Windows target compile
+or runtime was performed, and Linux policy tests do not qualify native Windows
+rename behavior or portable directory durability.
+`cargo test --locked --offline --lib runner::phases::tests::bundle_publication`
+combines actual bundled recording/replay with private publication faults. Nine
+isolated cases (eleven actual attempts including clean recording baselines) use
+the same bounded synthetic loopback provider as `repeated_run`, fake Pi clients
+and fixture-only keys. True/false and nullable native grades survive committed
+recordings followed by short/precommit or postcommit log/measurement failures.
+Combined recorder commit/publication failures retain primary client/grade facts,
+failed recording disposition and raw bytes, and stop before another batch.
+Selected seeded replay preserves track/algorithm/usage after source replacement
+despite publication failure. Assertions check exact-once client/evaluate/workload/
+provider-observer finish, independent final outputs, immutable association/raw
+digests and absent completion receipts. Measurement schemas do not carry the
+repeated `execution` selection object: their task/cohort/fingerprint/usage are
+checked against plan/log/streamed selection identity without inventing fields.
+No production fault switch, SDK, container, privileged collector or live LLM is
+used. Build the current ASB executable first and keep it unchanged while testing.
+The independent-offset fixture keeps its producer at offset five while full,
+prefix and interleaved frozen readers run; this assertion also remains enabled
+on Windows. An additional cross-platform source-replacement fixture must read
+admitted A=17, never replacement B=99. Shared pure file-ID decisions compare all
+128 bits and preserve unknown-ID semantics. A Windows-only future-native test
+checks the reopened description is read-only. These tests do not constitute
+native Windows execution in the Linux qualification; the ReOpenFile declaration,
+sharing/access/inheritability flags and full ID layout are source-reviewed.
 Human-terminal write/flush failures stop further presentation but finish an
 already-admitted execution, evaluation and explicit cleanup; broken guest-owner
 transport still cancels/preserves. Tests cover both policies. The elapsed clock
