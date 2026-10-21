@@ -8,6 +8,14 @@ fn isolated_bpftrace_preflight_and_attachment_failures() {
     use std::collections::BTreeSet;
     use std::os::unix::fs::PermissionsExt;
     const CASE: &str = "ASB_BPFTRACE_CAPTURE_CASE";
+    fn finish_fake_capture(session: &mut measurements::Session, root: &Path) {
+        assert!(
+            session.collectors[0].child.try_wait().unwrap().is_none(),
+            "the fake tracer must remain active until attachment has returned"
+        );
+        fs::write(root.join("release"), "attachment observed").unwrap();
+        assert!(session.collectors[0].child.wait().unwrap().success());
+    }
     let Ok(case) = std::env::var(CASE) else {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/bpftrace-capture-fixtures")
@@ -66,6 +74,16 @@ fn isolated_bpftrace_preflight_and_attachment_failures() {
                         "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$ASB_BPFTRACE_CAPTURE_ROOT/arguments\"\nprintf 'ASB_BPFTRACE_READY\\n'\n"
                     }
                 };
+                let mut body = body.to_owned();
+                if matches!(
+                    case,
+                    "builtin" | "custom" | "custom-replaced" | "custom-deleted"
+                ) {
+                    // Preflight/version probes stay immediate. Runtime capture remains
+                    // alive until the test observes attachment and releases it;
+                    // an immediate exit races the startup readiness protocol.
+                    body.push_str("case \"$1\" in -p|-B)\n  remaining=1000\n  while [ ! -f \"$ASB_BPFTRACE_CAPTURE_ROOT/release\" ]; do\n    remaining=$((remaining - 1))\n    if [ \"$remaining\" -eq 0 ]; then exit 90; fi\n    /bin/sleep 0.01\n  done\n;; esac\n");
+                }
                 fs::write(&path, body).unwrap();
                 fs::set_permissions(
                     path,
@@ -199,7 +217,7 @@ fn isolated_bpftrace_preflight_and_attachment_failures() {
         ADAPTER
             .attach_pid(&mut session, std::process::id())
             .unwrap();
-        assert!(session.collectors[0].child.wait().unwrap().success());
+        finish_fake_capture(&mut session, &root);
         let arguments = fs::read_to_string(root.join("arguments")).unwrap();
         assert!(arguments.contains("if (5 > 0)"));
         assert!(!arguments.contains("@host_unscoped"));
@@ -255,13 +273,13 @@ fn isolated_bpftrace_preflight_and_attachment_failures() {
         }
         "builtin" => {
             result.unwrap();
-            assert!(session.collectors[0].child.wait().unwrap().success());
+            finish_fake_capture(&mut session, &root);
             assert!(session.dir.join("bpftrace-syscall-rate.stdout").exists());
             assert!(session.dir.join("bpftrace-syscall-rate.stderr").exists());
         }
         "custom" => {
             result.unwrap();
-            assert!(session.collectors[0].child.wait().unwrap().success());
+            finish_fake_capture(&mut session, &root);
             assert!(session.dir.join("bpftrace-0.stdout").exists());
             assert!(session.dir.join("bpftrace-0.stderr").exists());
             let arguments = fs::read_to_string(root.join("arguments")).unwrap();
