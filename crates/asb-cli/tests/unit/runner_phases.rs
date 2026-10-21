@@ -1072,11 +1072,17 @@ fn full_entry_child(case: &str) {
         writes: 0,
         failures: 0,
     };
+    let cohort = measurements::ExecutionCohort {
+        id: workloads::TaskIdentity::local("execution-cohort", None).attempt_id,
+        selected_replicas: 1,
+        admitted_slots: vec![1],
+    };
     let options = RunOptions {
         json: true,
         mode: Some(tape::Mode::Replay),
         cassette: Some(cassette.to_str().unwrap()),
         on_completion: Some(&observer),
+        execution_cohort: provider_case.then_some(&cohort),
         ..Default::default()
     };
     let result = run_mode(
@@ -1156,6 +1162,41 @@ fn full_entry_child(case: &str) {
                 record["process_success"],
                 case != "provider-client-failed-finish"
             );
+        }
+        if case.contains("native") {
+            // Render the actual attempt's saved measurement/log contract. A
+            // completed numeric reward must retain independent cleanup facts.
+            let report =
+                crate::compare::generate(config_path.to_str().unwrap(), &mut Vec::new()).unwrap();
+            let comparison: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(report.with_file_name("comparison.json")).unwrap(),
+            )
+            .unwrap();
+            let row = &comparison["benchmarks"][0];
+            assert_eq!(
+                row["benchmark_outcome"]["evaluation"]["rewards"]["accuracy"],
+                0.5
+            );
+            assert!(row["benchmark_outcome"]["evaluation"]["resolution"].is_null());
+            assert_eq!(row["benchmark_outcome"]["execution_success"], true);
+            assert_eq!(
+                row["benchmark_outcome"]["cleanup_confirmed"],
+                case.ends_with("success")
+            );
+            let html = std::fs::read_to_string(report).unwrap();
+            if case.ends_with("success") {
+                assert_eq!(row["status"], "completed");
+                assert!(!html.contains("fixture provider cleanup uncertain"));
+                assert!(!row["status"].as_str().unwrap().contains("failed"));
+            } else {
+                assert!(
+                    row["status"]
+                        .as_str()
+                        .unwrap()
+                        .contains("fixture provider cleanup uncertain")
+                );
+                assert!(html.contains("fixture provider cleanup uncertain"));
+            }
         }
         if let Some(error) = error {
             assert!(

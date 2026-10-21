@@ -810,11 +810,10 @@ fn decode_record(run_value: &Value, attempt: &AttemptContext<'_>) -> Result<Deco
     let identity_bound = selection
         .as_ref()
         .is_none_or(|selection| task.as_ref().is_some_and(|task| selection.matches(task)));
-    let run_status =
-        if !measured {
-            outcome.map(outcomes::Recorded::status)
-        } else {
-            match run_value.get("status").and_then(Value::as_str) {
+    let run_status = if !measured {
+        outcome.map(outcomes::Recorded::status)
+    } else {
+        match run_value.get("status").and_then(Value::as_str) {
             Some(status)
                 if run_value.get("workload_evaluation").and_then(Value::as_str)
                     == Some("adapter-smoke") =>
@@ -827,26 +826,41 @@ fn decode_record(run_value: &Value, attempt: &AttemptContext<'_>) -> Result<Deco
                 "unscored: initial task was already passing or its baseline could not be verified"
                     .into(),
             ),
-            Some(status) if run_value.get("success") == Some(&Value::Bool(false))
-                && !(run_value["benchmark_outcome"]["evaluation"]["status"] == "completed"
-                    && run_value["benchmark_outcome"]["evaluation"]["resolution"].is_null()
-                    && run_value["process_success"] == true) => Some(
-                if let Some(reason) = run_value.get("failure_reason").and_then(Value::as_str) {
-                    format!("benchmark run failed: {reason}")
-                } else {
-                    format!(
-                        "benchmark run failed (status={status}, exit_code={})",
-                        run_value
-                            .get("exit_code")
-                            .map(Value::to_string)
-                            .unwrap_or_else(|| "null".into())
-                    )
-                },
-            ),
+            Some(status)
+                if run_value.get("success") == Some(&Value::Bool(false))
+                    && !(run_value["benchmark_outcome"]["evaluation"]["status"] == "completed"
+                        && run_value["benchmark_outcome"]["evaluation"]["resolution"]
+                            .is_null()
+                        && run_value["process_success"] == true
+                        && run_value
+                            .get("failure_reason")
+                            .and_then(Value::as_str)
+                            .is_none()
+                        && run_value
+                            .get("failure_kind")
+                            .and_then(Value::as_str)
+                            .is_none()
+                        && run_value["benchmark_outcome"]["cleanup_confirmed"].as_bool()
+                            != Some(false)) =>
+            {
+                Some(
+                    if let Some(reason) = run_value.get("failure_reason").and_then(Value::as_str) {
+                        format!("benchmark run failed: {reason}")
+                    } else {
+                        format!(
+                            "benchmark run failed (status={status}, exit_code={})",
+                            run_value
+                                .get("exit_code")
+                                .map(Value::to_string)
+                                .unwrap_or_else(|| "null".into())
+                        )
+                    },
+                )
+            }
             Some(status) => Some(status.to_owned()),
             None => Some("unknown".into()),
         }
-        };
+    };
     let workload_evaluation = run_value
         .get("workload_evaluation")
         .and_then(Value::as_str)

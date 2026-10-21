@@ -299,8 +299,8 @@ Independent source review approved `bdf219d4`; root separately passed its 18
 cli2key library tests, two provider-finish matrix entries (including five actual
 runner cases and loopback catalog cases), and four actual CLI regressions.
 The signed `ad5ce506` integration retains the structured native outcome/report
-pipeline and bounded model transport from **0.2.19**; its native/provider
-integration still requires independent source review. Seven actual runner
+pipeline and bounded model transport from **0.2.19**; root semantic review
+approved its generic finish/native cleanup wiring. Seven actual runner
 finish cases now include completed numeric rewards with null resolution:
 provider uncertainty preserves those rewards, legacy grades and execution
 success, sets structured cleanup confirmation false and withholds receipts.
@@ -311,6 +311,12 @@ hosted CI, merge and release remain pending. The earlier `93babfdd` full-suite
 proxy-startup failure remains unattributed; bounded fixture stderr and 100
 passing fresh concurrency fixtures are diagnostic evidence, not proof of its
 cause or repair. No live-provider qualification is claimed.
+Follow-up reporting review found that a healthy-native compatibility exception
+also hid recorded cleanup failures. It now applies only without a recorded
+failure kind/reason or explicit cleanup failure; unknown cleanup alone does not
+invent a failure. Reports generated from the actual native finish fixtures
+retain the numeric reward/null resolution and disclose provider uncertainty in
+both row status and HTML, while healthy native completion stays completed.
 
 ## 6. Shared implementation and lifecycle policies
 
