@@ -133,6 +133,16 @@ pub(crate) fn for_plan(
 }
 
 pub(crate) fn discover(python: &Path, dependencies: &[Dependency]) -> Result<Vec<PathBuf>, Error> {
+    discover_with_timeout(python, dependencies, Duration::from_secs(60))
+}
+
+// Keep production policy unchanged while real-child fixtures exercise the
+// complete exchange against a short watchdog. This does not repair its joins.
+fn discover_with_timeout(
+    python: &Path,
+    dependencies: &[Dependency],
+    timeout: Duration,
+) -> Result<Vec<PathBuf>, Error> {
     let mut dependencies = dependencies.to_vec();
     dependencies.sort();
     dependencies.dedup();
@@ -188,7 +198,7 @@ pub(crate) fn discover(python: &Path, dependencies: &[Dependency]) -> Result<Vec
     });
     let mut input = child.stdin.take().expect("runtime discovery stdin");
     let sender = std::thread::spawn(move || input.write_all(&request));
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + timeout;
     let success = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status.success(),
@@ -255,6 +265,141 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn inherited_stdout_after_successful_helper_exit_is_bounded() {
+        bounded_exchange_case("held-stdout");
+    }
+
+    #[test]
+    fn descendant_held_stdin_after_successful_nonreader_exit_is_bounded() {
+        bounded_exchange_case("held-stdin");
+    }
+
+    fn bounded_exchange_case(case: &str) {
+        use crate::test_support::IsolatedEnvironment;
+        use std::os::unix::fs::PermissionsExt;
+        const CASE: &str = "ASB_RUNTIME_DISCOVERY_RED_CASE";
+        const ROOT: &str = "ASB_RUNTIME_DISCOVERY_RED_ROOT";
+        let test = match case {
+            "held-stdout" => {
+                "runtime_inputs::tests::inherited_stdout_after_successful_helper_exit_is_bounded"
+            }
+            "held-stdin" => {
+                "runtime_inputs::tests::descendant_held_stdin_after_successful_nonreader_exit_is_bounded"
+            }
+            _ => unreachable!("private test case"),
+        };
+        if std::env::var(CASE).as_deref() == Ok(case) {
+            let root = PathBuf::from(std::env::var_os(ROOT).unwrap());
+            let dependencies = if case == "held-stdin" {
+                (0..512)
+                    .map(|index| {
+                        Dependency::file(format!(
+                            "/PRIVATE_RUNTIME_COMPONENT/{index}/{}",
+                            vec!["x".repeat(128); 8].join("/")
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                vec![Dependency::file("/fixture/absent-file")]
+            };
+            let result = discover_with_timeout(
+                &root.join("fake-python"),
+                &dependencies,
+                Duration::from_millis(150),
+            );
+            if case == "held-stdin" {
+                let error = result.unwrap_err().to_string();
+                assert!(!error.contains("PRIVATE_RUNTIME_COMPONENT"));
+            } else {
+                assert!(
+                    result.is_ok(),
+                    "a complete response may succeed after owned descendants settle"
+                );
+            }
+            std::fs::write(root.join("returned"), "exchange returned").unwrap();
+            return;
+        }
+        let root = Directory::new();
+        let script = format!(
+            "#!/usr/bin/python3\nimport os,pathlib,sys,time\nroot=pathlib.Path({})\ncase={}\nif case=='held-stdout': sys.stdin.buffer.read()\npid=os.fork()\nif pid==0:\n os.setsid()\n if case=='held-stdin': os.close(1)\n else: os.close(0)\n time.sleep(30)\n os._exit(0)\n(root/'descendant.pid').write_text(str(pid))\nos.write(1,b'{{\"schema_version\":1,\"paths\":[]}}\\n')\n(root/'helper-parent-exited').write_text('zero exit')\nos._exit(0)\n",
+            serde_json::to_string(&root.0).unwrap(),
+            serde_json::to_string(case).unwrap()
+        );
+        let helper = root.0.join("fake-python");
+        std::fs::write(&helper, script).unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let binary = executable.parent().unwrap().parent().unwrap().join("asb");
+        assert!(binary.is_file(), "build the actual ASB binary first");
+        let spawn = |program: &std::ffi::OsStr, arguments: &[&str], fixture: bool| {
+            let mut launch = crate::launch::ProcessLaunch::new(program);
+            for argument in arguments {
+                launch.arg(argument);
+            }
+            let (mut command, route) = launch.native(Some(&binary));
+            command
+                .isolated_env()
+                .env("PATH", "/usr/bin:/bin")
+                .env("ASB_RUNTIME_EXECUTABLE", &binary)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            if fixture {
+                command.env(CASE, case).env(ROOT, &root.0);
+            }
+            let mut gate =
+                crate::process_gate::Admission::new(route.validate_gate(&mut command).unwrap())
+                    .unwrap()
+                    .spawn()
+                    .unwrap();
+            gate.resume().unwrap();
+            gate
+        };
+        let mut sentinel = spawn(OsStr::new("/bin/sleep"), &["30"], false);
+        let mut fixture = spawn(
+            executable.as_os_str(),
+            &["--exact", test, "--nocapture"],
+            true,
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            if let Some(status) = fixture.try_wait().unwrap() {
+                break Some(status);
+            }
+            if Instant::now() >= deadline {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        // Red regressions must fail only after the real supervisor confirms
+        // complete fixture-tree quiescence; no raw PGID/PID cleanup is used.
+        fixture
+            .stop()
+            .expect("red watchdog must quiesce its owned fixture tree");
+        assert!(
+            sentinel.try_wait().unwrap().is_none(),
+            "unrelated sentinel was affected"
+        );
+        sentinel.stop().unwrap();
+        assert!(
+            root.0.join("helper-parent-exited").is_file(),
+            "fixture never reached successful helper exit"
+        );
+        let descendant: u32 = std::fs::read_to_string(root.0.join("descendant.pid"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            !Path::new(&format!("/proc/{descendant}")).exists(),
+            "watchdog left an owned descendant"
+        );
+        assert!(
+            status.is_some_and(|status| status.success()) && root.0.join("returned").exists(),
+            "runtime discovery exceeded its short exchange budget after zero-exit helper ({case}); outer watchdog reaped the entire fixture tree"
+        );
     }
 
     #[test]
