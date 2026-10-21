@@ -695,8 +695,165 @@ fn observe(
     })
 }
 
+#[derive(Serialize)]
+struct RuntimeFile {
+    name: &'static str,
+    text: String,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    inode_group: String,
+    attributes_sha256: String,
+}
+
+#[derive(Serialize)]
+struct RuntimeObservation {
+    files: Vec<RuntimeFile>,
+    usage: Budget,
+}
+
+struct RuntimeVersion {
+    name: &'static str,
+    metadata: Metadata,
+    content: [u8; 32],
+    attributes: String,
+}
+
+fn runtime_group(
+    groups: &mut BTreeMap<(u64, u64), RuntimeVersion>,
+    metadata: &Metadata,
+    bytes: &[u8],
+    attributes: &str,
+    name: &'static str,
+) -> Result<&'static str, &'static str> {
+    let content: [u8; 32] = Sha256::digest(bytes).into();
+    let key = (metadata.dev(), metadata.ino());
+    if let Some(prior) = groups.get(&key) {
+        if !stable(&prior.metadata, metadata)
+            || prior.content != content
+            || prior.attributes != attributes
+        {
+            return Err(invalid());
+        }
+        return Ok(prior.name);
+    }
+    groups.insert(
+        key,
+        RuntimeVersion {
+            name,
+            metadata: metadata.clone(),
+            content,
+            attributes: attributes.into(),
+        },
+    );
+    Ok(name)
+}
+
+fn runtime_files(root: &Path, limits: Budget) -> Result<RuntimeObservation, &'static str> {
+    if !(3..=100_000).contains(&limits.entries)
+        || !(39..=16 * 1024 * 1024).contains(&limits.names)
+        || limits.bytes > 2 * 1024 * 1024 * 1024
+        || limits.attributes > 16 * 1024 * 1024
+    {
+        return Err(invalid());
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let attribute_limit = limits.attributes.min(65536);
+    let mut attributes_left = attribute_limit;
+    let mut bytes_read = 0;
+    let mut groups = BTreeMap::new();
+    let mut result = Vec::new();
+    for name in ["hosts", "hostname", "resolv.conf"] {
+        let path = root.join("etc").join(name);
+        let path = path.to_str().ok_or_else(invalid)?;
+        let pinned = pin_root(path)?;
+        let before = pinned.metadata().map_err(|_| invalid())?;
+        if !before.is_file()
+            || before.len() > 4096
+            || before.len() > limits.bytes - bytes_read
+            || Instant::now() >= deadline
+        {
+            return Err(invalid());
+        }
+        let mut input = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(format!("/proc/self/fd/{}", pinned.as_raw_fd()))
+            .map_err(|_| invalid())?;
+        if !stable(&before, &input.metadata().map_err(|_| invalid())?) {
+            return Err(invalid());
+        }
+        let mut bytes = Vec::new();
+        (&mut input)
+            .take((limits.bytes - bytes_read).min(4096) + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| invalid())?;
+        if bytes.len() > 4096
+            || bytes
+                .iter()
+                .any(|byte| !matches!(byte, 9 | 10 | 13 | 32..=126))
+        {
+            return Err(invalid());
+        }
+        bytes_read = bytes_read
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(invalid)?;
+        if bytes_read > limits.bytes {
+            return Err(invalid());
+        }
+        let attributes_sha256 = attributes::observe(
+            attributes::Target::Descriptor(&input),
+            &mut attributes_left,
+            deadline,
+        )?;
+        if !stable(&before, &pinned.metadata().map_err(|_| invalid())?)
+            || !stable(&before, &pin_root(path)?.metadata().map_err(|_| invalid())?)
+            || Instant::now() >= deadline
+        {
+            return Err(invalid());
+        }
+        let inode_group = runtime_group(&mut groups, &before, &bytes, &attributes_sha256, name)?;
+        result.push(RuntimeFile {
+            name,
+            text: String::from_utf8(bytes).map_err(|_| invalid())?,
+            mode: before.mode() & 0o7777,
+            uid: before.uid(),
+            gid: before.gid(),
+            inode_group: inode_group.to_string(),
+            attributes_sha256,
+        });
+    }
+    Ok(RuntimeObservation {
+        files: result,
+        usage: Budget {
+            entries: 3,
+            names: 39,
+            bytes: bytes_read,
+            attributes: attribute_limit - attributes_left,
+        },
+    })
+}
+
 pub(crate) fn entry(args: &[OsString]) -> ExitCode {
     let result = (|| {
+        if args.len() == 1 && args[0] == "--runtime-files" {
+            let mut input = Vec::new();
+            std::io::stdin()
+                .take(1025)
+                .read_to_end(&mut input)
+                .map_err(|_| invalid())?;
+            if input.len() > 1024 {
+                return Err(invalid());
+            }
+            let limits = serde_json::from_slice(&input).map_err(|_| invalid())?;
+            let output = serde_json::to_vec(&runtime_files(Path::new("/"), limits)?)
+                .map_err(|_| invalid())?;
+            std::io::stdout()
+                .lock()
+                .write_all(&output)
+                .map_err(|_| invalid())?;
+            return Ok(());
+        }
         if !args.is_empty() {
             return Err(invalid());
         }
@@ -768,6 +925,103 @@ mod tests {
         fn drop(&mut self) {
             fs::remove_dir_all(&self.0).unwrap();
         }
+    }
+
+    #[test]
+    fn runtime_files_are_bounded_nofollow_observations_with_private_text_and_alias_groups() {
+        let fixture = Fixture::new();
+        fs::create_dir(fixture.0.join("etc")).unwrap();
+        let budget = Budget {
+            entries: 3,
+            names: 39,
+            bytes: 12288,
+            attributes: 65536,
+        };
+        for name in ["hosts", "hostname", "resolv.conf"] {
+            fs::write(fixture.0.join("etc").join(name), "fixture\n").unwrap();
+        }
+        let observed = runtime_files(&fixture.0, budget).unwrap();
+        assert_eq!(observed.usage.entries, 3);
+        assert_eq!(observed.usage.bytes, 24);
+        assert_eq!(observed.files[0].text, "fixture\n");
+        assert_eq!(observed.files[1].inode_group, "hostname");
+        let encoded = serde_json::to_string(&observed).unwrap();
+        assert!(!encoded.contains(fixture.0.to_str().unwrap()));
+        let hostname = fixture.0.join("etc/hostname");
+        fs::remove_file(&hostname).unwrap();
+        fs::hard_link(fixture.0.join("etc/hosts"), &hostname).unwrap();
+        assert_eq!(
+            runtime_files(&fixture.0, budget).unwrap().files[1].inode_group,
+            "hosts"
+        );
+        fs::remove_file(&hostname).unwrap();
+        symlink("hosts", &hostname).unwrap();
+        assert!(runtime_files(&fixture.0, budget).is_err());
+        fs::remove_file(&hostname).unwrap();
+        for content in [vec![b'x'; 4097], vec![0], vec![0xff]] {
+            fs::write(&hostname, content).unwrap();
+            assert!(runtime_files(&fixture.0, budget).is_err());
+        }
+        fs::write(&hostname, "fixture\n").unwrap();
+        assert!(
+            runtime_files(
+                &fixture.0,
+                Budget {
+                    bytes: 23,
+                    ..budget
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            runtime_files(
+                &fixture.0,
+                Budget {
+                    entries: 2,
+                    ..budget
+                }
+            )
+            .is_err()
+        );
+        assert!(
+            runtime_files(
+                &fixture.0,
+                Budget {
+                    names: 38,
+                    ..budget
+                }
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn runtime_aliases_reject_changed_versions_content_and_attributes_between_fixed_file_visits() {
+        let fixture = Fixture::new();
+        let hosts = fixture.0.join("hosts");
+        let hostname = fixture.0.join("hostname");
+        fs::write(&hosts, "first").unwrap();
+        fs::hard_link(&hosts, &hostname).unwrap();
+        let first = fs::metadata(&hosts).unwrap();
+        let mut groups = BTreeMap::new();
+        assert_eq!(
+            runtime_group(&mut groups, &first, b"first", "attributes", "hosts").unwrap(),
+            "hosts"
+        );
+        assert!(runtime_group(&mut groups, &first, b"other", "attributes", "hostname").is_err());
+        assert!(runtime_group(&mut groups, &first, b"first", "different", "hostname").is_err());
+        fs::write(&hostname, "changed payload").unwrap();
+        let second = fs::metadata(&hostname).unwrap();
+        assert!(
+            runtime_group(
+                &mut groups,
+                &second,
+                b"changed payload",
+                "attributes",
+                "hostname"
+            )
+            .is_err()
+        );
     }
 
     #[test]

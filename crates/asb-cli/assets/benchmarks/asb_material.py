@@ -104,7 +104,8 @@ def capture_task(task, definition, exclusions=(), deadline=None, binary=None):
         from asb_material_services import resolve
         _receipt, services, _primary = resolve(task,deadline)
         if len(services) != 1:
-            raise MaterialError("multiple declared services require explicit prepared material coverage")
+            from asb_material_environment import capture
+            return capture(task,definition,exclusions,binary,deadline)
     if len(containers) != 1:
         raise MaterialError("multiple declared services require explicit prepared material coverage")
     if time.monotonic() >= deadline or (task.cancelled is not None and task.cancelled.is_set()):

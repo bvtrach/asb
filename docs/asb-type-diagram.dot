@@ -420,6 +420,9 @@ digraph ASB_Rust_UML {
         "asb-cli_src_workloads_ResolutionSummary" [label="{workloads_ResolutionSummary|+task_count: usize\l+resolved_count: usize\l+unresolved_count: usize\l+unscored_count: usize\l+success_rate: Option\<f64\>\l|+observe(kind: &str, resolved: bool) void\l}", shape=record];
         "asb-cli_src_workloads_RetainedOutcomeContext" [label="{workloads_RetainedOutcomeContext|+recovery: workloads_RecoveryContext\<'a\>\l+summary: Value\l}", shape=record];
         "asb-cli_src_workloads_Root" [label="{workloads_Root|-name: String\l-path: String\l-exclusions: Vec\<String\>\l-content_paths: Option\<Vec\<String\>\>\l-image_sha256: Option\<String\>\l-expected_identity: Option\<[u64; 3]\>\l|+selected(relative: &str) bool\l}", shape=record];
+        "asb-cli_src_workloads_RuntimeFile" [label="{workloads_RuntimeFile|-name: &'static str\l-text: String\l-mode: u32\l-uid: u32\l-gid: u32\l-inode_group: String\l-attributes_sha256: String\l}", shape=record];
+        "asb-cli_src_workloads_RuntimeObservation" [label="{workloads_RuntimeObservation|-files: Vec\<workloads_RuntimeFile\>\l-usage: workloads_Budget\l}", shape=record];
+        "asb-cli_src_workloads_RuntimeVersion" [label="{workloads_RuntimeVersion|-name: &'static str\l-metadata: Metadata\l-content: [u8; 32]\l-attributes: String\l}", shape=record];
         "asb-cli_src_workloads_Session" [label="{workloads_Session|-process_lifetime: ProcessLifetime\l-controller: workloads_Controller\l-invocation: workloads_TaskInvocation\l-baseline: workloads_BaselineEvidence\l-initial_material: cassette_Result\<String, String\>\l-guest_workspace: String\l-agent_timeout: Duration\l-measurement_active: bool\l-preparation_active: bool\l-cleanup_attempted: bool\l-evaluation_completed: bool\l-artifacts: PathBuf\l|+cancel() cassette_Result\<(), String\>\l+run(context: &mut ExecutionContext\<'_\>, output: sweep_Write) cassette_Result\<workloads_ExecutionResult, String\>\l}", shape=record];
         "asb-cli_src_workloads_SourceExpectation" [label="{workloads_SourceExpectation|-files: &'static [FileExpectation]\l}", shape=record];
         "asb-cli_src_workloads_State" [label="{workloads_State|-hash: Sha256\l-entries: usize\l-bytes: u64\l-names: usize\l|+visit(root: &Path, path: &Path, depth: usize) cassette_Result\<(), String\>\l}", shape=record];
@@ -687,6 +690,8 @@ digraph ASB_Rust_UML {
     "asb-cli_src_workloads_Request" -> "asb-cli_src_workloads_Budget" [arrowhead="vee"];
     "asb-cli_src_workloads_Request" -> "asb-cli_src_workloads_Root" [arrowhead="vee"];
     "asb-cli_src_workloads_RetainedOutcomeContext" -> "asb-cli_src_workloads_RecoveryContext" [arrowhead="vee"];
+    "asb-cli_src_workloads_RuntimeObservation" -> "asb-cli_src_workloads_Budget" [arrowhead="vee"];
+    "asb-cli_src_workloads_RuntimeObservation" -> "asb-cli_src_workloads_RuntimeFile" [arrowhead="vee"];
     "asb-cli_src_workloads_Session" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
     "asb-cli_src_workloads_Session" -> "asb-cli_src_cassette_Result" [arrowhead="vee"];
     "asb-cli_src_workloads_Session" -> "asb-cli_src_workloads_BaselineEvidence" [arrowhead="vee"];

@@ -191,10 +191,23 @@ def plan(attributes, binds, volumes, runtime):
             "mode":item.get("Mode",""),"propagation":item.get("Propagation",""),
             "options":remaining,"tmpfs":(host.get("Tmpfs") or {}).get(target)})
         sources.append(source)
-    storage = {}
-    for index,source in enumerate(sources):
+    groups, aliases = storage_groups(sources,[item["name"] for item in canonical])
+    for item,group in zip(canonical,groups):
+        item["backing"] = group
+    if "/dev/shm" not in declared_targets:
+        roots.append({"name":"shared-memory","path":"/dev/shm", "exclusions":sorted(
+            target[len("/dev/shm/"):] for target in declared_targets if target.startswith("/dev/shm/"))})
+    return {"mounts":canonical,"aliases":aliases,"roots":roots,"shm_bytes":host.get("ShmSize"),
+        "raw_sha256":canonical_digest({"actual":actual,"configured":configured,"legacy":legacy,
+            "tmpfs":host.get("Tmpfs"),"ipc":host.get("IpcMode"),"shm":host.get("ShmSize")},"asb-private-mount-topology-v1")}
+
+
+def storage_groups(sources, names):
+    """Canonical backing/overlap graph, also usable across qualified services."""
+    storage, groups = {}, []
+    for source,name in zip(sources,names):
         key = (source[0],source[2][0] if source[0] == "bind" else source[1])
-        canonical[index]["backing"] = storage.setdefault(key,canonical[index]["name"])
+        groups.append(storage.setdefault(key,name))
     aliases = []
     for left,a in enumerate(sources):
         for right,b in enumerate(sources[left+1:],left+1):
@@ -214,10 +227,5 @@ def plan(attributes, binds, volumes, runtime):
                 elif not b[2] or a[2].startswith(b[2]+"/"):
                     relative, parent, child = (a[2][len(b[2])+1:] if b[2] else a[2]),right,left
             if relative is not None:
-                aliases.append({"parent":canonical[parent]["name"],"child":canonical[child]["name"],"relative":relative})
-    if "/dev/shm" not in declared_targets:
-        roots.append({"name":"shared-memory","path":"/dev/shm", "exclusions":sorted(
-            target[len("/dev/shm/"):] for target in declared_targets if target.startswith("/dev/shm/"))})
-    return {"mounts":canonical,"aliases":aliases,"roots":roots,"shm_bytes":host.get("ShmSize"),
-        "raw_sha256":canonical_digest({"actual":actual,"configured":configured,"legacy":legacy,
-            "tmpfs":host.get("Tmpfs"),"ipc":host.get("IpcMode"),"shm":host.get("ShmSize")},"asb-private-mount-topology-v1")}
+                aliases.append({"parent":names[parent],"child":names[child],"relative":relative})
+    return groups, aliases

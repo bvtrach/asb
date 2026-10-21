@@ -95,12 +95,14 @@ class ServiceTests(unittest.TestCase):
             self.resolve()
         self.assertEqual(self.client.containers.lookups,[])
 
-    def test_verified_capture_resolves_all_roles_but_never_claims_missing_composer(self):
+    def test_verified_capture_resolves_all_roles_and_dispatches_the_environment_composer(self):
         from asb_material import capture_task
-        with patch("asb_material_root.capture") as capture:
-            with self.assertRaisesRegex(MaterialError,"multiple declared services"):
-                capture_task(self.task,{"fixture":"task"},binary="/not-started")
+        expected = {"schema_version":1,"scope":"prepared-workload-material-v1","sha256":"a"*64}
+        with patch("asb_material_root.capture") as capture, \
+             patch("asb_material_environment.capture",return_value=expected) as compose:
+            self.assertEqual(capture_task(self.task,{"fixture":"task"},binary="/not-started"),expected)
             capture.assert_not_called()
+            self.assertIs(compose.call_args.args[0],self.task)
         self.assertEqual(self.client.containers.lookups,[ATTEMPT,ATTEMPT+"-database"])
 
     def test_shared_reader_requires_active_owner_even_for_cached_receipts(self):

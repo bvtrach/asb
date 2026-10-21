@@ -1,5 +1,16 @@
 # Development
 
+`benchmark_live_material_environment.py` uses the same explicit image/binary/
+artifact-parent opt-ins as the mounted-root qualification below. It prepares
+two network-none services per fixture, checks independent fresh generated
+identities, shared-volume mutation and shared-versus-independent equal-content
+storage, then removes successful owned fixtures only. Failed fixtures are
+stopped/preserved. No agent, provider or evaluator runs. The separate ordinary
+`benchmark_material_environment.py` suite tests whole-round ordering, one shared
+budget, generated-file normalization, private resource replacement and refusal
+of uncovered namespaces/networks/devices. These are not routed-network or
+complete original-catalog qualifications.
+
 `benchmark_live_material_mounts.py` is an opt-in mounted-root qualification.
 Set `ASB_TEST_MATERIAL_IMAGE` to an already cached Linux image ID,
 `ASB_TEST_BENCHMARK_ASB` to the built binary and `ASB_TEST_SWECATALOG_ROOT` to

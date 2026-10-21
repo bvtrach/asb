@@ -266,9 +266,9 @@ Requests without the extension retain the old response shape.
 Single-container capture owns one two-observation ledger (200,000 entries,
 32 MiB names, 4 GiB payload and 32 MiB attributes total). A future multi-service
 composer can share that same ledger across its service/round calls, declaring
-at most 32 observations (16 services, two rounds), never silently resetting
+at most 32 root observations (16 services, two rounds), never silently resetting
 allowances. Each call remains subject to the original smaller ceilings. The
-constructor bounds aggregate allowances by those 32-call maxima. Actual usage,
+constructor bounds aggregate allowances by those 32-root-observation maxima. Actual usage,
 not the maximum reservation, is subtracted, so unused allowance remains usable.
 A failed transport or invalid consumption leaves the ledger unresolved and
 unusable; any later ownership/snapshot failure must likewise abort the capture,
@@ -323,12 +323,52 @@ container; paused, restarting, missing or replaced resources fail. Ownership
 and exact name are rechecked after reload, and the primary role is identified
 by the task container ID rather than assuming a service named `main` or
 `client`. Resolver results are not evidence that content/topology was observed.
-Multiple services remain refused until the whole-environment composer exists.
+The network-none composer below consumes these roles; other network topologies
+still require additional explicit coverage.
 
 The shared receipt reader is also used for bind declarations, sanitizes corrupt
 or unavailable receipt errors, bounds input to 1 MiB and returns independent
 copies. These local consistency checks introduce no signatures, credentials or
 production authorization prerequisite.
+
+### Owned network-none environment composer
+
+Verified capture now routes multiple declared services to an environment
+composer, without falling back to a weaker main-only capture. The first
+supported runtime profile requires networking disabled, private/default
+namespaces, no external devices, inherited volumes, links or published ports.
+Unsupported profiles fail before instrumentation. This is not complete routed
+network or original-catalog support.
+
+Each role owns its own context, runtime cache and immutable container-ID anchor.
+All helper staging finishes before any observation. Complete rounds visit all
+services in stable role order; global snapshots bracket each round, retaining
+both normalized material and private raw resource/configuration/file witnesses.
+Replacement, ownership changes, cancellation, topology mutation and different
+A/B rounds abort preparation. Canonical storage groups and parent/subpath edges
+use service-qualified mount roles, distinguishing shared versus independent
+volumes even when bytes match. Disjoint cross-service bind roots on one device
+are refused until global file-level alias coverage exists; declarations alone
+cannot establish their hardlink relationships.
+
+The guest's private `--runtime-files` material-helper mode observes only
+`/etc/hosts`, `/etc/hostname` and `/etc/resolv.conf`: nofollow pinned paths,
+regular files, 4 KiB per file, printable ASCII plus tab/newline/CR, visible
+attributes, inode groups and stable per-inode versions/content. Non-text,
+oversized, linked-path or contradictory alias observations fail. The explicit
+private transport cap is 64 KiB; no file text enters the public result.
+Normalization uses tagged exact generated-hostname/container-name tokens, not
+substrings. Explicit hostnames/host mappings, whitespace, comments and resolver
+text remain literal. Raw snapshots are compared as well, so normalization cannot
+hide preparation-time mutation.
+
+Root calls and generated-file observations debit the same shared ledger. There
+are two root calls and four generated-file calls per service (before/after each
+whole round), not merely two total helper calls. The aggregate allowance remains
+`2 * service_count` times the original per-root maxima, shared conservatively
+across all six calls; it is not a resetting per-call or helper-count quota.
+Generated-file reads additionally cap attributes at 64 KiB per invocation and
+report actual consumption; exhausting any aggregate dimension aborts capture.
 
 - Official workload identity must bind adapter-owned environment material. Image
   ownership labels and attempt tags differ per execution, so raw source-build

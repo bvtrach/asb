@@ -1,6 +1,11 @@
 //! Provider-free tests of the upstream workload protocol's pure data layer.
 
 #[test]
+fn complete_environment_rounds_preserve_runtime_and_cross_service_storage_identity() {
+    python_protocol("benchmark_material_environment.py");
+}
+
+#[test]
 fn prepared_service_roles_bind_the_complete_live_owned_set() {
     python_protocol("benchmark_material_services.py");
 }
