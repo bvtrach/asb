@@ -137,6 +137,15 @@ production sleeps or environment-based production fault switches. Root review
 must approve the schema/defaults before implementation; none exists in product
 configuration at this checkpoint.
 
+Load and validate this section once at outer install admission through the same
+project-local reader for CLI and TUI; freeze the typed values for that operation.
+An edit during a build cannot reset deadlines; the next invocation reloads it.
+Missing keys use defaults. Invalid values fail before spawn or staging mutation,
+with the config path/key. Initialization without a config uses identical
+defaults. No credentials, authorization or authenticated-runtime gate is added.
+Proposed inspection bounds are 1 MiB per stream and 2 MiB aggregate per step;
+owners can declare smaller format-specific limits explicitly.
+
 Before spawn establish guardian admission, custody worker, pipes/log handles and
 any producer-dependent staging lease. The supervisor owns them outside an
 unwind scope. Resume only after required readiness. On cancellation, timeout,
@@ -157,6 +166,20 @@ cleanup; no Staging Drop/validation/publication/removal before the appropriate
 producer-completion permission. Blocking kernel/file operations cannot receive
 an absolute hard termination guarantee; truthful retained uncertainty is required.
 
+Concretely, a private shared `ProducerLease` owns the actual Staging guard, log
+sink and pipe pumps, not merely pathnames. The operation and each admitted step
+hold references. The pre-established worker retains its reference until matching
+quiescence and required stream settlement. Abort transfers ownership before
+returning a typed diagnostic. DownloadChild replacements take this lease
+explicitly. Custom recipes/fallback scopes must not keep a producer-exposed
+stack-local Staging guard that destructively drops on `?`: move it into the
+lease before admission. Recover/drop it only with a settled token and no active
+producer references. Unknown cleanup marks the lease retained; its final Drop
+must not call today's destructive Staging settlement, but preserve the pinned
+stage/evidence location. Readiness, spawn, panic and pump-error exits follow the
+same transition; a never-exposed stage may be released on pre-spawn failure.
+OwnedReaper alone is insufficient: it owns Child, not these stage/log/pipe leases.
+
 The TUI's outer installation gate still owns its worker. Inner step deadlines
 are not a replacement for owner-loss cancellation; nested guardians must settle
 without abandoning children when their outer owner exits. Synchronous CLI and
@@ -166,6 +189,16 @@ eventual backend qualification; do not silently label direct-child cleanup as
 equivalent or claim Linux tests qualify them. Preserve documented behavior until
 that decision is independently reviewed; do not add an accidental platform-wide
 unsupported-install regression during a Linux-only repair.
+
+Proposed explicit compatibility decision for root approval: scope the repaired
+backend to Linux. Keep existing non-Linux behavior in a separately named legacy
+backend returning honest `DirectChildOnly` facts, never `SettledStep` or a
+manufactured tree receipt. Do not silently alter its existing publication policy
+or claim the new custody guarantee there. Make the platform capability visible
+in typed routing. A qualified non-Linux tree backend (for example Windows Job
+Objects) is separate work. If root instead requires that backend in this class,
+implementation remains held until its design is approved; no blanket platform
+rejection or direct-child-as-tree shortcut is proposed.
 
 ## Output and log policy
 
@@ -184,6 +217,18 @@ ancillary log failure is not automatically an invalid installed product; carry
 it separately and decide presentation/operation policy explicitly. Required
 captured metadata remains unusable when incomplete. Keep filesystem write
 failure, process failure, timeout, cancellation and unconfirmed cleanup distinct.
+
+Concrete ancillary policy proposed for approval: one owned log per step, at
+most 16 MiB combined stdout/stderr, keeping the first bytes. After the limit,
+continue bounded drain/discard and return `Truncated { retained, discarded }`;
+print one concise path-bearing warning at the operation boundary. This is a
+diagnostic-retention cap, not an execution or required-metadata cap. Log
+open/write/flush failures retain the distinct error/path, switch to drain/discard
+and warn once. They do not alone invalidate a product whose exit, custody,
+required capture and owner validation succeeded. Required capture instead
+aborts on overflow/read error and never parses a successful prefix. Any log
+also used as adapter input must be declared required, without the ancillary
+relaxation. Freeze these policies in the step context and test both categories.
 
 ## Actual red fixtures before implementation
 
@@ -257,8 +302,8 @@ correction, not a product fix or an unmodified retry.
 
 Fresh actual run `target/installer44-observed-red-v2.log` compiled in 24.17s,
 then **0 passed / 4 failed / 0 ignored**, exit 101, runtime 1.33s. Each failure
-was the intended post-cleanup assertion, not admission, quiescence or sentinel
-failure:
+was the intended assertion, not admission or quiescence failure. Its sentinel
+liveness check preceded main cleanup, a test weakness corrected below:
 
 | Case | Actual observed failure | Preserved fixture suffix |
 | --- | --- | --- |
@@ -270,13 +315,32 @@ failure:
 All four directories under `target/installer-process-red/` retain a
 `watchdog-settlement` marker, written only after matching guardian exit and
 quiescence for the test tree and its sentinel, with sentinel survival checked
-before stopping that separate owned gate. The writer fixture retains actual
+before stopping that separate owned gate. V2 checked liveness before main
+cleanup, so only the corrected V3 proves post-cleanup sentinel survival.
+The writer fixture retains actual
 `returned.json` success, the release marker, changed `stage` and `writer-mutated`
 marker. The pipe fixture retains its finite principal's exit-zero marker; its
 raw output call never returned, so no direct wait result is fabricated there.
 The byte fixture retains the actual accepted length. No fixture process remains
 live; all actual target children were stopped/reaped through their explicit
 owned guardians. No raw PID/name/group cleanup or host setting was used.
+
+Self-review corrected only fixture ordering after immutable initial checkpoint
+`e1be4b72377138bd8bb153e9d28582603dbab7be`: main gate stop/settlement first,
+then sentinel `try_wait`, then the sentinel's own stop. Production was unchanged.
+Fresh `target/installer44-observed-red-v3.log` compiled in 23.82s and returned
+exit 101: **0 passed / 4 failed / 0 ignored**, runtime 1.35s. All four failed at
+the intended final assertions after positive main/sentinel settlement and
+post-main-cleanup sentinel-survival checks. The respective retained fixture
+suffixes are `18e0ab6460f5f92c-705a5-0` (pipes),
+`18e0ab64836db4c1-705a5-1` (overflow),
+`18e0ab64885046b3-705a5-2` (writer), and
+`18e0ab648d726175-705a5-3` (stuck). Each contains `watchdog-settlement`.
+The exact actual and frozen-copy hashes remained the above `e924e17a...` after
+V3. The V3 libtest's post-run SHA256 is
+`23b7809d3f4eeae595b84f221ed781510e518bbebf642d5eb0df9ed881a85187`;
+no pre-run libtest hash was measured and none is claimed. All handles are
+terminal; read-only process inspection found no remaining fixture process.
 
 Only three cfg(test) module-declaration lines were added to production source;
 the complete implementation of LoggedStatus, command_output, DownloadChild,

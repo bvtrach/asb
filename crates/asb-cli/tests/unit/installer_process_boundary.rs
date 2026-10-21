@@ -92,6 +92,7 @@ impl Harness {
         self.root.join(name).is_file()
     }
     fn settle(&mut self) {
+        let main = self.gate.as_mut().unwrap().stop();
         let alive = self
             .sentinel
             .as_mut()
@@ -99,7 +100,6 @@ impl Harness {
             .try_wait()
             .unwrap()
             .is_none();
-        let main = self.gate.as_mut().unwrap().stop();
         let sentinel = self.sentinel.as_mut().unwrap().stop();
         assert!(
             main.is_ok(),
