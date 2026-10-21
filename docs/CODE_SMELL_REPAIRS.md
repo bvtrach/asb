@@ -14,6 +14,31 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+Recording raw-source custody, staged patch **0.2.36**: integrated source
+`05ebf11d` retains the exact reviewed raw core from `bd2dea5e` alongside artifact,
+publication and bounded controller stack `b25d9f11`. The fresh focused matrix
+passed **680 tests**, zero failed, with four optional skips; strict workspace/
+all-target/all-feature Clippy and formatting passed with a stable actual 0.2.36
+executable hash. Parent qualifications do not qualify this combined tree.
+Detailed source boundaries, counts, hash and logs are recorded in
+[the raw custody integration proof](RECORDING_RAW_INTEGRATION.md).
+Independent integration review approved `98c51664`; signed `807012d9` then folds
+the independently reviewed packaged-fixture permission teardown without changing
+production or version. Fresh full locked/offline/workspace/all-target/all-feature
+qualification at `807012d9` passed **1,314 tests**, zero failed, with 21 optional
+skips across 24 outer targets. Before/after/final actual executable hash stayed
+`dfc3f9dcd0a22a66eb0f91f3336c2dad15c1c9bf075b7e3f26c4b9846d6c542a`.
+Fresh artifact entry two (all ten scenarios), recording/raw 12, strict Clippy/fmt,
+sequential make/private Rustdocs/pinned AutoUML/flows/interactive/completions and
+Bash/Zsh syntax checks all passed. Logs and exact limitations are in the linked
+integration proof. Final independent qualification review, hosted/package CI,
+merge, post-merge checks and release remain pending. No unrelated
+collector/runtime-input/installer/setup repair is folded in.
+
+Historical artifact35 snapshot below predates its later full qualification:
+`b25d9f11` subsequently passed 1,303 tests with 21 optional skips, recorded in
+`4b78a350`. That evidence remains distinct from the new raw36 focused matrix.
+
 Artifact integration, staged patch **0.2.35**, local qualification and package-fixture repair, delivery pending:
 historical artifact checkpoint `a2708632` is combined with committed
 publication34 `3359bfb2`.
