@@ -160,7 +160,7 @@ contract. It needs a separate repair class with supported probe/predicate
 parsing, multiline/OR regressions, and preservation of valid process-tree
 profiles; it must not be hidden as a test-only cleanup. Pending.
 
-Custom BPF candidate: PR #268 parses complete multiline blocks and positively
+Custom BPF candidate: PR #268, patch version **0.2.7**, parses complete multiline blocks and positively
 proves each process predicate, rejecting side effects (including map ++/--),
 OR-true bypasses, reserved membership-map actions and opaque preprocessing.
 Numeric `ASB_PARAM_` tuning replaces the unsupported bpftrace 0.20.2 `-D`
