@@ -173,7 +173,7 @@ Initial compile/lint and focused failure logs remain preserved. A false-grade
 test expectation was also corrected to include the existing `workload check
 failed:` primary prefix; no production grade assertion was weakened.
 
-## Fresh focused qualification, full held
+## Historical phase-only focused qualification (0fde0699), full held
 
 The actual 0.2.43 executable was built first on the exclusive dedicated cache
 `/home/martin/projects/asb-build-cache-runner43/target`, offline/locked, one job,
@@ -211,3 +211,86 @@ claim is made. Independent source/evidence review, coordinated current-stack
 integration, fresh full qualification, hosted/package CI, merge, post-merge jobs
 and release remain pending. The removed coverage gate stays removed. No push or
 PR accompanies this source checkpoint.
+
+## Reviewed official41/termination42 integration and combined qualification
+
+Signed merge `be5452b0` retained independently approved official-engine bindings
+`31070b9a`. Signed source merge `4cbc28ba` then combined the consuming phase
+implementation with approved termination42 `9b843ee3`; signed merge `e71a3b62`
+folded the latter's final independent qualification proof `182ada4c`, changing
+only `docs/PROCESS_TERMINATION_REPAIR.md`. Version 0.2.43 remains coordinated
+staging, not a release. Root independently reviewed the combined source and
+conflict mapping before authorizing the fresh full run below.
+
+All incoming production outside `runner.rs` and new `runner/attempt.rs` is
+byte-identical to the reviewed42 parent. The necessary runner integration carries
+optional `Observation` from native/guest execution into execution evidence,
+sealed result, log, measurement and presentation. It does not enter
+`AttemptIssues`, grading, operational disposition or continuation eligibility.
+The whole validated termination type, gate protocol, guest/controller paths,
+measurement/reporting/current-attempt agreement checks and their own tests are
+retained. The official41 binding/baseline contracts are retained as well. Cargo's
+only difference from the incoming42 package metadata is the staged43 version.
+
+Shared entry-fixture conflicts combine both sets of predicates, cases and
+assertions; they do not restore the old monolithic coordinator. Three additional
+Linux-only actual-entry combinations inject malformed optional observation plus
+post-grade stopped-warning I/O for true, false and numeric-native/null grades.
+They require the exact known-or-unknown observation and bounded diagnostic in
+both independent publishers and the private outcome, with unchanged grades,
+artifact handoff, exactly-once finalizers and existing reuse semantics. Workload
+custody through publication and runtime-entered/prepared-only cancellation
+boundaries remain unchanged.
+
+The merged actual CLI was built first, offline/locked, on the exclusive home
+cache with one job and incremental compilation disabled. Fresh focused testing
+passed **842 tests / zero failures / 14 existing optional skips** across 12
+deduplicated groups: the expanded library OR-union (645/nine skips), repeated
+run (30), benchmark protocol (35), guest agent (15), artifact ownership (two),
+capture session (two), completion diagnostics (six), offline CLI (94/five skips),
+parallel/partial/replay sweep (two each) and planning admission (seven). Strict
+workspace/all-target/all-feature Clippy (`-D warnings`), formatting and whitespace
+checks passed before full admission. These results are not added to the full
+suite counts, and earlier phase-only evidence is not substituted for this merge.
+
+At exact unchanged combined source `e71a3b62`, the fresh locked/offline workspace
+all-target/all-feature suite passed **1,423 tests / zero failures / 21 existing
+opt-in skips** across **24 outer Cargo targets**. The library contributed
+1,187 passes/13 skips (24.28s); other targets contributed 236 passes/eight skips.
+The Python protocol target passed 35 tests (66.58s). Separate all-feature
+workspace doctests passed with zero tests. Post-test strict workspace/all-target/
+all-feature Clippy, formatting and whitespace checks passed. Sequential offline
+`make -j1 build` passed, including private Rustdoc, pinned existing AutoUML 0.7.2
+DOT/Mermaid/SVG, function flows, interactive views and Bash/Zsh completions.
+Separate Bash/Zsh syntax checks passed. Graphviz emitted ordinary straight-line
+edge fallback warnings without failing generation.
+
+Full evidence is `target/runner43-combined-full.log` and its
+`{summary,doctests,clippy,fmt,diffcheck,make,bash-syntax,zsh-syntax}` companion
+logs. The summary selects the last result per outer Cargo `Running` target;
+nested one-test subprocess summaries are not double-counted. Fresh focused logs
+are `target/runner43-termination42-{build,library,clippy,fmt,diffcheck}.log` and
+the eleven named integration logs. All handles terminated zero before this
+documentation edit; no fresh full failure or retry occurred. Historical red,
+compile and focused failure transcripts remain preserved.
+
+Actual executable SHA-256 was identically
+`f39fc5d69df404ad2c633233fc4600c13dee267a8b4f109e98e91c6d000b3383`
+before/after focused runtime, after focused lint, before/after full runtime,
+after make and in `target/qualification/runner43-e71a3b62-asb`.
+The `runner43-termination42-*.sha256` and
+`runner43-combined-full-{before,after,final,frozen}.sha256` records retain these
+observations. Historical `runner43-b318ba43-asb` and red
+`runner43-red-dcd2467d-asb` remain separately preserved and hash-verified. No
+source edit or executable relink occurred during runtime; all compiler admissions
+checked at least 3 GiB free on the assigned cache filesystem. Only the allocated
+cache was used; no live provider/SDK, real credential or host setting was used or
+changed.
+
+This qualifies the reviewed combined local offline Linux x86-64 source, not
+native Windows/ARM, live SDK/container execution, arbitrary panic/OOM containment
+or hard cancellation of borrowed `Write`. The original broad audit remains
+open. Independent final proof review, actual-main delivery ancestry, hosted/
+packaged exact-head CI, merge, both post-merge jobs and a signed release remain
+pending. No push or PR accompanies this evidence-only checkpoint; the removed
+coverage gate stays removed.

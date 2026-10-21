@@ -14,18 +14,26 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
-Runner phase completion, coordinated staged patch **0.2.43**, focused source checkpoint:
+Runner phase completion, coordinated staged patch **0.2.43**, locally qualified:
 immutable red `dcd2467d` proves stopped-warning and late-cwd errors bypassed result
 publication after grading. Consuming configured/provider/workload/runtime/result/
 publication states preserve custody and independent finalization; stopped-warning
 I/O is sticky before sealing, while early physical anchors retain logical wire
 spelling. Finished workload ownership lasts through publication/observer/output;
 started execution errors never call prepared-only cancellation. Existing validated
-reuse semantics are unchanged. Fresh focused qualification passed 745 tests,
-zero failed, 13 optional skips across 12 deduplicated groups, plus strict Clippy/fmt;
-actual binary `b318ba43…` remained unchanged. Independent source/evidence review,
-current-stack integration (including separate termination diagnostics), full tests
-and all hosted/merge/release gates remain pending. See
+reuse semantics are unchanged. Root independently approved original phase source
+`0fde0699` and combined official41/termination42 merge `e71a3b62`; incoming
+production outside the two runner modules is preserved. Three additional actual
+warning/optional-observation fault combinations retain true/false/native-null
+grades. Fresh combined focus passed 842 tests, zero failed, 14 optional skips
+across 12 deduplicated groups. Authorized fresh full qualification passed 1,423
+tests, zero failed, 21 existing opt-in skips across 24 outer targets; nested
+subprocess summaries are excluded. Separate doctests, strict Clippy/fmt and
+sequential offline build/private docs/pinned diagrams/flows/interactive views/
+completion syntax passed. Actual binary `f39fc5d6…` remained unchanged; historical
+`b318ba43…` and red evidence are separately preserved. Independent final proof
+review, actual-main delivery ancestry and all hosted/merge/release gates remain
+pending. This does not complete the original broad audit. See
 [phase repair](RUNNER_PHASE_COMPLETION_REPAIR.md) for exact tests and limitations.
 
 Setup publication integration, coordinated staged patch **0.2.40**, locally qualified:
