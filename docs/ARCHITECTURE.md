@@ -73,8 +73,12 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   execution boundary and reject reused or reparented tasks;
   the mpstat/iostat result names use process-scoped `pidstat` sampling for the
   agent process and its child tasks, retaining bounded raw output and exposing
-  averaged, unit-named CPU and I/O metrics under a machine-readable `metrics`
-  object plus bounded per-sample `series` arrays. `perf stat` uses the same
+  unit-named CPU and I/O metrics averaged over process-tree interval totals
+  under a machine-readable `metrics` object plus bounded `series` arrays.
+  Process rows in the same observation are summed, not plotted as extra time
+  points. `series_timestamps` uses monotonic observation-completion offsets;
+  historical files fall back to pidstat clock offsets with midnight handling.
+  Average and child-summary rows are excluded. `perf stat` uses the same
   interval contract. Perf scalar counters sum the emitted interval deltas,
   rather than reporting only the final interval. Unsupported counters remain
   absent, not zero. `ASB_MEASURE_INTERVAL_MS` accepts 100--60000 ms and

@@ -1,6 +1,7 @@
 use super::super::{CollectorAdapter, ProcessContext, ProcessData};
+use super::pidstat::parse_columns;
 use crate::measurements;
-use crate::measurements::{parse_float, parse_pidstat_columns};
+use crate::measurements::parse_float;
 use std::collections::BTreeMap;
 pub(super) struct MpstatCollector;
 pub(super) static ADAPTER: MpstatCollector = MpstatCollector;
@@ -55,15 +56,22 @@ fn process(
     if result.metrics.is_empty() {
         result.metrics = parse_mpstat_metrics(context.stdout);
     }
-    result.series = parse_series(context.stdout);
+    let samples = samples(context.stdout);
+    result.series = samples.series;
+    result.timestamps = samples.timestamps;
     if result.metrics.is_empty() && result.series.is_empty() {
         result.status = "unavailable".into();
     }
     Ok(result)
 }
 
+#[cfg(test)]
 pub(crate) fn parse_series(output: &str) -> std::collections::BTreeMap<String, Vec<f64>> {
-    measurements::parse_pidstat_series(
+    samples(output).series
+}
+
+fn samples(output: &str) -> super::pidstat::Samples {
+    super::pidstat::parse_samples(
         output,
         &["%usr", "%system", "%guest", "%wait", "%CPU"],
         |name| {
@@ -158,7 +166,7 @@ pub(crate) fn parse_mpstat_metrics(output: &str) -> BTreeMap<String, f64> {
 /// the stable `mpstat` result name for compatibility, but it no longer uses
 /// host-wide mpstat CPU totals.
 pub(crate) fn parse_pidstat_cpu_metrics(output: &str) -> BTreeMap<String, f64> {
-    parse_pidstat_columns(
+    parse_columns(
         output,
         &["%usr", "%system", "%guest", "%wait", "%CPU"],
         |name| {
