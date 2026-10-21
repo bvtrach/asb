@@ -25,6 +25,7 @@ fn record_args(pid: u32) -> Vec<String> {
 fn stat_args(pid: u32, interval_ms: u64) -> Vec<String> {
     vec![
         "stat".into(),
+        "--no-scale".into(),
         "-I".into(),
         interval_ms.to_string(),
         "-x,".into(),
@@ -95,6 +96,21 @@ fn process(
         result.metrics = parsed.metrics;
         result.series = parsed.series;
         result.timestamps = parsed.timestamps;
+        measurements::write_json(
+            &session.dir.join("perf-stat-quality.json"),
+            &serde_json::json!({
+                "schema_version": 1,
+                "counter_mode": "unscaled-observed",
+                "whole_run_hardware_estimates": false,
+                "events": parsed.quality,
+                "limitations": [
+                    "Hardware values are observed unscaled counts, potentially incomplete; never estimated whole-run totals.",
+                    "Unavailable intervals and multiplexing can omit observations. PMU running percentage is not CPU utilization.",
+                    "Hybrid PMU identities and runtime fractions are retained separately. Rounded percentages are never used to reverse scaling."
+                ]
+            }),
+        )?;
+        result.artifact = Some("perf-stat-quality.json".into());
         if context.status.code().is_none() && !context.stderr.is_empty() {
             result.status = "completed".into();
         }
@@ -127,6 +143,7 @@ fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
             "stat",
             &[
                 "stat",
+                "--no-scale",
                 "-e",
                 "task-clock,context-switches,cpu-migrations,page-faults,cycles,instructions",
                 "--inherit",
@@ -265,6 +282,19 @@ struct PerfStat {
     metrics: BTreeMap<String, f64>,
     series: BTreeMap<String, Vec<f64>>,
     timestamps: BTreeMap<String, Vec<f64>>,
+    quality: BTreeMap<String, EventQuality>,
+}
+
+#[derive(Default, serde::Serialize)]
+struct EventQuality {
+    observed_value: Option<f64>,
+    value_unit: &'static str,
+    observed_rows: u64,
+    unavailable_rows: u64,
+    unknown_quality_rows: u64,
+    known_event_runtime_ns: f64,
+    min_running_pct: Option<f64>,
+    max_running_pct: Option<f64>,
 }
 
 fn parse_perf_stat(reader: impl BufRead) -> Result<PerfStat, String> {
@@ -314,8 +344,40 @@ fn parse_perf_stat_bounded(mut reader: impl BufRead, max_bytes: u64) -> Result<P
             .checked_sub(2)
             .and_then(|index| fields.get(index))
             .ok_or("malformed perf stat counter; no partial totals published")?;
+        let quality = parsed
+            .quality
+            .entry(fields[event_index].into())
+            .or_default();
+        quality.value_unit = if fields[event_index] == "task-clock" {
+            "ms"
+        } else {
+            "count"
+        };
         if matches!(*raw_value, "<not counted>" | "<not supported>") {
+            quality.unavailable_rows += 1;
             continue;
+        }
+        let runtime = fields
+            .get(event_index + 1)
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value >= 0.0);
+        let running_pct = fields
+            .get(event_index + 2)
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| value.is_finite() && (0.0..=100.0).contains(value));
+        quality.observed_rows += 1;
+        if let Some(runtime) = runtime {
+            quality.known_event_runtime_ns += runtime;
+            if !quality.known_event_runtime_ns.is_finite() {
+                return Err("perf stat runtime overflow; no partial totals published".into());
+            }
+        }
+        if let Some(pct) = running_pct {
+            quality.min_running_pct = Some(quality.min_running_pct.map_or(pct, |old| old.min(pct)));
+            quality.max_running_pct = Some(quality.max_running_pct.map_or(pct, |old| old.max(pct)));
+        }
+        if runtime.is_none() || running_pct.is_none() {
+            quality.unknown_quality_rows += 1;
         }
         let value: f64 = raw_value
             .parse()
@@ -328,12 +390,18 @@ fn parse_perf_stat_bounded(mut reader: impl BufRead, max_bytes: u64) -> Result<P
         if value < 0.0 {
             return Err("negative perf stat counter; no partial totals published".into());
         }
+        let observed_value = quality.observed_value.unwrap_or(0.0) + value;
+        if !observed_value.is_finite() {
+            return Err("perf stat PMU counter overflow; no partial totals published".into());
+        }
+        quality.observed_value = Some(observed_value);
         let name = format!("perf.{name}");
         let timestamp = if event_index == 3 {
             Some(
                 fields[0]
                     .parse::<f64>()
                     .ok()
+                    .map(|seconds| seconds * 1_000.0)
                     .filter(|value| value.is_finite() && *value >= 0.0)
                     .ok_or("invalid perf stat interval timestamp; no partial totals published")?,
             )
@@ -403,9 +471,9 @@ fn perf_metric_name(event: &str) -> Option<&'static str> {
         "context-switches" => Some("context_switches"),
         "cpu-migrations" => Some("cpu_migrations"),
         "page-faults" => Some("page_faults"),
-        "cycles" | "cpu_core/cycles/" | "cpu_atom/cycles/" => Some("cycles"),
+        "cycles" | "cpu_core/cycles/" | "cpu_atom/cycles/" => Some("observed_cycles_count"),
         "instructions" | "cpu_core/instructions/" | "cpu_atom/instructions/" => {
-            Some("instructions")
+            Some("observed_instructions_count")
         }
         _ => None,
     }
@@ -459,8 +527,11 @@ mod tests {
         assert_eq!(data.status, "completed");
         assert_eq!(data.metrics["perf.task_clock_ms"], 15998.0);
         assert_eq!(data.series["perf.task_clock_ms"].len(), 7999);
-        assert_eq!(data.timestamps["perf.task_clock_ms"].last(), Some(&800.0));
-        assert_eq!(data.timestamps["perf.task_clock_ms"][499], 50.1);
+        assert_eq!(
+            data.timestamps["perf.task_clock_ms"].last(),
+            Some(&800_000.0)
+        );
+        assert_eq!(data.timestamps["perf.task_clock_ms"][499], 50_100.0);
         std::fs::remove_file(&path).unwrap();
         assert!(
             super::process(
@@ -486,9 +557,34 @@ mod tests {
         let parsed = super::parse_perf_stat(std::io::Cursor::new(
             "0.1,4,,cpu_core/cycles/,1,\n0.1,3,,cpu_atom/cycles/,1,\n0.2,<not counted>,,cpu_core/cycles/,0,\n0.5,9,,cpu_core/cycles/,1,\n"
         )).unwrap();
-        assert_eq!(parsed.metrics["perf.cycles"], 16.0);
-        assert_eq!(parsed.series["perf.cycles"], [7.0, 9.0]);
-        assert_eq!(parsed.timestamps["perf.cycles"], [0.1, 0.5]);
+        assert_eq!(parsed.metrics["perf.observed_cycles_count"], 16.0);
+        assert_eq!(parsed.series["perf.observed_cycles_count"], [7.0, 9.0]);
+        assert_eq!(
+            parsed.timestamps["perf.observed_cycles_count"],
+            [100.0, 500.0]
+        );
+    }
+
+    #[test]
+    fn raw_hybrid_counts_keep_pmu_quality_without_reversing_rounded_scaling() {
+        let parsed = super::parse_perf_stat(std::io::Cursor::new(
+            "0.1,400,,cpu_core/cycles/,100000000,99.00,,\n0.1,2,,cpu_atom/cycles/,1000,0.00,,\n0.2,<not counted>,,cpu_atom/cycles/,0,0.00,,\n0.3,9,,instructions,100,,\n"
+        )).unwrap();
+        assert_eq!(parsed.metrics["perf.observed_cycles_count"], 402.0);
+        assert!(!parsed.metrics.contains_key("perf.cycles"));
+        let atom = &parsed.quality["cpu_atom/cycles/"];
+        assert_eq!(atom.observed_value, Some(2.0));
+        assert_eq!(atom.min_running_pct, Some(0.0));
+        assert_eq!(atom.known_event_runtime_ns, 1000.0);
+        assert_eq!(atom.unavailable_rows, 1);
+        assert_eq!(
+            parsed.quality["cpu_core/cycles/"].observed_value,
+            Some(400.0)
+        );
+        assert_eq!(parsed.quality["instructions"].unknown_quality_rows, 1);
+        let args = stat_args(1234, 100);
+        assert!(args.iter().any(|arg| arg == "--no-scale"));
+        assert!(!args.iter().any(|arg| arg == "--all-cpus"));
     }
 
     #[test]
@@ -537,8 +633,8 @@ mod tests {
         let metrics = super::parse_perf_stat_metrics(input);
         assert_eq!(metrics["perf.task_clock_ms"], 32.34);
         assert_eq!(metrics["perf.context_switches"], 10.0);
-        assert!(!metrics.contains_key("perf.cycles"));
-        assert!(!metrics.contains_key("perf.instructions"));
+        assert!(!metrics.contains_key("perf.observed_cycles_count"));
+        assert!(!metrics.contains_key("perf.observed_instructions_count"));
         for (name, values) in super::parse_perf_stat_series(input) {
             assert_eq!(metrics[&name], values.iter().sum::<f64>());
         }
@@ -562,6 +658,7 @@ mod tests {
             stat_args(42, 1000),
             vec![
                 "stat",
+                "--no-scale",
                 "-I",
                 "1000",
                 "-x,",

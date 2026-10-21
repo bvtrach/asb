@@ -44,6 +44,11 @@ pub(crate) trait CompletionObserver: Sync {
         Ok(())
     }
     fn completed(&self, replica: Identity, record: &Path) -> Result<(), Error>;
+    /// Optional receipt destination, for truthful publication diagnostics.
+    /// Unknown observers must not mislabel the source outcome as a receipt.
+    fn evidence_destination(&self, _replica: Identity) -> Option<std::path::PathBuf> {
+        None
+    }
 }
 
 pub(crate) fn configuration(

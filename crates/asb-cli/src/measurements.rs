@@ -11,7 +11,6 @@ mod cohort;
 mod coverage_tests;
 pub use cohort::ExecutionCohort;
 use serde::{Deserialize, Serialize};
-use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -426,7 +425,7 @@ struct CollectorResult {
     /// Bounded samples emitted by collectors that support interval output.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     series: BTreeMap<String, Vec<f64>>,
-    /// Timestamp in milliseconds for each Perfetto series sample.
+    /// Timestamp in milliseconds for each adapter's observed series sample.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     series_timestamps: BTreeMap<String, Vec<f64>>,
 }
@@ -471,7 +470,7 @@ pub struct Session {
     started_unix_ms: u128,
     pub(crate) collectors: Vec<Collector>,
     stopped_collectors: Vec<StoppedCollector>,
-    states: BTreeMap<TypeId, Box<dyn Any>>,
+    states: collectors::CollectorStates,
     shared_artifacts: BTreeMap<collectors::SharedArtifact, PathBuf>,
     run_started: bool,
     run_failed: bool,
@@ -597,7 +596,7 @@ impl Session {
         check_measurement_directory(dir)?;
         // Privilege and tracefs checks must complete before any agent process
         // is prepared. This prevents a partially measured benchmark run.
-        let sudo_collectors = preflight_collectors(dir, selected, tool_dir, &adapters)?;
+        let (sudo_collectors, states) = preflight_collectors(dir, selected, tool_dir, &adapters)?;
         let started_unix_ms = unix_ms();
         let mut session = Self {
             adapters,
@@ -608,7 +607,7 @@ impl Session {
             started_unix_ms,
             collectors: Vec::new(),
             stopped_collectors: Vec::new(),
-            states: BTreeMap::new(),
+            states,
             shared_artifacts: BTreeMap::new(),
             run_started: false,
             run_failed: false,
@@ -830,12 +829,7 @@ impl Session {
     }
 
     pub(crate) fn state<T: Default + 'static>(&mut self) -> Rc<RefCell<T>> {
-        self.states
-            .entry(TypeId::of::<T>())
-            .or_insert_with(|| Box::new(Rc::new(RefCell::new(T::default()))))
-            .downcast_ref::<Rc<RefCell<T>>>()
-            .expect("state is keyed by its concrete type")
-            .clone()
+        self.states.state::<T>()
     }
 
     pub(crate) fn set_artifact(&mut self, kind: collectors::SharedArtifact, path: PathBuf) {
@@ -1372,18 +1366,20 @@ fn preflight_collectors(
     selected: &[String],
     tool_dir: Option<&Path>,
     adapters: &[&'static dyn collectors::CollectorAdapter],
-) -> Result<BTreeSet<String>, String> {
+) -> Result<(BTreeSet<String>, collectors::CollectorStates), String> {
     let mut sudo_collectors = BTreeSet::new();
+    let mut states = collectors::CollectorStates::default();
     let mut context = collectors::PreflightContext {
         measurement_dir,
         selected,
         tool_dir,
         sudo_collectors: &mut sudo_collectors,
+        states: &mut states,
     };
     for collector in adapters {
         collector.preflight(&mut context)?;
     }
-    Ok(sudo_collectors)
+    Ok((sudo_collectors, states))
 }
 
 pub(crate) fn passwordless_sudo_available() -> bool {
@@ -2332,8 +2328,8 @@ mod tests {
         assert_eq!(metrics["perf.context_switches"], 8.0);
         assert_eq!(metrics["perf.cpu_migrations"], 2.0);
         assert_eq!(metrics["perf.page_faults"], 4.0);
-        assert_eq!(metrics["perf.cycles"], 1234.0);
-        assert_eq!(metrics["perf.instructions"], 567.0);
+        assert_eq!(metrics["perf.observed_cycles_count"], 1234.0);
+        assert_eq!(metrics["perf.observed_instructions_count"], 567.0);
         let series = parse_perf_stat_series(
             "0.000,12.34,msec,task-clock,100.00,\n1.000,20.00,msec,task-clock,100.00,\n0.000,8,,context-switches,100.00,\n",
         );

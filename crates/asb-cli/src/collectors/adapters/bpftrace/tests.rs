@@ -47,13 +47,13 @@ fn custom_source_validation_reports_file_bounds_and_missing_probes() {
     let fixture = Fixture::new();
     let path = fixture.0.join("program.bt");
     let error = validate_custom_program_scope(&path).unwrap_err();
-    assert!(error.contains("cannot inspect"));
+    assert!(error.contains("cannot read"));
     assert!(error.contains("program.bt"));
     fs::write(&path, [0xff, 0xfe]).unwrap();
     assert!(
         validate_custom_program_scope(&path)
             .unwrap_err()
-            .contains("cannot read")
+            .contains("not UTF-8")
     );
     fs::write(&path, vec![b' '; MAX_CUSTOM_PROGRAM as usize + 1]).unwrap();
     let error = validate_custom_program_scope(&path).unwrap_err();
@@ -62,7 +62,7 @@ fn custom_source_validation_reports_file_bounds_and_missing_probes() {
     for source in [
         "",
         "// tracepoint:x:y /@asb_tree[pid]/ {}\n",
-        "#define SEED 1\nBEGIN { @seed = 1; }\nEND { clear(@seed); }\n",
+        "BEGIN { @seed = 1; }\nEND { clear(@seed); }\n",
     ] {
         fs::write(&path, source).unwrap();
         assert!(
@@ -75,9 +75,9 @@ fn custom_source_validation_reports_file_bounds_and_missing_probes() {
     assert!(
         validate_custom_program_scope(&path)
             .unwrap_err()
-            .contains("unscoped probe")
+            .contains("no process-tree-scoped probe")
     );
-    fs::write(&path, "#define LIMIT 10\n\nBEGIN { @seed = 1; }\ntracepoint:syscalls:sys_enter_read /@asb_tree[pid]/ { @asb_reads = count(); } // bounded\nEND { clear(@seed); }\n").unwrap();
+    fs::write(&path, "BEGIN { @seed = 1; }\ntracepoint:syscalls:sys_enter_read /@asb_tree[pid]/ { @asb_reads = count(); } // bounded\nEND { clear(@seed); }\n").unwrap();
     validate_custom_program_scope(&path).unwrap();
     let scoped = scoped_custom_program(&path, std::process::id()).unwrap();
     assert!(scoped.contains(&format!("@asb_tree[{}] = 1;", std::process::id())));
@@ -187,7 +187,7 @@ fn isolated_profile_and_custom_program_selection() {
             (
                 "parameters",
                 None,
-                Some(";first.bt?limit=3&&unit=ns;;second.bt;"),
+                Some(";first.bt?ASB_PARAM_LIMIT=3&&ASB_PARAM_UNIT_NS=1;;second.bt;"),
             ),
             ("empty", None, Some(" ;;")),
         ] {
@@ -232,7 +232,7 @@ fn isolated_profile_and_custom_program_selection() {
             assert!(
                 custom_programs()
                     .unwrap_err()
-                    .contains("use PROGRAM?name=value")
+                    .contains("use PROGRAM?ASB_PARAM_LIMIT=12")
             );
             return;
         }
@@ -250,7 +250,10 @@ fn isolated_profile_and_custom_program_selection() {
                 vec![
                     (
                         "first.bt".into(),
-                        vec![("limit".into(), "3".into()), ("unit".into(), "ns".into())]
+                        vec![
+                            ("ASB_PARAM_LIMIT".into(), "3".into()),
+                            ("ASB_PARAM_UNIT_NS".into(), "1".into())
+                        ]
                     ),
                     ("second.bt".into(), vec![])
                 ]
