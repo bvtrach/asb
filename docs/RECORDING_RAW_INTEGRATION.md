@@ -120,3 +120,9 @@ Native Windows and other Unix kernels remain source-only, not runtime-qualified
 by these Linux checks. Final independent qualification review, hosted/package
 CI, merge, both post-merge jobs and release remain pending; no push/PR/release
 operation was performed here.
+
+Root independently reviewed that final docs-only checkpoint, all 24 outer-target
+summaries, strict lint/build evidence and matching hashes, following the earlier
+independent raw source/integration reviews. It approved the local qualification.
+Root additionally ran locked/offline doctests: zero cases, zero failures, recorded
+in `target/raw36-final-doctests.log`. Hosted/package CI and delivery remain pending.
