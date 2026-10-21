@@ -57,6 +57,7 @@ deadline = time.monotonic()+5
 while not all((root/f'barrier-{batch}-{index}').exists() for index in range(1,expected+1)):
     assert time.monotonic()<deadline, 'replicas did not overlap'
     time.sleep(.005)
+if (root/'reverse-arrivals').exists() and replica == 1: time.sleep(.04)
 body = {'model':'fixture','tools':[{'type':'function','function':{'name':'fixture','parameters':{'type':'object'}}}],'messages':[]}
 url = os.environ['ASB_PROVIDER_BASE_URL'].rstrip('/')
 if url.endswith('/v1'): url = url[:-3]
@@ -453,6 +454,42 @@ fn bundled_replay_only_decodes_selected_entries_and_fails_closed_on_selected_cor
 }
 
 #[test]
+fn complete_failed_recording_is_automatically_replayed_without_live_credentials() {
+    let project = Project::new();
+    project.config(1);
+    let provider = RecordingProvider::new();
+    fs::write(
+        project.0.join("fail-first"),
+        "record a complete failed attempt",
+    )
+    .unwrap();
+    let recorded = record(&project, &provider, None);
+    assert!(!recorded.status.success());
+    let archive = asb_cli::cassette::Archive::open(
+        &project.0.join("new-recording.jsonl"),
+        asb_cli::cassette::Limits::default(),
+    )
+    .unwrap();
+    let track = &archive.manifest().tracks[0];
+    assert_eq!(track.process_success, Some(false));
+    assert!(track.automatically_selectable());
+    drop(provider);
+    fs::remove_file(project.0.join("fail-first")).unwrap();
+    let replayed = replay_bundle(&project, &[]);
+    assert!(
+        replayed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replayed.stderr)
+    );
+    let selection = records(&replayed.stdout)
+        .into_iter()
+        .find(|row| row["type"] == "replay-selection")
+        .unwrap();
+    assert_eq!(selection["selection"]["tracks"], json!([1]));
+    assert!(selection["selection"]["seed"].is_u64());
+}
+
+#[test]
 fn bundled_replay_keeps_private_inputs_after_source_replacement_and_allows_new_concurrency() {
     let project = Project::new();
     project.config(2);
@@ -617,6 +654,13 @@ fn bundled_replay_choices_drive_actual_private_batch_inputs_without_a_provider()
         vec!["--repeat", "2", "--track", "3"],
         vec!["--track", "max:tokens"],
     ] {
+        if !observed_selections.is_empty() {
+            fs::write(
+                project.0.join("reverse-arrivals"),
+                "hold replica1 after selection",
+            )
+            .unwrap();
+        }
         let attempt_offset = records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len();
         let replayed = replay_bundle(&project, &extra);
         assert!(
@@ -653,6 +697,7 @@ fn bundled_replay_choices_drive_actual_private_batch_inputs_without_a_provider()
             let slot = row["execution"]["slot"].as_u64().unwrap() as usize - 1;
             assert_eq!(row["execution"]["replay_track"], chosen[slot]);
             assert_eq!(row["execution"]["replay_seed"], selection["seed"]);
+            assert_eq!(row["execution"]["replay_algorithm"], selection["algorithm"]);
         }
         if extra.contains(&"3") && extra.contains(&"--track") {
             assert!(chosen.iter().all(|id| *id == 3));
@@ -765,6 +810,15 @@ fn bundled_recording_uses_fresh_default_and_stable_repeated_slots_even_with_json
 fn bundle_commit_failure_keeps_real_grades_and_stops_before_another_batch() {
     let project = Project::new();
     project.config(2);
+    let config = project.0.join("benchmark.toml");
+    fs::write(
+        &config,
+        format!(
+            "{}\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n",
+            fs::read_to_string(&config).unwrap()
+        ),
+    )
+    .unwrap();
     fs::write(
         project.0.join("block-bundle-commit"),
         "force create-new staging failure",
@@ -780,7 +834,12 @@ fn bundle_commit_failure_keeps_real_grades_and_stops_before_another_batch() {
         .collect();
     assert_eq!(summaries.len(), 2, "{rows:?}");
     assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
-    for summary in summaries {
+    assert!(
+        summaries
+            .iter()
+            .any(|summary| summary["failure_kind"] == "recording_error")
+    );
+    for summary in &summaries {
         assert_eq!(summary["process_success"], true);
         assert_eq!(summary["workload_success"], true);
         assert_eq!(summary["execution"]["batch"], 1);
@@ -789,6 +848,30 @@ fn bundle_commit_failure_keeps_real_grades_and_stops_before_another_batch() {
         .parent()
         .unwrap()
         .to_path_buf();
+    for summary in summaries
+        .iter()
+        .filter(|summary| summary["failure_kind"] == "recording_error")
+    {
+        let replica = summary["replica_index"].as_u64().unwrap();
+        let log = records(
+            &fs::read(root.join(format!("batch-1/run-concurrency-{replica}.jsonl"))).unwrap(),
+        );
+        let measured: Value = serde_json::from_slice(
+            &fs::read(root.join(format!(
+                "batch-1/measurements-concurrency-{replica}/run.json"
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+        for record in [log.last().unwrap(), &measured] {
+            assert_eq!(record["status"], "failed");
+            assert_eq!(record["failure_kind"], "recording_error");
+            assert_eq!(record["process_success"], true);
+            assert_eq!(record["workload_success"], true);
+        }
+        // Incoming main deliberately retains grade-derived legacy success.
+        assert_eq!(measured["success"], true);
+    }
     assert!(!root.join("batch-2").exists());
     assert!(!project.0.join("new-recording.jsonl").exists());
     assert_eq!(

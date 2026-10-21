@@ -339,6 +339,23 @@ on aborted transitions preserves unfinished resources rather than calling
 destructive normal-close from Drop. Provider bridge ownership remains outside
 these transitions until proxy settlement and evaluation have finished.
 
+After explicit cleanup, private `RunDisposition::from_facts` derives one
+operational status, primary `RunFailure` and success decision from independent
+execution, evaluation, cleanup, collector and presentation facts. `RunStatus`
+and `FailureKind` serialize the existing log/measurement strings; failure keys
+remain nullable and the public JSONL summary gains no status field. A pending
+evaluation remains pending even when an operational failure makes the run
+status failed. Numeric rewards, nullable resolution and Boolean grades do not
+change. Legacy measurement `success` remains grade-derived, not an operational
+success flag. Reports disclose actual recorded failures independently of that
+legacy flag, and otherwise preserve healthy pending/native outcomes. Historical
+status/failure strings remain display data, not strict enum-deserialization
+boundaries; workload evaluation kinds remain adapter-extensible and unknown
+historical grader categories remain unscored. Recording commit failure updates
+the typed operational disposition before log/measurement publication, preserving
+any earlier primary failure and all independent grades/rewards. Post-publication errors retain
+their separate ancillary policy rather than rewriting an immutable disposition.
+
 Post-execution lifecycle failures are ancillary `AttemptIssues`, not missing
 submissions or replacement grades. Dispatch attempts every collector hook and
 execution-scoped shutdown even after a hook fails. Before execution/resume,
@@ -1410,6 +1427,35 @@ The count budget is not a host RAM reservation; task environment CPU/memory/PID
 limits remain adapter-owned, and operators must choose jobs for host capacity.
 Selected scheduling is saved in the plan and disclosed in JSON/HTML reports
 because concurrent configurations share host resources.
+
+Private consuming sweep phases enforce that ordering: `PreparedSweep` owns the
+output lock and validated plan/count/resource admission. Fresh preparation runs
+workload preflight before preserving old output; resumed preparation requires
+validated inputs and continuation state rather than an optional checkpoint.
+Activation creates/binds the result layout. After that boundary, presentation
+failures produce a zero/partial `SettledSweep`, not an early return bypassing
+input settlement and comparison. Only settled, joined execution can finalize;
+the output lock remains owned through final comparison publication. Optional
+fresh input seals still cannot block a fresh grade or authorize reuse.
+
+A sticky presentation writer observes the first permanent write/flush failure
+and performs no further writes to that sink. Interrupted I/O remains transient;
+a nonempty zero-byte write is a real failure. Sequential JSON output failure
+stops before the next configuration, while an already-admitted replica group
+finishes grading and cleanup. Parallel configuration reports carry independent
+spool-failure and spool-creation observations. The scheduler stops its queue in
+the worker before publishing a locally observed spool failure, while already
+admitted workers finish and release count/resource permits. Ordinary benchmark
+errors do not select that stop policy. Post-join cleanup removes only spools
+created by this invocation, never an unadmitted interrupted-resume spool or a
+file whose preservation/creation failed. Failed terminals suppress comparison
+summary bytes through `io::sink`, not artifact generation. Original grades and
+benchmark errors remain primary; reporting/input diagnostics stay ancillary.
+This does not make output preservation or multi-receipt publication transactional.
+Saved execution mode is a lowercase enum with the same live/record/replay/unknown
+wire values, missing historical mode defaults to unknown, and timing remains
+replay-only. Report projections and serialized fingerprint inputs are unchanged.
+
 Parallel terminal output uses private, bounded per-configuration files and is
 drained as whole configuration blocks on completion. Output errors stop new
 admission and join admitted work; owned temporary duplicates are then removed.

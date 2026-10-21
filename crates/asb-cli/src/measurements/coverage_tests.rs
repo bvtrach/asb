@@ -382,7 +382,7 @@ fn summary_retention_is_bounded_and_unscored_success_is_not_a_resolved_task() {
         execution_cohort: None,
         schema_version: 2,
         run_id: "latest".into(),
-        status: "unscored",
+        status: crate::runner::disposition::RunStatus::Unscored,
         success: false,
         process_success: true,
         workload_success: None,

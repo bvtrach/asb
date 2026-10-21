@@ -2,6 +2,10 @@
 mod batch;
 mod completion;
 pub(crate) mod diagnostics;
+pub(crate) mod disposition;
+#[cfg(test)]
+use disposition::RunStatus;
+use disposition::{FailureKind, RunDisposition, RunFacts, RunFailure};
 mod native;
 mod phases;
 pub(crate) mod recording;
@@ -71,7 +75,8 @@ struct RunResult<'a> {
     replica_index: Option<usize>,
     execution_cohort: Option<&'a measurements::ExecutionCohort>,
     schema_version: u32,
-    status: &'a str,
+    #[serde(flatten)]
+    disposition: RunDisposition,
     agent: &'a str,
     workload: &'a str,
     task: workloads::TaskIdentity,
@@ -85,8 +90,6 @@ struct RunResult<'a> {
     workload_baseline_passed: Option<bool>,
     workload_baseline: workloads::BaselineEvidence,
     workload_failure: Option<workloads::EvaluationFailure>,
-    failure_kind: Option<&'static str>,
-    failure_reason: Option<String>,
     success_rate: Option<f64>,
     adapter_smoke_success: Option<bool>,
     elapsed_ms: u128,
@@ -916,43 +919,34 @@ fn run_mode(
             .err()
             .map(|error| error.to_string());
         let workload_success = outcome.success();
-        let grading_failure = outcome.failure();
+        let grading_failure = RunFailure::evaluation(&outcome.evaluation);
         let evaluation = outcome.evaluation;
         let collector_error = issues.collector_failure();
         let run_error = issues.run_error;
         let output_error = issues.output_error;
-        let success = provider_cleanup_error.is_none()
-            && run_error.is_none()
-            && collector_error.is_none()
-            && output_error.is_none()
-            && process_success
-            && evaluation.completed()
-            && workload_success != Some(false);
+        let configured_kind = workload_session.evaluation_kind();
+        let evaluation_kind = workloads::scored_kind(configured_kind, &workload_baseline);
+        let resolution_eligible = workloads::resolution_eligible(evaluation_kind);
+        let disposition = RunDisposition::from_facts(RunFacts {
+            evaluation: &evaluation,
+            evaluation_kind,
+            process_success,
+            agent_failure: agent_failure.as_deref(),
+            run_error: run_error.as_deref(),
+            collector_error: collector_error.as_deref(),
+            output_error: output_error.as_deref(),
+            provider_cleanup_error: provider_cleanup_error.as_deref(),
+            workload_cleanup_confirmed,
+            proxy_cleanup_confirmed: proxy_evidence.cleanup_confirmed,
+        });
+        let success = disposition.success;
         let workload_failure =
             grading_failure
                 .as_ref()
-                .map(|(kind, reason)| workloads::EvaluationFailure {
-                    kind,
-                    reason: reason.clone(),
+                .map(|failure| workloads::EvaluationFailure {
+                    kind: failure.kind.as_str(),
+                    reason: failure.reason.clone(),
                 });
-        let failure = if let Some(error) = run_error.as_ref() {
-            Some(("run_error", error.clone()))
-        } else if let Some(error) = agent_failure {
-            Some(("agent_failure", error))
-        } else {
-            grading_failure
-                .or_else(|| collector_error.map(|error| ("collector_error", error)))
-                .or_else(|| {
-                    output_error
-                        .as_ref()
-                        .map(|error| ("output_error", error.clone()))
-                })
-                .or_else(|| {
-                    provider_cleanup_error
-                        .as_ref()
-                        .map(|error| ("provider_cleanup_error", error.clone()))
-                })
-        };
         let adapter_artifacts = guest
             .is_none()
             .then(|| agents::find(&config.agent))
@@ -1018,24 +1012,17 @@ fn run_mode(
             stderr.push_str(error);
             stderr.push('\n');
         }
-        if let Some((kind, reason)) = &failure {
+        if let Some(failure) = &disposition.failure {
             stderr.push_str("\nASB failure (");
-            stderr.push_str(kind);
+            stderr.push_str(failure.kind.as_str());
             stderr.push_str("): ");
-            stderr.push_str(reason);
+            stderr.push_str(&failure.reason);
             stderr.push('\n');
         }
         let run_metrics = crate::collectors::run_metrics(&crate::collectors::RunObservation {
             elapsed_ms,
             success,
         });
-        let configured_kind = workload_session.evaluation_kind();
-        let evaluation_kind = workloads::scored_kind(configured_kind, &workload_baseline);
-        let resolution_eligible = workloads::resolution_eligible(evaluation_kind);
-        let evaluation_pending = matches!(
-            &evaluation,
-            workloads::outcome::EvaluationOutcome::Pending { .. }
-        );
         let mut result = RunResult {
             recording: None,
             execution: options.batch.map(|batch| batch.execution(options.replica)),
@@ -1064,21 +1051,7 @@ fn run_mode(
             replica_index: Some(options.replica.index),
             execution_cohort: options.execution_cohort,
             schema_version: 2,
-            status: if evaluation_pending
-                && process_success
-                && run_error.is_none()
-                && provider_cleanup_error.is_none()
-            {
-                "evaluation-pending"
-            } else if success && evaluation_kind == "invalid-baseline" {
-                "unscored"
-            } else if success && !resolution_eligible {
-                "smoke-passed"
-            } else if success {
-                "completed"
-            } else {
-                "failed"
-            },
+            disposition,
             agent: &config.agent,
             workload: &config.workload,
             task: workload_session.invocation().identity.clone(),
@@ -1092,8 +1065,6 @@ fn run_mode(
             workload_baseline_passed,
             workload_baseline,
             workload_failure,
-            failure_kind: failure.as_ref().map(|(kind, _)| *kind),
-            failure_reason: failure.as_ref().map(|(_, reason)| reason.clone()),
             success_rate: resolution_eligible
                 .then_some(workload_success)
                 .flatten()
@@ -1127,19 +1098,11 @@ fn run_mode(
             }
         });
         if let Some(error) = &recording_error {
-            result.status = "failed";
-            if result.failure_kind.is_none() {
-                result.failure_kind = Some("recording_error");
-                result.failure_reason = Some(error.to_string());
-            }
+            result.disposition.recording_failed(error.to_string());
         }
         let log_publication =
             phases::LogPublication::publish(config_path, &config.log_file, &result);
-        let measurement_completion = phases::finish_measurements(
-            measurement_session,
-            &result,
-            success && recording_error.is_none(),
-        );
+        let measurement_completion = phases::finish_measurements(measurement_session, &result);
         // This private record preserves evaluator outcomes, including unresolved
         // tasks. Its absence never changes a benchmark grade or blocks execution;
         // a future continuation must also validate its input and evidence seals.
@@ -1205,7 +1168,11 @@ fn run_mode(
             }
             Ok(())
         })();
-        let outcome = phases::final_outcome(failure, log_publication, measurement_completion);
+        let outcome = phases::final_outcome(
+            result.disposition.failure.clone(),
+            log_publication,
+            measurement_completion,
+        );
         // Output loss is not an ordinary completed benchmark failure: repeated
         // execution must stop even when a separate task failure has higher priority.
         let outcome = match output_error {
@@ -1228,7 +1195,10 @@ fn run_mode(
                 Err(Error::Io(primary)) => Err(Error::Io(format!(
                     "{primary}; provider cleanup failed: {cleanup}"
                 ))),
-                Err(primary) if result.failure_kind == Some("provider_cleanup_error") => {
+                Err(primary)
+                    if result.disposition.failure.as_ref().map(|f| f.kind)
+                        == Some(FailureKind::ProviderCleanupError) =>
+                {
                     Err(primary)
                 }
                 Err(primary) => Err(Error::Run(format!(
@@ -1677,8 +1647,8 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
         "workload_baseline": result.workload_baseline,
         "workload_failure": result.workload_failure,
         "adapter_smoke_success": result.adapter_smoke_success,
-        "failure_kind": result.failure_kind,
-        "failure_reason": result.failure_reason,
+        "failure_kind": result.disposition.failure.as_ref().map(|f| f.kind),
+        "failure_reason": result.disposition.failure.as_ref().map(|f| &f.reason),
         "success_rate": result.success_rate,
         "elapsed_ms": result.elapsed_ms,
         "steps": result.steps,
@@ -2179,8 +2149,8 @@ mod boundary_tests;
 #[cfg(test)]
 mod tests {
     use super::{
-        RunResult, command_for, render_human, render_json, replica_cassette, resolve_log_path,
-        run_with_tape, write_log,
+        RunDisposition, RunResult, RunStatus, command_for, render_human, render_json,
+        replica_cassette, resolve_log_path, run_with_tape, write_log,
     };
     use crate::benchmark::BenchmarkConfig;
     use crate::measurements::TokenUsage;
@@ -2582,7 +2552,11 @@ mod tests {
                 execution_cohort: None,
                 schema_version: 1,
                 run_id: "test".into(),
-                status: if fail { "failed" } else { "completed" },
+                status: if fail {
+                    RunStatus::Failed
+                } else {
+                    RunStatus::Completed
+                },
                 success: !fail,
                 process_success: !fail,
                 workload_success: None,
@@ -2912,7 +2886,11 @@ mod tests {
             replica_index: None,
             execution_cohort: None,
             schema_version: 2,
-            status: "completed",
+            disposition: RunDisposition {
+                status: RunStatus::Completed,
+                failure: None,
+                success: true,
+            },
             agent: "codex",
             workload: "bug-fix",
             task: crate::workloads::TaskIdentity::local("bug-fix", None),
@@ -2928,8 +2906,6 @@ mod tests {
                 passed: Some(false),
             },
             workload_failure: None,
-            failure_kind: None,
-            failure_reason: None,
             success_rate: Some(1.0),
             adapter_smoke_success: None,
             elapsed_ms: 12,

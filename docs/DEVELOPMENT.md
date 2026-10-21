@@ -345,8 +345,20 @@ individual cleanup boundaries, exact-candidate recovery and foreign targets.
 An owned test child is actually killed at recording/prepared/linked/published
 stages, checking active-owner exclusion and recovery without new attempts. No
 agent/provider/container runs. Fault hooks exist only in test builds and have no
-environment/configuration surface in the installed CLI. The backend does not yet
-expose new run/sweep flags; integration follows MULTITRACK.md.
+environment/configuration surface in the installed CLI. `run` integrates the
+backend through its own recording/replay coordinators; sweep/resume/report and
+viewer delivery remain separate steps in MULTITRACK.md.
+`cargo test --locked --offline --test repeated_run` additionally records real
+embedded-proxy ZIP captures with a bounded loopback provider and synthetic agent.
+It checks no-overwrite/fresh defaults, ordinary complete failed recordings,
+seeded selections under changed arrival ordering, actual per-slot response
+identity, statistic ties, selected-only integrity, every compatibility field,
+source replacement after private staging, legacy selection/unknown metadata,
+strict partial consumption and zero-client/inference metadata-budget rejection.
+Recording commit failure preserves true grades and existing primary failures but
+publishes failed typed log/measurement disposition before withholding completion
+and stopping later admission. These tests use fixture-only credentials and no
+installed agents, real LLM calls, containers or privileged collectors.
 `cargo test --locked --lib runner::batch` checks the internal cancellable
 preparation gate and runner no-launch/cancellation wiring. Material regressions
 live in `workloads::material` and `workloads::session`: bounded canonical files,
@@ -651,8 +663,35 @@ working tracefs permissions: set `ASB_TEST_PERFETTO_TOOLS` to the project's
 tools directory and run the ignored `live_perfetto` tests serially. They use an
 offline replay fixture, not a live provider; ordinary CI does not require
 privileged tracing.
+`cargo test --locked --offline --lib disposition` checks the private operational
+decision matrix and twelve isolated actual-runner cases. Pending evaluation
+combined with collector, output, client, run or cleanup failure retains its
+evaluator state but records failed run status. True/false grades and native
+numeric rewards with null resolution survive broken streaming presentation.
+The fixtures check log/measurement/report/return consistency, private outcome
+records (not completed receipts), and exactly-once evaluation/workload/provider
+cleanup. Existing checkpoint invariants continue to reject pending/error or
+uncertain cleanup for sealing. No JSONL status field or public async evaluator
+is added. `unknown_historical_run_categories_remain_display_only_and_unscored`
+checks real report generation without rejecting extension strings.
+Build the actual binary first, as for the phase tests below.
+
 Runner phase regressions use `cargo test --locked --offline --lib runner::phases`
 and `cargo test --locked --offline --lib workloads::remote::execution_tests`.
+`cargo test --locked --offline --lib sweep::` also runs the consuming sweep
+phase regressions. Nine isolated actual-runner cases exercise sequential JSON
+writer failure, completion of an admitted replica group, reuse without client
+reruns, rejected changed execution mode, initial/history presentation failures,
+ordinary benchmark failure continuing, and combined benchmark/presentation/
+comparison or final-input-seal failures. They retain grades, task/plan metadata,
+receipts, partial reports and unadmitted interrupted-output sentinels. Actual
+bounded spool failure with a held sibling proves worker-side admission stop
+and joined permit release; failed spool preservation/creation cannot claim
+cleanup ownership. Sticky-writer tests distinguish transient Interrupted I/O
+from permanent write/flush failure and WriteZero. Existing planning/resources,
+native reward, false-grade and reconciliation invariant fixtures remain required.
+These fixtures use only project-local programs and loopback replay; build the
+current binary first and never rebuild it during runtime tests.
 For a focused library-only invocation, run `cargo build --locked --offline`
 first: the full-entry regression executes the actual ASB binary beside the
 test executable as its native process gate. Ordinary full `cargo test` builds

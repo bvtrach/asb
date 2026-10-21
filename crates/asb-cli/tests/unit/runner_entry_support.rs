@@ -9,6 +9,9 @@ struct Hook {
     calls: Rc<RefCell<Vec<&'static str>>>,
     provider_finish: Option<bool>,
     native_reward: bool,
+    pending: bool,
+    grader_error: bool,
+    cleanup_error: bool,
 }
 thread_local! { static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) }; }
 
@@ -23,6 +26,9 @@ impl Scope {
                 calls,
                 provider_finish: None,
                 native_reward: false,
+                pending: false,
+                grader_error: false,
+                cleanup_error: false,
             });
         });
         Self
@@ -42,6 +48,28 @@ impl Scope {
                 calls,
                 provider_finish: Some(fail),
                 native_reward,
+                pending: false,
+                grader_error: false,
+                cleanup_error: false,
+            });
+        });
+        Self
+    }
+
+    pub fn disposition(root: &Path, calls: Rc<RefCell<Vec<&'static str>>>, case: &str) -> Self {
+        HOOK.with(|slot| {
+            assert!(slot.borrow().is_none());
+            *slot.borrow_mut() = Some(Hook {
+                root: root.canonicalize().unwrap(),
+                event: case
+                    .contains("collector")
+                    .then_some(LifecycleEvent::AgentExecuteEnd),
+                calls,
+                provider_finish: Some(case.contains("provider")),
+                native_reward: case.contains("native"),
+                pending: case.contains("pending"),
+                grader_error: case.contains("grader"),
+                cleanup_error: case.contains("cleanup"),
             });
         });
         Self
@@ -174,13 +202,24 @@ pub(crate) fn observe_workload(
         slot.borrow()
             .as_ref()
             .filter(|hook| hook.root == root)
-            .map(|hook| (hook.calls.clone(), hook.native_reward))
+            .map(|hook| {
+                (
+                    hook.calls.clone(),
+                    hook.native_reward,
+                    hook.pending,
+                    hook.grader_error,
+                    hook.cleanup_error,
+                )
+            })
     });
     match calls {
-        Some((calls, native_reward)) => Box::new(Observed {
+        Some((calls, native_reward, pending, grader_error, cleanup_error)) => Box::new(Observed {
             inner: workload,
             calls,
             native_reward,
+            pending,
+            grader_error,
+            cleanup_error,
         }),
         None => workload,
     }
@@ -189,6 +228,9 @@ struct Observed {
     inner: Box<dyn workloads::WorkloadSession>,
     calls: Rc<RefCell<Vec<&'static str>>>,
     native_reward: bool,
+    pending: bool,
+    grader_error: bool,
+    cleanup_error: bool,
 }
 impl workloads::WorkloadSession for Observed {
     fn invocation(&self) -> &workloads::session::TaskInvocation {
@@ -212,6 +254,16 @@ impl workloads::WorkloadSession for Observed {
     }
     fn evaluate_outcome(&mut self, response: &str) -> workloads::outcome::EvaluationOutcome {
         self.calls.borrow_mut().push("evaluate");
+        if self.pending {
+            return workloads::outcome::EvaluationOutcome::Pending {
+                reason: "fixture evaluation queued".into(),
+            };
+        }
+        if self.grader_error {
+            return workloads::outcome::EvaluationOutcome::Error {
+                reason: "fixture verifier unavailable".into(),
+            };
+        }
         if self.native_reward {
             std::fs::write(
                 self.invocation().workspace.join("native-grade.json"),
@@ -254,7 +306,13 @@ impl workloads::WorkloadSession for Observed {
     }
     fn finish(&mut self) -> Result<workloads::session::ResourceSettlement, String> {
         self.calls.borrow_mut().push("finish");
-        self.inner.finish()
+        let result = self.inner.finish();
+        if self.cleanup_error {
+            result?;
+            Err("fixture workload cleanup uncertain".into())
+        } else {
+            result
+        }
     }
     fn checkpoint_evidence(&self) -> Vec<PathBuf> {
         if self.native_reward {
