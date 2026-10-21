@@ -61,6 +61,17 @@ does not qualify the legacy non-Unix blocking transport or close the remaining
 audit classes. Actual-main ancestry, hosted/package CI, PR publication/merge,
 post-merge verification and release remain coordinated root-owned steps.
 
+Root reviewed the final focused/full/lint/build transcripts and unchanged actual
+executable hash, then retained actual main `06c47a9e` (PR #298, fixture patch
+0.2.32) through signed merge `436bee9d`. That merge's tree is byte-identical to
+qualified-ledger checkpoint `bf6dacca`; only this subsequent ledger addition
+changes files. No production/test/Cargo/script/workflow requalification is
+fabricated for an ancestry-only update. PR #298's exact-head CI passed; its two
+post-merge jobs remain under observation. PR #297 now targets this staged 0.2.33
+head and needs fresh exact-head hosted/package CI before merge, followed by both
+post-merge jobs and a separate patch release. The parent release stays held
+until its own post-merge validation succeeds.
+
 Integrated candidate, staged patch **0.2.31**: the independently source-reviewed
 Unix controller transport `eec99cf8` is combined with typed-controller integration
 `cf658ba2`, repeated preparation and current capture. It retains the independent
