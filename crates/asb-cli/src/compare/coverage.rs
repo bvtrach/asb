@@ -16,6 +16,7 @@ fn metric_scope(benchmark: &BenchmarkData) -> Result<String, Error> {
             .and_then(|s| s.dataset.as_ref())
             .or_else(|| benchmark.task.as_ref().and_then(|t| t.dataset.as_ref())),
         &benchmark.module,
+        &benchmark.execution_plan_fingerprint,
         group_kind(benchmark),
     ))
     .map_err(|e| Error::Run(e.to_string()))
@@ -238,6 +239,7 @@ pub(super) fn populations(
             &selection.workload,
             dataset,
             &benchmark.module,
+            &benchmark.execution_plan_fingerprint,
         ))
         .map_err(|error| Error::Run(error.to_string()))?;
         let group = result.entry(key).or_insert_with(|| PopulationCoverage {

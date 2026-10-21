@@ -378,6 +378,7 @@ pub fn available_collectors() -> Vec<String> {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RunMeasurement<'a> {
+    pub(crate) execution_plan_fingerprint: Option<&'a str>,
     pub(crate) module: Option<&'a crate::workloads::contracts::ModuleDescriptor>,
     pub(crate) benchmark_outcome: Option<&'a crate::workloads::outcome::BenchmarkOutcome>,
     pub replica_index: Option<usize>,
@@ -1952,6 +1953,7 @@ mod tests {
             ))
             .unwrap();
         let run = RunMeasurement {
+            execution_plan_fingerprint: None,
             module: None,
             benchmark_outcome: None,
             replica_index: None,

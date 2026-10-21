@@ -17,6 +17,12 @@ default; `unscored` profiles cannot acquire benchmark score credit.
 The runner captures `module` from the adapter at execution time and writes it
 into the run log, JSONL summary, measurements and completion summary. Reports
 use only recorded provenance or a saved selection, never live registry lookup.
+`RunOptions::execution_plan_fingerprint` carries an optional opaque resolved
+planning-policy identity into the same records and all score/coverage grouping
+keys. Different known identities and unknown legacy identities are separate
+comparison groups. Step 4 must supply this fingerprint from its immutable plan,
+covering backend, effective budgets, resource/network policy and overrides;
+reports never derive it from current configuration or runtime defaults.
 The runner writes `benchmark_outcome` into the run log, JSONL summary,
 measurement record and private completion summary. It carries independent
 execution success, evaluation, cleanup confirmation, evaluator evidence paths,
@@ -43,6 +49,9 @@ Non-binary policies do not enter legacy binary-resolution score tables.
 
 - Repetition counts describe observed attempts, not a new scheduler repetition
   plan or seed policy. Step 4 owns planning.
+- Step 4 must populate and validate the execution-plan fingerprint against saved
+  plans during execution and resume. This change carries/groups it, but does
+  not invent a policy hash or claim legacy planning evidence.
 - Only attempt means and task means are implemented. Custom upstream metric
   scripts, weighted policies, pass@k, bootstrap intervals and official exports
   require separate validated policy implementations.

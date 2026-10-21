@@ -47,6 +47,7 @@ fn emit_warning(
 
 #[derive(Serialize)]
 struct RunResult<'a> {
+    execution_plan_fingerprint: Option<&'a str>,
     module: Option<workloads::contracts::ModuleDescriptor>,
     benchmark_outcome: Option<workloads::outcome::BenchmarkOutcome>,
     replica_index: Option<usize>,
@@ -84,6 +85,7 @@ struct RunResult<'a> {
 /// Execution choices shared by single runs, replicas, and sweeps.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RunOptions<'a> {
+    pub execution_plan_fingerprint: Option<&'a str>,
     pub execution_cohort: Option<&'a measurements::ExecutionCohort>,
     pub json: bool,
     pub show_output: bool,
@@ -1005,6 +1007,7 @@ fn run_mode(
         workloads::outcome::EvaluationOutcome::Pending { .. }
     );
     let result = RunResult {
+        execution_plan_fingerprint: options.execution_plan_fingerprint,
         module,
         benchmark_outcome: Some(workloads::outcome::BenchmarkOutcome {
             schema_version: 1,
@@ -1078,6 +1081,7 @@ fn run_mode(
             .event(LifecycleEvent::RunFinishing)
             .map_err(Error::Run)?;
         let measured = measurements::RunMeasurement {
+            execution_plan_fingerprint: result.execution_plan_fingerprint,
             module: result.module.as_ref(),
             benchmark_outcome: result.benchmark_outcome.as_ref(),
             replica_index: result.replica_index,
@@ -1408,6 +1412,7 @@ pub(crate) fn resolve_log_path(config_path: &Path, configured_path: &str) -> Pat
 
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
     let summary = serde_json::json!({
+        "execution_plan_fingerprint": result.execution_plan_fingerprint,
         "module": result.module,
         "benchmark_outcome": result.benchmark_outcome,
         "replica_index": result.replica_index,
@@ -2213,6 +2218,7 @@ mod tests {
             .unwrap();
         session
             .finish(crate::measurements::RunMeasurement {
+                execution_plan_fingerprint: None,
                 module: None,
                 benchmark_outcome: None,
                 replica_index: None,
@@ -2505,6 +2511,7 @@ mod tests {
 
     fn result<'a>() -> RunResult<'a> {
         RunResult {
+            execution_plan_fingerprint: None,
             module: None,
             benchmark_outcome: None,
             replica_index: None,

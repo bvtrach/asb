@@ -385,6 +385,7 @@ fn validate_outcome(record: &Outcome, entry: &PlannedBenchmark) -> Result<TaskId
 
 fn measurement_matches(measured: &Value, summary: &Value) -> bool {
     [
+        "execution_plan_fingerprint",
         "module",
         "benchmark_outcome",
         "replica_index",
