@@ -246,6 +246,35 @@ working tracefs permissions: set `ASB_TEST_PERFETTO_TOOLS` to the project's
 tools directory and run the ignored `live_perfetto` tests serially. They use an
 offline replay fixture, not a live provider; ordinary CI does not require
 privileged tracing.
+Runner phase regressions use `cargo test --locked --offline --lib runner::phases`
+and `cargo test --locked --offline --lib workloads::remote::execution_tests`.
+For a focused library-only invocation, run `cargo build --locked --offline`
+first: the full-entry regression executes the actual ASB binary beside the
+test executable as its native process gate. Ordinary full `cargo test` builds
+that binary as part of its CLI integration targets. The full-entry fixture
+runs isolated attempts through the real bundled grader, saved logs,
+measurements and completion policy; the larger outcome matrix tests consuming
+phase transitions with synthetic execution evidence, not full benchmark runs.
+Its real blocked-log-directory cases retain JSON and measurement grades,
+evaluate/finish exactly once, preserve primary and ancillary diagnostics and
+publish no completion receipt. Existing directories are never overwritten.
+They exercise independent client exit/grade/cleanup outcomes, failing lifecycle
+markers before and after execution, actual child-output retention, native and
+guest terminal-answer policy, incomplete recording/replay, explicit preservation
+on interruption and final measurement-publication failures. A separate
+`measurement_lifecycle_faults` test checks actual owned collector shutdown and
+unrelated-process survival despite an earlier failing adapter or full journal.
+The native-plan fixture verifies wrapper/endpoint/replay preparation without
+executing an installed client. All fixtures are provider-free and unprivileged;
+controller fixtures do not qualify Docker, SDK installation or a live benchmark.
+Human-terminal write/flush failures stop further presentation but finish an
+already-admitted execution, evaluation and explicit cleanup; broken guest-owner
+transport still cancels/preserves. Tests cover both policies. The elapsed clock
+freezes at native supervised-child exit observation before collector/proxy
+teardown; it does not claim an exact inner-client kernel timestamp. Guests keep
+their explicit execution observation. These phase changes do not repair the
+separately tracked stream-memory bounds or blocking owned-child wait limits.
+
 Concurrent Perfetto captures use one manual `traced`/`traced_probes` service per
 ASB process and exclusively lease a delegated named tracefs instance. All client
 commands use the explicit `perfetto` applet; neither preflight nor capture uses

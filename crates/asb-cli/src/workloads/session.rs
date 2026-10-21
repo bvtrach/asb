@@ -95,6 +95,9 @@ pub(crate) struct ExecutionResult {
     pub output: std::process::Output,
     pub metadata: crate::agents::driver::GuestResult,
     pub elapsed_ms: Option<u128>,
+    /// Post-execution instrumentation cannot invalidate an available submission.
+    pub collector_errors: Vec<String>,
+    pub output_error: Option<String>,
 }
 
 /// Baseline provenance is not a boolean: an official clean task definition
