@@ -87,6 +87,12 @@ and rejects every undeclared pair before configuration or command mutation.
 These are protocol-only fixtures: no agent/provider is executed. See the
 [independently checked repair ledger](CODE_SMELL_REPAIRS.md) for the broader
 code-smell audit and remaining delivery classes.
+Report identity regressions cover literal dots/brackets versus nested paths,
+empty/backslash keys, Unicode and colliding/long graph filenames, case-insensitive
+aliases, repeated configuration stems and deterministic regeneration. Numeric
+paths escape object-key separators; use `comparison.json`'s graph list rather
+than constructing filenames for unusual metric names. Conflicting collector
+identities fail explicitly instead of silently replacing a prior observation.
 `cargo test --locked cassette::` exercises the provider-free multi-track backend:
 manifest and compatibility bounds, stable seeded choices, selector edge cases,
 bounded metadata inspection, selective corruption checks and durable publication.
