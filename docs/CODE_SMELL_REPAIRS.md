@@ -111,6 +111,24 @@ Simplify checkpoint validation into named invariants without losing checks.
 Review broad parameter lists, result structs, visibility, dead API surface and
 module names in those owning boundaries. Pending.
 
+Runner candidate, staged patch **0.2.10** (not yet merged/released): private consuming admission,
+preparation, execution-evidence, proxy-settlement, evaluation and finalization
+states now separate owned resources and independent outcomes. It repairs the
+verified path where collector lifecycle errors discarded client output or an
+official grade and skipped explicit workload cleanup. Native supervised-exit
+time excludes collector/proxy teardown, and terminal-answer validation belongs
+to the owning agent adapter. Broken human presentation retains admitted work
+and its grade; broken owner transport remains cancellation. Log-publication
+failure still attempts measurements and presentation. Both log and measurement
+publication must be confirmed before a completion receipt can be emitted.
+Independent review and seven isolated full-entry fault cases verify that
+original grades, primary errors, secondary publication/output diagnostics,
+observer redaction and exact-once execution/evaluation/cleanup survive the
+combined failure paths. The larger phase matrix uses synthetic execution
+evidence, not full benchmark runs. This does not close the remaining comparison/sweep/driver structural
+work, stream-memory limits, blocking child-wait class or exact inner-principal
+native timing. Hosted and full final verification remain required.
+
 Audit correction: current `perfetto_instance_config` is seven lines, not the
 reported 630. Comparison's filter JavaScript is already a separate asset.
 Do not perform redundant extraction based on stale line counts.
