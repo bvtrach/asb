@@ -285,6 +285,7 @@ fn every_cross_row_invariant_and_population_failure_precedes_publication() {
             _ => {
                 for (index, row) in loaded.rows.iter_mut().enumerate() {
                     row.selection = Some(crate::workloads::TaskSelection {
+                        module: None,
                         workload: "bug-fix".into(),
                         task_id: format!("task{index}"),
                         dataset: Some(crate::workloads::session::DatasetIdentity {
@@ -411,6 +412,7 @@ fn manifest_and_benchmark_snapshots_preserve_plan_identity_across_path_replaceme
     let config: crate::benchmark::BenchmarkConfig =
         toml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
     let selection = crate::workloads::TaskSelection {
+        module: None,
         workload: "bug-fix".into(),
         task_id: "bug-fix".into(),
         dataset: None,
@@ -1009,7 +1011,7 @@ fn post_commit_durability_failure_reports_published_state_and_retains_previous_g
 fn generated_svg_and_embedded_html_script_execute_observed_hover_zoom_pan_and_modal_actions() {
     let fixture = Fixture::new();
     let manifest = fixture.seed("", 1);
-    fixture.write("sweep-results/000-0/measurements/profile.json",json!({"series":{"profile.latency_ms":[1,null,3]},"series_timestamps":{"profile.latency_ms":[0,100,200]}}).to_string());
+    fixture.write("sweep-results/000-0/measurements/profile.json",json!({"metrics":{"signed":-17.25},"series":{"profile.latency_ms":[1,null,3]},"series_timestamps":{"profile.latency_ms":[0,100,200]}}).to_string());
     let raw = Fixture::snapshot(&fixture.0.join("sweep-results"));
     let report = generate(manifest.to_str().unwrap(), &mut Vec::new()).unwrap();
     let graph = report.with_file_name("series-profile.latency_ms.svg");
@@ -1019,6 +1021,7 @@ fn generated_svg_and_embedded_html_script_execute_observed_hover_zoom_pan_and_mo
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/report_interactions_fixture.js"))
         .arg(&report)
         .arg(&graph)
+        .arg(report.with_file_name("metric-profile.signed.svg"))
         .env_clear()
         .output()
         .unwrap();
@@ -1033,6 +1036,95 @@ fn generated_svg_and_embedded_html_script_execute_observed_hover_zoom_pan_and_mo
             .contains("actual generated report interaction checks passed")
     );
     assert_eq!(Fixture::snapshot(&fixture.0.join("sweep-results")), raw);
+}
+
+#[test]
+fn signed_scalar_graphs_retain_observations_and_finite_zero_based_geometry() {
+    let fixture = Fixture::new();
+    let cases = [
+        ("negative", vec![-100.0, -1.0, 0.0]),
+        ("mixed", vec![-100.0, -1.0, 0.0, 1.0, 100.0]),
+        ("extreme", vec![-f64::MAX, 0.0, f64::MAX]),
+        ("tiny", vec![-f64::from_bits(1), 0.0, f64::from_bits(1)]),
+    ];
+    let manifest = fixture.seed("", 5);
+    for index in 0..5 {
+        let metrics = cases
+            .iter()
+            .filter_map(|(name, values)| {
+                values
+                    .get(index)
+                    .map(|value| ((*name).to_owned(), json!(value)))
+            })
+            .collect::<serde_json::Map<_, _>>();
+        fixture.write(
+            &format!("sweep-results/{index:03}-{index}/measurements/profile.json"),
+            json!({"metrics":metrics}).to_string(),
+        );
+    }
+    let report = generate(manifest.to_str().unwrap(), &mut Vec::new()).unwrap();
+    let html = fs::read_to_string(&report).unwrap();
+    let summary: Value =
+        serde_json::from_slice(&fs::read(report.with_file_name("comparison.json")).unwrap())
+            .unwrap();
+    fn attribute(tag: &str, name: &str) -> f64 {
+        tag.split_once(&format!("{name}=\""))
+            .unwrap()
+            .1
+            .split('"')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap()
+    }
+    for (name, values) in cases {
+        let graph = format!("metric-profile.{name}.svg");
+        let svg = fs::read_to_string(report.with_file_name(&graph)).unwrap();
+        assert!(html.contains(&format!("data-chart=\"profile.{name}\"")) || html.contains(&graph));
+        // Inline HTML contains the same generated bars used by the standalone SVG.
+        assert!(
+            html.contains(
+                &svg[svg.find("<g data-benchmark=").unwrap()..svg.rfind("</svg>").unwrap()]
+            )
+        );
+        let baseline_tag = svg
+            .split("class=\"zero-baseline\"")
+            .nth(1)
+            .unwrap()
+            .split('>')
+            .next()
+            .unwrap();
+        let baseline = attribute(baseline_tag, "y1");
+        let bars = svg
+            .split("class=\"bar\"")
+            .skip(1)
+            .map(|tail| tail.split('>').next().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(bars.len(), values.len());
+        for (index, (bar, original)) in bars.iter().zip(values).enumerate() {
+            let value = attribute(bar, "data-value");
+            assert_eq!(value, original);
+            assert_eq!(
+                summary["benchmarks"][index]["metrics"][format!("profile.{name}")],
+                json!(original)
+            );
+            let y = attribute(bar, "y");
+            let height = attribute(bar, "height");
+            assert!(y.is_finite() && height.is_finite());
+            assert!(y >= PLOT_TOP && y + height <= PLOT_BOTTOM + 0.1 && height >= 0.0);
+            if value < 0.0 {
+                assert!((y - baseline).abs() < 0.1 && height > 0.0);
+            } else if value > 0.0 {
+                assert!((y + height - baseline).abs() < 0.1 && height > 0.0);
+            } else {
+                assert_eq!(height, 0.0);
+            }
+        }
+        assert!(svg.contains("data-placement=\"inside\""));
+        if name == "negative" || name == "mixed" {
+            assert!(svg.contains("data-placement=\"below\""));
+        }
+    }
 }
 
 #[test]

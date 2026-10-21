@@ -116,6 +116,8 @@ graphs, gap preservation, atomic regeneration, persistent writer exclusion,
 recoverable previous generations and truthful post-publication failures.
 It runs the actual generated SVG and embedded interaction script under Node's
 synthetic DOM, including observed-sample hover, zoom, pan and modal controls;
+signed scalar fixtures additionally check negative/mixed/extreme finite and
+subnormal geometry, unchanged JSON values, embedded HTML and signed-value hover.
 this is not browser-layout qualification. The ignored
 `real_headless_browser_qualifies_generated_report_interactions` test can use an
 existing local browser selected explicitly with `ASB_TEST_CHROMIUM`; it never

@@ -608,11 +608,15 @@ fn write_bar_svg(
     values: &[(String, f64)],
     labels: &BTreeMap<String, String>,
 ) -> Result<(), Error> {
+    let min = values
+        .iter()
+        .map(|(_, value)| *value)
+        .fold(0.0_f64, f64::min);
     let max = values
         .iter()
         .map(|(_, value)| *value)
         .fold(0.0_f64, f64::max)
-        .max(1.0);
+        .max(if min < 0.0 { 0.0 } else { 1.0 });
     let width = 900.0;
     let height = 460.0;
     let left = 70.0;
@@ -625,15 +629,20 @@ fn write_bar_svg(
         PLOT_TOP,
         bottom,
         PLOT_RIGHT,
-        (0.0, max),
+        (min, max),
         title,
     );
+    let baseline = bottom - domain_fraction(0.0, min, max) * (bottom - PLOT_TOP);
+    if min < 0.0 {
+        svg.push_str(&format!("<line class=\"zero-baseline\" x1=\"{left}\" y1=\"{baseline:.1}\" x2=\"{PLOT_RIGHT}\" y2=\"{baseline:.1}\" stroke=\"black\"/>"));
+    }
     for (index, (label, value)) in values.iter().enumerate() {
         svg.push_str(&format!("<g data-benchmark=\"{}\">", escape(label)));
         let display = labels.get(label).unwrap_or(label);
         let x = left + index as f64 * bar_width + 4.0;
-        let bar_height = value.max(0.0) / max * (bottom - PLOT_TOP);
-        let y = bottom - bar_height;
+        let endpoint = bottom - domain_fraction(*value, min, max) * (bottom - PLOT_TOP);
+        let bar_height = (endpoint - baseline).abs();
+        let y = endpoint.min(baseline);
         let width = (bar_width - 8.0).max(2.0);
         svg.push_str(&format!(
             "<rect class=\"bar\" data-label=\"{}\" data-value=\"{value}\" x=\"{x:.1}\" y=\"{y:.1}\" width=\"{width:.1}\" height=\"{bar_height:.1}\" fill=\"#4472c4\"><title>{} [{}]: {value}</title></rect>",
@@ -645,7 +654,17 @@ fn write_bar_svg(
         let (label_y, placement, color) = if bar_height >= 24.0 {
             // Keep a small top inset while retaining enough contrast against
             // the bar fill for the value to remain readable.
-            (y + 16.0, "inside", "#ffffff")
+            (
+                if *value < 0.0 {
+                    endpoint - 6.0
+                } else {
+                    y + 16.0
+                },
+                "inside",
+                "#ffffff",
+            )
+        } else if *value < 0.0 {
+            (endpoint + 14.0, "below", "#18212b")
         } else {
             // Short and zero-height bars cannot contain a label. Place the
             // baseline just above the bar with the same small spacing.
@@ -767,11 +786,7 @@ fn write_series_svg(
                     LEFT,
                     RIGHT,
                 );
-                let fraction = if (max - min).is_finite() {
-                    (value - min) / (max - min)
-                } else {
-                    (value * 0.5 - min * 0.5) / (max * 0.5 - min * 0.5)
-                };
+                let fraction = domain_fraction(value, min, max);
                 let y = bottom - fraction * (bottom - plot_top);
                 segment.push(format!("{x:.1},{y:.1}"));
                 let timestamp = points
@@ -929,6 +944,15 @@ fn wrap_label(value: &str, max_chars: usize) -> Vec<String> {
         lines.push(remaining.to_owned());
     }
     lines
+}
+
+/// Normalize finite observations without overflowing an opposite-sign domain.
+fn domain_fraction(value: f64, min: f64, max: f64) -> f64 {
+    if (max - min).is_finite() {
+        (value - min) / (max - min)
+    } else {
+        (value * 0.5 - min * 0.5) / (max * 0.5 - min * 0.5)
+    }
 }
 
 fn append_y_axis(
@@ -1430,6 +1454,9 @@ mod tests {
         assert!(svg.contains("class=\"bar-value\" data-placement=\"above\""));
         assert!(svg.contains(">100</text>"));
         assert!(svg.contains(">1</text>"));
+        assert!(!svg.contains("zero-baseline"));
+        assert!(svg.contains("y=\"70.0\" width=\"397.0\" height=\"320.0\""));
+        assert!(svg.contains("y=\"386.8\" width=\"397.0\" height=\"3.2\""));
         let _ = std::fs::remove_dir_all(root);
     }
 

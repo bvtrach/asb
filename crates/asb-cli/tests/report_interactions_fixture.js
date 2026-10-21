@@ -19,6 +19,9 @@ function element(attrs={}){
 }
 function attributes(tag){return Object.fromEntries([...tag.matchAll(/([\w-]+)="([^"]*)"/g)].map(match=>[match[1],match[2]]));}
 const nodes=[...svgText.matchAll(/<(?:circle|polyline|rect|text)\b[^>]*>/g)].map(match=>element(attributes(match[0])));
+const barSvg=process.argv[4]?fs.readFileSync(process.argv[4],'utf8'):'';
+const bars=[...barSvg.matchAll(/<rect\b[^>]*class="bar"[^>]*>/g)].map(match=>element(attributes(match[0])));
+nodes.push(...bars);
 const points=nodes.filter(node=>node.classList.contains('series-point'));
 const lines=nodes.filter(node=>node.classList.contains('series'));
 assert.equal(points.length,2);
@@ -38,6 +41,13 @@ const scripts=[...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(match=>mat
 const script=scripts.find(script=>script.includes('Nearest displayed observed sample'));
 assert.ok(script,'test must execute the script embedded in the generated report');
 eval(script);
+if(barSvg){
+  assert.equal(bars.length,1);
+  assert.ok(Number(bars[0].getAttribute('height'))>0,'accepted negative scalar must have visible geometry');
+  bars[0].fire('pointerenter',{clientX:100,clientY:100});
+  assert.equal(tooltip.textContent,'000-0: -17.25','hover must preserve the original signed value');
+  assert.ok(html.includes('data-value="-17.25"'),'actual HTML must embed the signed observation');
+}
 const pointer={clientX:Number(points[1].getAttribute('cx')),clientY:100};
 lines[1].fire('pointerenter',pointer);
 assert.ok(tooltip.textContent.includes('Nearest displayed observed sample: 000-0: 3 @ 200 ms'),tooltip.textContent);

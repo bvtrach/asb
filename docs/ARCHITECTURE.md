@@ -55,6 +55,10 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   full JSON; SVGs disclose a 2048-observation bound preserving segment endpoints
   and extrema, never bridge unknown gaps, and distinguish sample indices from
   measured milliseconds. Raw state/event timelines are not downsampled.
+  Scalar charts retain accepted negative metrics around an explicit zero
+  baseline, with signed labels and original observations in hover metadata.
+  Signed scalar and series coordinates share overflow-safe normalization;
+  nonnegative scalar scales retain their existing zero-to-maximum geometry.
   A separate persistent report lock guards private same-filesystem staging;
   Linux and macOS native rename/exchange publish a whole generation after rendering
   and synchronization. Replaced generations, including user-added files, remain
