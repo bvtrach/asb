@@ -68,6 +68,9 @@ impl Observer<'_> {
 }
 
 impl CompletionObserver for Observer<'_> {
+    fn evidence_destination(&self, replica: Identity) -> Option<PathBuf> {
+        Some(path(self.inputs, self.index, replica.index))
+    }
     fn allocated(
         &self,
         replica: Identity,
