@@ -166,6 +166,9 @@ impl Drop for Release {
     }
 }
 struct Dependency(Arc<AtomicBool>);
+impl ProducerOwner for Dependency {
+    fn producer_started(&self) {}
+}
 impl Drop for Dependency {
     fn drop(&mut self) {
         self.0.store(true, Ordering::Release);
@@ -513,4 +516,177 @@ fn explicit_operation_proxy_snapshot_is_not_replaced_by_foreign_network_scope() 
             .contains("installation.download_timeout_seconds")
     );
     assert_eq!(context.root, root);
+}
+
+#[test]
+fn actual_staging_rejects_second_lane_and_stale_permission_then_publishes_only_matching_proof() {
+    let root = root();
+    let context = context(&root);
+    let destination = root.join("installed");
+    fs::write(&destination, "old-installed").unwrap();
+    let staging = Arc::new(crate::install::source::Staging::new(&destination).unwrap());
+    let source_path = staging.producer_path().to_owned();
+    struct ReleaseOnUnwind(PathBuf);
+    impl Drop for ReleaseOnUnwind {
+        fn drop(&mut self) {
+            let _ = fs::write(&self.0, "release");
+        }
+    }
+    let release = ReleaseOnUnwind(root.join("release"));
+    let mut lane = staging.producer_scope(&context);
+    let stale = staging.producer_scope(&context).finish().unwrap();
+    let second_lane = staging.producer_scope(&context);
+    let mut step = lane
+        .prepare("/bin/sh", Purpose::Probe, "actual staging producer")
+        .unwrap();
+    step.command_mut().env_clear().env("PATH", "/usr/bin:/bin").current_dir(&root)
+        .args(["-c", "printf complete > \"$1\"; printf started > ready; while ! test -f release; do sleep .01; done; printf done; printf diagnostic >&2", "fixture"])
+        .arg(&source_path).stdin(std::process::Stdio::null());
+    step.capture(Capture::inspection());
+    let (send, receive) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let result = lane.run(step);
+        let _ = send.send((lane, result));
+    });
+    wait_file(&root.join("ready"));
+    assert!(
+        staging.accept_producer_permission(stale).is_err(),
+        "stale never-admitted token authorized a live producer"
+    );
+    assert!(
+        matches!(second_lane.finish(), Err(InstallFailure::Abort(_))),
+        "second lane minted proof while the actual writer was active"
+    );
+    assert_eq!(fs::read_to_string(&destination).unwrap(), "old-installed");
+    assert!(source_path.exists());
+    fs::write(&release.0, "release").unwrap();
+    let (lane, result) = receive.recv_timeout(Duration::from_secs(5)).unwrap();
+    let result = result.unwrap();
+    assert!(result.status.success());
+    assert_eq!(result.stdout, b"done");
+    assert_eq!(result.stderr, b"diagnostic");
+    assert!(result.log.path.is_some());
+    let permission = lane.finish().unwrap();
+    let stage = Arc::try_unwrap(staging)
+        .ok()
+        .expect("actual stage owner remains held after quiescence");
+    stage
+        .publish_with_permission_for_test(permission, &destination)
+        .unwrap();
+    assert_eq!(fs::read_to_string(destination).unwrap(), "complete");
+    assert!(!source_path.exists());
+}
+
+#[test]
+fn actual_staging_rejects_other_owner_proof_without_publishing_or_cleaning_its_bytes() {
+    let root = root();
+    let context = context(&root);
+    let destination = root.join("installed");
+    fs::write(&destination, "old-installed").unwrap();
+    let stage = Arc::new(crate::install::source::Staging::new(&destination).unwrap());
+    let source_path = stage.producer_path().to_owned();
+    let other = Arc::new(crate::install::source::Staging::new(&root.join("other")).unwrap());
+    let mut other_lane = other.producer_scope(&context);
+    let mut step = other_lane
+        .prepare("/bin/true", Purpose::Probe, "different stage producer")
+        .unwrap();
+    step.command_mut().stdin(std::process::Stdio::null());
+    assert!(other_lane.run(step).unwrap().status.success());
+    let unrelated = other_lane.finish().unwrap();
+    let stage = Arc::try_unwrap(stage)
+        .ok()
+        .expect("target has no admitted producer");
+    assert!(
+        stage
+            .publish_with_permission_for_test(unrelated, &destination)
+            .is_err()
+    );
+    assert_eq!(fs::read_to_string(destination).unwrap(), "old-installed");
+    assert!(
+        source_path.exists(),
+        "wrong-owner denial destructively cleaned the target stage"
+    );
+}
+
+#[test]
+fn matching_permission_is_consumed_once_and_a_later_attempt_invalidates_old_receipts() {
+    let root = root();
+    let context = context(&root);
+    let lease = ProducerLease::default();
+    let state = lease.state.clone();
+    let first = ProcessScope::new(&context, lease.clone()).finish().unwrap();
+    let duplicate = ProcessScope::new(&context, lease.clone()).finish().unwrap();
+    first.consume_for(&state).unwrap();
+    assert!(matches!(
+        duplicate.consume_for(&state),
+        Err(InstallFailure::Abort(_))
+    ));
+    let step = shell(&context, "printf forbidden > must-not-execute");
+    assert!(matches!(step.run(lease), Err(InstallFailure::Abort(_))));
+    assert!(!root.join("must-not-execute").exists());
+}
+
+#[test]
+fn unknown_cleanup_keeps_actual_staging_owner_then_retains_raw_after_late_quiescence() {
+    let root = root();
+    let context = context(&root);
+    let mut sentinel = Sentinel::start();
+    let destination = root.join("installed");
+    fs::write(&destination, "old-installed").unwrap();
+    let staging = Arc::new(crate::install::source::Staging::new(&destination).unwrap());
+    let weak = Arc::downgrade(&staging);
+    let source_path = staging.producer_path().to_owned();
+    let mut lane = staging.producer_scope(&context);
+    let held = Arc::new(AtomicBool::new(true));
+    let release = ObserveRelease(Arc::clone(&held));
+    let mut step = lane
+        .prepare(
+            "/bin/sh",
+            Purpose::Probe,
+            "retained actual staging producer",
+        )
+        .unwrap();
+    step.command_mut()
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .current_dir(&root)
+        .args([
+            "-c",
+            "printf partial > \"$1\"; printf ready > ready; sleep 30",
+            "fixture",
+        ])
+        .arg(&source_path)
+        .stdin(std::process::Stdio::null());
+    step.hold_observation = Some(Arc::clone(&held));
+    let (send, receive) = mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let result = lane.run(step);
+        let _ = send.send(matches!(result, Err(InstallFailure::Abort(_))));
+        drop(lane);
+    });
+    wait_file(&root.join("ready"));
+    context.cancel();
+    assert!(receive.recv_timeout(Duration::from_secs(8)).unwrap());
+    drop(staging); // Worker, not a test-local path or guard, must keep it alive.
+    assert!(
+        weak.upgrade().is_some(),
+        "actual owner vanished before matching quiescence"
+    );
+    assert!(source_path.exists());
+    assert!(sentinel.0.try_wait().unwrap().is_none());
+    drop(release);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while weak.upgrade().is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "actual settled worker did not release its owner"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        source_path.exists(),
+        "late owner Drop destroyed evidence after an uncertain return"
+    );
+    assert_eq!(fs::read_to_string(destination).unwrap(), "old-installed");
+    assert!(sentinel.0.try_wait().unwrap().is_none());
 }

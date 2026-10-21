@@ -276,14 +276,26 @@ fn nonblocking(file: &impl AsRawFd) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn run(step: PreparedStep, lease: ProducerLease) -> InstallResult<SettledStep> {
-    let (deadline, limit_key) = step.context.step_deadline(step.purpose)?;
+pub(super) fn run(
+    step: PreparedStep,
+    lease: ProducerLease,
+    ticket: AdmissionTicket,
+) -> InstallResult<SettledStep> {
+    let (deadline, limit_key) = match step.context.step_deadline(step.purpose) {
+        Ok(value) => value,
+        Err(error) => {
+            ticket.settle(ProducerProof::NoNewAdmission);
+            return Err(error);
+        }
+    };
     if step.context.cancel.load(Ordering::Acquire) || Instant::now() >= deadline {
         let cause = if Instant::now() >= deadline {
             AbortCause::Deadline
         } else {
             AbortCause::Cancelled
         };
+        ticket.poison();
+        ticket.settle(ProducerProof::NoNewAdmission);
         return Err(InstallFailure::Abort(abort(
             &step, limit_key, cause, true, true, None,
         )));
@@ -300,10 +312,12 @@ pub(super) fn run(step: PreparedStep, lease: ProducerLease) -> InstallResult<Set
     let (send, receive) = mpsc::sync_channel(1);
     // The thread exists before Admission.spawn. If allocation fails, no target
     // has been admitted and no producer can hold a descriptor into the stage.
+    let worker_ticket = ticket.clone();
     std::thread::Builder::new()
         .name("asb-install-process".into())
-        .spawn(move || supervise(step, lease, deadline, limit_key, send))
+        .spawn(move || supervise(step, lease, deadline, limit_key, send, worker_ticket))
         .map_err(|error| {
+            ticket.settle(ProducerProof::NoNewAdmission);
             crate::Error::Io(format!(
                 "cannot establish installation custody worker: {}",
                 error.kind()
@@ -315,6 +329,7 @@ pub(super) fn run(step: PreparedStep, lease: ProducerLease) -> InstallResult<Set
             Ok(result) => return result,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 cancel.store(true, Ordering::Release);
+                ticket.poison();
                 return Err(InstallFailure::Abort(fallback));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -323,6 +338,7 @@ pub(super) fn run(step: PreparedStep, lease: ProducerLease) -> InstallResult<Set
             cancel.store(true, Ordering::Release);
             let end = *cancellation_end.get_or_insert_with(|| Instant::now() + CLEANUP);
             if Instant::now() >= end {
+                ticket.poison();
                 return Err(InstallFailure::Abort(AbortInstallation {
                     cause: if Instant::now() >= deadline {
                         AbortCause::Deadline
@@ -361,6 +377,7 @@ fn supervise(
     deadline: Instant,
     key: &'static str,
     send: mpsc::SyncSender<InstallResult<SettledStep>>,
+    ticket: AdmissionTicket,
 ) {
     // These resources remain outside every fallible/unwinding pump turn.
     let _lease = lease;
@@ -370,6 +387,8 @@ fn supervise(
         step.log_writer.take(),
     );
     if let Some(reason) = interrupted(&step.context, deadline) {
+        ticket.poison();
+        ticket.settle(ProducerProof::NoNewAdmission);
         let evidence = _lease
             .evidence
             .clone()
@@ -390,6 +409,7 @@ fn supervise(
     let mut gate: ManagedGate = match admitted {
         Ok(gate) => gate,
         Err(error) => {
+            ticket.settle(ProducerProof::NoNewAdmission);
             let _ = send.send(Err(crate::Error::Io(format!(
                 "cannot start installation step {}: {}",
                 step.label,
@@ -496,6 +516,7 @@ fn supervise(
                 let _ = gate.request_cancel();
             }
             if Instant::now() >= end && !sent {
+                ticket.poison();
                 let evidence = _lease
                     .evidence
                     .clone()
@@ -516,6 +537,10 @@ fn supervise(
         if let Some(status) = status
             && pipes.iter().all(|pipe| pipe.ended)
         {
+            if cause.is_some() {
+                ticket.poison();
+            }
+            ticket.settle(ProducerProof::Quiescent);
             #[cfg(test)]
             if let Some(pause) = &step.before_continue {
                 pause.settled.store(true, Ordering::Release);
@@ -538,6 +563,7 @@ fn supervise(
                             stdout: stdout.output,
                             stderr: stderr.output,
                             log,
+                            lease: _lease,
                         })
                     }
                 };

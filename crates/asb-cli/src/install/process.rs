@@ -132,7 +132,7 @@ pub(crate) enum AbortCause {
     Worker,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct AbortInstallation {
     pub(crate) cause: AbortCause,
     pub(crate) cleanup_confirmed: bool,
@@ -171,20 +171,212 @@ impl std::fmt::Display for AbortInstallation {
 
 /// Actual producer dependencies, held by the worker until matching quiescence.
 /// The owner must move its real staging guard here, not a copy of its pathname.
-#[derive(Clone, Default)]
-pub(crate) struct ProducerLease {
-    _owner: Option<Arc<dyn Send + Sync>>,
-    evidence: Option<PathBuf>,
+pub(crate) trait ProducerOwner: Send + Sync {
+    /// Disable destructive settlement before any potentially admitted producer.
+    fn producer_started(&self);
 }
-impl ProducerLease {
-    pub(crate) fn new<T: Send + Sync + 'static>(owner: Arc<T>, evidence: &Path) -> Self {
-        Self {
-            _owner: Some(owner),
-            evidence: Some(evidence.to_owned()),
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProducerProof {
+    NoNewAdmission,
+    Quiescent,
+}
+
+struct OwnerState {
+    generation: u64,
+    active: bool,
+    proof: Option<ProducerProof>,
+    consumed: bool,
+    poisoned: bool,
+    operation: Option<Arc<AtomicBool>>,
+}
+/// Identity plus private admission/settlement facts, never just pointer identity.
+#[derive(Clone)]
+pub(crate) struct ProducerState(Arc<std::sync::Mutex<OwnerState>>);
+impl Default for ProducerState {
+    fn default() -> Self {
+        Self(Arc::new(std::sync::Mutex::new(OwnerState {
+            generation: 0,
+            active: false,
+            proof: Some(ProducerProof::NoNewAdmission),
+            consumed: false,
+            poisoned: false,
+            operation: None,
+        })))
+    }
+}
+impl ProducerState {
+    fn lock(&self) -> std::sync::MutexGuard<'_, OwnerState> {
+        match self.0.lock() {
+            Ok(state) => state,
+            Err(poisoned) => {
+                let mut state = poisoned.into_inner();
+                state.poisoned = true;
+                state
+            }
         }
+    }
+    fn permission(
+        &self,
+        context: &OperationContext,
+        evidence: Option<PathBuf>,
+    ) -> Option<ProducerPermission> {
+        let mut state = self.lock();
+        if state.active || state.poisoned || state.consumed {
+            return None;
+        }
+        if let Some(operation) = &state.operation {
+            if !Arc::ptr_eq(operation, &context.cancel) {
+                return None;
+            }
+        } else {
+            state.operation = Some(Arc::clone(&context.cancel));
+        }
+        Some(ProducerPermission {
+            owner: self.clone(),
+            generation: state.generation,
+            proof: state.proof?,
+            context: context.clone(),
+            evidence,
+        })
     }
 }
 
+/// Non-cloneable one-use permission; identity, generation, operation and actual
+/// settlement facts are all revalidated before ANY destructive owner action.
+pub(crate) struct ProducerPermission {
+    owner: ProducerState,
+    generation: u64,
+    proof: ProducerProof,
+    context: OperationContext,
+    evidence: Option<PathBuf>,
+}
+impl ProducerPermission {
+    fn current(&self) -> bool {
+        let state = self.owner.lock();
+        state.generation == self.generation
+            && !state.active
+            && !state.poisoned
+            && !state.consumed
+            && state.proof == Some(self.proof)
+            && state
+                .operation
+                .as_ref()
+                .is_some_and(|operation| Arc::ptr_eq(operation, &self.context.cancel))
+    }
+    pub(crate) fn consume_for(self, owner: &ProducerState) -> InstallResult<()> {
+        let mut state = owner.lock();
+        let valid = Arc::ptr_eq(&self.owner.0, &owner.0)
+            && state.generation == self.generation
+            && !state.active
+            && !state.poisoned
+            && !state.consumed
+            && state.proof == Some(self.proof)
+            && state
+                .operation
+                .as_ref()
+                .is_some_and(|operation| Arc::ptr_eq(operation, &self.context.cancel));
+        if !valid {
+            return Err(authority_failure(
+                &self.context,
+                "stale or different producer permission",
+                self.evidence,
+            ));
+        }
+        state.consumed = true;
+        Ok(())
+    }
+}
+
+fn authority_failure(
+    context: &OperationContext,
+    label: &str,
+    evidence: Option<PathBuf>,
+) -> InstallFailure {
+    InstallFailure::Abort(AbortInstallation {
+        cause: AbortCause::Custody,
+        cleanup_confirmed: false,
+        capture_complete: false,
+        label: label.into(),
+        config_path: context.config_path.clone(),
+        limit_key: "operation_timeout_seconds",
+        evidence,
+    })
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct ProducerLease {
+    _owner: Option<Arc<dyn ProducerOwner>>,
+    state: ProducerState,
+    evidence: Option<PathBuf>,
+}
+impl ProducerLease {
+    pub(crate) fn new<T: ProducerOwner + 'static>(owner: Arc<T>, evidence: &Path) -> Self {
+        Self::with_state(owner, ProducerState::default(), evidence)
+    }
+    pub(crate) fn with_state<T: ProducerOwner + 'static>(
+        owner: Arc<T>,
+        state: ProducerState,
+        evidence: &Path,
+    ) -> Self {
+        Self {
+            _owner: Some(owner),
+            state,
+            evidence: Some(evidence.to_owned()),
+        }
+    }
+    fn begin(&self, context: &OperationContext) -> InstallResult<AdmissionTicket> {
+        // The actual owner disables destructive Drop before target exposure,
+        // including every pre-admission failure and unwind path.
+        if let Some(owner) = &self._owner {
+            owner.producer_started();
+        }
+        let mut state = self.state.lock();
+        let same_operation = state
+            .operation
+            .as_ref()
+            .is_none_or(|operation| Arc::ptr_eq(operation, &context.cancel));
+        let next = state.generation.checked_add(1);
+        if state.active || state.poisoned || state.consumed || !same_operation || next.is_none() {
+            state.poisoned = true;
+            return Err(authority_failure(
+                context,
+                "producer lane is active, settled, or belongs to another operation",
+                self.evidence.clone(),
+            ));
+        }
+        state.operation = Some(Arc::clone(&context.cancel));
+        state.generation = next.unwrap();
+        state.active = true;
+        state.proof = None; // Invalidate every previously issued permission.
+        Ok(AdmissionTicket {
+            state: self.state.clone(),
+            generation: state.generation,
+        })
+    }
+}
+
+/// Private worker/parent bookkeeping, not a public settlement permission.
+#[derive(Clone)]
+struct AdmissionTicket {
+    state: ProducerState,
+    generation: u64,
+}
+impl AdmissionTicket {
+    fn settle(&self, proof: ProducerProof) {
+        let mut state = self.state.lock();
+        if state.generation != self.generation || !state.active {
+            state.poisoned = true;
+            return;
+        }
+        state.active = false;
+        state.proof = Some(proof);
+    }
+    fn poison(&self) {
+        let mut state = self.state.lock();
+        state.poisoned = true;
+    }
+}
 #[derive(Clone, Copy)]
 pub(crate) enum Capture {
     Status,
@@ -208,6 +400,7 @@ pub(crate) struct SettledStep {
     stderr: Vec<u8>,
     #[cfg(target_os = "linux")]
     pub(crate) log: native::LogReport,
+    lease: ProducerLease,
 }
 impl SettledStep {
     pub(crate) fn status(&self) -> std::process::ExitStatus {
@@ -218,6 +411,127 @@ impl SettledStep {
     }
     pub(crate) fn stderr(&self) -> &[u8] {
         &self.stderr
+    }
+}
+
+/// Captures/status have no publication authority; only ProcessScope owns it.
+pub(crate) struct CompletedStep {
+    pub(crate) status: std::process::ExitStatus,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
+    pub(crate) log: native::LogReport,
+}
+
+/// A single sequential producer lane for one actual private stage. Neither this
+/// scope nor its permission can be cloned or extracted by validation callbacks.
+pub(crate) struct ProcessScope {
+    context: OperationContext,
+    lease: ProducerLease,
+    permission: Option<ProducerPermission>,
+    terminal: Option<AbortInstallation>,
+}
+impl ProcessScope {
+    pub(crate) fn new(context: &OperationContext, lease: ProducerLease) -> Self {
+        // This initial token means no producer was admitted by this new scope,
+        // not a manufactured process exit or guardian receipt.
+        let permission = lease.state.permission(context, lease.evidence.clone());
+        Self {
+            context: context.clone(),
+            lease,
+            permission,
+            terminal: None,
+        }
+    }
+    pub(crate) fn prepare(
+        &self,
+        program: impl AsRef<std::ffi::OsStr>,
+        purpose: Purpose,
+        label: &str,
+    ) -> InstallResult<PreparedStep> {
+        PreparedStep::new(&self.context, program, purpose, label)
+    }
+    pub(crate) fn run(&mut self, step: PreparedStep) -> InstallResult<CompletedStep> {
+        if let Some(abort) = &self.terminal {
+            return Err(InstallFailure::Abort(abort.clone()));
+        }
+        self.permission.take(); // Invalidate before EVERY attempt.
+        if !Arc::ptr_eq(&self.context.cancel, &step.context.cancel) {
+            let abort = AbortInstallation {
+                cause: AbortCause::Custody,
+                cleanup_confirmed: true,
+                capture_complete: false,
+                label: "producer operation mismatch".into(),
+                config_path: self.context.config_path.clone(),
+                limit_key: "operation_timeout_seconds",
+                evidence: self.lease.evidence.clone(),
+            };
+            self.terminal = Some(abort.clone());
+            return Err(InstallFailure::Abort(abort));
+        }
+        match step.run(self.lease.clone()) {
+            Ok(step) => {
+                if !Arc::ptr_eq(&step.lease.state.0, &self.lease.state.0) {
+                    let abort = AbortInstallation {
+                        cause: AbortCause::Custody,
+                        cleanup_confirmed: false,
+                        capture_complete: false,
+                        label: "producer owner mismatch".into(),
+                        config_path: self.context.config_path.clone(),
+                        limit_key: "operation_timeout_seconds",
+                        evidence: self.lease.evidence.clone(),
+                    };
+                    self.terminal = Some(abort.clone());
+                    return Err(InstallFailure::Abort(abort));
+                }
+                self.permission = step
+                    .lease
+                    .state
+                    .permission(&self.context, self.lease.evidence.clone());
+                if self.permission.is_none() {
+                    let failure = authority_failure(
+                        &self.context,
+                        "producer proof is missing or invalidated",
+                        self.lease.evidence.clone(),
+                    );
+                    if let InstallFailure::Abort(abort) = &failure {
+                        self.terminal = Some(abort.clone());
+                    }
+                    return Err(failure);
+                }
+                Ok(CompletedStep {
+                    status: step.status,
+                    stdout: step.stdout,
+                    stderr: step.stderr,
+                    log: step.log,
+                })
+            }
+            // The native boundary emits Ordinary only before admission. Earlier
+            // settled facts remain valid when this attempt admitted no producer.
+            Err(InstallFailure::Ordinary(error)) => {
+                self.permission = self
+                    .lease
+                    .state
+                    .permission(&self.context, self.lease.evidence.clone());
+                Err(InstallFailure::Ordinary(error))
+            }
+            Err(InstallFailure::Abort(abort)) => {
+                self.terminal = Some(abort.clone());
+                Err(InstallFailure::Abort(abort))
+            }
+        }
+    }
+    pub(crate) fn finish(mut self) -> InstallResult<ProducerPermission> {
+        if let Some(abort) = self.terminal.take() {
+            return Err(InstallFailure::Abort(abort));
+        }
+        match self.permission.take() {
+            Some(permission) if permission.current() => Ok(permission),
+            _ => Err(authority_failure(
+                &self.context,
+                "producer settlement is unavailable or stale",
+                self.lease.evidence.clone(),
+            )),
+        }
     }
 }
 
@@ -282,7 +596,8 @@ impl PreparedStep {
     }
     #[cfg(target_os = "linux")]
     pub(crate) fn run(self, lease: ProducerLease) -> InstallResult<SettledStep> {
-        native::run(self, lease)
+        let ticket = lease.begin(&self.context)?;
+        native::run(self, lease, ticket)
     }
 }
 

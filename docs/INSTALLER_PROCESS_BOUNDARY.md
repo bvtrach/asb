@@ -579,3 +579,66 @@ Local version44 is staging, not final release allocation. A separately
 reproduced compatibility-proxy startup repair must precede the queued runner
 delivery; root will coordinate monotonic patch versions during final ancestry
 integration. Preserve all current source/binary checkpoints rather than amend.
+
+## Actual staging owner and generation-bound permission: focused checkpoint
+
+Root's intermediate WIP review correctly rejected pointer identity plus a
+cloneable keepalive as sufficient settlement authority: a second scope could
+otherwise mint a never-admitted token while another scope exposed a producer.
+The prototype now uses actual owner-side private state, not that rejected design.
+Its generation, active admission, actual settlement proof, operation identity,
+consumed flag and sticky uncertainty are all revalidated on permission consume.
+Before every attempted admission, the actual owner disables destructive Drop,
+the old generation's proof is invalidated, and a private worker ticket is issued.
+Only explicit never-admitted or matching guardian-quiescent completion settles
+that ticket. Parent disconnect/deadline uncertainty permanently denies permission
+even if the retained worker later observes quiescence. No process exit is invented.
+
+ProcessScope returns status/captures separately from its non-cloneable final
+ProducerPermission. Another scope cannot finish while an actual producer is
+active; an already-issued token is stale after a later admission. Same-owner
+permission is consumed BEFORE restoring quiet staging or destructive publication.
+The worker owns the real Arc<Staging>, not a pathname surrogate; on an uncertain
+parent return, that owner and its opened directory/file identities remain alive.
+After later quiescence the guard drops without deleting raw evidence because its
+quiet flag was never restored. Ordinary pre-admission failure settles only the
+new never-admitted fact; it does not restore an old generation's permission.
+
+This remains an intermediate cfg(test)/Linux prototype and actual-Staging seam,
+NOT the broad production caller migration. The real Staging constructor,
+identity-bound snapshot/publication and cleanup code are exercised by a private
+test driver; producer fields/guards are test-scoped until all owning callers
+carry the typed operation and permission. Legacy LoggedStatus, command_output,
+DownloadChild and callback/fallback APIs remain unchanged, as do their four
+original observed-red cases. Non-Linux qualification is not claimed.
+
+| Evidence | Actual result |
+| --- | --- |
+| `target/installer44-staging-build.log` | Actual ASB build FIRST, exit0,13.58s |
+| `target/installer44-staging-focus.log` | Core19/0/0ignored,25.40s compile,25.25s runtime |
+| `target/installer44-staging-clippy.log` | Strict workspace/all-targets/all-features `-D warnings` PASS,15.24s |
+| `target/installer44-staging-unwind-guard.log` | Exact real-writer case repeated1/0,24.53s compile,0.03s runtime |
+| `target/installer44-staging-clippy-final.log` | Exact final source strict lint PASS,9.64s |
+| `target/installer44-staging-fmt.log` | Formatting PASS; git diff whitespace check also PASS |
+
+The four added distinct cases cover stale never-admitted/second-scope denial
+while a real helper writes the actual Stage, matching quiescent publication,
+wrong-owner proof preserving old destination and raw stage, one-use consume,
+and actual guard retention across bounded parent uncertainty then raw retention
+after late quiescence. The repeated case adds only an unwind release guard for
+its handshake file so assertion failures cannot strand the waiting fixture.
+It is not a twentieth distinct test. All tests are synthetic/offline; no live
+tool install, provider, SDK, Docker, sudo or host setting is involved.
+
+Actual ASB before/after and frozen copy:
+`b518297ec9662e0fde38286bf170c88365186bd036b7a92b01911117de1f473d`.
+Final libtest post-run/frozen copy:
+`6c72fa1b2a6e931a820303d3ff586d65f9be0935bd7c9e2d461aad3747bd94ab`.
+See `target/installer44-staging-before.sha256` and
+`target/installer44-staging-final.sha256`, and preserved copies
+`target/qualification/installer44-staging-{asb,libtests}`. No pre-run final libtest
+hash is claimed. No failure/retry occurred in this matrix; all earlier red and
+qualification evidence is preserved. All handles are terminal. No full suite,
+PR, push or release; independent source review precedes broad caller dependency
+on this owner-authority API. Remaining read/pump/start faults and complete typed
+all-caller Abort propagation are still required, not inferred from these19 tests.

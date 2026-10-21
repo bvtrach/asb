@@ -61,7 +61,7 @@ pub(in crate::install) fn same_object(first: &fs::Metadata, second: &fs::Metadat
     }
 }
 
-pub(super) struct Staging {
+pub(in crate::install) struct Staging {
     pub(super) directory: PathBuf,
     pub(super) file: PathBuf,
     handle: fs::File,
@@ -69,9 +69,13 @@ pub(super) struct Staging {
     directory_handle: fs::File,
     settled: bool,
     published: bool,
+    #[cfg(all(test, target_os = "linux"))]
+    producer: crate::install::process::ProducerState,
+    #[cfg(all(test, target_os = "linux"))]
+    producer_quiet: std::sync::atomic::AtomicBool,
 }
 impl Staging {
-    pub(super) fn new(destination: &Path) -> Result<Self, Error> {
+    pub(in crate::install) fn new(destination: &Path) -> Result<Self, Error> {
         let parent = destination
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
@@ -124,6 +128,10 @@ impl Staging {
                 directory_handle,
                 settled: false,
                 published: false,
+                #[cfg(all(test, target_os = "linux"))]
+                producer: crate::install::process::ProducerState::default(),
+                #[cfg(all(test, target_os = "linux"))]
+                producer_quiet: std::sync::atomic::AtomicBool::new(true),
             })
         })();
         created.map_err(|error: io::Error| {
@@ -225,6 +233,8 @@ impl Staging {
         validated: &Snapshot,
         publication: Publication,
     ) -> Result<(), Error> {
+        #[cfg(all(test, target_os = "linux"))]
+        self.require_quiet_producer().map_err(crate::io_error)?;
         // The probe knows the original pathname (and may retain its directory
         // handle). Move that entry out before trusting a commit pathname.
         let quiet = Quarantined::take(
@@ -308,6 +318,8 @@ impl Staging {
         quiet.finish(result)
     }
     fn settle(&self) -> io::Result<()> {
+        #[cfg(all(test, target_os = "linux"))]
+        self.require_quiet_producer()?;
         checkpoint(FaultPoint::Cleanup, &self.file)
             .map_err(|error| io::Error::other(error.to_string()))?;
         self.directory_owned()?;
@@ -551,6 +563,71 @@ impl Drop for Staging {
             self.settled = true;
             let _ = self.settle();
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+impl crate::install::process::ProducerOwner for Staging {
+    fn producer_started(&self) {
+        self.producer_quiet
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+impl Staging {
+    fn require_quiet_producer(&self) -> io::Result<()> {
+        if self
+            .producer_quiet
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "installation producer settlement is unavailable; private staging is retained",
+            ))
+        }
+    }
+    pub(in crate::install) fn producer_scope(
+        self: &std::sync::Arc<Self>,
+        context: &crate::install::process::OperationContext,
+    ) -> crate::install::process::ProcessScope {
+        let lease = crate::install::process::ProducerLease::with_state(
+            std::sync::Arc::clone(self),
+            self.producer.clone(),
+            &self.directory,
+        );
+        crate::install::process::ProcessScope::new(context, lease)
+    }
+    pub(in crate::install) fn accept_producer_permission(
+        &self,
+        permission: crate::install::process::ProducerPermission,
+    ) -> crate::install::process::InstallResult<()> {
+        self.producer_quiet
+            .store(false, std::sync::atomic::Ordering::Release);
+        permission.consume_for(&self.producer)?;
+        self.producer_quiet
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+    pub(in crate::install) fn producer_path(&self) -> &Path {
+        &self.file
+    }
+    pub(in crate::install) fn publish_with_permission_for_test(
+        mut self,
+        permission: crate::install::process::ProducerPermission,
+        destination: &Path,
+    ) -> crate::install::process::InstallResult<()> {
+        self.accept_producer_permission(permission)?;
+        let options = Options {
+            kind: "producer custody fixture",
+            limit: 1024 * 1024,
+            checksum: None,
+            executable: false,
+        };
+        let snapshot = self.snapshot(&options)?;
+        let result = self.publish_copy(destination, &options, &snapshot, Publication::Replace);
+        self.finish(result).map_err(Into::into)
     }
 }
 

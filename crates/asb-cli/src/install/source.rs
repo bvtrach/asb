@@ -9,7 +9,7 @@ const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 mod prepared;
 pub(super) use prepared::Input;
 pub(super) use prepared::Quarantined;
-use prepared::Staging;
+pub(in crate::install) use prepared::Staging;
 pub(super) use prepared::same_object;
 pub(super) use prepared::settle_directory;
 pub(super) use prepared::verify_pinned_checksum;
