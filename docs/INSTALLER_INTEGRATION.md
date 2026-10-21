@@ -99,3 +99,8 @@ debug executable was relinked, and no full/lint/build suite is claimed again.
 Independent final promotion review, actual-main ancestry, hosted/package CI,
 merge, both post-merge jobs and release remain pending. No push/PR/release action
 was performed here.
+
+Root independently approved the exact test-only merge and `f57306b3` proof after
+reading the complete diff, both ten-scenario transcripts, restored-mode/removal
+checks and unchanged frozen-executable hash. The known owning-fixture promotion
+block is closed locally; actual-main ancestry and hosted/package CI remain due.
