@@ -201,6 +201,10 @@ pub(crate) fn bpftrace_missing_dependency(dependency: &str, error: std::io::Erro
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/bpftrace_install.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
