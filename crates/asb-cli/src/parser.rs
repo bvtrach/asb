@@ -222,6 +222,12 @@ struct SetupArgs {
     agent: Option<String>,
     #[arg(long)]
     workload: Option<String>,
+    /// Installed workload instance ID, or enabled trial from --trial-set.
+    #[arg(long, value_name = "INSTANCE")]
+    trial: Option<String>,
+    /// Project-local workload trial selection TOML.
+    #[arg(long, value_name = "FILE", requires = "trial")]
+    trial_set: Option<String>,
     #[arg(long)]
     provider: Option<String>,
     #[arg(long)]
@@ -239,6 +245,8 @@ impl From<SetupArgs> for config::SetupOptions {
         Self {
             agent: value.agent,
             workload: value.workload,
+            trial: value.trial,
+            trial_set: value.trial_set,
             provider: value.provider,
             model: value.model,
             concurrency: value.concurrency,
@@ -459,11 +467,16 @@ mod tests {
             "bug-fix",
             "--workspace",
             "workspace",
+            "--trial",
+            "one",
+            "--trial-set",
+            "selected.workload.toml",
         ])
         .expect("typed setup options parse");
         let rendered = format!("{cli:?}");
         assert!(rendered.contains("gpt-6.1-sol"));
         assert!(rendered.contains("benchmark.toml"));
+        assert!(rendered.contains("selected.workload.toml"));
     }
 
     #[test]

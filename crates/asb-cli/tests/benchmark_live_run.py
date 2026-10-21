@@ -124,8 +124,19 @@ class NormalRunQualification(unittest.TestCase):
                         self.assertIsNone(process.poll())
                         base = f"http://127.0.0.1:{int((host_root / 'port').read_text())}/v1"
                     configuration = artifacts / "benchmark.toml"
-                    configuration.write_text(f"agent='pi'\nprovider='openrouter'\nmodel='fixture-model'\nworkload='{suite}'\ntrial='{instance}'\n"
-                                             + f"workspace='{artifacts}/workspace'\nlog_file='{artifacts}/run.log'\n")
+                    setup = subprocess.run([binary,"setup","--agent","pi","--provider","openrouter",
+                        "--model","fixture-model","--workload",suite,"--trial",instance,
+                        "--workspace",str(artifacts / "workspace"),"--output",str(configuration)],
+                        cwd=root,capture_output=True,timeout=30)
+                    (artifacts / "setup.stdout").write_bytes(setup.stdout)
+                    (artifacts / "setup.stderr").write_bytes(setup.stderr)
+                    self.assertEqual(setup.returncode,0,setup.stderr.decode())
+                    # Explicit per-qualification collection, not setup's host
+                    # defaults. Keep all adapter-neutral setup identity fields.
+                    selected = configuration.read_text().split("[measurements]",1)[0]
+                    configuration.write_text("\n".join(
+                        "log_file = " + json.dumps(str(artifacts / "run.log"))
+                        if line.startswith("log_file = ") else line for line in selected.splitlines()) + "\n")
                     if collector_selection:
                         with configuration.open("a") as output:
                             output.write("[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=" + json.dumps(collector_selection) + "\n")
@@ -259,7 +270,8 @@ class NormalRunQualification(unittest.TestCase):
                     if os.environ.get("ASB_TEST_EXPECT_RUNTIME_KIND"):
                         self.assertEqual(receipt["kind"],os.environ["ASB_TEST_EXPECT_RUNTIME_KIND"])
                     observation = json.loads((matching[0] / "execution.json").read_text())
-                    self.assertEqual(observation["agent_tree_cleanup"], "supervisor-confirmed")
+                    self.assertEqual(observation["agent_tree_cleanup"],
+                        "delegated-owned-workload" if terminal else "supervisor-confirmed")
                     self.assertLessEqual(abs(record["elapsed_ms"] - observation["elapsed_seconds"] * 1000), 1)
                     self.assertGreater(observation["preparation_seconds"], 0)
                     if terminal:
@@ -272,6 +284,9 @@ class NormalRunQualification(unittest.TestCase):
                     else:
                         self.assertIn("cright" if resolved else "asb-real-agent.txt", (matching[0] / "candidate.patch").read_text())
                     self.assertEqual(json.loads((matching[0] / "task-cleanup.json").read_text())["status"], "removed")
+                    self.assertEqual(client.containers.list(all=True,
+                        filters={"label":"asb.attempt="+identity["attempt_id"]}), [],
+                        "official grading must finish SDK-owned service/container teardown")
             finally:
                 network.remove()
 

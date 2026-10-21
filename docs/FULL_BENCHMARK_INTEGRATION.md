@@ -27,40 +27,40 @@ workload registrations remain explicit.
 
 ## Implementation and evidence gates
 
-- [ ] Extend WorkloadAdapter with installed task catalogs and per-attempt
+- [x] Extend WorkloadAdapter with installed task catalogs and per-attempt
   sessions. Put preparation, submission capture, evaluation, environment and
   cleanup in the owning adapters; keep agent/provider dispatch generic.
-- [ ] Add structured task/dataset/attempt identity, baseline evidence,
+- [x] Add structured task/dataset/attempt identity, baseline evidence,
   submission identity and evaluator outcomes to run and comparison records.
-- [ ] Install functioning, pinned project-local evaluator tools and dataset
+- [x] Install functioning, pinned project-local evaluator tools and dataset
   material, not only upstream reference text. Reuse the project Python/proxy
   configuration and shared caches. Diagnose missing Docker/resource access.
-- [ ] Implement real SWE-bench issue selection, clean base checkout and task
+- [x] Implement real SWE-bench issue selection, clean base checkout and task
   environment, candidate patch capture and official containerized evaluation
   for all three dataset variants. Keep gold patches/evaluator tests out of
   agent inputs. Grade usable submissions independently of agent exit status.
-- [ ] Implement real original Terminal-Bench 1.0 task/environment execution
+- [x] Implement real original Terminal-Bench 1.0 task/environment execution
   and official grading, using the configured ASB agent/provider/model.
-- [ ] Implement real Terminal-Bench 2.1 task/environment execution and Harbor
+- [x] Implement real Terminal-Bench 2.1 task/environment execution and Harbor
   grading, using the configured ASB agent/provider/model.
-- [ ] Make existing installed agents usable inside required task environments;
+- [x] Make existing installed agents usable inside required task environments;
   do not silently replace the selected agent with an upstream default agent.
-- [ ] Integrate generic execution targets, collector targeting and provider/
+- [x] Integrate generic execution targets, collector targeting and provider/
   tape connectivity for containerized attempts. Distinguish agent execution
   from environment preparation and grading in timing/accounting.
-- [ ] Support complete catalogs and selected subsets through setup and the
+- [x] Support complete catalogs and selected subsets through setup and the
   workload selector. Keep dataset task parallelism distinct from identical
   replicas/repetitions; bind record/replay material to the actual instance.
-- [ ] Implement bounded resource usage, fresh attempts, safe resume/cache
+- [x] Implement bounded resource usage, fresh attempts, safe resume/cache
   identities, precise failure classes and cancellation/crash cleanup that
   touches only ASB-owned resources. Never prune unrelated host resources.
-- [ ] Aggregate complete selected populations with explicit denominators,
+- [x] Aggregate complete selected populations with explicit denominators,
   coverage and infrastructure failures. Preserve official outcome semantics;
   never report partial/mock/smoke output as a full upstream score.
-- [ ] Add provider-free unit/integration tests for contracts, all five
+- [x] Add provider-free unit/integration tests for contracts, all five
   catalogs, adapters, install commands, selection, run/sweep, record/replay,
   evaluation failures, stale evidence, accounting and cleanup.
-- [ ] Validate actual upstream evaluator/container flows with known-good and
+- [x] Validate actual upstream evaluator/container flows with known-good and
   incorrect submissions without paid/live provider calls. Record what each
   runtime test actually proves; do not confuse an oracle evaluation with
   evidence that a real agent solved the task.
@@ -2540,3 +2540,40 @@ the trait/UML renderer is unchanged. Complete-source graph regressions pass in
 under two seconds and `make build` succeeds. Absolute/relative source paths are
 normalized identically so the regression exercises the actual build graph.
 Final source/hosted checks and delivery remain to be recorded.
+
+### Final implementation review and minor-release preparation
+
+The implementation gates above were reviewed against owning adapters, typed
+session/identity/selection contracts, install recipes, retained runtime evidence
+and provider-free regressions. A missing grade or incomplete ordinary outcome
+refuses reuse; owned-resource recovery plus a fresh sweep is the explicit new
+attempt disposition, preserving prior results/reports in history. Missing
+observations are not an implementation requirement to invent evidence.
+
+The review found that non-interactive setup could not specify an instance even
+though the workload/setup TUIs could. Generic `--trial INSTANCE` and optional
+`--trial-set FILE` now round-trip into benchmark configuration and use the same
+catalog/selection validation as planning. Missing/unknown instances, disabled
+trial-set entries, invalid paths and stale catalogs fail before replacing an
+existing configuration. Provider-free CLI regressions cover all five synthetic
+catalog shapes, configured local directories and no SDK/provider execution.
+README and evaluation guidance now describe actual original-benchmark execution
+instead of retaining the obsolete smoke-only warning for these five IDs.
+
+A final measured public-CLI sweep passed for each workload with real Pi,
+deterministic synthetic-provider repairs, official grading, usage/lifecycle
+records, SVG/HTML and scoped teardown: Full 64.173s, Lite 63.899s, Verified
+63.782s, original Terminal 1.0 46.089s and original Terminal 2.1 56.010s.
+The first Terminal refresh caught an outdated fixture assertion expecting
+pre-grading quiescence; its correction verifies adapter-owned service lifetime
+and independently checks that SDK-owned task containers are removed afterward.
+This changes the fixture contract, not grading or benchmark task semantics.
+These remain representative known repairs, not full-population AI scores.
+
+Workspace/package version is prepared as 0.2.0. Source tests and strict Clippy
+pass with the new setup selection; the complete five-workload runtime sequence
+is being repeated using public scripted setup first. Exact release-head package,
+hosted, merge/main-CI and publication checks remain required. Signed pre-release
+head 923ffa28 passed hosted run 39546156258 before these final setup/docs changes.
+The two delivery boxes intentionally remain open until those hosted actions
+are verified; implementation checks alone do not authorize a release claim.

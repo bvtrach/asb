@@ -12,6 +12,8 @@ use std::io::Write;
 pub struct SetupOptions {
     pub agent: Option<String>,
     pub workload: Option<String>,
+    pub trial: Option<String>,
+    pub trial_set: Option<String>,
     pub provider: Option<String>,
     pub model: Option<String>,
     pub concurrency: Option<usize>,
@@ -24,13 +26,18 @@ pub fn setup(options: SetupOptions, output: &mut dyn Write) -> Result<(), Error>
     let SetupOptions {
         agent,
         workload,
+        trial,
+        trial_set,
         provider,
         model,
         concurrency,
         workspace,
         output: destination,
     } = options;
-    let (_, project_config) = project::load(std::path::Path::new("."))?;
+    let (root, project_config) = project::load(std::path::Path::new("."))?;
+    let workload_directory = std::env::var_os("ASB_WORKLOAD_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| project::resolve(&root, &project_config.workloads_dir));
     let agent = required(agent)?;
     let known_agents = agents::all()
         .iter()
@@ -64,8 +71,8 @@ pub fn setup(options: SetupOptions, output: &mut dyn Write) -> Result<(), Error>
         provider,
         model,
         concurrency,
-        trial_set: None,
-        trial: None,
+        trial_set,
+        trial,
         workspace: workspace.unwrap_or(project_config.workspace_dir),
         log_file: destination
             .as_deref()
@@ -77,6 +84,24 @@ pub fn setup(options: SetupOptions, output: &mut dyn Write) -> Result<(), Error>
             collectors: measurements::available_collectors(),
         }),
     };
+    let catalog = crate::workloads::planning_catalog(&config.workload, &workload_directory)
+        .map_err(Error::Input)?;
+    if config.trial_set.is_some() && config.trial.is_none() {
+        return Err(Error::Input(
+            "--trial-set requires --trial; use `asb setup tui` to select multiple instances".into(),
+        ));
+    }
+    if catalog.is_some() && config.trial.is_none() {
+        return Err(Error::Input(format!(
+            "workload `{}` requires --trial INSTANCE; choose an installed instance with `asb workload tui` or use `asb setup tui`",
+            config.workload
+        )));
+    }
+    if catalog.is_none() && config.trial.is_some() && config.trial_set.is_none() {
+        return Err(Error::Input("--trial requires --trial-set for a workload without an installed instance catalog; select trials with `asb workload tui` first".into()));
+    }
+    crate::workloads::describe_selection(&config, &workload_directory, catalog.as_ref())
+        .map_err(Error::Input)?;
     let text = toml::to_string_pretty(&config)
         .map_err(|error| Error::Input(format!("cannot render configuration: {error}")))?;
     if let Some(path) = destination {
@@ -157,6 +182,8 @@ mod tests {
         SetupOptions {
             agent: Some(agent.into()),
             workload: Some("bug-fix".into()),
+            trial: None,
+            trial_set: None,
             provider: Some(provider.into()),
             model: Some(model.into()),
             concurrency: None,

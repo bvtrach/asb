@@ -160,8 +160,10 @@ paths are qualified. Bounded distinct-configuration scheduling (separate from
 replicas), mixed original-task overlap and SWE original source-image fallback
 are also qualified. Scheduling choices are recorded because simultaneous
 configurations share host resources; an active-attempt count budget is not a
-host memory reservation. Content-bound resume, scalable population presentation
-and abrupt-crash recovery remain unfinished. See the exact requirements and evidence in
+host memory reservation. Content-bound resume, complete-population selection
+reporting and owned-resource crash recovery are implemented with explicit
+evidence checks. They cannot reconstruct an unobserved task grade or missing
+execution observations. See the exact requirements and evidence in
 [the full integration ledger](FULL_BENCHMARK_INTEGRATION.md).
 No old smoke result is retroactively interpreted as an upstream grade.
 
@@ -247,6 +249,24 @@ exact inspected artifact bytes; changed bindings/grades or a conflicting normal
 outcome/measurement fail instead of being silently merged. This is current
 local consistency, not historical attestation or a completion/resume receipt.
 It does not authorize replaying the agent or retrying an unresolved task.
+
+`--resume --reconcile-completed` has a distinct grade-only closure path for an
+allocated, started slot whose ordinary execution record is absent. It requires
+the original input snapshot, start/allocation/selection and an independently
+inspected completed official grade. A private per-slot receipt binds preserved
+outputs; subsequent resume checks that seal without rerunning the client.
+Reporting labels these rows `recovered-official-grade`, preserves false as well
+as true outcomes and leaves execution timing, process success, tokens, steps
+and cohort unknown. It links partial collector artifacts as diagnostics, but
+does not graph them as final observations. Unknown process status remains a
+non-success command outcome, even when its official grade is resolved.
+
+This closure is not an ordinary execution completion receipt or historical
+attestation. Report-only imports cannot grant it by themselves. Conflicting
+ordinary outcomes, unknown grades or changed original evidence refuse reuse.
+After recovering owned resources where necessary, a new sweep without
+`--resume` creates independent attempts and preserves prior results in history;
+it does not replace an old unresolved grade with the result of a hidden retry.
 
 For the original SWE-bench Full/Lite/Verified adapters, a frozen captured patch
 whose official evaluation never completed can now be graded explicitly with

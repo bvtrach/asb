@@ -9,22 +9,22 @@ claims that an AI solved a complete population.
 
 | Requirement | Current evidence | Remaining delivery verification |
 | --- | --- | --- |
-| Workload-owned catalogs/lifecycle | `WorkloadAdapter` installed/planning/preparation hooks; `WorkloadSession`; owning SWE/Terminal adapters | Final full-diff boundary review |
-| Exact populations | Pinned catalog installers; installed Full/Lite/Verified 2294/300/500, original Terminal 1.0/2.1 80/89; complete installed-catalog 3263-entry planning/reporting qualification passed | Final release regression |
-| Functioning local SDK/tool installs | Separate `tools/swebench.rs`, `terminal_bench.rs`, `harbor.rs`; fresh-project public install qualification | Verify final release packaging/install |
-| Task/submission/evaluator identity | Dataset/task/attempt records, baseline provenance, captured patch/environment and SDK/image identity | Final cross-path contract review |
-| Original SWE execution/evaluation | Shared family engine, private evaluator inputs, clean isolated task, official harness; real correct/incorrect SDK qualifications | Final release regression set |
-| Original Terminal 1.0 execution/evaluation | Original task definitions, SDK Compose/tmux/parser; known grades and service-bearing Jupyter qualification | Final selected-agent integration regression |
-| Original Terminal 2.1 execution/evaluation | Original Harbor tasks, environment/verifier/reward parser; correct/incorrect SDK qualifications | Final selected-agent integration regression |
-| Selected ASB agent/provider | Generic guest driver and existing agent adapters; shared bootstrap/endpoint/relay; real Pi with synthetic provider | Final supported bootstrap/dependency review |
-| Measurement/tape targeting | Generic execution target and lifecycle boundaries; isolated collectors, scoped relay/tape; mixed original-task SVG/HTML qualification | Final measured/disabled-collection regressions |
-| Population selection and scheduling | Installed IDs, planning catalogs, bounded full manifests; jobs distinct from replicas; weighted admission | Final full-population format/report qualification |
-| Accurate resolution semantics | Official task grade separate from process exit; explicit selected denominators, missing/infra outcomes and unscored legacy smoke | Final population reporting review |
-| Freshness and completed continuation | Input snapshots, per-slot intent/allocation, completion evidence, explicit reconciliation, grade imports; separate grade-only closure for started slots with known official grades and missing ordinary run records | Final mixed-runtime qualification; review ungraded/incomplete-outcome disposition |
-| Failure/cancellation resource safety | Owned journals, scoped stop/preserve, inactive-owner recovery, no host-wide prune; actual interrupted fixtures | Final failure/cleanup regression audit |
-| Existing result recovery | SWE official-report reconstruction and Terminal SDK-return observations; imports/compare bind source bytes | Unknown unobserved grades must remain explicit, never guessed |
-| Provider-free tests | Unit/offline CLI, protocol, guest lifecycle, parallel/partial/replay/unmeasured suites | Exact final source/package/hosted runs |
-| Delivery | Draft PR #227; signed incremental commits and hosted CI | Full review, merge, exact-main CI, minor release |
+| Workload-owned catalogs/lifecycle | Reviewed adapter hooks and `WorkloadSession`; shared runner/sweep use generic invocation, execution, evaluation and cleanup contracts | Verified implementation; release-head checks below |
+| Exact populations | Pinned installed catalogs: 2294/300/500/80/89; complete installed-catalog 3263-entry planning/reporting qualification passed | Verified; no complete-population AI score claimed |
+| Functioning local SDK/tool installs | Separate SWE/Terminal/Harbor recipes; fresh-project public install passed in 151.349s (`benchmark-cold-install-final.log`) | Release-head package/install verification |
+| Task/submission/evaluator identity | Reviewed task/dataset/attempt, baseline, submission and SDK/image records; stale/conflicting/duplicate evidence regressions pass | Verified contracts |
+| Original SWE execution/evaluation | Owning family engine; private evaluator inputs; real official gold/incorrect checks for all three passed in 211.894s (`benchmark-resources-official-swe.log`) | Final 0.2.0 scripted-setup/runtime refresh |
+| Original Terminal 1.0 execution/evaluation | Original SDK task/Compose/tmux/parser; correct/incorrect grading; service-bearing Jupyter qualification and SDK-owned post-grade teardown | Final 0.2.0 scripted-setup/runtime refresh |
+| Original Terminal 2.1 execution/evaluation | Original Harbor environment/verifier/reward parser; real correct/incorrect grading and retained-grading qualifications | Final 0.2.0 scripted-setup/runtime refresh |
+| Selected ASB agent/provider | Reviewed generic guest driver and recipe-derived bootstrap for every registered agent; actual npm/Python/standalone install checks; real Pi with synthetic provider | Verified supported recipe classes; not every agent/model pairing is equivalent |
+| Measurement/tape targeting | Scoped execution targets/lifecycle; actual measured and disabled-collection recovery sweeps passed in 108.767s/99.966s; record/replay regressions | Verified; release-head regression checks |
+| Population selection and scheduling | Complete catalog plan/report passed; installed IDs; independent jobs/replica budget; typed `setup --trial`/`--trial-set` validates selections before writing | Source/package tests and final scripted-setup refresh |
+| Accurate resolution semantics | Reviewed evaluator-based resolution and coverage; missing/infra attempts stay in selected denominator; smoke unscored; repetitions not silently pass@1 | Verified unit/reporting and real grader evidence |
+| Freshness and completed continuation | Original input/intent/allocation and artifact seals; ordinary reconciliation; report-only imports; explicit grade-only closure and no-repeat runtime checks | Verified safe disposition: unknown/incomplete evidence refuses reuse; a fresh sweep preserves old history |
+| Failure/cancellation resource safety | Owned journals and scoped stop/preserve; real controller SIGKILL/EOF/TERM fixtures; unrelated sibling/image preservation; no global prune | Verified; unresolved attempts are not silently retried |
+| Existing result recovery | SWE raw-report and Terminal SDK-return reconstruction; source-byte bindings; true/false preservation; unknown outcomes remain unknown | Verified, not historical attestation or invented execution metrics |
+| Provider-free tests | 454 unit, 87 offline CLI, 21 benchmark protocol suites, guest/parallel/partial/replay/unmeasured checks; added all-five setup-selection CLI tests | Release-head source/package/hosted rerun |
+| Delivery | Signed PR #227 head 923ffa28 passed hosted run 39546156258; 0.2.0 preparation follows on the same PR | Merge, exact-main CI, minor release still required |
 
 Started-slot continuation now has an explicit grade-only closure path. Existing
 grade imports remain reporting-only and are never completion receipts or
@@ -38,3 +38,14 @@ No amount of metadata recovery can infer an unobserved verifier result. Safe
 handling means preserving the attempt, reporting unknown/missing evidence and
 requiring an explicit new-attempt disposition where necessary, not silently
 rerunning an unresolved task until it passes.
+
+The final source review found and repaired two integration-facing gaps rather
+than treating green checks as completion: README still described the real
+adapters as smoke exercises, and non-interactive setup lacked an instance
+selection argument. Setup now uses generic catalog/selection validation, with
+provider-free all-five-catalog tests for valid, missing, unknown and stale
+selections. A final real selected-client sweep for every workload additionally
+uses the public setup command before execution. The Terminal runtime fixture's
+old pre-evaluation quiescence assertion was corrected to require the adapter's
+service handoff followed by actual SDK-owned container removal, not to accept
+an unverified cleanup claim.
