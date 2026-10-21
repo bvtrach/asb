@@ -1,5 +1,6 @@
 //! Fresh sequential batches with a durable intended-slot plan and outcome links.
 mod replay;
+use super::campaign::{Plan, ReplayInput, Slot};
 use super::{RunOptions, batch, replica};
 use crate::{Error, benchmark::BenchmarkConfig, cassette::Compatibility, io_error};
 use serde::Serialize;
@@ -68,53 +69,6 @@ impl BatchIdentity {
             total: self.repeat * self.concurrency as u64,
         }
     }
-}
-
-#[derive(Serialize)]
-struct Slot {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    replay_track: Option<u64>,
-    id: u64,
-    batch: u64,
-    replica: usize,
-    workspace: PathBuf,
-    log: PathBuf,
-    measurements: Option<PathBuf>,
-    replay_input: Option<usize>,
-}
-
-#[derive(Serialize)]
-struct ReplayInput {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    complete: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    track: Option<u64>,
-    source: PathBuf,
-    private: PathBuf,
-    bytes: u64,
-    sha256: String,
-}
-
-#[derive(Serialize)]
-struct Plan<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    replay_selection: Option<crate::cassette::SelectionPlan>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    recording: Option<PathBuf>,
-    admission: crate::planning::BatchAdmissionPolicy,
-    schema_version: u32,
-    scope: &'static str,
-    campaign: &'a str,
-    source: PathBuf,
-    configuration: &'a BenchmarkConfig,
-    configuration_sha256: String,
-    repeat: u64,
-    concurrency: usize,
-    mode: &'static str,
-    respect_record_timings: bool,
-    measurement_root: Option<PathBuf>,
-    replay_inputs: Vec<ReplayInput>,
-    slots: Vec<Slot>,
 }
 
 pub(super) fn run(
@@ -195,19 +149,19 @@ pub(super) fn run(
         recording: recording_destination.clone(),
         admission,
         schema_version: 1,
-        scope: "intended-executions-not-attempt-evidence",
-        campaign: &campaign,
+        scope: "intended-executions-not-attempt-evidence".into(),
+        campaign: campaign.clone(),
         source: config_path.canonicalize().map_err(io_error)?,
-        configuration: &config,
+        configuration: config.clone(),
         configuration_sha256: crate::cassette::digest(
             &serde_json::to_vec(&config).map_err(|error| Error::Input(error.to_string()))?,
         ),
         repeat,
         concurrency: config.concurrency,
         mode: match options.mode {
-            Some(crate::tape::Mode::Record) => "record",
-            Some(crate::tape::Mode::Replay) => "replay",
-            _ => "live",
+            Some(crate::tape::Mode::Record) => crate::planning::ExecutionMode::Record,
+            Some(crate::tape::Mode::Replay) => crate::planning::ExecutionMode::Replay,
+            _ => crate::planning::ExecutionMode::Live,
         },
         respect_record_timings: options.respect_record_timings,
         measurement_root: measurement_root.clone(),
@@ -656,7 +610,7 @@ fn transfer_input(path: &Path, output: &mut dyn Write) -> Result<(u64, String), 
     Ok((bytes, format!("{:x}", hash.finalize())))
 }
 
-fn stage_replay(root: &Path, plan: &Plan<'_>, concurrency: usize) -> Result<Option<String>, Error> {
+fn stage_replay(root: &Path, plan: &Plan, concurrency: usize) -> Result<Option<String>, Error> {
     if plan.replay_inputs.is_empty() {
         return Ok(None);
     }

@@ -7,6 +7,29 @@ pub(crate) const DEFAULT_NATIVE_EXECUTION_SECONDS: u64 = 900;
 pub(crate) const DEFAULT_ENVIRONMENT_PREPARATION_SECONDS: u64 = 900;
 pub(crate) const DEFAULT_EVALUATION_SECONDS: u64 = 1800;
 
+/// Persisted execution mode shared by sweep and standalone campaign plans.
+/// Legacy missing modes are unknown, never implicit permission to run live.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ExecutionMode {
+    Live,
+    Record,
+    Replay,
+    #[default]
+    Unknown,
+}
+
+impl ExecutionMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Record => "record",
+            Self::Replay => "replay",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// Fixed shared admission policy, not a configurable per-agent phase cap.
 /// Its typed constructor also supplies the actual gate deadlines.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -16,6 +39,20 @@ pub(crate) struct BatchAdmissionPolicy {
     launch_seconds: u64,
     material_arming: &'static str,
     launch_arming: &'static str,
+}
+
+impl<'de> Deserialize<'de> for BatchAdmissionPolicy {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let observed = serde_json::Value::deserialize(deserializer)?;
+        let current = Self::current();
+        let expected = serde_json::to_value(current).map_err(serde::de::Error::custom)?;
+        if observed != expected {
+            return Err(serde::de::Error::custom(
+                "saved batch admission policy does not match the supported operational contract",
+            ));
+        }
+        Ok(current)
+    }
 }
 
 impl BatchAdmissionPolicy {
@@ -594,6 +631,45 @@ pub(crate) fn resolve_for_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn saved_admission_round_trips_only_the_exact_operational_contract() {
+        let current = BatchAdmissionPolicy::current();
+        let expected = serde_json::to_value(current).unwrap();
+        assert_eq!(
+            serde_json::from_value::<BatchAdmissionPolicy>(expected.clone()).unwrap(),
+            current
+        );
+        for key in expected.as_object().unwrap().keys() {
+            let mut missing = expected.clone();
+            missing.as_object_mut().unwrap().remove(key);
+            assert!(serde_json::from_value::<BatchAdmissionPolicy>(missing).is_err());
+            for replacement in [
+                serde_json::Value::Null,
+                serde_json::json!(false),
+                serde_json::json!(0),
+                serde_json::json!("changed"),
+                serde_json::json!(1800.0),
+            ] {
+                let mut changed = expected.clone();
+                changed[key] = replacement;
+                assert!(
+                    serde_json::from_value::<BatchAdmissionPolicy>(changed).is_err(),
+                    "{key}"
+                );
+            }
+        }
+        let mut extra = expected.clone();
+        extra["unknown"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<BatchAdmissionPolicy>(extra).is_err());
+        for non_object in [
+            serde_json::Value::Null,
+            serde_json::json!([]),
+            serde_json::json!("contract"),
+        ] {
+            assert!(serde_json::from_value::<BatchAdmissionPolicy>(non_object).is_err());
+        }
+    }
+
     fn config(extra: &str) -> BenchmarkConfig {
         toml::from_str(&format!(
             "agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='bug-fix'\n{extra}"

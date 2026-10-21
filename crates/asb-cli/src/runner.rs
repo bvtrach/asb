@@ -1,5 +1,6 @@
 //! Live execution of one configured benchmark.
 mod batch;
+pub(crate) mod campaign;
 mod completion;
 pub(crate) mod diagnostics;
 pub(crate) mod disposition;

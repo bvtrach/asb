@@ -4,6 +4,14 @@ Status: design checkpoint for delivery feature 5, not an availability claim.
 The preceding run integration is PR #294; this branch must retain its validated
 record/replay and legacy behavior. Feature 6 remains the offline track viewer.
 
+Foundation implemented on this branch: standalone repeated execution now writes
+the owned `runner::campaign` plan/slot/input contract, preserving its schema and
+wire shapes. Sweep and campaign modes share `planning::ExecutionMode`; legacy
+sweep missing modes remain unknown. Admission deserialization accepts only the
+current operational contract. These DTOs are not activation capabilities: the
+bounded reader, semantic validation, sweep lifecycle, continuation and reporting
+integration below remain required before this feature is available.
+
 ## Ownership and shared contracts
 
 Extract a reusable runner-owned campaign plan and bounded reader from the

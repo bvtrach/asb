@@ -27,26 +27,7 @@ pub(crate) struct SweepPlan {
     pub resources: Option<crate::planning::Resources>,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum SavedExecutionMode {
-    Live,
-    Record,
-    Replay,
-    #[default]
-    Unknown,
-}
-
-impl SavedExecutionMode {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Live => "live",
-            Self::Record => "record",
-            Self::Replay => "replay",
-            Self::Unknown => "unknown",
-        }
-    }
-}
+pub(crate) use crate::planning::ExecutionMode as SavedExecutionMode;
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

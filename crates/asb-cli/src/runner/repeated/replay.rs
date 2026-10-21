@@ -164,7 +164,7 @@ impl Prepared {
         Ok(())
     }
 
-    pub fn batch_choices(&self, plan: &Plan<'_>, batch: u64, concurrency: usize) -> BatchChoices {
+    pub fn batch_choices(&self, plan: &Plan, batch: u64, concurrency: usize) -> BatchChoices {
         let start = (batch as usize - 1) * concurrency;
         BatchChoices {
             seed: self.selection.as_ref().map(|selection| selection.seed),
@@ -183,7 +183,7 @@ impl Prepared {
 /// Each batch has its own replica aliases; each proxy still owns its own cursor.
 pub(super) fn stage_batch(
     root: &Path,
-    plan: &Plan<'_>,
+    plan: &Plan,
     batch: u64,
     concurrency: usize,
 ) -> Result<String, Error> {
