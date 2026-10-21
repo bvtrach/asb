@@ -314,7 +314,7 @@ shell completions passed. The actual executable SHA-256 remained
 before and after the full suite and build. Exact-head ordinary/package hosted
 CI, merge, post-merge verification and release remain pending.
 
-Checkpoint candidate, staged patch **0.2.22**: completion group/replica sealing, partial continuation
+Checkpoint repair, released patch **0.2.22**: completion group/replica sealing, partial continuation
 and retained-outcome reconciliation now consume a private validated outcome
 instead of passing an unchecked wire record after a long Boolean expression.
 Named protocol/cleanup, cohort, identity, grade/baseline and evidence-path
@@ -331,11 +331,13 @@ allocated unit fixture, not claimed as original-runtime qualification. Independe
 source review approved `9d0c6f3f`; a separate execution passed all 23 checkpoint
 tests and both public CLI tests. The worker's stable-binary full qualification
 passed 933 tests with 20 explicit optional skips, followed sequentially by fmt
-and strict Clippy, with unchanged executable hashes. PR #287 merged as
-`4224472f5fccb3a5651593fff8fbfd8f0b557a60` after exact-head hosted checks.
-At this ledger update, post-merge run `39642527007` is still in progress;
-**0.2.22** release verification remains pending. This does not close other
-structural items.
+and strict Clippy, with unchanged executable hashes. Final integrated source
+qualification passed 1,041 tests with 21 optional skips, followed by strict
+Clippy, formatting and build/docs checks. PR #287 merged as
+`4224472f5fccb3a5651593fff8fbfd8f0b557a60`; exact-head hosted/package CI and
+both post-merge jobs passed in run `39642527007`. **v0.2.22** was released
+from that exact commit with a GitHub-verified signed tag. This does not close
+other structural items.
 
 Runner repair, released patch **0.2.10**: private consuming admission,
 preparation, execution-evidence, proxy-settlement, evaluation and finalization
@@ -381,18 +383,20 @@ pipeline regressions (one explicit real-browser opt-in remains ignored). Signed
 scalar bars preserve negative observations, finite zero-based geometry even at
 opposite-sign floating-point extremes, and exact original values in embedded
 HTML hover. Worker full qualification passed 990 tests with 21 explicit skips
-at `4cb19e48`. Integrated version/package and ordinary hosted verification remain
-pending; this is not a release or a universal non-Linux atomicity claim.
+at `4cb19e48`. Final integrated qualification passed 1,036 tests; delivery is
+recorded in the released **v0.2.21** entry above. This is not a universal
+non-Linux atomicity claim.
 When the filesystem lacks exchange, a private no-replace probe precedes the
 recoverable backup/commit/rollback fallback. This path honestly discloses a
 temporary absent-destination/crash window, retains the old backup on failed
 restore and never overwrites a racing foreign destination. Missing safe native
 no-replace support fails closed without first moving user data. MacOS native
 calls are selected explicitly; Linux fixtures do not qualify a macOS runtime.
-Separate confirmed follow-up: bar charts still clamp signed values to zero.
-The signed-domain repair above covers line-series axes only; bar baselines,
-rectangles, signed ticks and labels need their own offline coordinate tests
-and repair before claiming all chart families faithfully display negatives.
+Historical follow-up, resolved before **v0.2.21**: bars also required signed
+baselines, rectangles, ticks and labels. The final signed-scalar implementation
+and offline coordinate/extreme-value regressions cover those bar cases in
+addition to the line-series axes; the earlier line-only candidate was not
+treated as completion evidence.
 The custom BPF scope validator is also a small function (about sixty lines),
 not the reported 533; its confirmed correctness defect is tracked below.
 
@@ -476,8 +480,13 @@ Clippy, formatting and sequential build/docs checks with stable executable
 bytes. The current **0.2.23** candidate also retains the approved report and
 checkpoint integration `1fb8c542`, including declared planning metadata outside
 measurement charts; provider, runner and model-discovery source is unchanged
-from `fbd0d69d`. Fresh current-integration qualification and independent review
-remain pending, along with package/hosted CI, merge and release.
+from `fbd0d69d`. Independent current-integration source review approved
+`c291a808`; its full offline suite passed 1,052 tests with 21 optional skips,
+followed by strict Clippy, formatting and build/docs checks. PR #289 merged as
+`73f3ce4768ef9f6dec06a25884c19228683bbe26` after exact-head hosted/package CI.
+Post-merge run `39644360265` passed both `checks` and `local-host-checks`.
+Patch **0.2.23** is released at that merge commit; GitHub verifies annotated
+tag `a073a80e836aa4911c5a11931dcdde57a26926a0` as valid.
 
 ## 6. Shared implementation and lifecycle policies
 
@@ -595,6 +604,12 @@ replacement, keeper failure and unwind custody. Existing trial-wizard regression
 coverage remains required. This candidate is not merged/released qualification,
 transactional installation rollback or bounded disappearance of unkillable
 kernel tasks. The user-confirmed removal of the CI coverage gate is retained.
+Independent source review approved the integrated `51e30654`; its full offline
+suite passed 1,062 tests with 21 optional skips, followed by strict Clippy,
+formatting and sequential build/private docs/diagrams/completions. Current main
+ancestry changes only this ledger, not that qualified production/test tree.
+Exact-head hosted/package CI, merge, both post-merge jobs and release remain
+pending for this **0.2.24** candidate.
 
 ## 7. Limits, diagnostics and CLI consistency
 
