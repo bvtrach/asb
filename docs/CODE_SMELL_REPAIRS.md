@@ -48,6 +48,8 @@ unchanged before/after runtime tests and the final build:
 `26627f73727662096c474899ad97cde664f5236b1eaf1bb8c991345f1c30e1c8`.
 Signed ancestry merge `e8313859` retains typed-controller delivery head
 `940a9d39` and changes only the ledger, not production, tests or Cargo bytes.
+Subsequent signed main merge `4074c87b` retains actual main `1bcc8253` with a
+tree identical to qualified-ledger checkpoint `3b8e5d4c`.
 Hosted exact-head/package CI, PR merge, post-merge verification and release
 remain pending. No optional SDK/host/provider qualification is inferred.
 
@@ -71,7 +73,9 @@ offline build/private Rust docs/pinned AutoUML 0.7.2/flows/interactive views/bas
 and zsh completions passed. The actual executable SHA-256 remained unchanged
 before/after runtime tests and the final build:
 `c489e15faa664c44df3201f8ddeff8738a6d8feecc3cd93b665efb6414115a41`.
-Hosted/package CI, PR merge, post-merge verification and release remain pending.
+Exact-head ordinary/package CI passed in run `39657670241`; PR #296 merged
+as `1bcc8253e563847e8898dd6a4562b6d384220f92`. Both post-merge jobs in run
+`39659641538` and release remain pending.
 Signed merge `889702ed` retains actual main `b12d8488` with a tree identical
 to qualified `64e7c45e`; no production, tests or Cargo bytes changed.
 The older pre-main full suite passed 1,100
@@ -102,8 +106,10 @@ SHA-256 stayed unchanged before/after tests and final build:
 `3acc60d2381d4f6037159d1a7c41fb5f6ae6d0ed2b9acd64183de388934d59a6`.
 Exact-head hosted/package CI passed in runs `39655735876` and `39655737318`;
 PR #295 merged as `b12d84882609aae00d16dabd497126348e9ef1ef` after independent
-main-ancestry publication review. Post-merge run `39657490808` and release
-remain pending. This does not qualify optional skipped host/provider tests,
+main-ancestry publication review. Both post-merge jobs passed in run
+`39657490808`; **0.2.29** is released with GitHub-verified valid annotated SSH
+tag `a71266ce3167f68ba49ca3ea4538813eaa396aaa` at that exact merge.
+This does not qualify optional skipped host/provider tests,
 runtime discovery, or the remaining overall audit.
 The subsequent signed ancestry merge retains actual main
 `46d20e382b7781c3fb3bf48216e6090ca4b37998` with a tree identical to qualified
