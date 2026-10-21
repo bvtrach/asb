@@ -54,6 +54,9 @@ fn emit_warning(
 
 #[derive(Serialize)]
 struct RunResult<'a> {
+    execution_plan_fingerprint: Option<&'a str>,
+    module: Option<workloads::contracts::ModuleDescriptor>,
+    benchmark_outcome: Option<workloads::outcome::BenchmarkOutcome>,
     replica_index: Option<usize>,
     execution_cohort: Option<&'a measurements::ExecutionCohort>,
     schema_version: u32,
@@ -89,6 +92,7 @@ struct RunResult<'a> {
 /// Execution choices shared by single runs, replicas, and sweeps.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RunOptions<'a> {
+    pub execution_plan_fingerprint: Option<&'a str>,
     pub execution_cohort: Option<&'a measurements::ExecutionCohort>,
     pub json: bool,
     pub show_output: bool,
@@ -539,6 +543,20 @@ fn run_mode(
             Ok(workload)
         },
     )?;
+    // Capture provenance at execution time; report rendering never consults
+    // today's adapter registry to label a historical record.
+    let module = workload_session.module_descriptor();
+    let policy = workload_session.metric_policy();
+    if !policy.valid()
+        || (module.is_none() && policy != workloads::outcome::MetricPolicy::default())
+        || module
+            .as_ref()
+            .is_some_and(|m| !m.valid() || !policy.matches_module(m))
+    {
+        return Err(Error::Run(
+            "module metric policy differs from its declared scoring protocol".into(),
+        ));
+    }
     let workspace = workload_session.invocation().workspace.clone();
     let workload_baseline = workload_session.baseline_evidence();
     let workload_baseline_passed = workload_baseline.measured_passed();
@@ -692,13 +710,15 @@ fn run_mode(
         proxy_evidence,
         cassette_usage_verified,
         outcome,
+        evaluator_evidence,
         cleanup_confirmed: workload_cleanup_confirmed,
         issues,
     } = settled
-        .evaluate(final_response.as_deref().unwrap_or_default())
+        .evaluate_with_policy(final_response.as_deref().unwrap_or_default(), &policy)
         .finish();
     let workload_success = outcome.success();
     let grading_failure = outcome.failure();
+    let evaluation = outcome.evaluation;
     let collector_error = issues.collector_failure();
     let run_error = issues.run_error;
     let output_error = issues.output_error;
@@ -706,7 +726,8 @@ fn run_mode(
         && collector_error.is_none()
         && output_error.is_none()
         && process_success
-        && workload_success == Some(true);
+        && evaluation.completed()
+        && workload_success != Some(false);
     let workload_failure =
         grading_failure
             .as_ref()
@@ -801,11 +822,32 @@ fn run_mode(
     let configured_kind = workload_session.evaluation_kind();
     let evaluation_kind = workloads::scored_kind(configured_kind, &workload_baseline);
     let resolution_eligible = workloads::resolution_eligible(evaluation_kind);
+    let evaluation_pending = matches!(
+        &evaluation,
+        workloads::outcome::EvaluationOutcome::Pending { .. }
+    );
     let result = RunResult {
+        execution_plan_fingerprint: options.execution_plan_fingerprint,
+        module,
+        benchmark_outcome: Some(workloads::outcome::BenchmarkOutcome {
+            schema_version: 1,
+            execution_success: Some(process_success),
+            evaluation,
+            cleanup_confirmed: Some(workload_cleanup_confirmed && proxy_evidence.cleanup_confirmed),
+            evidence: evaluator_evidence,
+            policy,
+            lineage: workloads::outcome::EvaluationLineage {
+                execution_attempt: workload_session.invocation().identity.attempt_id.clone(),
+                evaluation_id: workloads::TaskIdentity::local("evaluation", None).attempt_id,
+                supersedes: None,
+            },
+        }),
         replica_index: Some(options.replica.index),
         execution_cohort: options.execution_cohort,
         schema_version: 2,
-        status: if success && evaluation_kind == "invalid-baseline" {
+        status: if evaluation_pending && process_success && run_error.is_none() {
+            "evaluation-pending"
+        } else if success && evaluation_kind == "invalid-baseline" {
             "unscored"
         } else if success && !resolution_eligible {
             "smoke-passed"
@@ -827,11 +869,10 @@ fn run_mode(
         workload_failure,
         failure_kind: failure.as_ref().map(|(kind, _)| *kind),
         failure_reason: failure.as_ref().map(|(_, reason)| reason.clone()),
-        success_rate: resolution_eligible.then_some(if workload_success == Some(true) {
-            1.0
-        } else {
-            0.0
-        }),
+        success_rate: resolution_eligible
+            .then_some(workload_success)
+            .flatten()
+            .map(|resolved| if resolved { 1.0 } else { 0.0 }),
         adapter_smoke_success: (evaluation_kind == "adapter-smoke").then_some(success),
         elapsed_ms: run_metrics.elapsed_ms,
         exit_code: child.status.code(),
@@ -1205,6 +1246,9 @@ pub(crate) fn resolve_log_path(config_path: &Path, configured_path: &str) -> Pat
 
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
     let summary = serde_json::json!({
+        "execution_plan_fingerprint": result.execution_plan_fingerprint,
+        "module": result.module,
+        "benchmark_outcome": result.benchmark_outcome,
         "replica_index": result.replica_index,
         "execution_cohort": result.execution_cohort,
         "schema_version": result.schema_version,
@@ -2102,6 +2146,9 @@ mod tests {
             .unwrap();
         session
             .finish(crate::measurements::RunMeasurement {
+                execution_plan_fingerprint: None,
+                module: None,
+                benchmark_outcome: None,
                 replica_index: None,
                 execution_cohort: None,
                 schema_version: 1,
@@ -2392,6 +2439,9 @@ mod tests {
 
     fn result<'a>() -> RunResult<'a> {
         RunResult {
+            execution_plan_fingerprint: None,
+            module: None,
+            benchmark_outcome: None,
             replica_index: None,
             execution_cohort: None,
             schema_version: 2,

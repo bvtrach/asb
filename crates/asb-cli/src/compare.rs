@@ -33,6 +33,10 @@ const Y_TICKS: usize = 5;
 #[derive(Debug)]
 struct BenchmarkData {
     id: RowId,
+    legacy_evaluation_provenance: Option<crate::workloads::outcome::LegacyEvaluationProvenance>,
+    execution_plan_fingerprint: Option<String>,
+    module: Option<crate::workloads::contracts::ModuleDescriptor>,
+    benchmark_outcome: Option<crate::workloads::outcome::BenchmarkOutcome>,
     result_source: ResultSource,
     reconciled: bool,
     replica_index: Option<usize>,
@@ -383,6 +387,7 @@ fn write_html_report(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
         coverage.evaluated_attempts, coverage.eligible_selected_attempts, coverage.unevaluated_attempts, coverage.unscored_attempts,
         if selection_mode.is_some() {"Pre-run task selection is preserved and matches the configurations."} else {"No pre-run selection snapshot exists; dataset completeness cannot be established from these legacy records."}));
     html.push_str(&coverage::html_table(&prepared.populations));
+    html.push_str(&coverage::metric_html(&prepared.metric_groups));
     html.push_str("<section class=\"explain\"><strong>How to read this report</strong><p>Each row is one selected task attempt for an agent/provider/model/workload combination. Runtime, success rate, token usage, host metadata, component timings, and structured collector measurements are summarized in the table and charts. Network wait remains null unless directly observed. The complete machine-readable evidence inventory is available in comparison.json.</p></section>");
     html.push_str("<section class=\"filters\"><div class=\"section-title\"><h2>Filter results</h2><div><button type=\"button\" data-action=\"all\">Select all</button><button type=\"button\" data-action=\"none\">Clear all</button></div></div><div class=\"filter-grid\">");
     for (group, values) in dimensions {
