@@ -30,7 +30,21 @@ Independent final evidence review, current-main coordination, hosted/package
 CI, merge, both post-merge jobs and a coordinated release remain pending.
 No push or PR accompanied this evidence-only checkpoint. See
 [setup integration](SETUP_PUBLICATION_INTEGRATION.md) for exact scope and limits.
-Latest verified delivery: runtime discovery [PR #303](https://github.com/martin-beck/asb/pull/303)
+Latest verified delivery: collector [PR #304](https://github.com/martin-beck/asb/pull/304)
+merged as `c612c6c9a4b743c206840908e6a9c91915e75f26`. Exact-head CI
+`39683131129` and both enabled post-merge jobs `39684518488` passed. Signed
+annotated tag `v0.2.39` (`72eda8b095eb25cbb0d9e890b28eed7bd16a5780`)
+targets that commit with GitHub-verified valid signature; release published on
+21 October at 22:22:50 UTC (22 October in Berlin).
+
+Setup PR #305 passed exact-head CI `39684689249` and merged with an identical
+tree as `4caaab14bbbcfd2f30a99e58b522394dbd5a29cc`. Its post-merge run
+`39686295128` is in progress; signed v0.2.40 remains pending. Official engine
+binding stage 0.2.41 preserves that actual-main ancestry in signed merge
+`4ec464b5`; production/tests remain identical to independently qualified source
+`453898c0`. Its hosted delivery remains pending.
+
+Earlier runtime discovery [PR #303](https://github.com/martin-beck/asb/pull/303)
 merged as `54ecdcd1c62099a65a3da87ebffdb4d4f619f900`. Exact-head CI
 `39681539596` and both enabled post-merge jobs `39683034184` passed. Signed
 annotated tag `v0.2.38` (`ea9c743e694a07a7131a8109663c4076030f78f5`)
@@ -53,7 +67,7 @@ both post-merge `39679248531` passed, signed v0.2.36 published at 21:40:48 UTC.
 
 Collector PR #304 passed exact-head CI `39683131129` and merged with an
 identical tree as `c612c6c9a4b743c206840908e6a9c91915e75f26`.
-Post-merge run `39684518488` and signed v0.2.39 remain pending here. Earlier
+Post-merge run `39684518488` and signed v0.2.39 are complete as recorded above. Earlier
 staged/local proof below is historical; its then-pending statements do not
 override these later delivery checks or qualify other unfinished repairs.
 
