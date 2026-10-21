@@ -28,11 +28,11 @@ replace production panic fallbacks with errors containing protocol metadata
 only, never URLs or credentials. Registry-wide tests exercise every rejected
 interface/authentication pair and all advertised pairs without executing a
 client or contacting a provider. Independent review found no blocking issue.
-Delivery candidate: PR #256, patch version **0.2.4**, rebased by merging current
-main after the coverage prerequisite landed. Endpoint behavior and the complete
-matrix are unchanged from the independently reviewed candidate. Exact-head PR
-checks, merge, post-merge CI and release remain required; this entry does not
-mark the broader audit complete.
+Delivery: independently reviewed PR #256 merged as
+`bc0b1ae662b4e854082e3e25e5fef86aed8e0e59`, patch version **0.2.4**.
+Exact-head PR CI passed both ordinary checks and the mandatory coverage gate.
+Post-merge CI and release remain tracked on that PR; this entry does not mark
+the broader audit complete.
 
 ## 2. Report identities and shared path handling
 
@@ -54,6 +54,10 @@ Tests verify real summary values, distinct SVG titles/data and HTML references,
 repeat generation and repeated configuration stems. Existing safe unique
 artifact names stay unchanged; unusual keys use escaped path notation and
 consumers should obtain graph filenames from `comparison.json`.
+Delivery candidate: PR #257, patch version **0.2.5**, updated to main after
+the endpoint repair. Exact-head tests, mandatory coverage, hosted checks,
+merge, post-merge checks and release are required independently of earlier
+candidate verification.
 
 ## 3. Completion persistence, subprocess and cleanup failures
 
