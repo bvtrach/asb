@@ -289,6 +289,8 @@ fn outcome_state(
 
 fn validate_outcome(record: &Outcome, entry: &PlannedBenchmark) -> Result<TaskIdentity, Error> {
     let summary = &record.summary;
+    let structured = crate::workloads::outcome::BenchmarkOutcome::read(summary)
+        .map_err(|_| invalid("malformed structured benchmark outcome"))?;
     let config = &entry.configuration;
     if !summary["execution_cohort"].is_null() {
         let cohort: crate::measurements::ExecutionCohort =
@@ -309,6 +311,30 @@ fn validate_outcome(record: &Outcome, entry: &PlannedBenchmark) -> Result<TaskId
     }
     let task: TaskIdentity = serde_json::from_value(summary["task"].clone())
         .map_err(|_| invalid("outcome task identity is missing or malformed"))?;
+    if let Some(outcome) = &structured {
+        let selected = entry.selection.module.as_ref();
+        if selected.map_or_else(
+            || outcome.policy != crate::workloads::outcome::MetricPolicy::default(),
+            |module| !outcome.policy.matches_module(module),
+        ) {
+            return Err(invalid(
+                "outcome metric policy differs from selected protocol",
+            ));
+        }
+    }
+    if !summary["module"].is_null() {
+        let module: crate::workloads::contracts::ModuleDescriptor =
+            serde_json::from_value(summary["module"].clone())
+                .map_err(|_| invalid("malformed recorded module"))?;
+        if !module.valid()
+            || entry.selection.module.as_ref() != Some(&module)
+            || structured
+                .as_ref()
+                .is_some_and(|outcome| !outcome.policy.matches_module(&module))
+        {
+            return Err(invalid("recorded module differs from selected protocol"));
+        }
+    }
     let baseline: BaselineEvidence =
         serde_json::from_value(summary["workload_baseline"].clone())
             .map_err(|_| invalid("outcome baseline evidence is missing or malformed"))?;
@@ -328,7 +354,16 @@ fn validate_outcome(record: &Outcome, entry: &PlannedBenchmark) -> Result<TaskId
         || summary["workload"] != config.workload
         || summary["provider"] != config.provider
         || summary["model"] != config.model
-        || summary["workload_success"].as_bool().is_none()
+        || structured.as_ref().map_or_else(
+            || summary["workload_success"].as_bool().is_none(),
+            |outcome| {
+                !outcome.evaluation.completed()
+                    || outcome.cleanup_confirmed != Some(true)
+                    || outcome.lineage.execution_attempt != task.attempt_id
+                    || outcome.execution_success != summary["process_success"].as_bool()
+                    || outcome.evaluation.resolution() != summary["workload_success"].as_bool()
+            },
+        )
         || summary["process_success"].as_bool().is_none()
         || summary["workload_evaluation"] != entry.selection.evaluation_kind
         || !baseline.supports(&entry.selection.evaluation_kind)
@@ -361,6 +396,9 @@ fn validate_outcome(record: &Outcome, entry: &PlannedBenchmark) -> Result<TaskId
 
 fn measurement_matches(measured: &Value, summary: &Value) -> bool {
     [
+        "execution_plan_fingerprint",
+        "module",
+        "benchmark_outcome",
         "replica_index",
         "execution_cohort",
         "schema_version",
@@ -555,6 +593,7 @@ mod tests {
                 population_size: Some(2),
             };
             let entry = PlannedBenchmark {
+                policy: None,
                 reference: "benchmark.toml".into(),
                 configuration,
                 selection,
@@ -691,6 +730,49 @@ mod tests {
             assert!(!encoded.contains("private recording sentinel"));
             std::fs::write(&output, "different recording").unwrap();
             assert!(fixture.verify().is_err());
+        }
+    }
+
+    #[test]
+    fn custom_policy_without_recorded_module_cannot_bypass_selected_protocol() {
+        let fixture = Fixture::new(false);
+        let mut record = fixture.read(0);
+        record["summary"]["module"] = Value::Null;
+        record["summary"]["workload_success"] = Value::Null;
+        record["summary"]["benchmark_outcome"] = json!({
+            "schema_version":1,"execution_success":true,
+            "evaluation":{"status":"completed","resolution":null,"rewards":{"accuracy":0.5}},
+            "cleanup_confirmed":true,"evidence":[fixture.evidence],
+            "policy":{"id":"accuracy","version":1,"reward":"accuracy","aggregation":"attempt-mean",
+                "rewards":{"accuracy":{"unit":"ratio","range":[0,1]}}},
+            "lineage":{"execution_attempt":record["summary"]["task"]["attempt_id"],"evaluation_id":"eval-fixture","supersedes":null}
+        });
+        fixture.write(0, &record);
+        let error = fixture.seal().unwrap_err();
+        assert!(error.to_string().contains("metric policy"), "{error}");
+        assert!(!fixture.inputs.completion_path(0).exists());
+    }
+
+    #[test]
+    fn completed_native_evaluation_without_primary_reward_cannot_be_sealed() {
+        use crate::workloads::outcome::*;
+        for rewards in [json!({}), json!({"secondary":0.5})] {
+            let fixture = Fixture::new(false);
+            let mut record = fixture.read(0);
+            record["summary"]["benchmark_outcome"] = json!({
+                "schema_version":1,"execution_success":true,
+                "evaluation":{"status":"completed","resolution":null,"rewards":rewards},
+                "cleanup_confirmed":true,"evidence":[fixture.evidence],
+                "policy":{"id":"accuracy","version":1,"reward":"accuracy","aggregation":"attempt-mean","missing_rewards":"exclude",
+                    "rewards":{"accuracy":{"unit":"ratio","range":[0,1]},"secondary":{"unit":"ratio","range":[0,1]}}},
+                "lineage":{"execution_attempt":record["summary"]["task"]["attempt_id"],"evaluation_id":"eval-fixture","supersedes":null}
+            });
+            let parsed: BenchmarkOutcome =
+                serde_json::from_value(record["summary"]["benchmark_outcome"].clone()).unwrap();
+            assert!(parsed.validate().unwrap_err().contains("primary reward"));
+            fixture.write(0, &record);
+            assert!(fixture.seal().is_err());
+            assert!(!fixture.inputs.completion_path(0).exists());
         }
     }
 

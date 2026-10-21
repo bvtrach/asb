@@ -303,6 +303,7 @@ fn launch_validates_preparation_before_exposing_a_session_and_preserves_on_failu
     let workspace = fixture.root.join("workspace");
     fs::create_dir_all(&workspace).unwrap();
     let context = PreparationContext {
+        budgets: Default::default(),
         on_allocation: None,
         workload: "swe-bench-lite",
         trial: Some("task-1"),
@@ -335,7 +336,7 @@ fn launch_validates_preparation_before_exposing_a_session_and_preserves_on_failu
     )
     .unwrap();
     assert_eq!(
-        session.invocation().prompt,
+        session.invocation().input.instructions,
         "Solve the original fixture task."
     );
     assert_eq!(session.invocation().workspace, workspace);
