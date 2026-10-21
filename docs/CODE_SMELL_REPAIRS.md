@@ -176,8 +176,10 @@ second completion definition. PR #260 targets patch **0.2.8**, following the
 installer repair in PR #259 and BPF scope/startup repair in PR #268.
 The current-main coverage regressions remain in
 place with an explicit test-module import after removing the old generator.
-Exact-head source/package tests, mandatory coverage, hosted CI, merge,
-post-merge verification and release remain required.
+PR #260 merged as `0897aeb4e4ee5656b80f2e998b52dbe48acee8fe` after final
+source/package/install-smoke CI passed in run `39611418478`. Post-merge
+verification and the signed v0.2.8 release are tracked in the PR. Coverage is
+optional under the user-confirmed policy above, not a remaining release gate.
 
 Unify intended limits (including TUI concurrency versus benchmark maximum),
 replace positional pane access and scattered protocol deadlines with named
@@ -195,8 +197,8 @@ Ordinary CI must use offline/synthetic inputs, not live provider credentials,
 privileged collectors or paid requests. New regression tests run in the
 ordinary suite and extracted package. Maintain honest null/unavailable
 measurements and preserve existing original-task evaluation evidence. A green
-focused test does not establish completion of a whole repair class or the
-90% coverage requirement.
+focused test does not establish completion of a whole repair class or replace
+the required functional source/package and post-merge checks.
 
 Additional safety finding from coverage tests: custom BPFTrace scope validation
 can skip multiline probe headers and accepts an OR-true predicate containing
