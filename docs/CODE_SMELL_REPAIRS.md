@@ -141,8 +141,9 @@ registry suggestions retained. A private first-argument helper keeps both
 arity/shells and output failures are tested. Every public command context is
 exercised under Bash, and independent review exercised real interactive Zsh
 completion as well as both shell syntax checks. New schema entries need no
-second completion definition. PR #260 targets patch **0.2.7**, following the
-installer repair in PR #259. The current-main coverage regressions remain in
+second completion definition. PR #260 targets patch **0.2.8**, following the
+installer repair in PR #259 and BPF scope/startup repair in PR #268.
+The current-main coverage regressions remain in
 place with an explicit test-module import after removing the old generator.
 Exact-head source/package tests, mandatory coverage, hosted CI, merge,
 post-merge verification and release remain required.
