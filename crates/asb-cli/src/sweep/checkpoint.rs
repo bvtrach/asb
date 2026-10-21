@@ -10,6 +10,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const HELPER: &str = include_str!("../../assets/benchmarks/asb_fingerprint.py");
+mod campaigns;
 pub(super) mod completed;
 pub(super) use completed::replicas::Observer as ReplicaObserver;
 
@@ -325,7 +326,9 @@ impl Inputs {
                 roots.push(Root::path(format!("proxy-execution-file-{index}"), path));
             }
         }
-        if mode == Some(crate::tape::Mode::Replay) {
+        if plan.execution.is_some() {
+            roots.extend(campaigns::input_roots(results, plan)?);
+        } else if mode == Some(crate::tape::Mode::Replay) {
             for (index, path) in replay_sources.iter().enumerate() {
                 roots.push(Root::path(
                     format!("replay-source-{index}"),

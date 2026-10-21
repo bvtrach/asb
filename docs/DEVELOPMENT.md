@@ -391,6 +391,17 @@ These are protocol-only fixtures: no agent/provider is executed. See the
 [independently checked repair ledger](CODE_SMELL_REPAIRS.md) for the broader
 code-smell audit and remaining delivery classes.
 Continuation metadata is optional for a fresh grade, not optional for reuse.
+Campaign input-root regressions in `sweep::checkpoint::campaigns` check exact
+shared plan binding, private-input/configuration changes, original-source
+replacement and output independence without clients. The actual `repeated_run`
+case `campaign_input_seals_stay_stable` drives a registered Pi adapter backed by
+a local fixture executable: four synthetic-provider recordings and four replays
+with that provider shut down keep stable seals. This is not an installed Pi,
+live-provider or SDK qualification. The owning sweep-phase subprocess matrix
+also blocks initial key and final seal publication for two-batch campaigns;
+four real local grades and all report rows survive with one warning, while
+invalid keys and failed-seal diagnostics remain preserved. Build the actual ASB
+first and keep source/executable stable throughout runtime/full qualification.
 Runtime-discovery regressions require building the actual ASB binary first,
 then running `cargo test --offline --locked --lib runtime_inputs::tests` and
 `cargo test --offline --locked --test benchmark_protocol`. The inherited-pipe

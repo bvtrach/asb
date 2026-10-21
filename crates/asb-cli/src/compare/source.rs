@@ -256,66 +256,8 @@ pub(super) fn load(path: &str) -> Result<LoadedReport, Error> {
 }
 
 fn load_campaign_sweep(request: Request) -> Result<LoadedReport, Error> {
-    use crate::runner::campaign::reading::Layout;
     let plan = request.plan.as_ref().expect("campaign sweep plan");
-    let intent = plan.execution.as_ref().expect("validated execution intent");
-    // First bind every retained plan to its index entry. Do not read an outcome
-    // or recording payload from an earlier configuration before this succeeds.
-    let layouts = plan
-        .entries
-        .iter()
-        .map(|entry| {
-            let layout = Layout::read_reference(
-                &request.sweep_results,
-                entry
-                    .campaign
-                    .as_ref()
-                    .expect("validated campaign reference"),
-            )?;
-            if layout.plan.configuration != entry.configuration
-                || layout
-                    .plan
-                    .recording_selection
-                    .as_ref()
-                    .is_some_and(|selection| selection != &entry.selection)
-                || layout.plan.repeat != intent.repeat
-                || layout.plan.mode != plan.execution_mode
-                || layout.plan.respect_record_timings != plan.respect_record_timings
-                || !intent.matches_replay(&layout.plan)
-            {
-                return Err(Error::Input(
-                    "campaign plan differs from its saved sweep configuration or execution intent"
-                        .into(),
-                ));
-            }
-            Ok(layout)
-        })
-        .collect::<Result<Vec<_>, Error>>()?;
-    if intent.seed.is_some()
-        && layouts
-            .iter()
-            .all(|layout| layout.plan.replay_selection.is_none())
-    {
-        return Err(Error::Input(
-            "sweep seed has no bundled replay configuration".into(),
-        ));
-    }
-    if let Some(expected) = &intent.recording_reservation {
-        let mut actual = crate::cassette::RecordingReservation::default();
-        for layout in &layouts {
-            let capacity = layout.plan.recording_reservation.as_ref().ok_or_else(|| {
-                Error::Input("sweep recording capacity has no matching campaign reservation".into())
-            })?;
-            actual = actual
-                .checked_add(capacity)
-                .map_err(|error| Error::Input(error.to_string()))?;
-        }
-        if &actual != expected {
-            return Err(Error::Input(
-                "sweep recording capacity differs from its retained campaign plans".into(),
-            ));
-        }
-    }
+    let layouts = plan.read_campaigns(&request.sweep_results)?;
     let mut primary_bytes = 0u64;
     for layout in &layouts {
         primary_bytes = primary_bytes

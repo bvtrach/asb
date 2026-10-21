@@ -11,21 +11,22 @@ enum PreparedMode {
     },
 }
 enum ActiveMode {
-    Campaigns,
+    Campaigns(Option<checkpoint::Inputs>),
     Fresh(Option<checkpoint::Inputs>),
     Resumed(checkpoint::Inputs),
 }
 impl ActiveMode {
     fn checkpoint(&self) -> Option<&checkpoint::Inputs> {
         match self {
-            Self::Campaigns => None,
+            // Legacy completion observers must never consume campaign inputs.
+            Self::Campaigns(_) => None,
             Self::Fresh(value) => value.as_ref(),
             Self::Resumed(value) => Some(value),
         }
     }
     fn into_checkpoint(self) -> Option<checkpoint::Inputs> {
         match self {
-            Self::Campaigns => None,
+            Self::Campaigns(value) => value,
             Self::Fresh(value) => value,
             Self::Resumed(value) => Some(value),
         }
@@ -216,7 +217,26 @@ impl<'a> PreparedSweep<'a> {
                 plan::fresh_results(&self.parent, &self.stem, &self.plan)?;
                 if let Some(prepared) = self.campaigns {
                     campaigns = Some(prepared.publish(&self.results)?);
-                    (ActiveMode::Campaigns, resume::State::default(), None)
+                    #[cfg(all(test, unix))]
+                    tests::before_initial_seal(&self.results);
+                    match checkpoint::Inputs::begin(
+                        &self.parent,
+                        &self.results,
+                        &self.plan,
+                        self.options.mode,
+                        &[],
+                    ) {
+                        Ok(checkpoint) => (
+                            ActiveMode::Campaigns(Some(checkpoint)),
+                            resume::State::default(),
+                            None,
+                        ),
+                        Err(error) => (
+                            ActiveMode::Campaigns(None),
+                            resume::State::default(),
+                            Some(error),
+                        ),
+                    }
                 } else {
                     #[cfg(all(test, unix))]
                     tests::before_initial_seal(&self.results);

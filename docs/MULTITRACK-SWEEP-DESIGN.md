@@ -149,7 +149,7 @@ spool concurrency bounds separate from campaign presentation counts.
 
 This is not full feature-five readiness: modern continuation/reconciliation
 and grade import explicitly refuse before historical writes instead of falling
-through to legacy receipts. Campaign input/continuation seals
+through to legacy receipts. Campaign completion/continuation seals
 and complete source/package/hosted qualification remain required. The preceding
 integrated-head regression gate passed 1312 tests with 21 existing ignored and
 zero failures before this fresh-sweep wiring; that evidence does not qualify the
@@ -330,6 +330,50 @@ concurrency. Batches remain sequential inside a configuration; do not introduce
 nested pools or gates waiting on workers that cannot obtain held permits.
 
 ## Continuation and publication
+
+Campaign input sealing now follows complete plan/private-input publication and
+precedes client admission. Modern and legacy sweeps share declared project,
+tool, interpreter, environment and executable/runtime discovery, but modern
+roots come from the same exact index-to-campaign validator used by comparison.
+They bind each campaign plan, canonical original configuration source and
+private selected JSONL, with whole-population declared count/byte bounds. They
+never include original replay archives, growing ZIPs/journals, raw captures or
+attempt directories. Final sealing happens after joined settlement, including
+ordinary benchmark failures. The campaign mode cannot feed its input checkpoint
+to legacy replica/group observers.
+
+Missing/invalid local key or unavailable/failed input seal remains an optional
+continuation warning, not a fresh-grade gate. Tests preserve those faults and
+all four grades/report rows without client retries; real CLI fixture recording
+and provider-closed replay retain stable seals across publication and cleanup.
+Input-root tests independently distinguish output/source-display changes from
+private-input/configuration changes. This checkpoint includes current-main
+runtime-discovery and collector custody changes via merge `15126726`; their
+historical qualification is not substituted for new integrated gates.
+
+These are input-stability observations, not completed-slot receipts or resume
+authority. Resume must still verify private payloads against saved SHA/length,
+positive reservations/admission, original starts/allocations, strict outcomes,
+cohorts and immutable recording associations. No production authentication or
+signing prerequisite is introduced.
+
+The first current-main integrated suite retained one library failure: Linux
+returned `ETXTBSY` when the native-gate argument/environment fixture executed its
+new mock script; all other library and integration targets completed normally.
+Another parallel fork/pre-exec fixture retaining the writable descriptor is a
+credible explanation, not an experimentally traced historical writer. The
+fixture now creates that executable in a dedicated exact-test subprocess and
+waits for the creator to exit before the unchanged actual execution assertions.
+Its parent never holds the writable descriptor. No retries, sleeps, production
+launch policy changes or weakened routing assertions are used. The original
+failed log remains separate from qualification of the repaired source.
+
+The repaired integrated source passed its full offline suite, integration
+targets and doctests, strict all-target/all-feature Clippy, formatting, binary
+build, Rust documentation and UML generation. The invoking executable hash
+remained unchanged across qualification; the fixture repair changes tests only.
+This does not substitute for the remaining modern resume implementation or
+final feature-five package/install/hosted delivery gates.
 
 Independent continuation review identified a required distinction before modern
 resume can be enabled. A published campaign plan is intended work, not positive

@@ -96,6 +96,8 @@ fn actual_sweeps_stop_after_presentation_failure_but_settle_groups_and_partial_r
             "benchmark",
             "benchmark-output-compare",
             "json-final-seal",
+            "campaign-initial",
+            "campaign-final",
         ] {
             let child=Command::new(&executable)
                 .args(["--exact","sweep::phases::tests::actual_sweeps_stop_after_presentation_failure_but_settle_groups_and_partial_reports","--nocapture"])
@@ -172,6 +174,63 @@ fn actual_sweeps_stop_after_presentation_failure_but_settle_groups_and_partial_r
         cassette_root: Some(&inputs),
         ..Default::default()
     };
+    if matches!(case, "campaign-initial" | "campaign-final") {
+        FAIL_INITIAL.set(case == "campaign-initial");
+        FAIL_FINAL.set(case == "campaign-final");
+        let mut output = Vec::new();
+        run_with_options(
+            manifest.to_str().unwrap(),
+            Options {
+                repeat: Some(2),
+                ..options
+            },
+            &mut output,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&counter).unwrap().lines().count(),
+            4
+        );
+        let rows = String::from_utf8(output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let code = if case == "campaign-initial" {
+            "initial_input_seal_unavailable"
+        } else {
+            "input_seal_unavailable"
+        };
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["event"] == "continuation_warning" && row["code"] == code)
+                .count(),
+            1
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row["workload_success"] == true)
+                .count(),
+            4
+        );
+        let comparison = read(root.join("results/sweep-comparison/comparison.json"));
+        assert_eq!(comparison["benchmarks"].as_array().unwrap().len(), 4);
+        if case == "campaign-initial" {
+            assert_eq!(
+                std::fs::read_to_string(root.join("sweep-results/.checkpoint/key")).unwrap(),
+                "invalid owned fixture key"
+            );
+            assert!(!root.join("sweep-results/.checkpoint/inputs.json").exists());
+        } else {
+            assert!(root.join("sweep-results/.checkpoint/inputs.json").is_dir());
+            assert_eq!(
+                read(root.join("sweep-results/.checkpoint/initial-inputs.saved"))["status"],
+                "pending"
+            );
+        }
+        assert!(lock::OutputLock::acquire(root, "sweep").is_ok());
+        return;
+    }
     if case == "resume" || case == "resume-mode" {
         run_with_options(manifest.to_str().unwrap(), options, &mut Vec::new()).unwrap();
         std::fs::write(

@@ -551,8 +551,14 @@ Record/replay dispatch asks the selected proxy adapters for their
 execution files without starting them or materializing scratch scripts. The
 default adapter binds its selected host Node executable or explicit proxy
 override, preserving symlinks and PATH precedence. Replay additionally binds
-the actual source cassette directories, including rebased/preserved history
-paths. Record cassettes are outputs, not replay inputs. Interpreter and native
+the actual source cassette directories for legacy sweeps, including rebased/
+preserved history paths. Campaign sweeps instead bind the exact referenced
+plans, original configuration sources and staged private selected JSONL files,
+after all publications and before execution. Their input seals exclude original
+replay archives and growing recording/output directories. The same validated
+index-to-campaign binding serves reporting and sealing; stability is not proof
+of selected-payload identity or permission to resume. Record cassettes are
+outputs, not replay inputs. Interpreter and native
 loader dependencies are added by shared runtime discovery, not inferred merely
 from an executable's pathname.
 On Unix, runtime discovery owns one nonblocking duplex exchange, with a 1 MiB

@@ -48,6 +48,98 @@ fn legacy_name(project: &Project) -> String {
 }
 
 #[test]
+fn campaign_input_seals_stay_stable_after_record_publication_and_offline_replay() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = Project::new();
+    project.config(2);
+    let original_agent = project.0.join("fixture-agent");
+    let executable = project.0.join("tools/pi/bin/pi");
+    fs::create_dir_all(executable.parent().unwrap()).unwrap();
+    let script = fs::read_to_string(&original_agent).unwrap().replace(
+        "root = pathlib.Path(__file__).parent",
+        &format!(
+            "root = pathlib.Path({})",
+            serde_json::to_string(project.0.to_str().unwrap()).unwrap()
+        ),
+    );
+    fs::write(&executable, script).unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    let config_path = project.0.join("benchmark.toml");
+    let configuration = fs::read_to_string(&config_path)
+        .unwrap()
+        .replace(
+            &format!("agent='{}'", original_agent.display()),
+            "agent='pi'",
+        )
+        .replace("provider='fixture'", "provider='openrouter'");
+    fs::write(config_path, configuration).unwrap();
+    fs::write(project.0.join("sweep.toml"), "configs=['benchmark.toml']\n").unwrap();
+    let provider = RecordingProvider::new();
+    let recorded = sweep(
+        &project,
+        Some(&provider),
+        &["--record", "--repeat", "2", "--cassette-root", "recordings"],
+    );
+    assert!(
+        recorded.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&recorded.stdout),
+        String::from_utf8_lossy(&recorded.stderr)
+    );
+    let seal_path = project.0.join("sweep-results/.checkpoint/inputs.json");
+    let check = |replay: bool| {
+        let seal: Value = serde_json::from_slice(&fs::read(&seal_path).unwrap()).unwrap();
+        assert_eq!(seal["status"], "stable", "{seal}");
+        assert_eq!(seal["initial"], seal["final"]);
+        let roots = seal["roots"].as_array().unwrap();
+        assert!(roots.iter().any(|root| root["name"] == "campaign-0-plan"));
+        assert_eq!(
+            roots.iter().any(|root| root["name"]
+                .as_str()
+                .unwrap()
+                .starts_with("campaign-0-replay-")),
+            replay
+        );
+        assert!(
+            roots
+                .iter()
+                .all(|root| !root["name"].as_str().unwrap().starts_with("replay-source-"))
+        );
+        let recording = project
+            .0
+            .join("recordings/000-benchmark/cassettes/recording.asb.zip");
+        assert!(roots.iter().all(|root| root["path"] != json!(recording)));
+    };
+    check(false);
+    assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 4);
+    drop(provider);
+    let replayed = sweep(
+        &project,
+        None,
+        &[
+            "--replay",
+            "--repeat",
+            "2",
+            "--cassette-root",
+            "recordings",
+            "--seed",
+            "73",
+        ],
+    );
+    assert!(
+        replayed.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&replayed.stdout),
+        String::from_utf8_lossy(&replayed.stderr)
+    );
+    check(true);
+    assert_eq!(
+        records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+        8
+    );
+}
+
+#[test]
 fn repeated_sweep_records_one_bundle_per_configuration_and_replays_identically_across_jobs() {
     let project = Project::new();
     project.config(2);
