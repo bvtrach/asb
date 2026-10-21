@@ -130,7 +130,7 @@ fn gate_target_checks_absolute_interpreters_without_launching_anything() {
         std::fs::write(&path, bytes).unwrap();
         assert_eq!(gate_target_available(path.to_str().unwrap()), available);
     }
-    assert_eq!(safe_name("model:a/b Ω"), "model-a-b--");
+    assert_eq!(component("model:a/b Ω"), "model-a-b--");
 }
 
 #[cfg(unix)]

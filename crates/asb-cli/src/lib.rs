@@ -2,6 +2,7 @@
 
 mod agents;
 mod benchmark;
+mod benchmark_paths;
 pub mod cassette;
 mod collectors;
 mod compare;

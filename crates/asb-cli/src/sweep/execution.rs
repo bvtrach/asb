@@ -1,7 +1,7 @@
 //! One isolated configuration, independent of scheduling and workload identity.
 use super::{
-    Options, cassette_filename, checked_reference, isolated_config, plan, reuse_replay_inputs,
-    safe_name, spool,
+    Options, benchmark_stem, cassette_filename, checked_benchmark_reference, isolated_config, plan,
+    reuse_replay_inputs, spool,
 };
 use crate::{Error, runner, tape};
 use std::collections::BTreeSet;
@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 pub(super) fn result_name(index: usize, reference: &Path) -> String {
-    format!("{index:03}-{}", safe_name(reference))
+    format!("{index:03}-{}", benchmark_stem(reference))
 }
 
 pub(super) fn replay_sources(plan: &plan::SweepPlan, root: &Path) -> Vec<PathBuf> {
@@ -86,7 +86,7 @@ impl Execution<'_> {
         }
         let entry = &self.plan.entries[index];
         let config = &entry.configuration;
-        let config_path = checked_reference(self.parent, &entry.reference, self.source)?;
+        let config_path = checked_benchmark_reference(self.parent, &entry.reference, self.source)?;
         let result_dir = self.directory(index);
         std::fs::create_dir_all(&result_dir).map_err(|error| {
             Error::Run(format!(

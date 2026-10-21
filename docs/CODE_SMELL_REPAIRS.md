@@ -46,6 +46,18 @@ without changing established result/workspace identities unintentionally.
 Also review duplicated manifest reference validation and executable resolution;
 same names alone do not prove equivalent semantics. Pending.
 
+Shared benchmark-path candidate: all five equivalent legacy normalizers now
+use one component/stem policy, and both sweep execution and comparison use the
+same checked TOML-reference contract. Filename prefixes, Unicode-per-character
+replacement, non-UTF-8 fallback and existing symlink behavior are unchanged.
+The graph allocator still owns collision-free identities; the shared lossy
+normalizer is not a uniqueness or confinement mechanism. Tests preserve those
+boundaries and exercise actual CLI rejection in both commands before artifact
+creation. Independent source review found no blocker. Ordinary source tests
+and strict Clippy passed; release-head coverage, package/hosted checks, PR,
+post-merge validation and a patch release remain pending. This does not close
+the separate executable-resolution or orchestration classes.
+
 Candidate report repair: flatten numeric paths with escaped object separators
 and empty-key identities; reserve bounded portable SVG names, using digest
 suffixes for unsafe/long/colliding metric or series names. Shared series names

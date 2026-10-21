@@ -90,7 +90,7 @@ pub(super) struct GraphNames(BTreeSet<String>);
 
 impl GraphNames {
     pub(super) fn allocate(&mut self, kind: &str, name: &str) -> String {
-        let safe = super::safe_name_str(name);
+        let safe = crate::benchmark_paths::component(name);
         let legacy = format!("{kind}-{safe}.svg");
         if !safe.is_empty()
             && safe == name
