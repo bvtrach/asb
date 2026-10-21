@@ -159,3 +159,45 @@ fn actual_enospc_is_reported_as_producer_failure_instead_of_silent_completion() 
         "ENOSPC was not reported; completion={completion}, diagnostic={diagnostic:?}"
     );
 }
+
+#[test]
+fn worker_creation_failure_admits_no_command_or_observation() {
+    let fixture = Fixture::new();
+    let sampler = ProcessTreeSnapshot::start_with_spawn(
+        fixture.identity(),
+        "/must-not-execute".into(),
+        Box::new(|_| panic!("failed worker must not inspect or execute a command")),
+        File::create(fixture.directory.join("stdout")).unwrap(),
+        File::create(fixture.directory.join("stderr")).unwrap(),
+        |_| Err(std::io::Error::other("fixture worker creation failed")),
+    );
+    assert!(sampler.is_none());
+    assert!(
+        fixture.identity().matches(),
+        "unrelated observed target must survive"
+    );
+    assert_eq!(fs::read(fixture.directory.join("stdout")).unwrap(), b"");
+}
+
+#[test]
+fn worker_panic_is_reported_without_joining_a_live_worker_or_killing_observed_target() {
+    let fixture = Fixture::new();
+    let sampler = ProcessTreeSnapshot::start(
+        fixture.identity(),
+        "/must-not-execute".into(),
+        Box::new(|_| panic!("fixture worker panic before producer launch")),
+        File::create(fixture.directory.join("stdout")).unwrap(),
+        File::create(fixture.directory.join("stderr")).unwrap(),
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !sampler.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(sampler.is_finished());
+    assert!(sampler.stop().unwrap_err().contains("worker failed"));
+    assert!(
+        fixture.identity().matches(),
+        "unrelated observed target must survive"
+    );
+}

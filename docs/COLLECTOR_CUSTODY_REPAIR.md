@@ -191,3 +191,27 @@ Only the exclusive diagnostics cache was used, with incremental compilation off
 and two build jobs. No host permission, service, provider, real collector or
 live tracing change was made. Independent source review is next; this partial
 foundation must not be published as the complete collector migration.
+
+## Independent foundation review follow-up: source-only pending execution
+
+Review of immutable `96032b4a` found that the inner read loop retried Interrupted
+without rechecking cancellation/deadline, while its byte counter never advanced.
+The follow-up gives each read turn at most 32 attempts as well as 64 KiB and
+checks cancellation plus the original command/drain deadline before every read.
+Interrupted consumes an attempt; permanent read errors preserve their actual
+reason and cannot count as EOF. Intentional cancellation still discards only
+the in-flight snapshot, not an ordinary graceful collector's flush output.
+
+New private deterministic source fixtures cover Interrupted fairness,
+cancellation during retry, an expired shared budget without another read,
+permanent read failure after a valid prefix, actual WriteZero, failed worker
+creation before command admission and worker panic before producer launch.
+The worker factory is a private typed seam, not an environment/configuration
+fault switch. Checked observation writes are extracted unchanged for the
+WriteZero fixture; potentially blocking file writes retain the explicitly
+bounded caller wait/uncertain worker-custody policy, not an invented hard kernel
+I/O deadline. Source is formatted but has not been compiled or executed yet:
+publication34 qualification exclusively owned compiler resources while these
+changes were prepared. Fresh focused execution, strict lint and independent
+follow-up review remain required. No normal collector/Perfetto migration or
+full class-35 qualification is claimed.

@@ -12,68 +12,63 @@ use std::time::{Duration, Instant};
 
 pub(super) struct ProcessTreeSnapshot {
     stop: Arc<AtomicBool>,
-    handle: Option<std::thread::JoinHandle<Result<(), String>>>,
+    handle: Option<WorkerHandle>,
+}
+type WorkerTask = Box<dyn FnOnce() -> Result<(), String> + Send>;
+type WorkerHandle = std::thread::JoinHandle<Result<(), String>>;
+fn spawn_worker(task: WorkerTask) -> io::Result<WorkerHandle> {
+    std::thread::Builder::new()
+        .name("asb-process-tree-snapshot".into())
+        .spawn(task)
 }
 impl ProcessTreeSnapshot {
     pub(super) fn start(
         root: ProcessIdentity,
         executable: PathBuf,
         arguments: TreeSnapshotArguments,
+        stdout: File,
+        stderr: File,
+    ) -> Option<Self> {
+        Self::start_with_spawn(root, executable, arguments, stdout, stderr, spawn_worker)
+    }
+    pub(super) fn start_with_spawn(
+        root: ProcessIdentity,
+        executable: PathBuf,
+        arguments: TreeSnapshotArguments,
         mut stdout: File,
         mut stderr: File,
+        spawn: impl FnOnce(WorkerTask) -> io::Result<WorkerHandle>,
     ) -> Option<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let cancelled = Arc::clone(&stop);
-        let handle = std::thread::Builder::new()
-            .name("asb-process-tree-snapshot".into())
-            .spawn(move || {
-                let started = Instant::now();
-                while !cancelled.load(Ordering::Acquire) && root.matches() {
-                    let members = process_tree_pids(root.pid)
-                        .into_iter()
-                        .filter_map(ProcessIdentity::read)
-                        .filter(|member| member.in_tree(root))
-                        .collect::<Vec<_>>();
-                    if !root.matches() || members.is_empty() {
-                        break;
-                    }
-                    let pids = members.iter().map(|member| member.pid).collect::<Vec<_>>();
-                    let request = arguments(&pids);
-                    let Some(observation) = observe(&executable, request, &cancelled)? else {
-                        break;
-                    };
-                    if !root.matches() || members.iter().any(|member| !member.in_tree(root)) {
-                        continue;
-                    }
-                    writeln!(
-                        stdout,
-                        "# asb-snapshot-elapsed-seconds {:.6}",
-                        started.elapsed().as_secs_f64()
-                    )
-                    .map_err(|error| {
-                        format!("cannot write process-tree snapshot timestamp: {error}")
-                    })?;
-                    stdout.write_all(&observation.stdout).map_err(|error| {
-                        format!("cannot write process-tree snapshot stdout: {error}")
-                    })?;
-                    stderr.write_all(&observation.stderr).map_err(|error| {
-                        format!("cannot write process-tree snapshot stderr: {error}")
-                    })?;
-                    stdout.flush().map_err(|error| {
-                        format!("cannot flush process-tree snapshot stdout: {error}")
-                    })?;
-                    stderr.flush().map_err(|error| {
-                        format!("cannot flush process-tree snapshot stderr: {error}")
-                    })?;
-                    let deadline =
-                        Instant::now() + Duration::from_millis(measurement_interval_ms());
-                    while !cancelled.load(Ordering::Acquire) && Instant::now() < deadline {
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
+        let handle = spawn(Box::new(move || {
+            let started = Instant::now();
+            while !cancelled.load(Ordering::Acquire) && root.matches() {
+                let members = process_tree_pids(root.pid)
+                    .into_iter()
+                    .filter_map(ProcessIdentity::read)
+                    .filter(|member| member.in_tree(root))
+                    .collect::<Vec<_>>();
+                if !root.matches() || members.is_empty() {
+                    break;
                 }
-                Ok(())
-            })
-            .ok()?;
+                let pids = members.iter().map(|member| member.pid).collect::<Vec<_>>();
+                let request = arguments(&pids);
+                let Some(observation) = observe(&executable, request, &cancelled)? else {
+                    break;
+                };
+                if !root.matches() || members.iter().any(|member| !member.in_tree(root)) {
+                    continue;
+                }
+                write_observation(&mut stdout, &mut stderr, &observation, started.elapsed())?;
+                let deadline = Instant::now() + Duration::from_millis(measurement_interval_ms());
+                while !cancelled.load(Ordering::Acquire) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            Ok(())
+        }))
+        .ok()?;
         Some(Self {
             stop,
             handle: Some(handle),
@@ -124,6 +119,69 @@ pub(crate) struct SnapshotCommand {
 struct Observation {
     stdout: Vec<u8>,
     stderr: Vec<u8>,
+}
+
+fn write_observation(
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+    observation: &Observation,
+    elapsed: Duration,
+) -> Result<(), String> {
+    writeln!(
+        stdout,
+        "# asb-snapshot-elapsed-seconds {:.6}",
+        elapsed.as_secs_f64()
+    )
+    .map_err(|error| format!("cannot write process-tree snapshot timestamp: {error}"))?;
+    stdout
+        .write_all(&observation.stdout)
+        .map_err(|error| format!("cannot write process-tree snapshot stdout: {error}"))?;
+    stderr
+        .write_all(&observation.stderr)
+        .map_err(|error| format!("cannot write process-tree snapshot stderr: {error}"))?;
+    stdout
+        .flush()
+        .map_err(|error| format!("cannot flush process-tree snapshot stdout: {error}"))?;
+    stderr
+        .flush()
+        .map_err(|error| format!("cannot flush process-tree snapshot stderr: {error}"))
+}
+
+/// One fair, bounded turn. Interrupted calls consume attempts as well as
+/// checking the same cancellation/deadline; they cannot monopolize the pump.
+#[cfg(target_os = "linux")]
+fn read_turn(
+    pipe: &mut dyn Read,
+    output: &mut Vec<u8>,
+    eof: &mut bool,
+    limit: usize,
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    let mut bytes = 0;
+    for _ in 0..32 {
+        if *eof || bytes >= 64 * 1024 || cancelled.load(Ordering::Acquire) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err("process-tree snapshot output read deadline exceeded".into());
+        }
+        let mut buffer = [0; 4096];
+        match pipe.read(&mut buffer) {
+            Ok(0) => *eof = true,
+            Ok(length) => {
+                if output.len() + length > limit {
+                    return Err("process-tree snapshot output exceeded its capture limit".into());
+                }
+                output.extend_from_slice(&buffer[..length]);
+                bytes += length;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(error) => return Err(format!("cannot read process-tree snapshot output: {error}")),
+        }
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -240,25 +298,17 @@ fn observe(
             (0, &mut out as &mut dyn Read),
             (1, &mut err as &mut dyn Read),
         ] {
-            let mut count = 0;
-            while !eof[index] && count < 64 * 1024 {
-                let mut buffer = [0; 4096];
-                match pipe.read(&mut buffer) {
-                    Ok(0) => eof[index] = true,
-                    Ok(length) => {
-                        if output[index].len() + length > request.stream_bytes {
-                            return Err(
-                                "process-tree snapshot output exceeded its capture limit".into()
-                            );
-                        }
-                        output[index].extend_from_slice(&buffer[..length]);
-                        count += length;
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                    Err(_) => return Err("cannot read process-tree snapshot output".into()),
-                }
-            }
+            read_turn(
+                pipe,
+                &mut output[index],
+                &mut eof[index],
+                request.stream_bytes,
+                drain.unwrap_or(deadline),
+                cancelled,
+            )?;
+        }
+        if cancelled.load(Ordering::Acquire) {
+            continue;
         }
         if exited && eof.iter().all(|eof| *eof) {
             let [out, err] = output;
@@ -273,6 +323,117 @@ fn observe(
             );
         }
         std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod io_tests {
+    use super::*;
+    struct Reader<'a> {
+        calls: usize,
+        cancel: Option<&'a AtomicBool>,
+        error: io::ErrorKind,
+    }
+    impl Read for Reader<'_> {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            self.calls += 1;
+            if let Some(cancel) = self.cancel {
+                cancel.store(true, Ordering::Release);
+            }
+            Err(io::Error::new(self.error, "fixture read failure"))
+        }
+    }
+    #[test]
+    fn interrupted_reads_yield_and_recheck_cancel_and_shared_deadline() {
+        let cancelled = AtomicBool::new(false);
+        let mut bytes = Vec::new();
+        let mut eof = false;
+        let mut reader = Reader {
+            calls: 0,
+            cancel: None,
+            error: io::ErrorKind::Interrupted,
+        };
+        let deadline = Instant::now() + Duration::from_secs(2);
+        read_turn(
+            &mut reader,
+            &mut bytes,
+            &mut eof,
+            1024,
+            deadline,
+            &cancelled,
+        )
+        .unwrap();
+        assert_eq!(reader.calls, 32, "Interrupted must consume a fair turn");
+        assert!(!eof);
+        assert!(bytes.is_empty());
+        reader.cancel = Some(&cancelled);
+        read_turn(
+            &mut reader,
+            &mut bytes,
+            &mut eof,
+            1024,
+            deadline,
+            &cancelled,
+        )
+        .unwrap();
+        assert_eq!(reader.calls, 33, "cancellation must interrupt retry");
+        cancelled.store(false, Ordering::Release);
+        reader.cancel = None;
+        let error = read_turn(
+            &mut reader,
+            &mut bytes,
+            &mut eof,
+            1024,
+            Instant::now(),
+            &cancelled,
+        )
+        .unwrap_err();
+        assert!(error.contains("deadline"));
+        assert_eq!(
+            reader.calls, 33,
+            "expired budget must never perform another read"
+        );
+    }
+    #[test]
+    fn permanent_read_error_cannot_be_complete_eof_even_after_a_valid_prefix() {
+        let mut reader = Reader {
+            calls: 0,
+            cancel: None,
+            error: io::ErrorKind::PermissionDenied,
+        };
+        let mut bytes = b"valid prefix\n".to_vec();
+        let mut eof = false;
+        let error = read_turn(
+            &mut reader,
+            &mut bytes,
+            &mut eof,
+            1024,
+            Instant::now() + Duration::from_secs(1),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert!(error.contains("fixture read failure"));
+        assert!(!eof);
+        assert_eq!(bytes, b"valid prefix\n");
+    }
+    #[test]
+    fn actual_write_zero_is_a_failed_observation_not_silent_completion() {
+        struct Zero;
+        impl Write for Zero {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Ok(0)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let observation = Observation {
+            stdout: b"valid prefix\n".to_vec(),
+            stderr: Vec::new(),
+        };
+        let error = write_observation(&mut Zero, &mut Vec::new(), &observation, Duration::ZERO)
+            .unwrap_err();
+        assert!(error.contains("write"));
     }
 }
 
