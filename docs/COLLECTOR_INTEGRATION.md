@@ -142,3 +142,18 @@ outer summaries, before/after/final hashes, the docs-only source delta, strict
 lint/doctest and complete build/documentation evidence. This follows the earlier
 source, semantic integration and focused-proof reviews. Hosted/package CI and
 delivery remain pending; the preserved executable and failed evidence stay intact.
+
+## Actual-main promotion
+
+Signed `0c86fe6955bf1e00509b4530184f69d1ca6790bd` preserves actual PR #303
+main ancestry (`54ecdcd1c62099a65a3da87ebffdb4d4f619f900`). This merge changes
+only four proof/delivery documents relative to independently approved local
+checkpoint `e5f30a86`; all production, tests, Cargo files and workflows remain
+byte-identical. Root checked that protected tree before promotion. This is not
+a new full run or a claim that a copied cache qualifies changed source.
+
+PR #302 has both post-merge jobs green and signed v0.2.37 is published. Runtime
+PR #303 passed exact-head CI and merged; its two post-merge jobs and signed
+v0.2.38 release remain prerequisites to merging this collector class. Require
+this class's exact-head hosted/package CI and both post-merge jobs before its
+signed v0.2.39 release. The removed 90% coverage gate remains removed.
