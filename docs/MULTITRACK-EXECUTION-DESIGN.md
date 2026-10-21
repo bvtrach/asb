@@ -616,7 +616,7 @@ cleanup. This does not establish the remaining same-shell path or full catalog.
 The repaired source passes the full offline suite, strict Clippy and coverage:
 90.8313% production lines and 90.6212% aggregate lines.
 
-### Remaining cross-service bind alias component
+### Cross-service bind alias component
 
 Reuse the existing bounded multi-root Rust census rather than inventing an inode
 transport. A joint observation of verified local, owned bind sources can retain
@@ -633,7 +633,8 @@ Do not hash arbitrary hidden host files. Retain all per-binding visibility and
 mount relationships. Test cross-service hardlinks versus independent equal bytes,
 alias mutation, nested roots/views, replaced/symlink sources, remote daemons,
 aggregate exhaustion/cancellation and actual owned fixture cleanup. This component
-is still a design, not implemented coverage.
+is now implemented; the final lifecycle delta and hidden-view behavior remain
+under live qualification as described below.
 
 The joint bind planner must group identical source paths using a logical
 service/mount representative, while retaining every binding's own exclusions.
@@ -642,9 +643,11 @@ views: exclusions `{a}` and `{a/b}` yield `{a/b}`, and any unrestricted view
 yields no hidden subtree. Rebase semantic exclusions exactly as the guest root
 sampler does; a host census must not reintroduce intentionally omitted SDK/Git
 material. Distinct nested source roots stay distinct to preserve inode aliases.
-The existing helper groups regular-file inodes but not symlink inodes: extend
-the same grouping to hardlinked symlinks before claiming complete visible alias
-coverage, with target/attribute consistency checks and dedicated regressions.
+The helper now groups regular-file and symlink inodes, with kind, link-target,
+attribute and version agreement; symlinks never enter deferred file-payload
+reading. The actual CLI regression first exposed equal digests for shared versus
+independent symlinks, then passed after repair. Per-root observations remain
+equal in both cases while the joint graph correctly differs.
 
 `ObservationBudget.observations` bounds the initial aggregate allowance, not the
 number of helper invocations. Allocate its bounded multiplier once (never above
@@ -653,6 +656,26 @@ exhaustion without resetting or silently enlarging per-call maxima. A host bind
 observer must reuse the exact host executable and prove local daemon/kernel and
 source-root identities before reading; a guest runtime bundle can have a
 different architecture and is not the host helper.
+
+`PreparedSampler` requires a successful guest census matching every bind inode
+before exposing host views. A new census or failed callback invalidates the
+cached authorization. The composer brackets a complete initial guest round,
+requires later public/private state and samples to match it, and brackets each
+later complete guest round with joint host observations. Each host observation
+also checks the private source plan before/after reading. Initial guest scans,
+runtime-file reads and all host/guest rounds share one allowance allocated with
+multiplier `min(32, 3 * services + 4)`. This is not an atomic filesystem snapshot;
+mutation/refusal and exhausted allowance fail rather than silently narrowing
+coverage or retrying.
+
+The first frozen-binary owned Docker qualification passed in 170.273 seconds
+(`environment-material-hdfqe2f_`, binary `978a675d...`): fresh disjoint bind
+fixtures normalized equally, source mutation changed identity, and independent
+equal copies differed from shared regular/symlink inodes. A subsequent lifecycle
+repair invalidates stale coverage after failed sampling; its new frozen binary
+`788b25ad...` is undergoing final alias and nested-view qualification. These
+checks start no agent, provider or grader; successful declared resources are
+removed and failed fixtures are stopped/preserved.
 
 ### Remaining Terminal 1.0 installed-client same-shell execution
 

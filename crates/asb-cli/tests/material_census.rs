@@ -46,6 +46,57 @@ fn invoke(input: &[u8], args: &[&str]) -> Output {
 }
 
 #[test]
+fn joint_roots_distinguish_regular_and_symlink_hardlinks_from_equal_copies() {
+    for symlink in [false, true] {
+        let fixture = Fixture::new();
+        let left = fixture.0.join("left");
+        let right = fixture.0.join("right");
+        fs::create_dir(&left).unwrap();
+        fs::create_dir(&right).unwrap();
+        if symlink {
+            std::os::unix::fs::symlink("target-not-read", left.join("item")).unwrap();
+        } else {
+            fs::write(left.join("item"), "same payload").unwrap();
+        }
+        fs::hard_link(left.join("item"), right.join("item")).unwrap();
+        let separately = || {
+            [&left, &right].map(|path| {
+                let output = invoke(
+                    json!({"schema_version":1,"roots":[
+                    {"name":"workspace","path":path}]})
+                    .to_string()
+                    .as_bytes(),
+                    &[],
+                );
+                assert!(output.status.success(), "{output:?}");
+                output.stdout
+            })
+        };
+        let separate_linked = separately();
+        let request = json!({"schema_version":1,"roots":[
+            {"name":"bind-001","path":left}, {"name":"bind-002","path":right}]});
+        let linked = invoke(request.to_string().as_bytes(), &[]);
+        assert!(linked.status.success(), "{linked:?}");
+        fs::remove_file(right.join("item")).unwrap();
+        if symlink {
+            std::os::unix::fs::symlink("target-not-read", right.join("item")).unwrap();
+        } else {
+            fs::write(right.join("item"), "same payload").unwrap();
+        }
+        let independent = invoke(request.to_string().as_bytes(), &[]);
+        assert!(independent.status.success(), "{independent:?}");
+        assert_eq!(
+            separate_linked,
+            separately(),
+            "per-root scans alone cannot detect this alias change"
+        );
+        let linked: Value = serde_json::from_slice(&linked.stdout).unwrap();
+        let independent: Value = serde_json::from_slice(&independent.stdout).unwrap();
+        assert_ne!(linked["sha256"], independent["sha256"], "symlink={symlink}");
+    }
+}
+
+#[test]
 fn private_census_returns_only_bounded_observations_without_files_or_provider_setup() {
     let fixture = Fixture::new();
     fs::write(

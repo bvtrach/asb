@@ -41,6 +41,16 @@ budget, generated-file normalization, private resource replacement and refusal
 of uncovered namespaces/networks/devices. These are not routed-network or
 complete original-catalog qualifications.
 
+The same environment qualification has explicit disjoint-bind and shared-bind
+view tests. They use declared local source directories beneath each owned
+attempt, distinguish shared regular/symlink inodes from equal independent
+copies, and exercise overlapping tmpfs-hidden views. A source subtree hidden
+from every guest must not affect identity; material visible through either view
+must. Run the named tests with the same frozen executable and cached-image
+opt-ins. Ordinary planner/root/environment tests additionally cover source
+replacement, prior/failed guest validation, local-kernel refusal, initial round
+mutation and shared-budget exhaustion before any host content read.
+
 `benchmark_live_material_mounts.py` is an opt-in mounted-root qualification.
 Set `ASB_TEST_MATERIAL_IMAGE` to an already cached Linux image ID,
 `ASB_TEST_BENCHMARK_ASB` to the built binary and `ASB_TEST_SWECATALOG_ROOT` to

@@ -36,7 +36,13 @@ class EnvironmentQualification(unittest.TestCase):
     def test_two_service_routed_bridge_binds_default_routes(self):
         self.qualify(networked=True,internal=False)
 
-    def qualify(self,networked=False,single=False,internal=True):
+    def test_disjoint_owned_binds_distinguish_regular_and_symlink_hardlink_graphs(self):
+        self.qualify(binds=True)
+
+    def test_shared_bind_views_ignore_only_subtrees_hidden_from_every_service(self):
+        self.qualify(binds=True,views=True)
+
+    def qualify(self,networked=False,single=False,internal=True,binds=False,views=False):
         from docker.types import Mount
         from asb_docker import DockerSession
         from asb_material import capture_task
@@ -44,10 +50,10 @@ class EnvironmentQualification(unittest.TestCase):
         root = Path(os.environ["ASB_TEST_SWECATALOG_ROOT"]).absolute()
         artifacts = Path(tempfile.mkdtemp(prefix="environment-material-",dir=root))
         print(f"Retained environment-material qualification: {artifacts}",flush=True)
-        observations = []
+        observations,alias_cases = [],[]
         with DockerSession() as client:
             image = client.images.get(os.environ["ASB_TEST_MATERIAL_IMAGE"])
-            for index,shared in enumerate([True,True] if single else [True,True,False]):
+            for index,shared in enumerate([True,True] if single or views else [True,True,False]):
                 directory = artifacts/f"attempt-{index+1}"
                 directory.mkdir(mode=0o700)
                 attempt = "asb-"+uuid.uuid4().hex
@@ -59,6 +65,33 @@ class EnvironmentQualification(unittest.TestCase):
                     config = {"services":{"main":{"container_name":attempt},
                         "database":{"container_name":attempt+"-database"}},
                         "volumes":{role:{"name":attempt+"-"+role} for role in volume_roles}}
+                    sources = {}
+                    if binds:
+                        config["volumes"] = {}
+                        for role,service in sorted(config["services"].items()):
+                            source = directory/("source-shared" if views else "source-"+role)
+                            source.mkdir(exist_ok=views)
+                            sources[role] = source
+                            if role == "database" or not shared:
+                                (source/"input").write_text("equal material\n")
+                                (source/"link").symlink_to("target-not-read")
+                            elif not views:
+                                for name in ["input","link"]:
+                                    os.link(sources["database"]/name,source/name,follow_symlinks=False)
+                            service["volumes"] = [{"type":"bind","source":str(source),"target":"/data"}]
+                            if views:
+                                service["tmpfs"] = {"/data/a" if role == "database" else "/data/a/b":"size=1m"}
+                                if role == "database":
+                                    (source/"a/b").mkdir(parents=True)
+                                    (source/"a/visible").write_text("visible in main only\n")
+                                    (source/"a/b/hidden").write_text("hidden from every guest\n")
+                        def identical_inode(name):
+                            a,b = [os.lstat(sources[role]/name) for role in ["main","database"]]
+                            return (a.st_dev,a.st_ino) == (b.st_dev,b.st_ino)
+                        case = {"shared_regular_inode":identical_inode("input"),
+                            "shared_symlink_inode":identical_inode("link")}
+                        self.assertEqual(case,{"shared_regular_inode":shared,"shared_symlink_inode":shared})
+                        alias_cases.append(case)
                     if single:
                         config["services"].pop("database")
                     if networked:
@@ -72,11 +105,13 @@ class EnvironmentQualification(unittest.TestCase):
                     for role,item in config["volumes"].items():
                         volumes[role] = client.volumes.create(name=item["name"],labels=journal.labels)
                     for number,(role,item) in enumerate(sorted(config["services"].items())):
-                        volume = volumes["data" if shared else volume_roles[number]]
+                        mount = Mount("/data",str(sources[role]),type="bind") if binds else \
+                            Mount("/data",volumes["data" if shared else volume_roles[number]].name,type="volume")
                         containers[role] = client.containers.run(image.id,["sleep","infinity"],detach=True,
                             name=item["container_name"],labels=journal.labels,
                             **({"network":network.name} if networked else {"network_mode":"none"}),
-                            mem_limit="1g",pids_limit=64,mounts=[Mount("/data",volume.name,type="volume")])
+                            **({"tmpfs":item["tmpfs"]} if views else {}),
+                            mem_limit="1g",pids_limit=64,mounts=[mount])
                         containers[role].reload()
                     task = SimpleNamespace(client=client,journal=journal,artifacts=directory,cancelled=threading.Event(),
                         workspace=SimpleNamespace(container=containers["main"],workdir="/"))
@@ -86,9 +121,15 @@ class EnvironmentQualification(unittest.TestCase):
                     first = observe()
                     observations.append(first)
                     if index == 0:
-                        result = containers["main"].exec_run(["/bin/sh","-c","printf changed > /data/changed.txt"])
-                        self.assertEqual(result.exit_code,0)
-                        self.assertNotEqual(first,observe(),"shared service volume mutation must be visible")
+                        if views:
+                            (sources["main"]/"a/b/hidden").write_text("changed invisible source\n")
+                            self.assertEqual(first,observe(),"hidden host payload must not enter material identity")
+                            (sources["main"]/"a/visible").write_text("changed visible source\n")
+                            self.assertNotEqual(first,observe(),"content visible in either view must remain observable")
+                        else:
+                            result = containers["main"].exec_run(["/bin/sh","-c","printf changed > /data/changed.txt"])
+                            self.assertEqual(result.exit_code,0)
+                            self.assertNotEqual(first,observe(),"shared service volume mutation must be visible")
                     elif index == 1:
                         self.assertEqual(first,observe(),"repeat observations must not restage instrumentation")
                     success = True
@@ -116,10 +157,13 @@ class EnvironmentQualification(unittest.TestCase):
                                 self.assertIsNone(owned_resource(client,declaration,journal.labels))
                     journal.close()
         self.assertEqual(observations[0],observations[1],"fresh generated names/IDs must normalize equally")
-        if not single:
-            self.assertNotEqual(observations[0],observations[2],"independent equal-content volumes must differ")
+        if not single and not views:
+            self.assertNotEqual(observations[0],observations[2],"independent equal-content backing must differ")
         (artifacts/"qualification.json").write_text(json.dumps({"observations":observations,
             "services":1 if single else 2,"networked":networked,"internal":internal if networked else None,
+            "disjoint_bind_hardlinks":binds and not views,
+            "nested_shared_bind_views":views,
+            "alias_cases":alias_cases,
             "scope":"owned-environment-material",
             "agent_started":False,"provider_called":False,"evaluator_started":False},sort_keys=True)+"\n")
 

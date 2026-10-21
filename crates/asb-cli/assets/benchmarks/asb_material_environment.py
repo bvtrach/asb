@@ -1,14 +1,15 @@
 """Whole-environment observation for explicitly covered owned service sets.
 
 Owned default-IPAM local bridges and network-none environments are modeled.
-External networks and unobservable cross-service bind aliases are refused.
+Cross-service bind aliases use a joint census after positive guest-root proof.
 """
 import time
 from types import SimpleNamespace
 
 from asb_material import MaterialError, canonical_digest
-from asb_material_binds import beneath, verify as verify_binds
-from asb_material_exec import ObservationBudget
+from asb_material_binds import verify as verify_binds
+from asb_material_bind_graph import plan as bind_graph_plan
+from asb_material_exec import ObservationBudget, observe
 from asb_material_mounts import plan, storage_groups, targets
 from asb_material_runtime import configuration, normalize, read_files
 from asb_material_services import resolve
@@ -52,7 +53,9 @@ def capture(task, definition, exclusions, binary, deadline):
     if (set(contexts) != set(resources) or any(contexts[role].identity != resource.id
             for role,resource in resources.items())):
         raise MaterialError("prepared service identity changed after instrumentation")
-    budget = ObservationBudget(observations=2*len(resources))
+    has_binds = any(item["Type"] == "bind" for resource in resources.values()
+        for item in targets(resource.attrs,RUNTIME))
+    budget = ObservationBudget(observations=min(32,(3*len(resources)+4) if has_binds else 2*len(resources)))
     command = docker_command()
     samplers = {}
     for role,context in contexts.items():
@@ -77,7 +80,7 @@ def capture(task, definition, exclusions, binary, deadline):
             if volume is None:
                 raise MaterialError("prepared environment volume disappeared")
             volume_attributes[item["name"]] = volume.attrs
-        public,private,names,source_roles = {},{},[],[]
+        public,private,names = {},{},[]
         source_list = []
         used_volumes = set()
         for role,resource in live.items():
@@ -103,7 +106,6 @@ def capture(task, definition, exclusions, binary, deadline):
                     source = (kind,role+":"+target,"")
                 source_list.append(source)
                 names.append(role+"/"+mount["name"])
-                source_roles.append(role)
             public[role] = {"runtime":runtime,"files":files,
                 "mounts":{key:value for key,value in topology.items() if key != "raw_sha256"}}
             private[role] = {"id":resource.id,"image":attrs.get("Image"),
@@ -112,12 +114,6 @@ def capture(task, definition, exclusions, binary, deadline):
                     "networks":attrs.get("NetworkSettings"),"mounts":mounts},"asb-private-service-runtime-v1")}
         if used_volumes != set(volume_attributes):
             raise MaterialError("prepared environment has an unobserved declared volume")
-        for left,a in enumerate(source_list):
-            for right,b in enumerate(source_list[left+1:],left+1):
-                if (source_roles[left] != source_roles[right] and a[0] == b[0] == "bind"
-                        and a[2][0] == b[2][0] and a[2] != b[2]
-                        and not beneath(a[1],b[1]) and not beneath(b[1],a[1])):
-                    raise MaterialError("disjoint service binds require global inode coverage")
         groups,aliases = storage_groups(source_list,names)
         state = {"services":public,"storage":dict(zip(names,groups)),"aliases":aliases}
         if network is not None:
@@ -126,17 +122,57 @@ def capture(task, definition, exclusions, binary, deadline):
         canonical_digest({"state":state,"private":private},"asb-private-environment-snapshot-v1")
         return state,private
 
+    def bind_views():
+        check()
+        current,live,current_primary = resolve(task,deadline)
+        if current != receipt or current_primary != primary or any(
+                resource.id != contexts[role].identity for role,resource in live.items()):
+            raise MaterialError("prepared bind service authority changed")
+        views = []
+        for role,sampler in samplers.items():
+            check()
+            if not any(item["Type"] == "bind" for item in targets(live[role].attrs,RUNTIME)):
+                continue
+            for view in sampler.bind_views():
+                views.append(dict(view,name=role+"/"+view["name"]))
+        return bind_graph_plan(views)
+
+    def host_sample():
+        before = bind_views()
+        if not before["roots"]:
+            raise MaterialError("prepared bind roots disappeared before joint observation")
+        result = observe([str(binary),"__asb-material"],before["roots"],budget=budget,
+            deadline=min(deadline,time.monotonic()+90),cancelled=task.cancelled)
+        if before != bind_views():
+            raise MaterialError("prepared bind witnesses changed during joint observation")
+        return {"bindings":before["bindings"],"files":result}
+
+    initial_samples, initial_state = None,None
+    if has_binds:
+        # Prove every guest-visible bind inode before the first host content
+        # read; same-kernel evidence alone does not prove Source resolution.
+        initial_state = snapshot()
+        initial_samples = {role:sample(budget) for role,sample in samplers.items()}
+        if initial_state != snapshot():
+            raise MaterialError("prepared environment changed during initial guest bind validation")
     rounds,identities = [],[]
     for _ in range(2):
         before = snapshot()
+        if initial_state is not None and before != initial_state:
+            raise MaterialError("prepared environment differs from initial guest bind validation")
+        host_before = host_sample() if has_binds else None
         samples = {}
         for role,sample in samplers.items():
             check()
             samples[role] = sample(budget)
+        host_after = host_sample() if has_binds else None
         after = snapshot()
-        if before != after:
+        if before != after or host_before != host_after or (initial_samples is not None and samples != initial_samples):
             raise MaterialError("prepared environment changed during a complete service round")
-        rounds.append({"topology":before[0],"observations":samples})
+        observation = {"topology":before[0],"observations":samples}
+        if has_binds:
+            observation["bind_graph"] = host_before
+        rounds.append(observation)
         identities.append(before[1])
     if rounds[0] != rounds[1] or identities[0] != identities[1]:
         raise MaterialError("prepared environment changed between complete service rounds")

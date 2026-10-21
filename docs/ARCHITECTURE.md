@@ -283,9 +283,22 @@ ownership and binds actual prepared file content plus image/runtime definition.
 The controller stages the running ASB helper into an absent owned root, verifies
 its exact bounded TAR tree before reuse/execution, and composes two complete
 image-anchored root observations with change/deletion inventories plus
-full-content shared memory. Actual mounts, services and complete runtime/network
-topology still need composition; unsupported coverage has no narrow fallback in
-verified CLI execution. The TAR reader never extracts files; legacy runs never
+full-content shared memory. The complete composer covers declared mounts,
+services and supported owned/default-bridge runtime/network topology;
+unsupported coverage has no narrow fallback in verified CLI execution. Owned
+local bind sources additionally receive a joint multi-root census for cross-service
+regular-file and symlink hardlink relationships. `PreparedSampler` exposes bind
+views only after a successful guest census matched exact source/root witnesses.
+Every new census or failed callback invalidates that authorization. A complete
+initial guest round precedes host content reads and must agree with both later
+rounds. Joint host observations bracket each later whole guest round and recheck
+service authority, source chains and locality. Identical source paths share a
+logical root, but only subtrees hidden in every view are excluded; each binding's
+nested/semantic exclusions remain explicit. Host paths and numeric inode
+witnesses are private, never public identities. Host and guest reads share one
+bounded allowance without resets. This adds relevant owned local filesystem
+observations, not a portable host snapshot or provenance guarantee.
+The TAR reader never extracts files; legacy runs never
 request the capture. Broader
 official material coverage and real SDK qualification, bundled recording/replay
 and campaign-aware comparison remain integration work; see
@@ -697,8 +710,10 @@ checks precede stopping resources. A changed journal or unconfirmed stop is a
 preservation failure, not successful cleanup. `interruption.json` explicitly
 states that preservation is neither grading nor retry permission.
 Cancellation accepts a stopped-preserved acknowledgement and still reports
-the interrupted operation as failed; normal completion requires removal and
-cannot accept that acknowledgement as a completed attempt. A preserved
+the interrupted operation as failed. Positive preservation can admit later
+fresh attempts, but is not successful normal removal or a completed grade.
+Normal-close preservation retains an explicit teardown failure diagnostic.
+A preserved
 environment's filesystem is retained, not its running process/shell state.
 Official sessions also track whether their latest evaluator response actually
 completed a matching task grade. Errors, missing/contradictory resolved flags

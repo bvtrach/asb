@@ -11,6 +11,18 @@ from asb_material_exec import ObservationBudget, observe, run
 RUNTIME = "/opt/asb-runtime"
 
 
+class PreparedSampler:
+    """One prepared service's census and guest-validated bind views."""
+    def __init__(self, sample, bind_views):
+        self._sample, self._bind_views = sample,bind_views
+
+    def __call__(self, budget=None):
+        return self._sample(budget)
+
+    def bind_views(self):
+        return self._bind_views()
+
+
 def prepare(task, exclusions, binary, deadline):
     """Stage one service, then return a callable taking one complete observation.
 
@@ -118,8 +130,47 @@ service in isolation cannot establish a stable multi-service environment.
         check()
         return {"image":anchor,"changes":changes,"topology":topology,"hidden":hidden}
 
+    validated_mounts = None
+
+    def mounted_roots(topology):
+        roots = []
+        binds = verify_binds(task.journal,container) if any(
+            item["kind"] == "bind" for item in topology["mounts"]) else {}
+        for root in topology["roots"]:
+            root = dict(root,exclusions=list(root.get("exclusions",[])))
+            if root["path"] in binds:
+                root["expected_identity"] = binds[root["path"]]["chain"][-1]
+            for path in policy:
+                if beneath(root["path"],path):
+                    raise MaterialError("semantic material exclusion hides a mounted root")
+                if beneath(path,root["path"]):
+                    root["exclusions"].append(path[len(root["path"].rstrip("/"))+1:])
+            roots.append(root)
+        return roots
+
+    def bind_views():
+        nonlocal validated_mounts
+        witness, validated_mounts = validated_mounts,None
+        if witness is None:
+            raise MaterialError("prepared bind roots lack current guest inode coverage")
+        # A successful guest census must positively match source/root inodes
+        # before any host observer may read the daemon's declared source paths.
+        check(); container.reload(); check()
+        verify_runtime()
+        topology = mounted()
+        if topology["raw_sha256"] != witness:
+            raise MaterialError("prepared bind roots lack current guest inode coverage")
+        binds = verify_binds(task.journal,container)
+        views = [{"name":root["name"],"source":binds[root["path"]]["source"],
+            "identity":root["expected_identity"],"exclusions":root["exclusions"]}
+            for root in mounted_roots(topology) if root["path"] in binds]
+        validated_mounts = witness
+        return views
+
     def sample(budget=None):
         nonlocal kernel_identity
+        nonlocal validated_mounts
+        validated_mounts = None
         verify_runtime()
         if kernel_identity is None and any(item["kind"] == "bind" for item in initial_mounts["mounts"]):
             kernel_identity = checked(["/bin/sh","-c",'exec /opt/asb-runtime/asb __asb-target "$$"'])
@@ -127,30 +178,18 @@ service in isolation cannot establish a stable multi-service environment.
         roots = [{"name":"filesystem", "path":"/", "image_sha256":before["image"],
             "content_paths":[path[1:] for path, kind in before["changes"] if kind != 2],
             "exclusions":[name[1:] for name in before["hidden"]]}]
-        for root in before["topology"]["roots"]:
-            root = dict(root,exclusions=list(root.get("exclusions",[])))
-            if any(item["kind"] == "bind" and item["target"] == root["path"]
-                    for item in before["topology"]["mounts"]):
-                # Same-kernel evidence alone does not prove the daemon's mount
-                # namespace resolves Source like the controller. The guest's
-                # pinned census root must match the pre-creation source inode.
-                root["expected_identity"] = verify_binds(task.journal,container)[root["path"]]["chain"][-1]
-            for path in policy:
-                if beneath(root["path"],path):
-                    raise MaterialError("semantic material exclusion hides a mounted root")
-                if beneath(path,root["path"]):
-                    root["exclusions"].append(path[len(root["path"].rstrip("/"))+1:])
-            roots.append(root)
+        roots.extend(mounted_roots(before["topology"]))
         result = observe([*command, RUNTIME+"/asb", "__asb-material"], roots,
             deadline=min(deadline, time.monotonic()+90), cancelled=cancelled, budget=budget)
         after = snapshot()
         verify_runtime()
         if before != after:
             raise MaterialError("prepared image or change inventory changed during root observation")
+        validated_mounts = after["topology"]["raw_sha256"]
         topology = {key:value for key,value in before["topology"].items() if key != "raw_sha256"}
         return {"image_sha256":before["image"], "changes":before["changes"],
             "topology":topology,"files":result}
-    return sample
+    return PreparedSampler(sample,bind_views)
 
 
 def capture(task, definition, exclusions, binary, deadline):

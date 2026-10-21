@@ -31,6 +31,7 @@ fn owned_bridge_observation_requires_exact_bidirectional_endpoint_membership() {
 #[test]
 fn complete_environment_rounds_preserve_runtime_and_cross_service_storage_identity() {
     python_protocol("benchmark_material_environment.py");
+    python_protocol("benchmark_material_bind_graph.py");
 }
 
 #[test]

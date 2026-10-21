@@ -282,6 +282,16 @@ impl Census {
             version: None,
         };
         self.charge_name(&record.name)?;
+        if before.is_file() || before.file_type().is_symlink() {
+            record.inode = Some((before.dev(), before.ino()));
+            record.version = Some((
+                before.mtime(),
+                before.mtime_nsec(),
+                before.ctime(),
+                before.ctime_nsec(),
+                before.nlink(),
+            ));
+        }
         if before.is_dir() {
             let mut children = Vec::new();
             for child in fs::read_dir(descriptor_path(&file)).map_err(|_| invalid())? {
@@ -321,14 +331,6 @@ impl Census {
         } else if before.is_file() {
             record.kind = "file";
             record.bytes = Some(before.len());
-            record.inode = Some((before.dev(), before.ino()));
-            record.version = Some((
-                before.mtime(),
-                before.mtime_nsec(),
-                before.ctime(),
-                before.ctime_nsec(),
-                before.nlink(),
-            ));
             if root.content_paths.is_none() {
                 record.sha256 = Some(hash_payload(
                     &file,
@@ -400,7 +402,9 @@ fn inode_groups(records: &[Record]) -> Result<BTreeMap<(u64, u64), usize>, &'sta
         if let Some(inode) = record.inode {
             if let Some(previous) = observed.get(&inode) {
                 let previous = &records[*previous];
-                if record.mode != previous.mode
+                if record.kind != previous.kind
+                    || record.link != previous.link
+                    || record.mode != previous.mode
                     || record.uid != previous.uid
                     || record.gid != previous.gid
                     || record.bytes != previous.bytes
@@ -437,7 +441,7 @@ fn fill_selected(census: &mut Census, roots: &[Root]) -> Result<(), &'static str
         .collect();
     let mut groups: BTreeMap<_, Vec<usize>> = BTreeMap::new();
     for (index, record) in census.records.iter().enumerate() {
-        if let Some(inode) = record.inode {
+        if let Some(inode) = record.inode.filter(|_| record.kind == "file") {
             groups.entry(inode).or_default().push(index);
         }
     }
@@ -1076,12 +1080,14 @@ mod tests {
             .collect();
         assert_eq!(files.len(), 2);
         assert!(inode_groups(&files).is_ok());
-        for field in ["content", "mode", "version", "attributes"] {
+        for field in ["content", "mode", "version", "attributes", "kind", "link"] {
             let mut changed = files.clone();
             match field {
                 "content" => changed[1].sha256 = Some("0".repeat(64)),
                 "mode" => changed[1].mode ^= 0o100,
                 "attributes" => changed[1].attributes_sha256 = "0".repeat(64),
+                "kind" => changed[1].kind = "symlink",
+                "link" => changed[1].link = Some("contradictory target".into()),
                 _ => changed[1].version.as_mut().unwrap().0 += 1,
             }
             assert!(inode_groups(&changed).is_err());

@@ -85,6 +85,10 @@ pub(crate) fn publish_support(root: &std::path::Path) -> Result<(), crate::Error
             include_str!("../../assets/benchmarks/asb_material_mounts.py"),
         ),
         (
+            "asb_material_bind_graph.py",
+            include_str!("../../assets/benchmarks/asb_material_bind_graph.py"),
+        ),
+        (
             "asb_material_binds.py",
             include_str!("../../assets/benchmarks/asb_material_binds.py"),
         ),

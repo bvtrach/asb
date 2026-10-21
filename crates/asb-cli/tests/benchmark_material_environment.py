@@ -67,7 +67,7 @@ class RuntimeTests(unittest.TestCase):
 
 
 class EnvironmentTests(unittest.TestCase):
-    def fixture(self,letter="a",volumes=None,single=False):
+    def fixture(self,letter="a",volumes=None,single=False,binds=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         root = Path(temporary.name)
@@ -80,6 +80,11 @@ class EnvironmentTests(unittest.TestCase):
             config["services"].pop("database")
         if volumes:
             config["volumes"] = {role:{"name":owner+"-"+role} for role in (["data"] if volumes == "shared" else ["left","right"])}
+        if binds:
+            for role,service in config["services"].items():
+                source = root/("source-"+role)
+                source.mkdir();(source/"input").write_text("equal material")
+                service["volumes"] = [{"type":"bind","source":str(source),"target":"/data"}]
         journal.compose(config)
         for index,(role,item) in enumerate(sorted(config["services"].items())):
             resource = Container(item["container_name"],journal.labels)
@@ -94,12 +99,15 @@ class EnvironmentTests(unittest.TestCase):
                 api.volumes.values[name] = SimpleNamespace(name=name,attrs={"Labels":journal.labels,"Driver":"local","Scope":"local","Options":{}})
                 resource.attrs["Mounts"] = [{"Type":"volume","Name":name,"Source":"/private/"+name,
                     "Destination":"/data","Driver":"local","RW":True,"Mode":"","Propagation":""}]
+            if binds:
+                resource.attrs["Mounts"] = [{"Type":"bind","Source":item["volumes"][0]["source"],
+                    "Destination":"/data","RW":True,"Mode":"","Propagation":"rprivate"}]
             api.containers.values[resource.name] = resource
         main = api.containers.values[owner+"-main"]
         return SimpleNamespace(journal=journal,client=api,cancelled=threading.Event(),artifacts=root,
             workspace=SimpleNamespace(container=main,workdir="/"))
 
-    def capture(self,task,mutate=None):
+    def capture(self,task,mutate=None,host=None):
         events = []
         roles = {item["container"]:role for role,item in task.journal.material_services["services"].items()}
         identities = {resource.id:roles[name] for name,resource in task.client.containers.values.items()}
@@ -113,7 +121,17 @@ class EnvironmentTests(unittest.TestCase):
                 budget.consume(usage,budget.allowance())
                 if mutate:
                     mutate(task,role,events)
-                return {"files":{"sha256":"f"*64,"entries":1,"bytes":0}}
+                return {"files":{"sha256":getattr(task,"sample_digest","f"*64),"entries":1,"bytes":0}}
+            def views():
+                if ("sample",role) not in events:
+                    raise MaterialError("guest bind inode has not been validated")
+                from asb_material_binds import verify
+                binds = verify(task.journal,context.workspace.container)
+                topology = subject.plan(context.workspace.container.attrs,binds,{},subject.RUNTIME)
+                return [{"name":root["name"],"source":binds[root["path"]]["source"],
+                    "identity":binds[root["path"]]["chain"][-1],"exclusions":root["exclusions"]}
+                    for root in topology["roots"] if root["path"] in binds]
+            sample.bind_views = views
             return sample
         def read(command,budget,**kwargs):
             identity = command[3]
@@ -125,11 +143,72 @@ class EnvironmentTests(unittest.TestCase):
                 result[0]["text"] += task.runtime_suffix
             budget.consume({"entries":3,"names":39,"bytes":sum(len(item["text"]) for item in result),"attributes":0},budget.allowance())
             return result
+        def observe(command,roots,*,budget,**kwargs):
+            events.append(("host",len([event for event in events if event[0] == "host"])+1))
+            budgets.append(budget)
+            budget.consume({"entries":1,"names":1,"bytes":0,"attributes":0},budget.allowance())
+            if host:return host(command,roots,events)
+            return {"sha256":"e"*64,"entries":1,"bytes":0}
         with patch.object(subject,"prepare",side_effect=prepare),patch.object(subject,"read_files",side_effect=read), \
+             patch.object(subject,"observe",side_effect=observe), \
              patch("asb_docker.docker_command",return_value=["fixture-docker"]):
             result = subject.capture(task,{"task":"fixture"},[],"/not-run",time.monotonic()+3)
         self.assertEqual(len({id(budget) for budget in budgets}),1)
         return result,events
+
+    def test_disjoint_service_binds_use_joint_host_graph_after_complete_guest_proof(self):
+        task = self.fixture(binds=True)
+        def host(command,roots,events):
+            self.assertEqual(command,["/not-run","__asb-material"])
+            self.assertGreaterEqual(len([event for event in events if event[0] == "sample"]),2)
+            self.assertEqual([root["name"] for root in roots],["bind-001","bind-002"])
+            self.assertTrue(all(root["path"].startswith(str(task.artifacts)+"/") for root in roots))
+            return {"sha256":"e"*64,"entries":1,"bytes":0}
+        first,events = self.capture(task,host=host)
+        self.assertEqual(len([event for event in events if event[0] == "host"]),4)
+        self.assertEqual(len([event for event in events if event[0] == "sample"]),6)
+        second,_ = self.capture(self.fixture("b",binds=True))
+        self.assertEqual(first,second,"physical source names/inodes do not enter public identity")
+
+    def test_failed_or_changed_initial_guest_round_prevents_all_host_content_reads(self):
+        for failure in [True,False]:
+            task = self.fixture(binds=True)
+            def mutate(task,role,events):
+                if failure:raise MaterialError("guest inode mismatch")
+                if role == "main":task.workspace.container.attrs["Config"]["Cmd"] = ["changed"]
+            host = unittest.mock.Mock(side_effect=AssertionError("must not read host material"))
+            with self.assertRaises(MaterialError):self.capture(task,mutate,host=host)
+            host.assert_not_called()
+
+    def test_initial_guest_baseline_is_not_replaced_by_later_agreement(self):
+        task = self.fixture(binds=True)
+        def mutate(task,role,events):
+            if len([event for event in events if event[0] == "sample"]) > 2:
+                task.sample_digest = "a"*64
+        with self.assertRaisesRegex(MaterialError,"complete service round"):
+            self.capture(task,mutate)
+
+    def test_host_alias_mutation_and_source_replacement_refuse(self):
+        for replace in [False,True]:
+            task = self.fixture(binds=True)
+            def host(command,roots,events):
+                count = len([event for event in events if event[0] == "host"])
+                if replace and count == 1:
+                    source = Path(roots[0]["path"])
+                    source.rename(source.with_name("retained-source"));source.mkdir()
+                return {"sha256":("a" if count == 1 else "b")*64,"entries":1,"bytes":0}
+            with self.assertRaises(MaterialError):self.capture(task,host=host)
+
+    def test_initial_validation_and_host_reads_cannot_reset_aggregate_allowance(self):
+        task = self.fixture(binds=True)
+        host = unittest.mock.Mock(side_effect=AssertionError("exhausted budget must not read host"))
+        limits = {"entries":20,"names":1000,"bytes":1024**2,"attributes":1000}
+        budget = ObservationBudget(limits)
+        with patch.object(subject,"ObservationBudget",return_value=budget) as allocation:
+            with self.assertRaisesRegex(MaterialError,"exhausted"):
+                self.capture(task,host=host)
+        allocation.assert_called_once_with(observations=10)
+        host.assert_not_called()
 
     def test_whole_rounds_follow_all_preparation_and_rebased_ids_names_are_canonical(self):
         first,events = self.capture(self.fixture())

@@ -112,6 +112,42 @@ class RootTests(unittest.TestCase):
             self.assertEqual(root["expected_identity"],[12,34,16384])
         self.assertEqual(set(result),{"schema_version","scope","sha256"})
 
+    def test_host_bind_views_require_current_guest_witnesses_and_exact_policy(self):
+        task = self.fixture()
+        task.journal = SimpleNamespace()
+        task.workspace.container.attrs["Mounts"] = [{"Type":"bind","Source":"/owned/input",
+            "Destination":"/task","RW":True,"Mode":"","Propagation":"rprivate"}]
+        declaration = {"/task":{"source":"/owned/input","chain":[[12,34,16384]]}}
+        with patch("asb_docker.docker_command",return_value=["fixture-docker"]), \
+             patch("asb_guest.upload"), \
+             patch("asb_runtime.bundle",return_value=([("asb",b"fixture",0o755)],
+                 {"files":[{"sha256":hashlib.sha256(b"fixture").hexdigest()}]})), \
+             patch("asb_material_binds.verify",return_value=declaration), \
+             patch("asb_material_mounts.require_local_kernel") as local, \
+             patch.object(subject,"run"),patch.object(subject,"observe",return_value={"sha256":"a"*64}) as observe:
+            sampler = subject.prepare(task,[".git/index"],"/private/asb",time.monotonic()+3)
+            with self.assertRaises(MaterialError):sampler.bind_views()
+            observe.assert_not_called()
+            observe.side_effect = MaterialError("guest source inode mismatch")
+            with self.assertRaisesRegex(MaterialError,"guest source inode mismatch"):sampler()
+            with self.assertRaisesRegex(MaterialError,"current guest inode coverage"):sampler.bind_views()
+            observe.side_effect = None
+            sampler()
+            self.assertEqual(sampler.bind_views(),[{"name":"mount-001","source":"/owned/input",
+                "identity":[12,34,16384],"exclusions":[".git/index"]}])
+            observe.side_effect = MaterialError("later guest census failed")
+            with self.assertRaisesRegex(MaterialError,"later guest census failed"):sampler()
+            with self.assertRaisesRegex(MaterialError,"current guest inode coverage"):sampler.bind_views()
+            observe.side_effect = None
+            sampler()
+            local.side_effect = MaterialError("remote daemon")
+            with self.assertRaisesRegex(MaterialError,"remote daemon"):sampler.bind_views()
+            local.side_effect = None
+            with self.assertRaisesRegex(MaterialError,"current guest inode coverage"):sampler.bind_views()
+            sampler()
+            task.workspace.container.attrs["Mounts"][0]["RW"] = False
+            with self.assertRaisesRegex(MaterialError,"current guest inode coverage"):sampler.bind_views()
+
     def test_inventory_change_and_unsupported_mounts_never_fall_back(self):
         task = self.fixture()
         counter = [0]
