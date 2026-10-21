@@ -3,6 +3,7 @@
 The known upstream reference is deliberately supplied only to a synthetic
 client fixture. This checks the real guest adapter/supervisor and original
 verifier, not whether an AI agent can solve the task.
+It does not establish that the coding client launched from the SDK parent shell.
 """
 import json
 import os
@@ -19,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "assets/benchmarks"))
 @unittest.skipUnless(os.environ.get("ASB_TEST_BENCHMARK_ASB") and os.environ.get("ASB_TEST_SWECATALOG_ROOT"),
                      "requires explicit original SDK, Docker and compiled guest opt-in")
 class WorkloadServiceQualification(unittest.TestCase):
-    def test_original_jupyter_service_survives_client_exit_and_official_same_shell_grading(self):
+    def test_original_jupyter_service_survives_client_exit_and_official_grading(self):
         from asb_docker import DockerSession
         from asb_guest import execute_agent, upload
         from asb_runtime import bundle

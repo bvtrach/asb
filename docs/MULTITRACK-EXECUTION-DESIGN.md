@@ -702,6 +702,30 @@ must consume a transport contract instead of duplicating the runner. The
 strategy returns child target identity, demultiplexed output, final status and
 confirmed settlement, not merely a successful `send_command` call.
 
+The launch-transport foundation is now implemented. `ManagedDockerWorkspace`
+keeps the existing lock, gate, deadline, resume, bounded-output and workload
+lifetime state machine. Its iterable transport owns launch IO, actual target
+identity, child exit status and idempotent closure. The default Docker transport
+uses explicit boolean daemon lifecycle evidence; alternate transports never
+fall back to inspecting their bridge PID. Namespace-only targets explicitly
+omit a daemon-host PID. Invalid identity or host-collector refusal occurs before
+resume. Retained workloads hold the whole transport through namespace teardown,
+including launcher cleanup, and cancellation-class closure failures remain
+uncertain rather than disappearing in a background drain. This foundation is
+not yet an SDK-session launcher or proof of same-shell client execution.
+The real owned Docker transport qualification passed in 3.455 seconds
+(`execution-transport-azu7qwhn`), binding source SHA-256
+`cf7056826669b036e0e82651c89fb21d232d7012556efa49e05ff7bb16cec3c4`.
+It checks the actual stopped target's host/namespace PID, separate output,
+nonzero child exit, short execution deadline, cancellation and malformed-gate
+recovery; its declared container was removed. The initial timing-fixture failure
+used an execution-sized preparation budget; the corrected fixture gives
+preparation its own budget and starts cancellation only after attachment. That
+older failed owned fixture remains stopped/preserved, not promoted to success.
+Pure execution tests also cover custom target/bridge separation, startup and
+stream cancellation, strict daemon lifecycle/status fields, idempotent sticky
+closure and retained transport cancellation failures.
+
 Private bounded streams and a nonce-bound exit receipt can bridge the SDK
 session to the controller. Launch credentials belong in a private environment
 channel, not recorded tmux keystrokes. A blocking SDK call must not occupy the

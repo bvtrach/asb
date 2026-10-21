@@ -75,6 +75,72 @@ class WorkloadFrames:
         return bytes(output)
 
 
+class DockerExecTransport:
+    """Owned demux transport, distinct from the execution's measured target.
+
+    Alternative workload launchers implement this iterable/target/exit_status/
+    close contract. They must settle partial allocations if construction fails;
+    closing a transport alone never proves its client process tree quiescent.
+    """
+    def __init__(self, api, container, command, environment, workdir):
+        self.api, self.container = api,container
+        self.exec_id = api.exec_create(container.id,cmd=command,environment=environment,
+            workdir=workdir,stdout=True,stderr=True)["Id"]
+        self.stream = api.exec_start(self.exec_id,stream=True,demux=True)
+        self.closed, self.close_error = False,None
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self.stream)
+
+    def target(self, namespace_pid):
+        inspection = self.api.exec_inspect(self.exec_id)
+        daemon_pid = inspection.get("Pid")
+        if inspection.get("Running") is not True or type(daemon_pid) is not int or daemon_pid <= 1:
+            raise ExecutionError("Docker did not identify the running execution target")
+        return {"container_id":self.container.id,"exec_id":self.exec_id,
+            "daemon_pid":daemon_pid,"namespace_pid":namespace_pid,"pid_scope":"docker-daemon-host"}
+
+    def exit_status(self):
+        inspection = self.api.exec_inspect(self.exec_id)
+        status = inspection.get("ExitCode")
+        if type(status) is not int or not 0 <= status <= 255 or inspection.get("Running") is not False:
+            raise ExecutionError("Docker returned no final execution status")
+        return status
+
+    def close(self):
+        if self.close_error is not None:
+            raise ExecutionError("execution transport closure remains unconfirmed") from self.close_error
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            try:
+                self.stream.close()
+            finally:
+                response = getattr(self.stream,"_response",None)
+                if response is not None:
+                    response.close()
+        except BaseException as error:
+            self.close_error = error
+            raise
+
+
+def execution_target(transport, container, namespace_pid):
+    """Validate routing identity without guessing a custom launcher's agent PID."""
+    target = transport.target(namespace_pid)
+    if (not isinstance(target,dict) or target.get("container_id") != container.id
+            or target.get("exec_id") != transport.exec_id or target.get("namespace_pid") != namespace_pid
+            or target.get("pid_scope") not in ["docker-daemon-host","container-namespace"]
+            or (target["pid_scope"] == "docker-daemon-host" and
+                (type(target.get("daemon_pid")) is not int or target["daemon_pid"] <= 1))
+            or (target["pid_scope"] == "container-namespace" and target.get("daemon_pid") is not None)):
+        raise ExecutionError("execution transport returned a contradictory target identity")
+    return target
+
+
 class ManagedDockerWorkspace:
     @classmethod
     def attach(cls, client, container, attempt, workdir):
@@ -142,19 +208,19 @@ class ManagedDockerWorkspace:
 
     def execute(self, argv, environment=None, timeout=900, output_limit=256 * 1024, before_resume=None,
                 on_output=None, cancelled=None, gate="shell", preparation_timeout=None,
-                workload_owner=None, on_execution_end=None):
+                workload_owner=None, on_execution_end=None, transport_factory=None):
         if self.container is None:
             raise ExecutionError("workspace is not running")
         if not self.active.acquire(blocking=False):
             raise ExecutionError("one command is already running in this task workspace")
         try:
             return self._execute(argv, environment or {}, timeout, output_limit, before_resume, on_output, cancelled, gate, preparation_timeout,
-                                 workload_owner, on_execution_end)
+                                 workload_owner, on_execution_end, transport_factory)
         finally:
             self.active.release()
 
     def _execute(self, argv, environment, timeout, output_limit, before_resume, on_output, cancelled, gate, preparation_timeout,
-                 workload_owner, on_execution_end):
+                 workload_owner, on_execution_end, transport_factory):
         if (not isinstance(argv, list) or not argv or len(argv) > 10000
                 or any(not isinstance(value, str) or "\x00" in value for value in argv)
                 or not isinstance(environment, dict)
@@ -172,6 +238,8 @@ class ManagedDockerWorkspace:
             raise ExecutionError("execution was cancelled before starting")
         if gate not in ["shell", "application"]:
             raise ExecutionError("unknown execution gate protocol")
+        if transport_factory is not None and not callable(transport_factory):
+            raise ExecutionError("execution transport factory is not callable")
         if workload_owner is not None:
             if (gate != "application" or self.held_executions or not isinstance(workload_owner, dict)
                     or set(workload_owner) != {"controller_namespace", "guest_namespace", "token"}
@@ -214,10 +282,7 @@ class ManagedDockerWorkspace:
         result = None
         try:
             command = argv if gate == "application" else ["/bin/sh", "-c", GATE, "asb-gate", *argv]
-            created = api.exec_create(container.id, cmd=command,
-                                      environment=environment, workdir=self.workdir, stdout=True, stderr=True)
-            exec_id = created["Id"]
-            stream = api.exec_start(exec_id, stream=True, demux=True)
+            stream = (transport_factory or DockerExecTransport)(api,container,command,environment,self.workdir)
             ready = bytearray()
             for out, err in stream:
                 if err:
@@ -244,13 +309,7 @@ class ManagedDockerWorkspace:
                 time.sleep(0.01)
             else:
                 raise ExecutionError("container gate never reached its stopped state")
-            inspection = api.exec_inspect(exec_id)
-            daemon_pid = inspection.get("Pid")
-            if not inspection.get("Running") or not isinstance(daemon_pid, int) or daemon_pid <= 1:
-                raise ExecutionError("Docker did not identify the running execution target")
-            target = {"container_id": container.id, "exec_id": exec_id,
-                      "daemon_pid": daemon_pid, "namespace_pid": namespace_pid,
-                      "pid_scope": "docker-daemon-host"}
+            target = execution_target(stream,container,namespace_pid)
             if before_resume is not None:
                 before_resume(target)
             with phase_lock:
@@ -317,10 +376,9 @@ class ManagedDockerWorkspace:
                 stdout.extend(chunk[:room])
                 if on_output is not None:
                     on_output("stdout", chunk)
-            inspection = api.exec_inspect(exec_id)
-            status = inspection.get("ExitCode")
-            if not isinstance(status, int) or inspection.get("Running"):
-                raise ExecutionError("Docker returned no final execution status")
+            status = stream.exit_status()
+            if type(status) is not int or not 0 <= status <= 255:
+                raise ExecutionError("execution transport returned no valid child exit status")
             result = {"exit_code": status, "stdout": bytes(stdout), "stderr": bytes(stderr),
                       "timed_out": expired.is_set(), "cancelled": interrupted.is_set(), "output_truncated": truncated,
                       "elapsed_seconds": time.monotonic() - execution_started,
@@ -340,15 +398,16 @@ class ManagedDockerWorkspace:
             watchdog.join(timeout=125)
             try:
                 if stream is not None:
-                    try:
-                        stream.close()
-                    finally:
-                        # Docker's CancellableStream shuts down the raw socket
-                        # but does not close its HTTP response/file wrappers.
-                        # Release both, including partially consumed gates.
-                        response = getattr(stream, "_response", None)
-                        if response is not None:
-                            response.close()
+                    self._close_stream(stream)
+            except BaseException:
+                # Closing bridge IO is not proof that its actual client (or
+                # launcher worker) settled. Quiesce the owned namespace too.
+                reset_needed.set()
+                try:
+                    container.kill()
+                except Exception:
+                    pass
+                raise
             finally:
                 if reset_needed.is_set() and not watchdog.is_alive() and not watchdog_error:
                     container.wait(timeout=125)
@@ -367,6 +426,7 @@ class ManagedDockerWorkspace:
                 response.close()
 
     def _hold_execution(self, stream):
+        errors = []
         def drain():
             try:
                 for _chunk in stream:
@@ -376,20 +436,25 @@ class ManagedDockerWorkspace:
                 # and cleanup status come from the owning SDK, not this drain.
                 pass
             finally:
-                self._close_stream(stream)
+                try:
+                    self._close_stream(stream)
+                except BaseException as error:
+                    errors.append(type(error).__name__)
         worker = threading.Thread(target=drain, daemon=True)
-        self.held_executions.append((stream, worker))
+        self.held_executions.append((stream, worker, errors))
         worker.start()
 
     def join_held_executions(self):
         """Call after the owning SDK stops/removes its namespace, never before grading."""
-        for stream, worker in self.held_executions:
+        for stream, worker, errors in self.held_executions:
             worker.join(timeout=2)
             if worker.is_alive():
                 self._close_stream(stream)
                 worker.join(timeout=2)
             if worker.is_alive():
                 raise ExecutionError("owned workload output transport did not stop after namespace teardown")
+            if errors:
+                raise ExecutionError("owned workload transport closure remains unconfirmed after namespace teardown")
         self.held_executions.clear()
 
     def quiesce_unconfirmed_agent(self):

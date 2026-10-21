@@ -91,6 +91,16 @@ source relationships but never publish local paths or branch names. They
 supplement the maintained architecture overview and should be regenerated when
 reviewing public or private type relationships.
 
+`benchmark_live_execution_transport.py` qualifies the default owned Docker
+transport with `ASB_TEST_MATERIAL_IMAGE` and `ASB_TEST_SWECATALOG_ROOT` opt-ins.
+It checks the actual stopped target's namespace mapping, separate stdout/stderr,
+nonzero child status, execution timeout, cancellation, malformed-gate recovery
+and confirmed resource removal. Short execution budgets use an independent
+preparation budget. It starts no coding agent, provider or grader, and is not
+SDK-shell qualification. Success removes only its declared container; failure
+stops and preserves that owned fixture. Its receipt binds the exact Python
+transport source hash, which must stay unchanged during execution.
+
 Function-level dataflow/control diagrams use Graphviz's packed `osage` layout.
 This keeps module boxes and every directed call/label, including cross-module
 cycles, without the clustered hierarchical-ranking failure in Graphviz 2.43.

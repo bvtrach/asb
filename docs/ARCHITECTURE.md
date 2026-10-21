@@ -694,6 +694,16 @@ through runtime validation and checksum-pinned prefetch; protocol-only unit
 fixtures cannot enable a production preparation bypass. Dispatch, bounded event
 receipt, measured-target resume and completion decoding remain separate phases
 inside the same failure/cancellation envelope.
+Workload-owned launch transports sit beneath the shared Docker workspace
+gate/deadline/output state machine. The default transport uses the Docker exec
+identity; a different launcher supplies its actual stopped client identity and
+child status without treating a bridge's PID or exit code as the agent's.
+Namespace-only targets cannot satisfy host collector verification. A retained
+workload keeps the entire iterable transport until namespace teardown, not only
+its output stream. Closure is idempotent but sticky failures, including
+cancellation exceptions in a drain worker, prevent false cleanup confirmation.
+The SDK-shell launch strategy is still pending; this abstraction alone does not
+change Terminal's current direct-exec client launch semantics.
 Failed preparation/execution cancels the controller through EOF and drains its
 bounded protocol until cleanup acknowledgement and child exit, retaining the
 original error and any cleanup failure. Normal completion still requires a
