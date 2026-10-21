@@ -46,6 +46,15 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+`cargo test --locked --offline --lib publication_tests` exercises source-file
+publication with an offline fake curl executable and real SHA-256 computation.
+It checks partial HTTP failures, empty/oversized bodies, checksum/probe failures,
+missing transport, timeout/child reaping, symlinks, rename failure and successful
+local/remote replacement, including nonblocking rejection of FIFO sources.
+Staged version-probe failure and timeout also retain the prior installation.
+A blocked downloader proves that the previous ready
+executable remains visible until complete validated bytes are committed. These
+tests make no network requests and install no host packages.
 `cargo test --locked --offline --test compare_setup` checks repeated CLI setup
 selections, scoped models/trials, dependency expansion, non-overwriting sweep
 publication, standalone measured/unmeasured reports and an injected browser

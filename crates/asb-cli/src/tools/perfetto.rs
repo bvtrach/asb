@@ -1,10 +1,9 @@
 use super::{StaticTool, ToolKind};
 use crate::Error;
-use crate::install::{LoggedStatus, Recipe, install_source, make_executable, verify_sha256};
+use crate::install::{Recipe, check_executable_version, install_verified_source};
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
 };
 
 const PERFETTO_LINUX_X86_64_URL: &str =
@@ -64,38 +63,25 @@ fn install_perfetto(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<P
         .map_err(|error| Error::Io(format!("cannot create {}: {error}", bin.display())))?;
     let destination = bin.join("tracebox");
     progress(20, "downloading pinned Perfetto Tracebox");
-    install_source(tracebox_url, &destination, "Perfetto Tracebox")?;
-    progress(45, "verifying Perfetto Tracebox checksum");
-    verify_sha256(&destination, tracebox_hash, "Perfetto Tracebox")?;
-    make_executable(&destination)?;
+    install_verified_source(
+        tracebox_url,
+        &destination,
+        "Perfetto Tracebox",
+        tracebox_hash,
+        true,
+        |path| check_executable_version(path, "Perfetto Tracebox"),
+    )?;
+    progress(45, "verified Perfetto Tracebox checksum and executable");
     let processor = bin.join("trace_processor_shell");
     progress(60, "downloading pinned Perfetto trace processor");
-    install_source(processor_url, &processor, "Perfetto trace processor")?;
-    progress(80, "verifying Perfetto trace processor checksum");
-    verify_sha256(&processor, processor_hash, "Perfetto trace processor")?;
-    make_executable(&processor)?;
-    progress(90, "checking project-local Perfetto tools");
-    let version = Command::new(&destination)
-        .arg("--version")
-        .logged_status()
-        .map_err(|error| Error::Io(format!("cannot start installed Perfetto Tracebox: {error}")))?;
-    if !version.success() {
-        return Err(Error::Io(
-            "installed Perfetto Tracebox did not report a usable version".into(),
-        ));
-    }
-    let processor_version = Command::new(&processor)
-        .arg("--version")
-        .logged_status()
-        .map_err(|error| {
-            Error::Io(format!(
-                "cannot start installed Perfetto trace processor: {error}"
-            ))
-        })?;
-    if !processor_version.success() {
-        return Err(Error::Io(
-            "installed Perfetto trace processor did not report a usable version".into(),
-        ));
-    }
+    install_verified_source(
+        processor_url,
+        &processor,
+        "Perfetto trace processor",
+        processor_hash,
+        true,
+        |path| check_executable_version(path, "Perfetto trace processor"),
+    )?;
+    progress(90, "verified project-local Perfetto tools");
     Ok(destination)
 }
