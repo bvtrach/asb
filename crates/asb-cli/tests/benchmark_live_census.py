@@ -47,7 +47,8 @@ class GuestCensusQualification(unittest.TestCase):
                     self.assertEqual(result.returncode,0,result.stderr.decode(errors="replace"))
                     self.assertLess(len(result.stdout),4096)
                     value = json.loads(result.stdout)
-                    self.assertEqual(value["scope"],"declared-root-material-observation-v1")
+                    self.assertEqual(value["scope"],"declared-root-material-observation-v2")
+                    self.assertTrue(value["coverage"]["visible_extended_attributes"])
                     self.assertFalse(value["coverage"]["complete_namespace"])
                     self.assertFalse(value["coverage"]["extended_attributes"])
                     return value
@@ -59,13 +60,18 @@ class GuestCensusQualification(unittest.TestCase):
                 upload(task.workspace.container,"/tmp/asb-census-right",[("b",b"same bytes",0o644)],temporary_dir=artifacts)
                 copied = observe(roots)
                 self.assertNotEqual(linked["sha256"],copied["sha256"])
+                task.checked(["python","-c","import os; os.setxattr('/tmp/asb-census-left/a', 'user.asb', b'fixture-secret\\0binary\\xff')"])
+                attributed = observe(roots)
+                self.assertNotEqual(copied["sha256"],attributed["sha256"])
+                task.checked(["python","-c","import os; os.removexattr('/tmp/asb-census-left/a', 'user.asb')"])
+                self.assertEqual(copied,observe(roots))
                 repository = observe([{"name":"workspace","path":"/testbed"}])
                 self.assertGreater(repository["entries"],1000)
                 self.assertEqual(repository,observe([{"name":"workspace","path":"/testbed"}]))
             self.assertEqual(json.loads((artifacts/"task/task-cleanup.json").read_bytes())["status"],"removed")
         (artifacts/"qualification.json").write_text(json.dumps({
             "scope":"declared-roots-not-complete-environment","runtime":receipt,
-            "linked":linked,"copied":copied,"repository":repository,
+            "linked":linked,"copied":copied,"attributed":attributed,"repository":repository,
             "agent_started":False,"provider_called":False,"evaluator_started":False,
         },sort_keys=True)+"\n")
 

@@ -56,11 +56,13 @@ fn private_census_returns_only_bounded_observations_without_files_or_provider_se
     assert!(output.status.success(), "{:?}", output);
     assert!(output.stderr.is_empty());
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["scope"], "declared-root-material-observation-v1");
+    assert_eq!(value["scope"], "declared-root-material-observation-v2");
+    assert_eq!(value["schema_version"], 2);
     assert_eq!(value["entries"], 2);
     assert_eq!(value["coverage"]["visible_inode_equivalence"], true);
     assert_eq!(value["coverage"]["complete_namespace"], false);
     assert_eq!(value["coverage"]["extended_attributes"], false);
+    assert_eq!(value["coverage"]["visible_extended_attributes"], true);
     assert_eq!(value["coverage"]["atomic_snapshot"], false);
     let encoded = String::from_utf8(output.stdout).unwrap();
     assert!(!encoded.contains("fixture-secret"));

@@ -23,6 +23,8 @@ pub(crate) fn preflight(name: &str, context: &PreflightContext<'_>) -> Result<()
     adapters::find(name).map_or(Ok(()), |adapter| adapter.preflight(context))
 }
 #[cfg(target_os = "linux")]
+mod attributes;
+#[cfg(target_os = "linux")]
 pub(crate) mod census;
 mod controller;
 mod material;

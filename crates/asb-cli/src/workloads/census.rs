@@ -5,11 +5,12 @@
 //! inodes or directories. Numeric inode identities never leave this process.
 #![allow(unsafe_code)]
 
+use super::attributes::{self, stable};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{CString, OsString};
-use std::fs::{self, File, Metadata, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -51,6 +52,7 @@ struct Coverage {
     posix_metadata: bool,
     visible_inode_equivalence: bool,
     extended_attributes: bool,
+    visible_extended_attributes: bool,
     complete_namespace: bool,
     atomic_snapshot: bool,
 }
@@ -66,6 +68,7 @@ struct Record {
     sha256: Option<String>,
     link: Option<String>,
     inode_group: Option<String>,
+    attributes_sha256: String,
     #[serde(skip)]
     inode: Option<(u64, u64)>,
     #[serde(skip)]
@@ -77,6 +80,7 @@ struct Census {
     entries_left: usize,
     names_left: usize,
     bytes_left: u64,
+    attributes_left: usize,
     deadline: Instant,
 }
 
@@ -120,35 +124,37 @@ fn open_at(parent: &File, name: &str) -> Result<File, &'static str> {
     Ok(unsafe { File::from_raw_fd(descriptor) })
 }
 
-fn pin_root(path: &str) -> Result<File, &'static str> {
+struct PinnedRoot {
+    file: File,
+    parent: Option<(File, String)>,
+}
+
+fn locate_root(path: &str) -> Result<PinnedRoot, &'static str> {
     let mut current = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC)
         .open("/")
         .map_err(|_| invalid())?;
+    let mut parent = None;
     for component in Path::new(path).components() {
         if let Component::Normal(name) = component {
             if !current.metadata().map_err(|_| invalid())?.is_dir() {
                 return Err(invalid());
             }
-            current = open_at(&current, name.to_str().ok_or_else(invalid)?)?;
+            let name = name.to_str().ok_or_else(invalid)?;
+            let next = open_at(&current, name)?;
+            parent = Some((current, name.to_owned()));
+            current = next;
         }
     }
-    Ok(current)
+    Ok(PinnedRoot {
+        file: current,
+        parent,
+    })
 }
 
-fn stable(a: &Metadata, b: &Metadata) -> bool {
-    a.dev() == b.dev()
-        && a.ino() == b.ino()
-        && a.mode() == b.mode()
-        && a.uid() == b.uid()
-        && a.gid() == b.gid()
-        && a.len() == b.len()
-        && a.mtime() == b.mtime()
-        && a.mtime_nsec() == b.mtime_nsec()
-        && a.ctime() == b.ctime()
-        && a.ctime_nsec() == b.ctime_nsec()
-        && a.nlink() == b.nlink()
+fn pin_root(path: &str) -> Result<File, &'static str> {
+    Ok(locate_root(path)?.file)
 }
 
 fn descriptor_path(file: &File) -> String {
@@ -177,6 +183,7 @@ impl Census {
         relative: &str,
         file: File,
         depth: usize,
+        locator: Option<(&File, &str)>,
     ) -> Result<(), &'static str> {
         self.check()?;
         if depth > 128 || self.entries_left == 0 {
@@ -194,6 +201,7 @@ impl Census {
             sha256: None,
             link: None,
             inode_group: None,
+            attributes_sha256: String::new(),
             inode: None,
             version: None,
         };
@@ -226,7 +234,13 @@ impl Census {
             }
             children.sort_unstable();
             for (name, relative) in children {
-                self.visit(root, &relative, open_at(&file, &name)?, depth + 1)?;
+                self.visit(
+                    root,
+                    &relative,
+                    open_at(&file, &name)?,
+                    depth + 1,
+                    Some((&file, &name)),
+                )?;
             }
         } else if before.is_file() {
             record.kind = "file";
@@ -292,6 +306,32 @@ impl Census {
         } else {
             return Err(invalid());
         }
+        record.attributes_sha256 = if before.file_type().is_symlink() {
+            let (parent, name) = locator.ok_or_else(invalid)?;
+            attributes::observe(
+                attributes::Target::Link {
+                    parent,
+                    name,
+                    pinned: &file,
+                },
+                &mut self.attributes_left,
+                self.deadline,
+            )?
+        } else {
+            let reader = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+                .open(descriptor_path(&file))
+                .map_err(|_| invalid())?;
+            if !stable(&before, &reader.metadata().map_err(|_| invalid())?) {
+                return Err(invalid());
+            }
+            attributes::observe(
+                attributes::Target::Descriptor(&reader),
+                &mut self.attributes_left,
+                self.deadline,
+            )?
+        };
         self.check()?;
         if !stable(&before, &file.metadata().map_err(|_| invalid())?) {
             return Err(invalid());
@@ -312,6 +352,7 @@ fn inode_groups(records: &[Record]) -> Result<BTreeMap<(u64, u64), usize>, &'sta
                     || record.gid != previous.gid
                     || record.bytes != previous.bytes
                     || record.sha256 != previous.sha256
+                    || record.attributes_sha256 != previous.attributes_sha256
                     || record.version != previous.version
                 {
                     return Err(invalid());
@@ -362,6 +403,7 @@ fn observe(
         entries_left: entries,
         names_left: names,
         bytes_left: bytes,
+        attributes_left: 16 * 1024 * 1024,
         deadline: Instant::now() + Duration::from_secs(60),
     };
     let mut exclusions = BTreeMap::new();
@@ -374,9 +416,13 @@ fn observe(
             census.charge_name(name)?;
         }
         exclusions.insert(&root.name, declared);
-        let file = pin_root(&root.path)?;
-        let before = file.metadata().map_err(|_| invalid())?;
-        census.visit(root, "", file, 0)?;
+        let pinned = locate_root(&root.path)?;
+        let before = pinned.file.metadata().map_err(|_| invalid())?;
+        let locator = pinned
+            .parent
+            .as_ref()
+            .map(|(file, name)| (file, name.as_str()));
+        census.visit(root, "", pinned.file, 0, locator)?;
         if !stable(
             &before,
             &pin_root(&root.path)?.metadata().map_err(|_| invalid())?,
@@ -387,7 +433,7 @@ fn observe(
     census.records.sort_unstable_by(|a, b| a.name.cmp(&b.name));
     let inodes = inode_groups(&census.records)?;
     let mut digest = Sha256::new();
-    digest.update(b"asb-declared-root-material-v1\0");
+    digest.update(b"asb-declared-root-material-v2\0");
     digest.update(serde_json::to_vec(&exclusions).map_err(|_| invalid())?);
     for index in 0..census.records.len() {
         if Instant::now() >= census.deadline {
@@ -410,8 +456,8 @@ fn observe(
         digest.update(b"\0");
     }
     Ok(Observation {
-        schema_version: 1,
-        scope: "declared-root-material-observation-v1",
+        schema_version: 2,
+        scope: "declared-root-material-observation-v2",
         sha256: format!("{:x}", digest.finalize()),
         entries: census.records.len(),
         bytes: bytes - census.bytes_left,
@@ -420,6 +466,7 @@ fn observe(
             posix_metadata: true,
             visible_inode_equivalence: true,
             extended_attributes: false,
+            visible_extended_attributes: true,
             complete_namespace: false,
             atomic_snapshot: false,
         },
@@ -448,11 +495,14 @@ pub(crate) fn entry(args: &[OsString]) -> ExitCode {
             .map_err(|_| invalid())?;
         Ok(())
     })();
-    if result.is_ok() {
-        ExitCode::SUCCESS
-    } else {
-        eprintln!("asb: {}", invalid());
-        ExitCode::from(2)
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(reason) => {
+            // Every propagated reason is a fixed local static string, never a
+            // filesystem path, attribute name/value, or external error body.
+            eprintln!("asb: {reason}");
+            ExitCode::from(2)
+        }
     }
 }
 
@@ -526,6 +576,7 @@ mod tests {
             entries_left: 1000,
             names_left: 65536,
             bytes_left: 1024,
+            attributes_left: 16 * 1024 * 1024,
             deadline: Instant::now() + Duration::from_secs(60),
         };
         census
@@ -534,6 +585,7 @@ mod tests {
                 "",
                 pin_root(&request.roots[0].path).unwrap(),
                 0,
+                None,
             )
             .unwrap();
         let files: Vec<_> = census
@@ -544,11 +596,12 @@ mod tests {
             .collect();
         assert_eq!(files.len(), 2);
         assert!(inode_groups(&files).is_ok());
-        for field in ["content", "mode", "version"] {
+        for field in ["content", "mode", "version", "attributes"] {
             let mut changed = files.clone();
             match field {
                 "content" => changed[1].sha256 = Some("0".repeat(64)),
                 "mode" => changed[1].mode ^= 0o100,
+                "attributes" => changed[1].attributes_sha256 = "0".repeat(64),
                 _ => changed[1].version.as_mut().unwrap().0 += 1,
             }
             assert!(inode_groups(&changed).is_err());
@@ -571,6 +624,34 @@ mod tests {
         let path = b.0.join("workspace/a");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
         assert_ne!(original, b.digest(&["workspace"]));
+    }
+
+    #[test]
+    fn visible_attributes_change_identity_but_root_symlinks_do_not_read_target_attributes() {
+        let fixture = Fixture::new();
+        fs::create_dir(fixture.0.join("workspace")).unwrap();
+        let target = fixture.0.join("workspace/file");
+        fs::write(&target, "same bytes").unwrap();
+        symlink("workspace/file", fixture.0.join("link")).unwrap();
+        let before = fixture.digest(&["workspace"]);
+        let link = fixture.digest(&["link"]);
+        let file = File::open(&target).unwrap();
+        let value = b"fixture secret\0attribute\xff";
+        // SAFETY: file is live; static name is terminated; value covers len.
+        assert_eq!(
+            unsafe {
+                libc::fsetxattr(
+                    file.as_raw_fd(),
+                    c"user.asb".as_ptr(),
+                    value.as_ptr().cast(),
+                    value.len(),
+                    0,
+                )
+            },
+            0
+        );
+        assert_ne!(before, fixture.digest(&["workspace"]));
+        assert_eq!(link, fixture.digest(&["link"]));
     }
 
     #[test]
@@ -654,6 +735,7 @@ mod tests {
             entries_left: 100,
             names_left: 100,
             bytes_left: 100,
+            attributes_left: 16 * 1024 * 1024,
             deadline: Instant::now() - Duration::from_secs(1),
         };
         assert!(census.check().is_err());

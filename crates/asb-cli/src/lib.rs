@@ -143,10 +143,11 @@ mod adapter_layout_tests {
                 &[
                     "mod.rs",
                     "session.rs",
-                    "material.rs",  // Generic bounded initial-file material identity.
-                    "census.rs",    // Descriptor-owned guest material observations.
-                    "selection.rs", // Generic pre-execution catalog/identity contract.
-                    "recovery.rs",  // Generic attempt references and adapter dispatch.
+                    "material.rs",   // Generic bounded initial-file material identity.
+                    "census.rs",     // Descriptor-owned guest material observations.
+                    "attributes.rs", // Bounded visible Linux attribute observations.
+                    "selection.rs",  // Generic pre-execution catalog/identity contract.
+                    "recovery.rs",   // Generic attempt references and adapter dispatch.
                     "controller.rs",
                     "remote.rs",
                     "relay.rs",

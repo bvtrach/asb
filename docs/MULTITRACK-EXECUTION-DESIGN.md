@@ -96,8 +96,9 @@ The private Linux `__asb-material` helper now accepts a bounded JSON declaration
 over stdin and returns only an observation digest, entry/byte counts and explicit
 coverage flags. It starts no provider, agent or evaluator. This is not the
 `prepared-workload-material-v1` response and must not replace that protocol's
-complete environment declaration. Extended attributes/ACLs, complete namespace
-coverage and atomic snapshot coverage are explicitly false.
+complete environment declaration. Version two additionally binds visible Linux
+attributes, including visible ACL/capability bytes; it does not claim complete
+privileged attribute enumeration, namespace coverage or an atomic snapshot.
 
 Traversal pins roots and children with descriptor-relative `O_PATH|O_NOFOLLOW`.
 Only already verified regular-file descriptors are reopened for reading through
@@ -123,11 +124,31 @@ equivalence does not by itself model shared mount topology or external writers.
 Do not stop all task processes or pause a container and assume its in-container
 collector can still execute; broader preparation quiescence remains adapter-owned.
 
-Remaining wiring must bind xattrs/ACLs, grouped root/delta content, mounts and
+Remaining wiring must compose visible xattrs/ACLs, grouped root/delta content, mounts and
 namespace-visible aliases, service roles and logical networks, validate stable
 before/after observations, and exclude only positively owned staging material.
 The current helper is qualified as a reusable component, not complete official
 root/mount/multiservice support or an atomic machine snapshot.
+
+The Linux attribute helper uses descriptor-based reads for files/directories
+and retained-parent, no-follow reads for symlinks, checking the current directory
+entry against its pinned inode around every call. Two actual name/value passes
+must agree, and attribute digests participate in inode-equivalence consistency.
+Names and values are byte strings; only their canonical digest enters records.
+Lists/values are bounded at 64 KiB before allocation, with a shared 16 MiB budget
+for both passes' allocations/read bytes and retained name copies across roots.
+Permission, unsupported-filesystem and race errors are not empty attributes.
+The output distinguishes `visible_extended_attributes` from unconditional
+`extended_attributes`: Linux may filter privileged attributes without additional
+capabilities, and ASB never escalates privileges just to claim full visibility.
+
+Attribute probes are upper bounds, not necessarily actual output lengths.
+[OverlayFS](https://github.com/torvalds/linux/blob/master/fs/overlayfs/xattrs.c)
+can return the underlying list size for a null-buffer probe and filter private
+names only for the buffered read. The helper charges the full allocation but
+truncates to the actual successful result, then compares two complete visible
+observations. Oversized results, negative errors and changed actual observations
+still fail. Fixed local diagnostic classes expose no paths or attribute values.
 
 ## Implemented native repeated execution
 

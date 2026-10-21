@@ -95,11 +95,19 @@ relationships and multiply RPC cost over large change inventories.
 declared-root observations and global resource accounting. `cargo test --locked
 --test material_census` exercises the private actual-binary protocol with an empty
 environment, strict bounded input and redacted hash/count-only output. These
-components do not establish xattr, mount, complete-namespace or snapshot coverage.
+components do not establish privileged-attribute, mount, complete-namespace or
+snapshot coverage. Visible xattrs/ACLs are read and hashed by
+`workloads::attributes`; run `cargo test --locked --lib workloads::attributes`
+for binary names/values, bounded probes, OverlayFS filtering, two-pass mutation,
+shared budgets and symlink replacement tests. The census additionally checks
+attribute changes and root-level symlink target isolation. ASB does not request
+extra privileges to enumerate hidden attributes; that coverage stays unclaimed.
 The opt-in `benchmark_live_census.py` needs the installed SWE SDK interpreter,
 `ASB_TEST_SWECATALOG_ROOT` and `ASB_TEST_BENCHMARK_ASB`. It stages the same ASB
 runtime in a newly owned original task, checks cross-root hardlinks versus copies,
-reads the original repository and verifies normal container removal. Its declared
+reads the original repository and verifies normal container removal. Its
+attribute mutation case changes only a new fixture file and confirms that binary
+values affect identity without appearing in output. Its declared
 root subprocesses have a separate 90-second watchdog; the helper's own 60-second
 deadline is cooperative between filesystem operations. A subprocess timeout takes
 the enclosing owned workload's stopped-preservation path; killing a Docker CLI
