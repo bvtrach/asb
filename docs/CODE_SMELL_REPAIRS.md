@@ -47,7 +47,7 @@ without changing established result/workspace identities unintentionally.
 Also review duplicated manifest reference validation and executable resolution;
 same names alone do not prove equivalent semantics. Pending.
 
-Executable-policy candidate, staged patch **0.2.16**: project-local source
+Executable-policy candidate, staged patch **0.2.17**: project-local source
 installation, readiness and launch share one registry-neutral executable lookup.
 Explicit source overrides precede adapter-owned package preferences; unusable
 present candidates cannot silently fall through to stale fallback code. Codex
@@ -61,16 +61,17 @@ same shared executable predicate rather than a removed duplicate. Final full
 source/package checks, review of integration, PR merge, post-merge verification
 and the patch release remain pending.
 
-Shared benchmark-path candidate, staged patch **0.2.13**: all five equivalent legacy normalizers now
+Shared benchmark-path repair, released patch **0.2.13**: all five equivalent legacy normalizers now
 use one component/stem policy, and both sweep execution and comparison use the
 same checked TOML-reference contract. Filename prefixes, Unicode-per-character
 replacement, non-UTF-8 fallback and existing symlink behavior are unchanged.
 The graph allocator still owns collision-free identities; the shared lossy
 normalizer is not a uniqueness or confinement mechanism. Tests preserve those
 boundaries and exercise actual CLI rejection in both commands before artifact
-creation. Independent source review found no blocker. Ordinary source tests
-and strict Clippy passed; release-head functional package/hosted checks, PR,
-post-merge validation and a patch release remain pending. This does not close
+creation. Independently reviewed PR #271 merged as
+`c5674eabc051aa071539e6cb324d73924e058cbf`; exact-head ordinary/package CI
+and both post-merge jobs passed (run `39625633010`). The signed **v0.2.13**
+release points to that commit. This does not close
 the separate executable-resolution or orchestration classes.
 
 Candidate report repair: flatten numeric paths with escaped object separators
@@ -117,7 +118,7 @@ both post-merge jobs passed in run `39614537662`; GitHub verified its signed
 release tag. Other subprocess/publication cleanup
 items in this class are not claimed complete.
 
-Model-catalog transport candidate, staged patch **0.2.11**: replace blocking curl stdin/stdout operations,
+Model-catalog transport repair, released patch **0.2.11**: replace blocking curl stdin/stdout operations,
 stderr-reader joins and caller-side waits with fair nonblocking Unix polling
 under one operation/cleanup deadline. Preserve proxy settings, response limits
 and sanitized protocol diagnostics. Direct-child ownership uses the shared
@@ -127,12 +128,15 @@ timeouts, custody and reaping. The body limit and I/O timeout are shared with
 curl's actual arguments; exact-limit success and one-byte-over rejection have
 real subprocess regressions. Independent source review and a separate execution
 of all 36 focused model tests passed. Non-Unix discovery fails before spawn;
-cancellable non-Unix transport remains a separate portability contract. Full
-release-head qualification and delivery remain pending. Main `398c36cc` removed
+cancellable non-Unix transport remains a separate portability contract.
+Independently reviewed PR #274 merged as
+`8b6e2f4ad7e093fa6574cc00a5e764e8c671f64d`; exact-head ordinary/package CI
+and both post-merge jobs passed (run `39621160735`), followed by the signed
+**v0.2.11** release from that commit. Main `398c36cc` removed
 the hosted coverage gate and the user explicitly confirmed keeping that removal;
 local measurements are optional diagnostics, not a required hosted check.
 
-Flamegraph cleanup candidate, staged patch **0.2.15**: the perf-script/stack-collapse/render pipeline
+Flamegraph cleanup repair, released patch **0.2.15**: the perf-script/stack-collapse/render pipeline
 owns every directly spawned stage. A failure, timeout or unwind signals all
 remaining stages before polling against one shared cleanup deadline, preserving
 the original error and retaining unconfirmed children in the shared private
@@ -140,9 +144,11 @@ the original error and retaining unconfirmed children in the shared private
 parent PID or returns from an upstream failure while forgetting a downstream
 child. Offline real-child tests cover stage/file/spawn failures, timeout,
 unwind, fallback-custody handoff, actual reaping and unrelated sentinel survival.
-The reviewed source is integrated with main's benchmark planning changes;
-fresh ordinary/package qualification, post-merge checks and a patch release
-remain pending in PR #276. Coverage is optional, not a delivery gate. This does
+Independently reviewed PR #276 merged as
+`57eee9b12a40327407b3cf911371b74ec932902a`, preserving main's benchmark
+planning changes. Exact-head ordinary/package CI and both post-merge jobs
+passed (run `39630284995`); **v0.2.15** is signed and released from that
+commit. Coverage is optional, not a delivery gate. This does
 not claim arbitrary descendant or crash-persistent cleanup.
 
 ## 4. Typed domain and wire contracts
@@ -203,14 +209,16 @@ their adapters. Audit mutable globals for necessary scope: atomics for unique
 names and synchronized process ownership are not intrinsically defects.
 Avoid removing synchronization without an ownership replacement. Pending.
 
-Host prerequisite consent/probes now have a separate candidate repair: private
+Host prerequisite consent/probes shipped as **v0.2.16**: private
 typed requests, consumed approvals, one capability probe per sysctl/cgroup setup,
 and explicit independent-versus-dependent failure policies. Sysctls retain
 approved interactive fallback; cgroup delegation remains passwordless-only and
 requires separate consent. Offline fake-executor tests and the existing isolated
 fake-sudo fixtures cover both routes. This candidate does not repair wizard
-worker ownership or change tracefs lease/installation semantics; independent
-review and delivery are still pending.
+worker ownership or change tracefs lease/installation semantics. Independently
+reviewed PR #279 merged as `76a604bd5ef850e4aa2b29c6cd0dc031a965403b`;
+exact-head ordinary/package CI and both post-merge jobs passed (run
+`39631941396`). The signed release points to that exact commit.
 
 Process-gate inspection found an additional launch-contract problem: its
 `pre_exec` closure allocates buffers and enumerates the environment after fork
@@ -226,8 +234,8 @@ detached: a draw error can return while an installer still mutates project
 files. Shared progress handling must own worker completion/cancellation, with
 a fake-install regression for terminal failure during active work.
 
-Prerequisite native gate custody repair stages patch **0.2.12**, separately
-from the TUI worker repair; it is not yet merged or released.
+Prerequisite native gate custody repair shipped as **v0.2.12**, separately
+from the still-pending TUI worker repair.
 Its private `ManagedGate` is used by the actual runner ownership boundary:
 versioned PID-bound Hello precedes admission, completion requires Quiescent
 plus direct exit, startup failure never resumes an unsupported launcher, and
@@ -242,12 +250,12 @@ helpers, proof-writer noninheritance and owner loss after Hello, while stopped,
 after resume and after the spawning thread exits. Protocol stand-ins separately
 exercise malformed/missing receipts, bounded uncertainty and wait-only custody;
 they do not qualify kernel teardown. Starting polling errors retain custody
-before returning their original diagnostic. The staged candidate integrates
-the reviewed runner publication repairs and current development policy;
-fresh exact-head functional/package CI, independent review, merge and
-post-merge release verification remain required.
+before returning their original diagnostic. Independently reviewed PR #275
+merged as `ac80fcb4201cc679afd280b79775b46cfe20ef5b`. Exact-head
+ordinary/package CI and both post-merge jobs passed (run `39622744776`);
+the signed release points to that exact commit.
 
-Workload-wizard candidate, staged patch **0.2.17**: explicit browsing, editing
+Workload-wizard candidate, staged patch **0.2.18**: explicit browsing, editing
 and saved states repair the advertised Enter-to-finish action. Saved subsets
 are restored when editing, replaced rather than appended, retained across
 deselection, and published only for selected workloads. Every selected subset
