@@ -230,6 +230,28 @@ aborts on overflow/read error and never parses a successful prefix. Any log
 also used as adapter input must be declared required, without the ancillary
 relaxation. Freeze these policies in the step context and test both categories.
 
+### Approved pre-implementation log/cancellation invariants
+
+Regular-file writes and flushes can block. The supervisor retains independent,
+fixed-identity ManagedGate cancellation authority: neither the sole gate nor a
+mutex required to request cancellation may be held by a blocked pipe/log pump.
+A pre-established log writer consumes a bounded queue; pressure or an ancillary
+writer failure switches producers to bounded discard plus an honest diagnostic.
+The blocked writer retains its lease and file until it actually settles, without
+preventing target cancellation or fabricating completed logging. An offline
+fixture deliberately holds the writer, observes actual child/grandchild
+cancellation and matching guardian quiescence with the unrelated sentinel alive,
+and only then releases the writer. Never wait for that release to cancel.
+
+New Linux raw per-step logs are create-new mode 0600 inside an owned mode-0700
+attempt namespace, reached without following symlinks. Existing install.log or
+foreign entries are neither reused, overwritten nor chmod'ed. Creation races
+fail or choose a fresh private attempt; they never relax ownership. Ordinary
+warnings contain only static reason classes and safe paths, never stdout/stderr
+payloads or credentials. Tests use umask 022, pre-existing foreign regular files
+and symlinks, and inert secret text to verify modes, preservation and absence
+from human-readable output. These safeguards add no authorization gate.
+
 ## Actual red fixtures before implementation
 
 The test-only module calls the **old actual** LoggedStatus/command_output APIs
