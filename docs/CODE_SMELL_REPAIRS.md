@@ -139,6 +139,28 @@ Cargo excludes from the archive. Earlier full qualification remains tied to its
 actual source; this test-only correction has fresh owning-layout qualification
 and still requires a new exact-head hosted/package CI run before merge.
 
+The next hosted run, `39673871945` at `0f0680a7`, passed every extracted-crate
+test, including the two-test artifact target and all ten Python scenarios. Its
+step then failed while removing the extraction directory: this fixture had
+deliberately left workspace/trajectory directories read-only. Exact failure
+evidence remains in `target/pr300-ci-39673871945-failed.log`.
+
+Independently source-reviewed test-only `83caa6e9` journals the original mode and
+device/inode before applying each permission fault. Per-case `finally` restores
+only an opened, no-follow, identity-matching owned directory after all assertions;
+it attempts other restorations on failure, never recursively chmods or deletes
+evidence, and never changes production or CI policy. Exact signed-source checkout
+qualification passed both tests/all ten scenarios. A fresh actual Cargo archive
+passed all ten extracted scenarios, all ten journals/thirteen owned directory
+modes matched, and the exact disposable extraction could then be removed
+successfully. Older failure fixtures, source evidence, archive and logs remain.
+Additional teardown checks exercise assertion unwind and foreign symlink/regular
+directory replacement without changing foreign permissions. Strict Clippy/fmt
+passed; frozen actual CLI hash remains `eb1ccde0206f8afa34378522b9506efadfb049093b1dd14bdc497cf30304a0ba`.
+Logs: `target/artifact35-permission-fix-{checkout-final,extracted,cleanup,faults,package-committed,clippy,fmt}.log`
+and `artifact35-permission-fix-final.sha256`. This correction still needs fresh
+exact-head CI; neither failed hosted run is reclassified as a successful gate.
+
 Historical artifact integration:
 
 Integrated source candidate, staged patch **0.2.33**: independently reviewed
