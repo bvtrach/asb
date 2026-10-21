@@ -48,6 +48,16 @@ def declare(configuration, record):
                         or not resource_name(kind,resource.get("name"),record["attempt"])):
                     raise MaterialError("prepared resource role is invalid or external")
                 value[kind][role] = {"name":resource["name"]}
+                if kind == "networks":
+                    # Preserve creation intent, not a post-creation inspect
+                    # guess. An omitted IPAM pool permits daemon allocation;
+                    # an explicitly selected subnet/gateway does not. Retain
+                    # unknown options too so topology coverage can refuse them
+                    # rather than silently erasing a dependency.
+                    definition = copy.deepcopy(resource)
+                    definition.pop("name",None)
+                    definition.pop("labels",None)
+                    value[kind][role]["definition"] = definition
             if len({item["name"] for item in value[kind].values()}) != len(value[kind]):
                 raise MaterialError("prepared resource roles identify duplicate resources")
         canonical_digest(value,"asb-private-service-declaration-v1")

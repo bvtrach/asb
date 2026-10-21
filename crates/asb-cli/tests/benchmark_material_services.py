@@ -77,6 +77,35 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(MaterialError,"primary"):
             self.resolve()
 
+    def test_network_creation_intent_is_deep_frozen_without_generated_names_or_labels(self):
+        value = copy.deepcopy(self.config)
+        network = value["networks"]["private"]
+        network.update({"driver":"bridge","internal":True,
+            "ipam":{"driver":"default","config":[{"subnet":"192.0.2.0/24","gateway":"192.0.2.1"}]},
+            "driver_opts":{"com.docker.network.bridge.enable_icc":"false"},
+            "future_option":{"nested":["retain-or-refuse"]},"labels":{"attempt":"first"}})
+        receipt = subject.declare(value,self.journal.record)
+        expected = copy.deepcopy(network)
+        expected.pop("name")
+        expected.pop("labels")
+        self.assertEqual(receipt["networks"]["private"]["definition"],expected)
+        network["ipam"]["config"][0]["subnet"] = "198.51.100.0/24"
+        network["future_option"]["nested"].append("later")
+        self.assertEqual(receipt["networks"]["private"]["definition"],expected)
+        self.assertEqual(self.journal.material_services["networks"]["private"]["definition"],{},
+            "the durable first declaration cannot be upgraded by a later observation")
+
+    def test_default_network_allocation_is_distinct_from_explicit_pool_intent(self):
+        automatic = subject.declare(self.config,self.journal.record)
+        explicit = copy.deepcopy(self.config)
+        explicit["networks"]["private"]["ipam"] = {"config":[{"subnet":"192.0.2.0/24"}]}
+        selected = subject.declare(explicit,self.journal.record)
+        self.assertNotEqual(automatic,selected)
+        self.assertEqual(automatic["networks"]["private"]["definition"],{})
+        original = (self.root/"material-services.json").read_bytes()
+        self.journal.compose(explicit)
+        self.assertEqual(original,(self.root/"material-services.json").read_bytes())
+
     def test_nested_intents_and_later_compose_calls_cannot_rewrite_creation_authority(self):
         receipt = read(self.journal,"material_services","material-services.json")
         original = (self.root/"material-services.json").read_bytes()

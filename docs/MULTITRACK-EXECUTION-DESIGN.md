@@ -331,6 +331,23 @@ or unavailable receipt errors, bounds input to 1 MiB and returns independent
 copies. These local consistency checks introduce no signatures, credentials or
 production authorization prerequisite.
 
+### Routed-network creation intent prerequisite
+
+The immutable pre-creation service receipt now also retains each network's
+deep-copied Compose definition, excluding its physical name and annotation
+labels. This includes unknown options: a later topology observer must model or
+refuse them, never silently discard them. Explicit IPAM pools/gateways therefore
+remain distinguishable from omitted, daemon-allocated pools. Later Compose calls
+cannot rewrite the original receipt. This prerequisite does not enable routed
+network observation; the existing network-none refusal remains in force.
+
+The next composer must inspect only exact declared owned local bridge networks,
+verify bidirectional network/service membership, and retain raw network/endpoint
+identities privately across whole observation rounds. Explicit addresses, aliases,
+subnets and driver options remain literal and checked. Only positively proven
+automatic allocation may become tagged logical service/network identities.
+Unlisted members and unsupported dependencies are errors, not omitted state.
+
 ### Owned network-none environment composer
 
 Verified capture now routes multiple declared services to an environment
