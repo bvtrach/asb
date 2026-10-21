@@ -101,3 +101,34 @@ cancellable pipe handling must not be manufactured by a Unix-only test result.
 
 No production edits, runtime tests, version allocation, PR or merge are claimed
 by this discovery/design checkpoint. The removed 90% coverage gate stays removed.
+
+## Subsequent independent review and observed baseline
+
+An independent agent read this full design and the complete production
+fingerprint/runtime-exchange paths and approved the direction. Its required
+refinements are accepted: use the exact already-reviewed `resume_when` gate
+primitive to check the deadline AFTER stopped readiness; bounded request
+serialization must borrow rather than deep-clone the context first; preserve
+the old canonical request bytes; stderr may be null/discarded because it was
+never a successful-result criterion; explicitly retain non-Unix legacy behavior.
+
+Signed baseline `00d62a8c` adds three real regression tests and extracts only the
+existing 130-second policy into a short-test-allowance method. The blocking
+production algorithm remains unchanged in this baseline. Actual ASB built FIRST
+offline/locked, jobs1/incremental0, in13.86s. Its frozen baseline is
+`target/qualification/checkpoint49-00d62a8c-asb`, SHA256
+`c35adb3c7250bdd3f305840ff21605694f14d2510a5e9417cf585d4fb83b161c`;
+before/after hashes agree. Build artifacts came from a copy of the verified idle
+typed-evaluation debug cache; copied artifacts alone are not qualification.
+
+`target/checkpoint49-observed-red.log` records0PASS/3intendedFAIL/0ignored in
+12.25s after24.11s test compilation. Blocked request, duplex pressure and
+inherited stdout all exceeded the fixture's short operation allowance. Each
+outer watchdog first confirmed whole-tree cleanup, checked exact helper /
+descendant PIDs absent and an unrelated sentinel alive, then stopped that
+sentinel independently before the intended failure assertion. All three retained
+fixture directories contain `outer-cleanup-confirmed` plus child stdout/stderr
+logs. This is an observed transport defect, not proof of a historical user hang.
+No provider, Docker, credentials, privileged collector or host setting was used.
+There is no pre-run libtest stability claim. No full suite, PR, version
+allocation or release is claimed by this baseline.
