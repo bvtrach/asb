@@ -1940,3 +1940,52 @@ entire valid comparison remains identical, then checks duplicate-attempt
 rejection. It passed 50 direct repetitions, followed by the full 440-unit/
 87-offline-CLI/fifteen-protocol source suite, strict Clippy and build. Packaging
 and exact-head hosted verification follow this repair.
+
+### Native gate and embedded tape owner-loss teardown
+
+A dedicated child-subreaper diagnostic confirmed that the old native gate and
+its client survived the ASB owner being killed. Linux native execution now
+uses an exclusive gate with or without measurements. It binds the expected
+parent process with a pidfd, not a spawning-thread death signal, and waits on
+kernel descriptors for client completion, owner loss or cancellation. A small
+separate watcher can wake the SIGSTOP-ed gate after owner loss. Cancellation
+events also wake that watcher, and an explicit completion event releases it
+before descendant cleanup. Terminal interrupt/hangup/termination signals do
+not kill the watcher before it can wake its gate. Native resume waits for
+confirmed stopped readiness; this additionally repairs an observed early-CONT
+race on the unmeasured path. OwnedChild cancellation allows bounded gate
+cleanup instead of immediately killing the subreaper. No shared runner signal
+handler, global subreaper, host process-group signal, or privileged host change
+is introduced. Native process-tree totals include supervisor/watcher overhead;
+the new watcher is outside a subsequently attached CPU-accounting cgroup.
+
+ASB's embedded tape proxy has a private stdin owner pipe, preserving the
+original Node PID/readiness contract. EOF, including before startup, closes
+the listener/connections and forbids further recording. Shutdown stops and
+waits for only its own outbound subprocesses, escalating TERM to KILL when
+necessary. Abnormal embedded proxy exits cannot confirm cleanup on either
+finish or abort. Explicit legacy overrides keep their existing stdin and
+lifecycle responsibilities; this does not claim to supervise arbitrary
+external implementations or provider-owned bridges.
+
+New provider-free regressions use dedicated subreaper fixtures and pinned
+signals, not shared-runner cleanup. Native cases cover startup races, owner
+death while paused/running, daemonized TERM-resistant helpers, spawning-thread
+exit while its owner remains live, paused cancellation, runtime TERM/INT/HUP,
+and terminal-style interrupts of the fixture's private session. Proxy cases
+cover record/replay, EOF before readiness, outstanding requests and a
+TERM-resistant synthetic curl. Public `asb run --replay` owner-SIGKILL checks
+exercise the actual embedded startup wiring with and without measurements.
+They require stopped/reaped clients/helpers/listeners, unchanged unrelated
+siblings and no fabricated interrupted recording. All nine guest/lifecycle
+tests passed. Final source verification also passed all 441 unit tests, 87
+offline CLI tests, fifteen benchmark protocol suites and the remaining
+diagram/parallel/partial/replay/unmeasured tests, strict all-target/all-feature
+Clippy and `make build` (including rustdoc, complete diagrams and completions).
+Package, real original-task and hosted qualification for this increment are
+recorded after completion.
+
+This closes the demonstrated native-gate/default-tape orphan gap, not the
+remaining interrupted submission/evaluation recovery, complete sweep-slot
+reconciliation, population-scale presentation, full-diff review, PR merge,
+exact-main CI or minor-release delivery gates.

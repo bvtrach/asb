@@ -1123,16 +1123,18 @@ fn run_measured_agent(
     if let Some(session) = session.as_deref_mut() {
         session.agent_launch_prepared(command);
     }
+    let mut gated = false;
     #[cfg(unix)]
-    if session.is_some()
+    if (session.is_some() || cfg!(target_os = "linux"))
         && let Some(target_args) = target_args
         && gate_target_available(program)
     {
         let executable = crate::process_gate::executable()
             .map_err(|error| Error::Run(format!("cannot resolve ASB process gate: {error}")))?;
         crate::process_gate::install(command, &executable, program, target_args);
+        gated = true;
     }
-    let child = {
+    let mut child = {
         let mut emit = |event| {
             if let Some(session) = session.as_deref_mut() {
                 session.event(event).map_err(Error::Run)?;
@@ -1143,7 +1145,7 @@ fn run_measured_agent(
         emit(LifecycleEvent::AgentSpawn)?;
         emit(LifecycleEvent::AgentExecuteBegin)?;
         let child = match command.spawn() {
-            Ok(child) => OwnedChild(child),
+            Ok(child) => OwnedChild(child, gated),
             Err(error) => {
                 emit(LifecycleEvent::AgentExecuteEnd)?;
                 emit(LifecycleEvent::AgentSpawnFailed)?;
@@ -1165,8 +1167,8 @@ fn run_measured_agent(
         return Err(Error::Run(error));
     }
     #[cfg(unix)]
-    if session.is_some() && target_args.is_some() {
-        crate::process_gate::resume(child.id()).map_err(|error| {
+    if gated {
+        crate::process_gate::resume(&mut child.0).map_err(|error| {
             Error::Run(format!("could not resume measured agent process: {error}"))
         })?;
     }
@@ -1447,7 +1449,18 @@ enum OutputChunk {
 
 // std::process::Child does not stop a process on drop. Own it from spawn
 // through all collector attachment, output and wait error paths.
-struct OwnedChild(Child);
+struct OwnedChild(Child, bool);
+
+impl OwnedChild {
+    fn stop(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        #[cfg(target_os = "linux")]
+        if self.1 {
+            return crate::process_gate::cancel_gate(&mut self.0);
+        }
+        let _ = self.0.kill();
+        self.0.wait()
+    }
+}
 
 impl std::ops::Deref for OwnedChild {
     type Target = Child;
@@ -1466,7 +1479,7 @@ impl std::ops::DerefMut for OwnedChild {
 impl Drop for OwnedChild {
     fn drop(&mut self) {
         if self.0.try_wait().ok().flatten().is_none() {
-            let _ = self.0.kill();
+            let _ = self.stop();
         }
         let _ = self.0.wait();
     }
@@ -1502,7 +1515,7 @@ pub(crate) fn run_guest_process(
         .map_err(|error| Error::Run(format!("cannot retain guest agent descendants: {error}")))?;
     let child = command
         .spawn()
-        .map(OwnedChild)
+        .map(|child| OwnedChild(child, false))
         .map_err(|error| Error::Run(format!("cannot start guest agent: {error}")))?;
     wait_with_output_streams(child, true, stdout, Some(stderr), runtime, &mut || {
         #[cfg(target_os = "linux")]
@@ -1575,8 +1588,7 @@ fn wait_with_output_streams(
         }
         if status.is_none() && Instant::now() >= deadline {
             timed_out = true;
-            let _ = child.kill();
-            status = Some(child.wait()?);
+            status = Some(child.stop()?);
             after_exit()?;
             quiesced = true;
         }
@@ -2022,7 +2034,7 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = child.id();
-        let owned = super::OwnedChild(child);
+        let owned = super::OwnedChild(child, false);
         // Simulate returning from the runner after attachment fails.
         drop(owned);
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
@@ -2047,8 +2059,9 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = child.id();
-        let error = super::wait_with_output(super::OwnedChild(child), true, &mut FailingWriter)
-            .unwrap_err();
+        let error =
+            super::wait_with_output(super::OwnedChild(child, false), true, &mut FailingWriter)
+                .unwrap_err();
         assert!(error.to_string().contains("fixture output failure"));
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
     }

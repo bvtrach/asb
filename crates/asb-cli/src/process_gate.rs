@@ -11,6 +11,8 @@ use std::process::Command;
 #[cfg(target_os = "linux")]
 mod descendants;
 #[cfg(target_os = "linux")]
+mod owner;
+#[cfg(target_os = "linux")]
 pub(crate) use descendants::DescendantScope;
 
 /// A loader-bundled runtime uses its launcher for recursive ASB execution.
@@ -45,6 +47,8 @@ pub(crate) fn install(
     let gate_executable = gate_executable.to_owned();
     let target = target.to_owned();
     let args = args.to_owned();
+    #[cfg(target_os = "linux")]
+    command.env("ASB_GATE_OWNER_PID", std::process::id().to_string());
     let environment_changes = command
         .get_envs()
         .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
@@ -109,7 +113,31 @@ pub(crate) fn install(
 }
 
 #[cfg(unix)]
-pub(crate) fn resume(pid: u32) -> io::Result<()> {
+pub(crate) fn resume(child: &mut std::process::Child) -> io::Result<()> {
+    let pid = child.id();
+    #[cfg(target_os = "linux")]
+    {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if child.try_wait()?.is_some() {
+                return Err(io::Error::other(
+                    "native process gate exited before readiness",
+                ));
+            }
+            let status = std::fs::read_to_string(format!("/proc/{pid}/status"))?;
+            if status.lines().any(|line| {
+                line.starts_with("State:") && line.split_whitespace().nth(1) == Some("T")
+            }) {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(io::Error::other(
+                    "native process gate readiness deadline exceeded",
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
     if unsafe { libc::kill(pid as libc::pid_t, libc::SIGCONT) } == 0 {
         Ok(())
     } else {
@@ -126,6 +154,32 @@ pub(crate) fn pause_current() -> io::Result<()> {
     }
 }
 
+/// Cooperatively cancel an owned gate, allowing its subreaper to finish.
+/// Repeated CONT closes cancellation racing with the gate's initial STOP.
+#[cfg(target_os = "linux")]
+pub(crate) fn cancel_gate(child: &mut std::process::Child) -> io::Result<std::process::ExitStatus> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(io::Error::other(
+                "native gate cleanup deadline exceeded; descendant cleanup is unconfirmed",
+            ));
+        }
+        // This unreaped Child belongs exclusively to this caller; its PID
+        // cannot be reused until the caller waits for it.
+        unsafe {
+            libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+            libc::kill(child.id() as libc::pid_t, libc::SIGCONT);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
 #[cfg(unix)]
 pub(crate) fn run_gate(args: &[OsString]) -> std::process::ExitCode {
     let Some((program, target_args)) = args.split_first() else {
@@ -139,10 +193,31 @@ pub(crate) fn run_gate(args: &[OsString]) -> std::process::ExitCode {
             return std::process::ExitCode::from(2);
         }
     };
+    #[cfg(target_os = "linux")]
+    let owner = match owner::Owner::bind() {
+        Ok(owner) => owner,
+        Err(error) => {
+            eprintln!("asb process gate could not bind its owner: {error}");
+            return std::process::ExitCode::from(2);
+        }
+    };
     if pause_current().is_err() {
         return std::process::ExitCode::from(2);
     }
+    #[cfg(target_os = "linux")]
+    let status = (|| {
+        if owner.cancelled()? {
+            return Err(io::Error::other(
+                "native gate owner exited before client execution",
+            ));
+        }
+        let mut child = Command::new(program).args(target_args).spawn()?;
+        owner.wait(&mut child)
+    })();
+    #[cfg(not(target_os = "linux"))]
     let status = Command::new(program).args(target_args).status();
+    #[cfg(target_os = "linux")]
+    owner.stop_waker();
     #[cfg(target_os = "linux")]
     if let Err(error) = descendants.quiesce() {
         eprintln!("asb process gate could not stop owned agent descendants: {error}");
@@ -150,7 +225,10 @@ pub(crate) fn run_gate(args: &[OsString]) -> std::process::ExitCode {
     }
     match status {
         Ok(status) => std::process::ExitCode::from(status.code().unwrap_or(1).clamp(0, 255) as u8),
-        Err(_) => std::process::ExitCode::from(127),
+        Err(error) => {
+            eprintln!("asb process gate: {error}");
+            std::process::ExitCode::from(127)
+        }
     }
 }
 

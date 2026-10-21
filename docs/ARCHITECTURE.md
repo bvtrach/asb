@@ -269,13 +269,26 @@ native process path. The generic execution context carries the selected
 configuration and negotiated connection, and the owning session returns
 separate process output, adapter-parsed results and observed execution time.
 The runner does not choose container images, dataset formats or graders.
-The Linux guest driver and measured native process gate are exclusive child
+The Linux guest driver and native process gate are exclusive child
 supervisors. They retain double-forked helpers as subreapers, verify kernel
 child ownership through pidfds, stop/reap remaining helpers after the principal
 client exits, and only then publish a completed result. A 500 ms TERM grace is
 followed by KILL with a five-second teardown bound; the required kernel APIs
 are probed before client launch. The shared multi-run process never takes this
 ownership role. Guest output-consumer errors also trigger owned-child cleanup.
+Native Linux execution uses the gate even when measurements are disabled.
+Its owner is bound to the spawning process (not the spawning thread) with a
+pidfd before client execution. A small child watcher pins both owner and gate;
+it wakes a stopped gate on owner loss so the gate can quiesce its descendants.
+The native resume path confirms the stopped state before sending CONT, and
+cancellation uses TERM plus CONT with a bounded cleanup wait instead of
+immediately killing the supervisor. All watchers and signals are scoped to
+the attempt; no shared runner signal handler or process-group kill is used.
+The native supervisor and its idle watcher are part of the measured process
+tree; process-tree totals include that instrumentation overhead. The watcher
+is created before cgroup attachment, so it remains outside the new accounting
+leaf; the supervisor and subsequently launched client are inside it.
+Container task measurements continue to target their guest driver separately.
 If guest metadata cannot confirm quiescence, the workload controller waits for
 its owned private-PID-namespace container to stop and restarts its original
 entry point before grading partial work. The filesystem is retained, the
@@ -692,6 +705,12 @@ exposing the endpoint; an unrelated listening socket cannot satisfy readiness.
 Explicit `ASB_LLM_TAPE` overrides retain the legacy fixed-port/TCP readiness
 protocol for compatibility. Such overrides are responsible for their own
 listener ownership; they do not provide the built-in receipt guarantee.
+Embedded proxy invocations also hold a private stdin lifetime pipe. Parent
+exit closes it, including death before Node startup. EOF and normal shutdown
+close the listener and its connections, prevent further recording, and wait
+for owned outbound subprocesses with bounded TERM/KILL escalation. An abnormal
+embedded proxy exit cannot confirm cleanup. Legacy overrides retain their own
+stdin/lifecycle contract and do not acquire this built-in guarantee.
 Measurement collection remains
 explicitly opt-in through `asb run --measurements DIR`; CI tests the tape on
 loopback but does not start live agents, live providers, or host collectors.

@@ -6,10 +6,11 @@
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { performance } from "node:perf_hooks";
-import { cancelNetworkRequests, networkFetch } from "./network-fetch.mjs";
+import { quiesceNetworkRequests, networkFetch } from "./network-fetch.mjs";
 
 const MAX_BODY = 16 * 1024 * 1024;
 const MAX_DELAY_MS = 60 * 60 * 1000;
+let stopping = false;
 
 function usage(message) {
   if (message) console.error(`llmtape: ${message}`);
@@ -589,6 +590,7 @@ async function handle(request, response) {
     body: normalizeCassetteBody(responseBody),
   };
   const delayMs = Math.min(Math.max(0, Math.round(performance.now() - startedAt)), MAX_DELAY_MS);
+  if (stopping) return;
   appendFileSync(cassette, `${JSON.stringify({ request: recordedRequest, response: recordedResponse, delay_ms: delayMs })}\n`);
   response.writeHead(recordedResponse.status, recordedResponse.headers);
   response.end(responseBody);
@@ -600,6 +602,29 @@ const server = http.createServer((request, response) => {
     response.end(JSON.stringify({ error: String(error.message || error) }));
   });
 });
+
+async function shutdown() {
+  if (stopping) return;
+  stopping = true;
+  server.close();
+  server.closeAllConnections();
+  try {
+    await quiesceNetworkRequests();
+    process.exit(0);
+  } catch {
+    process.exit(2);
+  }
+}
+
+// Only ASB's embedded invocation enables the private lifetime pipe. A closed
+// owner, including one killed before Node starts, produces EOF. Standalone
+// and explicit legacy overrides keep their existing stdin contract.
+if (process.env.ASB_TAPE_OWNER_PIPE === "1") {
+  delete process.env.ASB_TAPE_OWNER_PIPE;
+  process.stdin.on("end", shutdown);
+  process.stdin.on("error", shutdown);
+  process.stdin.resume();
+}
 
 if (mode === "record") {
   if (existsSync(cassette)) writeFileSync(cassette, "");
@@ -614,5 +639,5 @@ server.listen(port, "127.0.0.1", () => {
   }
 });
 for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.on(signal, () => { cancelNetworkRequests(); server.close(() => process.exit(0)); });
+  process.on(signal, shutdown);
 }

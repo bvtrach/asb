@@ -381,6 +381,45 @@ fn native_gate_stops_and_reaps_adopted_helpers_without_changing_client_failure()
 
 #[cfg(target_os = "linux")]
 #[test]
+fn native_gate_owner_loss_and_cancellation_quiesce_only_owned_descendants() {
+    let project = Project::new();
+    let output = Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/native_gate_owner.py"
+        ))
+        .arg(env!("CARGO_BIN_EXE_asb"))
+        .arg(&project.0)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn tape_owner_loss_stops_its_listener_and_reaps_outbound_helpers() {
+    let project = Project::new();
+    let output = Command::new("python3")
+        .arg("-B")
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/proxy_owner.py"))
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/scripts"))
+        .arg(&project.0)
+        .arg(env!("CARGO_BIN_EXE_asb"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn guest_output_failure_still_quiesces_owned_helpers_without_publishing_a_result() {
     let project = Project::new();
     background_agent(&project, true, 7);
