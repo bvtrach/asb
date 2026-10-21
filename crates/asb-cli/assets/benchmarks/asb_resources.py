@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import threading
 import uuid
 
 
@@ -273,6 +274,105 @@ def quiesce(client, path):
         if lock is not None:
             os.close(lock)
         os.close(directory)
+
+
+class RetainedEnvironment:
+    """Temporarily start the exact preserved resources, never recreate them.
+
+    The caller holds the original attempt lock throughout SDK grading. All
+    resources are checked before any start; cancellation and exit stop only
+    the pinned original container objects. Volumes/networks/images survive.
+    """
+    def __init__(self, client, retained, artifacts, cancelled, before_start=None):
+        self.client, self.retained, self.artifacts = client, retained, artifacts
+        self.cancelled = cancelled
+        self.containers, self.main = [], None
+        self.finished, self.caretaker = threading.Event(), None
+        self.directory = None
+        self.before_start = before_start
+
+    def __enter__(self):
+        from asb_retained import require
+        require(getattr(self.retained,"grading",False), "retained environment needs explicit grading")
+        lock = os.fstat(self.retained.owner_lock)
+        expected = os.stat(self.retained.child("resources.lock"),follow_symlinks=False)
+        require((lock.st_dev,lock.st_ino) == (expected.st_dev,expected.st_ino),
+                "retained grading does not hold its original owner descriptor")
+        self.directory = open_directory(self.retained.root)
+        try:
+            record = read_record(self.directory)
+            require(record == self.retained.object("resources.json"), "retained resource journal changed")
+            require(record["attempt"] == self.retained.identity["attempt_id"], "retained resource attempt changed")
+            # Validate daemon/schema and every ownership declaration before
+            # stopping or resuming anything, including auxiliary services.
+            quiesce_record(self.client,self.directory,record)
+            labels = {"asb.owner":"asb","asb.attempt":record["attempt"],"asb.recovery":record["token"]}
+            owned = [(item,owned_resource(self.client,item,labels)) for item in record["resources"]]
+            require(all(resource is not None or item["kind"] == "images" for item,resource in owned),
+                    "retained environment is incomplete; missing resources cannot be recreated as the old task")
+            self.containers = [resource for item,resource in owned if item["kind"] == "containers"]
+            main = [container for container in self.containers if container.name.lstrip("/") == record["attempt"]]
+            require(len(main) == 1, "retained task has no unique original main container")
+            self.main = main[0]
+            require(self.retained.submission.get("container_id") == self.main.id
+                    and self.main.attrs.get("Image") == self.retained.task["image"].get("image_id"),
+                    "retained submission container or image differs from its original environment")
+            require(not self.cancelled.is_set(), "retained grading cancelled before environment restart")
+            if self.before_start is not None:self.before_start(self.main)
+            # Start auxiliary services before the original main service. Do
+            # not invoke Compose up/build, new images, agents or task setup.
+            for container in sorted(self.containers,key=lambda item:item.id == self.main.id):
+                require(not self.cancelled.is_set(), "retained grading cancelled during environment restart")
+                container.start()
+                container.reload()
+                require(container.attrs.get("State",{}).get("Running") is True,
+                        "retained container did not confirm restart")
+            self.record = record
+            require(not self.cancelled.is_set(), "retained grading cancelled after environment restart")
+            def watch():
+                while not self.finished.is_set():
+                    if self.cancelled.wait(.05):
+                        for container in self.containers:
+                            try:container.stop(timeout=2)
+                            except Exception:pass
+                        return
+            self.caretaker = threading.Thread(target=watch,daemon=True)
+            self.caretaker.start()
+            return self
+        except BaseException:
+            self.__exit__(None,None,None)
+            raise
+
+    def __exit__(self,*_error):
+        from asb_retained import require
+        self.finished.set()
+        try:
+            pending = False
+            if self.caretaker is not None:
+                self.caretaker.join(timeout=10)
+                pending = self.caretaker.is_alive()
+            failed = False
+            for container in self.containers:
+                try:
+                    container.stop(timeout=2)
+                    container.reload()
+                    if container.attrs.get("State",{}).get("Running") is not False:failed = True
+                except Exception:failed = True
+            require(not failed, "retained grader could not confirm stopped preservation; inspect its resources")
+            require(not pending, "retained cancellation cleanup is still pending")
+            if hasattr(self,"record"):
+                observed = quiesce_record(self.client,self.directory,self.record)
+                path = self.artifacts / "grading-cleanup.json"
+                with path.open("x") as output:
+                    json.dump({"schema_version":1,"attempt":self.record["attempt"],
+                        "scope":"retained-grading-resources-preserved","resources":observed["resources"]},output)
+                    output.flush()
+                    os.fsync(output.fileno())
+                path.chmod(0o600)
+        finally:
+            if self.directory is not None:
+                os.close(self.directory)
+                self.directory = None
 
 
 if __name__ == "__main__":

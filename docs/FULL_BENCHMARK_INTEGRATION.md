@@ -2235,3 +2235,64 @@ benchmark protocol suites, nine guest/lifecycle checks and the remaining
 diagram/parallel/partial/replay/unmeasured integrations. Strict Clippy,
 formatting and `make build` (rustdoc, complete diagrams, interactive views and
 completions) passed. Package and exact-head hosted qualification follow.
+
+### Retained original Terminal-Bench 1.0 environment grading
+
+The Terminal family dispatches explicit retained grading through its owning
+adapter/runtime. Original 1.0 now supports the first verifier invocation for a
+captured-before-verifier environment: installed definition/dataset/SDK, original
+container/image and exact declared ownership must agree. Shared retained-resource
+support holds the original attempt descriptor, validates the whole population,
+and resumes only existing owned containers/services without Compose up/build,
+replacement volumes or any agent. Normal completion, SDK failure and cooperative
+owner cancellation stop/preserve those resources; no grade is selected before
+cleanup confirmation. Tests cannot be silently repeated: normal and recovered
+1.0 grading publish a durable start marker before invoking the official SDK.
+Already-started tests need outcome reconstruction. Lost-agent-shell tasks are
+refused before restart instead of using an inequivalent replacement shell.
+
+The original task topology is now persisted for both Terminal SDKs. Restoration
+retains aliases and explicit static addresses without forcing old dynamic IPs;
+recovery can reconnect the main container after a scoped agent network override.
+Only the original container's membership changes; unrelated networks/containers
+are not removed. Recovered logs/results use a unique directory/session, preserving
+the original submission and completed grades. Read-only verification additionally
+requires the actual environment baseline kind/source revision/definition hash
+for both versions, rather than accepting an invented Git-task baseline.
+
+Provider-free tests cover true/false grading through original SDK seams, unchanged
+completed outcomes, lost shells, definition/capture mismatch, failure cleanup,
+non-retry markers, network options, exact resource identity/ownership, cooperative
+cancellation and unrelated-container survival. Import/reporting tests cover a
+recovered 1.0 result and tampered cleanup records. CLI diagnostics now preserve
+safe helper failure classes and owned-runtime errors without printing SDK bodies.
+The first real qualification found a JSON catalog-path string passed into the
+SDK's Path-based catalog reader; conversion and a string-input regression fix
+that failure. Failed artifacts are retained separately and are not passing proof.
+
+Real public retained grading passed both false/true hello-world states in
+45.121 seconds at `retained-terminal-grading-u2r7cufl`. The extended network-override
+qualification passed in 43.650 seconds at `retained-terminal-grading-dlpclkof`,
+including original aliases, retained file contents, stopped preservation, unchanged
+repeat grading/inspection and unknown execution metrics. Normal Harbor correct/
+incorrect SDK grading passed in 40.014 seconds (see
+`target/benchmark-terminal-grading-harbor-regression.log`). Normal mixed original
+SWE-bench Lite/Terminal-Bench 1.0 real-Pi/synthetic-provider qualification passed
+in 95.425 seconds at `parallel-original-tasks-mpd2nqe9`, including collectors,
+SVG/HTML, cached resume, explicit reconciliation and grade-only imports. No test
+used a live LLM provider, and these are not full-population AI-solving claims.
+
+Remaining full-goal work includes retained Harbor environment grading, raw-outcome
+reconstruction and already-started verifier recovery, complete interrupted-slot
+continuation, population-scale presentation/qualification, full review, PR merge,
+exact-main CI and minor release. Source/package/hosted gates follow this increment.
+
+Final source verification passed 445 unit tests, 87 offline CLI tests, nineteen
+benchmark protocol suites, nine guest/lifecycle checks and the remaining
+diagram/parallel/partial/replay/unmeasured integrations. Six retained Terminal
+SDK-seam tests, twenty-three shared resource tests and ten retained-artifact
+checks (the public CLI case needs its compiled-binary opt-in) are included in
+those suites; nine public import/reporting cases also passed separately.
+Strict Clippy, formatting and `make build` including rustdoc, full diagrams,
+interactive views and completions passed. Source packaging and separately
+compiled packaged/hosted tests follow.

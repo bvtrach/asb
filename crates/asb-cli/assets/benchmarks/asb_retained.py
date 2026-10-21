@@ -119,6 +119,46 @@ class RetainedOutcome:
                 "evidence":dict(sorted(self.evidence.items())),
                 "process_success":None, "exit_code":None, "elapsed_ms":None, "token_usage":None, "steps":None}
 
+    def selected_evaluation(self):
+        if not self.child("selected-evaluation.json").exists():
+            return None
+        selection = self.object("selected-evaluation.json")
+        directory = selection.get("directory", "")
+        require(selection.get("schema_version") == 1
+                and selection.get("scope") == "selected-retained-evaluator-not-agent-retry"
+                and selection.get("attempt_id") == self.identity["attempt_id"]
+                and re.fullmatch(r"(?:evaluation|recovered-evaluation)-[a-f0-9]{32}",directory),
+                "retained evaluator selection is malformed")
+        require(self.child(directory).is_dir(), "selected retained evaluator directory is absent")
+        return directory + "/"
+
+    def verify_grading_cleanup(self, prefix):
+        cleanup = self.object(prefix+"grading-cleanup.json")
+        resources = cleanup.get("resources")
+        declarations = self.object("resources.json")["resources"]
+        require(cleanup.get("schema_version") == 1 and cleanup.get("attempt") == self.identity["attempt_id"]
+                and cleanup.get("scope") == "retained-grading-resources-preserved"
+                and isinstance(resources,list) and len(resources) == len(declarations)
+                and all(isinstance(item,dict) and isinstance(item.get("kind"),str) and isinstance(item.get("name"),str)
+                        for item in resources), "retained grading cleanup is malformed")
+        declared = sorted((item["kind"],item["name"]) for item in declarations)
+        observed = [(item.get("kind"),item.get("name")) for item in resources]
+        require(len(set(observed)) == len(observed) and sorted(observed) == declared
+                and all(item.get("status") == ("stopped-preserved" if item["kind"] == "containers" else "preserved")
+                        or item["kind"] == "images" and item.get("status") == "absent" for item in resources)
+                and any(item["kind"] == "containers" and item["name"] == self.identity["attempt_id"] for item in resources)
+                and all(item["kind"] != "images" or item["status"] == "absent"
+                        or re.fullmatch(r"sha256:[a-f0-9]{64}",str(item.get("image_id",""))) for item in resources),
+                "retained grading did not confirm original resource preservation")
+
+    def verify_environment_baseline(self):
+        baseline = self.summary["workload_baseline"]
+        require(baseline.get("kind") == "upstream-environment-definition"
+                and baseline.get("source_revision") == self.identity["dataset"]["revision"]
+                and re.fullmatch(r"[a-f0-9]{40}",str(baseline.get("source_revision","")))
+                and re.fullmatch(r"[a-f0-9]{64}",str(baseline.get("definition_sha256",""))),
+                "retained environment baseline does not identify its original task definition")
+
     def publish_selection(self, directory):
         require(getattr(self,"grading",False), "evaluation selection requires explicit grading")
         value = {"schema_version":1,"scope":"selected-retained-evaluator-not-agent-retry",
@@ -217,6 +257,7 @@ def main():
                     cancelled.set()
                 threading.Thread(target=owner_lifetime,daemon=True).start()
                 retained.grading = True
+                retained.owner_lock = descriptor
                 module.grade_retained(retained,request["catalog"],cancelled)
                 # Build an identical inspection report on future reads; old
                 # failed grading attempts are retained but not silently merged.
@@ -234,8 +275,10 @@ def main():
         print(json.dumps(result))
         return 0
     except Exception as error:
+        from asb_resources import RecoveryError
+        from asb_docker import DockerAccessError
         result = {"ok":False,"error_class":type(error).__name__}
-        if isinstance(error,RetainedError):
+        if isinstance(error,(RetainedError,RecoveryError,DockerAccessError)):
             result["reason"] = str(error)
         elif isinstance(error,FileNotFoundError):
             result["reason"] = "required retained artifact is missing"

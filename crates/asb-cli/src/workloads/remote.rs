@@ -111,10 +111,23 @@ fn retained_grade_request(
         Instant::now() + Duration::from_secs(if grading_catalog.is_some() { 1980 } else { 60 });
     let report = controller.receive(deadline).map_err(crate::Error::Run)?;
     if report["ok"] == false {
+        let error_class = report["error_class"]
+            .as_str()
+            .filter(|name| {
+                !name.is_empty()
+                    && name.len() <= 128
+                    && name
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            })
+            .unwrap_or("unknown_error");
+        let fallback = format!(
+            "retained official grade is missing or inconsistent ({error_class}); inspect preserved artifacts"
+        );
         let reason = report["reason"]
             .as_str()
             .filter(|reason| reason.len() <= 512 && !reason.chars().any(char::is_control))
-            .unwrap_or("retained official grade is missing or inconsistent");
+            .unwrap_or(&fallback);
         return Err(crate::Error::Input(format!(
             "cannot {} retained grade: {reason}; no agent was run",
             if grading_catalog.is_some() {

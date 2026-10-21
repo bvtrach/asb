@@ -23,7 +23,7 @@ from asb_docker import DockerSession, docker_command
 from asb_execution import ExecutionError, ManagedDockerWorkspace
 from asb_resources import ResourceJournal, build_image_tag
 from asb_terminal_catalog import verify, tree_manifest
-from asb_terminal_bench_1 import quiet_sdk, restore_task_networks, write_json
+from asb_terminal_bench_1 import quiet_sdk, restore_task_networks, original_networks, write_json
 
 
 class ImageUnavailable(ExecutionError):
@@ -157,8 +157,19 @@ def inspect_retained(retained):
     verify_retained(retained)
 
 
+def grade_retained(retained, _catalog_path, _cancelled):
+    from asb_retained import require
+    if retained.child("evaluation.json").exists():
+        result = retained.object("evaluation.json")
+        if result.get("outcome") in ["resolved","unresolved"]:
+            inspect_retained(retained)
+            return
+    require(False,"retained Harbor environment grading is not implemented yet; preserved work was not changed")
+
+
 def verify_retained(retained):
     from asb_retained import require
+    retained.verify_environment_baseline()
     result = retained.object("evaluation.json")
     retained.grade(result)
     require(retained.task.get("sdk") == {"package":"harbor","version":"0.24.0"},
@@ -241,7 +252,7 @@ class HarborTask:
             if len(containers) != 1:
                 raise ExecutionError("official Harbor environment did not create exactly one owned main service")
             container = containers[0]
-            self.original_networks = list(container.attrs["NetworkSettings"]["Networks"])
+            self.original_networks = original_networks(container)
             self.workspace = ManagedDockerWorkspace.attach(self.client, container, self.attempt,
                 self.task.config.environment.workdir or container.attrs["Config"].get("WorkingDir") or "/")
             self.agent_timeout = self.task.config.agent.timeout_sec
@@ -251,7 +262,8 @@ class HarborTask:
                 "workspace":self.workspace.workdir, "baseline":{"kind":"upstream-environment-definition",
                 "source_revision":self.catalog["dataset"]["revision"], "definition_sha256":definition_sha},
                 "sdk":self.catalog["sdk"], "image":self.workspace.image_identity,"resources":self.workspace.limits,
-                "agent_timeout_seconds":self.agent_timeout,"environment_source":self.environment_source}
+                "agent_timeout_seconds":self.agent_timeout,"environment_source":self.environment_source,
+                "original_networks":self.original_networks}
             write_json(self.artifacts / "task.json", self.invocation)
             return self
         except BaseException:

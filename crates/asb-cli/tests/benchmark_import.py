@@ -93,6 +93,32 @@ class SweepFixture:
 
 @unittest.skipUnless(os.environ.get("ASB_TEST_HOST_ASB"), "requires compiled ASB")
 class GradeImportTests(unittest.TestCase):
+    def test_recovered_terminal_grade_import_requires_preserved_resource_cleanup(self):
+        fixture = SweepFixture()
+        self.addCleanup(fixture.temporary.cleanup)
+        artifacts = fixture.root/".asb/attempts/a-3-1"
+        directory = "recovered-evaluation-"+"d"*32
+        target = artifacts/directory
+        target.mkdir(mode=0o700)
+        (artifacts/"evaluation.json").rename(target/"evaluation.json")
+        (artifacts/"official").rename(target/"official")
+        identity = json.loads((artifacts/"task.json").read_text())["identity"]
+        cleanup = {"schema_version":1,"scope":"retained-grading-resources-preserved","attempt":identity["attempt_id"],
+                   "resources":json.loads((artifacts/"interruption.json").read_text())["resources"]}
+        (target/"grading-cleanup.json").write_text(json.dumps(cleanup))
+        (artifacts/"selected-evaluation.json").write_text(json.dumps({"schema_version":1,
+            "scope":"selected-retained-evaluator-not-agent-retry","attempt_id":identity["attempt_id"],"directory":directory}))
+        imported = fixture.run("sweep", "sweep.toml", "--import-grades", "--json")
+        self.assertEqual(imported.returncode,0,imported.stderr.decode())
+        compared = fixture.run("compare", "sweep.toml")
+        self.assertEqual(compared.returncode,0,compared.stderr.decode())
+        before = {path:path.read_bytes() for path in fixture.imports()}
+        cleanup["resources"][0]["status"] = "running"
+        (target/"grading-cleanup.json").write_text(json.dumps(cleanup))
+        compared = fixture.run("compare", "sweep.toml")
+        self.assertNotEqual(compared.returncode,0)
+        self.assertEqual(before,{path:path.read_bytes() for path in fixture.imports()})
+
     def test_explicit_recovered_evaluation_imports_without_guessing_from_failed_predecessors(self):
         fixture = SweepFixture()
         self.addCleanup(fixture.temporary.cleanup)

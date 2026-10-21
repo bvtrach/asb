@@ -27,8 +27,9 @@ class Fixture:
                     {"package":"harbor","version":"0.24.0"} if workload.endswith("2.1") else
                     {"package":"terminal-bench","version":"0.2.18"})
         identity = {"workload":workload,"task_id":"case-1","attempt_id":"asb-"+"a"*32,
-                    "dataset":{"source":"fixture/"+workload,"revision":"pinned","split":"test"}}
-        baseline = {"kind":"upstream-task-definition","base_commit":"b"*40}
+                    "dataset":{"source":"fixture/"+workload,"revision":"b"*40,"split":"test"}}
+        baseline = ({"kind":"upstream-task-definition","base_commit":"b"*40} if workload.startswith("swe-") else
+                    {"kind":"upstream-environment-definition","source_revision":"b"*40,"definition_sha256":"e"*64})
         image = {"image_id":"sha256:"+"c"*64}
         self.request = {"reference":{**identity,"artifacts":str(self.root)},
                         "summary":{"task":identity,"workload_baseline":baseline,
@@ -96,6 +97,20 @@ class Fixture:
 
 
 class RetainedTests(unittest.TestCase):
+    def test_environment_grades_require_their_actual_environment_baseline_kind_and_revision(self):
+        for workload in ["terminal-bench-1.0","terminal-bench-2.1"]:
+            for mutation in ["kind","revision","hash"]:
+                fixture = Fixture(workload,True)
+                try:
+                    task = json.loads((fixture.root/"task.json").read_bytes())
+                    if mutation == "kind":task["baseline"] = {"kind":"upstream-task-definition","base_commit":"b"*40}
+                    if mutation == "revision":task["baseline"]["source_revision"] = "c"*40
+                    if mutation == "hash":task["baseline"]["definition_sha256"] = "wrong"
+                    fixture.write("task.json",task)
+                    with self.assertRaisesRegex(retained.RetainedError,"environment baseline"):
+                        fixture.inspect()
+                finally:fixture.temporary.cleanup()
+
     @unittest.skipUnless(os.environ.get("ASB_TEST_HOST_ASB"), "requires compiled ASB CLI")
     def test_public_cli_inspects_every_adapter_from_its_owning_project_without_writing_attempts(self):
         binary = os.environ["ASB_TEST_HOST_ASB"]

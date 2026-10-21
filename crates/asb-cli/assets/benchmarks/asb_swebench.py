@@ -380,17 +380,9 @@ def remove_evaluation_container(client, task_id, run_id, expected_labels=None):
 
 def retained_evaluation_prefix(retained):
     from asb_retained import require
-    selected = retained.child("selected-evaluation.json")
-    if selected.exists():
-        selection = retained.object("selected-evaluation.json")
-        directory = selection.get("directory", "")
-        require(selection.get("schema_version") == 1
-                and selection.get("scope") == "selected-retained-evaluator-not-agent-retry"
-                and selection.get("attempt_id") == retained.identity["attempt_id"]
-                and re.fullmatch(r"(?:evaluation|recovered-evaluation)-[a-f0-9]{32}",directory),
-                "retained evaluator selection is malformed")
-        require(retained.child(directory).is_dir(), "selected retained evaluator directory is absent")
-        return directory + "/"
+    selected = retained.selected_evaluation()
+    if selected is not None:
+        return selected
     directories = []
     for index, path in enumerate(retained.root.iterdir()):
         require(index < 256, "retained attempt has excessive top-level artifacts")

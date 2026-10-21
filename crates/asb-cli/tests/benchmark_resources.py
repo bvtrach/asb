@@ -5,13 +5,15 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from types import SimpleNamespace
 import unittest
 
 sys.dont_write_bytecode = True
 SOURCE = Path(__file__).parents[1] / "assets/benchmarks"
 sys.path.insert(0, str(SOURCE))
-from asb_resources import RecoveryError, ResourceJournal, build_image_tag, quiesce
+from asb_resources import RecoveryError, ResourceJournal, RetainedEnvironment, build_image_tag, quiesce
 
 ATTEMPT = "asb-" + "a" * 32
 
@@ -45,6 +47,13 @@ class Container:
         self.name = name
         self.attrs = {"Config":{"Labels":dict(labels)}, "State":{"Running":True}}
         self.stops = 0
+        self.starts = 0
+        self.id = "c"*64
+        self.attrs["Image"] = "sha256:"+"d"*64
+        self.attrs["NetworkSettings"] = {"Networks":{}}
+    def start(self):
+        self.starts += 1
+        self.attrs["State"]["Running"] = True
     def stop(self, timeout):
         assert timeout == 2
         self.stops += 1
@@ -59,6 +68,63 @@ def client():
 
 
 class ResourceTests(unittest.TestCase):
+    def retained_environment(self):
+        journal = self.journal()
+        owned = Container(ATTEMPT,journal.declare("containers",ATTEMPT))
+        self.client.containers.values[ATTEMPT] = owned
+        journal.preserve(self.client)
+        artifacts = self.root/"recovered-grading"
+        artifacts.mkdir(mode=0o700)
+        retained = SimpleNamespace(grading=True,owner_lock=journal.lock,root=self.root,
+            child=lambda name:self.root/name,object=lambda name:json.loads((self.root/name).read_bytes()),
+            identity={"attempt_id":ATTEMPT},submission={"container_id":owned.id},task={"image":{"image_id":owned.attrs["Image"]}})
+        return retained,owned,artifacts
+
+    def test_retained_environment_starts_exact_container_and_preserves_it_on_success_or_failure(self):
+        for failure in [False,True]:
+            # Each iteration has its own journal/attempt directory.
+            if failure:
+                self.temporary = tempfile.TemporaryDirectory()
+                self.addCleanup(self.temporary.cleanup)
+                self.root,self.client = Path(self.temporary.name),client()
+            retained,owned,artifacts = self.retained_environment()
+            try:
+                with RetainedEnvironment(self.client,retained,artifacts,threading.Event()) as resumed:
+                    self.assertIs(resumed.main,owned)
+                    self.assertTrue(owned.attrs["State"]["Running"])
+                    if failure:raise RuntimeError("SDK failed")
+            except RuntimeError:
+                self.assertTrue(failure)
+            self.assertEqual(owned.starts,1)
+            self.assertFalse(owned.attrs["State"]["Running"])
+            self.assertIn(ATTEMPT,self.client.containers.values)
+            self.assertEqual(json.loads((artifacts/"grading-cleanup.json").read_bytes())["resources"][0]["status"],"stopped-preserved")
+
+    def test_retained_environment_rejects_missing_or_changed_resources_before_restart(self):
+        retained,owned,artifacts = self.retained_environment()
+        retained.submission["container_id"] = "wrong"
+        with self.assertRaisesRegex(ValueError,"container or image"):
+            with RetainedEnvironment(self.client,retained,artifacts,threading.Event()):pass
+        self.assertEqual(owned.starts,0)
+        retained.submission["container_id"] = owned.id
+        owned.attrs["Config"]["Labels"]["asb.recovery"] = "wrong"
+        with self.assertRaises(RecoveryError):
+            with RetainedEnvironment(self.client,retained,artifacts,threading.Event()):pass
+        self.assertEqual(owned.starts,0)
+
+    def test_retained_environment_owner_cancellation_stops_only_its_original_container(self):
+        retained,owned,artifacts = self.retained_environment()
+        unrelated = Container("unrelated",{})
+        self.client.containers.values["unrelated"] = unrelated
+        cancelled = threading.Event()
+        with RetainedEnvironment(self.client,retained,artifacts,cancelled):
+            cancelled.set()
+            deadline = time.monotonic()+2
+            while owned.attrs["State"]["Running"] and time.monotonic()<deadline:time.sleep(.01)
+            self.assertFalse(owned.attrs["State"]["Running"])
+        self.assertEqual(unrelated.stops,0)
+        self.assertEqual(unrelated.starts,0)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

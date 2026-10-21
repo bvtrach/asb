@@ -244,6 +244,29 @@ stopped, unknown execution metrics and positively-owned fixture cleanup. No LLM
 is used, and this is not full-population or AI-solving qualification. Do not
 rebuild the selected binary while this qualification is running.
 
+`benchmark_terminal_grading.py` supplies provider-free original 1.0 SDK seams
+for retained true/false grading, completed-grade preservation, definition/capture
+mismatch, lost-shell refusal, non-retry of side-effecting tests, stopped cleanup
+after SDK failure and network alias/static-address restoration. Shared resource
+tests check exact ownership/identity, preservation and owner cancellation without
+touching unrelated containers. Retained-artifact tests also reject the wrong
+environment baseline kind/revision/hash for both original Terminal versions.
+`benchmark_import.py` covers importing a recovered 1.0 grade into comparison and
+rejecting edited cleanup evidence without replacing the import.
+
+The opt-in `benchmark_live_terminal_grading.py` needs the same explicit ASB/project
+variables as SWE grading and the installed original Terminal-Bench Python. It
+captures known incorrect/correct hello-world states, preserves their containers,
+calls public `--grade`, checks the official SDK result, retained files, stopped
+resources, unchanged repeat calls/inspection and unknown execution metrics. The
+incorrect case first moves its owned main container to a new qualification-only
+network, proving recovery reconnects original aliases and removes that override
+connection without deleting unrelated networks. The test removes only its
+positively-owned fixture resources/network and retains artifacts. No LLM or agent
+is used. Representative cases do not establish full-population AI performance or
+reconstruct lost shell state. Normal mixed-sweep and Harbor SDK qualifications
+remain regression gates when changing shared network/metadata behavior.
+
 See
 [evaluation semantics](EVALUATION.md). Perfetto
 post-processing scopes scheduler counts and series to the benchmark process

@@ -60,24 +60,58 @@ def copy_task_inputs(source, target, definition):
         shutil.copy2(source, target)
 
 
+def original_networks(container):
+    """Persist only the SDK network options needed to reconnect this task."""
+    container.reload()
+    result = {}
+    for name,endpoint in container.attrs["NetworkSettings"]["Networks"].items():
+        ipam = endpoint.get("IPAMConfig") or {}
+        options = {"aliases":endpoint.get("Aliases") or []}
+        for source,target in [("IPv4Address","ipv4_address"),("IPv6Address","ipv6_address"),("LinkLocalIPs","link_local_ips")]:
+            if ipam.get(source):options[target] = ipam[source]
+        result[name] = options
+    return network_options(result)
+
+
+def network_options(original):
+    if not isinstance(original,dict) or len(original) > 64:
+        raise ExecutionError("original task network topology is missing or exceeds its bound")
+    for name,options in original.items():
+        if (not isinstance(name,str) or not 1 <= len(name) <= 255 or not isinstance(options,dict)
+                or set(options) - {"aliases","ipv4_address","ipv6_address","link_local_ips"}):
+            raise ExecutionError("original task network endpoint is malformed")
+        for key,value in options.items():
+            if key in ["aliases","link_local_ips"]:
+                if not isinstance(value,list) or len(value) > 64 or any(not isinstance(item,str) or len(item) > 255 for item in value):
+                    raise ExecutionError("original task network aliases or link-local addresses are malformed")
+            elif not isinstance(value,str) or not 1 <= len(value) <= 128:
+                raise ExecutionError("original task static network address is malformed")
+    return original
+
+
 def restore_task_networks(client, container, original):
     """Restore exactly the verifier's networks after a scoped agent override."""
+    if isinstance(original,dict):network_options(original)
     container.reload()
     connected = set(container.attrs["NetworkSettings"]["Networks"])
     for name in set(original) - connected:
-        client.networks.get(name).connect(container)
+        options = original[name] if isinstance(original,dict) else {}
+        client.networks.get(name).connect(container,**options)
     for name in connected - set(original):
         client.networks.get(name).disconnect(container)
 
 
 def inspect_retained(retained):
-    retained.select_grade(retained.object("evaluation.json"))
+    prefix = retained.selected_evaluation() or ""
+    retained.select_grade(retained.object(prefix+"evaluation.json"))
     verify_retained(retained)
 
 
-def verify_retained(retained):
+def verify_retained(retained, prefix=None):
     from asb_retained import require
-    result = retained.object("evaluation.json")
+    retained.verify_environment_baseline()
+    prefix = (retained.selected_evaluation() or "") if prefix is None else prefix
+    result = retained.object(prefix+"evaluation.json")
     retained.grade(result)
     require(retained.task.get("sdk") == {"package":"terminal-bench","version":"0.2.18"},
             "retained original Terminal-Bench SDK differs")
@@ -86,8 +120,117 @@ def verify_retained(retained):
             and result.get("failure_mode") == "none" and result.get("parse_failure") == "none"
             and result["resolved"] == all(status == "passed" for status in tests.values()),
             "retained original Terminal-Bench parsed tests disagree")
-    pane = "official/" + retained.identity["task_id"] + "/" + retained.identity["attempt_id"] + "/panes/post-test.txt"
+    pane = prefix+"official/" + retained.identity["task_id"] + "/" + retained.identity["attempt_id"] + "/panes/post-test.txt"
     require(bool(retained.bytes(pane)), "retained original verifier pane is missing")
+    if prefix:
+        retained.verify_grading_cleanup(prefix)
+
+
+def record_grading_start(artifacts, identity):
+    """An absent result is never permission to repeat side-effecting tests."""
+    path = artifacts/"evaluation-started.json"
+    descriptor = os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    with os.fdopen(descriptor,"w") as output:
+        json.dump({"schema_version":1,"scope":"official-verifier-started-not-a-grade","task":identity},output)
+        output.flush()
+        os.fsync(output.fileno())
+    descriptor = os.open(artifacts,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:os.fsync(descriptor)
+    finally:os.close(descriptor)
+
+
+@quiet_sdk
+def grade_retained(retained, catalog_path, cancelled):
+    from asb_retained import require
+    catalog_path = Path(catalog_path)
+    if retained.selected_evaluation() is not None:
+        inspect_retained(retained)
+        return
+    completed = []
+    started = False
+    for index,path in enumerate(retained.root.iterdir()):
+        require(index < 256, "retained attempt has excessive top-level artifacts")
+        if path.name == "evaluation.json":
+            result = retained.object(path.name)
+            if result.get("outcome") in ["resolved","unresolved"]:
+                inspect_retained(retained)
+                return
+            started = True
+        if path.name.startswith("recovered-evaluation-"):
+            import re
+            require(re.fullmatch(r"recovered-evaluation-[a-f0-9]{32}",path.name)
+                    and not path.is_symlink() and path.is_dir(), "retained evaluator directory is malformed")
+            result_path = retained.child(path.name+"/evaluation.json")
+            if result_path.exists():
+                result = retained.object(path.name+"/evaluation.json")
+                if result.get("outcome") in ["resolved","unresolved"]:completed.append(path.name)
+            started = started or retained.child(path.name+"/evaluation-started.json").exists()
+    require(len(completed) <= 1, "multiple completed retained grades cannot be replaced or guessed")
+    if completed:
+        prefix = completed[0]+"/"
+        retained.select_grade(retained.object(prefix+"evaluation.json"))
+        verify_retained(retained,prefix)
+        retained.publish_selection(completed[0])
+        return
+    pane = "official/"+retained.identity["task_id"]+"/"+retained.identity["attempt_id"]+"/panes/post-test.txt"
+    require(not started and not retained.child("evaluation-started.json").exists() and not retained.child(pane).exists(),
+            "the retained verifier already started; reconstruct its original outcome instead of rerunning side-effecting tests")
+    require(retained.submission.get("grading_state") == "captured-before-verifier",
+            "retained submission has no pre-verifier capture record; no tests or agent were rerun")
+    require(retained.recorded_cleanup == "stopped-preserved", "retained environment was not preserved for grading")
+    require(isinstance(retained.task.get("original_networks"),dict),
+            "retained task has no original network topology; no environment or verifier was restarted")
+    networks = network_options(retained.task.get("original_networks"))
+    catalog = verify(catalog_path,"terminal-bench-1.0")
+    selected = next((task for task in catalog["tasks"] if task["id"] == retained.identity["task_id"]),None)
+    require(selected is not None and catalog["dataset"] == retained.identity["dataset"]
+            and catalog["sdk"] == retained.task.get("sdk"), "retained task differs from its installed grading catalog")
+    definition = Path(catalog_path).parent/selected["definition"]
+    definition_sha = hashlib.sha256(json.dumps(tree_manifest(definition),sort_keys=True).encode()).hexdigest()
+    require(retained.task["baseline"] == {"kind":"upstream-environment-definition",
+            "source_revision":catalog["dataset"]["revision"],"definition_sha256":definition_sha},
+            "retained original task definition changed")
+    from asb_terminal_catalog import runtime_identity
+    runtime_identity("terminal-bench-1.0")
+    os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP","True")
+    from terminal_bench.handlers.trial_handler import TrialHandler, TrialPaths
+    from terminal_bench.harness.harness import Harness
+    from terminal_bench.terminal.terminal import Terminal
+    from terminal_bench.terminal.docker_compose_manager import DockerComposeManager
+    from asb_resources import RetainedEnvironment
+    handler = TrialHandler(retained.identity["attempt_id"],definition)
+    require(handler.task_id == retained.identity["task_id"], "retained task definition ID differs")
+    require(not handler.task.run_tests_in_same_shell,
+            "this original task requires its lost agent shell; a new shell cannot truthfully grade the retained attempt")
+    require(not cancelled.is_set(), "retained grading cancelled before environment restart")
+    directory = "recovered-evaluation-"+uuid.uuid4().hex
+    artifacts = retained.child(directory)
+    artifacts.mkdir(mode=0o700)
+    handler.trial_paths = TrialPaths(artifacts/"official",handler.task_id,handler.trial_name)
+    handler.trial_paths.mkdir()
+    with DockerSession() as client, RetainedEnvironment(client,retained,artifacts,cancelled,
+            before_start=lambda main:restore_task_networks(client,main,networks)) as resumed:
+        require(not cancelled.is_set(), "retained grading cancelled before verifier launch")
+        terminal = Terminal.__new__(Terminal)
+        terminal.container = resumed.main
+        terminal._sessions = {}
+        terminal._commands_path = handler.trial_paths.commands_path
+        terminal._disable_recording = True
+        terminal._compose_manager = DockerComposeManager.__new__(DockerComposeManager)
+        terminal._compose_manager._client_container = resumed.main
+        task = TerminalBenchTask.__new__(TerminalBenchTask)
+        task.artifacts, task.task_id, task.attempt = artifacts,handler.task_id,handler.trial_name
+        task.catalog, task.handler, task.terminal = catalog,handler,terminal
+        task.test_session_name = "asb-grade-"+uuid.uuid4().hex
+        task.evaluator = Harness.__new__(Harness)
+        task.evaluator._global_test_timeout_sec = min(1800,handler.task.max_test_timeout_sec)
+        task.evaluator._global_timeout_multiplier = 1.0
+        task.evaluator._logger = logging.getLogger("asb.retained-terminal-bench")
+        result = task.grade_environment()
+        require(not cancelled.is_set(), "retained grading cancelled; no outcome was selected")
+    retained.select_grade(result)
+    verify_retained(retained,directory+"/")
+    retained.publish_selection(directory)
 
 
 class TerminalBenchTask:
@@ -216,7 +359,7 @@ class TerminalBenchTask:
                 commands_path=paths.commands_path, disable_recording=self.handler.task.disable_asciinema)
             self.terminal.start()
             container = self.terminal.container
-            self.original_networks = list(container.attrs["NetworkSettings"]["Networks"])
+            self.original_networks = original_networks(container)
             self.workspace = ManagedDockerWorkspace.attach(self.client, container, self.attempt,
                 container.attrs["Config"].get("WorkingDir") or "/")
             self.agent_session = self.terminal.create_session("agent", as_configured_user=True)
@@ -226,7 +369,7 @@ class TerminalBenchTask:
                 "workspace":self.workspace.workdir, "baseline":{"kind":"upstream-environment-definition",
                 "source_revision":self.catalog["dataset"]["revision"], "definition_sha256":definition_sha},
                 "sdk":self.catalog["sdk"], "image":self.workspace.image_identity, "resources":self.workspace.limits,
-                "agent_timeout_seconds":self.agent_timeout}
+                "agent_timeout_seconds":self.agent_timeout,"original_networks":self.original_networks}
             write_json(self.artifacts / "task.json", self.invocation)
             return self
         except BaseException:
@@ -242,18 +385,25 @@ class TerminalBenchTask:
 
     def capture_submission(self):
         result = {"task":self.invocation["identity"], "kind":"in-place-environment",
+                  "grading_state":"captured-before-verifier",
                   "container_id":self.workspace.container.id, "image":self.workspace.image_identity}
         write_json(self.artifacts / "submission.json", result)
         return result
 
     @quiet_sdk
     def evaluate(self, timeout=1800):
-        from terminal_bench.agents.failure_mode import FailureMode
         self.capture_submission()
         # A qualification-only agent network override must not change the
         # original verifier's service connectivity or dependency downloads.
         restore_task_networks(self.client, self.workspace.container, self.original_networks)
-        session = self.agent_session if self.handler.task.run_tests_in_same_shell else self.terminal.create_session("tests", as_configured_user=False)
+        return self.grade_environment(timeout)
+
+    @quiet_sdk
+    def grade_environment(self, timeout=1800):
+        from terminal_bench.agents.failure_mode import FailureMode
+        record_grading_start(self.artifacts,self.invocation["identity"] if hasattr(self,"invocation") else {
+            "workload":"terminal-bench-1.0","task_id":self.task_id,"attempt_id":self.attempt,"dataset":self.catalog["dataset"]})
+        session = self.agent_session if self.handler.task.run_tests_in_same_shell else self.terminal.create_session(getattr(self,"test_session_name","tests"), as_configured_user=False)
         failure = self.evaluator._run_tests(self.terminal, session, self.handler)
         pane = session.capture_pane(capture_entire=True)
         self.handler.trial_paths.post_test_pane_path.write_text(pane)

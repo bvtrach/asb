@@ -257,8 +257,17 @@ completed true/false grade. Prior failed evaluator outputs remain available;
 an explicit selected-evaluator record binds the completed result. Failure does
 not become an unresolved grade or authorize retrying the agent. Afterwards use
 the original sweep's `--import-grades` operation and regenerate comparison.
-This grading operation does not yet support retained Terminal-Bench environments
-or reconstruct lost shell/process state.
+Original Terminal-Bench 1.0 also supports a captured environment whose verifier
+has not started. Grading checks the original definition/SDK/container/image,
+restores persisted task network aliases/static addresses, resumes only its exact
+owned resources, runs the original SDK test/parser, then stops and preserves
+the resources again. The old submission is unchanged; new grader artifacts and
+cleanup evidence are separate. Completed true/false grades are never retried.
+A durable verifier-start marker prevents silently repeating side-effecting tests
+after a failed/interrupted evaluation. Tasks requiring the lost agent shell are
+refused before restart rather than graded in an inequivalent new shell. This
+operation does not reconstruct lost process state, recover already-started test
+outcomes or yet grade retained Harbor/Terminal-Bench 2.1 environments.
 
 ## Steps and tokens
 

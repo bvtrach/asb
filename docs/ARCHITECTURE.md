@@ -615,8 +615,31 @@ are errors. Grading failure preserves artifacts without selecting a grade.
 The helper observes EOF/SIGTERM to cancel its official evaluator; raw descriptor
 reads avoid a buffered-stdin daemon shutdown race. Returned reports use the same
 grade-only inspection schema and still cannot invent missing execution metrics
-or admit a new agent attempt. Terminal-Bench retained grading and complete
-interrupted-slot continuation remain unfinished.
+or admit a new agent attempt.
+Original Terminal-Bench 1.0 now supports the first official verifier invocation
+for an explicitly captured pre-verifier environment. It binds the installed
+definition hash/dataset/SDK, original container and image, and every declared
+resource. Under the original owner lock it stops and resumes only those exact
+containers, never Compose up/build, a new agent or replacement volumes. Source
+preparation persists the main service's network aliases and explicit static
+addresses, so grading can restore its original connectivity after an agent
+override. Dynamic addresses are not pinned unnecessarily; unrelated containers
+and networks are not removed. Success/failure/cancellation stop and preserve the
+owned resources, and a recovered grade is selected only after cleanup confirms
+preservation. SDK test logs/results use a unique recovered directory/session;
+the original submission and prior records are not overwritten. Missing execution
+metrics remain unknown. Normal and recovered Terminal-Bench grades must identify
+their upstream environment baseline, not pretend to have a Git-task baseline.
+
+A durable `evaluation-started.json` is written before side-effecting tests.
+Missing results after that marker require outcome reconstruction, not an implicit
+test retry against already-mutated state. Original tasks requiring the lost
+agent shell cannot be truthfully graded in a new shell and are refused before
+restart. The new operation therefore does not reconstruct lost process/shell
+state or recover an already-started verifier. Retained Harbor environment
+grading, raw-outcome reconstruction and complete interrupted-slot continuation
+remain unfinished; existing completed Harbor grades are still read/reused
+without restarting anything.
 See the full benchmark delivery
 checklist before claiming complete upstream benchmark support.
 Their shared installer also downloads a checksum-pinned original

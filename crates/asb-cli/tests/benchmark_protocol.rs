@@ -1,6 +1,11 @@
 //! Provider-free tests of the upstream workload protocol's pure data layer.
 
 #[test]
+fn original_terminal_grading_preserves_resources_and_never_repeats_lost_shell_tests() {
+    python_protocol("benchmark_terminal_grading.py");
+}
+
+#[test]
 fn retained_submissions_use_official_grading_without_rerunning_agents_or_replacing_grades() {
     python_protocol("benchmark_grading.py");
 }
