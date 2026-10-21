@@ -422,6 +422,16 @@ def verify_retained(retained, prefix=None, result=None):
 
 
 class HarborTask:
+    def initial_material(self, binary=None):
+        from asb_material import MaterialError, capture_task
+        try:
+            return capture_task(self, {"baseline":self.invocation["baseline"],
+                "dataset":self.invocation["identity"]["dataset"],"sdk":self.invocation["sdk"]}, binary=binary)
+        except MaterialError as error:
+            raise ExecutionError(str(error)) from None
+        except Exception as error:
+            raise ExecutionError("prepared material transport failed: " + type(error).__name__) from None
+
     def __init__(self, client, catalog, task, artifacts, workload=None):
         self.workload = harbor_profile(workload) if workload is not None else None
         self.client, self.catalog_path, self.task_id = client, Path(catalog), task

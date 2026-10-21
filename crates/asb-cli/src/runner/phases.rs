@@ -322,6 +322,7 @@ pub(super) struct FinalizedAttempt {
     pub outcome: EvaluationOutcome,
     pub evaluator_evidence: Vec<PathBuf>,
     pub cleanup_confirmed: bool,
+    pub resource_disposition: Option<workloads::ResourceDisposition>,
     pub issues: AttemptIssues,
 }
 
@@ -333,7 +334,18 @@ impl EvaluatedAttempt {
             || self.settled.prepared.workload.finish(),
         );
         let cleanup_confirmed = cleanup.is_ok();
-        if let Err(error) = cleanup {
+        let resource_disposition = cleanup.as_ref().ok().map(|settled| settled.disposition);
+        let diagnostic = match cleanup {
+            Ok(settled) => settled.diagnostic,
+            Err(error) => Some(error),
+        };
+        if let Some(error) = diagnostic {
+            if cleanup_confirmed {
+                self.settled.issues.event(
+                    self.settled.prepared.measurements.as_mut(),
+                    LifecycleEvent::PhaseFailed(LifecyclePhase::WorkloadCleanup),
+                );
+            }
             self.settled
                 .issues
                 .run_error(format!("workload cleanup failed: {error}"));
@@ -347,6 +359,7 @@ impl EvaluatedAttempt {
             outcome: self.outcome,
             evaluator_evidence: self.evaluator_evidence,
             cleanup_confirmed,
+            resource_disposition,
             issues: self.settled.issues,
         }
     }
@@ -450,6 +463,8 @@ pub(super) fn finish_measurements(
     }
     issues.event(Some(&mut session), LifecycleEvent::RunFinishing);
     let measured = measurements::RunMeasurement {
+        workload_resource_disposition: result.workload_resource_disposition,
+        workload_artifacts: &result.workload_artifacts,
         execution_plan_fingerprint: result
             .execution_plan_fingerprint
             .as_ref()

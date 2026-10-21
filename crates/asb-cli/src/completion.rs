@@ -179,7 +179,14 @@ mod coverage_tests {
             for tool in install::tool_names() {
                 assert!(text.contains(tool), "missing installable tool {tool}");
             }
-            for flag in ["--record", "--replay", "--report", "--source", "--dry-run"] {
+            for flag in [
+                "--repeat",
+                "--record",
+                "--replay",
+                "--report",
+                "--source",
+                "--dry-run",
+            ] {
                 assert!(text.contains(flag), "missing {flag}");
             }
             let mut repeated = Vec::new();

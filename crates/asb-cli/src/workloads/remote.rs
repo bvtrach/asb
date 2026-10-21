@@ -4,7 +4,8 @@ use super::task_protocol::{
 };
 use crate::workloads::controller::{Controller, decode_base64};
 use crate::workloads::session::{
-    BaselineEvidence, ExecutionContext, ExecutionResult, PreparationContext, TaskInvocation,
+    BaselineEvidence, ExecutionContext, ExecutionResult, PreparationContext, ResourceDisposition,
+    ResourceSettlement, TaskInvocation,
 };
 use crate::workloads::{Evaluation, TaskIdentity, WorkloadSession};
 use serde_json::{Value, json};
@@ -320,12 +321,14 @@ struct Session {
     controller: Controller,
     invocation: TaskInvocation,
     baseline: BaselineEvidence,
+    initial_material: Result<String, String>,
     guest_workspace: String,
     agent_timeout: Duration,
     measurement_active: bool,
     preparation_active: bool,
     cleanup_attempted: bool,
     completed_grade: Option<CompletedGrade>,
+    settlement: Option<ResourceSettlement>,
     artifacts: PathBuf,
 }
 
@@ -497,19 +500,28 @@ pub(crate) fn launch(
                     .map(Duration::from_secs)
                     .unwrap_or(WORKLOAD_READY_TIMEOUT),
         )?;
-        ReadyTask::decode(&ready, workload, task, &dataset)
+        let ready = ReadyTask::decode(&ready, workload, task, &dataset)?;
+        let initial_material = if context.verify_initial_material {
+            Ok(request_initial_material(&mut controller)?)
+        } else {
+            Err("initial material identity was not requested for this legacy execution".into())
+        };
+        Ok((ready, initial_material))
     })();
-    let ReadyTask {
-        identity,
-        prompt,
-        guest_workspace,
-        baseline,
-        agent_timeout,
-    } = match prepared {
+    let (
+        ReadyTask {
+            identity,
+            prompt,
+            guest_workspace,
+            baseline,
+            agent_timeout,
+        },
+        initial_material,
+    ) = match prepared {
         Ok(prepared) => prepared,
         Err(error) => {
             return Err(match controller.cancel(CANCELLATION_TIMEOUT) {
-                Ok(()) => error,
+                Ok(_) => error,
                 Err(cleanup) => format!("{error}; workload cancellation cleanup failed: {cleanup}"),
             });
         }
@@ -534,6 +546,7 @@ pub(crate) fn launch(
             workspace: context.workspace.to_path_buf(),
         },
         baseline,
+        initial_material,
         guest_workspace,
         agent_timeout: context
             .budgets
@@ -544,14 +557,65 @@ pub(crate) fn launch(
         preparation_active: false,
         cleanup_attempted: false,
         completed_grade: None,
+        settlement: None,
         artifacts,
     }))
 }
 
+fn request_initial_material(controller: &mut Controller) -> Result<String, String> {
+    controller.send(
+        &Request::InitialMaterial {
+            binary: &runtime_binary()?,
+        }
+        .value()?,
+    )?;
+    let response = controller.receive(Instant::now() + Duration::from_secs(600))?;
+    if EventKind::of(&response) != Some(EventKind::InitialMaterial) {
+        return Err(
+            "official workload did not establish prepared material coverage; no agent was started"
+                .into(),
+        );
+    }
+    validate_initial_material(&response["material"])
+}
+
+fn validate_initial_material(value: &Value) -> Result<String, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Material {
+        schema_version: u32,
+        scope: String,
+        sha256: String,
+    }
+    let invalid = || {
+        "official prepared material identity has an unsupported schema, scope or digest".to_owned()
+    };
+    let material: Material = serde_json::from_value(value.clone()).map_err(|_| invalid())?;
+    if material.schema_version != 1
+        || material.scope != "prepared-workload-material-v1"
+        || material.sha256.len() != 64
+        || !material
+            .sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(invalid());
+    }
+    Ok(material.sha256)
+}
+
 impl Session {
-    fn cancel(&mut self) -> Result<(), String> {
+    fn cancel(&mut self) -> Result<ResourceDisposition, String> {
+        if let Some(settlement) = &self.settlement {
+            return Ok(settlement.disposition);
+        }
         self.cleanup_attempted = true;
-        self.controller.cancel(CANCELLATION_TIMEOUT)
+        let disposition = self.controller.cancel(CANCELLATION_TIMEOUT)?;
+        self.settlement = Some(ResourceSettlement {
+            disposition,
+            diagnostic: None,
+        });
+        Ok(disposition)
     }
 
     fn begin_agent_preparation(
@@ -588,7 +652,17 @@ impl Session {
         prepared: PreparedBootstrap,
     ) -> Result<ExecutionResult, String> {
         self.dispatch_agent(context, connection, prepared)?;
-        let deadline = Instant::now() + self.agent_timeout + AGENT_TRANSPORT_ALLOWANCE;
+        let preparation = context
+            .launch
+            .map(|launch| launch.remaining())
+            .transpose()?
+            .unwrap_or_default();
+        let allowance = if context.launch.is_some() {
+            Duration::from_secs(20)
+        } else {
+            AGENT_TRANSPORT_ALLOWANCE
+        };
+        let deadline = Instant::now() + preparation + self.agent_timeout + allowance;
         self.receive_execution(context, output, deadline)
     }
 
@@ -633,6 +707,10 @@ impl Session {
         let payload = AgentRequest {
             binary: &binary,
             project_root: context.project_root,
+            preparation_seconds: context
+                .launch
+                .map(|launch| launch.remaining().map(|remaining| remaining.as_secs_f64()))
+                .transpose()?,
             timeout: self.agent_timeout.as_secs_f64(),
             tools_root: &tools_root,
             bootstrap: &bootstrap,
@@ -651,10 +729,12 @@ impl Session {
         &mut self,
         context: &mut ExecutionContext<'_>,
         output: &mut dyn std::io::Write,
-        deadline: Instant,
+        mut deadline: Instant,
     ) -> Result<ExecutionResult, String> {
         let mut collector_errors = Vec::new();
         let mut output_error = None;
+        let mut launched = false;
+        let mut preparation_failed = false;
         loop {
             let event = self.controller.receive(deadline).map_err(|error| {
                 output_error.as_ref().map_or_else(
@@ -664,7 +744,21 @@ impl Session {
             })?;
             match EventKind::of(&event) {
                 Some(EventKind::Paused) => {
+                    if launched {
+                        return Err("isolated execution returned a second launch target".into());
+                    }
                     self.resume_measured_target(context, &event)?;
+                    launched = true;
+                }
+                Some(EventKind::PreparationFailed) => {
+                    if let Some(launch) = context.launch {
+                        launch.abort();
+                    }
+                    preparation_failed = true;
+                    // Peers are already cancelled. Retain the adapter's bounded
+                    // failure reason after its transport finalizers return,
+                    // rather than discarding it in cancellation's raw drain.
+                    deadline = deadline.min(Instant::now() + CANCELLATION_TIMEOUT);
                 }
                 Some(EventKind::Output) => {
                     let bytes = decode_base64(&event["data"])?;
@@ -694,6 +788,12 @@ impl Session {
                     }
                 }
                 Some(EventKind::Completed) => {
+                    if preparation_failed {
+                        return Err("isolated preparation failed before shared launch; inspect private task artifacts".into());
+                    }
+                    if context.launch.is_some() && !launched {
+                        return Err("isolated execution omitted shared launch readiness".into());
+                    }
                     let mut result = self.completed_execution(context, &event)?;
                     result.collector_errors.extend(collector_errors);
                     result.output_error = output_error;
@@ -709,6 +809,26 @@ impl Session {
         context: &mut ExecutionContext<'_>,
         event: &Value,
     ) -> Result<(), String> {
+        if context.launch.is_some() {
+            let target = &event["target"];
+            let valid_hex = |value: &Value| {
+                value.as_str().is_some_and(|text| {
+                    text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+            };
+            if !valid_hex(&target["container_id"])
+                || !valid_hex(&target["exec_id"])
+                || !target["namespace_pid"]
+                    .as_u64()
+                    .is_some_and(|pid| pid > 1 && pid <= u32::MAX as u64)
+                || !matches!(
+                    target["pid_scope"].as_str(),
+                    Some("docker-daemon-host" | "container-namespace")
+                )
+            {
+                return Err("isolated launch gate returned invalid stopped-target identity".into());
+            }
+        }
         if let Some(session) = context.measurements.as_deref_mut() {
             use crate::collectors::LifecycleEvent as Event;
             if self.measurement_active {
@@ -728,6 +848,12 @@ impl Session {
                 session.event(Event::AgentAttachFailed)?;
                 return Err(error);
             }
+        }
+        if let Some(launch) = context.launch {
+            launch.ready()?;
+        }
+        if let Some(session) = context.measurements.as_deref_mut() {
+            use crate::collectors::LifecycleEvent as Event;
             session.event(Event::PhaseEnd(
                 crate::collectors::LifecyclePhase::AgentPreparation,
             ))?;
@@ -775,6 +901,11 @@ impl Session {
         context: &mut ExecutionContext<'_>,
         mut result: Result<ExecutionResult, String>,
     ) -> Result<ExecutionResult, String> {
+        if result.is_err()
+            && let Some(launch) = context.launch
+        {
+            launch.abort();
+        }
         if result.is_err() && self.preparation_active {
             self.preparation_active = false;
             if let Some(session) = context.measurements.as_deref_mut() {
@@ -844,6 +975,12 @@ fn runtime_binary() -> Result<PathBuf, String> {
 }
 
 impl WorkloadSession for Session {
+    fn initial_material_sha256(&self) -> Result<String, String> {
+        self.initial_material.clone()
+    }
+    fn cancel_prepared(&mut self) -> Result<(), String> {
+        self.cancel().map(|_| ())
+    }
     fn effective_budgets(&self) -> crate::planning::EffectiveBudgets {
         crate::planning::EffectiveBudgets {
             environment_preparation_seconds: Some(self.preparation_seconds),
@@ -856,21 +993,36 @@ impl WorkloadSession for Session {
     fn checkpoint_evidence(&self) -> Vec<PathBuf> {
         vec![self.artifacts.clone()]
     }
-    fn finish(&mut self) -> Result<(), String> {
+    fn finish(&mut self) -> Result<ResourceSettlement, String> {
+        if let Some(settlement) = &self.settlement {
+            return Ok(settlement.clone());
+        }
         let Some(grade) = self.completed_grade.take() else {
             self.cancel()?;
-            return Err(format!(
-                "official evaluation is incomplete; task resources and partial work were stopped and preserved at {}; do not repeat the agent as the same attempt",
-                self.artifacts.display()
-            ));
+            return self
+                .settlement
+                .clone()
+                .ok_or("workload settlement was not confirmed".into());
         };
         self.cleanup_attempted = true;
         match self.controller.finish(grade, CANCELLATION_TIMEOUT) {
-            Ok(()) => Ok(()),
-            Err(error) => Err(match self.cancel() {
-                Ok(()) => error,
-                Err(cleanup) => format!("{error}; workload cancellation cleanup failed: {cleanup}"),
-            }),
+            Ok(settlement) => {
+                self.settlement = Some(settlement.clone());
+                Ok(settlement)
+            }
+            Err(error) => match self.cancel() {
+                Ok(disposition) => {
+                    let settlement = ResourceSettlement {
+                        disposition,
+                        diagnostic: Some(error),
+                    };
+                    self.settlement = Some(settlement.clone());
+                    Ok(settlement)
+                }
+                Err(cleanup) => Err(format!(
+                    "{error}; workload cancellation cleanup failed: {cleanup}"
+                )),
+            },
         }
     }
     fn invocation(&self) -> &TaskInvocation {
@@ -932,6 +1084,54 @@ mod execution_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn initial_material_protocol_preserves_only_known_bounded_local_diagnostics() {
+        for event in [
+            serde_json::json!({"event":"initial-material","material":{"schema_version":1,"scope":"prepared-workload-material-v1","sha256":"a".repeat(64)}}),
+            serde_json::json!({"event":"error","error_class":"ExecutionError","reason":"mounted prepared material requires explicit coverage"}),
+            serde_json::json!({"event":"error","error_class":"SdkError","reason":"secret-body-must-not-leak"}),
+        ] {
+            let script = "import json,sys\nassert json.loads(sys.stdin.readline())['op']=='initial-material'\nprint(sys.argv[1],flush=True)\nassert not sys.stdin.readline()\nprint(json.dumps(dict(event='closed',cleanup='stopped-preserved')),flush=True)\n";
+            let mut command = std::process::Command::new("python3");
+            command.args(["-u", "-c", script, &event.to_string()]);
+            let mut controller = super::Controller::spawn(&mut command).unwrap();
+            let result = super::request_initial_material(&mut controller);
+            if event["event"] == "initial-material" {
+                assert_eq!(result.unwrap(), "a".repeat(64));
+            } else {
+                let error = result.unwrap_err();
+                if event["error_class"] == "ExecutionError" {
+                    assert!(error.contains("mounted prepared material requires explicit coverage"));
+                }
+                assert!(!error.contains("secret-body-must-not-leak"));
+            }
+            controller
+                .cancel(std::time::Duration::from_secs(3))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn prepared_material_requires_exact_scope_schema_digest_and_no_unknown_fields() {
+        let original = serde_json::json!({"schema_version":1,"scope":"prepared-workload-material-v1","sha256":"a".repeat(64)});
+        assert_eq!(
+            super::validate_initial_material(&original).unwrap(),
+            "a".repeat(64)
+        );
+        for (key, value) in [
+            ("schema_version", serde_json::json!(2)),
+            ("scope", serde_json::json!("image-only-v1")),
+            ("sha256", serde_json::json!("A".repeat(64))),
+            ("secret", serde_json::json!("must-not-appear-in-errors")),
+        ] {
+            let mut changed = original.clone();
+            changed[key] = value;
+            let error = super::validate_initial_material(&changed).unwrap_err();
+            assert!(!error.contains("must-not-appear"));
+        }
+        assert!(super::validate_initial_material(&serde_json::Value::Null).is_err());
+    }
+
     use super::*;
 
     #[test]
@@ -1101,6 +1301,7 @@ sys.stdout.write(result['project_configuration'])
             .receive(Instant::now() + Duration::from_secs(3))
             .unwrap();
         Session {
+            initial_material: Err("fixture has no captured initial material".into()),
             evaluation_seconds: EVALUATION_TIMEOUT_SECONDS,
             preparation_seconds: WORKLOAD_READY_TIMEOUT.as_secs(),
             task_default_execution_seconds: 1.0,
@@ -1120,6 +1321,7 @@ sys.stdout.write(result['project_configuration'])
             preparation_active: false,
             cleanup_attempted: false,
             completed_grade: None,
+            settlement: None,
             artifacts: "retained-attempt".into(),
         }
     }
@@ -1154,9 +1356,23 @@ sys.stdout.write(result['project_configuration'])
             let mut task = session(&[invalid], false);
             assert!(task.evaluate("").is_err());
             assert!(task.completed_grade.is_none());
-            let error = task.finish().unwrap_err();
-            assert!(error.contains("stopped and preserved at retained-attempt"));
+            let settlement = task.finish();
+            assert!(
+                settlement.is_ok(),
+                "confirmed preservation is not uncertain cleanup: {settlement:?}"
+            );
             assert!(task.cleanup_attempted);
+            let settlement = settlement.unwrap();
+            assert_eq!(
+                settlement.disposition,
+                ResourceDisposition::StoppedPreserved
+            );
+            assert!(settlement.diagnostic.is_none());
+            assert_eq!(
+                task.finish().unwrap(),
+                settlement,
+                "settled finish must not repeat cancellation"
+            );
         }
     }
 
@@ -1173,6 +1389,43 @@ sys.stdout.write(result['project_configuration'])
         assert!(task.completed_grade.is_some());
         assert!(task.evaluate("").is_err());
         assert!(task.completed_grade.is_none());
-        assert!(task.finish().unwrap_err().contains("preserved"));
+        assert!(
+            task.finish().is_ok(),
+            "later evaluator failure must preserve without authorizing removal"
+        );
+    }
+
+    #[test]
+    fn failed_close_keeps_its_diagnostic_after_confirmed_cached_preservation() {
+        let mut task = session(&[], false);
+        let script = "import json,sys\nprint(json.dumps(dict(event='ready')),flush=True)\nassert json.loads(sys.stdin.readline())['op']=='close'\nprint(json.dumps(dict(event='error',error_class='ExecutionError',reason='fixture close failure')),flush=True)\nassert sys.stdin.read()==''\nprint(json.dumps(dict(event='closed',cleanup='stopped-preserved')),flush=True)\nsys.exit(1)\n";
+        let mut command = Command::new("python3");
+        command.args(["-u", "-c", script]);
+        task.controller = Controller::spawn(&mut command).unwrap();
+        task.controller
+            .receive(Instant::now() + Duration::from_secs(3))
+            .unwrap();
+        task.completed_grade = Some(
+            CompletedGrade::decode(
+                &json!({"event":"evaluated","result":result("unresolved", json!(false))}),
+                &task.invocation.identity,
+            )
+            .unwrap(),
+        );
+        let settled = task.finish().unwrap();
+        assert_eq!(settled.disposition, ResourceDisposition::StoppedPreserved);
+        assert!(
+            settled
+                .diagnostic
+                .as_ref()
+                .unwrap()
+                .contains("fixture close failure")
+        );
+        assert_eq!(task.finish().unwrap(), settled);
+        assert_eq!(
+            task.cancel().unwrap(),
+            ResourceDisposition::StoppedPreserved
+        );
+        assert_eq!(task.finish().unwrap(), settled);
     }
 }

@@ -14,21 +14,41 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
-Integrated candidate, staged patch **0.2.29**: independently source-approved
-typed task-controller contracts `ac8c7753` are combined with qualified bounded
-capture/sweep stack `5c71d53d`. Validated ready/completion/grade/cleanup views
-retain their wire and ownership boundaries; native/guest capture, reporting-only
-unmeasured grades, saved sweep modes and recorded-policy metadata remain intact.
-Focused integrated checks passed: workload/runner/sweep/comparison library
-tests 116/84/73/68 (five explicit optional skips), 24 benchmark-protocol tests
-and 21 other actual CLI tests, followed by strict Clippy and formatting. The
-actual executable stayed unchanged throughout those runtime checks. Independent
-integration source review and full qualification remain pending. Hosted/package
-CI, PR merge, post-merge verification and release
-remain pending. Blocking controller transport/deadline/Drop ownership and other
-audit classes are not closed by this typed-contract integration.
+Integrated candidate, staged patch **0.2.30**: independently source-approved
+typed task-controller contracts `ac8c7753` and historical layout correction
+`da9c1f51` are combined with capture checkpoint `8dabf284` and current repeated
+execution contracts. The latest matching grade is still consumed before close;
+settlement remains independently cached and can positively retain preserved
+resources without pretending normal removal succeeded. Typed initial-material
+requests and preparation-failure events preserve the new material and launch
+gates; agent requests retain the shared preparation budget. Invalid later grades
+revoke normal-close permission, never confirmed preservation. The generic
+transport still permits untagged retained-inspection responses and drains unknown
+in-flight cancellation events. Source-only semantic integration and test-source
+updates are complete; independent review, all runtime qualification, strict
+Clippy, hosted/package CI, merge, post-merge verification and release remain
+pending for this new combined tree. The older pre-main full suite passed 1,100
+tests with 21 optional skips, but is historical, not qualification of this merge.
+Blocking controller request/cleanup transport is a separate pending class.
 
-Integrated candidate, staged patch **0.2.28**: independently source-approved
+Integrated candidate, staged patch **0.2.29**: independently source-approved
+bounded capture `823f5081` is combined with newly qualified sweep checkpoint
+`1657ae18`, preserving repeated native/official execution, fresh preparation,
+resource/artifact contracts and typed sweep/disposition ownership. Independent
+integration source review and fresh full qualification remain pending. Focused
+offline checks passed 335 tests with five explicit optional skips: 103 runner,
+70 comparison, 74 sweep, one shared-isolation test and 87 tests across nine
+actual CLI/protocol targets. The actual binary was built first; strict
+all-target/all-feature Clippy and formatting passed. Shared launch failures
+abort peers before bounded owned-child settlement. Actual repeated-run capture
+overflow preserves independent true/false file grades and the already-admitted
+sibling, but cannot publish the incomplete slot's outcome or admit batch two.
+The unmeasured true/false/native reporting regressions retain resource/artifact
+fields and recorded planning/cap metadata without authorizing continuation.
+The private native fixture remains test-only, not new SDK qualification. The older
+qualification below is historical, not evidence for this new combined tree.
+
+Prior pre-main integration qualification: independently source-approved
 bounded capture/reporting repair `823f5081` is combined with qualified sweep
 phase stack `48609d50`. The original capture-failed unmeasured-sweep regression
 remains covered by true/false/native-reward replay fixtures; reporting-only logs
@@ -47,6 +67,47 @@ SHA-256 stayed `46792b8401bc9ca7bb0052cbcaac3e2a2c05cc0ea00bb926218d56d74aba1ad4
 before/after the full suite and final build. Hosted/package CI, PR merge,
 post-merge verification and a patch release remain pending. This entry neither
 closes other audit classes nor restores the removed coverage gate.
+
+The parent consuming sweep-phase integration is staged as **0.2.28**, on qualified
+typed-disposition checkpoint `6553da9c`. Independent integration source review
+approved `b1459a9f`; its fresh all-target/all-feature offline qualification
+passed 1,178 tests with zero failures and 21 explicit optional skips across
+22 targets. Strict Clippy, formatting and sequential build/private docs/pinned
+AutoUML/flows/interactive views/completions passed. Hosted delivery remains
+pending; the earlier 1,077-test sweep evidence is not substituted for these checks.
+
+The parent typed run-disposition integration is staged as **0.2.27**, on the
+independently source-reviewed selection-identity integration **0.2.26**, after
+independent main feature PR #250 consumed version 0.2.25 at
+`f48953476265e1f77373bb8623f65224c32cb047`. The selection-identity source merge
+was conflict-free;
+the TUI choice-key, named-pane and concurrency changes remain intact. This
+candidate additionally retains the private typed operational disposition and
+pending-evaluation failure repair while preserving main's repeated execution,
+fresh adapter preparation, workload transport and resource/artifact contracts.
+Earlier 1,066-test evidence predates that feature and does not qualify this new
+combined tree. For selection-identity **0.2.26**, independent integration review
+approved `381a653e`; that parent candidate's fresh
+all-target/all-feature offline suite passed 1,167 tests with no failures and
+21 explicit optional skips across 22 targets. Strict Clippy, formatting and
+sequential build/private Rust docs/pinned AutoUML 0.7.2/flows/interactive views
+and completions passed. Executable SHA-256 remained
+`1267b651841334b513585b948e3759ca50625345dded2f10c71a90b866c3ba30`
+before/after tests and final build. Independent source review also approved the
+typed-disposition **0.2.27** integration `0d7cf8a3`; its own fresh full offline
+qualification at ledger-aligned `e3c39f6e` passed 1,172 tests with no failures
+and 21 explicit optional skips across 22 targets. Strict Clippy, formatting and
+sequential build/private docs/pinned AutoUML/flows/interactive views/completions
+passed. For **0.2.26**, exact-head hosted/package CI passed in run
+`39650217102`; PR #291 merged as
+`c3498d273c0793ab21225da8b2117b50b3348ac8`. Both post-merge jobs passed in
+run `39651552412`; **0.2.26** is released from that exact commit with
+GitHub-verified valid annotated tag `6643f6676d114c1b143ecb251b4eaf56909f1a67`.
+For **0.2.27**, exact-head hosted/package CI passed in runs `39651772993` and
+`39651776713`; PR #292 merged as `a0be2ed445fddb56231447adc03260607eb76f87`.
+Post-merge run `39653471931` and its release remain pending. The parent sweep candidate's
+current-main ancestry merge changes no production, test or Cargo bytes from
+qualified `1657ae18`.
 
 Integrated repair, released patch **0.2.21**: the independently reviewed
 launch-descriptor/one-shot admission repair (`b1a54fde`) is combined with the
@@ -210,7 +271,7 @@ passed (run `39630284995`); **v0.2.15** is signed and released from that
 commit. Coverage is optional, not a delivery gate. This does
 not claim arbitrary descendant or crash-persistent cleanup.
 
-Bounded child-capture candidate, staged patch **0.2.28** (original source
+Bounded child-capture candidate, staged patch **0.2.29** (original source
 `823f5081` independently approved; integration `64a44bc1` source-approved and
 offline-qualified above; hosted delivery and release pending): the common runner no longer accumulates an
 unbounded channel/transcript, treats read failures as EOF, eagerly waits after
@@ -245,7 +306,7 @@ serialized representations and backwards reading. Add malformed/unknown
 protocol fixtures, round-trip and compatibility tests. Trial-set display
 suffixes should not serve as hidden identifiers. Pending.
 
-Run-disposition candidate, provisional patch **0.2.26**: an actual
+Run-disposition candidate, provisional patch **0.2.27**: an actual
 inconsistency allowed pending evaluator output to report `evaluation-pending`
 while collector/presentation errors recorded a primary failure. Private
 `RunDisposition::from_facts` now derives status, typed primary failure and
@@ -271,10 +332,29 @@ all-target/all-feature Clippy and formatting pass. Independent source review
 approved `5c4ed922`; its full offline all-target/all-feature suite
 passed 1,068 tests with 21 optional skips, followed by strict Clippy, formatting
 and build/docs/diagrams checks. Integration with the qualified `656aeed1`
-identity/provider/report/checkpoint stream preserves the typed disposition
-contract and recorded planning metadata. Fresh integration review and full
-qualification, exact-head ordinary/package CI, merge, post-merge verification
-and release remain pending. No live-provider/host qualification is claimed.
+identity/provider/report/checkpoint stream preserved the typed disposition
+contract and recorded planning metadata. The new integration with reviewed
+`381a653e` additionally retains main's fresh repeated execution, official material
+preparation and transport paths, independent resource settlement and artifact
+references. Its output-loss path retains the I/O class needed to stop later
+batches even when another failure has diagnostic priority. Earlier full evidence
+does not qualify this newly combined tree. New focused offline qualification
+passed 438 tests with five explicit optional skips: 91 runner, 145 workload,
+69 comparison, 68 sweep, 35 Python protocol wrappers, 14 actual guest-driver
+and 16 actual repeated-run tests. The actual binary was built first; strict
+all-target/all-feature Clippy and formatting passed. The twelve disposition
+full-entry fixtures also require agreement on resource disposition and artifact
+references across logs, measurements, summaries and private outcomes.
+Independent source review approved `0d7cf8a3`. The subsequent parent-evidence
+merge `e3c39f6e` changes only this ledger; all production, tests and Cargo files
+remain identical to that reviewed source. Its fresh all-target/all-feature
+offline suite passed 1,172 tests, zero failures and 21 explicit optional skips
+across 22 targets. Strict Clippy, formatting and sequential build/private Rust
+docs/pinned AutoUML 0.7.2/flows/interactive views/completions passed. Executable
+SHA-256 was unchanged before/after tests and final build:
+`b65b52f105980cc7d1cd74953c9e04f418c36d2e95eda35abc52c5ccc3464c5d`.
+Exact-head ordinary/package CI, merge, post-merge verification and release remain
+pending. No live-provider/host qualification is claimed.
 This is not a controller/dispatch protocol rewrite, workload-kind registry
 closure, live-provider qualification or delivery of every string-typing item.
 
@@ -291,7 +371,7 @@ Simplify checkpoint validation into named invariants without losing checks.
 Review broad parameter lists, result structs, visibility, dead API surface and
 module names in those owning boundaries. Pending.
 
-Sweep-phase candidate, provisional patch **0.2.27**: audit
+Sweep-phase candidate, provisional patch **0.2.28**: audit
 found that sequential JSON writer failures still admitted later configurations,
 and early post-activation diagnostic failures skipped final input settlement
 and comparison. Consuming prepared/fresh-or-resumed/activated/settled phases
@@ -331,7 +411,25 @@ build, private documentation, pinned AutoUML 0.7.2, function-flow diagrams and
 shell completions passed. The actual executable SHA-256 remained
 `25ad2738aa4261810672403085bef3a424a0495e517db43017e48bb9e1e41fb7`
 before and after the full suite and build. Exact-head ordinary/package hosted
-CI, merge, post-merge verification and release remain pending.
+CI, merge, post-merge verification and release remain pending. The new merge
+with qualified `6553da9c` preserves current main's repeated execution, material
+preparation, resource/artifact fields, output-loss I/O stop policy and new runner
+options alongside the consuming sweep phases and typed saved execution mode.
+Fresh focused offline qualification passed 320 tests with five explicit optional
+skips: 74 sweep, 90 runner, 69 comparison, one shared-isolation test and 86 tests
+across nine actual CLI/protocol targets, including repeated-run, guest driver,
+official protocol, planning admission and measured/unmeasured sweep paths.
+The actual binary was built first and its hash stayed unchanged; strict
+all-target/all-feature Clippy and formatting passed. Independent integration
+source review approved `b1459a9f`, including the docs-only current-main ancestry
+merge. Its fresh full offline all-target/all-feature suite passed 1,178 tests,
+zero failures and 21 explicit optional skips across 22 targets, followed by
+strict Clippy, formatting and sequential build/private Rust docs/pinned AutoUML
+0.7.2/flows/interactive views/completions. Actual executable SHA-256 stayed
+unchanged before/after tests and final build:
+`397f8ff5e13c5792dbd01598841ddef686e662bf3d1a6f100d939676d92a2652`.
+Exact-head hosted/package CI, merge, post-merge verification and release remain
+pending. This does not close the remaining audit or runtime-discovery repair.
 
 Checkpoint repair, released patch **0.2.22**: completion group/replica sealing, partial continuation
 and retained-outcome reconciliation now consume a private validated outcome
@@ -638,15 +736,17 @@ slow TERM-resistant double-forked writers, unchanged unrelated sentinels and
 absence of writes after confirmed cleanup. Other fixtures cover install success
 and failure, helper framing, descriptor noninheritance, running-image pathname
 replacement, keeper failure and unwind custody. Existing trial-wizard regression
-coverage remains required. This candidate is not merged/released qualification,
+coverage remains required. This repair does not establish
 transactional installation rollback or bounded disappearance of unkillable
 kernel tasks. The user-confirmed removal of the CI coverage gate is retained.
 Independent source review approved the integrated `51e30654`; its full offline
 suite passed 1,062 tests with 21 optional skips, followed by strict Clippy,
 formatting and sequential build/private docs/diagrams/completions. Current main
 ancestry changes only this ledger, not that qualified production/test tree.
-Exact-head hosted/package CI, merge, both post-merge jobs and release remain
-pending for this **0.2.24** candidate.
+Exact-head hosted/package CI passed in run `39646000398`; PR #290 merged as
+`bb33f4007a6309c248239c6ee0080c1baeeddd3b`. Both post-merge jobs passed in run
+`39647416921`. Patch **0.2.24** is released at that exact commit; GitHub verifies
+annotated tag `effaad57f913077dc017eb5115e97606356a5c7c` as valid.
 
 ## 7. Limits, diagnostics and CLI consistency
 

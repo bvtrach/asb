@@ -1,4 +1,5 @@
 //! Live execution of one configured benchmark.
+mod batch;
 mod completion;
 pub(crate) mod diagnostics;
 pub(crate) mod disposition;
@@ -7,6 +8,7 @@ use disposition::RunStatus;
 use disposition::{FailureKind, RunDisposition, RunFacts, RunFailure};
 mod native;
 mod phases;
+mod repeated;
 use phases::{
     AdmittedAttempt, AttemptIssues, ExecutionEvidence, FinalizedAttempt, MeasuredOutput,
     PreparedAttempt,
@@ -58,6 +60,8 @@ fn emit_warning(
 
 #[derive(Serialize)]
 struct RunResult<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution: Option<repeated::ExecutionIdentity>,
     planning: crate::planning::ResolvedPlan,
     effective_budgets: crate::planning::EffectiveBudgets,
     execution_plan: Option<PathBuf>,
@@ -76,6 +80,8 @@ struct RunResult<'a> {
     model: &'a str,
     process_success: bool,
     workload_success: Option<bool>,
+    workload_resource_disposition: Option<workloads::ResourceDisposition>,
+    workload_artifacts: Vec<PathBuf>,
     workload_evaluation: &'static str,
     workload_baseline_passed: Option<bool>,
     workload_baseline: workloads::BaselineEvidence,
@@ -98,6 +104,11 @@ struct RunResult<'a> {
 /// Execution choices shared by single runs, replicas, and sweeps.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RunOptions<'a> {
+    pub repeat: Option<u64>,
+    pub batch: Option<&'a repeated::BatchIdentity>,
+    pub verify_initial_material: bool,
+    pub preparation_gate: Option<&'a batch::Gate>,
+    pub launch_gate: Option<&'a batch::Gate>,
     pub policy: Option<&'a crate::planning::ResolvedPlan>,
     pub execution_cohort: Option<&'a measurements::ExecutionCohort>,
     pub json: bool,
@@ -130,11 +141,31 @@ pub(crate) fn run_with_diagnostics(
     let text = read_config(config_path)?;
     let config: BenchmarkConfig = toml::from_str(&text)
         .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
+    if let Some(repeat) = options.repeat {
+        return repeated::run(config_path, config, repeat, options, output, warnings);
+    }
+    run_loaded(config_path, config, options, output, warnings)
+}
+
+fn run_loaded(
+    config_path: &Path,
+    config: BenchmarkConfig,
+    options: RunOptions<'_>,
+    output: &mut dyn Write,
+    warnings: &Mutex<BTreeSet<String>>,
+) -> Result<(), Error> {
     crate::planning::resolve_snapshot(&config, options.measurement_dir.is_some(), options.policy)?;
     if !options.replica.valid() {
         return Err(Error::Input("invalid benchmark replica identity".into()));
     }
     if let Some(reused) = options.reused {
+        if !reused.is_empty()
+            && (options.verify_initial_material || options.preparation_gate.is_some())
+        {
+            return Err(Error::Input(
+                "fresh preparation cannot reuse historical replica slots".into(),
+            ));
+        }
         if reused
             .keys()
             .any(|index| !(1..=config.concurrency).contains(index))
@@ -182,6 +213,13 @@ pub(crate) fn run_with_diagnostics(
             output.write_all(&messages).map_err(io_error)?;
         }
     }
+    let gate = (options.verify_initial_material && options.preparation_gate.is_none())
+        .then(|| batch::Gate::new(config.concurrency, None, Duration::from_secs(1800)))
+        .transpose()?;
+    let options = RunOptions {
+        preparation_gate: options.preparation_gate.or(gate.as_ref()),
+        ..options
+    };
     if config.concurrency > 1 {
         return run_concurrent(config_path, &config, options, output, warnings);
     }
@@ -328,7 +366,7 @@ fn replica_cassette(mode: tape::Mode, base: &Path, index: usize) -> PathBuf {
         // recording. Reuse an existing replica recording rather than waiting
         // forever for a cassette that can never be produced. Keep the
         // requested path as the fail-closed fallback when no recording exists.
-        (1..=32)
+        (1..=crate::benchmark::MAX_CONCURRENCY)
             .map(|recorded| append_path_suffix(base, recorded))
             .find(|path| path.is_file())
             .unwrap_or(candidate)
@@ -365,6 +403,11 @@ fn run_mode(
     output: &mut dyn Write,
     warnings: &Mutex<BTreeSet<String>>,
 ) -> Result<(), Error> {
+    // Register before any fallible setup. Early return or unwinding aborts peers.
+    let mut arrival = options
+        .preparation_gate
+        .map(|gate| gate.register(options.replica))
+        .transpose()?;
     let policy = crate::planning::resolve_snapshot(
         &config,
         options.measurement_dir.is_some(),
@@ -419,6 +462,7 @@ fn run_mode(
         .as_deref()
         .map(|dir| {
             measurements::Session::start_with_resolved_collectors_and_parent(
+                &project_root,
                 dir,
                 &measurement_collectors,
                 &active_collectors,
@@ -539,7 +583,7 @@ fn run_mode(
                     .map_err(|error| error.to_string())
             })
         };
-        let workload_session = instrument_phase(
+        let mut workload_session = instrument_phase(
             measurement_session.as_mut(),
             LifecyclePhase::WorkloadPreparation,
             || {
@@ -558,6 +602,8 @@ fn run_mode(
                     ))
                 })?;
                 let workload = workloads::prepare_task(&workloads::PreparationContext {
+                    verify_initial_material: options.preparation_gate.is_some()
+                        || options.verify_initial_material,
                     budgets: policy.budgets,
                     on_allocation: Some(&allocation),
                     workload: &config.workload,
@@ -597,11 +643,12 @@ fn run_mode(
             Some(effective_budgets),
             Some(&workload_session.invocation().identity),
         )?;
-        let execution_plan_fingerprint = crate::planning::protocol_fingerprint(
+        let execution_plan_fingerprint = crate::planning::protocol_fingerprint_with_admission(
             &config,
             &policy,
             effective_budgets,
             options.replica.total,
+            options.batch.map(repeated::BatchIdentity::admission),
         )?;
         let module = workload_session.module_descriptor();
         let metric_policy = workload_session.metric_policy();
@@ -616,6 +663,53 @@ fn run_mode(
             ));
         }
         let workspace = workload_session.invocation().workspace.clone();
+        if let Some(arrival) = arrival.as_mut() {
+            let identity = (|| {
+                let task = &workload_session.invocation().identity;
+                let material_sha256 = workload_session
+                    .initial_material_sha256()
+                    .map_err(Error::Run)?;
+                let dataset_sha256 = task
+                    .dataset
+                    .as_ref()
+                    .map(|dataset| {
+                        serde_json::to_vec(dataset).map(|bytes| crate::cassette::digest(&bytes))
+                    })
+                    .transpose()
+                    .map_err(|error| Error::Run(error.to_string()))?;
+                Ok(crate::cassette::Compatibility {
+                    agent: config.agent.clone(),
+                    provider: config.provider.clone(),
+                    model: config.model.clone(),
+                    workload: task.workload.clone(),
+                    task: task.task_id.clone(),
+                    dataset_sha256,
+                    prompt_sha256: crate::cassette::digest(
+                        workload_session.invocation().input.instructions.as_bytes(),
+                    ),
+                    material_sha256,
+                })
+            })();
+            let ready = identity.and_then(|identity| arrival.ready(identity));
+            if let Err(error) = ready {
+                return Err(abort_prepared(error, arrival, workload_session.as_mut()));
+            }
+        }
+        let launch = options
+            .launch_gate
+            .map(|gate| {
+                let identity = options
+                    .preparation_gate
+                    .ok_or_else(|| {
+                        Error::Run("launch admission requires verified material".into())
+                    })?
+                    .confirmed_identity()?;
+                batch::LaunchAdmission::new(gate, options.replica, identity)
+            })
+            .transpose()?;
+        let launch = launch
+            .as_ref()
+            .map(|launch| launch as &dyn workloads::session::LaunchReadiness);
         let workload_baseline = workload_session.baseline_evidence();
         let workload_baseline_passed = workload_baseline.measured_passed();
         if !json && workload_baseline_passed == Some(true) {
@@ -666,6 +760,7 @@ fn run_mode(
             measurements: measurement_session,
             tape: tape_session,
         };
+        let _launch_failure = workloads::session::LaunchFailureGuard(launch);
         let tape_url = prepared.tape.as_ref().map(|session| session.url());
         let provider_endpoint = tape_url
             .or_else(|| providers::local_bridge_endpoint(&config.provider, bridge.as_deref()));
@@ -687,6 +782,7 @@ fn run_mode(
         let started = Instant::now();
         let isolated = prepared.workload.execute(
             &mut workloads::ExecutionContext {
+                launch,
                 config: &config,
                 connection: connection.as_ref(),
                 project_root: &project_root,
@@ -719,6 +815,7 @@ fn run_mode(
                     project_root: &project_root,
                     project_config: &project_config,
                     invocation: prepared.workload.invocation(),
+                    fresh_state: options.batch.is_some(),
                     route: native::NativeRoute {
                         connection: connection.as_ref(),
                         provider_endpoint,
@@ -729,7 +826,7 @@ fn run_mode(
                 }
                 .prepare(prepared.measurements.as_mut())?;
                 let (evidence, native_issues) =
-                    native.execute(prepared.measurements.as_mut(), show_output, output)?;
+                    native.execute(prepared.measurements.as_mut(), show_output, output, launch)?;
                 issues = native_issues;
                 (
                     evidence.output,
@@ -776,6 +873,7 @@ fn run_mode(
             outcome,
             evaluator_evidence,
             cleanup_confirmed: workload_cleanup_confirmed,
+            resource_disposition: workload_resource_disposition,
             issues,
         } = settled
             .evaluate_with_policy(
@@ -783,6 +881,23 @@ fn run_mode(
                 &metric_policy,
             )
             .finish();
+        let workload_artifacts = workload_session.checkpoint_evidence();
+        if workload_resource_disposition == Some(workloads::ResourceDisposition::StoppedPreserved)
+            && !json
+        {
+            emit_warning(
+                warnings,
+                output,
+                format!(
+                    "Warning: workload resources were stopped and preserved; inspect {}; do not retry the same attempt implicitly",
+                    workload_artifacts
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            )?;
+        }
         let provider_cleanup_error = providers::finish_session(&mut bridge)
             .err()
             .map(|error| error.to_string());
@@ -904,6 +1019,7 @@ fn run_mode(
             success,
         });
         let result = RunResult {
+            execution: options.batch.map(|batch| batch.execution(options.replica)),
             planning: policy,
             effective_budgets,
             execution_plan: Some(execution_plan),
@@ -937,6 +1053,8 @@ fn run_mode(
             model: &config.model,
             process_success,
             workload_success: resolution_eligible.then_some(workload_success).flatten(),
+            workload_resource_disposition,
+            workload_artifacts,
             workload_evaluation: evaluation_kind,
             workload_baseline_passed,
             workload_baseline,
@@ -996,7 +1114,7 @@ fn run_mode(
                 &config.log_file,
                 &result,
                 workload_cleanup_confirmed,
-                &workload_session.checkpoint_evidence(),
+                &result.workload_artifacts,
                 &proxy_evidence,
                 &completion::Context {
                     replica: options.replica,
@@ -1040,17 +1158,26 @@ fn run_mode(
             }
             Ok(())
         })();
-        let outcome = diagnostics::preserve_primary(
-            phases::final_outcome(
-                result.disposition.failure.clone(),
-                log_publication,
-                measurement_completion,
-            ),
-            presentation,
+        let outcome = phases::final_outcome(
+            result.disposition.failure.clone(),
+            log_publication,
+            measurement_completion,
         );
+        // Output loss is not an ordinary completed benchmark failure: repeated
+        // execution must stop even when a separate task failure has higher priority.
+        let outcome = match output_error {
+            Some(error) => Err(Error::Io(
+                outcome.err().map_or(error, |error| error.to_string()),
+            )),
+            None => outcome,
+        };
+        let outcome = diagnostics::preserve_primary(outcome, presentation);
         if let Some(cleanup) = provider_cleanup_error {
             match outcome {
                 Ok(()) => Err(Error::Run(cleanup)),
+                Err(Error::Io(primary)) => Err(Error::Io(format!(
+                    "{primary}; provider cleanup failed: {cleanup}"
+                ))),
                 Err(primary)
                     if result.disposition.failure.as_ref().map(|f| f.kind)
                         == Some(FailureKind::ProviderCleanupError) =>
@@ -1065,7 +1192,22 @@ fn run_mode(
             outcome
         }
     })();
-    providers::finish_result(attempt, &mut bridge)
+    finish_provider_attempt(attempt, &mut arrival, &mut bridge)
+}
+
+fn finish_provider_attempt(
+    attempt: Result<(), Error>,
+    arrival: &mut Option<batch::Arrival<'_>>,
+    bridge: &mut Option<Box<dyn providers::ProviderSession>>,
+) -> Result<(), Error> {
+    // Abort unsettled material admission before potentially slow provider
+    // teardown. Launch guards inside the attempt have already notified peers.
+    if let Err(error) = &attempt
+        && let Some(arrival) = arrival.as_mut()
+    {
+        arrival.abort(&error.to_string());
+    }
+    providers::finish_result(attempt, bridge)
 }
 
 /// Prevent replayed agents from contacting any live provider, updater, or
@@ -1093,6 +1235,21 @@ fn apply_replay_network_guard(command: &mut Command) {
         .env("no_proxy", LOOPBACK)
         .env("NO_PROXY", LOOPBACK)
         .env("NODE_USE_ENV_PROXY", "1");
+}
+
+fn abort_prepared(
+    error: Error,
+    arrival: &mut batch::Arrival<'_>,
+    session: &mut dyn workloads::WorkloadSession,
+) -> Error {
+    // Wake siblings before remote preservation/cleanup, which can take minutes.
+    arrival.abort(&error.to_string());
+    match session.cancel_prepared() {
+        Ok(()) => error,
+        Err(cleanup) => Error::Run(format!(
+            "{error}; preparation cancellation failed: {cleanup}"
+        )),
+    }
 }
 
 fn instrument_operation<T, E>(
@@ -1138,27 +1295,51 @@ fn run_measured_agent(
     show_output: bool,
     output: &mut dyn Write,
 ) -> Result<MeasuredOutput, Error> {
-    run_measured_agent_with_budget(
+    run_measured_agent_with_launch(
         command,
         target,
         route,
         session,
         show_output,
         output,
-        MAX_AGENT_RUNTIME,
+        NativeLaunch {
+            readiness: None,
+            runtime: MAX_AGENT_RUNTIME,
+        },
     )
 }
 
-fn run_measured_agent_with_budget(
+struct NativeLaunch<'a> {
+    readiness: Option<&'a dyn workloads::session::LaunchReadiness>,
+    runtime: Duration,
+}
+
+fn native_launch_failure(
+    child: &mut OwnedChild,
+    launch: Option<&dyn workloads::session::LaunchReadiness>,
+    primary: impl std::fmt::Display,
+) -> Error {
+    // Release waiting siblings before potentially slow bounded child cleanup.
+    if let Some(launch) = launch {
+        launch.abort();
+    }
+    Error::Run(child.failure(primary))
+}
+
+fn run_measured_agent_with_launch(
     command: &mut Command,
     target: &crate::launch::TargetLaunch,
     route: Option<crate::launch::CommandRoute>,
     mut session: Option<&mut measurements::Session>,
     show_output: bool,
     output: &mut dyn Write,
-    runtime: Duration,
+    control: NativeLaunch<'_>,
 ) -> Result<MeasuredOutput, Error> {
-    let started = Instant::now();
+    let NativeLaunch {
+        readiness: launch,
+        runtime,
+    } = control;
+    let mut started = Instant::now();
     let gated = route
         .as_ref()
         .is_some_and(crate::launch::CommandRoute::is_gated);
@@ -1180,6 +1361,11 @@ fn run_measured_agent_with_budget(
     if let Some(session) = session.as_deref_mut() {
         session.agent_launch_prepared(target);
     }
+    if launch.is_some() && (!gated || !cfg!(target_os = "linux")) {
+        return Err(Error::Run(
+            "shared launch requires a verifiable stopped native process gate".into(),
+        ));
+    }
     let mut child = {
         let mut emit = |event| {
             if let Some(session) = session.as_deref_mut() {
@@ -1189,7 +1375,9 @@ fn run_measured_agent_with_budget(
         };
         emit(LifecycleEvent::MeasurementsReady)?;
         emit(LifecycleEvent::AgentSpawn)?;
-        emit(LifecycleEvent::AgentExecuteBegin)?;
+        if launch.is_none() {
+            emit(LifecycleEvent::AgentExecuteBegin)?;
+        }
         #[cfg(target_os = "linux")]
         let spawned = match admission {
             Some(admission) => admission.spawn().map(OwnedChild::Gated),
@@ -1197,7 +1385,7 @@ fn run_measured_agent_with_budget(
         };
         #[cfg(not(target_os = "linux"))]
         let spawned = OwnedChild::spawn_direct(command);
-        let mut child = match spawned {
+        match spawned {
             Ok(child) => child,
             Err(error) => {
                 let mut primary = format!(
@@ -1214,12 +1402,24 @@ fn run_measured_agent_with_budget(
                 }
                 return Err(Error::Run(primary));
             }
-        };
-        if let Err(error) = emit(LifecycleEvent::AgentStarted) {
-            return Err(Error::Run(child.failure(error)));
         }
-        child
     };
+    let _launch_failure = workloads::session::LaunchFailureGuard(launch);
+    if let Some(session) = session.as_deref_mut()
+        && let Err(error) = session.event(LifecycleEvent::AgentStarted)
+    {
+        return Err(native_launch_failure(&mut child, launch, error));
+    }
+    #[cfg(unix)]
+    if launch.is_some()
+        && let Err(error) = child.wait_stopped()
+    {
+        return Err(native_launch_failure(
+            &mut child,
+            launch,
+            format!("native launch target is not stopped: {error}"),
+        ));
+    }
     if let Some(session) = session.as_deref_mut()
         && let Err(error) = session.attach_pid(child.id())
     {
@@ -1232,13 +1432,26 @@ fn run_measured_agent_with_budget(
                 primary.push_str(&format!("; {secondary}"));
             }
         }
-        return Err(Error::Run(child.failure(primary)));
+        return Err(native_launch_failure(&mut child, launch, primary));
+    }
+    if let Some(launch) = launch {
+        if let Err(error) = launch.ready() {
+            return Err(native_launch_failure(&mut child, Some(launch), error));
+        }
+        if let Some(session) = session.as_deref_mut()
+            && let Err(error) = session.event(LifecycleEvent::AgentExecuteBegin)
+        {
+            return Err(native_launch_failure(&mut child, Some(launch), error));
+        }
+        started = Instant::now();
     }
     #[cfg(unix)]
     if gated && let Err(error) = child.resume() {
-        return Err(Error::Run(child.failure(format!(
-            "could not resume measured agent process: {error}"
-        ))));
+        return Err(native_launch_failure(
+            &mut child,
+            launch,
+            format!("could not resume measured agent process: {error}"),
+        ));
     }
     let mut execution_finished = None;
     let result = capture_with_output_streams(
@@ -1383,6 +1596,7 @@ pub(crate) fn resolve_log_path(config_path: &Path, configured_path: &str) -> Pat
 
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
     let summary = serde_json::json!({
+        "execution": result.execution,
         "planning": result.planning,
         "effective_budgets": result.effective_budgets,
         "execution_plan": result.execution_plan,
@@ -1399,6 +1613,8 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
         "task": result.task,
         "process_success": result.process_success,
         "workload_success": result.workload_success,
+        "workload_resource_disposition": result.workload_resource_disposition,
+        "workload_artifacts": result.workload_artifacts,
         "workload_evaluation": result.workload_evaluation,
         "workload_baseline_passed": result.workload_baseline_passed,
         "workload_baseline": result.workload_baseline,
@@ -2069,6 +2285,8 @@ mod tests {
             .unwrap();
         session
             .finish(crate::measurements::RunMeasurement {
+                workload_resource_disposition: None,
+                workload_artifacts: &[],
                 execution_plan_fingerprint: None,
                 module: None,
                 benchmark_outcome: None,
@@ -2235,6 +2453,13 @@ mod tests {
             replica_cassette(crate::tape::Mode::Record, &base, 8),
             root.join("record-concurrency-8.jsonl")
         );
+        std::fs::remove_file(&recorded_replica).unwrap();
+        let last_replica = root.join("record-concurrency-64.jsonl");
+        std::fs::write(&last_replica, "test").unwrap();
+        assert_eq!(
+            replica_cassette(crate::tape::Mode::Replay, &base, 1),
+            last_replica
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2292,7 +2517,7 @@ mod tests {
                 &config,
                 "run.log",
                 &result,
-                resolved,
+                true,
                 &evidence,
                 &crate::proxy::Evidence {
                     output_files: Vec::new(),
@@ -2328,7 +2553,12 @@ mod tests {
                 evidence[0].to_str().unwrap()
             );
             let resolved = record["summary"]["workload_success"].as_bool().unwrap();
-            assert_eq!(record["workload_cleanup_confirmed"], resolved);
+            assert_eq!(record["workload_cleanup_confirmed"], true);
+            assert_eq!(record["workload_resource_disposition"], "not-required");
+            assert_eq!(
+                record["workload_resource_disposition"],
+                record["summary"]["workload_resource_disposition"]
+            );
             assert_eq!(record["proxy_cleanup_confirmed"], true);
             assert_eq!(record["proxy_evidence"], serde_json::json!([]));
             outcomes.push(resolved);
@@ -2376,6 +2606,7 @@ mod tests {
 
     fn result<'a>() -> RunResult<'a> {
         RunResult {
+            execution: None,
             planning: crate::planning::resolve(
                 &toml::from_str(
                     "agent='pi'\nprovider='fixture'\nmodel='fixture'\nworkload='bug-fix'",
@@ -2403,6 +2634,8 @@ mod tests {
             model: "test-model",
             process_success: true,
             workload_success: Some(true),
+            workload_resource_disposition: Some(crate::workloads::ResourceDisposition::NotRequired),
+            workload_artifacts: Vec::new(),
             workload_evaluation: "bundled-fixture",
             workload_baseline_passed: Some(false),
             workload_baseline: crate::workloads::BaselineEvidence::Measured {

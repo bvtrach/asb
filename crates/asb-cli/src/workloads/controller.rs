@@ -1,4 +1,5 @@
 //! Private, bounded JSON-lines transport to workload-owned execution engines.
+use super::session::{ResourceDisposition, ResourceSettlement};
 use super::task_protocol::{CancellationAck, CompletedGrade, EventKind, NormalCloseAck, Request};
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -45,6 +46,70 @@ pub(crate) fn publish_asset(path: &std::path::Path, source: &str) -> Result<(), 
 pub(crate) fn publish_support(root: &std::path::Path) -> Result<(), crate::Error> {
     for (name, source) in [
         (
+            "asb_material_direct.py",
+            include_str!("../../assets/benchmarks/asb_material_direct.py"),
+        ),
+        (
+            "asb_material_shared_network.py",
+            include_str!("../../assets/benchmarks/asb_material_shared_network.py"),
+        ),
+        (
+            "asb_material_network_runtime.py",
+            include_str!("../../assets/benchmarks/asb_material_network_runtime.py"),
+        ),
+        (
+            "asb_material_network_identity.py",
+            include_str!("../../assets/benchmarks/asb_material_network_identity.py"),
+        ),
+        (
+            "asb_material_networks.py",
+            include_str!("../../assets/benchmarks/asb_material_networks.py"),
+        ),
+        (
+            "asb_terminal_session.py",
+            include_str!("../../assets/benchmarks/asb_terminal_session.py"),
+        ),
+        (
+            "asb_material_environment.py",
+            include_str!("../../assets/benchmarks/asb_material_environment.py"),
+        ),
+        (
+            "asb_material_runtime.py",
+            include_str!("../../assets/benchmarks/asb_material_runtime.py"),
+        ),
+        (
+            "asb_material_services.py",
+            include_str!("../../assets/benchmarks/asb_material_services.py"),
+        ),
+        (
+            "asb_material_declarations.py",
+            include_str!("../../assets/benchmarks/asb_material_declarations.py"),
+        ),
+        (
+            "asb_material_mounts.py",
+            include_str!("../../assets/benchmarks/asb_material_mounts.py"),
+        ),
+        (
+            "asb_material_bind_graph.py",
+            include_str!("../../assets/benchmarks/asb_material_bind_graph.py"),
+        ),
+        (
+            "asb_material_binds.py",
+            include_str!("../../assets/benchmarks/asb_material_binds.py"),
+        ),
+        (
+            "asb_material_exec.py",
+            include_str!("../../assets/benchmarks/asb_material_exec.py"),
+        ),
+        (
+            "asb_material_root.py",
+            include_str!("../../assets/benchmarks/asb_material_root.py"),
+        ),
+        (
+            "asb_material.py",
+            include_str!("../../assets/benchmarks/asb_material.py"),
+        ),
+        (
             "asb_harness.py",
             include_str!("../../assets/benchmarks/asb_harness.py"),
         ),
@@ -75,6 +140,10 @@ pub(crate) fn publish_support(root: &std::path::Path) -> Result<(), crate::Error
         (
             "asb_runtime.py",
             include_str!("../../assets/benchmarks/asb_runtime.py"),
+        ),
+        (
+            "asb_staging.py",
+            include_str!("../../assets/benchmarks/asb_staging.py"),
         ),
         (
             "asb_relay.py",
@@ -230,7 +299,7 @@ impl Controller {
     /// EOF interrupts active work; continue draining its bounded event stream
     /// until the owner confirms teardown. Cancellation's nonzero child exit
     /// is expected, but it never substitutes for confirmed resource quiescence.
-    pub(crate) fn cancel(&mut self, timeout: Duration) -> Result<(), String> {
+    pub(crate) fn cancel(&mut self, timeout: Duration) -> Result<ResourceDisposition, String> {
         let deadline = Instant::now() + timeout;
         self.input.take();
         loop {
@@ -239,8 +308,9 @@ impl Controller {
             }
             let event = self.receive_raw(deadline)?;
             if EventKind::of(&event) == Some(EventKind::Closed) {
-                CancellationAck::decode(&event)?;
-                return self.wait_for_exit(deadline, false);
+                let disposition = CancellationAck::decode(&event)?.disposition();
+                self.wait_for_exit(deadline, false)?;
+                return Ok(disposition);
             }
             // A command already in flight can produce output, an error or a
             // final result before the input reader observes EOF. No payload
@@ -266,15 +336,31 @@ impl Controller {
         &mut self,
         _grade: CompletedGrade,
         timeout: Duration,
-    ) -> Result<(), String> {
+    ) -> Result<ResourceSettlement, String> {
         let deadline = Instant::now() + timeout;
         self.send(&Request::Close.value()?)?;
         // Keep stdin open until cleanup acknowledges completion. EOF is
         // cancellation and is only the fallback for a failed caller.
         let response = self.receive(deadline)?;
-        NormalCloseAck::decode(&response)?;
+        let disposition = NormalCloseAck::decode(&response)?.disposition();
         self.input.take();
-        self.wait_for_exit(deadline, true)
+        self.wait_for_exit(deadline, false)?;
+        let success = self
+            .child
+            .try_wait()
+            .map_err(|_| "cannot check settled workload controller")?
+            .ok_or("settled workload controller was not reaped")?
+            .success();
+        Ok(ResourceSettlement {
+            disposition,
+            diagnostic: if disposition != ResourceDisposition::Removed {
+                Some("normal workload teardown did not remove resources; confirmed cancellation disposition retained".into())
+            } else if !success {
+                Some("workload controller failed after confirmed resource removal".into())
+            } else {
+                None
+            },
+        })
     }
 
     pub(crate) fn complete_response(&mut self, deadline: Instant) -> Result<(), String> {
@@ -450,11 +536,13 @@ mod tests {
             controller
                 .receive(Instant::now() + Duration::from_secs(3))
                 .unwrap();
-            assert!(
-                controller
-                    .finish(completed_grade(), Duration::from_secs(3))
-                    .is_err()
-            );
+            let result = controller.finish(completed_grade(), Duration::from_secs(3));
+            if matches!(cleanup, "not_created" | "removed") && event == "closed" {
+                let settled = result.unwrap();
+                assert!(settled.diagnostic.is_some());
+            } else {
+                assert!(result.is_err());
+            }
         }
     }
 
@@ -517,13 +605,16 @@ mod tests {
                 .receive(Instant::now() + Duration::from_secs(3))
                 .unwrap();
             if normal {
-                assert!(
-                    controller
-                        .finish(completed_grade(), Duration::from_secs(3))
-                        .is_err()
-                );
+                let settled = controller
+                    .finish(completed_grade(), Duration::from_secs(3))
+                    .unwrap();
+                assert_eq!(settled.disposition, ResourceDisposition::StoppedPreserved);
+                assert!(settled.diagnostic.is_some());
             } else {
-                controller.cancel(Duration::from_secs(3)).unwrap();
+                assert_eq!(
+                    controller.cancel(Duration::from_secs(3)).unwrap(),
+                    ResourceDisposition::StoppedPreserved
+                );
             }
         }
     }
@@ -539,6 +630,53 @@ mod tests {
         let started = Instant::now();
         assert!(controller.cancel(Duration::from_millis(50)).is_err());
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn acknowledged_resources_do_not_settle_before_controller_reaping() {
+        for normal in [false, true] {
+            let mut command = Command::new("python3");
+            command.args(["-u","-c","import json,sys,time\nprint(json.dumps(dict(event='ready')),flush=True)\nsys.stdin.readline()\nprint(json.dumps(dict(event='closed',cleanup='stopped-preserved')),flush=True)\ntime.sleep(10)\n"]);
+            let mut controller = Controller::spawn(&mut command).unwrap();
+            controller
+                .receive(Instant::now() + Duration::from_secs(3))
+                .unwrap();
+            let failed = if normal {
+                controller
+                    .finish(completed_grade(), Duration::from_millis(100))
+                    .unwrap_err()
+            } else {
+                controller.cancel(Duration::from_millis(100)).unwrap_err()
+            };
+            assert!(failed.contains("did not exit"), "{failed}");
+            assert!(controller.child.try_wait().unwrap().is_none());
+            controller.child.kill().unwrap();
+            controller.child.wait().unwrap();
+        }
+    }
+
+    #[test]
+    fn cancellation_reports_each_actual_disposition_only_after_reaping() {
+        for (status, expected) in [
+            ("removed", ResourceDisposition::Removed),
+            ("not_created", ResourceDisposition::NotCreated),
+            ("stopped-preserved", ResourceDisposition::StoppedPreserved),
+        ] {
+            let script = format!(
+                "import json,sys\nprint(json.dumps(dict(event='ready')),flush=True)\nassert sys.stdin.read()==''\nprint(json.dumps(dict(event='closed',cleanup='{status}')),flush=True)\nsys.exit(3)\n"
+            );
+            let mut command = Command::new("python3");
+            command.args(["-u", "-c", &script]);
+            let mut controller = Controller::spawn(&mut command).unwrap();
+            controller
+                .receive(Instant::now() + Duration::from_secs(3))
+                .unwrap();
+            assert_eq!(controller.cancel(Duration::from_secs(3)).unwrap(), expected);
+            assert_eq!(
+                controller.child.try_wait().unwrap().unwrap().code(),
+                Some(3)
+            );
+        }
     }
 
     #[test]
