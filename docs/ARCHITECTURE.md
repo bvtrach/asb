@@ -221,11 +221,11 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   that parent automatically. A non-systemd layout or failed setup is reported
   and falls back to process sampling. Init never changes resource limits or
   edits sudoers.
-  `asb compare` also writes an execution-composition SVG with user CPU, system
-  CPU, block-I/O delay, runnable scheduler delay, and explicitly-labelled
-  remaining wall time. CPU categories are process-tree totals and may overlap
-  elapsed wall time when children execute concurrently; this is accounting
-  composition, not a fabricated single-thread state timeline.
+  `asb compare` also writes an observed scheduler thread-time composition SVG.
+  These are concurrent process-tree totals, not additive elapsed-wall categories:
+  elapsed wall is shown only as a separate numeric reference, never as a residual
+  computed by subtracting multi-thread totals. CPU/user/system/block-I/O component
+  measurements retain their own separate metric charts.
   the Perfetto adapter validates tracefs/ftrace access and starts project-local
   Tracebox before preparation begins. It waits for recording readiness before
   emitting fixed, non-secret lifecycle tracepoints; after the agent is spawned,
@@ -233,10 +233,19 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   run has a distinct trace identity. The project-local trace processor
   extracts stable aggregates,
   and ASB preserves the native `.perfetto-trace`, a bounded JSON record, one
-  portable SVG per extracted metric, and an exact per-thread scheduler-state
-  timeline SVG. The timeline uses trace timestamps and retains simultaneous
-  child-thread states as separate lanes; it is distinct from the ordered
-  aggregate execution-composition graph in `asb compare`;
+  portable SVG per extracted metric, and a bounded per-thread scheduler-state
+  timeline SVG. Its first 4,096 observed intervals over at most 64 unique thread
+  lifetimes are a view, not the aggregate source. Labels disclose displayed/full
+  interval and thread counts; the axis spans the actual execution bounds in
+  milliseconds, including gaps. Complete positive-duration state totals use a
+  separate materialized query with both boundary overlaps clipped. Unfinished
+  states (`dur=-1`) are counted as excluded, never guessed to last until the
+  end marker. `Running` means on-CPU; `R` and `R+` mean runnable, as defined by
+  [the pinned Perfetto tracker](https://github.com/google/perfetto/blob/v58.2/src/trace_processor/importers/common/thread_state_tracker.cc#L27-L55).
+  Missing blocked-reason I/O classification remains unknown (`io_wait_ms=null`)
+  rather than becoming measured zero; any positively observed I/O wait retains
+  its own metric. Unique thread IDs keep reused numeric TIDs in separate lanes.
+  Neither observed totals nor the bounded view reconstruct unobserved states;
   the perf adapter records both call stacks and stable `perf stat` counters
   (task clock, context switches, migrations, faults, cycles, instructions) for
   the complete process tree with explicit child inheritance; pidstat uses

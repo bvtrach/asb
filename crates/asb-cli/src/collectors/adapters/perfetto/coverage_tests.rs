@@ -29,7 +29,17 @@ impl Fixture {
     }
     #[cfg(unix)]
     fn successful_processor(&self) -> PathBuf {
-        self.processor("[ \"$1\" = query ] || exit 9\ncase \"$3\" in\n  *'WITH marks AS'*) printf 'ready,terminal,loss\\n1,1,0\\n';;\n  *'SELECT th.tid, st.ts'*) printf 'tid,ts,dur,state,io_wait\\n11,1000000,1000000,Running,0\\n11,2000000,2000000,Runnable,0\\n11,4000000,3000000,D,1\\n12,1000000,4000000,D,0\\n12,5000000,1000000,S,0\\n12,6000000,1000000,Z,0\\n';;\n  *'timestamp_s'*) printf 'timestamp_s,value\\n0,10\\n1,20\\n';;\n  *'SELECT COUNT(*) FROM sched '*|*'SELECT COUNT(*) FROM process '*|*'SELECT COUNT(*) FROM thread '*) printf 'count\\n7\\n';;\n  *'SELECT COUNT(*) FROM root CROSS JOIN bounds WHERE'*) printf 'count\\n1\\n';;\n  *'SELECT COUNT(*) FROM slice WHERE'*) printf 'count\\n1\\n';;\n  *) exit 10;;\nesac")
+        self.processor(r#"[ "$1" = query ] || exit 9
+case "$3" in
+  *'WITH marks AS'*) printf 'ready,terminal,loss\n1,1,0\n';;
+  *"SELECT 'bounds' AS kind"*) printf 'kind,state,io_wait,duration_ns,intervals,threads,start_ts,end_ts,unfinished\nbounds,,-1,0,6,2,1000000,7000000,0\nstate,Running,0,1000000,1,0,0,0,0\nstate,R,0,2000000,1,0,0,0,0\nstate,D,1,3000000,1,0,0,0,0\nstate,D,0,4000000,1,0,0,0,0\nstate,S,0,1000000,1,0,0,0,0\nstate,Z,0,1000000,1,0,0,0,0\n';;
+  *'SELECT utid,tid,ts,dur,state'*) printf 'utid,tid,ts,dur,state,io_wait\n1,11,1000000,1000000,Running,0\n1,11,2000000,2000000,R,0\n1,11,4000000,3000000,D,1\n2,12,1000000,4000000,D,0\n2,12,5000000,1000000,S,0\n2,12,6000000,1000000,Z,0\n';;
+  *'timestamp_s'*) printf 'timestamp_s,value\n0,10\n1,20\n';;
+  *'SELECT COUNT(*) FROM sched '*|*'SELECT COUNT(*) FROM process '*|*'SELECT COUNT(*) FROM thread '*) printf 'count\n7\n';;
+  *'SELECT COUNT(*) FROM root CROSS JOIN bounds WHERE'*) printf 'count\n1\n';;
+  *'SELECT COUNT(*) FROM slice WHERE'*) printf 'count\n1\n';;
+  *) exit 10;;
+esac"#)
     }
 }
 impl Drop for Fixture {
@@ -279,10 +289,13 @@ fn timeline_notices_handle_missing_failed_empty_and_malformed_processor_output()
             .contains("processor is missing")
     );
     for (body, reason) in [
-        ("exit 2", "cannot extract thread-state"),
+        (
+            "exit 2",
+            "cannot aggregate complete Perfetto scheduler states",
+        ),
         (
             "printf 'invalid,row\\n1,not-a-timestamp,1,R,0\\n'",
-            "no process-tree scheduler intervals",
+            "invalid Perfetto state aggregate row",
         ),
     ] {
         let processor = fixture.processor(body);
