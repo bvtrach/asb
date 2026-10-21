@@ -1229,6 +1229,14 @@ deduplicated and retains the normal bounded sweep contract. `all` is reserved
 and cannot be a selectable identifier; dynamic catalogs reject collisions,
 the TUI excludes colliding entries and CI checks every static registry.
 
+The workload trial wizard reduces explicit browsing, editing and saved states.
+An editing state owns its workload and trial pane; saving replaces that
+workload's in-memory subset. In the saved state, Enter finishes and publishes,
+while Tab reopens the saved choices. Back discards unsaved edits. Browsing or
+deselecting a workload retains its saved subset for later reselection, but
+publication includes only selected workloads and requires each to have a saved
+subset. Saving and cancellation publish no trial-set files.
+
 `asb compare BENCHMARK_OR_SWEEP.toml` dispatches by TOML shape, not filename.
 Standalone reports reuse the normal replica-path helper, read the most recent
 bounded JSONL record per configured log, and resolve project-scoped measurement

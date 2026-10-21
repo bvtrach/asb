@@ -21,10 +21,7 @@ impl Project {
             root: self.0.clone(),
             project: project::ProjectConfig::default(),
             workloads: Pane::new(vec![choice("custom")]),
-            trials: Pane::new(vec![choice("first"), choice("second")]),
-            level: 0,
-            selected_workload: None,
-            selections: BTreeSet::new(),
+            wizard: WorkloadWizard::default(),
             message: "Select a workload".into(),
             message_color: Color::Yellow,
             message_until: None,
@@ -50,11 +47,19 @@ fn workload_windows_render_both_levels_selected_rows_status_and_resizes() {
     let project = Project::new();
     let mut app = project.app();
     for level in 0..=1 {
-        app.level = level;
         app.workloads.selected[0] = true;
         app.workloads.choices[0].availability = Availability::Missing;
-        app.trials.selected[1] = true;
-        app.trials.choices[1].availability = Availability::Available;
+        if level == 1 {
+            let mut trials = Pane::new(vec![choice("first"), choice("second")]);
+            trials.selected[1] = true;
+            trials.choices[1].availability = Availability::Available;
+            app.wizard
+                .reduce(WorkloadAction::Open {
+                    workload: "custom".into(),
+                    trials,
+                })
+                .unwrap();
+        }
         for (width, height) in [(1, 1), (20, 5), (80, 24), (120, 40)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|frame| draw_workload(frame, &app)).unwrap();
@@ -160,13 +165,58 @@ fn workload_selection_propagates_install_error_and_does_not_select_hidden_items(
 fn empty_trial_selection_writes_nothing_and_write_failure_is_reported() {
     let project = Project::new();
     let mut app = project.app();
-    app.selections.insert("not-a-tab-separated-trial".into());
     assert_eq!(write_trial_sets(&app).unwrap(), 0);
     assert_eq!(
         fs::read_dir(project.0.join("workloads")).unwrap().count(),
         0
     );
-    app.selections.insert("custom\tfirst".into());
+    app.workloads.selected[0] = true;
+    app.wizard
+        .selections
+        .insert("custom".into(), BTreeSet::from(["smoke".into()]));
     fs::create_dir(project.0.join("workloads/custom.workload.toml")).unwrap();
     assert!(write_trial_sets(&app).is_err());
+}
+
+#[test]
+fn workload_reducer_requires_explicit_finish_and_replaces_saved_subset() {
+    let project = Project::new();
+    let mut app = project.app();
+    assert!(app.wizard.reduce(WorkloadAction::Finish).is_err());
+    let open = || WorkloadAction::Open {
+        workload: "custom".into(),
+        trials: Pane::new(vec![choice("first"), choice("second")]),
+    };
+    assert!(!app.wizard.reduce(open()).unwrap());
+    assert!(app.wizard.reduce(WorkloadAction::Save).is_err());
+    if let WorkloadStep::Editing { trials, .. } = &mut app.wizard.step {
+        trials.selected.fill(true);
+    }
+    assert!(!app.wizard.reduce(WorkloadAction::Save).unwrap());
+    assert!(matches!(app.wizard.step, WorkloadStep::Saved { .. }));
+    app.wizard.reduce(open()).unwrap();
+    if let WorkloadStep::Editing { trials, .. } = &mut app.wizard.step {
+        assert_eq!(trials.selected, vec![true, true]);
+        trials.selected[0] = false;
+    }
+    app.wizard.reduce(WorkloadAction::Back).unwrap();
+    app.wizard.reduce(open()).unwrap();
+    if let WorkloadStep::Editing { trials, .. } = &mut app.wizard.step {
+        assert_eq!(
+            trials.selected,
+            vec![true, true],
+            "back discards unsaved edits"
+        );
+        trials.selected[0] = false;
+    }
+    app.wizard.reduce(WorkloadAction::Save).unwrap();
+    assert_eq!(
+        app.wizard.selections["custom"],
+        BTreeSet::from(["second".into()])
+    );
+    assert!(app.wizard.reduce(WorkloadAction::Finish).unwrap());
+    assert_eq!(
+        fs::read_dir(project.0.join("workloads")).unwrap().count(),
+        0
+    );
 }

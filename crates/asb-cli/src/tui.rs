@@ -38,6 +38,9 @@ const INFO_GLYPH: &str = "ⓘ";
 #[path = "tui/coverage_tests.rs"]
 mod coverage_tests;
 
+mod workload_state;
+use workload_state::{WorkloadAction, WorkloadStep, WorkloadWizard};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Availability {
     Available,
@@ -472,10 +475,7 @@ pub fn workload_tui(output: &mut dyn Write) -> Result<(), Error> {
         root,
         project,
         workloads: Pane::new(choices),
-        trials: Pane::new(Vec::new()),
-        level: 0,
-        selected_workload: None,
-        selections: BTreeSet::new(),
+        wizard: WorkloadWizard::default(),
         message: "Space selects; Enter opens trials/saves; Tab down; Shift-Tab up; Esc cancels."
             .into(),
         message_color: Color::Yellow,
@@ -497,10 +497,7 @@ struct WorkloadApp {
     root: PathBuf,
     project: project::ProjectConfig,
     workloads: Pane,
-    trials: Pane,
-    level: usize,
-    selected_workload: Option<String>,
-    selections: BTreeSet<String>,
+    wizard: WorkloadWizard,
     message: String,
     message_color: Color,
     message_until: Option<std::time::Instant>,
@@ -604,92 +601,104 @@ fn workload_loop(
                 code: KeyCode::Tab,
                 modifiers,
                 ..
-            } if modifiers.contains(KeyModifiers::SHIFT) => app.level = 0,
+            } if modifiers.contains(KeyModifiers::SHIFT) => workload_back(app),
             KeyEvent {
                 code: KeyCode::BackTab,
                 ..
-            } => app.level = 0,
+            } => workload_back(app),
             KeyEvent {
-                code: KeyCode::Tab | KeyCode::Enter,
+                code: code @ (KeyCode::Tab | KeyCode::Enter),
                 ..
             } => {
-                if app.level == 0 {
+                if app.wizard.editing() {
+                    match app.wizard.reduce(WorkloadAction::Save) {
+                        Ok(_) => app.message = "Trial set saved in memory. Enter finishes; Tab edits; browse to configure another workload.".into(),
+                        Err(message) => app.message = message.into(),
+                    }
+                } else if matches!(app.wizard.step, WorkloadStep::Saved { .. })
+                    && code == KeyCode::Enter
+                {
+                    if app
+                        .workloads
+                        .selected_choices()
+                        .any(|choice| !app.wizard.selections.contains_key(&choice.label))
+                    {
+                        app.message = "Save trials for every selected workload before finishing. Browse to open another workload.".into();
+                    } else if app.wizard.reduce(WorkloadAction::Finish).unwrap_or(false) {
+                        return write_trial_sets(app);
+                    }
+                } else {
                     if !app.workloads.has_selection() {
                         app.message = "Select at least one external workload first.".into();
                         continue;
                     }
-                    if !app
-                        .workloads
-                        .selected
-                        .get(app.workloads.cursor)
-                        .copied()
-                        .unwrap_or(false)
-                    {
+                    let Some(index) = app.workloads.active_index() else {
+                        app.message =
+                            "No workload matches the search. Clear the filter to continue.".into();
+                        continue;
+                    };
+                    if !app.workloads.selected.get(index).copied().unwrap_or(false) {
                         app.message =
                             "Select the highlighted workload before opening its trials.".into();
                         continue;
                     }
-                    let current = app.workloads.choices[app.workloads.cursor].label.clone();
-                    if app.selected_workload.as_deref() != Some(&current) {
-                        app.selected_workload = Some(current.clone());
-                        app.trials = Pane::new(
-                            workloads::installed_trials(
-                                &current,
-                                &project::resolve(&app.root, &app.project.workloads_dir),
-                            )
-                            .map_err(Error::Input)?
-                            .into_iter()
-                            .map(|trial| Choice {
-                                label: trial.id,
-                                provider: None,
-                                model: None,
-                                availability: Availability::Available,
-                            })
-                            .collect(),
-                        );
-                        app.level = 1;
-                        app.message = "Select enabled trials; Enter saves this workload. Search filters trials.".into();
-                    } else if !app.selections.is_empty() {
-                        return write_trial_sets(app);
-                    }
-                } else if app.trials.has_selection() {
-                    let workload = app.selected_workload.take().expect("trial workload");
-                    for choice in app.trials.selected_choices() {
-                        app.selections
-                            .insert(format!("{workload}\t{}", choice.label));
-                    }
-                    app.level = 0;
-                    app.message =
-                        "Trial set saved. Select another workload or press Enter again to finish."
-                            .into();
-                } else {
-                    app.message = "Select at least one trial before continuing.".into();
+                    let current = app.workloads.choices[index].label.clone();
+                    let trials = Pane::new(
+                        workloads::installed_trials(
+                            &current,
+                            &project::resolve(&app.root, &app.project.workloads_dir),
+                        )
+                        .map_err(Error::Input)?
+                        .into_iter()
+                        .map(|trial| Choice {
+                            label: trial.id,
+                            provider: None,
+                            model: None,
+                            availability: Availability::Available,
+                        })
+                        .collect(),
+                    );
+                    app.wizard
+                        .reduce(WorkloadAction::Open {
+                            workload: current,
+                            trials,
+                        })
+                        .map_err(|message| Error::Input(message.into()))?;
+                    app.message = "Select enabled trials; Enter saves in memory. Shift-Tab discards edits; Esc cancels.".into();
                 }
             }
             KeyEvent {
                 code: KeyCode::Char(' '),
                 ..
-            } if app.level == 0 => {
+            } if !app.wizard.editing() => {
+                workload_back(app);
                 toggle_workload_choice(app, |app| install_workload_selection(terminal, app))?;
             }
-            key if handle_pane_key(
-                if app.level == 0 {
-                    &mut app.workloads
-                } else {
-                    &mut app.trials
-                },
-                key,
-            ) => {}
-            _ => {}
+            key => {
+                if let WorkloadStep::Editing { trials, .. } = &mut app.wizard.step {
+                    handle_pane_key(trials, key);
+                } else if handle_pane_key(&mut app.workloads, key) {
+                    app.wizard.reduce(WorkloadAction::Browse).ok();
+                    app.message =
+                        "Space selects; Enter/Tab opens highlighted trials; Esc cancels.".into();
+                }
+            }
         }
     }
+}
+
+fn workload_back(app: &mut WorkloadApp) {
+    app.wizard.reduce(WorkloadAction::Back).ok();
+    app.message =
+        "Space selects; Enter/Tab opens highlighted trials; Esc cancels. Unsaved edits discarded."
+            .into();
 }
 
 fn install_workload_selection(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     app: &mut WorkloadApp,
 ) -> Result<bool, Error> {
-    if app.level != 0 {
+    if app.wizard.editing() {
         set_message(
             &mut app.message,
             &mut app.message_color,
@@ -882,13 +891,14 @@ fn handle_pane_key(pane: &mut Pane, key: KeyEvent) -> bool {
 }
 
 fn draw_workload(frame: &mut ratatui::Frame<'_>, app: &WorkloadApp) {
+    let level = usize::from(app.wizard.editing());
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Min(5),
-            Constraint::Length(3),
+            Constraint::Length(5),
         ])
         .split(frame.area());
     let steps = ["workloads", "trials"];
@@ -896,12 +906,12 @@ fn draw_workload(frame: &mut ratatui::Frame<'_>, app: &WorkloadApp) {
         .iter()
         .enumerate()
         .flat_map(|(index, name)| {
-            let style = if index == app.level {
+            let style = if index == level {
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
-            } else if index < app.level {
+            } else if index < level {
                 Style::default().fg(Color::Green)
             } else {
                 Style::default().fg(Color::DarkGray)
@@ -924,26 +934,37 @@ fn draw_workload(frame: &mut ratatui::Frame<'_>, app: &WorkloadApp) {
         ),
         vertical[0],
     );
-    let description = if app.level == 0 {
-        "Choose external workloads; selecting a missing workload installs it first."
-    } else {
-        "Choose enabled trials for the selected workload."
+    let description = match &app.wizard.step {
+        WorkloadStep::Browsing => {
+            "Choose external workloads; selecting a missing workload installs it first.".into()
+        }
+        WorkloadStep::Editing { workload, .. } => format!("Choose enabled trials for {workload}."),
+        WorkloadStep::Saved { workload } => format!(
+            "{workload}: trials saved in memory; Enter finishes and writes selected workloads; Tab edits."
+        ),
     };
     frame.render_widget(
         Paragraph::new(description).block(Block::default().borders(Borders::ALL).title("Step")),
         vertical[1],
     );
-    let pane = if app.level == 0 {
-        &app.workloads
-    } else {
-        &app.trials
+    let pane = match &app.wizard.step {
+        WorkloadStep::Editing { trials, .. } => trials,
+        _ => &app.workloads,
     };
     render_choice_pane(frame, vertical[2], pane, true);
     frame.render_widget(
         Paragraph::new(Text::from(vec![
             Line::from(vec![
                 Span::styled("Space select/install", Style::default().fg(Color::Cyan)),
-                Span::raw(" | ⓘ green=ready red=missing yellow=unknown | Enter next"),
+                Span::raw(match app.wizard.step {
+                    WorkloadStep::Browsing => " | Enter/Tab opens trials | Esc cancels",
+                    WorkloadStep::Editing { .. } => {
+                        " | Enter/Tab saves | Shift-Tab discards edits | Esc cancels"
+                    }
+                    WorkloadStep::Saved { .. } => {
+                        " | Enter finishes | Tab edits | Arrows/search browse | Esc cancels"
+                    }
+                }),
             ]),
             Line::from(Span::styled(
                 visible_message(&app.message, app.message_until),
@@ -957,18 +978,14 @@ fn draw_workload(frame: &mut ratatui::Frame<'_>, app: &WorkloadApp) {
 
 fn write_trial_sets(app: &WorkloadApp) -> Result<usize, Error> {
     let directory = project::resolve(&app.root, &app.project.workloads_dir);
-    let mut grouped = std::collections::BTreeMap::<String, Vec<String>>::new();
-    for value in &app.selections {
-        if let Some((workload, trial)) = value.split_once('\t') {
-            grouped
-                .entry(workload.to_owned())
-                .or_default()
-                .push(trial.to_owned());
-        }
-    }
     let mut written = 0;
-    for (workload, ids) in grouped {
-        let catalog = workloads::installed_trials(&workload, &directory).map_err(Error::Input)?;
+    for choice in app.workloads.selected_choices() {
+        let workload = &choice.label;
+        let ids =
+            app.wizard.selections.get(workload).ok_or_else(|| {
+                Error::Input(format!("save trials for {workload} before finishing"))
+            })?;
+        let catalog = workloads::installed_trials(workload, &directory).map_err(Error::Input)?;
         let trials = catalog
             .into_iter()
             .filter(|trial| ids.contains(&trial.id))
@@ -2355,10 +2372,7 @@ mod tests {
             root: std::env::temp_dir(),
             project: ProjectConfig::default(),
             workloads: Pane::new(vec![choice("fixture")]),
-            trials: Pane::new(vec![]),
-            level: 0,
-            selected_workload: None,
-            selections: BTreeSet::new(),
+            wizard: super::WorkloadWizard::default(),
             message: String::new(),
             message_color: Color::Yellow,
             message_until: None,
