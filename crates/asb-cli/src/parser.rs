@@ -157,6 +157,9 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
         },
         Some(CommandLine::Workload(options)) => match options.command {
             WorkloadCommand::List(args) => install::workload_list(args.into(), stdout),
+            WorkloadCommand::Describe(args) => {
+                crate::workloads::describe_module(&args.name, stdout)
+            }
             WorkloadCommand::Install(args) => install::workload(args.into(), stdout),
             WorkloadCommand::Tui => tui::workload_tui(stdout),
             WorkloadCommand::Recover(args) => {
@@ -414,12 +417,19 @@ struct WorkloadArgs {
 #[derive(Debug, Subcommand)]
 enum WorkloadCommand {
     List(WorkloadListArgs),
+    /// Print a registered module's versioned JSON contract without installing or executing it.
+    Describe(WorkloadDescribeArgs),
     Install(WorkloadInstallArgs),
     Tui,
     #[command(
         after_help = "By default, stops only a departed controller's recorded task containers, preserving partial files and volumes. --inspect-grade instead reads an existing official grade without changing the attempt or running an agent/evaluator. Neither operation resumes a sweep."
     )]
     Recover(WorkloadRecoverArgs),
+}
+#[derive(Debug, Args)]
+struct WorkloadDescribeArgs {
+    #[arg(value_name = "WORKLOAD")]
+    name: String,
 }
 #[derive(Debug, Args)]
 struct WorkloadRecoverArgs {
