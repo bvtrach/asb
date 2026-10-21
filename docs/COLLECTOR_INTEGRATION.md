@@ -136,3 +136,9 @@ Cargo and CI remain identical to qualified `8ca779ca`. Earlier red/failure and
 old-source qualifications remain separate and preserved. Final independent
 proof review, exact-head hosted/package CI, PR/merge, both post-merge jobs and a
 release remain pending. No push, PR, merge-to-main or release was performed.
+
+Root independently approved final checkpoint `c82910d8` after reading all 24
+outer summaries, before/after/final hashes, the docs-only source delta, strict
+lint/doctest and complete build/documentation evidence. This follows the earlier
+source, semantic integration and focused-proof reviews. Hosted/package CI and
+delivery remain pending; the preserved executable and failed evidence stay intact.
