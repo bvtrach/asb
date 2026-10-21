@@ -47,6 +47,19 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+`cargo test --locked --offline --test tui_install` exercises the actual ASB
+install helper and real terminal backend with local fake npm/node executables.
+Closing the backend's output pipe forces EPIPE while the input PTY stays open:
+the original drawing error, cleanup diagnostics and restored echo/canonical mode
+are all checked. Ctrl-C, Esc, owner loss and helper loss stop owned slow,
+double-forked TERM-resistant writers; unrelated sentinels survive and no writes
+continue after confirmed cleanup. Successful and failed installs, descriptor
+noninheritance, nonterminal refusal and invoking-binary pathname replacement
+are checked without package downloads, live agents or provider credentials.
+`cargo test --locked --offline --lib install::operation` additionally covers
+fixed protocol validation, nonblocking queue pressure, pre-spawn keeper failure
+and unwinding after actual installer admission. Build the current ASB binary
+first for focused library tests, as for native gate qualification below.
 `cargo test --locked --offline --test tui_terminal` drives the actual current
 binary through a bounded PTY. Workload fixtures use only local fake catalogs:
 advertised Enter finishes, Tab edits, Back discards, saved choices reopen,

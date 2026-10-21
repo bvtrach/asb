@@ -450,12 +450,7 @@ pub fn setup(output: &mut dyn Write) -> Result<(), Error> {
         start_terminal().map_err(|error| Error::Io(format!("cannot start setup TUI: {error}")))?;
     let result = run_loop(&mut terminal, &mut app);
     let cleanup = stop_terminal(terminal);
-    if let Err(error) = cleanup
-        && result.is_ok()
-    {
-        return Err(Error::Io(format!("cannot restore terminal: {error}")));
-    }
-    let generated = result?;
+    let generated = with_terminal_cleanup(result, cleanup)?;
     writeln!(output, "{}", generated_summary(&generated)).map_err(crate::io_error)?;
     output.flush().map_err(crate::io_error)
 }
@@ -486,10 +481,7 @@ pub fn workload_tui(output: &mut dyn Write) -> Result<(), Error> {
         .map_err(|error| Error::Io(format!("cannot start workload TUI: {error}")))?;
     let result = workload_loop(&mut terminal, &mut app);
     let cleanup = stop_terminal(terminal);
-    if result.is_ok() {
-        cleanup.map_err(|error| Error::Io(format!("cannot restore terminal: {error}")))?;
-    }
-    let count = result?;
+    let count = with_terminal_cleanup(result, cleanup)?;
     writeln!(output, "Wrote {count} workload trial-set configurations").map_err(crate::io_error)
 }
 
@@ -729,59 +721,30 @@ fn install_workload_selection(
         Color::Cyan,
         false,
     );
-    let progress_state = std::sync::Arc::new(std::sync::Mutex::new((8_u8, "preparing".to_owned())));
-    let worker_progress = std::sync::Arc::clone(&progress_state);
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let install_name = name.clone();
     let directory = project::resolve(&app.root, &app.project.workloads_dir);
-    std::thread::spawn(move || {
-        let mut output = Vec::new();
-        let mut progress = |percent: u8, stage: &str| {
-            if let Ok(mut state) = worker_progress.lock() {
-                *state = (percent, stage.to_owned());
-            }
-        };
-        let result = install::workload_with_progress(
-            install::WorkloadInstallOptions {
-                source: install_name,
-                name: None,
-                dir: Some(directory),
-            },
-            &mut output,
-            &mut progress,
-        );
-        let _ = sender.send(result);
-    });
-    let started = Instant::now();
-    let mut tick = 0_u64;
-    let result = loop {
-        match receiver.try_recv() {
-            Ok(result) => break result,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                break Err(Error::Io(
-                    "workload installation stopped unexpectedly".into(),
-                ));
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-        }
-        let (percent, stage) = progress_state
-            .lock()
-            .map(|state| state.clone())
-            .unwrap_or((8, "installing".to_owned()));
-        set_message(
-            &mut app.message,
-            &mut app.message_color,
-            &mut app.message_until,
-            install_status_message(percent, &stage, started, tick),
-            Color::Cyan,
-            false,
-        );
-        terminal
-            .draw(|frame| draw_workload(frame, app))
-            .map_err(|error| Error::Io(format!("cannot draw workload install status: {error}")))?;
-        tick = tick.wrapping_add(1);
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    };
+    let result = drive_install(
+        app.root.clone(),
+        install::operation::Request::Workload {
+            name: name.clone(),
+            directory,
+        },
+        |status| {
+            set_message(
+                &mut app.message,
+                &mut app.message_color,
+                &mut app.message_until,
+                status,
+                Color::Cyan,
+                false,
+            );
+            terminal
+                .draw(|frame| draw_workload(frame, app))
+                .map_err(|error| {
+                    Error::Io(format!("cannot draw workload install status: {error}"))
+                })?;
+            Ok(())
+        },
+    )?;
     refresh_workload_availability(app);
     let ready = result.is_ok()
         && app
@@ -1020,35 +983,153 @@ fn write_trial_sets(app: &WorkloadApp) -> Result<usize, Error> {
     Ok(written)
 }
 
-fn start_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>, io::Error> {
-    terminal::enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    // Ctrl-I is encoded as the same byte as Tab by legacy terminals. Request
-    // Kitty's disambiguating keyboard protocol so crossterm can preserve the
-    // control modifier and the shortcut cannot fall through to navigation.
-    execute!(
-        stdout,
-        EnterAlternateScreen,
-        crossterm::cursor::Hide,
-        PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
-        )
-    )?;
-    Terminal::new(CrosstermBackend::new(stdout))
+struct TerminalCleanup {
+    active: bool,
 }
 
-fn stop_terminal(mut terminal: Terminal<CrosstermBackend<Stdout>>) -> Result<(), io::Error> {
-    terminal.clear()?;
-    terminal::disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        PopKeyboardEnhancementFlags,
-        LeaveAlternateScreen,
-        crossterm::cursor::Show
-    )?;
-    terminal.show_cursor()
+impl TerminalCleanup {
+    fn restore(&mut self) -> io::Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+        self.active = false;
+        let mut errors = Vec::new();
+        let mut stdout = io::stdout();
+        for result in [
+            terminal::disable_raw_mode(),
+            execute!(stdout, PopKeyboardEnhancementFlags),
+            execute!(stdout, LeaveAlternateScreen),
+            execute!(stdout, crossterm::cursor::Show),
+        ] {
+            if let Err(error) = result {
+                errors.push(error.to_string());
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(io::Error::other(errors.join("; ")))
+        }
+    }
+}
+
+impl Drop for TerminalCleanup {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
+}
+
+struct TerminalSession {
+    terminal: Terminal<CrosstermBackend<Stdout>>,
+    cleanup: TerminalCleanup,
+}
+
+impl std::ops::Deref for TerminalSession {
+    type Target = Terminal<CrosstermBackend<Stdout>>;
+    fn deref(&self) -> &Self::Target {
+        &self.terminal
+    }
+}
+
+impl std::ops::DerefMut for TerminalSession {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.terminal
+    }
+}
+
+fn start_terminal() -> Result<TerminalSession, io::Error> {
+    use std::io::IsTerminal;
+    if !io::stdin().is_terminal() {
+        return Err(io::Error::other("TUI requires a terminal on stdin"));
+    }
+    let mut cleanup = TerminalCleanup { active: true };
+    let started = (|| {
+        terminal::enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        // Ctrl-I is encoded as the same byte as Tab by legacy terminals. Request
+        // Kitty's disambiguating keyboard protocol so crossterm can preserve the
+        // control modifier and the shortcut cannot fall through to navigation.
+        execute!(
+            stdout,
+            EnterAlternateScreen,
+            crossterm::cursor::Hide,
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+            )
+        )?;
+        Terminal::new(CrosstermBackend::new(stdout))
+    })();
+    match started {
+        Ok(terminal) => Ok(TerminalSession { terminal, cleanup }),
+        Err(primary) => match cleanup.restore() {
+            Ok(()) => Err(primary),
+            Err(error) => Err(io::Error::other(format!(
+                "{primary}; cannot restore terminal: {error}"
+            ))),
+        },
+    }
+}
+
+fn stop_terminal(mut terminal: TerminalSession) -> Result<(), io::Error> {
+    let clear = terminal.clear();
+    let restore = terminal.cleanup.restore();
+    match (clear, restore) {
+        (Ok(()), result) | (result, Ok(())) => result,
+        (Err(first), Err(second)) => Err(io::Error::other(format!("{first}; {second}"))),
+    }
+}
+
+fn with_terminal_cleanup<T>(result: Result<T, Error>, cleanup: io::Result<()>) -> Result<T, Error> {
+    match (result, cleanup) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(error)) => Err(Error::Io(format!("cannot restore terminal: {error}"))),
+        (Err(primary), Err(error)) => Err(Error::Io(format!(
+            "{primary}; cannot restore terminal: {error}"
+        ))),
+    }
+}
+
+/// All callers share process custody, bounded progress and cancellation policy.
+fn drive_install(
+    root: PathBuf,
+    request: install::operation::Request,
+    mut render: impl FnMut(String) -> Result<(), Error>,
+) -> Result<Result<(), Error>, Error> {
+    let mut operation = install::operation::Operation::start(root, request)?;
+    let started = Instant::now();
+    let mut tick = 0_u64;
+    let result = (|| loop {
+        if let Some(result) = operation.poll()? {
+            return Ok(result);
+        }
+        render(install_status_message(
+            operation.percent(),
+            "installing",
+            started,
+            tick,
+        ))?;
+        tick = tick.wrapping_add(1);
+        if event::poll(std::time::Duration::from_millis(100))
+            .map_err(|error| Error::Io(format!("cannot read installation input: {error}")))?
+            && let Event::Key(key) = event::read()
+                .map_err(|error| Error::Io(format!("cannot read installation input: {error}")))?
+            && key.kind == KeyEventKind::Press
+            && (key.code == KeyCode::Esc
+                || (key.code == KeyCode::Char('c')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)))
+        {
+            return Err(Error::Usage("TUI installation cancelled"));
+        }
+    })();
+    match result {
+        Ok(result) => Ok(result),
+        Err(primary) => match operation.cancel() {
+            Ok(()) => Err(primary),
+            Err(cleanup) => Err(Error::Io(format!("{primary}; cleanup: {cleanup}"))),
+        },
+    }
 }
 
 fn run_loop(
@@ -1149,60 +1230,27 @@ fn install_setup_dependencies(
     {
         return Ok(true);
     }
-    let project_root = app.root.clone();
-    let progress_state = std::sync::Arc::new(std::sync::Mutex::new((
-        5_u8,
-        "preparing dependencies".to_owned(),
-    )));
-    let worker_progress = std::sync::Arc::clone(&progress_state);
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut output = Vec::new();
-        let mut progress = |percent, stage: &str| {
-            if let Ok(mut state) = worker_progress.lock() {
-                *state = (percent, stage.to_owned());
-            }
-        };
-        let result = install::ensure_collector_dependencies(
-            &selected,
-            &project_root,
-            &tools_root,
-            &mut output,
-            &mut progress,
-            false,
-        );
-        let _ = sender.send(result);
-    });
-    let started = Instant::now();
-    let mut tick = 0;
-    let result = loop {
-        match receiver.try_recv() {
-            Ok(result) => break result,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                break Err(Error::Io(
-                    "collector dependency installation stopped unexpectedly".into(),
-                ));
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-        }
-        let (percent, stage) = progress_state
-            .lock()
-            .map(|state| state.clone())
-            .unwrap_or((5, "installing dependencies".into()));
-        set_message(
-            &mut app.message,
-            &mut app.message_color,
-            &mut app.message_until,
-            install_status_message(percent, &stage, started, tick),
-            Color::Cyan,
-            false,
-        );
-        terminal.draw(|frame| draw(frame, app)).map_err(|error| {
-            Error::Io(format!("cannot draw dependency install status: {error}"))
-        })?;
-        tick = tick.wrapping_add(1);
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    };
+    let result = drive_install(
+        app.root.clone(),
+        install::operation::Request::Dependencies {
+            selected,
+            directory: tools_root,
+        },
+        |status| {
+            set_message(
+                &mut app.message,
+                &mut app.message_color,
+                &mut app.message_until,
+                status,
+                Color::Cyan,
+                false,
+            );
+            terminal.draw(|frame| draw(frame, app)).map_err(|error| {
+                Error::Io(format!("cannot draw dependency install status: {error}"))
+            })?;
+            Ok(())
+        },
+    )?;
     app.refresh_availability();
     match result {
         Ok(()) => {
@@ -1533,73 +1581,34 @@ fn install_setup_selection(
             &app.project.tools_dir
         },
     );
-    let progress_state = std::sync::Arc::new(std::sync::Mutex::new((8_u8, "preparing".to_owned())));
-    let worker_progress = std::sync::Arc::clone(&progress_state);
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut output = Vec::new();
-        let mut progress = |percent: u8, stage: &str| {
-            if let Ok(mut state) = worker_progress.lock() {
-                *state = (percent, stage.to_owned());
-            }
-        };
-        let result = match step {
-            0 | 4 => install::tool_with_progress(
-                install::ToolInstallOptions {
-                    name: install_label,
-                    source: None,
-                    dir: Some(directory),
-                    dry_run: false,
-                },
-                &mut output,
-                &mut progress,
-            ),
-            3 => {
-                let workload = install_label
-                    .strip_suffix(" [trial set]")
-                    .unwrap_or(&install_label);
-                install::workload_with_progress(
-                    install::WorkloadInstallOptions {
-                        source: workload.to_owned(),
-                        name: None,
-                        dir: Some(directory),
-                    },
-                    &mut output,
-                    &mut progress,
-                )
-            }
-            _ => unreachable!("installable setup steps were checked above"),
-        };
-        let _ = sender.send(result);
-    });
-    let started = Instant::now();
-    let mut tick = 0_u64;
-    let result = loop {
-        match receiver.try_recv() {
-            Ok(result) => break result,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                break Err(Error::Io("installation stopped unexpectedly".into()));
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+    let request = if step == 3 {
+        install::operation::Request::Workload {
+            name: install_label
+                .strip_suffix(" [trial set]")
+                .unwrap_or(&install_label)
+                .to_owned(),
+            directory,
         }
-        let (percent, stage) = progress_state
-            .lock()
-            .map(|state| state.clone())
-            .unwrap_or((8, "installing".to_owned()));
+    } else {
+        install::operation::Request::Tool {
+            name: install_label,
+            directory,
+        }
+    };
+    let result = drive_install(app.root.clone(), request, |status| {
         set_message(
             &mut app.message,
             &mut app.message_color,
             &mut app.message_until,
-            install_status_message(percent, &stage, started, tick),
+            status,
             Color::Cyan,
             false,
         );
         terminal
             .draw(|frame| draw(frame, app))
             .map_err(|error| Error::Io(format!("cannot draw setup install status: {error}")))?;
-        tick = tick.wrapping_add(1);
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    };
+        Ok(())
+    })?;
     app.refresh_availability();
     let ready = result.is_ok()
         && app.panes[step]

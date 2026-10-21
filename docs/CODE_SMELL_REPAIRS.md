@@ -337,8 +337,25 @@ not a claim of transactional multi-file I/O. Independent source review approved
 integration tests, including ten actual PTY workflow scenarios and terminal
 restoration. Worker full offline qualification passed 956 tests with 20 explicit
 optional skips. Version/package, exact-head hosted CI, merge and post-merge
-release verification remain pending. Detached installation-worker custody and
-other TUI structural issues remain separate repair classes.
+release verification remain pending. Other TUI structural issues remain
+separate repair classes.
+
+Detached TUI installation custody candidate: all three progress-spinner paths
+now share an owned helper process supervised through the existing native gate,
+with bounded, credential-free fixed datagrams and explicit cancellation/cleanup
+results. No blocking installer is assumed cancellable through a thread flag.
+Successful helper status additionally requires native descendant quiescence
+and refreshed readiness before selecting an item. A terminal guard independently
+attempts restoration after startup/draw/input failures and unwinding, preserving
+the original error alongside cleanup diagnostics. Offline actual-binary fixtures
+exercise real EPIPE rendering with PTY input, Ctrl-C/Esc, owner/helper death,
+slow TERM-resistant double-forked writers, unchanged unrelated sentinels and
+absence of writes after confirmed cleanup. Other fixtures cover install success
+and failure, helper framing, descriptor noninheritance, running-image pathname
+replacement, keeper failure and unwind custody. Existing trial-wizard regression
+coverage remains required. This candidate is not merged/released qualification,
+transactional installation rollback or bounded disappearance of unkillable
+kernel tasks. The user-confirmed removal of the CI coverage gate is retained.
 
 ## 7. Limits, diagnostics and CLI consistency
 

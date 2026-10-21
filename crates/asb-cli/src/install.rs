@@ -11,6 +11,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
+pub(crate) mod operation;
 mod source;
 pub(crate) use source::check_executable_version;
 
