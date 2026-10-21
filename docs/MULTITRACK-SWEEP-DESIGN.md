@@ -524,8 +524,8 @@ observers. It rechecks input stability without rewriting the original input
 seal or its historical executable locator. Omitted repeat/track/seed/source
 options reuse saved choices; explicitly conflicting options reject before
 activation. An explicit matching cassette root confirms the saved source without
-reopening it. Replay consumes previously staged private inputs, not the original
-public archive. Fresh execution without optional checkpoint support still runs
+reopening it. Reuse verifies staged private inputs without reopening the public
+archive or launching a replay client. Fresh execution without optional checkpoint support still runs
 and grades normally; missing historical input evidence cannot authorize reuse.
 
 Checkpoint tests include later-configuration receipt identity/root/fingerprint
@@ -558,6 +558,72 @@ launch zero clients. Continuing pending slots after terminal publication needs
 an explicit immutable continuation-artifact design; until that is implemented,
 the operation must refuse before historical writes and explain the retained
 terminal state. Such refusal is not full modern-continuation acceptance.
+
+### Reviewed next transition: partial continuation generations (not implemented)
+
+The next admission owner must classify every original slot under the existing
+sweep/campaign locks before publishing any generation or starting any worker.
+Besides referenced outcomes, inspect bounded actual completion records, starts,
+allocations, runtime/workspace/log/measurement paths, raw producers, recording
+associations and recovery-only markers. An orphan completion whose reference was
+lost is still attempted work. Return full-key reusable, positively untouched or
+recovery-required states; missing starts/receipts alone never prove untouched.
+A corrupt later configuration must prevent earlier pending slots from launching.
+
+After full read-only classification, publish an immutable generation manifest
+binding original input/index/campaign plan digests and exact pending original
+IDs per configuration/batch. A final generation admission marker follows all
+manifest publications. Preserve original plans, prepared identities, receipts,
+starts and outcomes. Newly observed preparation and generation evidence use
+derived create-new generation paths, not replacement of old prepared.json.
+New starts bind the admitted generation and original slot before allocation.
+
+Both material and launch gates need an explicit participant set: original C and
+pending original replica IDs, such as C=4 with P=[2,4]. Wait for those two genuine
+arrivals, reject nonmembers/duplicates, and never mark reused peers ready.
+Reused slots perform no environment preparation, collector admission or client
+launch. Keep replica.total=C and stable batch/slot IDs while disclosing actual
+P, a new cohort and generation identity. Partial execution requires a distinct
+continued-campaign lifecycle, not the completed-only verify-stable shortcut.
+Seeded replay choices stay frozen. Confirm new prepared material against original
+genuine identity; only an entirely unprepared original campaign can establish
+its first genuine identity through the new participants before launch.
+
+Continued recording must publish a new self-contained full-snapshot ZIP per
+configuration generation: all original retained tracks plus only newly executed
+untouched slots, retaining stable track IDs and imported-source provenance.
+Keep previous archives and slot receipts unchanged. An explicit generation ledger
+chooses the current snapshot for default replay/compare/export; do not scan for
+the newest filename, replace old ZIPs or retarget an alias used by old proofs.
+Disjoint partial bundles are not the intended one-bundle-per-configuration result.
+
+Current recording evidence deliberately equates recording_id, execution.campaign
+and the campaign-root basename; grouped proof rejects the same recording identity
+at different destinations. Therefore continuation needs versioned separation of
+logical campaign identity from physical recording-generation identity. Preserve
+old encoding as generation zero. Imported payloads retain exact original
+TrackEvidence/association origins; copying their bytes into a new snapshot cannot
+retroactively claim a new launch or change a sealed slot's evidence. Group proof
+must validate real generation identity/destination and declared import ancestry,
+not remove the conflicting-identity guard.
+
+Publication-only recovery verifies producer quiescence and expected commits,
+recovers/finalizes its journal and publishes the current-generation ledger with
+zero clients or evaluators. After a ZIP link but before ledger publication it
+must verify the exact prepared/published artifact and finish metadata only.
+Test every generation/admission/start/outcome/publication interruption boundary,
+noncontiguous original IDs, orphan attempts, unchanged old evidence, exact union
+snapshot contents, deterministic seed choices and zero-launch publication repair.
+
+At implementation checkpoint f2a7e068 on integrated main 32329d76 (v0.2.42),
+strict all-target/all-feature Clippy, formatting, build and the complete offline
+source suite passed. Library results were 1,248 passed and 13 explicitly ignored;
+all integration targets and doctests passed, including 43 repeated-run cases.
+The actual executable SHA-256 remained
+4b73dd12530be564c4f312b54c8602482459f0e88cbec9ccc3f2bddb7ab64d5e
+before/after runtime qualification. These gates do not imply pending partial
+continuation, installed original-SDK sweep qualification, packaging, hosted CI,
+merge or release. Those remain required for final feature delivery.
 
 Resume loads the original saved plan and verifies choices against the frozen
 source identity. It never generates another seed or silently resamples a changed
