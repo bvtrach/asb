@@ -324,6 +324,104 @@ fn existing_settings_need_no_consent_and_unavailable_sudo_never_mutates() {
 }
 
 #[test]
+fn partial_ready_settings_execute_only_the_pending_setting() {
+    let mut fake = Fake::default();
+    let mut reader = Cursor::new("y\n");
+    let mut output = Vec::new();
+    let mut policy = Policy::new(&mut reader, &mut fake);
+    let result = super::super::configure_host_capabilities_with(
+        &mut output,
+        false,
+        &mut policy,
+        |setting| {
+            Some(
+                if setting.ends_with("paranoid") {
+                    "-1\n"
+                } else {
+                    "0\n"
+                }
+                .into(),
+            )
+        },
+    )
+    .unwrap();
+    assert!(result.is_none());
+    assert_eq!(fake.probes, 1);
+    assert_eq!(fake.calls.len(), 1);
+    assert_eq!(
+        fake.calls[0].1.args,
+        ["sysctl", "-w", "kernel.sched_schedstats=1"]
+    );
+    let text = String::from_utf8(output).unwrap();
+    assert_eq!(
+        text.matches("kernel.perf_event_paranoid=-1 already enabled")
+            .count(),
+        1
+    );
+    assert_eq!(text.matches("changed kernel.sched_schedstats=1").count(), 1);
+    assert!(!text.contains("sudo sysctl -w kernel.perf_event_paranoid"));
+    assert!(!text.contains("changed kernel.perf_event_paranoid"));
+}
+
+#[test]
+fn final_preexecution_flush_failure_after_consent_and_probe_grants_no_permit() {
+    struct FinalFlushFailure {
+        output: Vec<u8>,
+        flushes: usize,
+    }
+    impl Write for FinalFlushFailure {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.output.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes += 1;
+            if self.flushes == 2 {
+                Err(io::Error::other("fixture final approval flush failed"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+    let mut fake = Fake {
+        available: true,
+        ..Default::default()
+    };
+    let mut reader = Cursor::new("y\n");
+    let mut output = FinalFlushFailure {
+        output: Vec::new(),
+        flushes: 0,
+    };
+    let mut policy = Policy::new(&mut reader, &mut fake);
+    let error =
+        super::super::configure_host_capabilities_with(&mut output, false, &mut policy, |_| None)
+            .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("fixture final approval flush failed")
+    );
+    assert_eq!(
+        output.flushes, 2,
+        "consent flush succeeded; final approval flush failed"
+    );
+    assert_eq!(
+        reader.position(),
+        2,
+        "affirmative consent was actually consumed"
+    );
+    assert_eq!(fake.probes, 1, "read-only capability probe actually ran");
+    assert!(
+        fake.calls.is_empty(),
+        "no operation may execute without a published permit"
+    );
+    let text = String::from_utf8(output.output).unwrap();
+    assert!(text.contains("Checking passwordless sudo"));
+    assert!(text.contains("Applying the commands above with passwordless sudo"));
+    assert!(!text.contains("Host capability setup: changed"));
+}
+
+#[test]
 fn shell_display_quotes_metacharacters_without_changing_executor_arguments() {
     let operation = Operation::command(&["chown", "1:2", "/fixture/a'b;$(false)"], false);
     assert!(
