@@ -599,6 +599,24 @@ SDK metadata inspection currently repeats per imported attempt during compare;
 population-scale presentation/inspection optimization remains delivery work.
 Actual recovered grading and interrupted execution continuation are separate
 from this report-only operation.
+`asb workload recover REFERENCE --grade [--json]` adds explicit retained
+submission grading through `WorkloadAdapter::grade_retained`. The three original
+SWE-bench registrations now implement it: their installed pinned catalog must
+match the retained task/dataset/base, and the captured patch hash/length/image
+must match the original submission. A new official evaluator runs against that
+frozen patch and original immutable image, never a new agent or restarted task.
+Completed true/false grades are validated and reused rather than rerun. Earlier
+failed evaluator artifacts stay in place; a private create-new
+`selected-evaluation.json` explicitly identifies the validated evaluator instead
+of guessing the latest directory. Unfinished evaluator journals are independently
+locked and quiesced before another grading attempt. Missing ownership evidence,
+conflicting completed grades, changed patches/catalogs and unavailable images
+are errors. Grading failure preserves artifacts without selecting a grade.
+The helper observes EOF/SIGTERM to cancel its official evaluator; raw descriptor
+reads avoid a buffered-stdin daemon shutdown race. Returned reports use the same
+grade-only inspection schema and still cannot invent missing execution metrics
+or admit a new agent attempt. Terminal-Bench retained grading and complete
+interrupted-slot continuation remain unfinished.
 See the full benchmark delivery
 checklist before claiming complete upstream benchmark support.
 Their shared installer also downloads a checksum-pinned original

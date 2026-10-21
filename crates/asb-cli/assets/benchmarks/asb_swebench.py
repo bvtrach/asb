@@ -380,6 +380,17 @@ def remove_evaluation_container(client, task_id, run_id, expected_labels=None):
 
 def retained_evaluation_prefix(retained):
     from asb_retained import require
+    selected = retained.child("selected-evaluation.json")
+    if selected.exists():
+        selection = retained.object("selected-evaluation.json")
+        directory = selection.get("directory", "")
+        require(selection.get("schema_version") == 1
+                and selection.get("scope") == "selected-retained-evaluator-not-agent-retry"
+                and selection.get("attempt_id") == retained.identity["attempt_id"]
+                and re.fullmatch(r"(?:evaluation|recovered-evaluation)-[a-f0-9]{32}",directory),
+                "retained evaluator selection is malformed")
+        require(retained.child(directory).is_dir(), "selected retained evaluator directory is absent")
+        return directory + "/"
     directories = []
     for index, path in enumerate(retained.root.iterdir()):
         require(index < 256, "retained attempt has excessive top-level artifacts")
@@ -389,12 +400,105 @@ def retained_evaluation_prefix(retained):
     return directories[0] + "/"
 
 
+def grade_retained(retained, catalog_path, cancelled):
+    """Grade the frozen patch, not a new client attempt or restarted workspace."""
+    from asb_retained import require
+    require(retained.task.get("sdk") == sdk_identity(), "retained SWE-bench SDK identity differs")
+    catalog, row = read_task(catalog_path, retained.identity["task_id"])
+    require(catalog.get("workload") == retained.identity["workload"]
+            and catalog.get("dataset") == retained.identity["dataset"]
+            and row.get("base_commit") == retained.task["baseline"].get("base_commit"),
+            "retained submission differs from its installed grading catalog")
+    patch = retained.bytes("candidate.patch",MAX_PATCH_BYTES)
+    require(retained.submission.get("patch_sha256") == hashlib.sha256(patch).hexdigest()
+            and retained.submission.get("patch_bytes") == len(patch)
+            and retained.submission.get("base_commit") == row["base_commit"],
+            "retained candidate patch or base commit changed")
+    if retained.child("selected-evaluation.json").exists():
+        inspect_retained(retained)
+        return
+    candidates = []
+    completed = []
+    for index,path in enumerate(retained.root.iterdir()):
+        require(index < 256, "retained attempt has excessive top-level artifacts")
+        if path.name.startswith(("evaluation-","recovered-evaluation-")):
+            require(re.fullmatch(r"(?:evaluation|recovered-evaluation)-[a-f0-9]{32}",path.name),
+                    "retained evaluator directory identity is malformed")
+            require(not path.is_symlink() and path.is_dir(), "retained evaluator is not a real directory")
+            candidates.append(path)
+            result_path = retained.child(path.name+"/evaluation.json")
+            result = {}
+            if result_path.exists():
+                result = retained.object(path.name+"/evaluation.json")
+                if result.get("outcome") in ["resolved","unresolved"]:
+                    require(type(result.get("resolved")) is bool, "completed retained grade is malformed")
+                    completed.append(path.name)
+            else:
+                require(retained.child(path.name+"/resources.json").is_file(),
+                        "unfinished evaluator has no durable ownership journal; inspect it before grading again")
+            if path.name not in completed:
+                # A lost wrapper result does not imply the official tests never
+                # finished. Preserve that potential grade for reconstruction,
+                # rather than rerunning a flaky failure until it passes.
+                reports = [result["official_report"]] if isinstance(result.get("official_report"),str) else []
+                run_id = result.get("run_id")
+                if not run_id and retained.child(path.name+"/resources.json").exists():
+                    run_id = retained.object(path.name+"/resources.json").get("attempt")
+                if isinstance(run_id,str) and re.fullmatch(r"asb-[a-f0-9]{32}",run_id):
+                    reports.append("logs/evaluation/"+run_id+"/asb/"+retained.identity["task_id"]+"/report.json")
+                require(not any(retained.child(path.name+"/"+relative).exists() for relative in reports),
+                        "retained official reports need outcome reconstruction; the evaluator was not rerun")
+    require(len(completed) <= 1, "multiple completed retained evaluations cannot be replaced or guessed")
+    if completed:
+        # Validate every byte of the existing grade before selecting it. A bad
+        # existing grade is an error, never permission to rerun until it passes.
+        # Selection is only needed with old failed directories alongside it;
+        # validate through the normal verifier with an explicit prefix first.
+        retained.select_grade(retained.object(completed[0]+"/evaluation.json"))
+        verify_retained(retained, prefix=completed[0]+"/")
+        if len(candidates) != 1 or completed[0].startswith("recovered-"):
+            retained.publish_selection(completed[0])
+        return
+    require(not cancelled.is_set(), "retained grading was cancelled before evaluator launch")
+    # Retired evaluator journals are independently locked/validated. An active
+    # grader must finish or be quiesced; a root lock alone is not sufficient.
+    from asb_docker import DockerSession
+    from asb_resources import quiesce
+    with DockerSession() as client:
+        for path in candidates:
+            if (path/"resources.json").exists():
+                quiesce(client,path)
+        image = retained.task["image"]
+        require(re.fullmatch(r"sha256:[0-9a-f]{64}",image.get("image_id","")),
+                "retained task has no immutable evaluator image")
+        # Lookup only the pinned image; no pull, rebuild, workspace start or
+        # client execution can silently replace the retained submission.
+        require(client.images.get(image["image_id"]).id == image["image_id"],
+                "retained evaluator image is unavailable")
+        directory = "recovered-evaluation-"+uuid.uuid4().hex
+        def executor(arguments, destination, log, deadline):
+            run_id = arguments[arguments.index("--run_id")+1]
+            def cancel():
+                cleanup = remove_evaluation_container(client,retained.identity["task_id"],run_id)
+                atomic_write(destination/"parent-cleanup.json",encoded(cleanup))
+                require(cleanup["status"] != "error", "could not stop the retained submission evaluator")
+            return run_harness(arguments,destination,log,deadline,cancelled=cancelled,on_cancel=cancel)
+        result = evaluate_submission(catalog_path,retained.identity["task_id"],retained.child("candidate.patch"),
+            retained.child(directory),1800,executor=executor,image_identity=image)
+        require(type(result.get("resolved")) is bool
+                and result.get("outcome") in ["resolved","unresolved"],
+                "official retained-submission evaluation did not complete; original work and grader artifacts were preserved")
+        retained.select_grade(result)
+        verify_retained(retained,prefix=directory+"/")
+        retained.publish_selection(directory)
+
+
 def inspect_retained(retained):
     retained.select_grade(retained.object(retained_evaluation_prefix(retained) + "evaluation.json"))
     verify_retained(retained)
 
 
-def verify_retained(retained):
+def verify_retained(retained, prefix=None):
     """Validate a closed SWE-bench record without executing tests or an agent."""
     from asb_retained import require
     require(retained.task.get("sdk") == sdk_identity(), "retained SWE-bench SDK identity differs")
@@ -404,7 +508,7 @@ def verify_retained(retained):
             and retained.submission.get("patch_bytes") == len(patch)
             and retained.submission.get("base_commit") == retained.task["baseline"].get("base_commit"),
             "retained SWE-bench submission hash or base commit differs")
-    prefix = retained_evaluation_prefix(retained)
+    prefix = retained_evaluation_prefix(retained) if prefix is None else prefix
     result = retained.object(prefix + "evaluation.json")
     require(result.get("schema_version") == 1
             and result.get("harness_revision") == HARNESS_REVISION

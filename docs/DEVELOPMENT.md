@@ -229,6 +229,21 @@ completion evidence. The mixed original-task qualification temporarily archives
 its own outcomes/measurements, imports both real official grades, regenerates
 SVG/HTML without new provider requests, then restores the original evidence.
 
+`benchmark_grading.py` covers explicit retained-patch grading for all three
+original SWE-bench populations with provider-free evaluator/SDK seams. It checks
+both grades, immutable submissions, preservation of completed grades and failed
+predecessors, malformed/missing ownership, active prior graders, cancellation,
+catalog/patch mismatch, explicit evaluator selection and clean helper shutdown
+while stdin remains open. EOF and SIGTERM cancellation do not rerun agents.
+The opt-in `benchmark_live_grading.py` uses the installed original catalogs/SDK,
+Docker and `ASB_TEST_BENCHMARK_ASB`/`ASB_TEST_SWECATALOG_ROOT`. It captures and
+preserves actual patches without grading, then invokes public `--grade` for
+unresolved cases in all three populations and a known-correct Lite patch. It
+checks unchanged repeat requests/inspection, original task containers remaining
+stopped, unknown execution metrics and positively-owned fixture cleanup. No LLM
+is used, and this is not full-population or AI-solving qualification. Do not
+rebuild the selected binary while this qualification is running.
+
 See
 [evaluation semantics](EVALUATION.md). Perfetto
 post-processing scopes scheduler counts and series to the benchmark process

@@ -2177,3 +2177,61 @@ an imported grade can never be combined with a normal measurement for its
 slot, even if every overlapping value matches. A public CLI regression covers
 this conflict and preservation of both records. The import commit `ff560436`
 is signed and pushed; exact-head hosted qualification follows the final guard.
+
+### Grade retained original SWE-bench submissions
+
+The adapter contract now exposes explicit `grade_retained`, reached through
+`asb workload recover REFERENCE --grade [--json]`. Original Full/Lite/Verified
+adapters bind the installed pinned catalog to the retained task/dataset/base,
+verify frozen patch bytes and original immutable image, and run only their
+official evaluator. No agent or original task environment is restarted.
+Already-completed true/false grades are validated/reused, never replaced or
+rerun until they pass. Failed earlier grader directories remain available;
+private create-new `selected-evaluation.json` names the validated completed
+grader explicitly. Read-only inspection and sweep grade import use that same
+selection and evidence, never a latest-directory heuristic. Retired unfinished
+grader journals are separately locked/quiesced; missing ownership or an active
+grader is not silently ignored. Failed/cancelled grading preserves the patch
+and grader output without selecting or fabricating a grade.
+
+The grading helper observes its controller lifetime pipe and SIGTERM for
+cancellation. The first real qualification exposed Python's buffered-stdin
+daemon shutdown lock failure after returning completed grading responses.
+Raw descriptor reads fix this; the regression now covers clean successful
+completion with stdin still open in addition to EOF and SIGTERM cancellation.
+The original failed qualification artifacts remain at
+`retained-original-grading-aetxibce`; that run was not accepted as a passing CLI
+qualification. A fresh fixed-binary qualification and complete source/package/
+hosted checks follow. Provider-free tests cover all three populations and both
+grades, unchanged original evidence, completed-grade preservation, malformed/
+missing old evaluator ownership, cancellation, SDK/catalog/patch mismatches,
+explicit selection and import with preserved failed predecessors.
+
+This completes neither retained Terminal-Bench grading nor interrupted slot
+continuation. Those, population-scale presentation/qualification, full review,
+merge, exact-main CI and minor release remain part of the unchanged full goal.
+
+The fresh public CLI qualification passed in 168.843 seconds at
+`retained-original-grading-iav6j4hg`: actual ungraded frozen patches for all
+three original SWE-bench populations received their official unresolved grades,
+and a known-correct Lite patch received its official resolved grade. Each
+original task container remained stopped through grading, repeated `--grade`
+requests preserved every artifact byte without another evaluation, and read-only
+inspection returned the identical report with unknown execution metrics. The
+fixture then removed only its positively-owned resources and retained reports.
+This qualifies retained-patch grading, not AI solving/full-population scores,
+retained Terminal-Bench grading, or interrupted slot continuation. Final source,
+package and exact-head hosted verification follow.
+
+Review also covered a lost wrapper result with already-present official raw
+reports. That is not proof the tests never finished: explicit grading refuses
+to rerun that evaluator and preserves its potential grade for outcome
+reconstruction. A provider-free regression verifies this refusal. Reconstructing
+such raw results remains recovery work; a completed normalized false grade is
+never retried, and an incomplete wrapper is never used to discard a raw grade.
+
+Final source verification passed 445 unit tests, 87 offline CLI tests, eighteen
+benchmark protocol suites, nine guest/lifecycle checks and the remaining
+diagram/parallel/partial/replay/unmeasured integrations. Strict Clippy,
+formatting and `make build` (rustdoc, complete diagrams, interactive views and
+completions) passed. Package and exact-head hosted qualification follow.

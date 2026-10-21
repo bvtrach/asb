@@ -118,7 +118,9 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
             WorkloadCommand::Install(args) => install::workload(args.into(), stdout),
             WorkloadCommand::Tui => tui::workload_tui(stdout),
             WorkloadCommand::Recover(args) => {
-                if args.inspect_grade {
+                if args.grade {
+                    crate::workloads::recovery::grade_retained(&args.reference, args.json, stdout)
+                } else if args.inspect_grade {
                     crate::workloads::recovery::inspect_grade(&args.reference, args.json, stdout)
                 } else {
                     crate::workloads::recovery::run(&args.reference, args.json, stdout)
@@ -354,6 +356,9 @@ enum WorkloadCommand {
 struct WorkloadRecoverArgs {
     #[arg(value_name = "REFERENCE")]
     reference: PathBuf,
+    /// Grade a retained unfinished submission with its official evaluator; never rerun the agent.
+    #[arg(long, conflicts_with = "inspect_grade")]
+    grade: bool,
     /// Read an existing official grade without running an agent/evaluator or changing the attempt.
     #[arg(long)]
     inspect_grade: bool,

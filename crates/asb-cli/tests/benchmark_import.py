@@ -93,6 +93,30 @@ class SweepFixture:
 
 @unittest.skipUnless(os.environ.get("ASB_TEST_HOST_ASB"), "requires compiled ASB")
 class GradeImportTests(unittest.TestCase):
+    def test_explicit_recovered_evaluation_imports_without_guessing_from_failed_predecessors(self):
+        fixture = SweepFixture()
+        self.addCleanup(fixture.temporary.cleanup)
+        for index in range(3):
+            artifacts = fixture.root / f".asb/attempts/a-{index}-1"
+            directory = "recovered-evaluation-"+f"{index:032x}"
+            (artifacts/"evaluation-fixture").rename(artifacts/directory)
+            failed = artifacts/("evaluation-"+"e"*32)
+            failed.mkdir()
+            (failed/"evaluation.json").write_text('{"outcome":"evaluation_timeout"}')
+            identity = json.loads((artifacts/"task.json").read_text())["identity"]
+            (artifacts/"selected-evaluation.json").write_text(json.dumps({"schema_version":1,
+                "scope":"selected-retained-evaluator-not-agent-retry","attempt_id":identity["attempt_id"],"directory":directory}))
+        imported = fixture.run("sweep", "sweep.toml", "--import-grades", "--json")
+        self.assertEqual(imported.returncode,0,imported.stderr.decode())
+        self.assertEqual(json.loads(imported.stdout)["imported"],5)
+        compared = fixture.run("compare", "sweep.toml")
+        self.assertEqual(compared.returncode,0,compared.stderr.decode())
+        for path in fixture.imports()[:3]:
+            report = json.loads(path.read_text())["report"]
+            self.assertIs(report["workload_success"],False)
+            self.assertIn("selected-evaluation.json",report["evidence"])
+            self.assertFalse(any(name.startswith("evaluation-") for name in report["evidence"]))
+
     def test_all_original_adapters_preserve_true_false_grades_unknown_metrics_and_slots(self):
         for resolved in [False, True]:
             with self.subTest(resolved=resolved):

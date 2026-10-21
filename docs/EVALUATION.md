@@ -248,6 +248,18 @@ outcome/measurement fail instead of being silently merged. This is current
 local consistency, not historical attestation or a completion/resume receipt.
 It does not authorize replaying the agent or retrying an unresolved task.
 
+For the original SWE-bench Full/Lite/Verified adapters, a frozen captured patch
+whose official evaluation never completed can now be graded explicitly with
+`asb workload recover REFERENCE --grade`. The pinned installed catalog, original
+task/base/submission and immutable image must agree. This runs only the official
+evaluator, not the agent or retained task environment, and never replaces a
+completed true/false grade. Prior failed evaluator outputs remain available;
+an explicit selected-evaluator record binds the completed result. Failure does
+not become an unresolved grade or authorize retrying the agent. Afterwards use
+the original sweep's `--import-grades` operation and regenerate comparison.
+This grading operation does not yet support retained Terminal-Bench environments
+or reconstruct lost shell/process state.
+
 ## Steps and tokens
 
 The old step collector searched JSON keys/text for words such as `step`,

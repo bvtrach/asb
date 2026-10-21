@@ -21,6 +21,28 @@ pub(super) static ADAPTER: SweBenchAdapter = SweBenchAdapter {
 };
 
 impl WorkloadAdapter for SweBenchAdapter {
+    fn grade_retained(
+        &self,
+        context: &crate::workloads::recovery::RecoveryContext<'_>,
+    ) -> Result<serde_json::Value, crate::Error> {
+        let workloads =
+            crate::project::resolve(context.project_root, &context.project_config.workloads_dir);
+        let installed = catalog::read(self, &workloads).map_err(crate::Error::Input)?;
+        if installed.dataset != context.reference.dataset {
+            return Err(crate::Error::Input(
+                "retained task dataset differs from the installed grading catalog".into(),
+            ));
+        }
+        let runtime = crate::workloads::remote::InspectionRuntime::new(context.project_root)?;
+        catalog::ensure_helpers(&runtime.0)?;
+        crate::workloads::remote::grade_retained(
+            "swebench",
+            "asb_swebench",
+            context,
+            &runtime.0,
+            &workloads.join(self.id).join("catalog.json"),
+        )
+    }
     fn inspect_grade(
         &self,
         context: &crate::workloads::recovery::RecoveryContext<'_>,

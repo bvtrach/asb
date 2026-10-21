@@ -13,6 +13,9 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import sys
+import signal
+import threading
+import uuid
 
 sys.modules.setdefault("asb_retained", sys.modules[__name__])
 
@@ -116,6 +119,25 @@ class RetainedOutcome:
                 "evidence":dict(sorted(self.evidence.items())),
                 "process_success":None, "exit_code":None, "elapsed_ms":None, "token_usage":None, "steps":None}
 
+    def publish_selection(self, directory):
+        require(getattr(self,"grading",False), "evaluation selection requires explicit grading")
+        value = {"schema_version":1,"scope":"selected-retained-evaluator-not-agent-retry",
+                 "attempt_id":self.identity["attempt_id"],"directory":directory}
+        temporary = self.root / (".grade-selection-" + uuid.uuid4().hex)
+        try:
+            descriptor = os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+            with os.fdopen(descriptor,"wb") as output:
+                output.write(json.dumps(value,sort_keys=True).encode()+b"\n")
+                output.flush()
+                os.fsync(output.fileno())
+            # Publish without replacing a previously selected grade.
+            os.link(temporary,self.child("selected-evaluation.json"))
+            descriptor = os.open(self.root,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+            try:os.fsync(descriptor)
+            finally:os.close(descriptor)
+        finally:
+            temporary.unlink(missing_ok=True)
+
     def child(self, relative):
         path = PurePosixPath(relative)
         require(not path.is_absolute() and path.parts and ".." not in path.parts,
@@ -166,6 +188,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--module",required=True)
     parser.add_argument("--inspect-grade",action="store_true")
+    parser.add_argument("--grade",action="store_true")
     arguments = parser.parse_args()
     try:
         require(re.fullmatch(r"asb_[a-z0-9_]+",arguments.module) is not None,
@@ -180,9 +203,27 @@ def main():
         try:
             require(stat.S_ISREG(os.fstat(descriptor).st_mode), "retained owner lock is not a regular file")
             fcntl.flock(descriptor,fcntl.LOCK_EX | fcntl.LOCK_NB)
-            retained = RetainedOutcome(request, inspect=arguments.inspect_grade)
+            retained = RetainedOutcome(request, inspect=arguments.inspect_grade or arguments.grade)
             module = importlib.import_module(arguments.module)
-            if arguments.inspect_grade:
+            if arguments.grade:
+                cancelled = threading.Event()
+                signal.signal(signal.SIGTERM,lambda *_:cancelled.set())
+                def owner_lifetime():
+                    # The Rust controller keeps stdin open until completion.
+                    # EOF or any unexpected additional input cancels grading.
+                    # Do not hold BufferedReader's lock in a daemon thread at
+                    # interpreter shutdown after a completed grading response.
+                    os.read(sys.stdin.fileno(),1)
+                    cancelled.set()
+                threading.Thread(target=owner_lifetime,daemon=True).start()
+                retained.grading = True
+                module.grade_retained(retained,request["catalog"],cancelled)
+                # Build an identical inspection report on future reads; old
+                # failed grading attempts are retained but not silently merged.
+                retained = RetainedOutcome(request,inspect=True)
+                module.inspect_retained(retained)
+                result = retained.inspected_grade()
+            elif arguments.inspect_grade:
                 module.inspect_retained(retained)
                 result = retained.inspected_grade()
             else:

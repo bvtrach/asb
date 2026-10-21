@@ -65,6 +65,26 @@ pub(crate) fn inspect_grade(
     context: &super::recovery::RecoveryContext<'_>,
     runtime: &std::path::Path,
 ) -> Result<Value, crate::Error> {
+    retained_grade_request(tool_id, module, context, runtime, None)
+}
+
+pub(crate) fn grade_retained(
+    tool_id: &str,
+    module: &str,
+    context: &super::recovery::RecoveryContext<'_>,
+    runtime: &std::path::Path,
+    catalog: &std::path::Path,
+) -> Result<Value, crate::Error> {
+    retained_grade_request(tool_id, module, context, runtime, Some(catalog))
+}
+
+fn retained_grade_request(
+    tool_id: &str,
+    module: &str,
+    context: &super::recovery::RecoveryContext<'_>,
+    runtime: &std::path::Path,
+    grading_catalog: Option<&std::path::Path>,
+) -> Result<Value, crate::Error> {
     context.reference.validate_location(context.project_root)?;
     let tool = crate::project::resolve(context.project_root, &context.project_config.tools_dir)
         .join(tool_id);
@@ -72,14 +92,23 @@ pub(crate) fn inspect_grade(
     let mut command = Command::new(tool.join("venv/bin/python"));
     command
         .arg(runtime.join("asb_retained.py"))
-        .args(["--module", module, "--inspect-grade"])
+        .args([
+            "--module",
+            module,
+            if grading_catalog.is_some() {
+                "--grade"
+            } else {
+                "--inspect-grade"
+            },
+        ])
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .stderr(std::process::Stdio::null());
     let mut controller = Controller::spawn(&mut command).map_err(crate::Error::Run)?;
     controller
-        .send(&json!({"reference":context.reference}))
+        .send(&json!({"reference":context.reference,"catalog":grading_catalog}))
         .map_err(crate::Error::Run)?;
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline =
+        Instant::now() + Duration::from_secs(if grading_catalog.is_some() { 1980 } else { 60 });
     let report = controller.receive(deadline).map_err(crate::Error::Run)?;
     if report["ok"] == false {
         let reason = report["reason"]
@@ -87,7 +116,12 @@ pub(crate) fn inspect_grade(
             .filter(|reason| reason.len() <= 512 && !reason.chars().any(char::is_control))
             .unwrap_or("retained official grade is missing or inconsistent");
         return Err(crate::Error::Input(format!(
-            "cannot inspect retained grade: {reason}; no agent or evaluator was run"
+            "cannot {} retained grade: {reason}; no agent was run",
+            if grading_catalog.is_some() {
+                "complete"
+            } else {
+                "inspect"
+            }
         )));
     }
     controller

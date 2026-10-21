@@ -232,6 +232,25 @@ pub(crate) fn run(path: &Path, json: bool, output: &mut dyn Write) -> Result<(),
     }
 }
 
+pub(crate) fn grade_retained(path: &Path, json: bool, output: &mut dyn Write) -> Result<(), Error> {
+    let reference = read_reference(path)?;
+    let (root, project_config) = owning_project(&reference)?;
+    let report = super::adapters::find(&reference.workload)
+        .ok_or_else(|| Error::Input("the attempt's workload adapter is unavailable".into()))?
+        .grade_retained(&RecoveryContext {
+            project_root: &root,
+            project_config: &project_config,
+            reference: &reference,
+        })?;
+    if json {
+        serde_json::to_writer(&mut *output, &report)
+            .map_err(|error| Error::Io(error.to_string()))?;
+        writeln!(output).map_err(io_error)
+    } else {
+        writeln!(output, "Official retained task grade for {} {:?}: {}. No agent was rerun. Execution metrics remain unknown; use `asb sweep SWEEP.toml --import-grades` to import the grade into its original sweep report.", reference.workload, reference.task_id, if report["workload_success"] == true { "resolved" } else { "unresolved" }).map_err(io_error)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
