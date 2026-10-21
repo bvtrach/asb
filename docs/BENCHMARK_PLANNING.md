@@ -71,6 +71,11 @@ additional record with actual task identity and effective controller caps before
 the agent executes. Run logs, JSONL and completion summaries retain the policy,
 effective caps and record reference even without measurement collection.
 Instructions, credentials and attachment payloads never enter policy records.
+Comparison JSON preserves recorded `planning` and `effective_budgets` objects
+separately from observations. A matching original outcome/log can supply them
+when measurement records omit them; absent metadata stays unknown. Module
+revisions, reservations, repetition indices and timeout caps are not measurement
+metrics or charts. Conflicting recorded policy objects fail comparison.
 
 The runner computes `execution_plan_fingerprint` itself from validated resolved
 operator choices, pinned module/default-rule identity and replica concurrency;
