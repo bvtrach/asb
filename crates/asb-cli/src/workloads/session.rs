@@ -156,6 +156,9 @@ impl TaskInput {
                 ));
             }
         }
+        if !self.attachments.is_empty() {
+            return Err("agent input transport does not deliver task attachments yet; inline supported text in instructions instead".into());
+        }
         Ok(())
     }
 }
@@ -185,6 +188,19 @@ mod input_tests {
                 .validate_for_agent("pi")
                 .unwrap_err()
                 .contains("invalid bounded")
+        );
+        input.attachments.clear();
+        input.attachments.push(TaskAttachment {
+            artifact: "missing-unverified.txt".into(),
+            media_type: "text/plain".into(),
+            sha256: "a".repeat(64),
+            byte_length: 1024,
+        });
+        assert!(
+            input
+                .validate_for_agent("pi")
+                .unwrap_err()
+                .contains("does not deliver task attachments")
         );
         input.attachments.clear();
         input.instructions = "x".repeat(64 * 1024 + 1);

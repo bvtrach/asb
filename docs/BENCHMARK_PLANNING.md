@@ -115,9 +115,12 @@ configuration disables measurements. Unavailable results remain unavailable.
 
 Task invocation now carries structured instructions and bounded attachment
 references (relative artifact, MIME type, byte length and SHA-256). Registered
-agents declare input modalities. Current transports support text only and reject
-image/audio inputs; introducing an attachment type does not qualify multimodal
-execution or authorize dropping attachments.
+agents declare input modalities. Current transports deliver instructions only
+and reject all attachment references, including `text/plain`. A declared MIME
+type is not validated payload delivery. Adding an attachment transport requires
+file/size/hash validation and actual delivery before accepting references;
+introducing an attachment type does not qualify multimodal execution or
+authorize dropping attachments.
 
 ## Remaining qualification and extensions
 

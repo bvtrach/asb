@@ -93,6 +93,7 @@ fn native_plan_executes_with_the_validated_budget_and_keeps_output_for_grading()
             "run",
             "benchmark.toml",
             "--replay",
+            "--cassette",
             "fixture.jsonl",
             "--json",
         ])
