@@ -28,6 +28,8 @@ class Discovery:
         self.paths = set()
         self.programs = set()
         self.native_scanned = set()
+        # Exact existing json.dumps response bytes, including print's newline.
+        self.response_bytes = len(json.dumps({"schema_version":1,"paths":[]}))+1
         self.deadline = time.monotonic() + timeout
 
     def check(self):
@@ -39,7 +41,20 @@ class Discovery:
         path = absolute(path)
         if "\0" in str(path):
             raise InputError("invalid input path")
-        self.paths.add(str(path))
+        text = str(path)
+        if text not in self.paths:
+            size = 2  # JSON quotes; count escaping without allocating its copy.
+            for character in text:
+                value = ord(character)
+                size += (2 if character in '\\"\b\f\n\r\t' else
+                         6 if value<32 or 127<=value<=65535 else
+                         12 if value>65535 else 1)
+                if self.response_bytes+size+(2 if self.paths else 0)>4*1024**2:
+                    raise InputError("runtime response names exceeded their serialized byte bound")
+            if len(self.paths)>=100000:
+                raise InputError("runtime path population exceeded")
+            self.response_bytes += size+(2 if self.paths else 0)
+        self.paths.add(text)
         return path
 
     def program(self, path, search=None, depth=0):
@@ -59,7 +74,7 @@ class Discovery:
         if identity in self.programs:
             return path
         self.programs.add(identity)
-        descriptor = os.open(path,os.O_RDONLY|os.O_NONBLOCK)
+        descriptor = os.open(path,os.O_RDONLY|getattr(os,"O_NONBLOCK",0))
         with os.fdopen(descriptor,"rb") as source:
             if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
                 raise InputError("runtime entry changed to a non-regular file")
@@ -74,7 +89,7 @@ class Discovery:
                 for name in ["LD_LIBRARY_PATH","LD_PRELOAD"]:
                     if name in os.environ:
                         environment[name] = os.environ[name]
-                libraries = asb_runtime.resolve_dependencies(interpreter,path,environment)
+                libraries = asb_runtime.resolve_dependencies(interpreter,path,environment,deadline=self.deadline)
                 for library in libraries.values():
                     self.file(library)
             return path
@@ -100,11 +115,8 @@ class Discovery:
         # The caller separately declares inherited PYTHONPATH directories.
         script = "import json,sys,sysconfig; print(json.dumps({'paths':sys.path,'stdlib':sysconfig.get_path('stdlib'),'platstdlib':sysconfig.get_path('platstdlib'),'executable':sys.executable}))"
         arguments = [path,"-I","-B"] + ([] if site else ["-S"]) + ["-c",script]
-        result = subprocess.run(arguments,stdin=subprocess.DEVNULL,
-            capture_output=True,timeout=15)
-        if result.returncode or len(result.stdout)>1024*1024:
-            raise InputError("Python runtime path query failed")
-        info = json.loads(result.stdout)
+        result = asb_runtime.bounded_probe(arguments,deadline=self.deadline)
+        info = json.loads(result)
         paths = info["paths"]+[info["stdlib"], info["platstdlib"]]
         if len(paths)>512:
             raise InputError("Python runtime path population exceeded")
@@ -156,7 +168,7 @@ class Discovery:
             if not python_extension(path):
                 continue
             asb_runtime.elf(path)
-            for dependency in asb_runtime.resolve_dependencies(loader,path,environment).values():
+            for dependency in asb_runtime.resolve_dependencies(loader,path,environment,deadline=self.deadline).values():
                 self.file(dependency)
 
     def process(self, pid):
@@ -166,11 +178,12 @@ class Discovery:
         _,_,interpreter = asb_runtime.elf(executable)
         if interpreter:
             self.file(interpreter)
-            for library in asb_runtime.resolve_dependencies(interpreter,executable).values():
+            for library in asb_runtime.resolve_dependencies(interpreter,executable,deadline=self.deadline).values():
                 self.file(library)
         # Bind libraries actually mapped in the running ASB, not a newer file
         # installed under an old library's pathname during a package upgrade.
-        text = Path(f"/proc/{pid}/maps").read_text()
+        with Path(f"/proc/{pid}/maps").open("r",encoding="utf-8") as source:
+            text = source.read(4*1024**2+1)
         if len(text)>4*1024**2:
             raise InputError("process mapping population exceeded")
         target = executable.stat()

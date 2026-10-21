@@ -1,13 +1,16 @@
 # Runtime-discovery bounded exchange design
 
-This is the design and red-reproduction checkpoint for the next repair class,
-based on qualified `8dabf284`. It is not a production fix or qualification.
-The version remains 0.2.29 until later integration stages this class.
+This records the design, immutable red reproduction and subsequent source fix
+for the next repair class, based on qualified `8dabf284`. The original red
+checkpoint is `8f19a83b`; its observations/evidence below remain historical.
+The version remains 0.2.29 until later integration stages this class. Focused
+source qualification is separate from a future integrated full-suite run.
 
 ## Observed defects and first reproductions
 
-`runtime_inputs::discover` starts a blocking stdin writer and stdout reader,
-polls only the direct helper until its 60-second deadline, unconditionally waits
+At the red checkpoint, `runtime_inputs::discover` starts a blocking stdin writer
+and stdout reader, polls only the direct helper until its 60-second deadline,
+unconditionally waits
 and joins both threads. A zero-exit helper skips `stop_owned`. Its descendants
 can therefore retain stdout or stdin after direct-child exit and block either
 join without any remaining deadline. `stop_owned` also starts external
@@ -111,4 +114,61 @@ Strict all-target/all-feature offline Clippy and formatting passed; those checks
 do not convert the deliberately red behavioral regressions into qualification.
 Logs/build products stay under this worktree's ignored `target/`; its debug
 symlink uses only the reserved BPF cache. Production behavior is not fixed at
-this checkpoint, and the rest of the proposed qualification matrix is pending.
+that red checkpoint; the following source repair is a later checkpoint.
+
+## Implemented source boundaries
+
+Unix discovery now drives owned stdin/stdout from one nonblocking loop. A
+bounded serializer preserves sorted/deduplicated declarations without cloning
+their payloads and refuses a byte beyond the existing 1 MiB request limit.
+Capture permits a complete 4 MiB response, checking each fixed-buffer read
+before extending storage; active output cannot restart the absolute deadline.
+Permanent read faults remain failures, not EOF. Success requires complete
+request delivery, response EOF and successful settled helper exit.
+
+Linux owns the exact typed launch through the current ASB native gate, including
+detached descendants. Stop/unwind use its existing bounded proof-aware cleanup
+and pre-established wait-only keeper. A missing proof cannot become a seal.
+Other Unix hosts have bounded pipes and pre-established direct-child custody,
+not Linux descendant proof. The original non-Unix Rust exchange is retained
+without a new blanket refusal; its blocking joins remain explicitly unqualified.
+
+POSIX Python probes now bound stdout (1 MiB) and stderr (64 KiB) while reading,
+use the remaining discovery deadline and never join a pipe worker. One
+pre-established direct-child fallback thread per helper retains uncertainty
+and closes future admission. Its direct-child scope outside the Linux gate is
+not whole-SDK descendant/crash-persistent ownership. Non-POSIX probes retain
+their legacy capture behavior, not a claimed during-read bound.
+
+Collected path names account for the exact existing default JSON encoding,
+including escaped control/non-ASCII characters, separators, header and newline,
+within 4 MiB. There is no new smaller pathname budget. The 4096-declaration,
+100000-path, 256 MiB ELF and character-based proc-maps limits remain unchanged.
+ELF inspection bounds reads at the existing limit and rejects non-regular or
+changed files instead of accepting a raced/unbounded image. Cleanup diagnostics
+contain fixed classifications, compose a prior probe/exchange failure, and do
+not print raw helper output, paths, arguments or environment values.
+
+## Focused source-checkpoint evidence
+
+The actual CLI was built offline before the final focused sequence. Runtime
+discovery passed 8 Rust tests, benchmark protocol passed 35 wrapper tests,
+checkpoint invariants passed 33, native gate custody passed 18, and partial
+sweep/replay targets passed 4: 98 passed, 0 failed, 0 ignored across these
+focused invocations. The protocol wrapper includes the 9 Python runtime-input
+tests; those are not an additional 9 Rust tests. Tests include simultaneous
+1 MiB request/4 MiB response pressure; exact/+1 response/request boundaries;
+escaped-name accounting; real inherited endpoints with outer gate/sentinel;
+read faults, Interrupted, timeout, keeper exhaustion and unwind; and actual
+Python child cleanup uncertainty refusing further admission. Startup unwind
+after a real keeper thread starts cannot create a second worker or child;
+interruptions during pipe close/child wait still retain cleanup custody.
+
+Strict offline all-target/all-feature Clippy and formatting passed. The initial
+unit-expression lint failure is retained separately, not reported as green.
+Logs are `target/runtime34-{rust,protocol,checkpoint,gate,sweep,python}-focused.log`,
+`target/runtime34-fix-{build,clippy,fmt}.log` and the retained initial-failure log.
+The actual CLI SHA-256 matched before and after the entire final sequence:
+`843c2d3eb5fab1480e9d723602524ca1b6ef151d86d1dd21b15c6f8290affcfd`.
+This is focused Linux source evidence only: integrated full-suite, non-Linux
+runtime, hosted CI, publication, merge and release qualification remain pending.

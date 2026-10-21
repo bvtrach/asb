@@ -336,6 +336,19 @@ These are protocol-only fixtures: no agent/provider is executed. See the
 [independently checked repair ledger](CODE_SMELL_REPAIRS.md) for the broader
 code-smell audit and remaining delivery classes.
 Continuation metadata is optional for a fresh grade, not optional for reuse.
+Runtime-discovery regressions require building the actual ASB binary first,
+then running `cargo test --offline --locked --lib runtime_inputs::tests` and
+`cargo test --offline --locked --test benchmark_protocol`. The inherited-pipe
+fixtures use an outer real native gate/watchdog and an unrelated sentinel;
+cleanup is confirmed before assertions, including deliberately red historical
+reproductions. Private short budgets exercise the unchanged 60-second policy's
+algorithm. Python tests cover during-read probe limits, remaining deadlines,
+permanent read errors versus Interrupted, pre-spawn keeper failure and uncertain
+handoff refusing further admission. Serialized pathname accounting must match
+the existing schema-1 JSON, including escaping/separators/newline, rather than
+introducing a smaller arbitrary pathname cap. These are offline Linux/Unix
+contracts, not qualification of the retained non-Unix legacy fallback or
+whole-SDK descendant ownership outside a discovery gate.
 If an outcome, replica/group receipt or initial/final input seal cannot be
 published, human output identifies the missing evidence without changing the
 grade or retrying a client. JSONL instead emits a separate schema-1 object with

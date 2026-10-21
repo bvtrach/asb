@@ -4,7 +4,7 @@ use crate::process_cleanup::OwnedReaper;
 use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
-use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus};
 use std::time::{Duration, Instant};
 
 const STARTUP: Duration = Duration::from_secs(5);
@@ -76,6 +76,10 @@ impl ManagedGate {
 
     pub(crate) fn take_stdout(&mut self) -> Option<ChildStdout> {
         self.child.as_mut()?.stdout.take()
+    }
+
+    pub(crate) fn take_stdin(&mut self) -> Option<ChildStdin> {
+        self.child.as_mut()?.stdin.take()
     }
 
     pub(crate) fn take_stderr(&mut self) -> Option<ChildStderr> {

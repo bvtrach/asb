@@ -7,6 +7,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -38,6 +39,184 @@ def native_image(name):
 
 
 class RuntimeInputTests(unittest.TestCase):
+    def test_response_budget_matches_existing_json_including_escaping(self):
+        discovery = subject.Discovery()
+        for path in ['/ascii', '/quotes"\\\t\n', '/\x7f\u0080\u2603\U0001f600']:
+            discovery.file(path)
+            encoded = json.dumps({"schema_version":1,"paths":sorted(discovery.paths)}).encode()+b"\n"
+            self.assertEqual(discovery.response_bytes,len(encoded))
+        for excess in [0,1]:
+            discovery = subject.Discovery()
+            length = 4*1024**2-discovery.response_bytes-2
+            path = "/"+"a"*(length-1+excess)
+            if excess:
+                with self.assertRaises(subject.InputError):discovery.file(path)
+                self.assertEqual(discovery.paths,set())
+            else:
+                discovery.file(path)
+                self.assertEqual(len(json.dumps({"schema_version":1,"paths":[path]}).encode())+1,4*1024**2)
+                discovery.file(path)  # Repeated names do not consume the budget twice.
+
+    @unittest.skipUnless(os.name=="posix","nonblocking regular-file inspection")
+    def test_elf_fifo_and_changed_file_do_not_become_stable_inputs(self):
+        runtime = subject.asb_runtime
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)/"input"
+            with self.assertRaisesRegex(runtime.ExecutionError,"missing"):
+                runtime.elf(path)
+            os.mkfifo(path)
+            started = time.monotonic()
+            with self.assertRaises(runtime.ExecutionError):runtime.elf(path)
+            self.assertLess(time.monotonic()-started,.5)
+            path.unlink()
+            path.write_bytes(b"not-an-ELF")
+            original = runtime.os.fstat
+            calls = [0]
+            def changed(fd):
+                calls[0] += 1
+                if calls[0]==2:
+                    with path.open("ab") as output:output.write(b"changed")
+                return original(fd)
+            with patch.object(runtime.os,"fstat",side_effect=changed):
+                with self.assertRaisesRegex(runtime.ExecutionError,"changed during"):
+                    runtime.elf(path)
+
+    @unittest.skipUnless(os.name=="posix","nonblocking owned pipe implementation")
+    def test_real_probe_stream_limits_and_remaining_deadline(self):
+        runtime = subject.asb_runtime
+        def probe(code, budget=2):
+            return runtime.bounded_probe([sys.executable,"-I","-S","-B","-c",code],deadline=time.monotonic()+budget)
+        self.assertEqual(len(probe("import os;os.write(1,b'x'*1048576);os.write(2,b'e'*65536)")),1048576)
+        for code in ["import os;os.write(1,b'x'*1048577)",
+                     "import os;os.write(2,b'e'*65537)","raise SystemExit(7)"]:
+            with self.assertRaises(runtime.ExecutionError):probe(code)
+        start = time.monotonic()
+        with self.assertRaisesRegex(runtime.ExecutionError,"deadline"):
+            probe("import time;time.sleep(30)",.1)
+        self.assertLess(time.monotonic()-start,1.5)
+        # A permanent read fault is not accepted as EOF; Interrupted is retried.
+        original = runtime.os.read
+        interrupted = [False]
+        def retry(fd,count):
+            if count<=16384 and not interrupted[0]:
+                interrupted[0] = True
+                raise InterruptedError()
+            return original(fd,count)
+        with patch.object(runtime.os,"read",side_effect=retry):
+            self.assertEqual(probe("print('complete')"),b"complete\n")
+        def fail(fd,count):
+            if count<=16384:raise OSError("SECRET_READ_VALUE")
+            return original(fd,count)
+        with patch.object(runtime.os,"read",side_effect=fail):
+            with self.assertRaisesRegex(runtime.ExecutionError,"transport failed") as caught:
+                probe("print('not EOF')")
+        self.assertNotIn("SECRET",str(caught.exception))
+        real = runtime.subprocess.Popen
+        children = []
+        close_error = [OSError]
+        def close_fault(*args,**kwargs):
+            child = real(*args,**kwargs)
+            children.append(child)
+            close = child.stdout.close
+            def fail_close():
+                close()
+                raise close_error[0]("SECRET_CLOSE_VALUE")
+            child.stdout.close = fail_close
+            return child
+        with patch.object(runtime.subprocess,"Popen",side_effect=close_fault):
+            with self.assertRaisesRegex(runtime.ExecutionError,"deadline.*pipe cleanup failed") as caught:
+                probe("import time;time.sleep(30)",.05)
+        self.assertNotIn("SECRET",str(caught.exception))
+        self.assertIsNotNone(children[0].poll())
+        close_error[0] = KeyboardInterrupt
+        with patch.object(runtime.subprocess,"Popen",side_effect=close_fault):
+            with self.assertRaises(KeyboardInterrupt):probe("import time;time.sleep(30)",.05)
+        self.assertIsNotNone(children[-1].poll())
+        children[-1].stderr.close()
+        self.assertEqual(probe("print('cleanup released')"),b"cleanup released\n")
+
+    @unittest.skipUnless(os.name=="posix","owned probe keeper")
+    def test_probe_keeper_failure_precedes_spawn_and_uncertainty_closes_admission(self):
+        # Isolate the intentionally poisoned singleton from other healthy tests.
+        script = '''
+import sys,time,subprocess
+from unittest.mock import patch
+sys.path.insert(0,sys.argv[1])
+import asb_runtime as runtime
+with patch.object(runtime.threading.Thread,"start",side_effect=RuntimeError("keeper unavailable")):
+    with patch.object(runtime.subprocess,"Popen",side_effect=AssertionError("must not spawn")):
+        try:runtime.bounded_probe([sys.executable,"-c","pass"])
+        except runtime.ExecutionError as error:assert "custody unavailable before spawn" in str(error)
+        else:raise AssertionError("missing keeper failure")
+        try:runtime.bounded_probe([sys.executable,"-c","pass"])
+        except runtime.ExecutionError as error:assert "custody unavailable" in str(error)
+        else:raise AssertionError("failed keeper admitted new work")
+# This test's mocked start never created a worker; reset only this isolated
+# subprocess's singleton to exercise independent real-child handoff below.
+runtime._PROBE_CUSTODY = None
+start = runtime.threading.Thread.start
+starts = []
+def interrupted_start(worker):
+    starts.append(worker)
+    start(worker)
+    raise KeyboardInterrupt()
+with patch.object(runtime.threading.Thread,"start",interrupted_start):
+    with patch.object(runtime.subprocess,"Popen",side_effect=AssertionError("must not spawn")):
+        try:runtime.bounded_probe([sys.executable,"-c","pass"])
+        except KeyboardInterrupt:pass
+        else:raise AssertionError("missing startup unwind")
+        try:runtime.bounded_probe([sys.executable,"-c","pass"])
+        except runtime.ExecutionError:pass
+        else:raise AssertionError("startup unwind admitted work")
+assert len(starts)==1
+runtime._PROBE_CUSTODY.ready.set()
+starts[0].join(2)
+assert not starts[0].is_alive()
+# The sole real idle keeper is confirmed finished before this fixture reset.
+runtime._PROBE_CUSTODY = None
+real = runtime.subprocess.Popen
+children = []
+interrupt_wait = False
+def spawn(*args,**kwargs):
+    child = real(*args,**kwargs)
+    children.append(child)
+    wait = child.wait
+    def uncertain(timeout=None):
+        if timeout is not None:
+            if interrupt_wait:raise KeyboardInterrupt()
+            raise subprocess.TimeoutExpired("private fixture",timeout)
+        return wait()
+    child.wait = uncertain
+    return child
+with patch.object(runtime.subprocess,"Popen",side_effect=spawn):
+    try:runtime.bounded_probe([sys.executable,"-c","print('valid')"])
+    except runtime.ExecutionError as error:assert "cleanup unconfirmed" in str(error)
+    else:raise AssertionError("uncertainty accepted")
+    try:runtime.bounded_probe([sys.executable,"-c","pass"])
+    except runtime.ExecutionError as error:assert "unconfirmed" in str(error)
+    else:raise AssertionError("new admission accepted")
+assert len(children)==1
+runtime._PROBE_CUSTODY.worker.join(2)
+assert not runtime._PROBE_CUSTODY.worker.is_alive()
+assert children[0].poll() is not None
+runtime._PROBE_CUSTODY = None  # Prior fixture keeper is confirmed finished.
+children.clear()
+interrupt_wait = True
+with patch.object(runtime.subprocess,"Popen",side_effect=spawn):
+    try:runtime.bounded_probe([sys.executable,"-c","print('valid')"])
+    except KeyboardInterrupt:pass
+    else:raise AssertionError("missing cleanup unwind")
+    try:runtime.bounded_probe([sys.executable,"-c","pass"])
+    except runtime.ExecutionError as error:assert "unconfirmed" in str(error)
+    else:raise AssertionError("cleanup unwind admitted new work")
+assert len(children)==1
+runtime._PROBE_CUSTODY.worker.join(2)
+assert not runtime._PROBE_CUSTODY.worker.is_alive()
+assert children[0].poll() is not None
+'''
+        result = subprocess.run([sys.executable,"-I","-S","-B","-c",script,str(ASSETS)],capture_output=True,timeout=5)
+        self.assertEqual(result.returncode,0,result.stderr.decode())
+
     def test_python_entries_are_distinct_from_bundled_dependent_libraries(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
