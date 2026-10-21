@@ -555,6 +555,11 @@ stream: only task-loopback listeners are opened, and host destinations remain
 on the host. Endpoint and HTTP/HTTPS/SOCKS proxy ports are rewritten before
 installation; TLS hostnames and raw protocol bytes are preserved. The relay
 spans installation/execution and closes on cancellation or any failure.
+Guest project configuration explicitly projects the guest tool, workload and
+workspace paths plus proxy settings. Host-only cgroup parents and delegated
+Perfetto instances never cross this boundary; guest parsing uses their empty
+defaults. The relay rewrites proxy endpoints on that projected configuration,
+not on a serialized copy of host capabilities.
 Measured isolated sessions verify the daemon PID against this host's kernel
 boot ID, namespace PID mapping, stopped state, process start time and owned
 container cgroup before dispatching through the collector interface. They

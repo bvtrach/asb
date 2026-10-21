@@ -387,6 +387,7 @@ digraph ASB_Rust_UML {
         "asb-cli_src_workloads_FileExpectation" [label="{workloads_FileExpectation|-relative: &'static str\l-accepted: &'static [&'static str]\l}", shape=record];
         "asb-cli_src_workloads_FileSession" [label="{workloads_FileSession|-invocation: workloads_TaskInvocation\l-evaluator: Evaluator\l-evaluation_kind: &'static str\l-baseline_passed: Option\<bool\>\l|+new(context: &PreparationContext\<'_\>, prompt: String, evaluator: Evaluator, evaluation_kind: &'static str) Self\l}", shape=record];
         "asb-cli_src_workloads_Fixture" [label="{workloads_Fixture|-name: &'static str\l-files: &'static [(&'static str, &'static str)]\l}", shape=record];
+        "asb-cli_src_workloads_GuestProject" [label="{workloads_GuestProject|-tools_dir: &'static str\l-workloads_dir: &'static str\l-workspace_dir: &'static str\l-proxy: NetworkProxy\l}", shape=record];
         "asb-cli_src_workloads_Identity" [label="{workloads_Identity|-boot_id: String\l-namespace_pid: u32\l-start_time_ticks: u64\l}", shape=record];
         "asb-cli_src_workloads_InspectionRuntime" [label="{workloads_InspectionRuntime||+new(project_root: Path) cassette_Result\<Self, crate::Error\>\l}", shape=record];
         "asb-cli_src_workloads_InstallationContext" [label="{workloads_InstallationContext|+project_root: &'a Path\l+tools_root: &'a Path\l+workloads_root: &'a Path\l}", shape=record];
@@ -638,6 +639,7 @@ digraph ASB_Rust_UML {
     "asb-cli_src_workloads_ExecutionResult" -> "asb-cli_src_agents_GuestResult" [arrowhead="vee"];
     "asb-cli_src_workloads_ExecutionResult" -> "asb-cli_src_sweep_Output" [arrowhead="vee"];
     "asb-cli_src_workloads_FileSession" -> "asb-cli_src_workloads_TaskInvocation" [arrowhead="vee"];
+    "asb-cli_src_workloads_GuestProject" -> "asb-cli_src_NetworkProxy" [arrowhead="vee"];
     "asb-cli_src_workloads_InspectionRuntime" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
     "asb-cli_src_workloads_PlanningCatalog" -> "asb-cli_src_workloads_DatasetIdentity" [arrowhead="vee"];
     "asb-cli_src_workloads_PreflightContext" -> "asb-cli_src_ProjectConfig" [arrowhead="vee"];
