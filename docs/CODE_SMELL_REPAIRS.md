@@ -56,15 +56,13 @@ artifact names stay unchanged; unusual keys use escaped path notation and
 consumers should obtain graph filenames from `comparison.json`.
 Delivery: independently reviewed PR #257 merged as
 `552cd640124ca1ad02d8c4fcfd8f85c8400fa62f`, patch version **0.2.5**.
-Exact-head tests, mandatory coverage and
-hosted checks passed. The initial post-merge run required the test-only repair
-described below before release.
+Exact-head tests, mandatory coverage and hosted checks passed.
 The first main run exposed a test-only Perfetto descriptor observation race.
 Independently reviewed PR #267 merged as
 `9e7a1ba49e60f394cf1339315d0df9c8c939eafd`, preserving lease rejection
-assertions behind a child-authored post-exec observation. Every repaired-main
-post-merge job passed and signed **v0.2.5** was released from that exact
-`9e7a1ba49e60f394cf1339315d0df9c8c939eafd` commit.
+assertions behind a child-authored post-exec observation. Every post-merge job
+passed at that repaired main in run `39599622348`, and **v0.2.5** was released
+from that exact commit with a GitHub-verified signed tag.
 
 ## 3. Completion persistence, subprocess and cleanup failures
 
@@ -148,6 +146,20 @@ not only helper tests, and repair the explicit save/finish state in this class.
 
 ## 7. Limits, diagnostics and CLI consistency
 
+Completion candidate: removed hand-maintained command/flag lists and generate
+Bash/Zsh directly from Clap's actual public command tree, with existing tool
+registry suggestions retained. A private first-argument helper keeps both
+`--__generate-completion bash` and `--__generate-completion=bash`; invalid
+arity/shells and output failures are tested. Every public command context is
+exercised under Bash, and independent review exercised real interactive Zsh
+completion as well as both shell syntax checks. New schema entries need no
+second completion definition. PR #260 targets patch **0.2.8**, following the
+installer repair in PR #259 and BPF scope/startup repair in PR #268.
+The current-main coverage regressions remain in
+place with an explicit test-module import after removing the old generator.
+Exact-head source/package tests, mandatory coverage, hosted CI, merge,
+post-merge verification and release remain required.
+
 Unify intended limits (including TUI concurrency versus benchmark maximum),
 replace positional pane access and scattered protocol deadlines with named
 contracts, and audit shell-completion drift. Preserve signal-exit information
@@ -174,6 +186,26 @@ contract. It needs a separate repair class with supported probe/predicate
 parsing, multiline/OR regressions, and preservation of valid process-tree
 profiles; it must not be hidden as a test-only cleanup. Pending.
 
+Custom BPF candidate: PR #268, patch version **0.2.7**, parses complete multiline blocks and positively
+proves each process predicate, rejecting side effects (including map ++/--),
+OR-true bypasses, reserved membership-map actions and opaque preprocessing.
+Numeric `ASB_PARAM_` tuning replaces the unsupported bpftrace 0.20.2 `-D`
+argument with bounded canonical integer expression tokens. Independent review
+found and fixed accidental binding inside unquoted attachment paths; provider,
+path and symbol fields now remain unchanged. Generic typed per-session state
+retains the exact source validated at preflight, including across path
+replacement or deletion. No shared orchestration branches on BPF identity.
+Custom startup uses the independently reviewed shared `OwnedReaper` dependency
+from PR #259 before admitting a child; readiness failure/unwind has bounded
+caller-side polling and retains uncertain child custody. Offline tests cover
+predicate proof/mutation, multiline/UTF-8/malformed inputs, numeric binding,
+frozen bytes, real child identity/reaping and ownership transfer. The installed
+tool's unprivileged `-e SOURCE -V` check validates actual option routing only,
+not script compilation or privileged attachment. Custom actions remain trusted
+code, and other collector lifecycle paths are not claimed repaired. Exact-head
+independent review, ordinary/package tests, mandatory coverage, hosted checks,
+merge, post-merge verification and release remain required.
+
 Installer inspection found that HTTP downloads write directly to the published
 destination. A failed/truncated or oversized response can replace a usable
 executable with partial bytes while retaining its executable mode. Required
@@ -197,6 +229,9 @@ poll/deadline handoff, unwinding, real direct-child reaping and an unrelated
 surviving sentinel. No live provider, privileged collector or network is used.
 This does not claim whole-install transactionality, parent-directory crash
 durability, arbitrary descendant supervision or crash-persistent reaping.
-Exact-head ordinary/package tests, mandatory coverage and hosted PR checks
-passed before merge. The current main's post-merge CI verification and release
-remain pending; this entry does not claim their completion.
+Delivery: PR #259 merged as
+`55a3d0d69972707ce2db105f93ddb5806563776f`. Every post-merge job passed in
+run `39601181355`, including the source/package/install-smoke checks and the
+local-host job. Hosted coverage was 90.779707% production and 90.431599%
+aggregate. **v0.2.6** was released from that exact commit with a GitHub-verified
+signed tag. The broader cleanup and orchestration audit remains incomplete.
