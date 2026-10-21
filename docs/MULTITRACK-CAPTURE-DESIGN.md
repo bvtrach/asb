@@ -1,11 +1,11 @@
 # Recording finalization and run integration
 
-Status: recorder lifecycle, bounded source discovery, immutable track proofs and
-run-owned recording coordination and bundled replay selection/extraction are
-implemented on the feature branch. Full integration qualification, sweep/report
-integration and the viewer remain unfinished. This is not a claim that the
-complete workflow is available on main.
-See MULTITRACK.md for the full delivery scope.
+The run integration implements recorder lifecycle, bounded source discovery,
+immutable track proofs, run-owned recording coordination and bundled replay
+selection/extraction. Release qualification evidence is maintained with its
+feature PR rather than inferred from this design document. Sweep population,
+continuation/report integration and the offline viewer are separate unfinished
+deliveries. See MULTITRACK.md for the full scope and delivery boundaries.
 
 ## Run recording checkpoint
 
