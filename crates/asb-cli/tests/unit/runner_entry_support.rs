@@ -39,6 +39,19 @@ pub(crate) fn module_descriptor(
 }
 
 impl Scope {
+    pub fn artifact(
+        root: &Path,
+        calls: Rc<RefCell<Vec<&'static str>>>,
+        failed_measurement: bool,
+    ) -> Self {
+        let scope = Self::provider(root, calls, false, false);
+        if failed_measurement {
+            HOOK.with(|slot| {
+                slot.borrow_mut().as_mut().unwrap().event = Some(LifecycleEvent::RunFinishing)
+            });
+        }
+        scope
+    }
     pub fn new(root: &Path, event: LifecycleEvent, calls: Rc<RefCell<Vec<&'static str>>>) -> Self {
         HOOK.with(|slot| {
             assert!(slot.borrow().is_none());

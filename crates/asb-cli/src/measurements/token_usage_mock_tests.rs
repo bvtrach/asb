@@ -250,7 +250,10 @@ fn mini_swe_trajectory_counts_each_response_once() {
         crate::agents::find("mini-swe")
             .unwrap()
             .collect(&crate::agents::CollectionContext {
-                workspace: &workspace,
+                frozen: &crate::agents::FrozenArtifacts::for_test(
+                    "trajectory.json",
+                    serde_json::from_slice(&std::fs::read(&trajectory.0).unwrap()).unwrap(),
+                ),
                 run_dir: &workspace,
                 interface: None,
                 anthropic_input_includes_cache: false,

@@ -27,6 +27,25 @@ fn actual_bundled_record_replay_publication_faults_preserve_independent_evidence
     ]);
 }
 
+#[test]
+fn actual_bundled_artifact_handoff_survives_commit_and_publication_failures() {
+    isolated_full_entry_cases(&[
+        "bundle-publication-artifact-record-true-log-short",
+        "bundle-publication-artifact-record-false-run-short",
+        "bundle-publication-artifact-record-native-log-sync",
+        "bundle-publication-artifact-record-true-commit-failure-log-short",
+        "bundle-publication-artifact-record-false-client-commit-failure-summary-sync",
+        "bundle-publication-artifact-replay-true-replace-run-short",
+    ]);
+}
+
+fn trajectory(answer: &str) -> Value {
+    json!({"trajectory_format":"mini-swe-agent-1.1",
+        "info":{"model_stats":{"api_calls":4},"private_note":"fixture-private-artifact-note"},
+        "messages":[{"role":"assistant","content":answer,
+            "extra":{"response":{"usage":{"prompt_tokens":13,"completion_tokens":21}}}}]})
+}
+
 const OLD_LOG: &[u8] = b"{\"previous\":\"bundle log sentinel\"}\n";
 const OLD_RUN: &[u8] = b"{\"previous\":\"bundle measurement sentinel\"}";
 
@@ -179,7 +198,12 @@ fn run_child(case: &str) {
     .unwrap();
     fs::create_dir(root.join("workloads")).unwrap();
     workloads::populate(&root.join("workloads")).unwrap();
-    let agent = root.join("tools/pi/bin/pi");
+    let artifact = case.contains("artifact-");
+    let agent = root.join(if artifact {
+        "tools/mini-swe/bin/mini"
+    } else {
+        "tools/pi/bin/pi"
+    });
     fs::create_dir_all(agent.parent().unwrap()).unwrap();
     let counter = root.join("agent-executions");
     let cassette = root.join("bundle.zip");
@@ -193,7 +217,26 @@ fn run_child(case: &str) {
     } else {
         "src/cli.py src/registry.py lookup"
     };
-    let response = json!({"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":answer}]}]});
+    // In artifact cases stdout deliberately disagrees with the frozen answer.
+    // True/false grades must come from the owning adapter's frozen trajectory.
+    let transcript_answer = if artifact {
+        if false_grade {
+            "src/cli.py src/registry.py lookup"
+        } else {
+            "incorrect"
+        }
+    } else {
+        answer
+    };
+    let response = json!({"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":transcript_answer}]}]});
+    let artifact_script = if artifact {
+        format!(
+            "const p=require('node:path');const oi=process.argv.indexOf('--output');const out=process.argv[oi+1];const owned=p.resolve(process.cwd()+'.asb-agent-runtime','runs')+p.sep;if(oi<0||!out||!p.resolve(out).startsWith(owned)||!out.endsWith(p.join('mini-swe','trajectory.json')))throw Error('missing private attempt output');fs.writeFileSync(out,JSON.stringify({}));console.log(JSON.stringify({{usage:{{prompt_tokens:499,completion_tokens:500,total_tokens:999}}}}));",
+            trajectory(answer)
+        )
+    } else {
+        String::new()
+    };
     let counter_js = serde_json::to_string(&counter).unwrap();
     let cassette_js = serde_json::to_string(&cassette).unwrap();
     let partial_js =
@@ -213,7 +256,7 @@ fn run_child(case: &str) {
     };
     let script = |replace: bool, block: bool| {
         format!(
-            "#!{}\nconst fs=require('node:fs');fs.appendFileSync({counter_js},'called\\n');{}fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw Error('fixture request failed');await r.text();{}{}console.log(JSON.stringify({response}));process.exitCode={};}}).catch(e=>{{console.error(e);process.exitCode=9;}});\n",
+            "#!{}\nconst fs=require('node:fs');fs.appendFileSync({counter_js},'called\\n');{artifact_script}{}fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw Error('fixture request failed');await r.text();{}{}console.log(JSON.stringify({response}));process.exitCode={};}}).catch(e=>{{console.error(e);process.exitCode=9;}});\n",
             node.display(),
             if replace || !replay {
                 seed.as_str()
@@ -235,7 +278,10 @@ fn run_child(case: &str) {
     };
     fs::write(&agent, script(false, case.contains("commit-failure"))).unwrap();
     fs::set_permissions(&agent, fs::Permissions::from_mode(0o700)).unwrap();
-    let config: BenchmarkConfig = toml::from_str("agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='repository-navigation'\nworkspace='workspace'\nlog_file='run.jsonl'\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n").unwrap();
+    let mut config: BenchmarkConfig = toml::from_str("agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='repository-navigation'\nworkspace='workspace'\nlog_file='run.jsonl'\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n").unwrap();
+    if artifact {
+        config.agent = "mini-swe".into();
+    }
     let config_path = root.join("benchmark.toml");
     fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
     let calls = Rc::new(RefCell::new(Vec::new()));
@@ -383,7 +429,68 @@ fn check(
     ] {
         assert_eq!(summary["runs"][0][key], shown[key], "summary {key}");
     }
-    assert_eq!(shown["token_usage"]["total_tokens"], 5);
+    // Validated tape usage remains authoritative even though the independent
+    // frozen trajectory contains 34 tokens and stdout claims 999.
+    let tokens = 5;
+    assert_eq!(shown["token_usage"]["total_tokens"], tokens);
+    if case.contains("artifact-") {
+        assert_eq!(shown["agent"], "mini-swe");
+        for record in [shown, &measured, &summary["runs"][0]] {
+            assert_eq!(record["steps"], 4);
+            assert!(
+                record["token_usage"]["source"]
+                    .as_str()
+                    .unwrap()
+                    .contains("cassette")
+            );
+        }
+        let attempts: Vec<_> = fs::read_dir(
+            crate::runner::replica::runtime_path(&batch.join("workspace")).join("runs"),
+        )
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+        assert_eq!(attempts.len(), 1, "one admitted client/attempt");
+        let frozen = attempts[0].join("mini-swe/frozen-trajectory.json");
+        let answer = if case.contains("false") {
+            "incorrect"
+        } else {
+            "src/cli.py src/registry.py lookup"
+        };
+        assert_eq!(
+            fs::read(&frozen).unwrap(),
+            serde_json::to_vec(&trajectory(answer)).unwrap(),
+            "exact frozen bytes remain recoverable, never reconstruct from the current pathname"
+        );
+        let document = read(&frozen);
+        assert_eq!(document["messages"][0]["content"], answer);
+        assert_eq!(document["info"]["model_stats"]["api_calls"], 4);
+        assert_eq!(
+            document["messages"][0]["extra"]["response"]["usage"]["prompt_tokens"],
+            13
+        );
+        assert_eq!(
+            document["messages"][0]["extra"]["response"]["usage"]["completion_tokens"],
+            21
+        );
+        assert_eq!(
+            fs::metadata(&frozen).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(!attempts[0].join("mini-swe/trajectory.json").exists());
+        assert!(error.contains("retained frozen agent evidence"), "{error}");
+        assert!(
+            error.contains(&format!(
+                "{}/mini-swe/frozen-trajectory.json",
+                attempts[0].file_name().unwrap().to_str().unwrap()
+            )),
+            "{error}"
+        );
+        assert!(
+            !error.contains("fixture-private-artifact-note"),
+            "diagnostics must not expose raw artifact contents: {error}"
+        );
+    }
     assert_eq!(shown["process_success"], !case.contains("client"));
     assert_eq!(
         shown["benchmark_outcome"]["evaluation"]["status"],
@@ -492,7 +599,10 @@ fn check(
             evidence.track.track.workload_success,
             shown["workload_success"].as_bool()
         );
-        assert_eq!(evidence.track.track.statistics.tokens, Some(5));
+        assert_eq!(evidence.track.track.statistics.tokens, Some(tokens));
+        if case.contains("artifact-") {
+            assert_eq!(evidence.track.track.statistics.steps, Some(4));
+        }
         assert_eq!(evidence.track.track.statistics.requests, Some(1));
         assert!(evidence.track.track.complete);
         let raw = fs::read(&evidence.producer).unwrap();

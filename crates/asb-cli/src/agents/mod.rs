@@ -4,6 +4,8 @@
 //! shape and provider-specific adjustment lives in the owning adapter module.
 
 mod adapters;
+mod artifacts;
+pub(crate) use artifacts::{ArtifactOwner, ArtifactSpec, FrozenArtifacts};
 pub(crate) mod driver;
 use adapters::REGISTRY;
 
@@ -65,6 +67,9 @@ pub(crate) trait AgentAdapter: Sync {
     }
     fn collect(&self, _context: &CollectionContext<'_>) -> AgentArtifacts {
         AgentArtifacts::default()
+    }
+    fn artifact_specs(&self) -> &'static [ArtifactSpec] {
+        &[]
     }
     /// `Some` means the adapter owns parsing of its output, even if usage is unavailable.
     fn output_usage(
@@ -129,17 +134,15 @@ pub(crate) struct CommandSpec {
 }
 #[derive(Default)]
 pub(crate) struct AgentArtifacts {
+    pub final_response: Option<String>,
     pub token_usage: Option<crate::measurements::TokenUsage>,
     /// Agent-reported completed model/tool calls, when the adapter exposes a
     /// bounded structured usage artifact.
     pub steps: Option<u64>,
-    /// Files that were consumed by this adapter and can be removed once their
-    /// data has been incorporated into the generic run result.
-    pub cleanup_paths: Vec<PathBuf>,
 }
 
 pub(crate) struct CollectionContext<'a> {
-    pub workspace: &'a Path,
+    pub frozen: &'a FrozenArtifacts,
     pub run_dir: &'a Path,
     pub interface: Option<Interface>,
     pub anthropic_input_includes_cache: bool,
@@ -235,6 +238,7 @@ pub(super) struct StaticAdapter {
     command: CommandBuilder,
     prepare: PreparationHook,
     collect: Option<CollectionHook>,
+    artifact_specs: &'static [ArtifactSpec],
     output_usage: Option<UsageHook>,
     final_response: Option<FinalResponseHook>,
     process: Option<ProcessHook>,
@@ -262,6 +266,7 @@ impl StaticAdapter {
             command,
             prepare,
             collect: None,
+            artifact_specs: &[],
             output_usage: None,
             final_response: None,
             process: None,
@@ -299,6 +304,10 @@ impl StaticAdapter {
 
     pub(super) const fn with_final_response(mut self, hook: FinalResponseHook) -> Self {
         self.final_response = Some(hook);
+        self
+    }
+    pub(super) const fn with_artifact_specs(mut self, specs: &'static [ArtifactSpec]) -> Self {
+        self.artifact_specs = specs;
         self
     }
 
@@ -383,6 +392,9 @@ impl AgentAdapter for StaticAdapter {
         self.collect
             .map(|collect| collect(context))
             .unwrap_or_default()
+    }
+    fn artifact_specs(&self) -> &'static [ArtifactSpec] {
+        self.artifact_specs
     }
     fn output_usage(
         &self,
@@ -473,11 +485,6 @@ pub(super) fn usage_fields(value: &serde_json::Value) -> crate::measurements::To
 }
 
 pub(crate) fn final_response(id: &str, output: &str, workspace: &Path) -> Option<String> {
-    if id == "mini-swe"
-        && let Some(response) = adapters::mini_swe_final_response(workspace)
-    {
-        return Some(response);
-    }
     find(id).and_then(|adapter| adapter.final_response(output, workspace))
 }
 
@@ -771,10 +778,7 @@ mod tests {
             "{\n  \"messages\": [\n    {\n      \"role\": \"assistant\",\n      \"content\": [{\"type\": \"text\", \"text\": \"mini final\"}]\n    }\n  ],\n  \"exit\": \"submitted\"\n}\n",
         )
         .unwrap();
-        assert_eq!(
-            final_response("mini-swe", "", &mini_root).as_deref(),
-            Some("mini final")
-        );
+        assert_eq!(final_response("mini-swe", "", &mini_root).as_deref(), None,);
         std::fs::remove_dir_all(root).unwrap();
     }
 

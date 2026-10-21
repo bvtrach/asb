@@ -164,6 +164,61 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+`cargo test --locked --offline --test agent_artifact_ownership` drives actual
+native replay and guest-driver clients through A-then-silent-B attempts. The
+former fixed workspace trajectory reproduced stale answers, 34 tokens and four
+steps after a naturally failed unlink. The fixed routes use fresh private output
+paths, retain foreign legacy workspace bytes and never attribute A to B. Actual
+scratch-cleanup/publication failure, symlink, malformed and oversized fixtures
+retain independent grades/usage or mark unavailable evidence without changing
+confirmed process quiescence. Native execution uses only the embedded loopback
+replay; guest execution uses an inert local client, never a container/provider.
+`cargo test --locked --offline --lib agents::artifacts` checks single bounded
+snapshots, namespace collisions, file/symlink/in-place replacements, absent-then-
+created files, explicit settlement failure and unwind cleanup. Deterministic
+per-owner unit hooks replace the namespace after its pathname check but before
+the relative open, and replace the source after its identity check but before
+the custody move. Both regular and symlink replacements retain foreign bytes;
+the hooks do not exist in production builds. Frozen evidence survives publication
+unwind. `agents::driver::artifact_publication_tests` uses the actual OS publisher
+with first/final write blockers: first failure retains raw JSON, final failure
+retains the durable pending record and its answer/steps/quiescence facts. This
+publisher unit seam is not an original-SDK retained-service qualification.
+The actual guest-entry first-publication fixture also verifies retained raw JSON.
+Production managed-transport seams separately admit one fake grader callback for
+pending/failed ancillary scratch status with matching retained owner evidence,
+and none for missing first metadata. The non-retained guest fallback confirms
+reset before one fake grader callback and never fabricates answer/usage. These
+are deterministic admission seams, not original-SDK or installed-client claims.
+Shared identity
+decision tests reject unknown and mismatched IDs, including high 128-bit changes.
+Windows handle identity is source-only qualification here; identity-unavailable
+hosts retain isolated evidence with a diagnostic instead of guessing deletion
+ownership or disabling execution. Build the current ASB binary before focused
+actual-entry tests and never relink while they are running.
+The ownership-window follow-up passed 61 adapter tests (including the snapshot,
+custody-window and OS-publisher seams), the exact adapter-layout guard, actual
+artifact/guest/completion tests, the existing 24 protocol harness tests, the
+updated 21 execution and 10 guest Python cases, strict all-target/all-feature
+Clippy and formatting. This old-base checkpoint has no full-suite or integrated
+current-main qualification yet; Windows remains source-qualified only.
+The subsequent native publication-loss regression uses the actual ASB Mini-SWE
+route, embedded loopback replay and bundled local repository-navigation grader,
+not an external SDK verifier. With the log blocked and measurements disabled,
+the previous binary returned a completed grade/34 tokens/four steps but deleted
+the only raw trajectory. The fixed fixture requires a recoverable mode-0600
+frozen copy containing that exact answer/usage/steps, a locatable diagnostic,
+one client call and no completion receipt. Real runner-entry observation also
+checks grading, workload finish and provider finish exactly once with blocked
+logging and either disabled or failed measurements; summary output is not
+appended twice. Unit cases verify exact frozen bytes after source replacement,
+create-new file/symlink refusal, permission failure and a test-only synchronization
+fault, all retaining the original when handoff is unconfirmed. No old-base full
+suite or integrated-current-main qualification is implied by these focused gates.
+The native handoff checkpoint passed 63 adapter tests, 73 runner tests (three
+explicit opt-in cases ignored), the layout guard, the extended actual-entry
+fixture, strict all-target/all-feature Clippy, formatting and binary build.
+
 `cargo test --locked --offline --lib runner::capture` uses real local children
 for simultaneous stdout/stderr pressure, finite capture, closed/held pipes,
 execution/drain deadlines, writer failure, unwind and uncertain cleanup custody.
@@ -792,6 +847,17 @@ repeated `execution` selection object: their task/cohort/fingerprint/usage are
 checked against plan/log/streamed selection identity without inventing fields.
 No production fault switch, SDK, container, privileged collector or live LLM is
 used. Build the current ASB executable first and keep it unchanged while testing.
+The artifact-handoff test in the same module adds six actual native MiniSWE
+record/replay cases without another provider implementation. The fake executable
+writes only the adapter's actual current-private `--output` trajectory; its
+stdout deliberately disagrees with the frozen answer and claims 999 tokens.
+True/false grades must use the frozen answer, steps remain four, validated tape
+usage stays authoritative at five tokens, and the exact retained 0600 trajectory
+independently contains 34 tokens. Commit plus log/measurement failures and selected
+private replay after source replacement must retain a locatable frozen copy,
+consume only the original owned trajectory, finish/evaluate/publish once, stop
+further admission and withhold unsafe receipts. This extends the source-approved
+integration's offline evidence, not native Windows or original-SDK qualification.
 The independent-offset fixture keeps its producer at offset five while full,
 prefix and interleaved frozen readers run; this assertion also remains enabled
 on Windows. An additional cross-platform source-replacement fixture must read
