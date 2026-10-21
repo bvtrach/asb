@@ -1,6 +1,11 @@
 //! Provider-free tests of the upstream workload protocol's pure data layer.
 
 #[test]
+fn prepared_material_archive_identity_is_bounded_canonical_and_provider_free() {
+    python_protocol("benchmark_material.py");
+}
+
+#[test]
 fn terminal_sdk_return_reconstruction_never_repeats_verifiers_or_invents_lost_metrics() {
     python_protocol("benchmark_verifier_reconstruction.py");
 }

@@ -35,6 +35,24 @@ class Task:
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_material_capture_is_explicit_offline_and_never_starts_execution(self):
+        class MaterialTask(Task):
+            calls = 0
+            def initial_material(self):
+                self.calls += 1
+                return {"schema_version":1,"scope":"prepared-workload-material-v1","sha256":"a"*64}
+        task = MaterialTask()
+        self.run_protocol([{"op":"close"}],task)
+        self.assertEqual(task.calls,0)
+        status,events,_ = self.run_protocol([{"op":"initial-material"},{"op":"close"}],task)
+        self.assertEqual(status,0)
+        self.assertEqual(task.calls,1)
+        self.assertEqual(task.commands,[])
+        self.assertEqual([event["event"] for event in events],["ready","initial-material","closed"])
+        self.assertEqual(events[1]["material"]["sha256"],"a"*64)
+        _,events,_ = self.run_protocol([{"op":"initial-material"},{"op":"close"}])
+        self.assertIn("has not declared prepared material coverage",events[1]["reason"])
+
     def run_protocol(self, requests, task=None):
         task = task or Task()
         output = io.StringIO()

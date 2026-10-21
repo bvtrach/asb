@@ -31,6 +31,37 @@ their existing workspace and retain their existing evaluation semantics.
 
 These are local consistency checks, not authentication or historical attestation.
 
+## Official prepared-material protocol foundation
+
+Verified preparation requests `initial-material` from the workload controller
+after readiness and before agent/proxy startup. Legacy execution never sends
+that operation. The response carries only a versioned scope and SHA-256 digest;
+Rust rejects unknown fields, unsupported scopes and malformed digests. A failed
+capture takes the existing stopped-preservation cancellation path.
+
+The three original SDK adapter implementations share an owned-container capture
+helper. It verifies the active resource journal, selected daemon and exact
+declared container before reading material. The current implementation covers a
+single non-root work directory with no mounts and no changes outside that root,
+apart from explicitly enumerated Docker runtime files/pseudo-filesystems. Root
+workspaces, changed ancestors, mounted inputs and additional services are refused;
+this foundation is not full original-environment support.
+
+Within that coverage, identity binds image filesystem layers and declared runtime
+configuration, adapter task/dataset/SDK definitions and actual prepared file
+content. Container IDs, ownership labels, image aliases and timestamps are not
+material identity. A bounded raw TAR walker validates extension lengths before
+reading payloads, binds modes/ownership, directories, symlinks and hardlink
+topology, and never extracts files. Cancellation, transport closure and aggregate
+metadata/content limits apply even to malformed archives.
+
+SWE-bench additionally verifies a clean selected base and binds semantic Git
+index entries/flags and reflog ref/commit/action/actor state before and after
+capture. Only raw index timestamp caches and raw reflog timestamps are normalized;
+configuration, hooks, attributes and other Git files remain content-bound. The
+ASB-owned reset uses a stable per-command committer identity, not a global Git
+configuration change.
+
 ## Implemented native repeated execution
 
 Explicit repetition, including `--repeat 1`, allocates a new project-local
@@ -65,6 +96,9 @@ not sweep resume receipts or permission to retry started attempts.
   ownership labels and attempt tags differ per execution, so raw source-build
   image IDs cannot by themselves represent stable material equality. Stable
   definition/content identity must remain distinct from actual-image provenance.
+  Extend the protocol foundation to root workspaces, declared mounts, multiple
+  services and changes outside the work directory, then qualify real installed
+  SDK environments. Do not replace missing coverage with definition-only hashes.
 - Integrate durable recording journals and saved bundle replay selections with
   the execution campaign, preserving diagnostics before a compatibility anchor
   exists. Do not fabricate fingerprints or completed attempts after failed setup.
@@ -92,3 +126,8 @@ user material, failure continuation, initial preparation diagnostics, cross-batc
 prompt mismatch, frozen replay inputs, sparse legacy mapping, measurement-only
 relocation and closed-output stop/join. Internal tests retain outcomes on cleanup
 failure while stopping admission, and cover publication failure/timeout races.
+`benchmark_material.py` supplies Docker/provider-free archive and SDK seams,
+including oversized extension rejection before payload allocation, hardlink
+metadata consistency, semantic Git normalization and explicit coverage refusal.
+Task-server and Rust controller tests check on-demand dispatch, strict response
+validation, bounded known diagnostics and redaction of arbitrary SDK errors.

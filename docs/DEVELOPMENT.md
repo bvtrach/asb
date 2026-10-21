@@ -71,6 +71,19 @@ unsupported links, immutable initial identity and evaluator side effects. These
 provider-free tests qualify the native preparation foundation, not the pending
 repeat/bundle CLI or official environment identity integration. See
 MULTITRACK-EXECUTION-DESIGN.md for the remaining requirements.
+`cargo test --locked --test benchmark_protocol` includes pure Python qualification
+of the official prepared-material protocol and bounded raw TAR reader. These
+fixtures need no Docker, SDK installation or provider. They cover the current
+single-container/non-root/unmounted declaration, semantic Git state, rejected
+uncovered services/mounts/ancestors, archive bounds and cancellation. They do not
+qualify real installed environments or the remaining broader material coverage.
+The separate opt-in `benchmark_live_material.py` uses the installed SWE-bench
+SDK interpreter and `ASB_TEST_SWECATALOG_ROOT` to compare two actual original
+Lite preparations, repeat capture, change Git configuration and reject a dirty
+worktree. It launches no agent, provider or evaluator. Its fixture containers
+are normally removed; diagnostic artifacts stay in the selected project. This
+is representative single-container qualification, not full-population or
+root/mount/service coverage. Do not treat a skipped opt-in as a passing live test.
 `cargo test --locked --test repeated_run` exercises the native repeat prototype
 through the real CLI with a fake client and loopback replay. It verifies exact
 counts, overlap/sequential batches, fresh material, private replay input copies,

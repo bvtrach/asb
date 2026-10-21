@@ -104,6 +104,11 @@ def serve(task, source, destination, idle_timeout=900):
                         emit("submission", submission=task.capture_submission())
                     elif operation == "evaluate":
                         emit("evaluated", result=task.evaluate(timeout=request.get("timeout", 1800)))
+                    elif operation == "initial-material":
+                        capture = getattr(task, "initial_material", None)
+                        if capture is None:
+                            raise ExecutionError("workload adapter has not declared prepared material coverage")
+                        emit("initial-material", material=capture())
                     else:
                         raise ExecutionError("unknown task protocol operation")
                 except ExecutionError as error:

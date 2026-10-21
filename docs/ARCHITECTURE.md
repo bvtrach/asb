@@ -197,10 +197,17 @@ these scans. The native `run --repeat` prototype publishes an intended-slot plan
 allocates fresh campaigns and batches, freezes private legacy replay inputs and
 links every completed outcome. Batches continue only after confirmed preparation,
 complete output publication and cleanup. Measurement overrides relocate only
-measurements, not project-local workspaces/logs. Official prepared-material
-identity, bundled recording/replay and campaign-aware comparison remain
-integration work; see [the execution design](MULTITRACK-EXECUTION-DESIGN.md).
-Sweep planning caches this once per installed workload and saves a bounded
+measurements, not project-local workspaces/logs. Official sessions now expose an
+on-demand versioned material identity through the workload controller, separate
+from evaluator baseline evidence. The shared capture verifies declared resource
+ownership and binds actual prepared file content plus image/runtime definition.
+Its current single-container, non-root, unmounted scope explicitly rejects
+uncovered roots, mounts, services and outside-root changes. The bounded TAR
+reader never extracts files; legacy runs never request the capture. Broader
+official material coverage and real SDK qualification, bundled recording/replay
+and campaign-aware comparison remain integration work; see
+[the execution design](MULTITRACK-EXECUTION-DESIGN.md).
+Sweep planning caches each read-only planning catalog once per installed workload and saves a bounded
 `plan.json` before running anything. A `TaskSelection` is requested intent,
 not an actual `TaskIdentity`, measured baseline, or evaluator result. Compare
 uses that snapshot when preparation failed, validates source configuration

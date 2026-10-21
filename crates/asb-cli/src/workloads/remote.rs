@@ -282,6 +282,7 @@ struct Session {
     controller: Controller,
     invocation: TaskInvocation,
     baseline: BaselineEvidence,
+    initial_material: Result<String, String>,
     guest_workspace: String,
     agent_timeout: Duration,
     measurement_active: bool,
@@ -486,17 +487,32 @@ pub(crate) fn launch(
         if !agent_timeout.is_finite() || !(0.001..=86400.0).contains(&agent_timeout) {
             return Err("official task returned an invalid agent time budget".into());
         }
-        Ok((identity, prompt, guest_workspace, baseline, agent_timeout))
+        let initial_material = if context.verify_initial_material {
+            Ok(request_initial_material(&mut controller)?)
+        } else {
+            Err("initial material identity was not requested for this legacy execution".into())
+        };
+        Ok((
+            identity,
+            prompt,
+            guest_workspace,
+            baseline,
+            agent_timeout,
+            initial_material,
+        ))
     })();
-    let (identity, prompt, guest_workspace, baseline, agent_timeout) = match prepared {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            return Err(match controller.cancel(Duration::from_secs(240)) {
-                Ok(()) => error,
-                Err(cleanup) => format!("{error}; workload cancellation cleanup failed: {cleanup}"),
-            });
-        }
-    };
+    let (identity, prompt, guest_workspace, baseline, agent_timeout, initial_material) =
+        match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return Err(match controller.cancel(Duration::from_secs(240)) {
+                    Ok(()) => error,
+                    Err(cleanup) => {
+                        format!("{error}; workload cancellation cleanup failed: {cleanup}")
+                    }
+                });
+            }
+        };
     Ok(Box::new(Session {
         process_lifetime: super::adapters::find(workload)
             .ok_or("workload adapter disappeared before execution")?
@@ -508,6 +524,7 @@ pub(crate) fn launch(
             workspace: context.workspace.to_path_buf(),
         },
         baseline,
+        initial_material,
         guest_workspace,
         agent_timeout: Duration::from_secs_f64(agent_timeout),
         measurement_active: false,
@@ -516,6 +533,43 @@ pub(crate) fn launch(
         evaluation_completed: false,
         artifacts,
     }))
+}
+
+fn request_initial_material(controller: &mut Controller) -> Result<String, String> {
+    controller.send(&json!({"op":"initial-material"}))?;
+    let response = controller.receive(Instant::now() + Duration::from_secs(600))?;
+    if response["event"] != "initial-material" {
+        return Err(
+            "official workload did not establish prepared material coverage; no agent was started"
+                .into(),
+        );
+    }
+    validate_initial_material(&response["material"])
+}
+
+fn validate_initial_material(value: &Value) -> Result<String, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Material {
+        schema_version: u32,
+        scope: String,
+        sha256: String,
+    }
+    let invalid = || {
+        "official prepared material identity has an unsupported schema, scope or digest".to_owned()
+    };
+    let material: Material = serde_json::from_value(value.clone()).map_err(|_| invalid())?;
+    if material.schema_version != 1
+        || material.scope != "prepared-workload-material-v1"
+        || material.sha256.len() != 64
+        || !material
+            .sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(invalid());
+    }
+    Ok(material.sha256)
 }
 
 impl Session {
@@ -715,6 +769,9 @@ fn runtime_binary() -> Result<PathBuf, String> {
 }
 
 impl WorkloadSession for Session {
+    fn initial_material_sha256(&self) -> Result<String, String> {
+        self.initial_material.clone()
+    }
     fn cancel_prepared(&mut self) -> Result<(), String> {
         self.cancel()
     }
@@ -824,6 +881,54 @@ impl Drop for Session {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn initial_material_protocol_preserves_only_known_bounded_local_diagnostics() {
+        for event in [
+            serde_json::json!({"event":"initial-material","material":{"schema_version":1,"scope":"prepared-workload-material-v1","sha256":"a".repeat(64)}}),
+            serde_json::json!({"event":"error","error_class":"ExecutionError","reason":"mounted prepared material requires explicit coverage"}),
+            serde_json::json!({"event":"error","error_class":"SdkError","reason":"secret-body-must-not-leak"}),
+        ] {
+            let script = "import json,sys\nassert json.loads(sys.stdin.readline())['op']=='initial-material'\nprint(sys.argv[1],flush=True)\nassert not sys.stdin.readline()\nprint(json.dumps(dict(event='closed',cleanup='stopped-preserved')),flush=True)\n";
+            let mut command = std::process::Command::new("python3");
+            command.args(["-u", "-c", script, &event.to_string()]);
+            let mut controller = super::Controller::spawn(&mut command).unwrap();
+            let result = super::request_initial_material(&mut controller);
+            if event["event"] == "initial-material" {
+                assert_eq!(result.unwrap(), "a".repeat(64));
+            } else {
+                let error = result.unwrap_err();
+                if event["error_class"] == "ExecutionError" {
+                    assert!(error.contains("mounted prepared material requires explicit coverage"));
+                }
+                assert!(!error.contains("secret-body-must-not-leak"));
+            }
+            controller
+                .cancel(std::time::Duration::from_secs(3))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn prepared_material_requires_exact_scope_schema_digest_and_no_unknown_fields() {
+        let original = serde_json::json!({"schema_version":1,"scope":"prepared-workload-material-v1","sha256":"a".repeat(64)});
+        assert_eq!(
+            super::validate_initial_material(&original).unwrap(),
+            "a".repeat(64)
+        );
+        for (key, value) in [
+            ("schema_version", serde_json::json!(2)),
+            ("scope", serde_json::json!("image-only-v1")),
+            ("sha256", serde_json::json!("A".repeat(64))),
+            ("secret", serde_json::json!("must-not-appear-in-errors")),
+        ] {
+            let mut changed = original.clone();
+            changed[key] = value;
+            let error = super::validate_initial_material(&changed).unwrap_err();
+            assert!(!error.contains("must-not-appear"));
+        }
+        assert!(super::validate_initial_material(&serde_json::Value::Null).is_err());
+    }
+
     use super::*;
 
     #[test]
@@ -920,6 +1025,7 @@ mod tests {
             .receive(Instant::now() + Duration::from_secs(3))
             .unwrap();
         Session {
+            initial_material: Err("fixture has no captured initial material".into()),
             process_lifetime: super::super::session::ProcessLifetime::Quiesce,
             controller,
             invocation: TaskInvocation {

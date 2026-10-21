@@ -393,6 +393,7 @@ digraph ASB_Rust_UML {
         "asb-cli_src_workloads_InspectionRuntime" [label="{workloads_InspectionRuntime||+new(project_root: Path) cassette_Result\<Self, crate::Error\>\l}", shape=record];
         "asb-cli_src_workloads_InstallationContext" [label="{workloads_InstallationContext|+project_root: &'a Path\l+tools_root: &'a Path\l+workloads_root: &'a Path\l}", shape=record];
         "asb-cli_src_workloads_LocalTarget" [label="{workloads_LocalTarget|+pid: u32\l+namespace_pid: u32\l+start_time_ticks: u64\l+cgroup: PathBuf\l}", shape=record];
+        "asb-cli_src_workloads_Material" [label="{workloads_Material|-schema_version: u32\l-scope: String\l-sha256: String\l}", shape=record];
         "asb-cli_src_workloads_PlanningCatalog" [label="{workloads_PlanningCatalog|+dataset: workloads_DatasetIdentity\l+task_ids: BTreeSet\<String\>\l+evaluation_kind: &'static str\l}", shape=record];
         "asb-cli_src_workloads_PreflightContext" [label="{workloads_PreflightContext|+project_root: &'a Path\l+project_config: ProjectConfig\l+agent: &'a str\l|+tool_root(id: &str) PathBuf\l}", shape=record];
         "asb-cli_src_workloads_PreparationContext" [label="{workloads_PreparationContext|+verify_initial_material: bool\l+on_allocation: Option\<&'a super::recovery::AllocationObserver\<'a\>\>\l+workload: &'a str\l+trial: Option\<&'a str\>\l+trial_set: Option\<&'a str\>\l+workload_directory: &'a Path\l+workspace: &'a Path\l+project_root: &'a Path\l+project_config: ProjectConfig\l|+tool_root(id: &str) PathBuf\l}", shape=record];
@@ -400,7 +401,7 @@ digraph ASB_Rust_UML {
         "asb-cli_src_workloads_RecoveryContext" [label="{workloads_RecoveryContext|+project_root: &'a Path\l+project_config: ProjectConfig\l+reference: &'a AttemptReference\l}", shape=record];
         "asb-cli_src_workloads_ResolutionSummary" [label="{workloads_ResolutionSummary|+task_count: usize\l+resolved_count: usize\l+unresolved_count: usize\l+unscored_count: usize\l+success_rate: Option\<f64\>\l|+observe(kind: &str, resolved: bool) void\l}", shape=record];
         "asb-cli_src_workloads_RetainedOutcomeContext" [label="{workloads_RetainedOutcomeContext|+recovery: workloads_RecoveryContext\<'a\>\l+summary: Value\l}", shape=record];
-        "asb-cli_src_workloads_Session" [label="{workloads_Session|-process_lifetime: ProcessLifetime\l-controller: workloads_Controller\l-invocation: workloads_TaskInvocation\l-baseline: workloads_BaselineEvidence\l-guest_workspace: String\l-agent_timeout: Duration\l-measurement_active: bool\l-preparation_active: bool\l-cleanup_attempted: bool\l-evaluation_completed: bool\l-artifacts: PathBuf\l|+cancel() cassette_Result\<(), String\>\l+run(context: &mut ExecutionContext\<'_\>, output: sweep_Write) cassette_Result\<workloads_ExecutionResult, String\>\l}", shape=record];
+        "asb-cli_src_workloads_Session" [label="{workloads_Session|-process_lifetime: ProcessLifetime\l-controller: workloads_Controller\l-invocation: workloads_TaskInvocation\l-baseline: workloads_BaselineEvidence\l-initial_material: cassette_Result\<String, String\>\l-guest_workspace: String\l-agent_timeout: Duration\l-measurement_active: bool\l-preparation_active: bool\l-cleanup_attempted: bool\l-evaluation_completed: bool\l-artifacts: PathBuf\l|+cancel() cassette_Result\<(), String\>\l+run(context: &mut ExecutionContext\<'_\>, output: sweep_Write) cassette_Result\<workloads_ExecutionResult, String\>\l}", shape=record];
         "asb-cli_src_workloads_SourceExpectation" [label="{workloads_SourceExpectation|-files: &'static [FileExpectation]\l}", shape=record];
         "asb-cli_src_workloads_State" [label="{workloads_State|-hash: Sha256\l-entries: usize\l-bytes: u64\l-names: usize\l|+visit(root: &Path, path: &Path, depth: usize) cassette_Result\<(), String\>\l}", shape=record];
         "asb-cli_src_workloads_Target" [label="{workloads_Target|-container_id: String\l-exec_id: String\l-daemon_pid: u32\l-namespace_pid: u32\l-pid_scope: String\l-process_identity: workloads_Identity\l}", shape=record];
@@ -658,6 +659,7 @@ digraph ASB_Rust_UML {
     "asb-cli_src_workloads_RecoveryContext" -> "asb-cli_src_ProjectConfig" [arrowhead="vee"];
     "asb-cli_src_workloads_RetainedOutcomeContext" -> "asb-cli_src_workloads_RecoveryContext" [arrowhead="vee"];
     "asb-cli_src_workloads_Session" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
+    "asb-cli_src_workloads_Session" -> "asb-cli_src_cassette_Result" [arrowhead="vee"];
     "asb-cli_src_workloads_Session" -> "asb-cli_src_workloads_BaselineEvidence" [arrowhead="vee"];
     "asb-cli_src_workloads_Session" -> "asb-cli_src_workloads_Controller" [arrowhead="vee"];
     "asb-cli_src_workloads_Session" -> "asb-cli_src_workloads_ExecutionResult" [arrowhead="vee", style="dashed"];
