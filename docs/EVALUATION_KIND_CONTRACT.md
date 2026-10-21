@@ -123,3 +123,21 @@ literal baseline was regenerated. No failure occurred in these baseline runs.
 No SDK, provider, Docker daemon or privileged operation was used. Production
 remains held for root's independent design/baseline approval; after extraction,
 the exact unchanged official goldens must run again with all other owning tests.
+
+## Independent root review and sequencing
+
+Root independently read the complete design and five-test baseline, inspected
+the actual producer dispatch, eligibility, baseline support and descriptor
+construction, and checked all focused result logs against the reported totals.
+The actual binary and frozen baseline both still hash to `d1da6f73` above.
+The 31 focused tests establish existing behavior; they do not demonstrate an
+incorrect grade or qualify a future implementation.
+
+The typed known-producer / tolerant borrowed saved-reader design is approved.
+Preserve all existing wire spellings, unknown extension bytes, baseline support,
+eligibility and literal official goldens. Do not introduce new authorization,
+verification or grading policy. Production work remains deliberately parked
+while the same worker implements the higher-priority compatibility-listener
+repair; this approval is not permission to run both edits concurrently. After
+implementation, independent source review and fresh qualification are still
+required before PR delivery. The removed 90% coverage gate remains removed.
