@@ -368,7 +368,9 @@ from `fbd0d69d`. Independent current-integration source review approved
 `c291a808`; its full offline suite passed 1,052 tests with 21 optional skips,
 followed by strict Clippy, formatting and build/docs checks. PR #289 merged as
 `73f3ce4768ef9f6dec06a25884c19228683bbe26` after exact-head hosted/package CI.
-Post-merge run `39644360265` and the **0.2.23** release remain pending.
+Post-merge run `39644360265` passed both `checks` and `local-host-checks`.
+Patch **0.2.23** is released at that merge commit; GitHub verifies annotated
+tag `a073a80e836aa4911c5a11931dcdde57a26926a0` as valid.
 
 ## 6. Shared implementation and lifecycle policies
 
