@@ -280,35 +280,16 @@ pub(crate) fn parse_perf_stat_series(output: &str) -> BTreeMap<String, Vec<f64>>
 }
 
 pub(crate) fn parse_perf_stat_metrics(output: &str) -> BTreeMap<String, f64> {
-    let mut metrics = BTreeMap::new();
-    for line in output.lines() {
-        let fields = line.split(',').map(str::trim).collect::<Vec<_>>();
-        let Some(event_index) = fields.iter().position(|field| {
-            matches!(
-                *field,
-                "task-clock"
-                    | "context-switches"
-                    | "cpu-migrations"
-                    | "page-faults"
-                    | "cycles"
-                    | "instructions"
-            )
-        }) else {
-            continue;
-        };
-        let Some(value) = event_index
-            .checked_sub(2)
-            .and_then(|index| fields.get(index))
-            .and_then(|field| parse_float(field))
-        else {
-            continue;
-        };
-        let Some(name) = perf_metric_name(fields[event_index]) else {
-            continue;
-        };
-        metrics.insert(format!("perf.{name}"), value);
-    }
-    metrics
+    // `perf stat -I` emits deltas, not cumulative snapshots. Scalar run
+    // counters must sum those same observations used by the interval graphs.
+    // A single non-interval observation retains its existing value.
+    parse_perf_stat_series(output)
+        .into_iter()
+        .filter_map(|(name, values)| {
+            let total: f64 = values.into_iter().sum();
+            total.is_finite().then_some((name, total))
+        })
+        .collect()
 }
 
 fn perf_metric_name(event: &str) -> Option<&'static str> {
@@ -330,6 +311,23 @@ pub(crate) fn perf_permission_error() -> String {
 #[cfg(test)]
 mod tests {
     use super::{record_args, stat_args};
+
+    #[test]
+    fn scalar_perf_counters_sum_intervals_instead_of_reporting_the_final_sample() {
+        let input = "0.100,12.34,msec,task-clock,100.00,\n0.200,20.00,msec,task-clock,100.00,\n0.100,8,,context-switches,100.00,\n0.200,2,,context-switches,100.00,\n0.200,<not supported>,,cycles,0,\n0.200,<not counted>,,instructions,0,\n";
+        let metrics = super::parse_perf_stat_metrics(input);
+        assert_eq!(metrics["perf.task_clock_ms"], 32.34);
+        assert_eq!(metrics["perf.context_switches"], 10.0);
+        assert!(!metrics.contains_key("perf.cycles"));
+        assert!(!metrics.contains_key("perf.instructions"));
+        for (name, values) in super::parse_perf_stat_series(input) {
+            assert_eq!(metrics[&name], values.iter().sum::<f64>());
+        }
+        assert!(super::parse_perf_stat_metrics("unavailable\n").is_empty());
+        assert!(
+            super::parse_perf_stat_metrics("1e308,,cycles,100,\n1e308,,cycles,100,\n").is_empty()
+        );
+    }
 
     #[test]
     fn perf_record_is_root_attached_and_inherits_all_descendants() {
