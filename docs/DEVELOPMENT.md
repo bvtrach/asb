@@ -53,6 +53,11 @@ cases cover external execution overrides, broken/non-executable/symlink
 candidates, host-tool policy and custom project roots. The Codex adapter also
 checks its native-package preference and explicit-source precedence. No package
 manager, provider, real agent or download is invoked by these path-policy tests.
+
+Perf-stat regression fixtures process a complete synthetic file larger than
+the diagnostic cap, retain missing-interval timestamps and hybrid CPU counter
+totals, and reject invalid or excessive input without publishing partial totals.
+They need neither perf permissions nor a live agent/provider.
 `cargo test --locked --offline --test compare_setup` checks repeated CLI setup
 selections, scoped models/trials, dependency expansion, non-overwriting sweep
 publication, standalone measured/unmeasured reports and an injected browser
