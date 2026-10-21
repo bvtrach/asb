@@ -14,8 +14,9 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
-Artifact integration, staged patch **0.2.35**, pending full qualification: historical artifact
-checkpoint `a2708632` is combined with committed publication34 `3359bfb2`.
+Artifact integration, staged patch **0.2.35**, pending full qualification:
+historical artifact checkpoint `a2708632` is combined with committed
+publication34 `3359bfb2`.
 The incoming bundled recording/replay, selected-track capture proofs and typed
 recording-failure disposition are retained. Native exact frozen-byte evidence
 handoff still precedes initial result construction; recording commit then updates
@@ -24,12 +25,14 @@ remain attached to failed publishers. Guest pending/final publication, pinned
 namespace custody, instrumentation guard and execution workspace are unchanged
 from the reviewed artifact integration. Both parents' recording, publication,
 capture and artifact tests are retained, including the actual private MiniSWE
-`--output` fixture. Only the committed publication checkpoint is included, not
-its author's unfinished cross-feature tests. No runtime/collector repair is
+`--output` fixture. Initial `8cf06433` included only the committed publication
+checkpoint, not unfinished cross-feature work; later committed and qualified
+tests are recorded below. No runtime/collector repair is
 folded in. Earlier 511-, 1,246- and 1,258-test results describe their historical
-trees, not this combined source. Independent integration review, fresh focused
-and full qualification, hosted/package CI, merge, post-merge verification and
-release remain pending. No build, test or cache use accompanied initial `8cf06433`.
+trees, not this combined source. Source review and fresh focused qualification
+are recorded below; final independent review, full qualification, hosted/package
+CI, merge, post-merge verification and release remain pending. No build, test or
+cache use accompanied initial `8cf06433`.
 Windows identity, publication and independent-reader qualification remains
 source-only; this merge adds no Windows runtime evidence.
 
