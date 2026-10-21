@@ -13,6 +13,9 @@ pub(crate) struct ProcessContext<'a> {
     pub status: &'a std::process::ExitStatus,
     pub stdout: &'a str,
     pub stderr: &'a str,
+    /// Complete stopped-collector output, available only during processing.
+    /// The strings above remain bounded diagnostics, not measurement inputs.
+    pub stderr_path: &'a Path,
 }
 
 pub(crate) struct ProcessData {
@@ -407,8 +410,8 @@ mod tests {
             let dependencies: &[&str] = if id == "flamegraph" { &["perf"] } else { &[] };
             assert_eq!(adapter.dependencies(), dependencies, "{id}");
             for process in ["perf", "perf-stat", "perfetto", "bpftrace-sched", "other"] {
-                let graceful =
-                    matches!(id, "perfetto" | "bpftrace") || (id == "perf" && process == "perf");
+                let graceful = matches!(id, "perfetto" | "bpftrace")
+                    || (id == "perf" && matches!(process, "perf" | "perf-stat"));
                 assert_eq!(
                     adapter.graceful_shutdown(process),
                     graceful,
