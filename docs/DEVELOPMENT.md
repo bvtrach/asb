@@ -158,8 +158,8 @@ ordinary CI: service fixtures use local Unix sockets and mock daemons, check
 creator-thread exit, owner-process death, failed-client isolation, lease lifetime,
 and bounded log draining. Actual overlapping captures remain an opt-in local
 qualification; mock ownership tests do not prove real scheduler coverage.
-The ignored `live_perfetto_streaming_preserves_markers_beyond_the_old_ring_capacity`
-test writes fixed, non-secret marker pressure beyond the old 64 MiB service
+The ignored `live_perfetto_streaming_preserves_markers_beyond_the_service_ring_capacity`
+test writes fixed, non-secret marker pressure beyond the configured 128 MiB service
 buffer, then requires complete, loss-free capture and scoped agent measurements.
 The ordinary offline coverage fixtures reject missing/duplicate boundaries,
 data loss and malformed processor output. The ignored
