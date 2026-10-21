@@ -59,6 +59,30 @@ qualification and hosted/package/post-merge delivery remain separate gates. The 
 recording raw-cleanup replacement-window finding is source-only in the residual
 audit; its separate repair/reproduction is not implemented by these tests.
 
+Fresh publication34 qualification at frozen, independently approved `5a2f05ad`:
+the locked/offline/all-target/all-feature suite passed **1,288 tests**, zero
+failures and 21 explicit optional skips across 23 Cargo targets. The additional
+`capture_session` target comes from incoming recording main. Strict Clippy
+(`-D warnings`, all targets/features), formatting and sequential offline
+`make -j1 build` passed, including private Rust docs, pinned AutoUML 0.7.2,
+flows, interactive renderings and Bash/Zsh completions; both generated shell
+files separately passed syntax checks. Graphviz emitted its existing straight-
+edge layout fallback warning, not a failed gate. The actual executable stayed
+`1b8252f5115c966709c069d443a0e459d80507db3b7dcd2f4838833259c3f9fc`
+before/after runtime tests and after the final build. Source/test files stayed
+frozen; only this later qualification/audit documentation changes afterward.
+
+Evidence: `target/publication34-full.log`,
+`target/publication34-full-summary.log`, `target/publication34-full-clippy.log`,
+`target/publication34-full-make.log`,
+`target/publication34-full-auto-uml-version.log`, and
+`target/publication34-full-binary-{before,after,final}.sha256`. Earlier fixture
+failure logs and historical qualification are retained. Native Windows and
+explicit opt-ins remain unqualified. Independent final review, actual parent33
+delivery ancestry, hosted/package CI, PR merge, both post-merge jobs and release
+remain pending. No collector, runtime, artifact or separate recording raw-
+consumption repair is folded into this qualified publication tree.
+
 Historical publication integration:
 
 Integrated candidate, staged patch **0.2.32**: source-reviewed publication
