@@ -21,12 +21,13 @@ make uml
 
 `make rust-doc` runs `cargo doc --locked --no-deps --document-private-items`,
 because the CLI implementation modules are intentionally private. `make uml`
-installs the pinned AutoUML release under `target/tools/`, regenerates
-`docs/asb-type-diagram.mmd`, normalizes AutoUML's source-path identifiers into
-stable logical names, and renders `docs/asb-type-diagram.svg`. The normalized
-diagram explicitly shows trait implementation edges and never publishes local
-paths or branch names. It supplements the maintained architecture overview;
-review both when changing public or private type relationships.
+installs the pinned AutoUML release under `target/tools/`, generates the local
+type-diagram sources and renderings, and leaves those derived files ignored.
+`make flows` generates local dataflow and control-flow diagrams; `make
+interactive` adds the local HTML renderings. These diagrams explicitly show
+source relationships but never publish local paths or branch names. They
+supplement the maintained architecture overview and should be regenerated when
+reviewing public or private type relationships.
 
 Function-level dataflow/control diagrams use Graphviz's packed `osage` layout.
 This keeps module boxes and every directed call/label, including cross-module
@@ -84,6 +85,12 @@ a private ownership slot, without spawning a thread or waiting on that worker.
 Deterministic test-only faults cover worker-creation failure and uncertain
 cleanup polling. Exit receipts also check idle, failed and unwinding workers;
 these tests do not need a genuinely kernel-stuck process.
+CPU/I/O and BPF adapter fixtures likewise place final samples/cumulative maps
+beyond 256 KiB, pass unrelated diagnostic strings and require full-file means,
+series and final values. Shared output tests reject incomplete, oversized,
+invalid-UTF-8 and nonfinite data and enforce the processed JSON budget without
+allocating a second serialized buffer. These are offline fixtures, not native
+BPF clock-series qualification.
 `cargo test --locked --offline --test compare_setup` checks repeated CLI setup
 selections, scoped models/trials, dependency expansion, non-overwriting sweep
 publication, standalone measured/unmeasured reports and an injected browser
@@ -101,12 +108,38 @@ and rejects every undeclared pair before configuration or command mutation.
 These are protocol-only fixtures: no agent/provider is executed. See the
 [independently checked repair ledger](CODE_SMELL_REPAIRS.md) for the broader
 code-smell audit and remaining delivery classes.
+Continuation metadata is optional for a fresh grade, not optional for reuse.
+If an outcome, replica/group receipt or initial/final input seal cannot be
+published, human output identifies the missing evidence without changing the
+grade or retrying a client. JSONL instead emits a separate schema-1 object with
+`event: "continuation_warning"`, a stable `code`, display path, explicit
+`path_role` (`destination`, or `source_outcome` when an observer cannot report
+its receipt destination), safe reason and
+explicit remediation. Consumers must distinguish these events from schema-2
+benchmark summaries (`task`, `process_success`, `workload_success`); unchanged
+successful publication adds no event. Arbitrary helper/observer text is not
+printed. Identical stage/configuration/cause warnings are emitted once across
+replicas; different causes remain distinct. A writer failure is reported without
+discarding an existing benchmark failure. Existing sealed logs and grade
+records are never rewritten to add these presentation diagnostics. Missing
+starts/seals may not be reconstructable: preserve results and use explicit
+continuation/reconciliation only when its normal checks permit it.
+`cargo test --offline --locked --test completion_diagnostics` uses actual blocked
+publication paths, a private catalog-command fixture and a local synthetic
+client, not a provider, installed agent package or workload container. It checks
+both grades, client failures, concurrent deduplication, broken writers and
+conservative resume without another client invocation.
 Report identity regressions cover literal dots/brackets versus nested paths,
 empty/backslash keys, Unicode and colliding/long graph filenames, case-insensitive
 aliases, repeated configuration stems and deterministic regeneration. Numeric
 paths escape object-key separators; use `comparison.json`'s graph list rather
 than constructing filenames for unusual metric names. Conflicting collector
 identities fail explicitly instead of silently replacing a prior observation.
+Shell completions are generated from the actual Clap command schema using a
+pinned compatible `clap_complete`. Tests enumerate every public command/flag
+for both shells, execute Bash completions in every command context, and check
+writer errors and the internal helper's separate/equals argument forms.
+Registry suggestions affect only the completion clone, not custom tool parsing.
 `cargo test --locked cassette::` exercises the provider-free multi-track backend:
 manifest and compatibility bounds, stable seeded choices, selector edge cases,
 bounded metadata inspection, selective corruption checks and durable publication.
@@ -135,8 +168,35 @@ explicitly unclassified lower bound, not a guessed count.
 Run `asb run` with credentials only as an explicit local
 smoke/benchmark operation.
 
-CI's `coverage-90-percent` check requires at least 90% executable-line coverage.
-Run the same offline check locally with:
+Model catalog transport uses nonblocking Unix pipes, polling request input,
+response output and diagnostic output concurrently. A single 35-second
+operation budget includes a 30-second I/O phase and up to five seconds reserved
+for direct-child cleanup; individual reads, writes and exit observation never
+restart that clock. Bodies remain capped at 16 MiB and diagnostics retain only
+the final 8 KiB for sanitized HTTP/proxy/content-type metadata. Credentials stay
+in the in-memory request sent through stdin, never argv or a transport file.
+Errors, deadline expiry and unwinding close owned pipe handles and stop/reap
+only the direct curl child. If bounded exit observation cannot confirm cleanup,
+an already-established private `OwnedReaper` retains custody and the request
+fails explicitly. This bounds caller-side observation, not an uninterruptible
+kernel operation or scheduling delay. It does not supervise arbitrary curl
+descendants; inherited open pipes cannot extend the I/O deadline.
+The bounded transport currently requires Unix. Non-Unix model discovery fails
+before spawning a request; a cancellable non-Unix pipe implementation remains
+an outstanding portability contract, not an unbounded fallback.
+`cargo test --offline --locked --lib models::` includes private subprocess
+fixtures for duplex pipe pressure, blocked stdin, oversized output, inherited
+stdout/stderr, deadlines, setup errors, uncertain cleanup and unwinding. Linux
+pidfd observations verify original direct-child exit/reaping and unrelated
+sentinel survival. Existing fake-curl fixtures retain HTTP/proxy/JSON/error and
+credential-redaction checks, and require curl's actual size/time arguments to
+match the shared reader/watchdog contract. Real subprocess fixtures accept an
+exactly 16 MiB JSON body and reject one extra byte. No real curl request,
+installed agent or provider is used by these tests.
+
+Coverage is an optional local diagnostic, not a required CI check or merge
+threshold. The former `coverage-90-percent` CI job and required check were
+removed deliberately. To run the retained offline diagnostic locally:
 
 ```sh
 rustup component add llvm-tools-preview
@@ -144,7 +204,9 @@ cargo install cargo-llvm-cov --version 0.9.0 --locked
 bash scripts/check-coverage.sh
 ```
 
-Both LLVM's complete aggregate and production-only coverage must pass. The
+The diagnostic script reports and checks its historical 90% thresholds for
+both LLVM's complete aggregate and production-only coverage. Those local
+thresholds are informational for delivery, not a branch-protection policy. The
 production denominator comes from LLVM's non-test `asb` executable map, without
 excluding any production modules; unit and integration tests contribute the
 execution counts, but adding test-body lines cannot inflate that denominator.
@@ -157,6 +219,13 @@ evidence files remain intact. Workspace coverage objects and raw profiles are
 cleaned while dependency compilation caches are retained. This also prevents
 obsolete test-binary maps from distorting totals after version or feature changes.
 No live provider, real agent installation, or privileged collector is necessary.
+The production map excludes only registry/git package directories identified by
+locked offline host-filtered Cargo metadata (including relocated/symlinked caches).
+Unbuilt cross-target packages need not be downloaded for native coverage. Workspace
+and local path-package sources stay in the denominator; no product module is excluded.
+Missing-project capability fixtures test the same private initialized-file guard
+used by production, and ancestor discovery uses an owned fixture parent/child.
+They never assume TMPDIR has no real ancestor project or pass one to host setup.
 
 Token accounting has synthetic, provider-free regression fixtures for all
 registered agent families, plus replay CLI checks for JSON, logs, and
@@ -217,6 +286,35 @@ working tracefs permissions: set `ASB_TEST_PERFETTO_TOOLS` to the project's
 tools directory and run the ignored `live_perfetto` tests serially. They use an
 offline replay fixture, not a live provider; ordinary CI does not require
 privileged tracing.
+Runner phase regressions use `cargo test --locked --offline --lib runner::phases`
+and `cargo test --locked --offline --lib workloads::remote::execution_tests`.
+For a focused library-only invocation, run `cargo build --locked --offline`
+first: the full-entry regression executes the actual ASB binary beside the
+test executable as its native process gate. Ordinary full `cargo test` builds
+that binary as part of its CLI integration targets. The full-entry fixture
+runs isolated attempts through the real bundled grader, saved logs,
+measurements and completion policy; the larger outcome matrix tests consuming
+phase transitions with synthetic execution evidence, not full benchmark runs.
+Its real blocked-log-directory cases retain JSON and measurement grades,
+evaluate/finish exactly once, preserve primary and ancillary diagnostics and
+publish no completion receipt. Existing directories are never overwritten.
+They exercise independent client exit/grade/cleanup outcomes, failing lifecycle
+markers before and after execution, actual child-output retention, native and
+guest terminal-answer policy, incomplete recording/replay, explicit preservation
+on interruption and final measurement-publication failures. A separate
+`measurement_lifecycle_faults` test checks actual owned collector shutdown and
+unrelated-process survival despite an earlier failing adapter or full journal.
+The native-plan fixture verifies wrapper/endpoint/replay preparation without
+executing an installed client. All fixtures are provider-free and unprivileged;
+controller fixtures do not qualify Docker, SDK installation or a live benchmark.
+Human-terminal write/flush failures stop further presentation but finish an
+already-admitted execution, evaluation and explicit cleanup; broken guest-owner
+transport still cancels/preserves. Tests cover both policies. The elapsed clock
+freezes at native supervised-child exit observation before collector/proxy
+teardown; it does not claim an exact inner-client kernel timestamp. Guests keep
+their explicit execution observation. These phase changes do not repair the
+separately tracked stream-memory bounds or blocking owned-child wait limits.
+
 Concurrent Perfetto captures use one manual `traced`/`traced_probes` service per
 ASB process and exclusively lease a delegated named tracefs instance. All client
 commands use the explicit `perfetto` applet; neither preflight nor capture uses
@@ -501,6 +599,16 @@ subreaper. This retains helpers that daemonize or outlive an intermediate
 wrapper under the benchmark root, so perf inheritance, bpftrace fork tracking,
 pidstat sampling, and process-accounted timing include the complete relevant
 tree without collecting unrelated host processes.
+Changes to native custody must preserve the private Hello/Quiescent protocol,
+Starting-versus-Admitted cleanup distinction, stopped-owner-loss watcher and
+wait-only fallback ownership. Build the actual current `asb` binary before
+running the `process_gate` library tests: those tests exercise the real gate,
+not the libtest executable. Run the `guest_agent` native-gate matrix as well;
+it covers owner loss after validated Hello, while stopped, after resume and
+after a short-lived spawning thread exits, with double-forked TERM-resistant
+writers and an unrelated sentinel. Protocol stand-ins test malformed/absent
+receipts and bounded fallback custody only; they do not qualify kernel
+descendant teardown or a live provider. No root permissions are required.
 The guest driver likewise owns a private child supervisor. By default both
 supervisors stop and reap leftover helpers before accepting an execution result.
 An adapter may instead delegate guest service lifetime through evaluation to

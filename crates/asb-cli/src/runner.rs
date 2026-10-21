@@ -1,5 +1,12 @@
 //! Live execution of one configured benchmark.
 mod completion;
+pub(crate) mod diagnostics;
+mod native;
+mod phases;
+use phases::{
+    AdmittedAttempt, AttemptIssues, ExecutionEvidence, FinalizedAttempt, MeasuredOutput,
+    PreparedAttempt,
+};
 pub(crate) mod replica;
 pub(crate) mod reuse;
 #[cfg(target_os = "linux")]
@@ -8,6 +15,7 @@ pub(crate) mod workload_process;
 use super::{Error, io_error, read_config};
 use crate::agents;
 use crate::benchmark::BenchmarkConfig;
+use crate::benchmark_paths::component;
 use crate::collectors::{LifecycleEvent, LifecyclePhase};
 use crate::measurements;
 use crate::models;
@@ -251,13 +259,16 @@ fn run_concurrent(
 
     completed.sort_by_key(|(index, _, _)| *index);
     let mut failures: Vec<(String, Vec<usize>)> = Vec::new();
+    let mut presentation = Ok(());
     for (index, result, buffer) in completed {
-        output.write_all(&buffer).map_err(io_error)?;
+        if presentation.is_ok() {
+            presentation = output.write_all(&buffer).map_err(io_error);
+        }
         if let Err(error) = result {
             add_replica_failure(&mut failures, index + 1, error.to_string());
         }
     }
-    if failures.is_empty() {
+    let primary = if failures.is_empty() {
         Ok(())
     } else {
         Err(Error::Run(format!(
@@ -280,7 +291,8 @@ fn run_concurrent(
                 .collect::<Vec<_>>()
                 .join("; ")
         )))
-    }
+    };
+    diagnostics::preserve_primary(primary, presentation)
 }
 
 fn add_replica_failure(failures: &mut Vec<(String, Vec<usize>)>, index: usize, message: String) {
@@ -342,6 +354,12 @@ fn run_mode(
     output: &mut dyn Write,
     warnings: &Mutex<BTreeSet<String>>,
 ) -> Result<(), Error> {
+    let AdmittedAttempt {
+        config,
+        options,
+        project_root,
+        project_config,
+    } = AdmittedAttempt::admit(config_path, config, options)?;
     let RunOptions {
         json,
         show_output,
@@ -351,17 +369,6 @@ fn run_mode(
         respect_record_timings,
         ..
     } = options;
-    if options
-        .execution_cohort
-        .is_some_and(|cohort| !cohort.admits(options.replica.index, options.replica.total))
-    {
-        return Err(Error::Input(
-            "dispatch cohort does not admit the selected replica".into(),
-        ));
-    }
-    if let Some(observer) = options.on_completion {
-        observer.starting(options.replica, options.execution_cohort)?;
-    }
     let tape_request = mode.map(|mode| (mode, cassette));
     let tape_cassette = tape_request.map(|(mode, requested)| {
         (
@@ -371,12 +378,6 @@ fn run_mode(
                 .unwrap_or_else(|| default_cassette(config_path, &config)),
         )
     });
-    let (project_root, project_config) = project::load(config_path)?;
-    let project_root = project_root.canonicalize().map_err(|error| {
-        Error::Input(format!(
-            "cannot resolve benchmark project directory: {error}"
-        ))
-    })?;
     let _network_project = project::network_project(&project_root);
     let configured_measurements = config
         .measurements
@@ -407,6 +408,8 @@ fn run_mode(
         })
         .transpose()
         .map_err(Error::Run)?;
+    #[cfg(all(test, unix))]
+    phases::entry_test_support::configure_measurements(&project_root, measurement_session.as_mut());
     if let Some(session) = measurement_session.as_mut() {
         session
             .event(LifecycleEvent::RunStarted)
@@ -502,7 +505,7 @@ fn run_mode(
                 .map_err(|error| error.to_string())
         })
     };
-    let mut workload_session = instrument_phase(
+    let workload_session = instrument_phase(
         measurement_session.as_mut(),
         LifecyclePhase::WorkloadPreparation,
         || {
@@ -520,7 +523,7 @@ fn run_mode(
                     workspace.display()
                 ))
             })?;
-            workloads::prepare_task(&workloads::PreparationContext {
+            let workload = workloads::prepare_task(&workloads::PreparationContext {
                 on_allocation: Some(&allocation),
                 workload: &config.workload,
                 trial: config.trial.as_deref(),
@@ -530,10 +533,12 @@ fn run_mode(
                 project_root: &project_root,
                 project_config: &project_config,
             })
-            .map_err(Error::Run)
+            .map_err(Error::Run)?;
+            #[cfg(all(test, unix))]
+            let workload = phases::entry_test_support::observe_workload(&project_root, workload);
+            Ok(workload)
         },
     )?;
-    let prompt = workload_session.invocation().prompt.clone();
     let workspace = workload_session.invocation().workspace.clone();
     let workload_baseline = workload_session.baseline_evidence();
     let workload_baseline_passed = workload_baseline.measured_passed();
@@ -550,7 +555,7 @@ fn run_mode(
     if !json && workload_session.evaluation_kind() == "adapter-smoke" {
         emit_warning(warnings, output, "Selected external workload runs only an adapter smoke exercise, not an upstream benchmark task. Benchmark task success will be unavailable; an official dataset and evaluator are not integrated yet.".into())?;
     }
-    let mut tape_session = instrument_phase(
+    let tape_session = instrument_phase(
         measurement_session.as_mut(),
         LifecyclePhase::ProxyPreparation,
         || {
@@ -580,7 +585,12 @@ fn run_mode(
             }
         },
     )?;
-    let tape_url = tape_session.as_ref().map(|session| session.url());
+    let mut prepared = PreparedAttempt {
+        workload: workload_session,
+        measurements: measurement_session,
+        tape: tape_session,
+    };
+    let tape_url = prepared.tape.as_ref().map(|session| session.url());
     let provider_endpoint =
         tape_url.or_else(|| providers::local_bridge_endpoint(&config.provider, bridge.as_deref()));
     let provider_credentials =
@@ -596,272 +606,107 @@ fn run_mode(
         })
         .transpose()?;
     let started = Instant::now();
-    let isolated = workload_session.execute(
+    let isolated = prepared.workload.execute(
         &mut workloads::ExecutionContext {
             config: &config,
             connection: connection.as_ref(),
             project_root: &project_root,
             project_config: &project_config,
             replay: tape_mode == Some(tape::Mode::Replay),
-            measurements: measurement_session.as_mut(),
+            measurements: prepared.measurements.as_mut(),
             show_output,
         },
         output,
     );
-    let (child, run_dir, guest, execution_elapsed_ms, runtime_output) = if let Some(result) =
-        isolated
-    {
-        let result = result.map_err(Error::Run)?;
-        (
-            result.output,
-            PathBuf::new(),
-            Some(result.metadata),
-            result.elapsed_ms,
-            None,
-        )
-    } else {
-        // Adapters run with the benchmark workspace as their current directory.
-        // Pass the canonical workspace explicitly so a relative configuration
-        // value is not resolved a second time inside that directory (which is
-        // especially important for OpenJiuwen's persistent workspace).
-        let mut command_config = config.clone();
-        command_config.workspace = workspace.to_string_lossy().into_owned();
-        let specification = command_for_with_interface(
-            &command_config,
-            connection
-                .as_ref()
-                .map(|connection| connection.base_url.as_str())
-                .or(provider_endpoint),
-            &prompt,
-            connection.as_ref().map(|connection| connection.interface),
-        )?;
-        let mut program = specification.program;
-        if let Some(local) =
-            agents::resolve(&config.agent, &project_root, &project_config.tools_dir)
-        {
-            program = local;
-        }
-        let mut command = agents::find(&config.agent).map_or_else(
-            || Ok(Command::new(&program)),
-            |adapter| adapter.process(&program),
-        )?;
-        project::apply_network_proxy(&mut command, config_path)?;
-        command.args(specification.args);
-        // Do not leak an enclosing Codex session into the benchmark agent. These
-        // variables are host-runner integration state; if inherited, a project
-        // local Codex CLI can advertise the coordinator's tools as an
-        // `additional_tools` request that cli2key does not support.
-        agents::driver::isolate_parent_state(&mut command);
-        if specification.append_prompt {
-            command.arg(&prompt);
-        }
-        command
-            .current_dir(&workspace)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        providers::configure(
-            &mut command,
-            &config.provider,
-            &config.model,
-            tape_mode == Some(tape::Mode::Replay),
-        );
-        if tape_mode == Some(tape::Mode::Replay) {
-            agents::mask_replay_credentials(&mut command);
-        }
-        providers::apply_with_tape(
-            &mut command,
-            &config.provider,
-            &config.model,
-            provider_credentials,
-            tape_url,
-            tape_mode == Some(tape::Mode::Replay),
-        )?;
-        // Agent state must not appear inside the workload checkout, where it can
-        // affect git status, tools, and therefore the recorded agent trajectory.
-        let runtime_path = replica::runtime_path(&workspace);
-        // Run-specific agent artifacts must not be confused with earlier runs or
-        // simultaneous replicas, including after process IDs are reused.
-        static RUN_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let run_dir = runtime_path.join("runs").join(format!(
-            "{}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos(),
-            RUN_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        ));
-        instrument_phase(
-            measurement_session.as_mut(),
-            LifecyclePhase::AgentPreparation,
-            || {
-                if let Some(connection) = connection.as_ref() {
-                    agents::prepare(
-                        &config.agent,
-                        &mut agents::PreparationContext {
-                            command: &mut command,
-                            model: &config.model,
-                            connection,
-                            runtime_dir: &runtime_path,
-                            run_dir: &run_dir,
-                        },
-                    )?;
-                }
-                Ok(())
-            },
-        )?;
-        if let Some(url) = tape_url {
-            providers::configure_tape(
-                &mut command,
-                &config.provider,
-                url,
-                tape_mode.expect("tape URL implies tape mode"),
-            );
-        }
-        if tape_mode == Some(tape::Mode::Replay) {
-            apply_replay_network_guard(&mut command);
-        }
-        project::apply_python_path(&mut command, &project_root, Path::new(&program))?;
-        crate::tools::apply_runtime_path(&mut command, &project_root, &project_config.tools_dir)?;
-        // The process gate must execute the fully prepared command, not the
-        // adapter's original executable. Some adapters (for example OpenJiuwen)
-        // install a process wrapper that carries compatibility and output fixes;
-        // bypassing it at the gate would silently undo those fixes while still
-        // appearing to attach collectors correctly.
-        let gate_program = command.get_program().to_string_lossy().into_owned();
-        let gate_args = command
-            .get_args()
-            .map(|value| value.to_string_lossy().into_owned())
-            .collect::<Vec<_>>();
-        let child = run_measured_agent(
-            &mut command,
-            &gate_program,
-            Some(&gate_args),
-            measurement_session.as_mut(),
-            show_output,
-            output,
-        )?;
-        (child, run_dir, None, None, Some(runtime_path))
-    };
-    let (proxy_evidence, mut run_error) = match tape_session.take() {
-        Some(session) => {
-            let completed = session.finish();
+    let mut issues = AttemptIssues::default();
+    let (child, run_dir, guest, execution_elapsed_ms, runtime_output) =
+        if let Some(result) = isolated {
+            let result = result.map_err(Error::Run)?;
+            issues.collector_errors = result.collector_errors;
+            issues.output_error = result.output_error;
             (
-                completed.evidence,
-                completed.result.err().map(|error| error.to_string()),
+                result.output,
+                PathBuf::new(),
+                Some(result.metadata),
+                result
+                    .elapsed_ms
+                    .unwrap_or_else(|| started.elapsed().as_millis()),
+                None,
             )
-        }
-        None => (
-            crate::proxy::Evidence {
-                output_files: Vec::new(),
-                cleanup_confirmed: true,
+        } else {
+            let native = native::NativePlan {
+                config_path,
+                config: &config,
+                project_root: &project_root,
+                project_config: &project_config,
+                invocation: prepared.workload.invocation(),
+                route: native::NativeRoute {
+                    connection: connection.as_ref(),
+                    provider_endpoint,
+                    provider_credentials,
+                    tape_url,
+                    tape_mode,
+                },
+            }
+            .prepare(prepared.measurements.as_mut())?;
+            let (evidence, native_issues) =
+                native.execute(prepared.measurements.as_mut(), show_output, output)?;
+            issues = native_issues;
+            (
+                evidence.output,
+                evidence.run_dir,
+                evidence.guest,
+                evidence.elapsed_ms,
+                evidence.runtime_output,
+            )
+        };
+    let settled = prepared
+        .executed(
+            ExecutionEvidence {
+                output: child,
+                run_dir,
+                guest,
+                elapsed_ms: execution_elapsed_ms,
+                runtime_output,
             },
-            None,
-        ),
-    };
-    // A failed replay can have served only part of the recording. Its full
-    // cassette is not evidence of this attempt's token usage. Keep native
-    // usage available, but trust cassette totals only after proxy validation.
-    let cassette_usage_verified = tape_mode != Some(tape::Mode::Replay) || run_error.is_none();
-    if let Some((tape::Mode::Record, cassette)) = tape_cassette.as_ref() {
-        match std::fs::metadata(cassette) {
-            Ok(metadata) if metadata.len() > 0 => {}
-            Ok(_) => {
-                run_error = Some(format!(
-                    "record created an empty cassette {}; the agent made no provider request; verify its provider base URL and credentials",
-                    cassette.display()
-                ));
-            }
-            Err(error) => {
-                run_error = Some(format!(
-                    "record completed without creating cassette {}; verify the provider endpoint and proxy adapter installation: {error}",
-                    cassette.display()
-                ));
-            }
-        }
-    }
-    let elapsed_ms = execution_elapsed_ms.unwrap_or_else(|| started.elapsed().as_millis());
-    // Prefer the agent's structured final response when deciding whether a
-    // zero-exit process succeeded. Tool output can legitimately contain a
-    // transient failed command that the agent repairs before its final answer;
-    // scanning that whole transcript would incorrectly fail the run.
-    let final_response = match guest.as_ref() {
-        Some(metadata) => metadata.final_response.clone(),
-        None => agents::final_response(&config.agent, &bounded(&child.stdout), &workspace),
-    };
-    let adapter_failure = guest
-        .as_ref()
-        .and_then(|metadata| metadata.execution_failure.clone())
-        .or_else(|| {
-            agents::find(&config.agent).and_then(|adapter| {
-                adapter.execution_failure(&bounded(&child.stdout), &bounded(&child.stderr))
-            })
-        });
-    let agent_failure = if adapter_failure.is_some() {
-        adapter_failure
-    } else if config.agent == "openjiuwen" && final_response.is_none() {
-        Some("OpenJiuwen exited without a final response; the last event appears to be an unexecuted tool call. Retry with a compatible OpenJiuwen client or inspect the benchmark log.".into())
-    } else {
-        process_failure_reason(
-            &child.status,
-            &child.stdout,
-            &child.stderr,
-            final_response.as_deref(),
+            issues,
         )
-    };
-    let process_success = agent_failure.is_none();
+        .settle(tape_cassette.as_ref());
+    let agent_outcome = settled.evidence.agent_outcome(&config.agent, &workspace);
+    let process_success = agent_outcome.failure.is_none();
+    let agent_failure = agent_outcome.failure;
+    let final_response = agent_outcome.final_response;
     // A usable submission can survive a failed client or proxy teardown.
     // Evaluator errors and process failures are recorded independently.
-    let (workload_success, grading_failure) = {
-        match instrument_operation(
-            measurement_session.as_mut(),
-            LifecyclePhase::WorkloadEvaluation,
-            || workload_session.evaluate(final_response.as_deref().unwrap_or_default()),
-        )? {
-            Ok(workloads::Evaluation::Passed) => (Some(true), None),
-            Ok(workloads::Evaluation::Failed(reason)) => {
-                if let Some(session) = measurement_session.as_mut() {
-                    session
-                        .event(LifecycleEvent::PhaseFailed(
-                            LifecyclePhase::WorkloadEvaluation,
-                        ))
-                        .map_err(Error::Run)?;
-                }
-                (
-                    Some(false),
-                    Some((
-                        "workload_check_failed",
-                        format!("workload check failed: {reason}"),
-                    )),
-                )
-            }
-            Err(error) => (
-                None,
-                Some((
-                    "grader_error",
-                    format!("workload grader could not evaluate the result: {error}"),
-                )),
-            ),
-        }
-    };
-    let cleanup = instrument_operation(
-        measurement_session.as_mut(),
-        LifecyclePhase::WorkloadCleanup,
-        || workload_session.finish(),
-    )?;
-    let workload_cleanup_confirmed = cleanup.is_ok();
-    if let Err(error) = cleanup {
-        let message = format!("workload cleanup failed: {error}");
-        match run_error.as_mut() {
-            Some(previous) => {
-                previous.push_str("; ");
-                previous.push_str(&message);
-            }
-            None => run_error = Some(message),
-        }
-    }
-    let success = run_error.is_none() && process_success && workload_success == Some(true);
+    let FinalizedAttempt {
+        workload: workload_session,
+        measurements: measurement_session,
+        evidence:
+            ExecutionEvidence {
+                output: child,
+                run_dir,
+                guest,
+                elapsed_ms,
+                runtime_output,
+            },
+        proxy_evidence,
+        cassette_usage_verified,
+        outcome,
+        cleanup_confirmed: workload_cleanup_confirmed,
+        issues,
+    } = settled
+        .evaluate(final_response.as_deref().unwrap_or_default())
+        .finish();
+    let workload_success = outcome.success();
+    let grading_failure = outcome.failure();
+    let collector_error = issues.collector_failure();
+    let run_error = issues.run_error;
+    let output_error = issues.output_error;
+    let success = run_error.is_none()
+        && collector_error.is_none()
+        && output_error.is_none()
+        && process_success
+        && workload_success == Some(true);
     let workload_failure =
         grading_failure
             .as_ref()
@@ -875,6 +720,12 @@ fn run_mode(
         Some(("agent_failure", error))
     } else {
         grading_failure
+            .or_else(|| collector_error.map(|error| ("collector_error", error)))
+            .or_else(|| {
+                output_error
+                    .as_ref()
+                    .map(|error| ("output_error", error.clone()))
+            })
     };
     let adapter_artifacts = guest
         .is_none()
@@ -921,6 +772,16 @@ fn run_mode(
         })
     };
     let mut stderr = bounded(&child.stderr);
+    if let Some(error) = output_error.as_ref() {
+        stderr.push_str("\nASB presentation error: ");
+        stderr.push_str(error);
+        stderr.push('\n');
+    }
+    for error in &issues.collector_errors {
+        stderr.push_str("\nASB collector error: ");
+        stderr.push_str(error);
+        stderr.push('\n');
+    }
     if let Some(error) = run_error.as_deref() {
         stderr.push_str("\nASB run error: ");
         stderr.push_str(error);
@@ -987,47 +848,8 @@ fn run_mode(
         stdout: bounded(&child.stdout),
         stderr,
     };
-    write_log(config_path, &config.log_file, &result)?;
-    if let Some(session) = measurement_session {
-        let mut session = session;
-        if !success {
-            session
-                .event(LifecycleEvent::RunFailed)
-                .map_err(Error::Run)?;
-        }
-        session
-            .event(LifecycleEvent::RunFinishing)
-            .map_err(Error::Run)?;
-        let measured = measurements::RunMeasurement {
-            replica_index: result.replica_index,
-            execution_cohort: result.execution_cohort,
-            schema_version: 2,
-            run_id: format!("{}-{}", result.workload, result.elapsed_ms),
-            status: result.status,
-            success: result.success_rate == Some(1.0),
-            process_success: result.process_success,
-            workload_success: result.workload_success,
-            failure_kind: result.failure_kind,
-            failure_reason: result.failure_reason.as_deref(),
-            workload_evaluation: result.workload_evaluation,
-            workload_baseline_passed: result.workload_baseline_passed,
-            workload_baseline: Some(&result.workload_baseline),
-            workload_failure: result.workload_failure.as_ref(),
-            adapter_smoke_success: result.adapter_smoke_success,
-            success_rate: result.success_rate,
-            agent: result.agent,
-            workload: result.workload,
-            task: Some(&result.task),
-            provider: result.provider,
-            model: result.model,
-            elapsed_ms,
-            exit_code: result.exit_code,
-            token_usage: result.token_usage.clone(),
-            steps: result.steps,
-            started_unix_ms: session.started_unix_ms(),
-        };
-        session.finish(measured).map_err(Error::Run)?;
-    }
+    let log_publication = phases::LogPublication::publish(config_path, &config.log_file, &result);
+    let measurement_completion = phases::finish_measurements(measurement_session, &result, success);
     // This private record preserves evaluator outcomes, including unresolved
     // tasks. Its absence never changes a benchmark grade or blocks execution;
     // a future continuation must also validate its input and evidence seals.
@@ -1038,27 +860,61 @@ fn run_mode(
     if let Some(path) = runtime_output {
         completion_outputs.push(path);
     }
-    if let Ok(record) = completion::persist(
-        config_path,
-        &config.log_file,
-        &result,
-        workload_cleanup_confirmed,
-        &workload_session.checkpoint_evidence(),
-        &proxy_evidence,
-        &completion::Context {
-            replica: options.replica,
-            outputs: &completion_outputs,
-        },
-    ) && let Some(observer) = options.on_completion
-    {
-        let _ = observer.completed(options.replica, &record);
+    let mut continuation_warnings = Vec::new();
+    if log_publication.confirmed() && measurement_completion.confirmed() {
+        match completion::persist(
+            config_path,
+            &config.log_file,
+            &result,
+            workload_cleanup_confirmed,
+            &workload_session.checkpoint_evidence(),
+            &proxy_evidence,
+            &completion::Context {
+                replica: options.replica,
+                outputs: &completion_outputs,
+            },
+        ) {
+            Ok(record) => {
+                if let Some(observer) = options.on_completion
+                    && let Err(error) = observer.completed(options.replica, &record)
+                {
+                    let destination = observer.evidence_destination(options.replica);
+                    let warning = diagnostics::Warning::new(
+                        diagnostics::Stage::Replica,
+                        config_path,
+                        destination.as_deref().unwrap_or(&record),
+                        &error,
+                    );
+                    continuation_warnings.push(if destination.is_some() {
+                        warning
+                    } else {
+                        warning.source_outcome()
+                    });
+                }
+            }
+            Err(error) => continuation_warnings.push(diagnostics::Warning::new(
+                diagnostics::Stage::Outcome,
+                config_path,
+                &completion::directory(config_path, &config.log_file),
+                &error,
+            )),
+        }
     }
-    if json {
-        render_json(&result, output)?;
-    } else {
-        render_human(&result, output)?;
-    }
-    failure.map_or(Ok(()), |(_, reason)| Err(Error::Run(reason)))
+    let presentation = (|| {
+        if json {
+            render_json(&result, output)?;
+        } else {
+            render_human(&result, output)?;
+        }
+        for warning in continuation_warnings {
+            warning.emit(json, output, warnings)?;
+        }
+        Ok(())
+    })();
+    diagnostics::preserve_primary(
+        phases::final_outcome(failure, log_publication, measurement_completion),
+        presentation,
+    )
 }
 
 /// Prevent replayed agents from contacting any live provider, updater, or
@@ -1129,11 +985,14 @@ fn run_measured_agent(
     mut session: Option<&mut measurements::Session>,
     show_output: bool,
     output: &mut dyn Write,
-) -> Result<Output, Error> {
+) -> Result<MeasuredOutput, Error> {
+    let started = Instant::now();
     if let Some(session) = session.as_deref_mut() {
         session.agent_launch_prepared(command);
     }
     let mut gated = false;
+    #[cfg(target_os = "linux")]
+    let mut admission = None;
     #[cfg(unix)]
     if (session.is_some() || cfg!(target_os = "linux"))
         && let Some(target_args) = target_args
@@ -1141,6 +1000,18 @@ fn run_measured_agent(
     {
         let executable = crate::process_gate::executable()
             .map_err(|error| Error::Run(format!("cannot resolve ASB process gate: {error}")))?;
+        #[cfg(target_os = "linux")]
+        {
+            admission = Some(
+                crate::process_gate::Admission::new(command, &executable, program, target_args)
+                    .map_err(|error| {
+                        Error::Run(format!(
+                            "cannot establish ASB process gate custody: {error}"
+                        ))
+                    })?,
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
         crate::process_gate::install(command, &executable, program, target_args);
         gated = true;
     }
@@ -1154,12 +1025,26 @@ fn run_measured_agent(
         emit(LifecycleEvent::MeasurementsReady)?;
         emit(LifecycleEvent::AgentSpawn)?;
         emit(LifecycleEvent::AgentExecuteBegin)?;
-        let child = match command.spawn() {
-            Ok(child) => OwnedChild(child, gated),
+        #[cfg(target_os = "linux")]
+        let spawned = match admission.take() {
+            Some(admission) => admission.spawn(command).map(OwnedChild::Gated),
+            None => command.spawn().map(OwnedChild::Direct),
+        };
+        #[cfg(not(target_os = "linux"))]
+        let spawned = command.spawn().map(OwnedChild::Direct);
+        let child = match spawned {
+            Ok(child) => child,
             Err(error) => {
-                emit(LifecycleEvent::AgentExecuteEnd)?;
-                emit(LifecycleEvent::AgentSpawnFailed)?;
-                return Err(Error::Run(format!("could not start {program}: {error}")));
+                let mut primary = format!("could not start {program}: {error}");
+                for event in [
+                    LifecycleEvent::AgentExecuteEnd,
+                    LifecycleEvent::AgentSpawnFailed,
+                ] {
+                    if let Err(secondary) = emit(event) {
+                        primary.push_str(&format!("; {secondary}"));
+                    }
+                }
+                return Err(Error::Run(primary));
             }
         };
         emit(LifecycleEvent::AgentStarted)?;
@@ -1168,34 +1053,71 @@ fn run_measured_agent(
     if let Some(session) = session.as_deref_mut()
         && let Err(error) = session.attach_pid(child.id())
     {
-        session
-            .event(LifecycleEvent::AgentExecuteEnd)
-            .map_err(Error::Run)?;
-        session
-            .event(LifecycleEvent::AgentAttachFailed)
-            .map_err(Error::Run)?;
-        return Err(Error::Run(error));
+        let mut primary = error;
+        for event in [
+            LifecycleEvent::AgentExecuteEnd,
+            LifecycleEvent::AgentAttachFailed,
+        ] {
+            if let Err(secondary) = session.event(event) {
+                primary.push_str(&format!("; {secondary}"));
+            }
+        }
+        return Err(Error::Run(primary));
     }
     #[cfg(unix)]
     if gated {
-        crate::process_gate::resume(&mut child.0).map_err(|error| {
+        child.resume().map_err(|error| {
             Error::Run(format!("could not resume measured agent process: {error}"))
         })?;
     }
-    let result = wait_with_output(child, show_output, output);
+    let mut execution_finished = None;
+    let result = capture_with_output_streams(
+        child,
+        show_output,
+        output,
+        None,
+        MAX_AGENT_RUNTIME,
+        PresentationPolicy::PreserveEvidence,
+        &mut || {
+            execution_finished = Some(Instant::now());
+            Ok(())
+        },
+    );
+    // Freeze execution before collector/proxy teardown, even if that teardown
+    // fails. A completed client output is evidence for official grading.
+    let elapsed_ms = execution_finished
+        .unwrap_or_else(Instant::now)
+        .duration_since(started)
+        .as_millis();
+    let mut issues = AttemptIssues::default();
     if let Some(session) = session {
-        session
-            .event(LifecycleEvent::AgentExecuteEnd)
-            .map_err(Error::Run)?;
-        session
-            .event(if result.is_ok() {
+        issues.event(Some(session), LifecycleEvent::AgentExecuteEnd);
+        issues.event(
+            Some(session),
+            if result.is_ok() {
                 LifecycleEvent::AgentExited
             } else {
                 LifecycleEvent::AgentWaitFailed
-            })
-            .map_err(Error::Run)?;
+            },
+        );
     }
-    result.map_err(|error| Error::Run(format!("could not wait for {program}: {error}")))
+    match result {
+        Ok(captured) => {
+            issues.output_error = captured.output_error;
+            Ok(MeasuredOutput {
+                output: captured.output,
+                elapsed_ms,
+                issues,
+            })
+        }
+        Err(error) => {
+            let mut primary = format!("could not wait for {program}: {error}");
+            if let Some(secondary) = issues.collector_failure() {
+                primary.push_str(&format!("; {secondary}"));
+            }
+            Err(Error::Run(primary))
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -1232,23 +1154,10 @@ fn default_cassette(config_path: &Path, config: &BenchmarkConfig) -> std::path::
         .join("cassettes")
         .join(format!(
             "{stem}-{}-{}-{}.jsonl",
-            safe_name(&config.agent),
-            safe_name(&config.workload),
-            safe_name(&config.model)
+            component(&config.agent),
+            component(&config.workload),
+            component(&config.model)
         ))
-}
-
-fn safe_name(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect()
 }
 
 fn write_log(
@@ -1459,46 +1368,90 @@ enum OutputChunk {
 
 // std::process::Child does not stop a process on drop. Own it from spawn
 // through all collector attachment, output and wait error paths.
-struct OwnedChild(Child, bool);
+enum OwnedChild {
+    Direct(Child),
+    #[cfg(target_os = "linux")]
+    Gated(crate::process_gate::ManagedGate),
+}
 
 impl OwnedChild {
     fn stop(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        #[cfg(target_os = "linux")]
-        if self.1 {
-            return crate::process_gate::cancel_gate(&mut self.0);
+        match self {
+            Self::Direct(child) => {
+                let _ = child.kill();
+                child.wait()
+            }
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.stop(),
         }
-        let _ = self.0.kill();
-        self.0.wait()
     }
-}
-
-impl std::ops::Deref for OwnedChild {
-    type Target = Child;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
+    fn id(&self) -> u32 {
+        match self {
+            Self::Direct(child) => child.id(),
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.id(),
+        }
     }
-}
-
-impl std::ops::DerefMut for OwnedChild {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+        match self {
+            Self::Direct(child) => child.try_wait(),
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.try_wait(),
+        }
+    }
+    fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        match self {
+            Self::Direct(child) => child.wait(),
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.wait(),
+        }
+    }
+    fn take_stdout(&mut self) -> Option<std::process::ChildStdout> {
+        match self {
+            Self::Direct(child) => child.stdout.take(),
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.take_stdout(),
+        }
+    }
+    fn take_stderr(&mut self) -> Option<std::process::ChildStderr> {
+        match self {
+            Self::Direct(child) => child.stderr.take(),
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.take_stderr(),
+        }
+    }
+    #[cfg(unix)]
+    fn resume(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Direct(child) => crate::process_gate::resume(child),
+            #[cfg(target_os = "linux")]
+            Self::Gated(gate) => gate.resume(),
+        }
     }
 }
 
 impl Drop for OwnedChild {
     fn drop(&mut self) {
-        if self.0.try_wait().ok().flatten().is_none() {
-            let _ = self.stop();
+        // ManagedGate owns its own bounded cancellation/handoff policy. Never
+        // follow it with an unconditional raw wait in this outer owner.
+        match self {
+            Self::Direct(child) => {
+                if child.try_wait().ok().flatten().is_none() {
+                    let _ = child.kill();
+                }
+                let _ = child.wait();
+            }
+            #[cfg(target_os = "linux")]
+            Self::Gated(_) => {}
         }
-        let _ = self.0.wait();
     }
 }
 
 /// Wait for an agent while optionally forwarding both output streams live.
 /// Readers run independently so a verbose agent cannot deadlock on a full
-/// stdout or stderr pipe. The complete bounded-by-the-existing-runner capture
-/// is still returned for logging and token parsing.
+/// stdout or stderr pipe. Capture is returned for logging and token parsing;
+/// this helper does not impose a stream-memory bound.
+#[cfg(test)]
 fn wait_with_output(
     child: OwnedChild,
     show_output: bool,
@@ -1525,7 +1478,7 @@ pub(crate) fn run_guest_process(
         .map_err(|error| Error::Run(format!("cannot retain guest agent descendants: {error}")))?;
     let child = command
         .spawn()
-        .map(|child| OwnedChild(child, false))
+        .map(OwnedChild::Direct)
         .map_err(|error| Error::Run(format!("cannot start guest agent: {error}")))?;
     wait_with_output_streams(child, true, stdout, Some(stderr), runtime, &mut || {
         #[cfg(target_os = "linux")]
@@ -1537,20 +1490,52 @@ pub(crate) fn run_guest_process(
 }
 
 fn wait_with_output_streams(
-    mut child: OwnedChild,
+    child: OwnedChild,
     show_output: bool,
     output: &mut dyn Write,
-    mut error_output: Option<&mut dyn Write>,
+    error_output: Option<&mut dyn Write>,
     runtime: Duration,
     after_exit: &mut dyn FnMut() -> std::io::Result<()>,
 ) -> std::io::Result<Output> {
+    capture_with_output_streams(
+        child,
+        show_output,
+        output,
+        error_output,
+        runtime,
+        PresentationPolicy::CancelOnTransportFailure,
+        after_exit,
+    )
+    .map(|captured| captured.output)
+}
+
+enum PresentationPolicy {
+    /// Human presentation is optional after admission: retain the evidence and
+    /// finish this attempt even if its terminal stops accepting writes.
+    PreserveEvidence,
+    /// Losing the guest/controller transport is owner loss, not a terminal.
+    CancelOnTransportFailure,
+}
+
+struct CapturedOutput {
+    output: Output,
+    output_error: Option<String>,
+}
+
+fn capture_with_output_streams(
+    mut child: OwnedChild,
+    mut show_output: bool,
+    output: &mut dyn Write,
+    mut error_output: Option<&mut dyn Write>,
+    runtime: Duration,
+    policy: PresentationPolicy,
+    after_exit: &mut dyn FnMut() -> std::io::Result<()>,
+) -> std::io::Result<CapturedOutput> {
     let stdout = child
-        .stdout
-        .take()
+        .take_stdout()
         .ok_or_else(|| std::io::Error::other("agent stdout was not piped"))?;
     let stderr = child
-        .stderr
-        .take()
+        .take_stderr()
         .ok_or_else(|| std::io::Error::other("agent stderr was not piped"))?;
     let (sender, receiver) = mpsc::channel();
     let stdout_sender = sender.clone();
@@ -1559,6 +1544,7 @@ fn wait_with_output_streams(
 
     let mut stdout_capture = Vec::new();
     let mut stderr_capture = Vec::new();
+    let mut output_error = None;
     let mut finished_streams = 0;
     let mut status = None;
     let mut quiesced = false;
@@ -1567,23 +1553,35 @@ fn wait_with_output_streams(
     while (finished_streams < 2 || status.is_none()) && !timed_out {
         match receiver.recv_timeout(Duration::from_millis(50)) {
             Ok(OutputChunk::Stdout(chunk)) => {
-                if show_output {
-                    output.write_all(&chunk)?;
-                    output.flush()?;
-                }
                 stdout_capture.extend_from_slice(&chunk);
+                if show_output
+                    && let Err(error) = output.write_all(&chunk).and_then(|()| output.flush())
+                {
+                    if matches!(policy, PresentationPolicy::CancelOnTransportFailure) {
+                        return Err(error);
+                    }
+                    output_error = Some(format!("cannot write agent output: {error}"));
+                    show_output = false;
+                }
             }
             Ok(OutputChunk::Stderr(chunk)) => {
+                stderr_capture.extend_from_slice(&chunk);
                 if show_output {
-                    if let Some(error_output) = error_output.as_deref_mut() {
-                        error_output.write_all(&chunk)?;
-                        error_output.flush()?;
+                    let written = if let Some(error_output) = error_output.as_deref_mut() {
+                        error_output
+                            .write_all(&chunk)
+                            .and_then(|()| error_output.flush())
                     } else {
-                        output.write_all(&chunk)?;
-                        output.flush()?;
+                        output.write_all(&chunk).and_then(|()| output.flush())
+                    };
+                    if let Err(error) = written {
+                        if matches!(policy, PresentationPolicy::CancelOnTransportFailure) {
+                            return Err(error);
+                        }
+                        output_error = Some(format!("cannot write agent output: {error}"));
+                        show_output = false;
                     }
                 }
-                stderr_capture.extend_from_slice(&chunk);
             }
             Ok(OutputChunk::Finished) => finished_streams += 1,
             Err(RecvTimeoutError::Timeout) => {}
@@ -1616,10 +1614,13 @@ fn wait_with_output_streams(
             .as_bytes(),
         );
     }
-    Ok(Output {
-        status,
-        stdout: stdout_capture,
-        stderr: stderr_capture,
+    Ok(CapturedOutput {
+        output: Output {
+            status,
+            stdout: stdout_capture,
+            stderr: stderr_capture,
+        },
+        output_error,
     })
 }
 
@@ -2200,7 +2201,7 @@ mod tests {
             .spawn()
             .unwrap();
         let pid = child.id();
-        let owned = super::OwnedChild(child, false);
+        let owned = super::OwnedChild::Direct(child);
         // Simulate returning from the runner after attachment fails.
         drop(owned);
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
@@ -2226,7 +2227,7 @@ mod tests {
             .unwrap();
         let pid = child.id();
         let error =
-            super::wait_with_output(super::OwnedChild(child, false), true, &mut FailingWriter)
+            super::wait_with_output(super::OwnedChild::Direct(child), true, &mut FailingWriter)
                 .unwrap_err();
         assert!(error.to_string().contains("fixture output failure"));
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());

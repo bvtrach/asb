@@ -1,231 +1,169 @@
-//! Shell completion script generation.
+//! Shell completions generated from the authoritative Clap command tree.
 
-use crate::{Error, install, io_error};
-use std::fmt::Write as FmtWrite;
+use crate::{Error, io_error};
+use clap_complete::Shell;
 use std::io::Write;
 
-const TOP_LEVEL: &[&str] = &[
-    "init", "setup", "run", "sweep", "compare", "provider", "tool", "workload",
-];
-const INIT_OPTIONS: &[&str] = &["--reset", "--yes", "-y"];
-const SETUP_OPTIONS: &[&str] = &[
-    "--agent",
-    "--workload",
-    "--provider",
-    "--model",
-    "--trial",
-    "--trial-set",
-    "--measure",
-    "--collector",
-    "--concurrency",
-    "--workspace",
-    "--output",
-];
-const RUN_OPTIONS: &[&str] = &[
-    "--record",
-    "--replay",
-    "--cassette",
-    "--json",
-    "--measurements",
-];
-const SWEEP_OPTIONS: &[&str] = &[
-    "--reconcile-completed",
-    "--resume",
-    "--record",
-    "--replay",
-    "--json",
-    "--show-output",
-    "--respect-record-timings",
-    "--cassette-root",
-    "--jobs",
-    "--max-active-attempts",
-];
-const PROVIDER_SUBCOMMANDS: &[&str] = &["models"];
-const PROVIDER_MODELS_OPTIONS: &[&str] = &["--json", "--free"];
-const TOOL_SUBCOMMANDS: &[&str] = &["list", "install"];
-const WORKLOAD_SUBCOMMANDS: &[&str] = &["list", "install", "tui", "recover"];
-const WORKLOAD_RECOVER_OPTIONS: &[&str] = &["--json"];
-const WORKLOAD_LIST_OPTIONS: &[&str] = &["--dir"];
-const WORKLOAD_INSTALL_OPTIONS: &[&str] = &["--name", "--dir"];
-
-/// Write a Bash completion script assembled from the CLI command catalog.
+/// Write Bash completions without starting project discovery or any providers.
 pub(crate) fn bash(output: &mut dyn Write) -> Result<(), Error> {
-    output
-        .write_all(generate_bash().as_bytes())
-        .map_err(io_error)
+    write(Shell::Bash, output)
 }
 
-/// Write a Zsh completion script assembled from the CLI command catalog.
+/// Write Zsh completions from the same schema as the CLI and Bash completions.
 pub(crate) fn zsh(output: &mut dyn Write) -> Result<(), Error> {
+    write(Shell::Zsh, output)
+}
+
+fn generate(shell: Shell, mut command: clap::Command) -> Vec<u8> {
+    let mut bytes = if matches!(shell, Shell::Bash) {
+        b"# bash completion for asb\n".to_vec()
+    } else {
+        Vec::new()
+    };
+    // Upstream expects an infallible writer. Buffer locally, then propagate
+    // user output failures instead of panicking on a broken pipe.
+    clap_complete::generate(shell, &mut command, "asb", &mut bytes);
+    bytes
+}
+
+fn write(shell: Shell, output: &mut dyn Write) -> Result<(), Error> {
     output
-        .write_all(generate_zsh().as_bytes())
+        .write_all(&generate(shell, crate::parser::completion_command()))
         .map_err(io_error)
 }
 
-fn generate_bash() -> String {
-    let mut script = String::from("# bash completion for asb\n_asb() {\n");
-    script.push_str("    local cur command subcommand\n    COMPREPLY=()\n");
-    script.push_str("    cur=\"${COMP_WORDS[COMP_CWORD]}\"\n");
-    script.push_str("    command=\"${COMP_WORDS[1]}\"\n");
-    script.push_str("    subcommand=\"${COMP_WORDS[2]}\"\n\n");
-    let _ = writeln!(
-        script,
-        "    if [[ ${{COMP_CWORD}} -eq 1 ]]; then\n        COMPREPLY=( $(compgen -W '{}' -- \"$cur\") )\n        return\n    fi\n",
-        words(TOP_LEVEL)
-    );
-    script.push_str("    case \"$command\" in\n");
-    simple_case(&mut script, "init", INIT_OPTIONS);
-    simple_case(&mut script, "setup", SETUP_OPTIONS);
-    simple_case(&mut script, "run", RUN_OPTIONS);
-    simple_case(&mut script, "sweep", SWEEP_OPTIONS);
-    simple_case(&mut script, "compare", &["--report"]);
-    nested_case(
-        &mut script,
-        "provider",
-        PROVIDER_SUBCOMMANDS,
-        &[("models", PROVIDER_MODELS_OPTIONS)],
-    );
-    let tool_values = tool_install_values();
-    nested_case(
-        &mut script,
-        "tool",
-        TOOL_SUBCOMMANDS,
-        &[("install", &tool_values)],
-    );
-    nested_case(
-        &mut script,
-        "workload",
-        WORKLOAD_SUBCOMMANDS,
-        &[
-            ("list", WORKLOAD_LIST_OPTIONS),
-            ("install", WORKLOAD_INSTALL_OPTIONS),
-            ("recover", WORKLOAD_RECOVER_OPTIONS),
-        ],
-    );
-    script.push_str("    esac\n}\ncomplete -F _asb asb\n");
-    script
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn simple_case(script: &mut String, command: &str, values: &[&str]) {
-    let _ = writeln!(
-        script,
-        "        {command}) COMPREPLY=( $(compgen -W '{}' -- \"$cur\") ) ;;",
-        words(values)
-    );
-}
-
-fn nested_case(
-    script: &mut String,
-    command: &str,
-    subcommands: &[&str],
-    nested_values: &[(&str, &[&str])],
-) {
-    let _ = writeln!(script, "        {command})");
-    let _ = writeln!(
-        script,
-        "            if [[ ${{COMP_CWORD}} -eq 2 ]]; then\n                COMPREPLY=( $(compgen -W '{}' -- \"$cur\") )",
-        words(subcommands)
-    );
-    for (subcommand, values) in nested_values {
-        let _ = writeln!(
-            script,
-            "            elif [[ \"$subcommand\" == {subcommand} ]]; then\n                COMPREPLY=( $(compgen -W '{}' -- \"$cur\") )",
-            words(values)
-        );
-    }
-    script.push_str("            fi ;;\n");
-}
-
-fn words(values: &[&str]) -> String {
-    values.join(" ")
-}
-
-fn generate_zsh() -> String {
-    let mut script = String::from("#compdef asb\n\n_asb() {\n");
-    script.push_str("  local state\n  typeset -A opt_args\n");
-    script.push_str("  _arguments -C '1:command:->command' '*::arg:->args'\n");
-    script.push_str("  case $state in\n    command)\n      local -a commands=(\n");
-    for command in TOP_LEVEL {
-        let _ = writeln!(script, "        '{command}'");
-    }
-    script.push_str("      )\n      _describe 'command' commands\n      ;;\n    args)\n      case $words[1] in\n");
-    zsh_simple_case(&mut script, "init", INIT_OPTIONS);
-    zsh_simple_case(&mut script, "setup", SETUP_OPTIONS);
-    zsh_simple_case(&mut script, "run", RUN_OPTIONS);
-    zsh_simple_case(&mut script, "sweep", SWEEP_OPTIONS);
-    zsh_simple_case(&mut script, "compare", &["--report"]);
-    zsh_nested_case(
-        &mut script,
-        "provider",
-        PROVIDER_SUBCOMMANDS,
-        &[("models", PROVIDER_MODELS_OPTIONS)],
-    );
-    let tool_values = tool_install_values();
-    zsh_nested_case(
-        &mut script,
-        "tool",
-        TOOL_SUBCOMMANDS,
-        &[("install", &tool_values)],
-    );
-    zsh_nested_case(
-        &mut script,
-        "workload",
-        WORKLOAD_SUBCOMMANDS,
-        &[
-            ("list", WORKLOAD_LIST_OPTIONS),
-            ("install", WORKLOAD_INSTALL_OPTIONS),
-            ("recover", WORKLOAD_RECOVER_OPTIONS),
-        ],
-    );
-    script.push_str("      esac\n      ;;\n  esac\n}\n");
-    script
-}
-
-fn tool_install_values() -> Vec<&'static str> {
-    let mut values = install::tool_names().collect::<Vec<_>>();
-    values.extend(["--source", "--dir", "--dry-run"]);
-    values
-}
-
-fn zsh_simple_case(script: &mut String, command: &str, options: &[&str]) {
-    let _ = writeln!(script, "        {command})");
-    script.push_str("          _arguments");
-    for option in options {
-        let _ = write!(script, " '{option}[complete {option}]'");
-    }
-    script.push_str("\n          ;;\n");
-}
-
-fn zsh_nested_case(
-    script: &mut String,
-    command: &str,
-    subcommands: &[&str],
-    nested_values: &[(&str, &[&str])],
-) {
-    let _ = writeln!(script, "        {command})");
-    let _ = writeln!(script, "          if (( CURRENT == 3 )); then");
-    let _ = writeln!(
-        script,
-        "            _values 'subcommand' {}",
-        words(subcommands)
-    );
-    for (subcommand, values) in nested_values {
-        let _ = writeln!(
-            script,
-            "          elif [[ $words[2] == {subcommand} ]]; then"
-        );
-        script.push_str("            _arguments");
-        for value in *values {
-            let _ = write!(script, " '{value}[complete {value}]'");
+    fn assert_schema(command: &clap::Command, script: &str) {
+        for argument in command.get_arguments().filter(|arg| !arg.is_hide_set()) {
+            if let Some(long) = argument.get_long() {
+                assert!(
+                    script.contains(&format!("--{long}")),
+                    "{}: missing --{long}",
+                    command.get_name()
+                );
+            }
+            if let Some(short) = argument.get_short() {
+                assert!(script.contains(&format!("-{short}")), "missing -{short}");
+            }
         }
-        script.push('\n');
+        for child in command.get_subcommands().filter(|cmd| !cmd.is_hide_set()) {
+            assert!(
+                script.contains(child.get_name()),
+                "missing {}",
+                child.get_name()
+            );
+            assert_schema(child, script);
+        }
     }
-    script.push_str("          fi\n          ;;\n");
+
+    #[test]
+    fn every_current_public_command_and_option_is_in_both_shells() {
+        for shell in [Shell::Bash, Shell::Zsh] {
+            let mut command = crate::parser::completion_command();
+            command.build();
+            let script = String::from_utf8(generate(shell, command.clone())).unwrap();
+            assert_schema(&command, &script);
+            for tool in crate::install::tool_names() {
+                assert!(
+                    script.contains(tool),
+                    "{shell:?} missing registry tool {tool}"
+                );
+            }
+            for option in [
+                "--configure-host",
+                "--show-output",
+                "--respect-record-timings",
+                "--import-grades",
+                "--grade",
+                "--inspect-grade",
+            ] {
+                assert!(script.contains(option), "{shell:?} missing {option}");
+            }
+            assert!(!script.contains("--__generate-completion"));
+        }
+    }
+
+    #[test]
+    fn new_commands_and_options_do_not_need_a_second_completion_definition() {
+        let command = crate::parser::completion_command().subcommand(
+            clap::Command::new("future-command")
+                .arg(clap::Arg::new("future-flag").long("future-flag")),
+        );
+        for shell in [Shell::Bash, Shell::Zsh] {
+            let script = String::from_utf8(generate(shell, command.clone())).unwrap();
+            assert!(script.contains("future-command"));
+            assert!(script.contains("--future-flag"));
+        }
+    }
+
+    #[test]
+    fn both_completion_outputs_propagate_writer_failure() {
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "fixture",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        assert!(bash(&mut Broken).is_err());
+        assert!(zsh(&mut Broken).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bash_completes_each_command_context_with_its_actual_flags() {
+        fn visit(command: &clap::Command, path: Vec<String>, script: &str) {
+            let mut child = std::process::Command::new("bash");
+            child.env_clear();
+            if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+                child.env("LLVM_PROFILE_FILE", profile);
+            }
+            let result = child
+                .args(["--noprofile", "--norc", "-c"])
+                .arg(format!("{script}\nCOMP_WORDS=(\"$@\"); COMP_CWORD=$(($# - 1)); _asb asb --; printf '%s\\n' \"${{COMPREPLY[@]}}\""))
+                .arg("completion-fixture").args(&path).arg("--")
+                .output().unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let candidates = String::from_utf8(result.stdout).unwrap();
+            for argument in command.get_arguments().filter(|arg| !arg.is_hide_set()) {
+                if let Some(long) = argument.get_long() {
+                    assert!(
+                        candidates
+                            .lines()
+                            .any(|candidate| candidate == format!("--{long}")),
+                        "{path:?} missing --{long}: {candidates}"
+                    );
+                }
+            }
+            for child in command.get_subcommands().filter(|cmd| !cmd.is_hide_set()) {
+                let mut next = path.clone();
+                next.push(child.get_name().into());
+                visit(child, next, script);
+            }
+        }
+        let mut command = crate::parser::completion_command();
+        command.build();
+        let script = String::from_utf8(generate(Shell::Bash, command.clone())).unwrap();
+        visit(&command, vec!["asb".into()], &script);
+    }
 }
 
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
+    use crate::install;
 
     #[test]
     fn both_shells_publish_core_commands_registry_tools_and_stable_output() {
