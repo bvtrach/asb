@@ -144,6 +144,7 @@ def observe(task, deadline):
         raise MaterialError("prepared network ownership or topology could not be confirmed") from None
     check()
     value = {"primary":primary,"networks":result,
+        "service_intent":copy.deepcopy(receipt["services"]),
         "attachments":copy.deepcopy(attachments),"services":{role:resource.id for role,resource in services.items()},
         "modes":{role:resource.attrs["HostConfig"]["NetworkMode"] for role,resource in services.items()}}
     canonical_digest(value,"asb-private-network-topology-observation-v1")

@@ -36,6 +36,7 @@ def declare(configuration, record):
                     or any(ord(char) < 32 or ord(char) == 127 for char in hostname)):
                 raise MaterialError("prepared hostname declaration is invalid")
             roles[role] = {"container":name,"hostname":hostname,
+                "mac_address":copy.deepcopy(service.get("mac_address")),
                 "networks":copy.deepcopy(service.get("networks"))}
         value = {"schema_version":1,**identity,"available":True,"services":roles}
         for kind in ["networks","volumes"]:

@@ -18,6 +18,13 @@ sys.path.insert(0,str(Path(__file__).parents[1]/"assets/benchmarks"))
     "ASB_TEST_SWECATALOG_ROOT"]),"requires explicit cached Docker fixture opt-in")
 class NetworkQualification(unittest.TestCase):
     def test_owned_internal_bridge_observation_and_missing_endpoint_refusal(self):
+        from asb_material_network_identity import canonicalize
+        first,second = self.exercise(),self.exercise()
+        self.assertNotEqual(first,second,"fresh fixtures must have different private identities")
+        self.assertEqual(canonicalize(first)[0],canonicalize(second)[0],
+            "equivalent fresh bridge environments must have equal canonical topology")
+
+    def exercise(self):
         from asb_docker import DockerSession
         from asb_material import MaterialError, canonical_digest
         from asb_material_networks import observe
@@ -77,6 +84,7 @@ class NetworkQualification(unittest.TestCase):
                             self.assertIsNone(owned_resource(client,declaration,journal.labels))
                 finally:
                     journal.close()
+        return first
 
 
 if __name__ == "__main__":

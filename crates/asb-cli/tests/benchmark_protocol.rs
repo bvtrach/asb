@@ -1,6 +1,11 @@
 //! Provider-free tests of the upstream workload protocol's pure data layer.
 
 #[test]
+fn owned_bridge_identity_checks_explicit_intent_before_normalizing_automatic_allocation() {
+    python_protocol("benchmark_material_network_identity.py");
+}
+
+#[test]
 fn owned_bridge_observation_requires_exact_bidirectional_endpoint_membership() {
     python_protocol("benchmark_material_networks.py");
 }

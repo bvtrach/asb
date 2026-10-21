@@ -368,6 +368,38 @@ exact owned names; failure stops and preserves only its own resources. It starts
 no agent, provider or evaluator. This qualifies membership observation only,
 not cross-attempt routed equivalence or deterministic network behaviour.
 
+The next component, `asb_material_network_identity.canonicalize`, validates
+frozen network/endpoint intent against this private observation. It covers owned
+local bridges with default IPAM; custom plugins remain external dependencies.
+Explicit pools/gateways/auxiliary addresses, static IPs, MACs, aliases, link-local
+addresses, gateway priority and driver options are checked and retained.
+Only absent creation intent permits typed automatic pool/address/MAC identities.
+Generated aliases use exact owned names, never substring replacement, and
+explicit hostnames/aliases take precedence. Driver options and unmodeled observed
+fields remain bound; unknown declared dependencies are refused.
+
+Automatic pools preserve family/prefix and gateway offset. Internal bridges keep
+their absent endpoint default route even when IPAM has allocated a pool gateway.
+IPv4/IPv6 pool order is canonical by family; duplicate addresses compare parsed
+IPs and duplicate MACs compare case-insensitively. Generated address maps are
+scoped private evidence for Docker runtime-file locations, not authority to
+rewrite workload data or provider requests. Two freshly created internal-bridge
+fixtures qualify equal canonical topology despite unequal raw identities.
+The service receipt now explicitly records service-level MAC intent; old receipts
+without that evidence cannot authorize automatic MAC normalization. This pure
+component is embedded and tested, but runtime configuration/generated-file
+composition must still consume it before routed environments are enabled.
+
+Runtime integration must use the same whole-environment composer for verified
+single-service routed tasks, not only multi-service tasks. It must bind the
+canonical endpoint topology and network-mode role while retaining private raw
+network snapshots across every round. Generated runtime-file address tags are
+permitted only on positively identified Docker-generated host lines; explicit
+ExtraHosts, static addresses, literal aliases, comments and resolver contents
+remain distinct. Legacy aggregate NetworkSettings fields and sandbox identity
+need explicit coverage or refusal, not silent omission. Config/HostConfig fields
+outside already modeled mounts and network identity remain content-bound.
+
 ### Owned network-none environment composer
 
 Verified capture now routes multiple declared services to an environment
