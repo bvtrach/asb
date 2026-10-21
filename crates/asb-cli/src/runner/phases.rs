@@ -464,6 +464,8 @@ pub(super) fn finish_measurements(
     }
     issues.event(Some(&mut session), LifecycleEvent::RunFinishing);
     let measured = measurements::RunMeasurement {
+        execution: result.execution.as_ref(),
+        recording: result.recording.as_ref(),
         workload_resource_disposition: result.workload_resource_disposition,
         workload_artifacts: &result.workload_artifacts,
         execution_plan_fingerprint: result

@@ -370,8 +370,10 @@ mod tests {
         use crate::workloads::outcome::*;
         let task = crate::workloads::TaskIdentity::local("bug-fix", Some("case"));
         BenchmarkData {
+            execution: None,
             id: crate::compare::RowId {
                 configuration: 0,
+                batch: None,
                 replica: if missing { 2 } else { 1 },
             },
             artifact_sources: BTreeMap::new(),

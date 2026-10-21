@@ -378,6 +378,10 @@ pub fn available_collectors() -> Vec<String> {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RunMeasurement<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) execution: Option<&'a crate::runner::campaign::ExecutionIdentity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) recording: Option<&'a crate::runner::recording::Evidence>,
     pub(crate) execution_plan_fingerprint: Option<&'a str>,
     pub(crate) module: Option<&'a crate::workloads::contracts::ModuleDescriptor>,
     pub(crate) benchmark_outcome: Option<&'a crate::workloads::outcome::BenchmarkOutcome>,
@@ -2009,6 +2013,8 @@ mod tests {
             ))
             .unwrap();
         let run = RunMeasurement {
+            execution: None,
+            recording: None,
             workload_resource_disposition: None,
             workload_artifacts: &[],
             execution_plan_fingerprint: None,

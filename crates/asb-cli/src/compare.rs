@@ -33,6 +33,7 @@ const Y_TICKS: usize = 5;
 #[derive(Debug)]
 struct BenchmarkData {
     id: RowId,
+    execution: Option<Value>,
     planning: Option<Value>,
     effective_budgets: Option<Value>,
     legacy_evaluation_provenance: Option<crate::workloads::outcome::LegacyEvaluationProvenance>,
@@ -359,7 +360,15 @@ fn write_html_report(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
         .request
         .plan
         .as_ref()
-        .map(|plan| plan.execution_mode.as_str());
+        .map(|plan| plan.execution_mode.as_str())
+        .or_else(|| {
+            prepared
+                .data
+                .request
+                .campaign
+                .as_ref()
+                .and_then(|campaign| campaign["execution_mode"].as_str())
+        });
     let scheduling = prepared
         .data
         .request
@@ -388,7 +397,7 @@ fn write_html_report(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
     html.push_str(&format!("<section class=\"explain\"><strong>Evaluation coverage</strong><p>Execution mode: {}.</p><p>{}/{} eligible selected attempts evaluated; {} have no completed evaluation. {} attempts are unscored. {}</p><p>Partial results are not a complete-population benchmark score. See population_coverage in comparison.json for dataset selection, unique tasks and complete one-attempt-per-task scores.</p></section>",
         escape(selection_mode.unwrap_or("unknown")),
         coverage.evaluated_attempts, coverage.eligible_selected_attempts, coverage.unevaluated_attempts, coverage.unscored_attempts,
-        if selection_mode.is_some() {"Pre-run task selection is preserved and matches the configurations."} else {"No pre-run selection snapshot exists; dataset completeness cannot be established from these legacy records."}));
+        if prepared.data.request.plan.is_some() {"Pre-run task selection is preserved and matches the configurations."} else if prepared.data.request.campaign.is_some() {"Saved campaign slots are enumerated; repeated attempts do not establish a complete one-attempt-per-task population score."} else {"No pre-run selection snapshot exists; dataset completeness cannot be established from these legacy records."}));
     html.push_str(&coverage::html_table(&prepared.populations));
     html.push_str(&coverage::metric_html(&prepared.metric_groups));
     html.push_str("<section class=\"explain\"><strong>How to read this report</strong><p>Each row is one selected task attempt for an agent/provider/model/workload combination. Runtime, success rate, token usage, host metadata, component timings, and structured collector measurements are summarized in the table and charts. Network wait remains null unless directly observed. The complete machine-readable evidence inventory is available in comparison.json.</p></section>");

@@ -3,6 +3,8 @@ use super::*;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
 pub(super) struct RowId {
     pub configuration: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub batch: Option<u64>,
     pub replica: usize,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]

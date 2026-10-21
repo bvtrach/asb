@@ -1675,6 +1675,7 @@ pub(crate) fn resolve_log_path(config_path: &Path, configured_path: &str) -> Pat
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
     let mut summary = serde_json::json!({
         "execution": result.execution,
+        "measurement_directory": result.measurement_directory,
         "planning": result.planning,
         "effective_budgets": result.effective_budgets,
         "execution_plan": result.execution_plan,
@@ -2367,6 +2368,8 @@ mod tests {
             .unwrap();
         session
             .finish(crate::measurements::RunMeasurement {
+                execution: None,
+                recording: None,
                 workload_resource_disposition: None,
                 workload_artifacts: &[],
                 execution_plan_fingerprint: None,

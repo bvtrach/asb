@@ -48,6 +48,8 @@ pub(super) fn render(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
         }
     }
     let benchmark_rows = benchmark_data.iter().map(|benchmark| json!({
+            "id": benchmark.id,
+            "execution": benchmark.execution,
             "name": benchmark.label,
             "planning": benchmark.planning,
             "effective_budgets": benchmark.effective_budgets,
@@ -79,6 +81,7 @@ pub(super) fn render(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
         })).collect::<Vec<_>>();
     let summary = json!({
         "schema_version": 2,
+        "campaign": prepared.data.request.campaign,
         "success_rate_definition": "resolved task attempts / all selected task attempts, including failures; not process exit rate or pass@k; smoke checks excluded",
         "resolution_groups": resolution_groups,
         "selection_plan": plan.as_ref().map(|plan| json!({"run_id":plan.run_id,"configuration_match":true,"execution_mode":plan.execution_mode,"respect_record_timings":plan.respect_record_timings,"scheduling":plan.scheduling})),
@@ -86,7 +89,7 @@ pub(super) fn render(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
         "population_coverage":population_coverage,
         "metric_groups": prepared.metric_groups,
         "input": sweep_path,
-        "input_kind": if single { "benchmark" } else { "sweep" },
+        "input_kind": if prepared.data.request.campaign.is_some() { "campaign" } else if single { "benchmark" } else { "sweep" },
         "sweep": if single { Value::Null } else { json!(sweep_path) },
         "results_directory": if single { json!(parent) } else { json!(sweep_results) },
         "comparison_directory": prepared.data.request.comparison_dir,

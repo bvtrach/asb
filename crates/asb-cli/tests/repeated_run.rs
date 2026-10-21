@@ -126,6 +126,257 @@ fn records(bytes: &[u8]) -> Vec<Value> {
         .collect()
 }
 
+fn campaign_plan(output: &Output) -> PathBuf {
+    PathBuf::from(
+        records(&output.stdout)
+            .iter()
+            .find(|row| row["type"] == "execution-plan")
+            .unwrap()["path"]
+            .as_str()
+            .unwrap(),
+    )
+}
+
+fn compare_campaign(project: &Project, plan: &std::path::Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_asb"))
+        .current_dir(&project.0)
+        .isolated_env()
+        .env("HOME", &project.0)
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .arg("compare")
+        .arg(plan)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn campaign_comparison_enumerates_every_batch_and_preserves_failed_attempt_grades() {
+    let project = Project::new();
+    project.config(2);
+    fs::write(project.0.join("fail-first"), "one ordinary process failure").unwrap();
+    let run = project.run("3");
+    assert!(!run.status.success());
+    let plan = campaign_plan(&run);
+    let output = compare_campaign(&project, &plan);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let directory = plan.parent().unwrap().join("comparison");
+    let report: Value =
+        serde_json::from_slice(&fs::read(directory.join("comparison.json")).unwrap()).unwrap();
+    assert_eq!(report["campaign"]["repeat"], 3);
+    assert_eq!(report["campaign"]["execution_mode"], "replay");
+    let rows = report["benchmarks"].as_array().unwrap();
+    assert_eq!(rows.len(), 6);
+    let mut attempts = std::collections::BTreeSet::new();
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(row["id"]["batch"], index / 2 + 1);
+        assert_eq!(row["id"]["replica"], index % 2 + 1);
+        assert_eq!(row["execution"]["slot"], index + 1);
+        assert_eq!(row["metrics"]["success_rate"], 1.0);
+        assert!(attempts.insert(row["task"]["attempt_id"].as_str().unwrap()));
+    }
+    assert!(directory.join("report.html").is_file());
+    assert!(!report["graphs"].as_array().unwrap().is_empty());
+    assert_eq!(
+        records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+        6
+    );
+}
+
+#[test]
+fn campaign_comparison_rejects_present_invalid_references_without_replacing_previous_report() {
+    let project = Project::new();
+    project.config(1);
+    let run = project.run("2");
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let plan = campaign_plan(&run);
+    assert!(compare_campaign(&project, &plan).status.success());
+    let root = plan.parent().unwrap();
+    let report = root.join("comparison/comparison.json");
+    let previous = fs::read(&report).unwrap();
+    let reference = root.join("batch-1/outcomes/1.json");
+    let original = fs::read(&reference).unwrap();
+    for field in ["execution", "path", "sha256"] {
+        let mut value: Value = serde_json::from_slice(&original).unwrap();
+        match field {
+            "execution" => value[field]["batch"] = json!(2),
+            "path" => value[field] = json!("batch-2/.asb-completions/foreign.json"),
+            _ => value[field] = json!("0".repeat(64)),
+        }
+        fs::write(&reference, serde_json::to_vec(&value).unwrap()).unwrap();
+        let compared = compare_campaign(&project, &plan);
+        assert!(!compared.status.success(), "{field}");
+        assert_eq!(fs::read(&report).unwrap(), previous);
+    }
+    fs::write(&reference, original).unwrap();
+    assert!(compare_campaign(&project, &plan).status.success());
+    fs::remove_file(&reference).unwrap();
+    assert!(
+        compare_campaign(&project, &plan).status.success(),
+        "honest log fallback"
+    );
+    fs::remove_file(root.join("batch-1/run.jsonl")).unwrap();
+    assert!(
+        compare_campaign(&project, &plan).status.success(),
+        "missing slot remains visible"
+    );
+    let value: Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
+    assert_eq!(value["benchmarks"].as_array().unwrap().len(), 2);
+    assert_eq!(value["benchmarks"][0]["result_source"], "missing");
+    assert!(value["benchmarks"][0]["execution"].is_null());
+}
+
+#[test]
+fn campaign_comparison_binds_measurement_only_rows_to_exact_execution() {
+    let project = Project::new();
+    project.config(1);
+    let run = project.run_extra("2", &["--measurements", "captures"]);
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let plan_path = campaign_plan(&run);
+    let root = plan_path.parent().unwrap();
+    let plan: Value = serde_json::from_slice(&fs::read(&plan_path).unwrap()).unwrap();
+    let measures = PathBuf::from(plan["measurement_root"].as_str().unwrap());
+    for batch in 1..=2 {
+        fs::remove_file(root.join(format!("batch-{batch}/outcomes/1.json"))).unwrap();
+        fs::remove_file(root.join(format!("batch-{batch}/run.jsonl"))).unwrap();
+    }
+    let good = compare_campaign(&project, &plan_path);
+    assert!(
+        good.status.success(),
+        "{}",
+        String::from_utf8_lossy(&good.stderr)
+    );
+    let report = root.join("comparison/comparison.json");
+    let previous = fs::read(&report).unwrap();
+    let source = measures.join("batch-1/measurements/run.json");
+    let original = fs::read(&source).unwrap();
+    for field in ["campaign", "batch", "slot", "replica", "total"] {
+        let mut value: Value = serde_json::from_slice(&original).unwrap();
+        value["execution"][field] = if field == "campaign" {
+            json!("foreign")
+        } else {
+            json!(99)
+        };
+        fs::write(&source, serde_json::to_vec(&value).unwrap()).unwrap();
+        let result = compare_campaign(&project, &plan_path);
+        assert!(!result.status.success(), "accepted foreign {field}");
+        assert_eq!(fs::read(&report).unwrap(), previous);
+    }
+    fs::write(source, original).unwrap();
+    assert!(compare_campaign(&project, &plan_path).status.success());
+}
+
+#[test]
+fn campaign_comparison_rejects_excessive_primary_observations_before_decoding_payloads() {
+    let project = Project::new();
+    project.config(1);
+    let run = project.run("17");
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let plan = campaign_plan(&run);
+    let root = plan.parent().unwrap();
+    for batch in 1..=17 {
+        fs::File::create(root.join(format!("batch-{batch}/run.jsonl")))
+            .unwrap()
+            .set_len(16 * 1024 * 1024)
+            .unwrap();
+    }
+    let compared = compare_campaign(&project, &plan);
+    assert!(!compared.status.success());
+    assert!(
+        String::from_utf8_lossy(&compared.stderr).contains("aggregate primary observations exceed"),
+        "{}",
+        String::from_utf8_lossy(&compared.stderr)
+    );
+    assert!(!root.join("comparison").exists());
+}
+
+#[test]
+fn campaign_comparison_rejects_recording_disagreement_with_measurements() {
+    let project = Project::new();
+    project.config(1);
+    let config_path = project.0.join("benchmark.toml");
+    let configuration = fs::read_to_string(&config_path).unwrap();
+    fs::write(config_path, format!("{configuration}\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n")).unwrap();
+    let provider = RecordingProvider::new();
+    let run = record(&project, &provider, Some("2"));
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let plan = campaign_plan(&run);
+    let root = plan.parent().unwrap();
+    let good = compare_campaign(&project, &plan);
+    assert!(
+        good.status.success(),
+        "{}",
+        String::from_utf8_lossy(&good.stderr)
+    );
+    let report = root.join("comparison/comparison.json");
+    let previous = fs::read(&report).unwrap();
+    let measurement = root.join("batch-1/measurements/run.json");
+    let original = fs::read(&measurement).unwrap();
+    let recorded: Value = serde_json::from_slice(&original).unwrap();
+    assert!(recorded["recording"].is_object());
+    for variant in ["missing", "null", "changed"] {
+        let mut value = recorded.clone();
+        match variant {
+            "missing" => {
+                value.as_object_mut().unwrap().remove("recording");
+            }
+            "null" => value["recording"] = Value::Null,
+            _ => value["recording"]["attempt_id"] = json!("foreign"),
+        }
+        fs::write(&measurement, serde_json::to_vec(&value).unwrap()).unwrap();
+        let compared = compare_campaign(&project, &plan);
+        assert!(!compared.status.success(), "{variant}");
+        assert_eq!(fs::read(&report).unwrap(), previous);
+    }
+    fs::write(measurement, original).unwrap();
+    assert!(compare_campaign(&project, &plan).status.success());
+    assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[test]
+fn campaign_comparison_rejects_intermediate_symlink_aliases() {
+    let project = Project::new();
+    project.config(1);
+    let run = project.run("1");
+    assert!(run.status.success());
+    let plan = campaign_plan(&run);
+    assert!(compare_campaign(&project, &plan).status.success());
+    let root = plan.parent().unwrap();
+    let report = root.join("comparison/comparison.json");
+    let previous = fs::read(&report).unwrap();
+    for directory in ["outcomes", ".asb-completions"] {
+        let path = root.join("batch-1").join(directory);
+        let held = root.join("batch-1").join(format!("{directory}-held"));
+        fs::rename(&path, &held).unwrap();
+        std::os::unix::fs::symlink(&held, &path).unwrap();
+        let compared = compare_campaign(&project, &plan);
+        assert!(!compared.status.success(), "{directory}");
+        assert_eq!(fs::read(&report).unwrap(), previous);
+        fs::remove_file(&path).unwrap();
+        fs::rename(held, path).unwrap();
+    }
+    assert!(compare_campaign(&project, &plan).status.success());
+}
+
 /// Bounded loopback responses, never a live provider or credential. The owner
 /// joins the listener on every assertion/error path, including command failure.
 struct RecordingProvider {
@@ -931,6 +1182,22 @@ fn complete_llm_recording_survives_incomplete_agent_output_without_authorizing_c
         assert_eq!(track.statistics.tokens, Some(5));
         assert_eq!(track.statistics.requests, Some(1));
     }
+    drop(archive);
+    let plan = root.join("plan.json");
+    let compared = compare_campaign(&project, &plan);
+    assert!(
+        compared.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compared.stderr)
+    );
+    let report = root.join("comparison/comparison.json");
+    let previous = fs::read(&report).unwrap();
+    // The overflow slot has only a reporting log, not an outcome receipt.
+    // Its recording association must still verify the published payload.
+    fs::remove_file(project.0.join("new-recording.jsonl")).unwrap();
+    let corrupt = compare_campaign(&project, &plan);
+    assert!(!corrupt.status.success());
+    assert_eq!(fs::read(report).unwrap(), previous);
 }
 
 #[test]

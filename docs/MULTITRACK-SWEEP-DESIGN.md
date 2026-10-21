@@ -58,6 +58,37 @@ destination rechecks follow exclusive ownership, so a root-contained cassette
 cannot accidentally pre-create or adopt the campaign root. Sweep must collect
 all successful publications and durable index references before executing any.
 
+The in-progress report reader now accepts an explicit campaign `plan.json`,
+validates its structural layout and enumerates every saved batch/replica slot.
+It prefers the slot's checksummed immutable outcome reference, with exact-slot
+log fallback only when no reference exists. Present invalid references never
+fall back. Measurement-only rows must match the full saved execution identity,
+configured task and actual replica/cohort; their JSON snapshot is retained once.
+Cross-source execution, task, outcome and recording claims must agree before
+publication. Missing slots remain rows without invented observed identities.
+Machine-readable rows retain batch/replica and observed execution metadata;
+campaign metadata and HTML disclose mode and repeated-attempt limitations.
+
+Primary reference/log/outcome/measurement metadata receives a 256 MiB aggregate
+preflight before outcome hashes or recording payload verification; actual reads
+share a bounded budget, including retained measurement snapshots. Unix reads
+traverse observation components relative to an opened root descriptor and refuse
+intermediate/final symlink aliases. These are local integrity/path checks, not
+authentication or historical attestation. Report-only recording summaries verify
+the actual producer association and selected payload without manufacturing missing
+capture receipts or granting continuation authority. Full outcome records still
+validate capture agreement separately. Measurements now carry the same optional
+execution/recording identity as logs, and new private summary output retains its
+measurement directory; older private summaries can omit that directory.
+
+Real CLI regressions cover six rows at N3/C2 including a completed process failure,
+invalid reference identity/path/hash without report replacement, missing/log-only
+slots, measurement-only execution mutations, aggregate sparse-log exhaustion,
+intermediate aliases, measurement/recording disagreement and output-overflow log
+recording proof. Grouped per-recording proof verification, retained population
+selection semantics, sweep scheduling/continuation wiring and complete feature
+qualification remain unfinished; these checkpoints are not feature readiness.
+
 ## Ownership and shared contracts
 
 Extract a reusable runner-owned campaign plan and bounded reader from the

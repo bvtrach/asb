@@ -1,6 +1,7 @@
 //! Read-only report inputs and per-record decoding. Never publishes report files.
 use super::*;
 use std::io::Read;
+mod campaign;
 
 /// Open once, reject nonregular sources, and bound the actual read even if the
 /// file grows after metadata inspection. Nonblocking open avoids FIFO hangs.
@@ -91,6 +92,7 @@ pub(super) struct Request {
     pub sweep_results: PathBuf,
     pub comparison_dir: PathBuf,
     pub plan: Option<crate::sweep::plan::SweepPlan>,
+    pub campaign: Option<Value>,
     configurations: BTreeMap<PathBuf, String>,
 }
 pub(super) struct LoadedReport {
@@ -189,6 +191,7 @@ impl Request {
         };
         let comparison_dir = parent.join("results").join(format!("{stem}-comparison"));
         Ok(Request {
+            campaign: None,
             path: path.to_owned(),
             parent: parent.to_path_buf(),
             single,
@@ -202,6 +205,12 @@ impl Request {
 }
 
 pub(super) fn load(path: &str) -> Result<LoadedReport, Error> {
+    if Path::new(path)
+        .file_name()
+        .is_some_and(|name| name == "plan.json")
+    {
+        return campaign::load(path);
+    }
     let request = Request::read(path)?;
     let mut rows = Vec::new();
     for (index, reference) in request.sweep.configs.iter().enumerate() {
@@ -241,6 +250,10 @@ struct Configuration {
     provider: String,
     model: String,
     concurrency: usize,
+    batch: Option<u64>,
+    expected_execution: Option<Value>,
+    measurement_snapshot: Option<Value>,
+    measurement_override: Option<Option<PathBuf>>,
     standalone: Option<crate::benchmark::BenchmarkConfig>,
     selection: Option<crate::workloads::TaskSelection>,
     outcomes: BTreeMap<usize, outcomes::Recorded>,
@@ -329,6 +342,10 @@ fn load_configuration(
         provider,
         model,
         concurrency,
+        batch: None,
+        expected_execution: None,
+        measurement_snapshot: None,
+        measurement_override: None,
         standalone,
         selection,
         outcomes,
@@ -363,7 +380,9 @@ fn load_attempt(
             benchmark_stem(config)
         )
     };
-    let measurement_dir = if let Some(configuration) = &standalone {
+    let measurement_dir = if let Some(directory) = &context.measurement_override {
+        directory.clone()
+    } else if let Some(configuration) = &standalone {
         let selected = crate::runner::replica::configuration(
             configuration,
             crate::runner::replica::Identity {
@@ -384,7 +403,7 @@ fn load_attempt(
             format!("measurements-concurrency-{replica}")
         }))
     };
-    let measurement_dir = if single {
+    let measurement_dir = if single && context.measurement_override.is_none() {
         outcomes
             .get(&replica)
             .and_then(|record| record.summary.get("measurement_directory"))
@@ -409,15 +428,23 @@ fn load_attempt(
     let outcome = outcomes.get(&replica);
     let grade_only_closed =
         outcome.is_some_and(|record| record.source == "recovered-official-grade");
-    let measured = capture_enabled && run_path.is_file() && !grade_only_closed;
+    let measured = capture_enabled
+        && (if context.expected_execution.is_some() {
+            context.measurement_snapshot.is_some()
+        } else {
+            run_path.is_file()
+        })
+        && !grade_only_closed;
     if !measured && outcome.is_none() {
         let workload_evaluation = selection.as_ref().map_or_else(
             || crate::workloads::evaluation_kind(&workload, Path::new("")).into(),
             |selection| selection.evaluation_kind.clone(),
         );
         return Ok(BenchmarkData {
+            execution: None,
             id: RowId {
                 configuration: context.index,
+                batch: context.batch,
                 replica,
             },
             legacy_evaluation_provenance: None,
@@ -453,7 +480,11 @@ fn load_attempt(
         });
     }
     let run_value = if measured {
-        let measured = read_json(&run_path)?;
+        let measured = if let Some(snapshot) = &context.measurement_snapshot {
+            snapshot.clone()
+        } else {
+            read_json(&run_path)?
+        };
         if let Some(outcome) = outcome {
             outcome.check_measurement(&measured)?;
         }
@@ -480,6 +511,9 @@ fn load_attempt(
             outcome,
         },
     )?;
+    if context.expected_execution.is_some() {
+        campaign::verify_summary_recording(&run_value)?;
+    }
     let mut metrics = BTreeMap::new();
     let legacy_evaluation_provenance: Option<
         crate::workloads::outcome::LegacyEvaluationProvenance,
@@ -646,8 +680,13 @@ fn load_attempt(
     let (series, host_metadata, components) =
         load_collectors(&measurement_dir, measured, &mut metrics)?;
     Ok(BenchmarkData {
+        execution: run_value
+            .get("execution")
+            .filter(|value| !value.is_null())
+            .cloned(),
         id: RowId {
             configuration: index,
+            batch: context.batch,
             replica,
         },
         planning,
@@ -730,6 +769,13 @@ fn decode_record(run_value: &Value, attempt: &AttemptContext<'_>) -> Result<Deco
         ..
     } = context;
     let concurrency = *concurrency;
+    if let Some(expected) = &context.expected_execution
+        && run_value.get("execution") != Some(expected)
+    {
+        return Err(Error::Input(
+            "campaign result differs from its planned execution identity".into(),
+        ));
+    }
     let single = standalone.is_some();
     let has_plan = selection.is_some();
     if single || has_plan || outcome.is_some() {
@@ -791,6 +837,13 @@ fn decode_record(run_value: &Value, attempt: &AttemptContext<'_>) -> Result<Deco
                 run_path.display()
             ))
         })?;
+    if context.expected_execution.is_some()
+        && (task.is_none() || replica_index != Some(replica) || execution_cohort.is_none())
+    {
+        return Err(Error::Input(
+            "campaign result lacks its actual task or replica/cohort identity".into(),
+        ));
+    }
     if let Some(configuration) = &standalone
         && task.as_ref().is_some_and(|task| {
             task.workload != *workload

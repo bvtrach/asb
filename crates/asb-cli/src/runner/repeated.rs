@@ -1,6 +1,7 @@
 //! Fresh sequential batches with a durable intended-slot plan and outcome links.
 mod legacy;
 mod replay;
+pub(crate) use super::campaign::ExecutionIdentity;
 use super::campaign::{MAX_EXECUTIONS, Plan, ReplayInput, Slot, planned_slots};
 use super::{RunOptions, batch, replica};
 use crate::{Error, benchmark::BenchmarkConfig, cassette::Compatibility, io_error};
@@ -15,22 +16,6 @@ use std::sync::{Arc, Mutex};
 
 const MAX_PLAN_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OUTCOME_BYTES: u64 = 1024 * 1024;
-
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct ExecutionIdentity {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    replay_track: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    replay_seed: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    replay_algorithm: Option<String>,
-    admission: crate::planning::BatchAdmissionPolicy,
-    campaign: String,
-    batch: u64,
-    replica: usize,
-    slot: u64,
-    total: u64,
-}
 
 #[derive(Clone, Serialize)]
 pub(crate) struct BatchIdentity {
@@ -723,7 +708,14 @@ impl replica::CompletionObserver for Observer {
             &self
                 .directory
                 .join(format!("outcomes/{}.json", replica.index)),
-            &json!({"schema_version":1,"execution":expected,"path":relative,"bytes":bytes.len(),"sha256":crate::cassette::digest(&bytes),"task":value["summary"]["task"]}),
+            &super::campaign::OutcomeReference {
+                schema_version: 1,
+                execution: expected,
+                path: relative.to_path_buf(),
+                bytes: bytes.len() as u64,
+                sha256: crate::cassette::digest(&bytes),
+                task: value["summary"]["task"].clone(),
+            },
         )?;
         if value["workload_cleanup_confirmed"] != true || value["proxy_cleanup_confirmed"] != true {
             self.cleanup_confirmed.store(false, Ordering::Release);

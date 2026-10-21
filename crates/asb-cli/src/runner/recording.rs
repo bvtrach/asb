@@ -32,6 +32,33 @@ impl Evidence {
         summary: &serde_json::Value,
         captures: &[proxy::capture::CaptureEvidence],
     ) -> Result<(), Error> {
+        self.validate_report_summary(summary)?;
+        let track = &self.track.track;
+        let matching: Vec<_> = captures
+            .iter()
+            .filter(|capture| capture.output == self.producer)
+            .collect();
+        if matching.len() > 1
+            || matching.iter().any(|capture| {
+                capture.bytes != track.bytes
+                    || capture.sha256 != track.sha256
+                    || capture.complete != track.complete
+            })
+            || (track.complete && matching.is_empty())
+            || track.statistics.requests
+                != matching.first().map(|capture| capture.inference_requests)
+        {
+            return Err(Error::Input(
+                "recorded track differs from its capture evidence".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// A report-only summary lacks completion capture receipts, but must still
+    /// bind its producer/attempt association and actual selected track bytes.
+    /// This does not establish cleanup or authorize execution continuation.
+    pub fn validate_report_summary(&self, summary: &serde_json::Value) -> Result<(), Error> {
         self.track
             .validate(Limits::default())
             .map_err(recording_error)?;
@@ -68,24 +95,6 @@ impl Evidence {
         {
             return Err(Error::Input(
                 "recorded track does not belong to this execution/producer".into(),
-            ));
-        }
-        let matching: Vec<_> = captures
-            .iter()
-            .filter(|capture| capture.output == self.producer)
-            .collect();
-        if matching.len() > 1
-            || matching.iter().any(|capture| {
-                capture.bytes != track.bytes
-                    || capture.sha256 != track.sha256
-                    || capture.complete != track.complete
-            })
-            || (track.complete && matching.is_empty())
-            || track.statistics.requests
-                != matching.first().map(|capture| capture.inference_requests)
-        {
-            return Err(Error::Input(
-                "recorded track differs from its capture evidence".into(),
             ));
         }
         // Bind the association itself, not just a self-consistent claim copied

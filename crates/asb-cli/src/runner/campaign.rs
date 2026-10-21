@@ -6,6 +6,36 @@ use std::path::PathBuf;
 
 mod layout;
 pub(super) use layout::{MAX_EXECUTIONS, planned_slots};
+pub(crate) mod reading;
+
+/// The same execution identity is emitted by the runner and checked by readers.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExecutionIdentity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) replay_track: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) replay_seed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) replay_algorithm: Option<String>,
+    pub(super) admission: planning::BatchAdmissionPolicy,
+    pub(super) campaign: String,
+    pub(super) batch: u64,
+    pub(super) replica: usize,
+    pub(super) slot: u64,
+    pub(super) total: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OutcomeReference {
+    pub schema_version: u32,
+    pub execution: ExecutionIdentity,
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub sha256: String,
+    pub task: serde_json::Value,
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -55,6 +85,25 @@ pub(crate) struct Plan {
     pub measurement_root: Option<PathBuf>,
     pub replay_inputs: Vec<ReplayInput>,
     pub slots: Vec<Slot>,
+}
+
+impl Plan {
+    pub(crate) fn execution(&self, slot: &Slot) -> ExecutionIdentity {
+        ExecutionIdentity {
+            replay_track: slot.replay_track,
+            replay_seed: self.replay_selection.as_ref().map(|value| value.seed),
+            replay_algorithm: self
+                .replay_selection
+                .as_ref()
+                .map(|value| value.algorithm.clone()),
+            admission: self.admission,
+            campaign: self.campaign.clone(),
+            batch: slot.batch,
+            replica: slot.replica,
+            slot: slot.id,
+            total: self.slots.len() as u64,
+        }
+    }
 }
 
 #[cfg(test)]
