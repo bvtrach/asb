@@ -2,6 +2,7 @@
 //! an upstream dataset. Runtime repair is excluded by positive fixture guards;
 //! the fake verifier computes a real digest of its tiny fixture archive.
 use super::*;
+use crate::workloads::adapters::WorkloadAdapter;
 use serde_json::json;
 use std::path::PathBuf;
 const ADAPTER: TerminalBenchAdapter = TerminalBenchAdapter {
@@ -164,7 +165,7 @@ raise AssertionError('unrecognized fixture operation')
     } else {
         &ADAPTER
     };
-    let result = install(adapter, &context, &mut output, &mut |percent, _| {
+    let result = adapter.install(&context, &mut output, &mut |percent, _| {
         stages.push(percent)
     });
     assert_eq!(
@@ -173,7 +174,7 @@ raise AssertionError('unrecognized fixture operation')
         "SDK fixture must never be reinstalled"
     );
     if case == "fresh" || case == "damaged-cache" {
-        result.unwrap();
+        assert!(result.unwrap());
         assert!(stages.contains(&20));
         assert!(stages.contains(&50));
         assert!(stages.contains(&100));
