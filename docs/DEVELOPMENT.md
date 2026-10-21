@@ -204,6 +204,21 @@ checks real EOF, SIGTERM and interruption during official evaluation; normal
 completion still removes resources, while interrupted attempts retain them.
 These are retention/teardown checks, not recovered grading or retry receipts.
 
+`benchmark_live_inspection.py` qualifies public `workload recover --inspect-grade`
+against retained original SDK fixture reports without running Docker, an agent,
+provider or evaluator. Set `ASB_TEST_BENCHMARK_ASB`, `ASB_TEST_SWECATALOG_ROOT`
+and `ASB_TEST_GRADE_INSPECTION_SOURCES`: a JSON object mapping all five workload
+IDs to `{"artifacts":"/absolute/retained/task","resolved":false}` (or the
+fixture's known true grade). It copies completed fixture evidence under new
+canonical references, checks the CLI report and unchanged source/copy/SDK
+bytes, and retains the qualification directory. The copy is not claimed to
+be a past ASB execution or historical attestation. Ordinary provider-free
+`benchmark_retained.py` additionally exercises all five CLI adapter routes,
+active-owner refusal, malformed/absent grades, unknown execution fields and
+temporary-copy cleanup. The mixed real-task qualification inspects both
+completed grades before resume, proving that inspection does not invalidate
+the original receipts or start another client.
+
 See
 [evaluation semantics](EVALUATION.md). Perfetto
 post-processing scopes scheduler counts and series to the benchmark process

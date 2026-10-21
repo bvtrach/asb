@@ -31,6 +31,14 @@ mod terminal_bench_1_0;
 mod terminal_bench_2_1;
 
 pub(super) trait WorkloadAdapter: Sync {
+    fn inspect_grade(
+        &self,
+        _context: &super::recovery::RecoveryContext<'_>,
+    ) -> Result<serde_json::Value, crate::Error> {
+        Err(crate::Error::Input(
+            "this workload cannot inspect retained official grades".into(),
+        ))
+    }
     fn verify_retained(
         &self,
         _context: &super::recovery::RetainedOutcomeContext<'_>,

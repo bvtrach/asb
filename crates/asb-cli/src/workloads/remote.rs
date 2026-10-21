@@ -59,6 +59,114 @@ pub(crate) fn verify_retained(
         .map_err(crate::Error::Run)
 }
 
+pub(crate) fn inspect_grade(
+    tool_id: &str,
+    module: &str,
+    context: &super::recovery::RecoveryContext<'_>,
+    runtime: &std::path::Path,
+) -> Result<Value, crate::Error> {
+    context.reference.validate_location(context.project_root)?;
+    let tool = crate::project::resolve(context.project_root, &context.project_config.tools_dir)
+        .join(tool_id);
+    require_sdk(&tool, &context.reference.workload)?;
+    let mut command = Command::new(tool.join("venv/bin/python"));
+    command
+        .arg(runtime.join("asb_retained.py"))
+        .args(["--module", module, "--inspect-grade"])
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .stderr(std::process::Stdio::null());
+    let mut controller = Controller::spawn(&mut command).map_err(crate::Error::Run)?;
+    controller
+        .send(&json!({"reference":context.reference}))
+        .map_err(crate::Error::Run)?;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let report = controller.receive(deadline).map_err(crate::Error::Run)?;
+    if report["ok"] == false {
+        let reason = report["reason"]
+            .as_str()
+            .filter(|reason| reason.len() <= 512 && !reason.chars().any(char::is_control))
+            .unwrap_or("retained official grade is missing or inconsistent");
+        return Err(crate::Error::Input(format!(
+            "cannot inspect retained grade: {reason}; no agent or evaluator was run"
+        )));
+    }
+    controller
+        .complete_response(deadline)
+        .map_err(crate::Error::Run)?;
+    validate_inspected_grade(&report, context.reference)?;
+    Ok(report)
+}
+
+/// Private support copies must not replace an active worker's installed SDK helpers.
+pub(crate) struct InspectionRuntime(pub(crate) PathBuf);
+
+impl InspectionRuntime {
+    pub(crate) fn new(project_root: &std::path::Path) -> Result<Self, crate::Error> {
+        let path = project_root.join(".asb").join(format!(
+            "grade-inspection-{}",
+            TaskIdentity::local("inspection", None).attempt_id
+        ));
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&path).map_err(crate::io_error)?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for InspectionRuntime {
+    fn drop(&mut self) {
+        // Only the unique directory successfully created by this guard.
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn validate_inspected_grade(
+    report: &Value,
+    reference: &super::recovery::AttemptReference,
+) -> Result<(), crate::Error> {
+    let invalid = || {
+        crate::Error::Input("retained grade inspection returned an invalid or mismatched report; no outcome was imported".into())
+    };
+    let task: TaskIdentity =
+        serde_json::from_value(report["task"].clone()).map_err(|_| invalid())?;
+    let baseline: BaselineEvidence =
+        serde_json::from_value(report["workload_baseline"].clone()).map_err(|_| invalid())?;
+    if report["schema_version"] != 1
+        || report["scope"] != "retained-official-grade-not-execution-recovery"
+        || task.workload != reference.workload
+        || task.task_id != reference.task_id
+        || Some(&reference.dataset) != task.dataset.as_ref()
+        || task.attempt_id.len() != 36
+        || !task.attempt_id.starts_with("asb-")
+        || !task.attempt_id[4..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+        || !baseline.supports("upstream-harness")
+        || report["workload_evaluation"] != "upstream-harness"
+        || report["workload_success"].as_bool().is_none()
+        || !matches!(
+            report["recorded_cleanup"].as_str(),
+            Some("removed" | "stopped-preserved")
+        )
+        || [
+            "process_success",
+            "exit_code",
+            "elapsed_ms",
+            "token_usage",
+            "steps",
+        ]
+        .iter()
+        .any(|field| !report.get(field).is_some_and(Value::is_null))
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
 pub(crate) fn runtime_inputs(
     tool: &str,
     context: &crate::runtime_inputs::Context<'_>,
@@ -627,6 +735,69 @@ impl Drop for Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inspected_grade_requires_bound_identity_and_explicitly_unknown_execution() {
+        let reference = super::super::recovery::AttemptReference {
+            schema_version: 1,
+            preparation_id: "a-b-c".into(),
+            workload: "fixture".into(),
+            task_id: "original-task".into(),
+            dataset: super::super::session::DatasetIdentity {
+                source: "fixture/dataset".into(),
+                revision: "b".repeat(40),
+                split: "test".into(),
+            },
+            artifacts: "unused".into(),
+        };
+        let original = json!({"schema_version":1,"scope":"retained-official-grade-not-execution-recovery",
+            "task":{"workload":reference.workload,"task_id":reference.task_id,"dataset":reference.dataset,"attempt_id":format!("asb-{}","a".repeat(32))},
+            "workload_baseline":{"kind":"upstream-task-definition","base_commit":"b".repeat(40)},
+            "workload_evaluation":"upstream-harness","workload_success":false,"recorded_cleanup":"stopped-preserved",
+            "process_success":null,"exit_code":null,"elapsed_ms":null,"token_usage":null,"steps":null});
+        validate_inspected_grade(&original, &reference).unwrap();
+        for field in [
+            "process_success",
+            "exit_code",
+            "elapsed_ms",
+            "token_usage",
+            "steps",
+        ] {
+            let mut forged = original.clone();
+            forged[field] = json!(0);
+            assert!(
+                validate_inspected_grade(&forged, &reference).is_err(),
+                "{field}"
+            );
+            forged.as_object_mut().unwrap().remove(field);
+            assert!(
+                validate_inspected_grade(&forged, &reference).is_err(),
+                "missing {field}"
+            );
+        }
+        for (field, value) in [
+            ("scope", json!("complete")),
+            ("workload_success", Value::Null),
+            ("recorded_cleanup", json!("pending")),
+            ("workload_evaluation", json!("adapter-smoke")),
+        ] {
+            let mut forged = original.clone();
+            forged[field] = value;
+            assert!(
+                validate_inspected_grade(&forged, &reference).is_err(),
+                "{field}"
+            );
+        }
+        let mut forged = original.clone();
+        forged["task"]["task_id"] = json!("another-task");
+        assert!(validate_inspected_grade(&forged, &reference).is_err());
+        forged = original.clone();
+        forged["task"]["attempt_id"] = json!("invalid");
+        assert!(validate_inspected_grade(&forged, &reference).is_err());
+        forged = original;
+        forged["workload_baseline"] = json!({"kind":"unavailable"});
+        assert!(validate_inspected_grade(&forged, &reference).is_err());
+    }
 
     fn session(results: &[Value], completed: bool) -> Session {
         let script = format!(

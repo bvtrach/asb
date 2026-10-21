@@ -378,6 +378,22 @@ def remove_evaluation_container(client, task_id, run_id, expected_labels=None):
     return cleanup
 
 
+def retained_evaluation_prefix(retained):
+    from asb_retained import require
+    directories = []
+    for index, path in enumerate(retained.root.iterdir()):
+        require(index < 256, "retained attempt has excessive top-level artifacts")
+        if path.name.startswith("evaluation-"):
+            directories.append(path.name)
+    require(len(directories) == 1, "retained SWE-bench evaluator population is ambiguous")
+    return directories[0] + "/"
+
+
+def inspect_retained(retained):
+    retained.select_grade(retained.object(retained_evaluation_prefix(retained) + "evaluation.json"))
+    verify_retained(retained)
+
+
 def verify_retained(retained):
     """Validate a closed SWE-bench record without executing tests or an agent."""
     from asb_retained import require
@@ -388,13 +404,7 @@ def verify_retained(retained):
             and retained.submission.get("patch_bytes") == len(patch)
             and retained.submission.get("base_commit") == retained.task["baseline"].get("base_commit"),
             "retained SWE-bench submission hash or base commit differs")
-    directories = []
-    for index, path in enumerate(retained.root.iterdir()):
-        require(index < 256, "retained attempt has excessive top-level artifacts")
-        if path.name.startswith("evaluation-"):
-            directories.append(path.name)
-    require(len(directories) == 1, "retained SWE-bench evaluator population is ambiguous")
-    prefix = directories[0] + "/"
+    prefix = retained_evaluation_prefix(retained)
     result = retained.object(prefix + "evaluation.json")
     require(result.get("schema_version") == 1
             and result.get("harness_revision") == HARNESS_REVISION

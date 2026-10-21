@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -35,7 +36,7 @@ class Fixture:
         self.write("task.json",{"identity":identity,"baseline":baseline,"image":image,"sdk":self.sdk})
         submission = {"task":identity,"image":image}
         self.write("task-cleanup.json",{"attempt_id":identity["attempt_id"],"status":"removed"})
-        self.write("resources.json",{"attempt":identity["attempt_id"]})
+        self.write("resources.json",{"schema_version":1,"attempt":identity["attempt_id"],"daemon":"fixture-daemon","token":"d"*32,"resources":[]})
         (self.root / "resources.lock").touch()
         result = {"schema_version":1,**{key:identity[key] for key in ["workload","task_id","dataset"]},
                   "resolved":resolved,"outcome":"resolved" if resolved else "unresolved","sdk":self.sdk}
@@ -79,8 +80,135 @@ class Fixture:
         with patch.object(swe,"sdk_identity",return_value=self.sdk):
             self.module.verify_retained(retained.RetainedOutcome(self.request))
 
+    def preserve(self):
+        attempt = self.request["summary"]["task"]["attempt_id"]
+        declarations = [{"kind":"containers","name":attempt},{"kind":"images","name":"asb-workload:"+attempt}]
+        self.write("resources.json",{"schema_version":1,"attempt":attempt,"daemon":"fixture-daemon","token":"d"*32,"resources":declarations})
+        self.write("task-cleanup.json",{"attempt_id":attempt,"status":"stopped-preserved"})
+        self.write("interruption.json",{"schema_version":1,"attempt":attempt,"scope":"preserved-incomplete-attempt-not-grade-not-retry",
+            "resources":[dict(declarations[0],status="stopped-preserved"),dict(declarations[1],status="preserved",image_id="sha256:"+"c"*64)]})
+
+    def inspect(self):
+        value = retained.RetainedOutcome({"reference":self.request["reference"]},inspect=True)
+        with patch.object(swe,"sdk_identity",return_value=self.sdk):
+            self.module.inspect_retained(value)
+        return value.inspected_grade()
+
 
 class RetainedTests(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get("ASB_TEST_HOST_ASB"), "requires compiled ASB CLI")
+    def test_public_cli_inspects_every_adapter_from_its_owning_project_without_writing_attempts(self):
+        binary = os.environ["ASB_TEST_HOST_ASB"]
+        for workload, tool in [("swe-bench","swebench"),("swe-bench-lite","swebench"),("swe-bench-verified","swebench"),
+                                ("terminal-bench-1.0","terminal-bench"),("terminal-bench-2.1","harbor")]:
+            with self.subTest(workload=workload), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory) / "project"
+                (root / ".asb").mkdir(parents=True)
+                (root / ".asb/project.toml").write_text("tools_dir='custom-tools'\nworkloads_dir='workloads'\nworkspace_dir='workspace'\n")
+                metadata = Path(directory) / "sdk-metadata/swebench-5.0.2.dist-info"
+                metadata.mkdir(parents=True)
+                (metadata / "METADATA").write_text("Name: swebench\nVersion: 5.0.2\n")
+                (metadata / "direct_url.json").write_text(json.dumps({"vcs_info":{"commit_id":swe.HARNESS_REVISION}}))
+                python = root / "custom-tools" / tool / "venv/bin/python"
+                python.parent.mkdir(parents=True)
+                python.symlink_to(sys.executable)
+                old_helper = python.parents[2] / "asb_retained.py"
+                old_helper.write_text("raise RuntimeError('installed helper must not be replaced or used')\n")
+                installed_bytes = old_helper.read_bytes()
+                fixture = Fixture(workload,False)
+                try:
+                    fixture.preserve()
+                    artifacts = root / ".asb/attempts/a-b-c"
+                    shutil.copytree(fixture.root,artifacts)
+                    reference = {"schema_version":1,"preparation_id":"a-b-c","workload":workload,"task_id":"case-1",
+                                 "dataset":fixture.request["reference"]["dataset"],"artifacts":str(artifacts)}
+                    path = Path(directory) / "external-reference.json"
+                    path.write_text(json.dumps(reference))
+                    path.chmod(0o600)
+                    environment={"PATH":os.environ.get("PATH",""),"HOME":directory,
+                                 "PYTHONPATH":str(metadata.parent),"PYTHONDONTWRITEBYTECODE":"1"}
+                    before={str(item.relative_to(artifacts)):item.read_bytes() for item in artifacts.rglob("*") if item.is_file()}
+                    command=[binary,"workload","recover",str(path),"--inspect-grade"]
+                    output=subprocess.run(command+["--json"],env=environment,cwd=directory,capture_output=True,timeout=15)
+                    self.assertEqual(output.returncode,0,output.stderr.decode())
+                    report=json.loads(output.stdout)
+                    self.assertIs(report["workload_success"],False)
+                    self.assertIsNone(report["exit_code"])
+                    self.assertEqual(report["task"]["workload"],workload)
+                    human=subprocess.run(command,env=environment,cwd=directory,capture_output=True,timeout=15)
+                    self.assertEqual(human.returncode,0,human.stderr.decode())
+                    self.assertIn(b"unresolved",human.stdout)
+                    self.assertIn(b"No agent or evaluator ran",human.stdout)
+                    self.assertIn(b"No sweep outcome was imported",human.stdout)
+                    self.assertEqual(old_helper.read_bytes(),installed_bytes)
+                    self.assertEqual(list((root/".asb").glob("grade-inspection-*")),[])
+                    import fcntl
+                    with (artifacts/"resources.lock").open("r+") as owner:
+                        fcntl.flock(owner,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                        active=subprocess.run(command+["--json"],env=environment,cwd=directory,capture_output=True,timeout=15)
+                        self.assertNotEqual(active.returncode,0)
+                        self.assertFalse(active.stdout)
+                        self.assertIn(b"active owner",active.stderr)
+                    self.assertEqual(list((root/".asb").glob("grade-inspection-*")),[])
+                    after={str(item.relative_to(artifacts)):item.read_bytes() for item in artifacts.rglob("*") if item.is_file()}
+                    self.assertEqual(before,after)
+                    # Missing grading evidence cannot silently become zero or a retry.
+                    result=artifacts/("evaluation-fixture/evaluation.json" if workload.startswith("swe-") else "evaluation.json")
+                    result.unlink()
+                    missing=subprocess.run(command+["--json"],env=environment,cwd=directory,capture_output=True,timeout=15)
+                    self.assertNotEqual(missing.returncode,0)
+                    self.assertFalse(missing.stdout)
+                    self.assertEqual(old_helper.read_bytes(),installed_bytes)
+                    self.assertEqual(list((root/".asb").glob("grade-inspection-*")),[])
+                finally:fixture.temporary.cleanup()
+
+    def test_all_original_inspections_preserve_grades_and_do_not_invent_execution_metrics(self):
+        for workload in ["swe-bench","swe-bench-lite","swe-bench-verified","terminal-bench-1.0","terminal-bench-2.1"]:
+            for resolved in [False,True]:
+                for preserved in [False,True]:
+                    with self.subTest(workload=workload,resolved=resolved,preserved=preserved):
+                        fixture = Fixture(workload,resolved)
+                        try:
+                            if preserved:fixture.preserve()
+                            before={str(path.relative_to(fixture.root)):path.read_bytes() for path in fixture.root.rglob("*") if path.is_file()}
+                            report=fixture.inspect()
+                            self.assertEqual(report["workload_success"],resolved)
+                            self.assertEqual(report["task"],fixture.request["summary"]["task"])
+                            self.assertEqual(report["scope"],"retained-official-grade-not-execution-recovery")
+                            self.assertEqual(report["recorded_cleanup"],"stopped-preserved" if preserved else "removed")
+                            for field in ["process_success","exit_code","elapsed_ms","token_usage","steps"]:
+                                self.assertIn(field,report)
+                                self.assertIsNone(report[field])
+                            after={str(path.relative_to(fixture.root)):path.read_bytes() for path in fixture.root.rglob("*") if path.is_file()}
+                            self.assertEqual(before,after)
+                            if preserved:
+                                with self.assertRaises(retained.RetainedError):fixture.verify()
+                        finally:fixture.temporary.cleanup()
+
+    def test_interrupted_errors_changed_submissions_and_ambiguous_grades_cannot_be_inspected(self):
+        for workload in ["swe-bench-lite","terminal-bench-1.0","terminal-bench-2.1"]:
+            fixture=Fixture(workload,False)
+            try:
+                fixture.preserve()
+                result_path="evaluation-fixture/evaluation.json" if workload.startswith("swe-") else "evaluation.json"
+                original=json.loads((fixture.root/result_path).read_bytes())
+                fixture.write(result_path,{**original,"outcome":"evaluation_error"})
+                with self.assertRaises(retained.RetainedError):fixture.inspect()
+                fixture.write(result_path,{**original,"resolved":True,"outcome":"resolved"})
+                with self.assertRaises(retained.RetainedError):fixture.inspect()
+                fixture.write(result_path,original)
+                interruption=json.loads((fixture.root/"interruption.json").read_bytes())
+                for changes in [{"resources":[]},{"attempt":"another"}]:
+                    fixture.write("interruption.json",{**interruption,**changes})
+                    with self.assertRaises(retained.RetainedError):fixture.inspect()
+                fixture.write("interruption.json",interruption)
+                if workload.startswith("swe-"):
+                    (fixture.root/"evaluation-other").mkdir()
+                    with self.assertRaises(retained.RetainedError):fixture.inspect()
+                    (fixture.root/"evaluation-other").rmdir()
+                    (fixture.root/"candidate.patch").write_bytes(b"changed candidate")
+                    with self.assertRaises(retained.RetainedError):fixture.inspect()
+            finally:fixture.temporary.cleanup()
     def test_all_five_original_adapter_contracts_preserve_true_and_false_grades(self):
         for workload in ["swe-bench","swe-bench-lite","swe-bench-verified","terminal-bench-1.0","terminal-bench-2.1"]:
             for resolved in [False,True]:

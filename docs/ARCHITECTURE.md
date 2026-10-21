@@ -563,6 +563,24 @@ one-shot response and must exit successfully. Human output describes preserved
 work; JSON contains only the recovery report. A no-op inspection of already
 absent resources does not add files to sealed evaluator evidence. Recovery
 still cannot assign a grade or admit an interrupted slot for retry.
+`asb workload recover REFERENCE --inspect-grade [--json]` instead inspects an
+existing official grading report through `WorkloadAdapter::inspect_grade`.
+The owning adapter checks task/submission identity, baseline, SDK and its own
+evaluator artifacts. Removed attempts retain their normal cleanup checks;
+stopped-preserved attempts additionally require matching interruption/resource
+declarations. The inactive-owner lock is acquired before reading evidence.
+Missing, inconsistent, ambiguous or incomplete grades are errors, never an
+invented unresolved grade. No agent, evaluator or Docker operation runs.
+The report explicitly leaves process success, exit code, elapsed time, tokens
+and steps null. `recorded_cleanup` describes retained evidence, not a new
+observation of Docker state. This is current local artifact consistency, not
+historical attestation or recovered execution metrics.
+Inspection uses a private temporary support copy and the owning project's
+installed SDK interpreter; it never replaces installed SDK helper files that
+another worker may be using. Temporary copies are removed on success/error,
+while retained artifacts remain unchanged. The operation publishes no outcome
+or resume receipt and cannot admit a new attempt. Recovered grading and
+outcome import remain separate work.
 See the full benchmark delivery
 checklist before claiming complete upstream benchmark support.
 Their shared installer also downloads a checksum-pinned original

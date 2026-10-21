@@ -2063,3 +2063,55 @@ local-host job was skipped by repository configuration. The follow-up source
 passed all 444 unit tests, 87 offline CLI tests, sixteen protocol suites and
 the remaining integration checks, strict Clippy and `make build`. Its real
 normal-path/package/hosted checks are recorded after completion.
+
+### Inspect existing official grades without inventing lost execution data
+
+The explicit public `asb workload recover REFERENCE --inspect-grade [--json]`
+path now dispatches through the owning WorkloadAdapter for all five original
+registrations. It acquires the inactive-owner lock before reading retained
+evidence and validates the actual task/submission, SDK and official grading
+artifacts through the existing adapter-owned verifiers. Closed attempts still
+require their removed-resource evidence; stopped-preserved attempts require
+a matching interruption record covering every declared resource. Missing,
+incomplete, contradictory and ambiguous grades fail instead of producing a
+fake failure/success. Default resource quiescence and closed-outcome
+reconciliation retain their previous semantics.
+
+The typed report scope is `retained-official-grade-not-execution-recovery`.
+It contains the existing true/false task grade and explicit null process
+success, exit code, elapsed time, tokens and steps. Recorded cleanup is not a
+new Docker observation. This is current local artifact consistency, not a
+historical execution attestation, imported outcome or sweep resume receipt.
+No client, provider, evaluator or Docker operation starts. A private project
+temporary runtime uses the installed SDK interpreter without replacing any
+installed SDK helpers; retained artifacts and helpers stay unchanged, including
+while another worker owns the attempt (which inspection refuses).
+
+Standard-library fixtures cover true/false grades for every original adapter
+in removed and stopped-preserved states, preservation of the existing strict
+closed-outcome checks, unconfirmed/malformed interruption reports, changed
+patches, missing/contradictory/ambiguous grades, active-owner refusal and
+public CLI JSON/human routes through an externally located reference and
+custom project tool directory. RPC validation rejects fabricated or missing
+execution metrics, wrong identity/baseline/scope and incomplete grades.
+
+Real retained SDK reports for all five originals passed public inspection in
+0.777 seconds at the fresh project's `retained-grade-inspection-f25k8t7d`.
+The qualification clones completed fixture evidence into canonical references
+under the same project, preserves actual task identity/grades, and verifies
+unchanged original/copy/installed-helper bytes. It does not claim those copies
+were original ASB executions. The normal mixed original SWE-bench Lite /
+Terminal-Bench 1.0 real-Pi/synthetic-provider qualification passed in 90.703
+seconds at `parallel-original-tasks-jhfscq5j`, including inspection of completed
+true grades before unchanged-receipt reuse, no new client requests, collectors,
+SVG/HTML and explicit lost-receipt reconciliation. No qualification called a
+live LLM or executed complete benchmark populations. Source/package/hosted
+verification is recorded after completion. Actual recovered grading, outcome
+import, full sweep-slot reconciliation, population presentation and the final
+review/PR merge/main-CI/minor-release gates remain unfinished.
+
+Final source verification for inspection passed 445 unit tests, 87 offline
+CLI tests, all sixteen benchmark protocol suites and the remaining guest,
+diagram, parallel/partial/replay/unmeasured regressions, strict Clippy and
+`make build` (including rustdoc, complete diagrams and completions). Package
+and exact-head hosted verification follow this increment.

@@ -152,6 +152,11 @@ def environment_class(command, attempt, artifacts, journal=None):
     return OwnedHarborEnvironment
 
 
+def inspect_retained(retained):
+    retained.select_grade(retained.object("evaluation.json"))
+    verify_retained(retained)
+
+
 def verify_retained(retained):
     from asb_retained import require
     result = retained.object("evaluation.json")

@@ -168,8 +168,9 @@ fn read_reference(path: &Path) -> Result<AttemptReference, Error> {
         .map_err(|_| Error::Input("attempt reference is malformed".into()))
 }
 
-pub(crate) fn run(path: &Path, json: bool, output: &mut dyn Write) -> Result<(), Error> {
-    let reference = read_reference(path)?;
+fn owning_project(
+    reference: &AttemptReference,
+) -> Result<(PathBuf, crate::project::ProjectConfig), Error> {
     // External workspaces must not select another project's SDK installation.
     let owner = reference
         .artifacts
@@ -178,6 +179,32 @@ pub(crate) fn run(path: &Path, json: bool, output: &mut dyn Write) -> Result<(),
         .ok_or_else(|| Error::Input("attempt reference has no owning project".into()))?;
     let (root, project_config) = crate::project::load(owner)?;
     reference.validate_location(&root)?;
+    Ok((root, project_config))
+}
+
+pub(crate) fn inspect_grade(path: &Path, json: bool, output: &mut dyn Write) -> Result<(), Error> {
+    let reference = read_reference(path)?;
+    let (root, project_config) = owning_project(&reference)?;
+    let report = super::adapters::find(&reference.workload)
+        .ok_or_else(|| Error::Input("the attempt's workload adapter is unavailable".into()))?
+        .inspect_grade(&RecoveryContext {
+            project_root: &root,
+            project_config: &project_config,
+            reference: &reference,
+        })?;
+    if json {
+        serde_json::to_writer(&mut *output, &report)
+            .map_err(|error| Error::Io(error.to_string()))?;
+        writeln!(output).map_err(io_error)
+    } else {
+        writeln!(output, "Retained official grade for {} task {:?}: {}. No agent or evaluator ran; execution timing, exit status, tokens and steps remain unknown. No sweep outcome was imported.",
+            reference.workload, reference.task_id, if report["workload_success"] == true { "resolved" } else { "unresolved" }).map_err(io_error)
+    }
+}
+
+pub(crate) fn run(path: &Path, json: bool, output: &mut dyn Write) -> Result<(), Error> {
+    let reference = read_reference(path)?;
+    let (root, project_config) = owning_project(&reference)?;
     let adapter = super::adapters::find(&reference.workload)
         .ok_or_else(|| Error::Input("the attempt's workload adapter is unavailable".into()))?;
     let report = adapter.recover(&RecoveryContext {

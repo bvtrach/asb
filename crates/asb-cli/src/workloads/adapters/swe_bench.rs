@@ -21,6 +21,18 @@ pub(super) static ADAPTER: SweBenchAdapter = SweBenchAdapter {
 };
 
 impl WorkloadAdapter for SweBenchAdapter {
+    fn inspect_grade(
+        &self,
+        context: &crate::workloads::recovery::RecoveryContext<'_>,
+    ) -> Result<serde_json::Value, crate::Error> {
+        let tool = crate::project::resolve(context.project_root, &context.project_config.tools_dir)
+            .join("swebench");
+        context.reference.validate_location(context.project_root)?;
+        crate::workloads::remote::require_sdk(&tool, self.id)?;
+        let runtime = crate::workloads::remote::InspectionRuntime::new(context.project_root)?;
+        catalog::ensure_helpers(&runtime.0)?;
+        crate::workloads::remote::inspect_grade("swebench", "asb_swebench", context, &runtime.0)
+    }
     fn verify_retained(
         &self,
         context: &crate::workloads::recovery::RetainedOutcomeContext<'_>,

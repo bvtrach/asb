@@ -26,14 +26,19 @@ def require(condition, message):
 
 
 class RetainedOutcome:
-    def __init__(self, request):
-        self.reference, self.summary = request["reference"], request["summary"]
+    def __init__(self, request, *, inspect=False):
+        self.reference, self.inspect = request["reference"], inspect
         self.root = Path(self.reference["artifacts"])
         require(self.root.is_absolute() and self.root.is_dir() and not self.root.is_symlink(),
                 "retained attempt artifacts are not a real directory")
         self.task = self.object("task.json")
         self.submission = self.object("submission.json")
+        self.summary = ({"task": self.task.get("identity"), "workload_baseline": self.task.get("baseline"),
+                         "workload_evaluation": "upstream-harness", "workload_success": None}
+                        if inspect else request["summary"])
         self.identity = self.summary["task"]
+        require(isinstance(self.identity,dict) and set(self.identity) == {"workload","task_id","attempt_id","dataset"},
+                "retained task identity is malformed")
         require(self.task.get("identity") == self.identity and self.submission.get("task") == self.identity,
                 "retained task and submission identities disagree")
         require(all(self.identity.get(key) == self.reference.get(key) for key in ["workload","task_id","dataset"]),
@@ -43,9 +48,11 @@ class RetainedOutcome:
         require(self.task.get("image") == self.submission.get("image"),
                 "retained submission image differs from its task environment")
         cleanup = self.object("task-cleanup.json")
-        require(cleanup.get("attempt_id") == self.identity["attempt_id"] and cleanup.get("status") == "removed",
+        self.recorded_cleanup = cleanup.get("status")
+        require(cleanup.get("attempt_id") == self.identity["attempt_id"]
+                and (self.recorded_cleanup == "removed" or inspect and self.recorded_cleanup == "stopped-preserved"),
                 "retained task cleanup is not confirmed")
-        require(type(self.summary.get("workload_success")) is bool
+        require((inspect or type(self.summary.get("workload_success")) is bool)
                 and self.summary.get("workload_evaluation") == "upstream-harness",
                 "retained outcome has no completed upstream grade")
         resources = self.object("resources.json")
@@ -54,10 +61,32 @@ class RetainedOutcome:
         declarations = resources.get("resources",[])
         require(isinstance(declarations,list) and len(declarations) <= 64
                 and all(isinstance(entry,dict) for entry in declarations),"retained resource declarations are malformed")
+        if inspect:
+            from asb_resources import resource_name
+            require(resources.get("schema_version") == 1
+                    and isinstance(resources.get("daemon"),str) and 1 <= len(resources["daemon"]) <= 256
+                    and re.fullmatch(r"[0-9a-f]{32}",str(resources.get("token","")))
+                    and all(set(entry) == {"kind","name"} and resource_name(entry["kind"],entry["name"],self.identity["attempt_id"])
+                            for entry in declarations), "retained inspection resource declarations are malformed")
         images = [entry.get("name") for entry in declarations if entry.get("kind") == "images"]
         require(all(isinstance(name,str) and self.identity["attempt_id"] in name for name in images)
                 and len(set(images)) == len(images),"retained build image declarations are malformed")
-        if images:
+        if self.recorded_cleanup == "stopped-preserved":
+            interruption = self.object("interruption.json")
+            observed = interruption.get("resources")
+            require(interruption.get("schema_version") == 1 and interruption.get("attempt") == self.identity["attempt_id"]
+                    and interruption.get("scope") == "preserved-incomplete-attempt-not-grade-not-retry"
+                    and isinstance(observed,list) and len(observed) == len(declarations)
+                    and all(isinstance(entry,dict) for entry in observed), "retained interruption evidence is malformed")
+            declared = [(entry.get("kind"),entry.get("name")) for entry in declarations]
+            seen = [(entry.get("kind"),entry.get("name")) for entry in observed]
+            require(len(set(declared)) == len(declared) and sorted(declared) == sorted(seen)
+                    and all(entry.get("status") == "absent" or entry.get("status") == (
+                        "stopped-preserved" if entry.get("kind") == "containers" else "preserved") for entry in observed)
+                    and all(entry.get("status") == "absent" or entry.get("kind") != "images"
+                            or re.fullmatch(r"sha256:[0-9a-f]{64}",str(entry.get("image_id",""))) for entry in observed),
+                    "retained interruption does not cover its declared resources")
+        elif images:
             cleanup = self.object("image-cleanup.json")
             outcomes = cleanup.get("resources")
             require(cleanup.get("schema_version") == 1 and cleanup.get("attempt") == self.identity["attempt_id"]
@@ -67,6 +96,22 @@ class RetainedOutcome:
                     and all(entry.get("kind") == "images" and entry.get("status") in ["removed","absent"]
                             and (entry.get("status") == "absent" or re.fullmatch(r"sha256:[0-9a-f]{64}",str(entry.get("image_id",""))))
                             for entry in outcomes), "retained build image cleanup is not confirmed")
+
+    def select_grade(self, result):
+        require(self.inspect and self.summary["workload_success"] is None,
+                "retained inspection cannot replace an existing outcome")
+        require(type(result.get("resolved")) is bool
+                and result.get("outcome") == ("resolved" if result["resolved"] else "unresolved"),
+                "retained evaluator did not complete an official grade")
+        self.summary["workload_success"] = result["resolved"]
+
+    def inspected_grade(self):
+        require(type(self.summary["workload_success"]) is bool, "retained inspection has no completed grade")
+        return {"schema_version":1, "scope":"retained-official-grade-not-execution-recovery",
+                "task":self.identity, "workload_baseline":self.summary["workload_baseline"],
+                "workload_evaluation":"upstream-harness", "workload_success":self.summary["workload_success"],
+                "recorded_cleanup":self.recorded_cleanup,
+                "process_success":None, "exit_code":None, "elapsed_ms":None, "token_usage":None, "steps":None}
 
     def child(self, relative):
         path = PurePosixPath(relative)
@@ -110,6 +155,7 @@ class RetainedOutcome:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--module",required=True)
+    parser.add_argument("--inspect-grade",action="store_true")
     arguments = parser.parse_args()
     try:
         require(re.fullmatch(r"asb_[a-z0-9_]+",arguments.module) is not None,
@@ -117,16 +163,24 @@ def main():
         raw = sys.stdin.buffer.readline(1024*1024+1)
         require(len(raw) <= 1024*1024 and raw.endswith(b"\n"), "retained verification request is not bounded")
         request = json.loads(raw)
-        retained = RetainedOutcome(request)
         # Do not create a missing lock or change any evaluator evidence.
-        descriptor = os.open(retained.child("resources.lock"), os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
+        root = Path(request["reference"]["artifacts"])
+        require(root.is_absolute() and root.is_dir() and not root.is_symlink(), "retained attempt is not a real directory")
+        descriptor = os.open(root / "resources.lock", os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
         try:
             require(stat.S_ISREG(os.fstat(descriptor).st_mode), "retained owner lock is not a regular file")
             fcntl.flock(descriptor,fcntl.LOCK_EX | fcntl.LOCK_NB)
-            importlib.import_module(arguments.module).verify_retained(retained)
+            retained = RetainedOutcome(request, inspect=arguments.inspect_grade)
+            module = importlib.import_module(arguments.module)
+            if arguments.inspect_grade:
+                module.inspect_retained(retained)
+                result = retained.inspected_grade()
+            else:
+                module.verify_retained(retained)
+                result = {"ok":True,"scope":"retained-artifact-consistency-not-historical-attestation"}
         finally:
             os.close(descriptor)
-        print(json.dumps({"ok":True,"scope":"retained-artifact-consistency-not-historical-attestation"}))
+        print(json.dumps(result))
         return 0
     except Exception as error:
         result = {"ok":False,"error_class":type(error).__name__}
@@ -134,6 +188,8 @@ def main():
             result["reason"] = str(error)
         elif isinstance(error,FileNotFoundError):
             result["reason"] = "required retained artifact is missing"
+        elif isinstance(error,BlockingIOError):
+            result["reason"] = "retained attempt still has an active owner; wait for it to finish"
         print(json.dumps(result))
         return 1
 

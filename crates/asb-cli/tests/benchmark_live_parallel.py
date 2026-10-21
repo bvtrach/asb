@@ -118,6 +118,15 @@ class ParallelOriginalTaskQualification(unittest.TestCase):
                         self.assertTrue(report["resources"])
                         self.assertTrue(all(resource["status"] == "absent" for resource in report["resources"]))
                         self.assertFalse((Path(reference["artifacts"]) / "resource-quiescence.json").exists())
+                        inspection = subprocess.run([binary,"workload","recover",references[0],"--inspect-grade","--json"],
+                            cwd=root,env=environment,capture_output=True,timeout=60)
+                        self.assertEqual(inspection.returncode,0,inspection.stderr.decode())
+                        grade = json.loads(inspection.stdout)
+                        self.assertTrue(grade["workload_success"])
+                        self.assertEqual(grade["task"]["task_id"],reference["task_id"])
+                        self.assertEqual(grade["scope"],"retained-official-grade-not-execution-recovery")
+                        for field in ["process_success","exit_code","elapsed_ms","token_usage","steps"]:
+                            self.assertIsNone(grade[field])
                     resumed = subprocess.run([binary,"sweep",manifest,"--jobs","2","--max-active-attempts","2","--resume","--json"],
                         cwd=root, env=environment, capture_output=True, timeout=120)
                     (artifacts / "resume.stdout").write_bytes(resumed.stdout)

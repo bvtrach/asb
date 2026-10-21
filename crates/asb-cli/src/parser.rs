@@ -117,7 +117,11 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
             WorkloadCommand::Install(args) => install::workload(args.into(), stdout),
             WorkloadCommand::Tui => tui::workload_tui(stdout),
             WorkloadCommand::Recover(args) => {
-                crate::workloads::recovery::run(&args.reference, args.json, stdout)
+                if args.inspect_grade {
+                    crate::workloads::recovery::inspect_grade(&args.reference, args.json, stdout)
+                } else {
+                    crate::workloads::recovery::run(&args.reference, args.json, stdout)
+                }
             }
         },
     };
@@ -338,7 +342,7 @@ enum WorkloadCommand {
     Install(WorkloadInstallArgs),
     Tui,
     #[command(
-        after_help = "Stops only a departed controller's recorded task containers, preserving partial files and volumes. This does not retry or grade an attempt."
+        after_help = "By default, stops only a departed controller's recorded task containers, preserving partial files and volumes. --inspect-grade instead reads an existing official grade without changing the attempt or running an agent/evaluator. Neither operation resumes a sweep."
     )]
     Recover(WorkloadRecoverArgs),
 }
@@ -346,6 +350,9 @@ enum WorkloadCommand {
 struct WorkloadRecoverArgs {
     #[arg(value_name = "REFERENCE")]
     reference: PathBuf,
+    /// Read an existing official grade without running an agent/evaluator or changing the attempt.
+    #[arg(long)]
+    inspect_grade: bool,
     #[arg(long)]
     json: bool,
 }
