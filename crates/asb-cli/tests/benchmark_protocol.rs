@@ -1,5 +1,8 @@
 //! Provider-free tests of the upstream workload protocol's pure data layer.
 
+mod support;
+use support::IsolatedEnvironment;
+
 #[test]
 fn terminal_sdk_return_reconstruction_never_repeats_verifiers_or_invents_lost_metrics() {
     python_protocol("benchmark_verifier_reconstruction.py");
@@ -112,7 +115,7 @@ fn python_protocol(test: &str) {
                 .join("tests")
                 .join(test),
         )
-        .env_clear()
+        .isolated_env()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("ASB_TEST_HOST_ASB", env!("CARGO_BIN_EXE_asb"))

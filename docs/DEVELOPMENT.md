@@ -80,6 +80,24 @@ agent package, container or privileged collector.
 Run `asb run` with credentials only as an explicit local
 smoke/benchmark operation.
 
+CI's `coverage-90-percent` check requires at least 90% executable-line coverage.
+Run the same offline check locally with:
+
+```sh
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --version 0.9.0 --locked
+bash scripts/check-coverage.sh
+```
+
+Both LLVM's complete aggregate and production-only coverage must pass. The
+production denominator comes from LLVM's non-test `asb` executable map, without
+excluding any production modules; unit and integration tests contribute the
+execution counts, but adding test-body lines cannot inflate that denominator.
+Isolated test subprocesses discard inherited state and credentials while
+retaining only LLVM's coverage-output setting. Reports and uncovered-file
+summaries are retained under `target/coverage/`, including on CI failures.
+No live provider, real agent installation, or privileged collector is necessary.
+
 Token accounting has synthetic, provider-free regression fixtures for all
 registered agent families, plus replay CLI checks for JSON, logs, and
 measurement files. Run the focused checks with `cargo test --offline --locked
