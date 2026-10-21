@@ -70,6 +70,8 @@ row = json.dumps({'batch':batch,'replica':replica,'workspace':str(workspace),'be
 fd = os.open(root/'attempts.jsonl',os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
 os.write(fd,row.encode()); os.close(fd)
 if batch == 1 and replica == 1:
+    if (root/'noisy-record').exists():
+        sys.stdout.buffer.write(b'x' * (8*1024*1024+1024)); sys.stdout.buffer.flush()
     if (root/'block-bundle-commit').exists(): (root/'.new-recording.jsonl.partial/track-1.jsonl').write_text('preserved blocking stage')
     if (root/'block-outcome-first').exists(): (workspace.parent/'.asb-completions').write_text('retain this blocking fixture')
     if (root/'grader-error-first').exists(): (workspace/'src/parser.py').write_bytes(bytes([255]))
@@ -805,6 +807,78 @@ fn bundled_recording_uses_fresh_default_and_stable_repeated_slots_even_with_json
             provider.calls.load(std::sync::atomic::Ordering::SeqCst),
             before
         );
+    }
+}
+
+#[test]
+fn complete_llm_recording_survives_incomplete_agent_output_without_authorizing_continuation() {
+    let project = Project::new();
+    project.config(2);
+    fs::write(
+        project.0.join("noisy-record"),
+        "overflow only the first client transcript",
+    )
+    .unwrap();
+    let provider = RecordingProvider::new();
+    let output = record(&project, &provider, Some("2"));
+    assert!(!output.status.success());
+    assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    let rows = records(&output.stdout);
+    let summaries: Vec<_> = rows
+        .iter()
+        .filter(|row| row.get("task").is_some())
+        .collect();
+    assert_eq!(summaries.len(), 2);
+    assert!(
+        summaries
+            .iter()
+            .all(|summary| summary["workload_success"] == true)
+    );
+    let incomplete = summaries
+        .iter()
+        .find(|summary| summary["replica_index"] == 1)
+        .unwrap();
+    assert_eq!(incomplete["process_success"], false);
+    assert_eq!(
+        summaries
+            .iter()
+            .find(|summary| summary["replica_index"] == 2)
+            .unwrap()["process_success"],
+        true
+    );
+    assert!(
+        incomplete["failure_reason"]
+            .as_str()
+            .unwrap()
+            .contains("capture")
+    );
+    assert_eq!(incomplete["token_usage"]["total_tokens"], 5);
+    assert!(incomplete["steps"].is_null());
+    let root = PathBuf::from(
+        rows.iter()
+            .find(|row| row["type"] == "execution-plan")
+            .unwrap()["path"]
+            .as_str()
+            .unwrap(),
+    )
+    .parent()
+    .unwrap()
+    .to_path_buf();
+    assert!(!root.join("batch-2").exists());
+    assert!(!root.join("batch-1/outcomes/1.json").exists());
+    let log = records(&fs::read(root.join("batch-1/run-concurrency-1.jsonl")).unwrap());
+    assert_eq!(log.last().unwrap()["exit_code"], 0);
+    let archive = asb_cli::cassette::Archive::open(
+        &project.0.join("new-recording.jsonl"),
+        asb_cli::cassette::Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(archive.manifest().tracks.len(), 2);
+    assert_eq!(archive.manifest().tracks[0].process_success, Some(false));
+    for track in &archive.manifest().tracks {
+        assert!(track.complete && track.automatically_selectable());
+        assert_eq!(track.statistics.tokens, Some(5));
+        assert_eq!(track.statistics.requests, Some(1));
     }
 }
 
