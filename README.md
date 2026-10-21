@@ -336,6 +336,10 @@ model, workload, all numeric measurements, and links to raw run/collector/log
 artifacts. Checkbox filters can enable or disable individual benchmarks,
 agents, providers, models, and workloads without contacting a provider or
 rerunning the sweep.
+The same filters hide/show graph bars, complete time-series and their legends,
+and execution-composition rows, including labels and values. Graphs with no
+selected data show an empty-state message. Axes retain their original scale
+for stable comparisons; downloadable SVGs retain the complete unfiltered data.
 
 For a single benchmark, pass the same TOML used by `asb run`. ASB reads the
 latest record from each replica's configured log and the actual measurement
