@@ -28,6 +28,7 @@ impl Recorded {
             ));
         }
         for field in [
+            "execution_plan_fingerprint",
             "module",
             "benchmark_outcome",
             "schema_version",
@@ -541,6 +542,23 @@ mod tests {
             )?;
             read_json(&self.root.join("results/sweep-comparison/comparison.json"))
         }
+    }
+
+    #[test]
+    fn execution_plan_fingerprints_partition_known_and_unknown_experiments() {
+        let fixture = Fixture::new("terminal-bench-2.1", 3);
+        for slot in 1..=3 {
+            let mut record = fixture.record(slot, json!(true), true, true);
+            if slot < 3 {
+                record["summary"]["execution_plan_fingerprint"] = json!(format!("plan-{slot}"));
+            }
+            fixture.publish(slot, &record);
+        }
+        let report = fixture.compare().unwrap();
+        assert_eq!(report["metric_groups"].as_object().unwrap().len(), 3);
+        assert_eq!(report["population_coverage"].as_object().unwrap().len(), 3);
+        assert_eq!(report["resolution_groups"].as_object().unwrap().len(), 3);
+        assert!(report["benchmarks"][2]["execution_plan_fingerprint"].is_null());
     }
 
     #[test]

@@ -21,6 +21,7 @@ const Y_TICKS: usize = 5;
 
 #[derive(Debug)]
 struct BenchmarkData {
+    execution_plan_fingerprint: Option<String>,
     module: Option<crate::workloads::contracts::ModuleDescriptor>,
     benchmark_outcome: Option<crate::workloads::outcome::BenchmarkOutcome>,
     result_source: &'static str,
@@ -222,6 +223,7 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
                     |selection| selection.evaluation_kind.clone(),
                 );
                 benchmark_data.push(BenchmarkData {
+                    execution_plan_fingerprint: None,
                     module: selection.as_ref().and_then(|s| s.module.clone()),
                     benchmark_outcome: None,
                     result_source: "missing",
@@ -418,6 +420,25 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
                 )));
             }
             let mut metrics = BTreeMap::new();
+            let execution_plan_fingerprint: Option<String> = run_value
+                .get("execution_plan_fingerprint")
+                .filter(|v| !v.is_null())
+                .map(|v| serde_json::from_value(v.clone()))
+                .transpose()
+                .map_err(|_| {
+                    Error::Input("malformed recorded execution plan fingerprint".into())
+                })?;
+            if execution_plan_fingerprint.as_ref().is_some_and(|v| {
+                v.is_empty()
+                    || v.len() > 256
+                    || !v
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b":._-".contains(&b))
+            }) {
+                return Err(Error::Input(
+                    "invalid recorded execution plan fingerprint".into(),
+                ));
+            }
             let module: Option<crate::workloads::contracts::ModuleDescriptor> = run_value
                 .get("module")
                 .filter(|v| !v.is_null())
@@ -606,6 +627,7 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
                 }
             }
             benchmark_data.push(BenchmarkData {
+                execution_plan_fingerprint,
                 module,
                 benchmark_outcome,
                 result_source: if measured {
@@ -716,6 +738,7 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
             &benchmark.workload,
             coverage::group_kind(benchmark),
             &benchmark.module,
+            &benchmark.execution_plan_fingerprint,
             benchmark
                 .task
                 .as_ref()
@@ -755,6 +778,7 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
         "benchmarks": benchmark_data.iter().map(|benchmark| json!({
             "name": benchmark.label,
             "module": benchmark.module,
+            "execution_plan_fingerprint": benchmark.execution_plan_fingerprint,
             "benchmark_outcome": benchmark.benchmark_outcome,
             "directory": benchmark.directory,
             "agent": benchmark.agent,
