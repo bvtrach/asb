@@ -229,6 +229,7 @@ impl ProcessTreeSnapshot {
         let handle = std::thread::Builder::new()
             .name("asb-process-tree-snapshot".into())
             .spawn(move || {
+                let started = Instant::now();
                 while !thread_stop.load(Ordering::Relaxed) {
                     if !root.matches() {
                         break;
@@ -260,6 +261,11 @@ impl ProcessTreeSnapshot {
                                 .open(&stdout_path)
                             {
                                 use std::io::Write;
+                                let _ = writeln!(
+                                    file,
+                                    "# asb-snapshot-elapsed-seconds {:.6}",
+                                    started.elapsed().as_secs_f64()
+                                );
                                 let _ = file.write_all(&output.stdout);
                             }
                             if let Ok(mut file) = OpenOptions::new()
@@ -1186,44 +1192,6 @@ pub(crate) fn safe_svg_name(value: &str) -> String {
         .collect()
 }
 
-pub(crate) fn parse_pidstat_series(
-    output: &str,
-    wanted: &[&str],
-    name: impl Fn(&str) -> String,
-) -> BTreeMap<String, Vec<f64>> {
-    let mut header = None;
-    let mut samples: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    for line in output.lines() {
-        let fields = line.split_whitespace().collect::<Vec<_>>();
-        if fields.first().is_some_and(|field| *field == "Average:")
-            || fields.first().is_some_and(|field| *field == "Linux")
-        {
-            continue;
-        }
-        if fields.iter().any(|field| wanted.contains(field)) {
-            header = Some(fields);
-            continue;
-        }
-        let Some(header_fields) = header.as_ref() else {
-            continue;
-        };
-        if fields.len() != header_fields.len() {
-            continue;
-        }
-        for wanted_name in wanted {
-            let Some(index) = header_fields.iter().position(|field| field == wanted_name) else {
-                continue;
-            };
-            let Some(value) = fields.get(index).and_then(|field| parse_float(field)) else {
-                continue;
-            };
-            samples.entry(name(wanted_name)).or_default().push(value);
-        }
-    }
-    samples.retain(|_, values| !values.is_empty());
-    samples
-}
-
 fn tool_binary_name(name: &str) -> &str {
     crate::tools::find(name)
         .and_then(|tool| tool.executable())
@@ -1235,49 +1203,6 @@ pub(crate) fn file_name(path: &Path) -> String {
         .and_then(|name| name.to_str())
         .unwrap_or("artifact")
         .to_owned()
-}
-
-pub(crate) fn parse_pidstat_columns(
-    output: &str,
-    wanted: &[&str],
-    name: impl Fn(&str) -> String,
-) -> BTreeMap<String, f64> {
-    let mut header = None;
-    let mut totals: BTreeMap<String, (f64, usize)> = BTreeMap::new();
-    for line in output.lines() {
-        let fields = line.split_whitespace().collect::<Vec<_>>();
-        if fields.first().is_some_and(|field| *field == "Average:") {
-            continue;
-        }
-        if fields.iter().any(|field| wanted.contains(field)) {
-            header = Some(fields);
-            continue;
-        }
-        let Some(header_fields) = header.as_ref() else {
-            continue;
-        };
-        if fields.len() != header_fields.len()
-            || fields.first().is_some_and(|field| *field == "Linux")
-        {
-            continue;
-        }
-        for wanted_name in wanted {
-            let Some(index) = header_fields.iter().position(|field| field == wanted_name) else {
-                continue;
-            };
-            let Some(value) = fields.get(index).and_then(|field| parse_float(field)) else {
-                continue;
-            };
-            let entry = totals.entry((*wanted_name).to_owned()).or_default();
-            entry.0 += value;
-            entry.1 += 1;
-        }
-    }
-    totals
-        .into_iter()
-        .filter(|(_, (_, count))| *count > 0)
-        .map(|(metric, (sum, count))| (name(&metric), sum / count as f64))
-        .collect()
 }
 
 pub(crate) fn parse_float(value: &str) -> Option<f64> {

@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+mod parsing;
+pub(super) use parsing::{Samples, parse_columns, parse_samples};
+
 pub(super) fn executable(tools: Option<&Path>) -> PathBuf {
     if let Some(tools) = tools {
         for path in [
