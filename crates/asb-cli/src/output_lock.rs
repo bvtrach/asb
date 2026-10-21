@@ -16,6 +16,15 @@ impl Drop for OutputLock {
 
 impl OutputLock {
     pub(crate) fn acquire(path: &Path, busy: &str) -> Result<Self, String> {
+        Self::acquire_for(path, busy, std::time::Duration::ZERO)
+    }
+
+    /// Contention is a typed OS result, not a diagnostic-string predicate.
+    pub(crate) fn acquire_for(
+        path: &Path,
+        busy: &str,
+        timeout: std::time::Duration,
+    ) -> Result<Self, String> {
         let failure = |error| format!("cannot lock output at {}: {error}", path.display());
         match std::fs::symlink_metadata(path) {
             Ok(metadata) if !metadata.is_file() => {
@@ -44,10 +53,18 @@ impl OutputLock {
                 path.display()
             ));
         }
-        match file.try_lock() {
-            Ok(()) => Ok(Self { file }),
-            Err(TryLockError::WouldBlock) => Err(format!("{busy} (lock: {})", path.display())),
-            Err(TryLockError::Error(error)) => Err(failure(error)),
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            match file.try_lock() {
+                Ok(()) => return Ok(Self { file }),
+                Err(TryLockError::WouldBlock) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(TryLockError::WouldBlock) => {
+                    return Err(format!("{busy} (lock: {})", path.display()));
+                }
+                Err(TryLockError::Error(error)) => return Err(failure(error)),
+            }
         }
     }
 

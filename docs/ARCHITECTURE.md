@@ -404,6 +404,76 @@ Both log and measurement publication must be confirmed before a completion
 record/observer receipt is permitted. Original run failures precede ancillary
 log/measurement diagnostics; repairing reporting does not repeat the agent.
 
+Post-grade evidence publication prepares serialized JSON before touching a
+published file. Each destination has a persistent-inode lock (shared lock
+mechanics, five-second contention observation) held across its opened regular
+snapshot, private sibling staging, atomic per-file rename and parent-directory
+synchronization on Unix. Windows instead synchronizes the prepared writable
+file and requests `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`; it never
+requests a cross-volume copy, delayed move or weaker rename retry. Other
+platforms retain file synchronization and their standard rename operation.
+No non-Unix policy attempts an ordinary `File::open(directory)` or claims
+portable directory/crash durability. The Windows route is source-qualified
+against pinned Rust/Windows API declarations, not natively compiled or executed
+by the Linux qualification. See Microsoft's [MoveFileExW contract](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw),
+[FlushFileBuffers access contract](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)
+and [directory-opening requirements](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew).
+Symlinks, pipes and other nonregular destinations are rejected.
+Unix snapshots additionally bind device/inode identity. Other platforms retain
+conservative creation/last-write/size/permission consistency checks instead of
+rejecting all existing files; Linux fixtures do not qualify Windows runtime.
+Log history is streamed without truncating original bytes, validating complete
+JSONL records under the existing 16 MiB per-record consumer bound. A historical
+malformed record is preserved and reported, not joined to the next attempt.
+Summary read/modify/write holds the same lock and preserves unknown metadata;
+malformed historical JSON or runs never silently becomes empty history.
+Prepared encoding stops at the consumer's 16 MiB bound, including the newline
+for log records, before publishing oversized output.
+Pre-commit errors retain old published bytes; post-rename confirmation errors
+explicitly say that evidence was published but durability is unconfirmed. They
+do not roll back or repeat execution.
+If native rename reports failure and its private regular source is missing or
+uninspectable, the commit outcome is instead unknown: destination and exact
+staging are retained without retry, rollback or a claim that publication did
+or did not happen. A remaining regular private source classifies a precommit
+failure under the quiet same-filesystem staging contract, not an adversarial
+filesystem transaction guarantee. This classification is separate from a
+known successful rename followed by a failed confirmation.
+Post-commit scratch retention after successful synchronization has its own
+published-and-synchronized diagnostic and retained path; it does not pretend
+that a known successful sync was uncertain. Explicit cleanup refusal retains
+that stage rather than silently retrying in Drop. Independent measurement outputs
+and adapter finish hooks are all attempted; one publication failure cannot skip the
+others. Explicit finish suppresses silent lifecycle-publication retries in Drop.
+This is per-file cooperating-writer ownership, not a multi-file transaction,
+hostile filesystem confinement or arbitrary crash-recovery protocol.
+
+Stopped collectors pin opened regular stdout/stderr captures before processing.
+Their admitted handles precede producer startup. Unix readers use `read_at`;
+Windows `seek_read` updates a cursor, so Windows first uses
+[`ReOpenFile`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-reopenfile)
+on the admitted object to obtain a separate read-only description, never a
+pathname refresh or shared-offset `try_clone`. Its sharing preserves read,
+write and delete access; inheritability is cleared before any producer starts.
+Full volume/128-bit file IDs are compared when both queries are available.
+Unavailable file-ID queries do not fabricate proof or change the native
+object-based reopen into a pathname lookup. Both stopped readers and startup
+diagnostics use that separate read description, preserving the writer cursor.
+This Windows implementation remains source-qualified only, without native
+target compilation/runtime evidence; Unix behavior and conservative non-Unix
+raw deletion policy are unchanged.
+Result publication failure or durability uncertainty skips raw consumption and
+reports the source paths, without skipping sibling exports or final run records.
+Only confirmed collector-result publication permits raw cleanup. Unix device/
+inode binding and a second check after atomic movement into private custody
+prevent deleting a replacement between a pathname check and unlink. A moved
+foreign regular entry is restored without clobbering a new arrival, or retained
+with an exact inspection path when restore is unsafe. Cleanup failures retain
+their source/staging diagnostics and cannot erase the task grade. Platforms
+without native capture identity retain scratch conservatively; no Windows
+cleanup runtime qualification is claimed. Unterminated historical log records
+must also leave room for their required newline inside the consumer window.
+
 `WorkloadAdapter` creates a distinct mutable `WorkloadSession` for each
 attempt. The session owns its task invocation, prepared workspace, initial
 baseline evidence and evaluator. The generic runner consumes those values
@@ -843,8 +913,71 @@ wire interface. OpenHands may itself report a cache count of zero when its SDK
 does not distinguish a missing cache field from zero. Those run-specific state
 directories can contain agent session transcripts and remain beside the run
 workspace. OpenHands and OpenJiuwen use
-machine-readable output; mini-SWE writes a project-local trajectory that
-is parsed for nested provider usage before it is removed. Their terminal output is intentionally limited to success
+machine-readable output. Mini-SWE's trajectory and Hermes's usage ledger now
+belong to fresh private per-attempt namespaces outside the task workspace.
+The adapters declare and configure their own artifact paths, including the
+guest's explicit mounted run directory; generic execution has no agent-ID
+branch for file answers. After execution, each bounded regular JSON file is
+opened without following symlinks and frozen once. Answer, usage and steps use
+that same document rather than independently refreshing a workspace pathname.
+Existing workspace trajectories are neither interpreted nor deleted.
+The namespace handle stays pinned from preparation. Unix `openat` and Windows
+rooted `NtCreateFile` resolve the child relative to that handle, not a second
+full-path traversal after checking the namespace. Explicit consuming scratch
+settlement checks file identity and frozen size/time observations. On Unix it
+atomically moves the source entry into a create-new, owner-only custody directory
+before rechecking and unlinking the custody entry; a replacement in the source
+check-to-move window is retained there, never deleted. Windows disposition acts
+on the checked open file handle. Replaced namespace paths and foreign source
+entries are never path-deleted. Empty private namespaces/custody directories can
+remain intentionally. This is normal concurrency protection, not an atomic
+conditional-unlink sandbox against a hostile same-UID actor invading the private
+custody directory itself. Fixed per-artifact reasons identify only declared
+namespace/filename and failure class, never file contents or raw OS/JSON errors.
+Malformed/oversized/unreadable snapshots are retained. Before freezing, unwind
+has a best-effort guard; after freezing, unwind retains evidence for inspection.
+Explicit failed settlement is never retried by Drop, which never prints.
+Before native scratch settlement, each valid frozen snapshot is transferred to
+`<private-runtime>/runs/<attempt>/mini-swe/frozen-trajectory.json` (or the
+declaring adapter's equivalent `frozen-<filename>`). This writes the exact
+already-validated bytes, never a second source-path read or JSON re-encoding.
+Create-new, nofollow, pinned-relative creation refuses existing files/symlinks.
+Unix files use mode 0600 inside the owned 0700 namespace and synchronize both
+file and namespace; Windows retains its namespace ACL and uses rooted
+write-through creation plus file flush (source qualification only, not a claim
+of portable directory flushing). Failed creation/write/synchronization prevents
+source consumption, records a fixed attempt-relative diagnostic and still allows
+the independent publishers to run. Original deletion retains the existing
+identity/version and custody checks. The durable evidence copy is intentionally
+retained even after successful publication, not counted as unremoved scratch.
+It can contain complete agent conversation/usage and sensitive data; do not
+share it as a harmless diagnostic. Each raw snapshot/copy is at most 16 MiB,
+with at most 16 declared artifacts (256 MiB raw-copy storage per attempt at the
+API ceiling; currently one for each owning adapter). Frozen raw bytes also stay
+in bounded memory alongside the parsed document until handoff. Copies accumulate
+across attempts: there is no project-wide storage quota or automatic evidence
+expiry. Disk-full errors retain the original and are not a reason to retry the
+agent. These file/namespace flushes are not a multi-file publication transaction.
+Log/measurement publishers still consume one immutable result exactly once;
+their failures disclose locatable attempt-relative frozen evidence when available.
+Scratch retention is ancillary run failure, not unconfirmed workload/container
+quiescence: official grading and independent workload/provider cleanup and
+publication still run once. Guest metadata carries a separate optional artifact
+diagnostic while retaining the existing process/namespace ownership facts.
+Guest publication first synchronizes a usable result marked scratch-settlement
+pending, then consumes settlement and publishes its final ancillary status.
+Failed first publication retains raw source. Failed final publication leaves
+the honest pending result available for grading; it never asserts cleanup.
+These two publications are not a multi-file transaction. A retained-service
+workload still requires the existing durable result/owner/READY authorization;
+missing first publication does not fabricate that authority.
+Unix file identity is qualified with offline fixtures. Windows retains a
+handle-based volume/128-bit-file-ID implementation with reparse-point refusal,
+root-relative access and handle-based disposition;
+its source is reviewed but Linux execution does not qualify Windows runtime.
+An identity-unavailable filesystem/platform still runs and freezes isolated
+evidence, but refuses destructive settlement and reports retained scratch.
+Their terminal output is intentionally limited to success
 rate, elapsed time, and token usage; `--json` changes only the representation
 of those metrics.
 Pass `--show-output` to stream the agent's stdout and stderr live for interactive
@@ -1062,10 +1195,42 @@ and unknown events without printing their payloads. The wire spellings, adapter
 evaluation-kind extension strings and structured/native outcome APIs do not
 change. Existing official Python task sessions still supply binary grades;
 this refactoring does not add native-reward transport to those SDK sessions.
-Python receive deadlines retain main's monotonic elapsed-time accounting and
-shared preparation allowance. The controller's blocking request write and Drop
-custody remain separate pending bounded-I/O repairs; typed contracts do not
-make those waits wall-clock bounded.
+On Unix, controller stdin/stdout retain private standard process pipes with
+nonblocking parent ends and blocking child ends. One caller-owned duplex pump
+keeps an eight-event queue and a 1 MiB frame bound (one oversize probe byte);
+there is no detached
+reader or blocking reader join. Requests start one absolute deadline before
+encoding/writing, and the same deadline covers the response. One-shot inspection
+also constrains error cleanup and child-exit observation to its deadline. Task
+sessions retain their separate preserving-cancellation budget after an execution
+or evaluator failure. Agent dispatch and
+resume writes consume the existing execution-protocol deadline rather than
+starting another clock. A partial failed write closes stdin: it cannot be retried
+as a new request or interpreted as normal close.
+Normal close, cancellation and final exit observation share the earliest
+cleanup deadline, so a failed close does not restart another cleanup budget.
+Only the existing validated acknowledgements can confirm resource cleanup.
+Unix destruction closes its owned pipes, gives EOF up to three seconds, then
+signals only the still-owned direct controller with TERM inside a total
+fifteen-second fallback budget. An existing shorter cleanup deadline takes
+precedence. Deadline/poll uncertainty sends KILL to that direct child and
+transfers custody to an `OwnedReaper` established fallibly before spawn; caller
+cleanup never performs an unconditional child wait or creates a Drop worker.
+This is bounded caller observation, not proof that a kernel-stuck controller
+has exited or that its Docker resources were preserved. Resource recovery still
+requires the adapter's journal/ownership checks. The fallback is neither
+descendant supervision nor crash-persistent recovery.
+Python task-loop waits use actual monotonic deadlines, including checking a
+late dequeued request before it can authorize close; idle, collector attachment,
+queue publication and execution/evaluation defaults retain purpose-specific
+names and existing values. The non-Unix controller intentionally retains its
+legacy blocking pipes, reader and Drop behavior for compatibility. It is not
+qualified by the Unix tests and does not gain this bounded-I/O/custody guarantee;
+cancellable non-Unix transport remains unresolved portability work. Process
+spawn, operating-system scheduling and arbitrary SDK operations are not given
+a new hard real-time guarantee. Shared preparation retains its independent
+remaining-time allowance: dispatch writes cannot consume the later execution
+budget. Initial-material request writing and response reading share one deadline.
 Task controllers now persist a private `resources.json` before creating their
 declared containers, Compose networks and volumes. The journal binds the exact
 names to one attempt, a random ownership label and the Docker daemon identity;

@@ -163,6 +163,7 @@ fn prepared(
 fn evidence(exit: i32, guest: bool) -> ExecutionEvidence {
     use std::os::unix::process::ExitStatusExt;
     ExecutionEvidence {
+        artifact_owner: None,
         capture_complete: true,
         output: Output {
             status: std::process::ExitStatus::from_raw(exit << 8),
@@ -197,7 +198,7 @@ fn native_guest_grade_and_cleanup_matrix_preserves_independent_facts() {
                         .collector_errors
                         .push("capture shutdown failed".into());
                     let execution = evidence(exit, guest);
-                    let agent = execution.agent_outcome("fixture", &fixture.0);
+                    let agent = execution.agent_outcome("fixture", &fixture.0, None);
                     assert_eq!(agent.failure.is_none(), exit == 0);
                     let final_state = prepared
                         .executed(execution, issues)
@@ -562,7 +563,7 @@ fn native_and_guest_apply_the_same_adapter_terminal_answer_policy() {
         if let Some(metadata) = execution.guest.as_mut() {
             metadata.final_response = None;
         }
-        let outcome = execution.agent_outcome("openjiuwen", &fixture.0);
+        let outcome = execution.agent_outcome("openjiuwen", &fixture.0, None);
         assert!(
             outcome
                 .failure
@@ -575,7 +576,7 @@ fn native_and_guest_apply_the_same_adapter_terminal_answer_policy() {
         } else {
             execution.output.stdout = b"{\"type\":\"answer\",\"payload\":\"finished\"}".to_vec();
         }
-        let outcome = execution.agent_outcome("openjiuwen", &fixture.0);
+        let outcome = execution.agent_outcome("openjiuwen", &fixture.0, None);
         assert!(outcome.failure.is_none());
         assert_eq!(outcome.final_response.as_deref(), Some("finished"));
     }
@@ -890,6 +891,11 @@ fn native_postexecution_event_failure_retains_actual_child_output_and_grade() {
     }
 }
 
+#[path = "runner_bundle_publication.rs"]
+mod bundle_publication;
+#[path = "runner_publication.rs"]
+mod publication;
+
 fn recording_identity(result: &RunResult<'_>) -> crate::cassette::Compatibility {
     crate::cassette::Compatibility {
         agent: result.agent.into(),
@@ -1102,7 +1108,7 @@ fn postgrade_log_publication_is_independent_and_diagnostics_keep_primary_order()
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("cannot open log file"));
+        assert!(error.contains("regular file"));
         assert!(error.contains(fixture.0.join("blocked.jsonl").to_str().unwrap()));
         assert!(error.contains("measurement write failure"));
         if primary.is_some() {
@@ -1218,6 +1224,11 @@ fn full_runner_entry_keeps_grade_and_publication_errors_when_result_writer_also_
 #[test]
 fn full_runner_entry_observer_warning_is_redacted_and_broken_warning_writer_keeps_primary() {
     isolated_full_entry_cases(&["observer-failure", "observer-warning-writer"]);
+}
+
+#[test]
+fn full_runner_native_artifact_handoff_survives_publication_loss_without_repeating_owners() {
+    isolated_full_entry_cases(&["artifact-loss-disabled", "artifact-loss-failed-measurement"]);
 }
 
 #[test]
@@ -1467,6 +1478,10 @@ fn repeated_provider_finish_child(
 }
 
 fn full_entry_child(case: &str) {
+    if case.starts_with("bundle-publication-") {
+        bundle_publication::run(case);
+        return;
+    }
     use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Observer {
@@ -1495,8 +1510,10 @@ fn full_entry_child(case: &str) {
             }
         }
     }
+    let artifact_case = case.starts_with("artifact-loss-");
     let provider_case = case.starts_with("provider-");
     let disposition_case = case.starts_with("disposition-");
+    let publication_case = case.contains("publication-");
     let capture_case = case.starts_with("capture-");
     let capture_sweep = case.starts_with("capture-sweep-");
     let fixture = Fixture::new();
@@ -1516,8 +1533,12 @@ fn full_entry_child(case: &str) {
     std::fs::create_dir(root.join("workloads")).unwrap();
     workloads::populate(&root.join("workloads")).unwrap();
     let mini_swe_case = case == "capture-mini-swe-read-failure";
-    let agent_id = if mini_swe_case { "mini-swe" } else { "pi" };
-    let agent = root.join(if mini_swe_case {
+    let agent_id = if mini_swe_case || artifact_case {
+        "mini-swe"
+    } else {
+        "pi"
+    };
+    let agent = root.join(if mini_swe_case || artifact_case {
         "tools/mini-swe/bin/mini"
     } else {
         "tools/pi/bin/pi"
@@ -1536,7 +1557,8 @@ fn full_entry_child(case: &str) {
     };
     let row = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body.to_string()},"response":{"status":200,"headers":{"content-type":"application/json"},"body":response_body}});
     std::fs::write(&cassette, format!("{row}\n")).unwrap();
-    if provider_case || capture_case || (disposition_case && !case.contains("run")) {
+    if artifact_case || provider_case || capture_case || (disposition_case && !case.contains("run"))
+    {
         let node = crate::tools::host_executable(Path::new("node")).unwrap();
         let answer = if case == "provider-false-failed-finish"
             || case.contains("false")
@@ -1554,7 +1576,7 @@ fn full_entry_child(case: &str) {
         };
         let counter_js = serde_json::to_string(&counter).unwrap();
         let artifact_js = if mini_swe_case {
-            "require('node:fs').writeFileSync('.asb-mini-swe.traj.json',JSON.stringify({trajectory_format:'mini-swe-agent-1.1',info:{model_stats:{api_calls:4}},messages:[{extra:{response:{usage:{prompt_tokens:11,completion_tokens:13}}}}]}));"
+            "require('node:fs').writeFileSync(process.argv[process.argv.indexOf('--output')+1],JSON.stringify({trajectory_format:'mini-swe-agent-1.1',info:{model_stats:{api_calls:4}},messages:[{extra:{response:{usage:{prompt_tokens:11,completion_tokens:13}}}}]}));"
         } else {
             ""
         };
@@ -1567,6 +1589,12 @@ fn full_entry_child(case: &str) {
             String::new()
         };
         std::fs::write(&agent, format!("#!{}\nrequire('node:fs').appendFileSync({counter_js},'called\\n');fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw new Error('fixture request failed');await r.text();{capture_js}console.log(JSON.stringify({response}));process.exitCode={exit};}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
+        if artifact_case {
+            let trajectory = serde_json::json!({"trajectory_format":"mini-swe-agent-1.1", "info":{"model_stats":{"api_calls":4}},
+                "messages":[{"role":"assistant","content":"src/cli.py src/registry.py lookup",
+                "extra":{"response":{"usage":{"prompt_tokens":13,"completion_tokens":21}}}}]});
+            std::fs::write(&agent, format!("#!{}\nconst fs=require('node:fs');fs.appendFileSync({counter_js},'called\\n');const out=process.argv[process.argv.indexOf('--output')+1];fs.writeFileSync(out,JSON.stringify({trajectory}));fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw Error('fixture replay');await r.text();}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
+        }
     }
     if case == "provider-early-failed-finish" {
         std::fs::write(root.join("workspace"), "blocking fixture file").unwrap();
@@ -1575,13 +1603,16 @@ fn full_entry_child(case: &str) {
     if case.starts_with("provider-repeat-") {
         config.concurrency = 2;
     }
+    if artifact_case && case.ends_with("disabled") {
+        config.measurements = None;
+    }
     let config_path = root.join("benchmark.toml");
     std::fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
     if case.starts_with("provider-repeat-") {
         repeated_provider_finish_child(case, &root, &config_path, config, &cassette);
         return;
     }
-    let blocked_log = case.starts_with("blocked-log");
+    let blocked_log = artifact_case || case.starts_with("blocked-log");
     if blocked_log {
         std::fs::create_dir(root.join("run.jsonl")).unwrap();
     }
@@ -1601,7 +1632,9 @@ fn full_entry_child(case: &str) {
     let _capture_scope = case
         .contains("read-failure")
         .then(super::capture::test_support::Scope::read_failure);
-    let _scope = if disposition_case || capture_case {
+    let _scope = if artifact_case {
+        entry_test_support::Scope::artifact(&root, calls.clone(), !case.ends_with("disabled"))
+    } else if disposition_case || capture_case {
         entry_test_support::Scope::disposition(&root, calls.clone(), case)
     } else if provider_case {
         entry_test_support::Scope::provider(
@@ -1657,6 +1690,7 @@ fn full_entry_child(case: &str) {
         writes: 0,
         failures: 0,
     };
+    let _publication_fault = publication_case.then(|| publication::prepare(case, &root));
     let cohort = measurements::ExecutionCohort {
         id: workloads::TaskIdentity::local("execution-cohort", None).attempt_id,
         selected_replicas: 1,
@@ -1678,6 +1712,70 @@ fn full_entry_child(case: &str) {
         &mut output,
         &Mutex::new(BTreeSet::new()),
     );
+    if artifact_case {
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("run log publication failed after task evaluation"),
+            "{error}"
+        );
+        assert!(error.contains("retained frozen agent evidence"), "{error}");
+        if !case.ends_with("disabled") {
+            assert!(error.contains("measurement finalization failed"), "{error}");
+            assert!(
+                error.find("run log publication failed").unwrap()
+                    < error.find("measurement finalization failed").unwrap()
+            );
+        }
+        let summary: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+        assert_eq!(summary["workload_success"], true);
+        assert_eq!(summary["token_usage"]["total_tokens"], 34);
+        assert_eq!(summary["steps"], 4);
+        assert_eq!(summary["benchmark_outcome"]["cleanup_confirmed"], true);
+        assert_eq!(
+            calls.borrow().as_slice(),
+            ["evaluate", "finish", "provider-finish"]
+        );
+        assert_eq!(std::fs::read_to_string(counter).unwrap(), "called\n");
+        assert_eq!(observer.completed.load(Ordering::SeqCst), 0);
+        assert!(!root.join(".asb-completions").exists());
+        let runs = replica::runtime_path(&root.join("workspace")).join("runs");
+        let attempts: Vec<_> = std::fs::read_dir(runs)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(attempts.len(), 1);
+        let frozen = attempts[0].join("mini-swe/frozen-trajectory.json");
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&frozen).unwrap()).unwrap();
+        assert_eq!(raw["info"]["model_stats"]["api_calls"], 4);
+        assert_eq!(
+            raw["messages"][0]["extra"]["response"]["usage"]["prompt_tokens"],
+            13
+        );
+        assert_eq!(
+            raw["messages"][0]["content"],
+            "src/cli.py src/registry.py lookup"
+        );
+        assert!(!attempts[0].join("mini-swe/trajectory.json").exists());
+        assert_eq!(
+            output.bytes.iter().filter(|byte| **byte == b'\n').count(),
+            1,
+            "one summary, never append a corrected duplicate"
+        );
+        return;
+    }
+    if publication_case {
+        publication::check(
+            case,
+            &root,
+            result,
+            &calls,
+            &output.bytes,
+            observer.completed.load(Ordering::SeqCst),
+        );
+        assert_eq!(std::fs::read_to_string(counter).unwrap(), "called\n");
+        return;
+    }
     if capture_case {
         assert!(
             result
@@ -1930,7 +2028,7 @@ fn full_entry_child(case: &str) {
             error.contains("run log publication failed after task evaluation"),
             "{error}"
         );
-        assert!(error.contains("cannot open log file"), "{error}");
+        assert!(error.contains("regular file"), "{error}");
         assert!(
             error.contains(root.join("run.jsonl").to_str().unwrap()),
             "{error}"

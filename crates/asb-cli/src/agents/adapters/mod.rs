@@ -31,7 +31,3 @@ pub(super) static REGISTRY: &[&dyn AgentAdapter] = &[
     &cline::ADAPTER,
     &continue_agent::ADAPTER,
 ];
-
-pub(super) fn mini_swe_final_response(workspace: &std::path::Path) -> Option<String> {
-    mini_swe::final_response(workspace)
-}

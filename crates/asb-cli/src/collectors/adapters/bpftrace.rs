@@ -74,7 +74,7 @@ fn process(
 ) -> Result<ProcessData, String> {
     let mut result = ProcessData::from_output(context);
     if let Some(profile) = context.name.strip_prefix("bpftrace-") {
-        let output = super::super::read_complete_output(context.stdout_path)?;
+        let output = super::super::read_complete_output(context.stdout_reader()?)?;
         result.metrics = parse_bpftrace_metrics(profile, &output);
         result.series = parse_bpftrace_series(profile, &output);
         super::super::validate_processed_output(&result)?;
@@ -157,7 +157,6 @@ fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
 use crate::collectors;
 use crate::measurements::{Collector, env_true, escape_svg, parse_float, write_unavailable};
 use std::collections::BTreeMap;
-use std::fs::File;
 use std::time::Instant;
 
 #[derive(Clone, Default)]
@@ -239,19 +238,18 @@ impl measurements::Session {
             );
             let stdout_path = self.dir.join(format!("bpftrace-{index}.stdout"));
             let stderr_path = self.dir.join(format!("bpftrace-{index}.stderr"));
+            let captures = [
+                crate::evidence::Capture::create(&stdout_path)?,
+                crate::evidence::Capture::create(&stderr_path)?,
+            ];
             command
-                .stdout(Stdio::from(
-                    File::create(&stdout_path)
-                        .map_err(|e| format!("cannot create bpftrace output: {e}"))?,
-                ))
-                .stderr(Stdio::from(File::create(&stderr_path).map_err(|e| {
-                    format!("cannot create bpftrace error output: {e}")
-                })?));
+                .stdout(Stdio::from(captures[0].writer()?))
+                .stderr(Stdio::from(captures[1].writer()?));
             let mut child = startup::StartupChild::spawn(&mut command, &program.path)?;
             if let Err(error) = wait_for_profile_ready(
                 child.child(),
-                &stdout_path,
-                &stderr_path,
+                &captures[0],
+                &captures[1],
                 std::time::Duration::from_secs(30),
             ) {
                 return Err(child.failure(format!(
@@ -264,8 +262,7 @@ impl measurements::Session {
                 adapter: collectors::find("bpftrace").expect("registered collector"),
                 child: child.ready(),
                 started: Instant::now(),
-                stdout_path,
-                stderr_path,
+                captures,
             });
         }
         Ok(())
@@ -280,10 +277,12 @@ impl measurements::Session {
             let name = format!("bpftrace-{}", profile.name);
             let stdout_path = self.dir.join(format!("{name}.stdout"));
             let stderr_path = self.dir.join(format!("{name}.stderr"));
-            let stdout = File::create(&stdout_path)
-                .map_err(|error| format!("cannot create {name} output: {error}"))?;
-            let stderr = File::create(&stderr_path)
-                .map_err(|error| format!("cannot create {name} error output: {error}"))?;
+            let captures = [
+                crate::evidence::Capture::create(&stdout_path)?,
+                crate::evidence::Capture::create(&stderr_path)?,
+            ];
+            let stdout = captures[0].writer()?;
+            let stderr = captures[1].writer()?;
             let child = self
                 .command("bpftrace")
                 .args(["-B", "line"])
@@ -296,8 +295,8 @@ impl measurements::Session {
                 Ok(mut child) => {
                     if let Err(error) = wait_for_profile_ready(
                         &mut child,
-                        &stdout_path,
-                        &stderr_path,
+                        &captures[0],
+                        &captures[1],
                         std::time::Duration::from_secs(30),
                     ) {
                         let _ = child.kill();
@@ -312,8 +311,7 @@ impl measurements::Session {
                         adapter: collectors::find("bpftrace").expect("registered collector"),
                         child,
                         started: Instant::now(),
-                        stdout_path,
-                        stderr_path,
+                        captures,
                     });
                 }
                 Err(error) if !env_true("ASB_MEASURE_BPFTRACE") => write_unavailable(
@@ -411,21 +409,18 @@ fn process_tree_prelude_from_pids(pids: impl IntoIterator<Item = u32>) -> String
 
 fn wait_for_profile_ready(
     child: &mut std::process::Child,
-    stdout: &Path,
-    stderr: &Path,
+    stdout: &crate::evidence::Capture,
+    stderr: &crate::evidence::Capture,
     timeout: std::time::Duration,
 ) -> Result<(), String> {
-    use std::io::Read;
     let deadline = Instant::now() + timeout;
     loop {
-        let mut text = String::new();
-        let _ = File::open(stdout).and_then(|f| f.take(4096).read_to_string(&mut text));
+        let text = stdout.startup_diagnostic(4096)?;
         if text.lines().any(|line| line == "ASB_BPFTRACE_READY") {
             return Ok(());
         }
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
-            let mut diagnostic = String::new();
-            let _ = File::open(stderr).and_then(|f| f.take(4096).read_to_string(&mut diagnostic));
+            let diagnostic = stderr.startup_diagnostic(4096)?;
             return Err(format!("exited {status}: {diagnostic}"));
         }
         if Instant::now() >= deadline {
@@ -798,21 +793,38 @@ mod tests {
         let stderr = dir.join("stderr");
         fs::write(&stdout, "").unwrap();
         fs::write(&stderr, "missing kernel tracepoint").unwrap();
+        let stdout_capture = crate::evidence::Capture::open(&stdout).unwrap();
+        let stderr_capture = crate::evidence::Capture::open(&stderr).unwrap();
         let mut failed = Command::new("sh").args(["-c", "exit 2"]).spawn().unwrap();
-        let error =
-            super::wait_for_profile_ready(&mut failed, &stdout, &stderr, Duration::from_secs(2))
-                .unwrap_err();
+        let error = super::wait_for_profile_ready(
+            &mut failed,
+            &stdout_capture,
+            &stderr_capture,
+            Duration::from_secs(2),
+        )
+        .unwrap_err();
         assert!(error.contains("missing kernel tracepoint"));
         let _ = failed.wait();
         let mut waiting = Command::new("sleep").arg("10").spawn().unwrap();
         assert!(
-            super::wait_for_profile_ready(&mut waiting, &stdout, &stderr, Duration::ZERO)
-                .unwrap_err()
-                .contains("timed out")
+            super::wait_for_profile_ready(
+                &mut waiting,
+                &stdout_capture,
+                &stderr_capture,
+                Duration::ZERO
+            )
+            .unwrap_err()
+            .contains("timed out")
         );
         fs::write(&stdout, "ASB_BPFTRACE_READY\n").unwrap();
         assert!(
-            super::wait_for_profile_ready(&mut waiting, &stdout, &stderr, Duration::ZERO).is_ok()
+            super::wait_for_profile_ready(
+                &mut waiting,
+                &stdout_capture,
+                &stderr_capture,
+                Duration::ZERO
+            )
+            .is_ok()
         );
         let _ = waiting.kill();
         let _ = waiting.wait();

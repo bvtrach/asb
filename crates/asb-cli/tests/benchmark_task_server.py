@@ -12,6 +12,7 @@ from unittest.mock import patch
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).parents[1] / "assets/benchmarks"))
 from asb_task_server import Event, Operation, serve
+import asb_task_server as subject
 
 
 class Task:
@@ -36,6 +37,37 @@ class Task:
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_protocol_deadline_counts_actual_monotonic_delay_not_requested_poll_intervals(self):
+        clock = SimpleNamespace(now=0.0, monotonic=lambda: clock.now)
+        class DelayedQueue:
+            calls = 0
+            def get(self, timeout):
+                self.calls += 1
+                clock.now += 1.0  # Scheduling delay much longer than a 50ms poll.
+                raise subject.queue.Empty
+        requests = DelayedQueue()
+        with patch.object(subject, "time", clock, create=True), \
+             patch.object(subject.queue, "Queue", return_value=requests), \
+             patch.object(subject.threading, "Thread"):
+            output, task = io.StringIO(), Task()
+            self.assertEqual(serve(task, io.StringIO(""), output, idle_timeout=0.1), 1)
+        self.assertEqual(requests.calls, 1, "protocol deadline restarted after actual wall time elapsed")
+        self.assertTrue(task.interrupted)
+
+    def test_late_queued_close_cannot_authorize_normal_teardown_after_deadline(self):
+        clock = SimpleNamespace(now=0.0, monotonic=lambda: clock.now)
+        class LateQueue:
+            def get(self, timeout):
+                clock.now += 1.0
+                return {"op": "close"}
+        with patch.object(subject, "time", clock), \
+             patch.object(subject.queue, "Queue", return_value=LateQueue()), \
+             patch.object(subject.threading, "Thread"):
+            output, task = io.StringIO(), Task()
+            self.assertEqual(serve(task, io.StringIO(""), output, idle_timeout=0.1), 1)
+        self.assertTrue(task.interrupted)
+        self.assertIn("protocol deadline", json.loads(output.getvalue().splitlines()[-2])["reason"])
+
     def test_typed_identifiers_preserve_wire_and_reject_unknown_operation_types(self):
         self.assertEqual([item.value for item in Operation],
                          ["execute", "agent", "resume", "capture", "evaluate", "close", "cancel", "initial-material"])

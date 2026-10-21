@@ -2,14 +2,21 @@
 use super::*;
 use crate::collectors::LifecyclePhase;
 
-struct Fixture(PathBuf);
+struct Fixture(PathBuf, [crate::evidence::Capture; 2]);
 impl Fixture {
     fn new() -> Self {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/perfetto-parser-fixtures")
             .join(crate::workloads::TaskIdentity::local("fixture", None).attempt_id);
         fs::create_dir_all(&root).unwrap();
-        Self(root)
+        let mut captures = [
+            crate::evidence::Capture::create(&root.join("perfetto.stdout")).unwrap(),
+            crate::evidence::Capture::create(&root.join("perfetto.stderr")).unwrap(),
+        ];
+        for capture in &mut captures {
+            capture.freeze().unwrap();
+        }
+        Self(root, captures)
     }
     fn session(&self) -> measurements::Session {
         measurements::Session::start_in_execution_namespace(
@@ -138,14 +145,12 @@ fn complete_capture_processes_metrics_series_and_exact_per_thread_timeline() {
     let result = ADAPTER
         .process(
             &mut session,
-            &ProcessContext {
-                name: "perfetto",
-                status: &status,
-                stdout: "",
-                stdout_path: &fixture.0.join("perfetto.stdout"),
-                stderr: "",
-                stderr_path: &fixture.0.join("perfetto.stderr"),
-            },
+            &ProcessContext::new(
+                "perfetto",
+                &status,
+                ["", ""],
+                [&fixture.1[0], &fixture.1[1]],
+            ),
         )
         .unwrap();
     assert_eq!(result.status, "completed");
@@ -213,14 +218,12 @@ fn failed_capture_and_ambiguous_scope_never_publish_unscoped_scheduler_metrics()
     let result = ADAPTER
         .process(
             &mut session,
-            &ProcessContext {
-                name: "perfetto",
-                status: &status,
-                stdout: "",
-                stdout_path: &fixture.0.join("perfetto.stdout"),
-                stderr: "",
-                stderr_path: &fixture.0.join("perfetto.stderr"),
-            },
+            &ProcessContext::new(
+                "perfetto",
+                &status,
+                ["", ""],
+                [&fixture.1[0], &fixture.1[1]],
+            ),
         )
         .unwrap();
     assert_eq!(result.status, "failed");
@@ -235,14 +238,12 @@ fn failed_capture_and_ambiguous_scope_never_publish_unscoped_scheduler_metrics()
     let result = ADAPTER
         .process(
             &mut session,
-            &ProcessContext {
-                name: "perfetto",
-                status: &status,
-                stdout: "",
-                stdout_path: &fixture.0.join("perfetto.stdout"),
-                stderr: "FtraceController unavailable",
-                stderr_path: &fixture.0.join("perfetto.stderr"),
-            },
+            &ProcessContext::new(
+                "perfetto",
+                &status,
+                ["", "FtraceController unavailable"],
+                [&fixture.1[0], &fixture.1[1]],
+            ),
         )
         .unwrap();
     assert_eq!(result.status, "unavailable");
@@ -331,14 +332,12 @@ fn missing_capture_context_remains_diagnostic_and_owned_svg_errors_propagate() {
     let result = ADAPTER
         .process(
             &mut session,
-            &ProcessContext {
-                name: "perfetto",
-                status: &status,
-                stdout: "",
-                stdout_path: &fixture.0.join("perfetto.stdout"),
-                stderr: "",
-                stderr_path: &fixture.0.join("perfetto.stderr"),
-            },
+            &ProcessContext::new(
+                "perfetto",
+                &status,
+                ["", ""],
+                [&fixture.1[0], &fixture.1[1]],
+            ),
         )
         .unwrap();
     assert_eq!(result.status, "failed");
