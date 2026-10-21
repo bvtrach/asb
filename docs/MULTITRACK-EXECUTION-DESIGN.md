@@ -712,7 +712,7 @@ omit a daemon-host PID. Invalid identity or host-collector refusal occurs before
 resume. Retained workloads hold the whole transport through namespace teardown,
 including launcher cleanup, and cancellation-class closure failures remain
 uncertain rather than disappearing in a background drain. This foundation is
-not yet an SDK-session launcher or proof of same-shell client execution.
+not alone proof of same-shell client execution.
 The real owned Docker transport qualification passed in 3.455 seconds
 (`execution-transport-azu7qwhn`), binding source SHA-256
 `cf7056826669b036e0e82651c89fb21d232d7012556efa49e05ff7bb16cec3c4`.
@@ -732,6 +732,27 @@ channel, not recorded tmux keystrokes. A blocking SDK call must not occupy the
 controller's cancellation reader. Own and join every launcher worker and bridge;
 uncertainty requires stopped preservation. The SDK parent shell persists through
 evaluation independently of the measured client process tree.
+
+The SDK-session vertical slice now implements that transport, but is not enabled
+by the production task dispatcher. It stages a configured-user-owned private
+launcher and FIFOs; tmux keystrokes contain only private paths and receipt
+metadata, never the provider environment. Parent, started, exit and return
+receipts are staged privately and published with exact-target no-clobber links;
+readers never retry a malformed exposed receipt. A bounded host resolver maps
+the stopped namespace child through existing boot/start-time/NSpid/cgroup
+verification, rejects ambiguous candidates and never substitutes the bridge PID.
+Failed factory construction retains ownership, attempts closure and reports
+uncertainty if a launched child has no confirmed bridge settlement.
+
+The original installed SDK fake-client qualification passed in 12.940 seconds
+(`sdk-session-transport-2tdiyc_e`) with unchanged frozen binary SHA-256
+`34f8049510f53e118f7634093263f7667fd2fbcc8be8ec74b94dbd3c547bf1a2`.
+It verifies child versus bridge PID, separate output, exact nonzero and zero
+statuses, and persistent parent PID/user/cwd/environment. It starts no coding
+agent, provider or grader. Ordinary protocol tests separately cover non-root
+upload ownership, atomic receipt publication, existing final file/directory/
+symlink refusal, malformed frames/resolver output and partial-launch ownership.
+This is transport evidence, not production installed-client or verifier parity.
 
 The bridge's Docker exec PID is not the client PID. Keep transport exec identity
 separate from the real stopped application's namespace PID and start-time
@@ -754,8 +775,10 @@ bounded streamed stdout/stderr and exact child exit, and exercise cancellation
 at launch/gate/execution/return. Test shell replacement/death, malformed or
 duplicate receipts, blocked channels, sibling preparation failure and teardown
 uncertainty. Qualify an actual installed client on a true same-shell original
-task with repeat-two/concurrency-two. This strategy remains unimplemented; the
-successful separate-shell fixtures do not close it.
+task with repeat-two/concurrency-two. Production dispatcher wiring, actual-client
+context parity, configured non-root runtime accessibility, post-preparation
+batch rendezvous and full cancellation qualification remain outstanding; the
+successful separate-shell and fake-client fixtures do not close them.
 
 ## Current test coverage
 

@@ -138,7 +138,88 @@ pub(crate) fn verify(value: &serde_json::Value) -> Result<LocalTarget, String> {
     verify_at(value, Path::new("/proc"))
 }
 
+/// Candidate daemon PIDs are hints, never authority or a substitute bridge PID.
+/// Reuse exactly the collector verifier and reject ambiguous/partial resolution.
+fn resolve_at(value: &serde_json::Value, proc: &Path) -> Result<serde_json::Value, String> {
+    let invalid = || "cannot uniquely resolve the stopped owned client on this host".to_owned();
+    let mut target = value.as_object().cloned().ok_or_else(invalid)?;
+    if target.len() != 5
+        || ![
+            "container_id",
+            "exec_id",
+            "namespace_pid",
+            "process_identity",
+            "candidates",
+        ]
+        .iter()
+        .all(|key| target.contains_key(*key))
+    {
+        return Err(invalid());
+    }
+    let candidates = target.remove("candidates").ok_or_else(invalid)?;
+    let candidates = candidates
+        .as_array()
+        .filter(|values| !values.is_empty() && values.len() <= 4096)
+        .ok_or_else(invalid)?;
+    let mut unique = std::collections::BTreeSet::new();
+    for candidate in candidates {
+        let pid = candidate
+            .as_u64()
+            .and_then(|pid| u32::try_from(pid).ok())
+            .filter(|pid| *pid > 1)
+            .ok_or_else(invalid)?;
+        if !unique.insert(pid) {
+            return Err(invalid());
+        }
+    }
+    target.insert("pid_scope".into(), serde_json::json!("docker-daemon-host"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut selected = None;
+    for pid in unique {
+        if std::time::Instant::now() >= deadline {
+            return Err(invalid());
+        }
+        target.insert("daemon_pid".into(), serde_json::json!(pid));
+        let candidate = serde_json::Value::Object(target.clone());
+        if verify_at(&candidate, proc).is_ok() {
+            if selected.is_some() {
+                return Err(invalid());
+            }
+            selected = Some(candidate);
+        }
+    }
+    let selected = selected.ok_or_else(invalid)?;
+    verify_at(&selected, proc)?;
+    Ok(selected)
+}
+
+fn resolve_input(reader: impl Read, proc: &Path) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take(65537)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "cannot read target resolution request")?;
+    if bytes.len() > 65536 {
+        return Err("target resolution request exceeds its bound".into());
+    }
+    let value = serde_json::from_slice(&bytes).map_err(|_| "invalid target resolution request")?;
+    serde_json::to_string(&resolve_at(&value, proc)?)
+        .map_err(|_| "cannot encode resolved target".into())
+}
+
 pub(crate) fn entry(args: &[std::ffi::OsString]) -> std::process::ExitCode {
+    if args.len() == 1 && args[0] == "--resolve" {
+        return match resolve_input(std::io::stdin().lock(), Path::new("/proc")) {
+            Ok(value) => {
+                println!("{value}");
+                std::process::ExitCode::SUCCESS
+            }
+            Err(_) => {
+                eprintln!("cannot resolve stopped owned process identity");
+                std::process::ExitCode::FAILURE
+            }
+        };
+    }
     let result = args
         .first()
         .filter(|_| args.len() == 1)
@@ -195,6 +276,47 @@ mod tests {
             (9001, 42, 123456)
         );
         assert!(target.cgroup.to_string_lossy().contains(&"a".repeat(64)));
+        let mut request = value.clone();
+        request.as_object_mut().unwrap().remove("daemon_pid");
+        request.as_object_mut().unwrap().remove("pid_scope");
+        request["candidates"] = json!([9002, 9001]);
+        assert_eq!(resolve_at(&request, &root).unwrap(), value);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(
+                &resolve_input(request.to_string().as_bytes(), &root).unwrap()
+            )
+            .unwrap(),
+            value
+        );
+        for candidates in [
+            json!([]),
+            json!([9002]),
+            json!([9001, 9001]),
+            json!([0, 9001]),
+            json!([true, 9001]),
+            json!([4294967296u64]),
+            json!(vec![9001; 4097]),
+        ] {
+            let mut invalid = request.clone();
+            invalid["candidates"] = candidates;
+            assert!(resolve_at(&invalid, &root).is_err());
+        }
+        let mut extra = request.clone();
+        extra["daemon_pid"] = json!(9001);
+        assert!(resolve_at(&extra, &root).is_err());
+        assert!(resolve_input(&b"not json"[..], &root).is_err());
+        assert!(resolve_input(&vec![b' '; 65537][..], &root).is_err());
+        std::fs::create_dir_all(root.join("9002")).unwrap();
+        for name in ["stat", "cgroup"] {
+            std::fs::copy(root.join("9001").join(name), root.join("9002").join(name)).unwrap();
+        }
+        std::fs::write(root.join("9002/status"), "State: T\nNSpid: 9002 42\n").unwrap();
+        assert!(
+            resolve_at(&request, &root).is_err(),
+            "ambiguous hints cannot choose the first PID"
+        );
+        std::fs::write(root.join("9002/status"), "State: T\nNSpid: 9002 43\n").unwrap();
+        assert_eq!(resolve_at(&request, &root).unwrap(), value);
         for (field, replacement) in [
             ("daemon_pid", json!(0)),
             ("namespace_pid", json!(43)),

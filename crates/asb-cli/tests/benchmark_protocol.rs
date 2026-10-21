@@ -127,6 +127,7 @@ fn docker_transport_is_scoped_and_cleans_its_own_processes() {
 #[test]
 fn managed_execution_pauses_for_collectors_and_bounds_each_attempt() {
     python_protocol("benchmark_execution.py");
+    python_protocol("benchmark_sdk_session.py");
 }
 
 #[test]

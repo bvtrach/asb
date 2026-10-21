@@ -18,12 +18,17 @@ from asb_runtime import bundle
 from asb_relay import HostRelay, ForwardingCancellation, forward_request
 
 
-def upload(container, destination, files, temporary_dir=None):
+def upload(container, destination, files, temporary_dir=None, owner=None):
+    if owner is not None and (not isinstance(owner,tuple) or len(owner) != 2
+            or any(type(value) is not int or not 0 <= value <= 4294967295 for value in owner)):
+        raise ExecutionError("invalid private guest file owner")
     with tempfile.TemporaryFile(dir=temporary_dir) as archive:
         with tarfile.open(fileobj=archive, mode="w") as tar:
             for name, content, mode in files:
                 entry = tarfile.TarInfo(name)
                 entry.size, entry.mode = len(content), mode
+                if owner is not None:
+                    entry.uid,entry.gid = owner
                 tar.addfile(entry, io.BytesIO(content))
         archive.seek(0)
         if not container.put_archive(destination, archive):
