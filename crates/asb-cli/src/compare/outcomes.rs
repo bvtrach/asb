@@ -586,6 +586,7 @@ mod tests {
                 cpu_millis: Some(slot as u64 * 1000),
                 memory_mib: Some(slot as u64 * 1024),
                 execution_seconds: Some(task_default),
+                evaluation_seconds: Some(300.0 + slot as f64),
                 ..Default::default()
             });
             let caps = crate::planning::EffectiveBudgets {
@@ -602,6 +603,19 @@ mod tests {
                 ..caps
             };
             assert!(crate::planning::protocol_fingerprint(&config, &policy, altered, 1).is_err());
+            let changed_ready = crate::planning::EffectiveBudgets {
+                task_default_execution_seconds: Some(task_default + 1.0),
+                execution_seconds: Some(if slot == 3 {
+                    1200.0
+                } else {
+                    task_default + 1.0
+                }),
+                ..caps
+            };
+            assert!(
+                crate::planning::protocol_fingerprint(&config, &policy, changed_ready, 1).is_err(),
+                "a changed ready default cannot bypass the pinned task definition"
+            );
             fingerprints.push(fingerprint.clone());
             let mut record = fixture.record(1, json!(true), true, true);
             record["summary"]["task"]["task_id"] = json!(task);
