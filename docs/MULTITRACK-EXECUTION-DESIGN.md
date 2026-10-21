@@ -793,6 +793,29 @@ different inherited cwd, private request handling, exact exit seven and parent
 survival. Both retain source hashes and frozen binary identity. Neither starts
 an installed coding client or contacts an LLM provider.
 
+The installed-client qualification subsequently passed with real Pi 0.73.1,
+unpatched production installation/bootstrap and original same-shell Jupyter
+grading in 67.009 seconds (`original-sdk-real-pi-moirbo0l`). The frozen executable
+SHA-256 remained
+`e86cbc20f4400f25d8eaefa1a646c901eb892622ca1ac7423d549b2d77da9c5f`;
+source hashes now include extracted `asb_harness.py`. Two synthetic provider
+calls drove one actual tool invocation, the same root-user SDK parent persisted
+through grading, and owned resources were removed. This is a known-reference
+integration, not AI-solving or cloud-inference evidence.
+
+The initial fresh-guest installation failed because the project public npm
+cache was absent; an isolated tool-directory prewarm populated it without
+changing existing tools. A separate internal-network attempt produced a real
+unresolved grade because the original reference could not install its Debian/
+PyPI dependencies. Another owned-bridge attempt hit the existing bounded-output
+refusal due to cumulative streamed installation output. These failures remain
+stopped/preserved. The successful fixture allows ordinary package egress and
+logs the UNCHANGED reference's verbose output privately, returning a bounded
+summary. It does not pre-solve/preseed workload material, relax production
+capture limits or modify/retry the original grader. It does not establish
+arbitrary verbose-output robustness, configured non-root support or repeated
+concurrent same-shell readiness.
+
 The bridge's Docker exec PID is not the client PID. Keep transport exec identity
 separate from the real stopped application's namespace PID and start-time
 identity. Host collector attachment requires an authoritative mapping to the
@@ -814,16 +837,16 @@ bounded streamed stdout/stderr and exact child exit, and exercise cancellation
 at launch/gate/execution/return. Test shell replacement/death, malformed or
 duplicate receipts, blocked channels, sibling preparation failure and teardown
 uncertainty. Qualify an actual installed client on a true same-shell original
-task with repeat-two/concurrency-two. Actual installed-client context parity,
+task with repeat-two/concurrency-two. Repeated installed-client context parity,
 configured non-root runtime accessibility, post-preparation batch rendezvous
 and full cancellation/release-race qualification remain outstanding; the
 successful separate-shell and fixture-client qualifications do not close them.
 The existing private-runtime prefix rule also needs an explicit owned-path
 solution for valid root (`/`) working directories; changing the shell cwd to
 evade that limitation is not an acceptable solution.
-Keep the resource journal's ownership lock until transport-finalization attempts
-finish when tightening the remaining cleanup ordering; releasing that lock is
-not itself confirmation of launcher settlement.
+The resource journal's ownership lock spans all transport-finalization attempts
+and is released last; releasing that lock is not itself confirmation of
+launcher settlement.
 
 ## Current test coverage
 

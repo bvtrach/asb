@@ -438,9 +438,9 @@ class TerminalBenchTask:
                 self.workspace.cleanup_status = "cleanup_failed"
             if hasattr(self, "original_client"):
                 docker.from_env, terminal_module.DockerComposeManager = self.original_client, self.original_manager
-            finalizers = [self.journal.close if self.journal is not None else None,
-                self.workspace.join_held_executions if self.workspace is not None else None,
-                self.agent_launcher.close if self.agent_launcher is not None else None]
+            finalizers = [self.workspace.join_held_executions if self.workspace is not None else None,
+                self.agent_launcher.close if self.agent_launcher is not None else None,
+                self.journal.close if self.journal is not None else None]
             for finalize in finalizers:
                 if finalize is not None:
                     try:finalize()

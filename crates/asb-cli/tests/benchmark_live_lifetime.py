@@ -26,8 +26,8 @@ class WorkloadServiceQualification(unittest.TestCase):
         from asb_guest import execute_agent, upload
         from asb_runtime import bundle
         from asb_terminal_bench_1 import TerminalBenchTask
-        import asb_execution,asb_guest,asb_terminal_bench_1,asb_terminal_session
-        sources = [Path(module.__file__) for module in [asb_execution,asb_guest,asb_terminal_bench_1,asb_terminal_session]]
+        import asb_execution,asb_guest,asb_terminal_bench_1,asb_terminal_session,asb_harness
+        sources = [Path(module.__file__) for module in [asb_execution,asb_guest,asb_terminal_bench_1,asb_terminal_session,asb_harness]]
         source_hashes = {path.name:hashlib.sha256(path.read_bytes()).hexdigest() for path in sources}
         binary = Path(os.environ["ASB_TEST_BENCHMARK_ASB"])
         binary_hash = hashlib.sha256(binary.read_bytes()).hexdigest()

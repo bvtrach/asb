@@ -14,6 +14,21 @@ Neither is an installed coding-client, non-root or full repeated-batch
 qualification. Successful owned
 resources are removed; failures are stopped/preserved with private evidence.
 
+`benchmark_live_sdk_agent.py` uses the same explicit SDK/project/frozen-binary
+opt-ins with the REAL pinned Pi package and unpatched production bootstrap.
+Prefetch the pinned Node archive and public npm cache before running: guest
+installation deliberately sets npm offline and never falls back to a fake
+client. An isolated `asb tool install pi --dir DIR` can populate the project's
+public cache without replacing existing tools. Inference uses a synthetic
+loopback provider with fixture-only credentials; the known upstream reference
+solution still needs ordinary bridge egress for Debian/PyPI tool dependencies.
+Its verbose installation output goes to a private guest log, returning only a
+summary or a bounded failure tail. Neither production capture bounds nor the
+original official grader is changed. Assertions require one actual tool call,
+two provider calls, exact package identity, unchanged original SDK parent and a
+resolved original grade. Failed attempts are retained, not silently retried or
+promoted into successful qualification evidence.
+
 Real workload qualifications must use a separate frozen executable, not
 `target/debug/asb`. Cargo package verification can replace the ordinary build
 output even though the extracted packaged-crate tests use another target tree.

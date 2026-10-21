@@ -75,11 +75,15 @@ class SDKSessionTests(unittest.TestCase):
             with self.subTest(fault=fault),tempfile.TemporaryDirectory() as root:
                 task = terminal.TerminalBenchTask(None,"catalog","task",root)
                 task.interrupted = True
-                task.workspace = SimpleNamespace(join_held_executions=Mock(
-                    side_effect=ExecutionError("held failure") if fault in ["held","serve-held"] else None))
-                task.journal = SimpleNamespace(preserve=Mock(),close=Mock(
-                    side_effect=ExecutionError("journal failure") if fault == "journal" else None))
-                task.agent_launcher = SimpleNamespace(close=Mock())
+                order = []
+                def finalizer(name,failed=False):
+                    def close():
+                        order.append(name)
+                        if failed:raise ExecutionError(name+" failure")
+                    return Mock(side_effect=close)
+                task.workspace = SimpleNamespace(join_held_executions=finalizer("held",fault in ["held","serve-held"]))
+                task.journal = SimpleNamespace(preserve=Mock(),close=finalizer("journal",fault == "journal"))
+                task.agent_launcher = SimpleNamespace(close=finalizer("launcher"))
                 with patch.dict(sys.modules,{"docker":ModuleType("docker"),"terminal_bench":package,
                         "terminal_bench.terminal":subpackage,"terminal_bench.terminal.terminal":module}), \
                         patch.object(terminal,"write_json",side_effect=ExecutionError("record failure") if fault == "record" else None):
@@ -99,6 +103,7 @@ class SDKSessionTests(unittest.TestCase):
                 task.journal.close.assert_called_once_with()
                 self.assertEqual(task.cleanup_status,"cleanup_failed")
                 self.assertEqual(task.workspace.cleanup_status,"cleanup_failed")
+                self.assertEqual(order,["held","launcher","journal"],"owner lock must span transport settlement attempts")
 
     def test_release_reader_bounds_raw_bytes_and_requires_exact_nonce_newline(self):
         nonce = "a"*32

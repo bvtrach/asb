@@ -21,8 +21,8 @@ class SDKSessionQualification(unittest.TestCase):
         from asb_runtime import bundle
         from asb_terminal_bench_1 import TerminalBenchTask
         from asb_terminal_session import SDKSessionLauncher
-        import asb_execution,asb_terminal_session
-        sources = [Path(module.__file__) for module in [asb_execution,asb_terminal_session]]
+        import asb_execution,asb_terminal_session,asb_terminal_bench_1,asb_guest,asb_harness
+        sources = [Path(module.__file__) for module in [asb_execution,asb_terminal_session,asb_terminal_bench_1,asb_guest,asb_harness]]
         hashes = {path.name:hashlib.sha256(path.read_bytes()).hexdigest() for path in sources}
         binary = Path(os.environ["ASB_TEST_BENCHMARK_ASB"]).absolute()
         binary_hash = hashlib.sha256(binary.read_bytes()).hexdigest()
