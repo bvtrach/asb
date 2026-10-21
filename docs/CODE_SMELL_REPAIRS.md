@@ -59,6 +59,11 @@ Delivery: independently reviewed PR #257 merged as
 Exact-head tests, mandatory coverage and
 hosted checks passed; post-merge CI and release remain pending. Earlier
 candidate verification is not a substitute for those remaining gates.
+The first main run exposed a test-only Perfetto descriptor observation race.
+Independently reviewed PR #267 merged as
+`9e7a1ba49e60f394cf1339315d0df9c8c939eafd`, preserving lease rejection
+assertions behind a child-authored post-exec observation. Release stays held
+until that repaired main passes every post-merge job.
 
 ## 3. Completion persistence, subprocess and cleanup failures
 
