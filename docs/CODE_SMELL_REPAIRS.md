@@ -14,7 +14,7 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
-Artifact integration, staged patch **0.2.35**, locally qualified, delivery pending:
+Artifact integration, staged patch **0.2.35**, local qualification and package-fixture repair, delivery pending:
 historical artifact checkpoint `a2708632` is combined with committed
 publication34 `3359bfb2`.
 The incoming bundled recording/replay, selected-track capture proofs and typed
@@ -101,6 +101,26 @@ No raw-recording-custody, runtime-input or collector follow-up was folded in.
 Native Windows/original external SDK/live-provider qualification is not claimed.
 Hosted/package CI, final independent proof review, PR/merge, both post-merge jobs
 and release remain pending for this staged patch; no push was performed here.
+
+PR #300 exact-head CI at `4b78a350` passed checkout tests but failed the extracted
+crate's new `agent_artifact_ownership` target: its Python fixture assumed a
+checkout-level `workloads` directory and attempted `/tmp/workloads` after package
+extraction. The full failed hosted log is retained as
+`target/pr300-ci-failed.log`; no failed CI was blindly retried.
+
+Independently reviewed test-only `75d0213b` anchors fixture inputs to the actual
+crate's packaged `assets/workloads`, keeps fresh retained evidence beneath that
+crate's target directory, and validates the fake client's private output argument
+before any write. No production, assertions, Cargo or workflow changes are made.
+The actual checkout target passed both tests/all ten scenarios; an actual Cargo
+archive was extracted and its packaged Python fixture passed all ten scenarios
+against the same frozen CLI. Strict Clippy/formatting passed and actual CLI hash
+remained `eb1ccde0206f8afa34378522b9506efadfb049093b1dd14bdc497cf30304a0ba`.
+Root also ran locked/offline `cargo package --no-verify` without `--allow-dirty`:
+it passed despite the deliberately retained untracked fixture artifacts, which
+Cargo excludes from the archive. Earlier full qualification remains tied to its
+actual source; this test-only correction has fresh owning-layout qualification
+and still requires a new exact-head hosted/package CI run before merge.
 
 Historical artifact integration:
 
