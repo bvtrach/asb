@@ -2,6 +2,179 @@
 use super::*;
 use std::fs;
 use std::path::PathBuf;
+
+#[cfg(target_os = "linux")]
+#[test]
+fn owned_tracefs_fixture_covers_delegation_policy_without_sudo_or_host_tracefs() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+    fn controls(path: &Path) {
+        fs::create_dir_all(path.join("events")).unwrap();
+        for file in [
+            "trace_marker",
+            "tracing_on",
+            "buffer_size_kb",
+            "trace_clock",
+            "events/enable",
+        ] {
+            fs::write(path.join(file), b"fixture control").unwrap();
+        }
+    }
+    for case in [
+        "ready",
+        "repair",
+        "owned-empty",
+        "partial",
+        "traversal-fails",
+        "metadata-fails",
+        "mkdir-fails",
+        "chown-fails",
+        "chmod-fails",
+        "incomplete",
+        "symlink",
+    ] {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/owned-tracefs-fixtures")
+            .join(crate::workloads::TaskIdentity::local(case, None).attempt_id);
+        let parent = root.join("tracefs/instances");
+        fs::create_dir_all(&parent).unwrap();
+        let names = instance_names(&root).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+        if case == "ready" {
+            for name in &names {
+                controls(&parent.join(name));
+            }
+        }
+        if case == "partial" {
+            controls(&parent.join(&names[0]));
+        }
+        if case == "owned-empty" {
+            for name in &names {
+                fs::create_dir(parent.join(name)).unwrap();
+            }
+        }
+        if case == "symlink" {
+            fs::create_dir_all(root.join("foreign")).unwrap();
+            for name in &names {
+                symlink(root.join("foreign"), parent.join(name)).unwrap();
+            }
+        }
+        // A decoder file may disappear after enumeration. This deterministic
+        // unreadable input exercises the exact repair command and warning.
+        let metadata = if case == "metadata-fails" {
+            vec![root.join("tracefs/events/missing-format")]
+        } else {
+            Vec::new()
+        };
+        let mut calls = Vec::<Vec<String>>::new();
+        let mut output = Vec::new();
+        let identity = fs::metadata("/proc/self").unwrap();
+        let expected_owner = format!("{}:{}", identity.uid(), identity.gid());
+        let result = configure_at(
+            &root,
+            &mut output,
+            true,
+            ConfigurePaths {
+                instances_parent: &parent,
+                metadata_paths: &metadata,
+            },
+            |args| {
+                calls.push(args.iter().map(|value| (*value).to_owned()).collect());
+                let target = Path::new(args.last().unwrap());
+                assert!(
+                    target.starts_with(&root),
+                    "fixture runner must never touch host paths"
+                );
+                if args.starts_with(&["chmod", "o+x", "--"]) {
+                    assert_eq!(target, parent);
+                    return case != "traversal-fails";
+                }
+                if args.starts_with(&["chmod", "o+r", "--"]) {
+                    assert_eq!(target, metadata[0]);
+                    return false;
+                }
+                assert_eq!(target.parent(), Some(parent.as_path()));
+                assert!(names.iter().any(|name| target == parent.join(name)));
+                if args.starts_with(&["mkdir", "--"]) {
+                    if case == "mkdir-fails" {
+                        return false;
+                    }
+                    fs::create_dir(target).unwrap();
+                    return true;
+                }
+                if args[0] == "chown" {
+                    assert_eq!(args[1], "-R");
+                    assert_eq!(args[2], expected_owner);
+                    assert_eq!(args[3], "--");
+                    return case != "chown-fails";
+                }
+                assert!(args.starts_with(&["chmod", "-R", "u+rwX", "--"]));
+                if case == "chmod-fails" {
+                    return false;
+                }
+                if case != "incomplete" {
+                    controls(target);
+                }
+                true
+            },
+        )
+        .unwrap();
+        let text = String::from_utf8(output).unwrap();
+        match case {
+            "ready" => {
+                assert_eq!(result, names);
+                assert!(calls.is_empty());
+                assert!(text.is_empty());
+            }
+            "repair" | "owned-empty" | "partial" | "metadata-fails" => {
+                assert_eq!(result, names);
+                assert!(
+                    result
+                        .iter()
+                        .all(|name| delegated_ready(&parent.join(name)))
+                );
+                assert!(text.contains("project-specific tracefs instances"));
+                if case == "partial" {
+                    assert!(
+                        !calls.iter().any(|args| args.last()
+                            == Some(&parent.join(&names[0]).display().to_string()))
+                    );
+                }
+                if case == "metadata-fails" {
+                    assert!(text.contains("format metadata could not be delegated"));
+                }
+            }
+            "traversal-fails" => {
+                assert!(result.is_empty());
+                assert_eq!(calls.len(), 1);
+                assert!(text.contains("parent traversal could not be enabled"));
+            }
+            "mkdir-fails" | "symlink" => {
+                assert!(result.is_empty());
+                assert!(text.contains("Did not adopt or modify"));
+            }
+            _ => {
+                assert!(result.is_empty());
+                assert!(text.contains("Could not delegate"));
+            }
+        }
+        if case != "ready" {
+            assert!(
+                text.contains(
+                    "No global event/buffer/tracing_on values or sudoers will be changed"
+                )
+            );
+        }
+        if case == "symlink" {
+            assert!(calls.iter().all(|args| args.starts_with(&[
+                "chmod".into(),
+                "o+x".into(),
+                "--".into()
+            ])));
+            assert!(fs::read_dir(root.join("foreign")).unwrap().next().is_none());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+}
 #[cfg(target_os = "linux")]
 #[test]
 fn isolated_delegation_consent_logs_scoped_commands_without_host_mutation() {

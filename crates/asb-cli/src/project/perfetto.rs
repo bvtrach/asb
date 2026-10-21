@@ -118,57 +118,90 @@ pub(super) fn configure(
     }
     #[cfg(target_os = "linux")]
     {
-        use std::fs;
-        use std::os::unix::fs::MetadataExt;
-        use std::process::Command;
         let parent = Path::new("/sys/kernel/tracing/instances");
         if !parent.is_dir() {
             return Ok(Vec::new());
         }
-        let metadata = fs::metadata("/proc/self").map_err(|e| Error::Io(e.to_string()))?;
-        let uid = metadata.uid();
-        let owner = format!("{uid}:{}", metadata.gid());
-        let names = instance_names(root).map_err(Error::Input)?;
-        let metadata = crate::collectors::adapters::perfetto::required_trace_metadata()
+        let metadata = crate::collectors::adapters::perfetto::required_trace_metadata();
+        let paths = ConfigurePaths {
+            instances_parent: parent,
+            metadata_paths: &metadata,
+        };
+        configure_at(root, output, yes, paths, |args| {
+            std::process::Command::new("sudo")
+                .args(args)
+                .status()
+                .is_ok_and(|status| status.success())
+        })
+    }
+}
+
+/// Private filesystem/command inputs keep delegation policy testable without
+/// exposing a tracefs override to configuration, environment variables or CLI.
+#[cfg(target_os = "linux")]
+struct ConfigurePaths<'a> {
+    instances_parent: &'a Path,
+    metadata_paths: &'a [std::path::PathBuf],
+}
+
+#[cfg(target_os = "linux")]
+fn configure_at(
+    root: &Path,
+    output: &mut dyn Write,
+    yes: bool,
+    paths: ConfigurePaths<'_>,
+    mut run: impl FnMut(&[&str]) -> bool,
+) -> Result<Vec<String>, Error> {
+    use std::fs;
+    use std::os::unix::fs::MetadataExt;
+    let parent = paths.instances_parent;
+    if !parent.is_dir() {
+        return Ok(Vec::new());
+    }
+    let metadata = fs::metadata("/proc/self").map_err(|e| Error::Io(e.to_string()))?;
+    let uid = metadata.uid();
+    let owner = format!("{uid}:{}", metadata.gid());
+    let names = instance_names(root).map_err(Error::Input)?;
+    let metadata = paths
+        .metadata_paths
+        .iter()
+        .filter(|path| fs::File::open(path).is_err())
+        .cloned()
+        .collect::<Vec<_>>();
+    let pending = names
+        .iter()
+        .filter(|name| !delegated_ready(&parent.join(name)))
+        .collect::<Vec<_>>();
+    if pending.is_empty() && metadata.is_empty() {
+        return Ok(names
             .into_iter()
-            .filter(|path| fs::File::open(path).is_err())
-            .collect::<Vec<_>>();
-        let pending = names
-            .iter()
-            .filter(|name| !delegated_ready(&parent.join(name)))
-            .collect::<Vec<_>>();
-        if pending.is_empty() && metadata.is_empty() {
-            return Ok(names
-                .into_iter()
-                .filter(|name| {
-                    fs::symlink_metadata(parent.join(name))
-                        .is_ok_and(|m| m.is_dir() && m.uid() == uid)
-                        && delegated_ready(&parent.join(name))
-                })
-                .collect());
-        }
-        let traverse = fs::metadata(parent).is_ok_and(|m| m.mode() & 1 == 0);
-        writeln!(output, "Optional Perfetto setup creates or repairs two project-specific tracefs instances. Separate ASB processes lease separate instances; concurrent replicas share a service. The following commands change only new instances or this user's existing instances, plus execute-only traversal of the instances parent if needed (not write/list permission). Existing foreign-owned instances will not be adopted:").map_err(crate::io_error)?;
-        if traverse {
-            writeln!(output, "  sudo chmod o+x -- {}", parent.display())
-                .map_err(crate::io_error)?;
-        }
-        if !metadata.is_empty() {
-            writeln!(
-                output,
-                "  sudo chmod o+r -- {}",
-                metadata
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            )
-            .map_err(crate::io_error)?;
-            writeln!(output, "This makes only the listed kernel event format/ID metadata readable (not event filters, raw trace data, enable controls or buffers). Tracebox needs these read-only decoder definitions even when recording an isolated instance.").map_err(crate::io_error)?;
-        }
-        for name in &pending {
-            let path = parent.join(name);
-            writeln!(
+            .filter(|name| {
+                fs::symlink_metadata(parent.join(name)).is_ok_and(|m| m.is_dir() && m.uid() == uid)
+                    && delegated_ready(&parent.join(name))
+            })
+            .collect());
+    }
+    let traverse = fs::metadata(parent).is_ok_and(|m| m.mode() & 1 == 0);
+    writeln!(output, "Optional Perfetto setup creates or repairs two project-specific tracefs instances. Separate ASB processes lease separate instances; concurrent replicas share a service. The following commands change only new instances or this user's existing instances, plus execute-only traversal of the instances parent if needed (not write/list permission). Existing foreign-owned instances will not be adopted:").map_err(crate::io_error)?;
+    if traverse {
+        writeln!(output, "  sudo chmod o+x -- {}", parent.display()).map_err(crate::io_error)?;
+    }
+    if !metadata.is_empty() {
+        writeln!(
+            output,
+            "  sudo chmod o+r -- {}",
+            metadata
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+        .map_err(crate::io_error)?;
+        writeln!(output, "This makes only the listed kernel event format/ID metadata readable (not event filters, raw trace data, enable controls or buffers). Tracebox needs these read-only decoder definitions even when recording an isolated instance.").map_err(crate::io_error)?;
+    }
+    for name in &pending {
+        let path = parent.join(name);
+        writeln!(
                 output,
                 "  sudo mkdir -- {}  (only if absent)\n  sudo chown -R {owner} -- {}\n  sudo chmod -R u+rwX -- {}",
                 path.display(),
@@ -176,64 +209,68 @@ pub(super) fn configure(
                 path.display()
             )
             .map_err(crate::io_error)?;
-        }
-        writeln!(output, "Ownership grants this user tracing control inside the listed instances. No global event/buffer/tracing_on values or sudoers will be changed; only the explicitly listed metadata read permissions and parent traversal may be widened. Instances are reusable until reboot; rerun `asb init --configure-host` after reboot. Declining leaves other collectors usable.").map_err(crate::io_error)?;
-        if !super::request_sudo_consent(output, yes)? {
-            return Ok(Vec::new());
-        }
-        let run = |args: &[&str]| {
-            Command::new("sudo")
-                .args(args)
-                .status()
-                .is_ok_and(|status| status.success())
-        };
-        if traverse && !run(&["chmod", "o+x", "--", "/sys/kernel/tracing/instances"]) {
-            writeln!(output, "Perfetto delegation was not applied: tracefs parent traversal could not be enabled.").map_err(crate::io_error)?;
-            return Ok(Vec::new());
-        }
-        if !metadata.is_empty() {
-            let mut args = vec!["chmod", "o+r", "--"];
-            args.extend(metadata.iter().filter_map(|path| path.to_str()));
-            if !run(&args) {
-                writeln!(output, "Some read-only Perfetto format metadata could not be delegated; review the exact chmod command printed above.").map_err(crate::io_error)?;
-            }
-        }
-        for name in pending {
-            let path = parent.join(name);
-            let path = path.to_str().expect("fixed ASCII tracefs path");
-            // Never chown an already-existing foreign instance, including a
-            // symlink or an old object that does not belong to this user.
-            let existing = fs::symlink_metadata(path);
-            let owned = match existing {
-                Ok(metadata) => metadata.is_dir() && metadata.uid() == uid,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    run(&["mkdir", "--", path])
-                }
-                Err(_) => false,
-            };
-            if !owned {
-                writeln!(output, "Did not adopt or modify {path}: it is foreign-owned, inaccessible, or could not be created. Review that exact instance before any manual repair.").map_err(crate::io_error)?;
-                continue;
-            }
-            if !run(&["chown", "-R", &owner, "--", path])
-                || !run(&["chmod", "-R", "u+rwX", "--", path])
-                || !delegated_ready(Path::new(path))
-            {
-                writeln!(
-                    output,
-                    "Could not delegate {path}; repair only that instance with the printed command."
-                )
-                .map_err(crate::io_error)?;
-            }
-        }
-        Ok(names
-            .into_iter()
-            .filter(|name| {
-                fs::symlink_metadata(parent.join(name)).is_ok_and(|m| m.is_dir() && m.uid() == uid)
-                    && delegated_ready(&parent.join(name))
-            })
-            .collect())
     }
+    writeln!(output, "Ownership grants this user tracing control inside the listed instances. No global event/buffer/tracing_on values or sudoers will be changed; only the explicitly listed metadata read permissions and parent traversal may be widened. Instances are reusable until reboot; rerun `asb init --configure-host` after reboot. Declining leaves other collectors usable.").map_err(crate::io_error)?;
+    if !super::request_sudo_consent(output, yes)? {
+        return Ok(Vec::new());
+    }
+    if traverse
+        && !run(&[
+            "chmod",
+            "o+x",
+            "--",
+            parent.to_str().expect("fixed ASCII tracefs path"),
+        ])
+    {
+        writeln!(
+            output,
+            "Perfetto delegation was not applied: tracefs parent traversal could not be enabled."
+        )
+        .map_err(crate::io_error)?;
+        return Ok(Vec::new());
+    }
+    if !metadata.is_empty() {
+        let mut args = vec!["chmod", "o+r", "--"];
+        args.extend(metadata.iter().filter_map(|path| path.to_str()));
+        if !run(&args) {
+            writeln!(output, "Some read-only Perfetto format metadata could not be delegated; review the exact chmod command printed above.").map_err(crate::io_error)?;
+        }
+    }
+    for name in pending {
+        let path = parent.join(name);
+        let path = path.to_str().expect("fixed ASCII tracefs path");
+        // Never chown an already-existing foreign instance, including a
+        // symlink or an old object that does not belong to this user.
+        let existing = fs::symlink_metadata(path);
+        let owned = match existing {
+            Ok(metadata) => metadata.is_dir() && metadata.uid() == uid,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                run(&["mkdir", "--", path])
+            }
+            Err(_) => false,
+        };
+        if !owned {
+            writeln!(output, "Did not adopt or modify {path}: it is foreign-owned, inaccessible, or could not be created. Review that exact instance before any manual repair.").map_err(crate::io_error)?;
+            continue;
+        }
+        if !run(&["chown", "-R", &owner, "--", path])
+            || !run(&["chmod", "-R", "u+rwX", "--", path])
+            || !delegated_ready(Path::new(path))
+        {
+            writeln!(
+                output,
+                "Could not delegate {path}; repair only that instance with the printed command."
+            )
+            .map_err(crate::io_error)?;
+        }
+    }
+    Ok(names
+        .into_iter()
+        .filter(|name| {
+            fs::symlink_metadata(parent.join(name)).is_ok_and(|m| m.is_dir() && m.uid() == uid)
+                && delegated_ready(&parent.join(name))
+        })
+        .collect())
 }
 
 #[cfg(test)]
