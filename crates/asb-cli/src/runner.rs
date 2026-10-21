@@ -47,6 +47,8 @@ fn emit_warning(
 
 #[derive(Serialize)]
 struct RunResult<'a> {
+    module: Option<workloads::contracts::ModuleDescriptor>,
+    benchmark_outcome: Option<workloads::outcome::BenchmarkOutcome>,
     replica_index: Option<usize>,
     execution_cohort: Option<&'a measurements::ExecutionCohort>,
     schema_version: u32,
@@ -539,6 +541,9 @@ fn run_mode(
         },
     )?;
     let prompt = workload_session.invocation().prompt.clone();
+    // Capture provenance at execution time; report rendering never consults
+    // today's adapter registry to label a historical record.
+    let module = workloads::descriptor(&config.workload);
     let workspace = workload_session.invocation().workspace.clone();
     let workload_baseline = workload_session.baseline_evidence();
     let workload_baseline_passed = workload_baseline.measured_passed();
@@ -818,14 +823,37 @@ fn run_mode(
     let process_success = agent_failure.is_none();
     // A usable submission can survive a failed client or proxy teardown.
     // Evaluator errors and process failures are recorded independently.
+    let mut evaluation = instrument_operation(
+        measurement_session.as_mut(),
+        LifecyclePhase::WorkloadEvaluation,
+        || Ok(workload_session.evaluate_outcome(final_response.as_deref().unwrap_or_default())),
+    )?
+    .map_err(Error::Run)?;
+    if let Err(reason) = evaluation.validate() {
+        evaluation = workloads::outcome::EvaluationOutcome::Error { reason };
+    }
+    if matches!(
+        evaluation,
+        workloads::outcome::EvaluationOutcome::Error { .. }
+    ) && let Some(session) = measurement_session.as_mut()
+    {
+        session
+            .event(LifecycleEvent::PhaseFailed(
+                LifecyclePhase::WorkloadEvaluation,
+            ))
+            .map_err(Error::Run)?;
+    }
     let (workload_success, grading_failure) = {
-        match instrument_operation(
-            measurement_session.as_mut(),
-            LifecyclePhase::WorkloadEvaluation,
-            || workload_session.evaluate(final_response.as_deref().unwrap_or_default()),
-        )? {
-            Ok(workloads::Evaluation::Passed) => (Some(true), None),
-            Ok(workloads::Evaluation::Failed(reason)) => {
+        match &evaluation {
+            workloads::outcome::EvaluationOutcome::Completed {
+                resolution: Some(true),
+                ..
+            } => (Some(true), None),
+            workloads::outcome::EvaluationOutcome::Completed {
+                resolution: Some(false),
+                reason,
+                ..
+            } => {
                 if let Some(session) = measurement_session.as_mut() {
                     session
                         .event(LifecycleEvent::PhaseFailed(
@@ -837,17 +865,21 @@ fn run_mode(
                     Some(false),
                     Some((
                         "workload_check_failed",
-                        format!("workload check failed: {reason}"),
+                        format!(
+                            "workload check failed: {}",
+                            reason.as_deref().unwrap_or("unresolved")
+                        ),
                     )),
                 )
             }
-            Err(error) => (
+            workloads::outcome::EvaluationOutcome::Error { reason: error } => (
                 None,
                 Some((
                     "grader_error",
                     format!("workload grader could not evaluate the result: {error}"),
                 )),
             ),
+            _ => (None, None),
         }
     };
     let cleanup = instrument_operation(
@@ -866,7 +898,10 @@ fn run_mode(
             None => run_error = Some(message),
         }
     }
-    let success = run_error.is_none() && process_success && workload_success == Some(true);
+    let success = run_error.is_none()
+        && process_success
+        && evaluation.completed()
+        && workload_success != Some(false);
     let workload_failure =
         grading_failure
             .as_ref()
@@ -945,11 +980,31 @@ fn run_mode(
     let configured_kind = workload_session.evaluation_kind();
     let evaluation_kind = workloads::scored_kind(configured_kind, &workload_baseline);
     let resolution_eligible = workloads::resolution_eligible(evaluation_kind);
+    let evaluation_pending = matches!(
+        &evaluation,
+        workloads::outcome::EvaluationOutcome::Pending { .. }
+    );
     let result = RunResult {
+        module,
+        benchmark_outcome: Some(workloads::outcome::BenchmarkOutcome {
+            schema_version: 1,
+            execution_success: Some(process_success),
+            evaluation,
+            cleanup_confirmed: Some(workload_cleanup_confirmed && proxy_evidence.cleanup_confirmed),
+            evidence: workload_session.checkpoint_evidence(),
+            policy: workload_session.metric_policy(),
+            lineage: workloads::outcome::EvaluationLineage {
+                execution_attempt: workload_session.invocation().identity.attempt_id.clone(),
+                evaluation_id: workloads::TaskIdentity::local("evaluation", None).attempt_id,
+                supersedes: None,
+            },
+        }),
         replica_index: Some(options.replica.index),
         execution_cohort: options.execution_cohort,
         schema_version: 2,
-        status: if success && evaluation_kind == "invalid-baseline" {
+        status: if evaluation_pending && process_success && run_error.is_none() {
+            "evaluation-pending"
+        } else if success && evaluation_kind == "invalid-baseline" {
             "unscored"
         } else if success && !resolution_eligible {
             "smoke-passed"
@@ -971,11 +1026,10 @@ fn run_mode(
         workload_failure,
         failure_kind: failure.as_ref().map(|(kind, _)| *kind),
         failure_reason: failure.as_ref().map(|(_, reason)| reason.clone()),
-        success_rate: resolution_eligible.then_some(if workload_success == Some(true) {
-            1.0
-        } else {
-            0.0
-        }),
+        success_rate: resolution_eligible
+            .then_some(workload_success)
+            .flatten()
+            .map(|resolved| if resolved { 1.0 } else { 0.0 }),
         adapter_smoke_success: (evaluation_kind == "adapter-smoke").then_some(success),
         elapsed_ms: run_metrics.elapsed_ms,
         exit_code: child.status.code(),
@@ -1004,6 +1058,8 @@ fn run_mode(
             .event(LifecycleEvent::RunFinishing)
             .map_err(Error::Run)?;
         let measured = measurements::RunMeasurement {
+            module: result.module.as_ref(),
+            benchmark_outcome: result.benchmark_outcome.as_ref(),
             replica_index: result.replica_index,
             execution_cohort: result.execution_cohort,
             schema_version: 2,
@@ -1332,6 +1388,8 @@ pub(crate) fn resolve_log_path(config_path: &Path, configured_path: &str) -> Pat
 
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
     let summary = serde_json::json!({
+        "module": result.module,
+        "benchmark_outcome": result.benchmark_outcome,
         "replica_index": result.replica_index,
         "execution_cohort": result.execution_cohort,
         "schema_version": result.schema_version,
@@ -2135,6 +2193,8 @@ mod tests {
             .unwrap();
         session
             .finish(crate::measurements::RunMeasurement {
+                module: None,
+                benchmark_outcome: None,
                 replica_index: None,
                 execution_cohort: None,
                 schema_version: 1,
@@ -2425,6 +2485,8 @@ mod tests {
 
     fn result<'a>() -> RunResult<'a> {
         RunResult {
+            module: None,
+            benchmark_outcome: None,
             replica_index: None,
             execution_cohort: None,
             schema_version: 2,

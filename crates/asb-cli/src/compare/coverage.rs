@@ -4,6 +4,102 @@ use crate::Error;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
+fn metric_scope(benchmark: &BenchmarkData) -> Result<String, Error> {
+    serde_json::to_string(&(
+        &benchmark.agent,
+        &benchmark.provider,
+        &benchmark.model,
+        &benchmark.workload,
+        benchmark
+            .selection
+            .as_ref()
+            .and_then(|s| s.dataset.as_ref())
+            .or_else(|| benchmark.task.as_ref().and_then(|t| t.dataset.as_ref())),
+        &benchmark.module,
+        group_kind(benchmark),
+    ))
+    .map_err(|e| Error::Run(e.to_string()))
+}
+
+pub(super) fn metric_groups(
+    benchmarks: &[BenchmarkData],
+) -> Result<BTreeMap<String, crate::workloads::outcome::MetricSummary>, Error> {
+    use crate::workloads::outcome::{EvaluationOutcome, MetricPolicy};
+    let mut groups = BTreeMap::<String, (MetricPolicy, Vec<(String, EvaluationOutcome)>)>::new();
+    let mut observed = BTreeMap::<String, Vec<MetricPolicy>>::new();
+    for benchmark in benchmarks {
+        if let Some(outcome) = &benchmark.benchmark_outcome {
+            let policies = observed.entry(metric_scope(benchmark)?).or_default();
+            if !policies.contains(&outcome.policy) {
+                policies.push(outcome.policy.clone());
+            }
+        }
+    }
+    for benchmark in benchmarks {
+        if !crate::workloads::resolution_eligible(group_kind(benchmark)) {
+            continue;
+        }
+        let policy = benchmark
+            .benchmark_outcome
+            .as_ref()
+            .map(|o| o.policy.clone())
+            .unwrap_or_default();
+        let scope = metric_scope(benchmark)?;
+        let task = benchmark
+            .task
+            .as_ref()
+            .map(|t| t.task_id.clone())
+            .or_else(|| benchmark.selection.as_ref().map(|s| s.task_id.clone()))
+            .unwrap_or_else(|| benchmark.label.clone());
+        let evaluation = benchmark
+            .benchmark_outcome
+            .as_ref()
+            .map(|o| o.evaluation.clone())
+            .unwrap_or_else(|| {
+                if benchmark.evaluation_completed {
+                    EvaluationOutcome::binary(benchmark.metrics.get("success_rate") == Some(&1.0))
+                } else {
+                    EvaluationOutcome::Pending {
+                        reason: "no completed evaluation recorded".into(),
+                    }
+                }
+            });
+        let mut policies = vec![policy];
+        // An absent attempt still belongs in every observed policy's coverage.
+        // Never make a custom score look complete by dropping missing rows.
+        if benchmark.benchmark_outcome.is_none()
+            && !benchmark.evaluation_completed
+            && let Some(known) = observed.get(&scope)
+        {
+            policies = known.clone();
+        }
+        for policy in policies {
+            let key =
+                serde_json::to_string(&(&scope, &policy)).map_err(|e| Error::Run(e.to_string()))?;
+            groups
+                .entry(key)
+                .or_insert_with(|| (policy, Vec::new()))
+                .1
+                .push((task.clone(), evaluation.clone()));
+        }
+    }
+    Ok(groups
+        .into_iter()
+        .map(|(key, (policy, rows))| (key, crate::workloads::outcome::aggregate(policy, &rows)))
+        .collect())
+}
+
+pub(super) fn metric_html(benchmarks: &[BenchmarkData]) -> Result<String, Error> {
+    let mut html = String::from(
+        "<section><h2>Benchmark metric policies</h2><p>Estimates use completed named rewards only; incomplete coverage is not an official population score. Uncertainty is the standard error over independent task means, unavailable with fewer than two tasks or unequal repetition counts for attempt means. Repetitions are not pass@k.</p><table><tr><th>Group</th><th>Policy / reward</th><th>Reward coverage</th><th>Tasks</th><th>Estimate</th><th>Task standard error</th></tr>",
+    );
+    for (key, group) in metric_groups(benchmarks)? {
+        html.push_str(&format!("<tr><td>{}</td><td>{} v{} / {}</td><td>{}/{}</td><td>{}</td><td>{}</td><td>{}</td></tr>", super::escape(&key), super::escape(&group.policy.id), group.policy.version, super::escape(&group.policy.reward), group.rewarded_attempts, group.selected_attempts, group.unique_tasks, group.estimate.map_or_else(|| "Unavailable".into(), |v| format!("{v:.6}")), group.task_cluster_standard_error.map_or_else(|| "Unavailable".into(), |v| format!("{v:.6}"))));
+    }
+    html.push_str("</table></section>");
+    Ok(html)
+}
+
 pub(super) fn group_kind(benchmark: &BenchmarkData) -> &str {
     benchmark
         .selection
@@ -56,6 +152,8 @@ pub(super) struct PopulationCoverage {
     complete_population_evaluation: bool,
     full_population_resolution_rate: Option<f64>,
     #[serde(skip)]
+    nonbinary: bool,
+    #[serde(skip)]
     selected: BTreeSet<String>,
     #[serde(skip)]
     evaluated: BTreeSet<String>,
@@ -102,7 +200,8 @@ impl PopulationCoverage {
         self.complete_population_evaluation =
             self.selected_tasks == population && self.evaluated_attempts == self.selected_attempts;
         // Repeated attempts are not pass@1 or an official one-attempt/task score.
-        self.full_population_resolution_rate = (self.complete_population_evaluation
+        self.full_population_resolution_rate = (!self.nonbinary
+            && self.complete_population_evaluation
             && self.selected_attempts == self.selected_tasks)
             .then_some(self.resolved_tasks as f64 / population as f64);
         Ok(())
@@ -121,32 +220,41 @@ pub(super) fn populations(
         else {
             continue;
         };
+        if benchmark.benchmark_outcome.as_ref().is_some_and(|o| {
+            o.policy != crate::workloads::outcome::MetricPolicy::default()
+                || (o.evaluation.completed() && o.evaluation.resolution().is_none())
+        }) {
+            continue;
+        }
         let key = serde_json::to_string(&(
             &benchmark.agent,
             &benchmark.provider,
             &benchmark.model,
             &selection.workload,
             dataset,
+            &benchmark.module,
         ))
         .map_err(|error| Error::Run(error.to_string()))?;
-        result
-            .entry(key)
-            .or_insert_with(|| PopulationCoverage {
-                label: format!(
-                    "{} / {} / {} / {}",
-                    benchmark.agent, benchmark.provider, benchmark.model, selection.workload
-                ),
-                ..Default::default()
-            })
-            .observe(
-                &selection.task_id,
-                population,
-                benchmark.evaluation_completed,
-                benchmark
-                    .metrics
-                    .get("success_rate")
-                    .is_some_and(|rate| *rate == 1.0),
-            )?;
+        let group = result.entry(key).or_insert_with(|| PopulationCoverage {
+            label: format!(
+                "{} / {} / {} / {}",
+                benchmark.agent, benchmark.provider, benchmark.model, selection.workload
+            ),
+            ..Default::default()
+        });
+        group.nonbinary |= benchmark
+            .benchmark_outcome
+            .as_ref()
+            .is_some_and(|o| o.evaluation.completed() && o.evaluation.resolution().is_none());
+        group.observe(
+            &selection.task_id,
+            population,
+            benchmark.evaluation_completed,
+            benchmark
+                .metrics
+                .get("success_rate")
+                .is_some_and(|rate| *rate == 1.0),
+        )?;
     }
     Ok(result)
 }
