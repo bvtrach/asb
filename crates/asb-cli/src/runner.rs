@@ -1,5 +1,6 @@
 //! Live execution of one configured benchmark.
 mod completion;
+pub(crate) mod diagnostics;
 pub(crate) mod replica;
 pub(crate) mod reuse;
 #[cfg(target_os = "linux")]
@@ -251,13 +252,16 @@ fn run_concurrent(
 
     completed.sort_by_key(|(index, _, _)| *index);
     let mut failures: Vec<(String, Vec<usize>)> = Vec::new();
+    let mut presentation = Ok(());
     for (index, result, buffer) in completed {
-        output.write_all(&buffer).map_err(io_error)?;
+        if presentation.is_ok() {
+            presentation = output.write_all(&buffer).map_err(io_error);
+        }
         if let Err(error) = result {
             add_replica_failure(&mut failures, index + 1, error.to_string());
         }
     }
-    if failures.is_empty() {
+    let primary = if failures.is_empty() {
         Ok(())
     } else {
         Err(Error::Run(format!(
@@ -280,7 +284,8 @@ fn run_concurrent(
                 .collect::<Vec<_>>()
                 .join("; ")
         )))
-    }
+    };
+    diagnostics::preserve_primary(primary, presentation)
 }
 
 fn add_replica_failure(failures: &mut Vec<(String, Vec<usize>)>, index: usize, message: String) {
@@ -1038,7 +1043,8 @@ fn run_mode(
     if let Some(path) = runtime_output {
         completion_outputs.push(path);
     }
-    if let Ok(record) = completion::persist(
+    let mut continuation_warnings = Vec::new();
+    match completion::persist(
         config_path,
         &config.log_file,
         &result,
@@ -1049,16 +1055,41 @@ fn run_mode(
             replica: options.replica,
             outputs: &completion_outputs,
         },
-    ) && let Some(observer) = options.on_completion
-    {
-        let _ = observer.completed(options.replica, &record);
+    ) {
+        Ok(record) => {
+            if let Some(observer) = options.on_completion
+                && let Err(error) = observer.completed(options.replica, &record)
+            {
+                continuation_warnings.push(diagnostics::Warning::new(
+                    diagnostics::Stage::Replica,
+                    config_path,
+                    &record,
+                    &error,
+                ));
+            }
+        }
+        Err(error) => continuation_warnings.push(diagnostics::Warning::new(
+            diagnostics::Stage::Outcome,
+            config_path,
+            &completion::directory(config_path, &config.log_file),
+            &error,
+        )),
     }
-    if json {
-        render_json(&result, output)?;
-    } else {
-        render_human(&result, output)?;
-    }
-    failure.map_or(Ok(()), |(_, reason)| Err(Error::Run(reason)))
+    let presentation = (|| {
+        if json {
+            render_json(&result, output)?;
+        } else {
+            render_human(&result, output)?;
+        }
+        for warning in continuation_warnings {
+            warning.emit(json, output, warnings)?;
+        }
+        Ok(())
+    })();
+    diagnostics::preserve_primary(
+        failure.map_or(Ok(()), |(_, reason)| Err(Error::Run(reason))),
+        presentation,
+    )
 }
 
 /// Prevent replayed agents from contacting any live provider, updater, or

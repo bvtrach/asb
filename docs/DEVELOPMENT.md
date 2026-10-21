@@ -67,6 +67,25 @@ and rejects every undeclared pair before configuration or command mutation.
 These are protocol-only fixtures: no agent/provider is executed. See the
 [independently checked repair ledger](CODE_SMELL_REPAIRS.md) for the broader
 code-smell audit and remaining delivery classes.
+Continuation metadata is optional for a fresh grade, not optional for reuse.
+If an outcome, replica/group receipt or initial/final input seal cannot be
+published, human output identifies the missing evidence without changing the
+grade or retrying a client. JSONL instead emits a separate schema-1 object with
+`event: "continuation_warning"`, a stable `code`, display path, safe reason and
+explicit remediation. Consumers must distinguish these events from schema-2
+benchmark summaries (`task`, `process_success`, `workload_success`); unchanged
+successful publication adds no event. Arbitrary helper/observer text is not
+printed. Identical stage/configuration/cause warnings are emitted once across
+replicas; different causes remain distinct. A writer failure is reported without
+discarding an existing benchmark failure. Existing sealed logs and grade
+records are never rewritten to add these presentation diagnostics. Missing
+starts/seals may not be reconstructable: preserve results and use explicit
+continuation/reconciliation only when its normal checks permit it.
+`cargo test --offline --locked --test completion_diagnostics` uses actual blocked
+publication paths, a private catalog-command fixture and a local synthetic
+client, not a provider, installed agent package or workload container. It checks
+both grades, client failures, concurrent deduplication, broken writers and
+conservative resume without another client invocation.
 `cargo test --locked cassette::` exercises the provider-free multi-track backend:
 manifest and compatibility bounds, stable seeded choices, selector edge cases,
 bounded metadata inspection, selective corruption checks and durable publication.

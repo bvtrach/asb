@@ -55,7 +55,14 @@ deduplicated diagnostics and fault-injection tests. Audit curl kill/wait,
 installer temporary publication/cleanup and consumed agent artifacts for
 bounded teardown and actionable errors. Best-effort cleanup in destructors
 is not automatically equivalent to an incorrectly ignored required write.
-Pending.
+Completion-diagnostic candidate: fresh outcome/observer/group-checkpoint and
+initial/final input-seal failures now produce deduplicated human warnings or
+typed JSONL events. Original grades, process results, sealed logs and primary
+errors remain intact; missing evidence never authorizes an automatic retry.
+Actual filesystem-publication and broken-writer fixtures cover true/false
+grades, concurrent replicas and conservative resume. Independent review,
+full gates and delivery remain pending. Other subprocess/publication cleanup
+items in this class are not claimed complete.
 
 ## 4. Typed domain and wire contracts
 

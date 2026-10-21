@@ -220,6 +220,7 @@ pub(crate) fn run_with_options(
     let preserved_source = backup.join(format!("{stem}-results"));
     let replay_sources =
         execution::replay_sources(&plan, replay_inputs.as_deref().unwrap_or(&preserved_source));
+    let warnings = Mutex::new(BTreeSet::new());
     let checkpoint = if options.resume {
         Some(checkpoint::Inputs::resume(
             parent,
@@ -229,7 +230,19 @@ pub(crate) fn run_with_options(
             &replay_sources,
         )?)
     } else {
-        checkpoint::Inputs::begin(parent, &results_root, &plan, mode, &replay_sources).ok()
+        match checkpoint::Inputs::begin(parent, &results_root, &plan, mode, &replay_sources) {
+            Ok(checkpoint) => Some(checkpoint),
+            Err(error) => {
+                crate::runner::diagnostics::Warning::new(
+                    crate::runner::diagnostics::Stage::InputInitial,
+                    Path::new(path),
+                    &results_root.join(".checkpoint/inputs.json"),
+                    &error,
+                )
+                .emit(json, output, &warnings)?;
+                None
+            }
+        }
     };
     if options.reconcile_completed {
         checkpoint
@@ -255,7 +268,6 @@ pub(crate) fn run_with_options(
     }
 
     let mut failures: Vec<(String, Vec<String>)> = Vec::new();
-    let warnings = Mutex::new(BTreeSet::new());
     let execution = execution::Execution {
         source: path,
         parent,
@@ -344,8 +356,24 @@ pub(crate) fn run_with_options(
             }
         }
     }
-    if let Some(checkpoint) = checkpoint {
-        let _ = checkpoint.finish();
+    if let Some(checkpoint) = checkpoint
+        && let Err(error) = checkpoint.finish()
+    {
+        let presentation = crate::runner::diagnostics::Warning::new(
+            crate::runner::diagnostics::Stage::InputFinal,
+            Path::new(path),
+            &results_root.join(".checkpoint/inputs.json"),
+            &error,
+        )
+        .emit(json, output, &warnings);
+        if let Err(error) = presentation {
+            schedule_error = Some(match schedule_error {
+                Some(primary) => Error::Run(format!(
+                    "{primary}; continuation diagnostic output also failed: {error}"
+                )),
+                None => error,
+            });
+        }
     }
     // Always regenerate the comparison artifacts after the execution loop,
     // including partial sweeps. The comparison report records missing or
@@ -359,9 +387,7 @@ pub(crate) fn run_with_options(
     } else {
         compare::run(path, output).err()
     };
-    if let Some(error) = schedule_error {
-        Err(error)
-    } else if failures.is_empty() {
+    let primary = if failures.is_empty() {
         comparison_error.map_or(Ok(()), Err)
     } else {
         let mut details = format!(
@@ -380,7 +406,8 @@ pub(crate) fn run_with_options(
             details.push_str(&format!("; comparison failed: {error}"));
         }
         Err(Error::Run(details))
-    }
+    };
+    crate::runner::diagnostics::preserve_primary(primary, schedule_error.map_or(Ok(()), Err))
 }
 
 fn cassette_filename(config: &BenchmarkConfig) -> String {
