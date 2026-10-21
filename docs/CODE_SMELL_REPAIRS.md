@@ -31,10 +31,27 @@ The exact artifact module allowance extends the reviewed named layout guard
 without weakening controller-directory or registered-adapter exclusions.
 Both parents' actual publication/capture/artifact tests are retained. Historical
 old-base artifact checks and publication32's 1,246-test qualification do not
-qualify this new combined tree. Independent source review, focused checks, fresh
-full qualification, hosted/package CI, merge, post-merge verification and release
-remain pending. No collector35/runtime34 changes are included. Windows identity,
+qualify this new combined tree. Focused checks for the corrected integration are
+recorded below; final independent source review, fresh full qualification,
+hosted/package CI, merge, post-merge verification and release remain pending.
+No collector35/runtime34 changes are included. Windows identity,
 publication and independent-reader behavior remain source-only qualification.
+
+Independent source review of `a9bfa663` identified a definite compile defect:
+the prepared guest was destructured but revalidation still addressed the old
+wrapper field. Signed `300cbadb` instead revalidates the retained instrumentation
+guard binding against the same request owner and keeps it alive through the full
+run. The first actual build of this corrected integration passed. Its focused
+offline matrix passed **511 tests** with four explicit optional skips: agents 65,
+layout one, actual artifact-entry two, runner 105, workloads 169, comparison 70,
+checkpoint 33, repeated CLI 17, benchmark protocol 35 and guest/native-gate 14.
+This includes the artifact/capture/publication and grade/resource regression
+families together, not just synthetic snapshot tests. Strict workspace/all-target/
+all-feature Clippy and formatting passed. The actual executable SHA-256 stayed
+`5312430ea785a54fb73438ea926a85f26585131f8a2a12563745594906cf9e9b`
+before/after all runtime checks. Logs and hashes are `target/artifact33-*`;
+the source and executable were frozen until every runtime handle was terminal.
+Full qualification remains held for independent review and cache coordination.
 
 Integrated candidate, staged patch **0.2.32**: source-reviewed publication
 `1a2980fb`, platform confirmation `4affdb3a` and independent Windows capture
