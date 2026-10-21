@@ -155,6 +155,10 @@ fn readonly_mount_flags(flags: libc::c_ulong) -> libc::c_ulong {
 }
 
 #[cfg(test)]
+#[path = "../../../../tests/unit/perfetto_bootstrap.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod tests {
     #[cfg(target_os = "linux")]
     #[test]

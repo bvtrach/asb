@@ -7,6 +7,8 @@
 
 use crate::collectors;
 mod cohort;
+#[cfg(test)]
+mod coverage_tests;
 pub use cohort::ExecutionCohort;
 use serde::{Deserialize, Serialize};
 use std::any::{Any, TypeId};

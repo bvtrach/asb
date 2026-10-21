@@ -247,3 +247,7 @@ fn become_child_subreaper() -> io::Result<()> {
         Err(io::Error::last_os_error())
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "process_gate/coverage_tests.rs"]
+mod coverage_tests;

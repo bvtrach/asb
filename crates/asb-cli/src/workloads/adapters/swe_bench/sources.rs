@@ -126,6 +126,10 @@ fn preserve(path: &Path, output: &mut dyn Write) -> Result<(), Error> {
 }
 
 #[cfg(test)]
+#[path = "sources/coverage_tests.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

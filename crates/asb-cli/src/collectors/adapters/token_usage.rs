@@ -646,6 +646,10 @@ fn env_u64(name: &str) -> Option<u64> {
 }
 
 #[cfg(test)]
+#[path = "../../../tests/unit/token_usage.rs"]
+mod normalization_tests;
+
+#[cfg(test)]
 mod tests {
     use super::usage_from_cassette;
 

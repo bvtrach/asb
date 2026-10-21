@@ -1,6 +1,7 @@
 //! Opt-in real-agent smoke against a loopback Responses fixture, never a live provider.
 #![cfg(unix)]
 
+mod support;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::os::unix::fs::symlink;
@@ -10,6 +11,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use support::IsolatedEnvironment;
 
 #[test]
 #[ignore = "requires ASB_REAL_CODEX pointing to a local Codex executable"]
@@ -204,7 +206,7 @@ fn exercise_agent(agent: &str, binary: &str, executable: std::ffi::OsString, usa
             .current_dir(&root)
             .args(["--kill-after=2s", &deadline, env!("CARGO_BIN_EXE_asb")])
             .args(args)
-            .env_clear()
+            .isolated_env()
             .env("HOME", &root)
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("PYTHONUNBUFFERED", "1")
