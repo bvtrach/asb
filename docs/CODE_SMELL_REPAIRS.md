@@ -14,11 +14,12 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
-Controller transport source integration, staged patch **0.2.33**: qualified
+Controller transport integration, staged patch **0.2.33**: qualified
 old-main controller checkpoint `7472c33a` is combined with actual main
 `cabaa576` (peer PR #294, bundled recording/replay, version 0.2.31). The next
-0.2.32 slot is reserved for the separate cli2key fixture repair; that repair is
-not merged here. New run-owned recording/replay coordination, bounded capture
+0.2.32 slot belongs to the separate cli2key fixture repair; approved fixture head
+`5e4bd492` is included through signed merge `af0eb258` without changing staged
+0.2.33 or the reviewed controller production. New run-owned recording/replay coordination, bounded capture
 receipts, immutable track/selection proofs, typed recording-failure disposition
 and checkpoint fields remain byte-identical to the incoming main. Provider and
 proxy archive/track authority boundaries, handler accounting, resource/grade
@@ -31,11 +32,33 @@ outside the Unix boundedness qualification. The only merge conflict was the
 test layout guard: the named category record and exact controller-directory
 allowance are retained alongside main's exact `proxy/capture.rs` allowance and
 all registered-adapter negative guards. Both parents' tests and new CI package
-asset checks remain present. This checkpoint is source-only: earlier full-suite
-evidence below does not qualify this new combined tree. Independent integration
-review, fresh build/focused/full checks, Clippy/formatting/build/docs, hosted CI,
-merge, post-merge verification and release remain pending. Publication/artifact
+asset checks remain present. Earlier old-main full-suite evidence below does not
+qualify this new combined tree; its independent integration review and fresh
+qualification are recorded next. Hosted CI, merge, post-merge verification and
+release remain pending. Publication/artifact
 repairs and runtime34/collector35 are not folded into this integration.
+
+Root independently source-approved `10f8f133` and the fixture-only `af0eb258`
+merge, whose only conflicts were Cargo version lines resolved to 0.2.33. The
+fixture and diagnostic document remain byte-identical to approved `5e4bd492`.
+The actual 0.2.33 executable was built first. Focused offline qualification
+passed 150 tests with no failures or ignored cases: controller 29, remote 25,
+typed task contracts six, layout one, bounded capture 12, recording two, replay
+three, actual repeated CLI 29, capture-session two, benchmark protocol 35 and
+cli2key fixture six. The fresh all-target/all-feature offline suite at frozen
+`af0eb258` passed **1,258 tests**, zero failures and 21 explicit optional skips
+across 23 targets. No skipped original-SDK/host/provider qualification is implied.
+Strict workspace/all-target/all-feature Clippy, formatting and sequential offline
+build/private Rust docs/pinned AutoUML 0.7.2/flows/interactive views/bash and zsh
+completions passed. Actual executable SHA-256 remained
+`f6f22e68ede91b814fa59dd7a94fbf57cc9fc88540d418f25549a21b392eee72`
+before and after focused tests, after the full suite and after the final build.
+Logs and hashes are `target/controller33-*`; source and executable were frozen
+through all runtime handles. The preexisting untracked `.asb/install.log` remains
+unchanged, including its original empty contents and timestamp. This qualification
+does not qualify the legacy non-Unix blocking transport or close the remaining
+audit classes. Actual-main ancestry, hosted/package CI, PR publication/merge,
+post-merge verification and release remain coordinated root-owned steps.
 
 Integrated candidate, staged patch **0.2.31**: the independently source-reviewed
 Unix controller transport `eec99cf8` is combined with typed-controller integration
