@@ -66,6 +66,33 @@ impl Drop for Project {
 }
 
 #[test]
+fn guest_refuses_unowned_or_controller_namespace_service_lifetimes_before_preparation() {
+    use std::os::unix::fs::MetadataExt;
+    let project = Project::new();
+    let namespace = std::fs::metadata("/proc/self/ns/pid").unwrap().ino();
+    for owner in [
+        serde_json::Value::Null,
+        serde_json::json!({
+            "controller_namespace":namespace,"guest_namespace":namespace,"token":"e".repeat(32)
+        }),
+    ] {
+        let mut request = project.request();
+        request["process_lifetime"] = "through-evaluation".into();
+        request["workload_owner"] = owner;
+        let result = Command::new(env!("CARGO_BIN_EXE_asb"))
+            .arg("__asb-agent")
+            .env_clear()
+            .env("ASB_GUEST_AGENT_REQUEST", request.to_string())
+            .output()
+            .unwrap();
+        assert!(!result.status.success());
+        assert!(result.stdout.is_empty());
+        assert!(!project.0.join("private").exists());
+        assert!(!project.0.join("workspace/performed.txt").exists());
+    }
+}
+
+#[test]
 fn guest_uses_registered_adapter_prepares_before_gate_and_preserves_output_usage_and_failure() {
     let project = Project::new();
     let mut request = project.request();

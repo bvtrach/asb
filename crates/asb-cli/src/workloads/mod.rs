@@ -27,7 +27,7 @@ pub(crate) mod recovery;
 pub(crate) mod relay;
 mod remote;
 mod selection;
-mod session;
+pub(crate) mod session;
 pub(crate) fn runtime_inputs(
     name: &str,
     context: &crate::runtime_inputs::Context<'_>,

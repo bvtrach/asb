@@ -1,5 +1,6 @@
 """Provider-free managed execution tests using a deterministic Docker API fixture."""
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import threading
@@ -99,6 +100,113 @@ class API:
 
 
 class ExecutionTests(unittest.TestCase):
+    def owner(self):
+        return {"controller_namespace":100, "guest_namespace":200, "token":"e" * 32}
+
+    def frames(self, status=0, timed_out=0):
+        return (f"\n__ASB_AGENT_ENDED__:42:{'e' * 32}:{status}:123:{timed_out}\n"
+                f"\n__ASB_WORKLOAD_READY__:42:{'e' * 32}:{status}\n").encode()
+
+    def test_workload_frames_keep_split_output_and_publish_one_exact_boundary(self):
+        ended = []
+        frames = RUNTIME.WorkloadFrames(42, self.owner(), ended.append)
+        received = bytearray()
+        for byte in b"agent output without newline" + self.frames(status=7, timed_out=1):
+            received.extend(frames.feed(bytes([byte])))
+        self.assertTrue(frames.ready)
+        self.assertEqual(bytes(received), b"agent output without newline\n\n")
+        self.assertEqual(ended, [{"exit_code":7, "elapsed_seconds":.123, "timed_out":True}])
+        self.assertNotIn(b"__ASB_", received)
+
+    def test_workload_frames_reject_wrong_owner_order_status_and_repeated_end(self):
+        valid = self.frames()
+        ended, ready = valid.strip().split(b"\n\n")
+        for content in [valid.replace(b":42:", b":43:"), valid.replace(b"e" * 32, b"a" * 32),
+                        ready + b"\n", ended + b"\n" + ended + b"\n",
+                        valid.replace(b":0:123:0", b":256:123:0"),
+                        valid.replace(b":0:123:0", b":0:123:2"),
+                        ended + b"\n" + ready.replace(b":0", b":7") + b"\n"]:
+            with self.subTest(content=content), self.assertRaises(RUNTIME.ExecutionError):
+                RUNTIME.WorkloadFrames(42, self.owner(), None).feed(content)
+
+    def test_workload_output_remains_bounded_without_linebreaks(self):
+        frames = RUNTIME.WorkloadFrames(42, self.owner(), None)
+        output = frames.feed(b"x" * 100000)
+        self.assertEqual(len(frames.pending), 512)
+        self.assertEqual(len(output), 100000-512)
+
+    def retained_workspace(self, metadata_override=None):
+        workspace, container, api, _ = self.workspace()
+        metadata = dict(workload_owner=self.owner(), tree_quiesced=False, exit_code=0,
+                        elapsed_ms=123, timed_out=False)
+        metadata.update(metadata_override or {})
+        original_exec = container.exec_run
+        def execute(argv):
+            if argv == ["cat", "/opt/asb-private/attempt/agent-result.json"]:
+                return SimpleNamespace(exit_code=0, output=json.dumps(metadata).encode())
+            return original_exec(argv)
+        container.exec_run = execute
+        class RetainedStream(Stream):
+            def __next__(stream):
+                if stream.index > len(api.output):
+                    if not container.killed.wait(3):
+                        raise AssertionError("SDK did not stop its owned namespace")
+                    raise StopIteration
+                return super().__next__()
+        def start(*_args, **_kwargs):
+            api.stream = RetainedStream(api)
+            return api.stream
+        api.exec_start = start
+        api.output = [(b"agent output", None), (self.frames()[:40], None), (self.frames()[40:], None)]
+        remove = container.remove
+        def stop(force):
+            remove(force)
+            container.killed.set()
+        container.remove = stop
+        return workspace, container, api
+
+    def test_services_and_their_output_transport_live_through_grading_until_sdk_cleanup(self):
+        workspace, container, api = self.retained_workspace()
+        ended = []
+        with workspace:
+            result = workspace.execute(["asb", "__asb-agent"], gate="application",
+                workload_owner=self.owner(), on_execution_end=ended.append)
+            self.assertTrue(result["workload_processes_retained"])
+            self.assertEqual(result["exit_code"], 0)
+            self.assertEqual(result["elapsed_seconds"], .123)
+            self.assertEqual(result["metadata"]["workload_owner"], self.owner())
+            self.assertEqual(len(ended), 1)
+            self.assertFalse(api.stream.closed)
+            self.assertTrue(workspace.held_executions[0][1].is_alive())
+            self.assertTrue(workspace.active.acquire(blocking=False))
+            workspace.active.release()
+            self.assertNotIn("kill", container.events)
+            # The SDK may now run its official verifier while services remain.
+            container.events.append("official-grade")
+        self.assertTrue(api.stream.closed)
+        self.assertTrue(api.stream._response.closed)
+        self.assertEqual(workspace.held_executions, [])
+        self.assertLess(container.events.index("official-grade"), container.events.index("remove"))
+
+    def test_contradictory_retained_metadata_resets_owned_tree_and_cannot_grade(self):
+        for changed in [{"tree_quiesced":True}, {"workload_owner":None}, {"exit_code":7},
+                        {"elapsed_ms":124}, {"timed_out":True}]:
+            with self.subTest(changed=changed):
+                workspace, container, api = self.retained_workspace(changed)
+                with workspace:
+                    with self.assertRaises(RUNTIME.ExecutionError):
+                        workspace.execute(["asb"], gate="application", workload_owner=self.owner())
+                    self.assertIn("kill", container.events)
+                    self.assertEqual(workspace.held_executions, [])
+                    self.assertTrue(api.stream.closed)
+
+    def test_invalid_retention_never_launches_an_execution(self):
+        for owner in [{}, dict(self.owner(), guest_namespace=100), dict(self.owner(), token="bad")]:
+            workspace, _, api, _ = self.workspace()
+            with workspace, self.assertRaises(RUNTIME.ExecutionError):
+                workspace.execute(["asb"], gate="application", workload_owner=owner)
+            self.assertEqual(api.calls, [])
+
     def test_collector_attachment_has_its_own_budget_and_is_not_agent_elapsed_time(self):
         workspace, container, _, _ = self.workspace()
         with workspace:

@@ -276,8 +276,18 @@ subreaper. This retains helpers that daemonize or outlive an intermediate
 wrapper under the benchmark root, so perf inheritance, bpftrace fork tracking,
 pidstat sampling, and process-accounted timing include the complete relevant
 tree without collecting unrelated host processes.
-The guest driver likewise owns a private child supervisor; both supervisors
-stop and reap leftover helpers before accepting an execution result. Offline
+The guest driver likewise owns a private child supervisor. By default both
+supervisors stop and reap leftover helpers before accepting an execution result.
+An adapter may instead delegate guest service lifetime through evaluation to
+its owned private PID namespace. Principal exit ends execution accounting;
+bounded private metadata confirms the handoff, output pipes remain drained,
+and SDK teardown stops/removes services only after grading. Native and SWE-bench
+execution retain default quiescence. The opt-in `benchmark_live_lifetime.py`
+qualification uses the original Jupyter task, a known reference solution through
+a synthetic client and the official verifier. It requires
+`ASB_TEST_BENCHMARK_ASB`/`ASB_TEST_SWECATALOG_ROOT` and the original Terminal SDK
+interpreter; it never calls a live LLM. This qualifies service lifetime, not AI
+solving or preservation of an agent's interactive shell variables. Offline
 guest fixtures exercise double forks, ignored TERM, inherited output pipes,
 nonzero exits and output-consumer failure, and verify that unrelated fixture
 processes survive. The optional `benchmark_live_quiescence.py` qualification

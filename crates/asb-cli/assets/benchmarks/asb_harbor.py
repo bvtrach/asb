@@ -346,6 +346,8 @@ class HarborTask:
             self.loop.close()
             if self.journal is not None:
                 self.journal.close()
+            if self.workspace:
+                self.workspace.join_held_executions()
 
 
 def main():

@@ -458,6 +458,8 @@ class TerminalBenchTask:
                 write_json(self.artifacts / "task-cleanup.json", {"attempt_id":self.attempt,"status":status})
             if self.journal is not None:
                 self.journal.close()
+            if self.workspace:
+                self.workspace.join_held_executions()
 
 
 def main():

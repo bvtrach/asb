@@ -2,6 +2,8 @@
 mod completion;
 pub(crate) mod replica;
 pub(crate) mod reuse;
+#[cfg(target_os = "linux")]
+pub(crate) mod workload_process;
 
 use super::{Error, io_error, read_config};
 use crate::agents;

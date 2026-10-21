@@ -185,9 +185,40 @@ def _execute_agent(task, request, before_resume, on_output, cancelled, resources
             if previous != network:
                 container.client.networks.get(previous).disconnect(container)
     guest = dict(guest)
+    lifetime = guest.get("process_lifetime", "quiesce")
+    lifetime_options = {}
+    if lifetime == "through-evaluation":
+        import os
+        import uuid
+        container.reload()
+        labels = container.attrs.get("Config", {}).get("Labels", {}) or {}
+        if (labels.get("asb.owner") != "asb" or labels.get("asb.attempt") != task.workspace.attempt
+                or container.attrs.get("HostConfig", {}).get("PidMode") not in [None, "", "private"]):
+            raise ExecutionError("retained services require this attempt's private PID namespace")
+        probe = container.exec_run(["/opt/asb-runtime/asb", "__asb-namespace"])
+        if probe.exit_code != 0 or len(probe.output) > 32 or not probe.output.strip().isdigit():
+            raise ExecutionError("cannot identify owned workload PID namespace")
+        controller_namespace = os.stat("/proc/self/ns/pid").st_ino
+        guest_namespace = int(probe.output)
+        if guest_namespace <= 1 or guest_namespace == controller_namespace:
+            raise ExecutionError("workload services cannot outlive their client in the controller namespace")
+        guest["workload_owner"] = {"controller_namespace":controller_namespace,
+                                   "guest_namespace":guest_namespace, "token":uuid.uuid4().hex}
+        lifetime_options["workload_owner"] = guest["workload_owner"]
+    elif lifetime != "quiesce":
+        raise ExecutionError("unknown workload process lifetime")
     guest["timeout_seconds"] = request.get("timeout", getattr(task, "agent_timeout", 900))
     guest.update(project_root="/opt/asb-project", runtime_dir="/opt/asb-private", run_dir="/opt/asb-private/attempt")
     environment = dict(environment, ASB_GUEST_AGENT_REQUEST=json.dumps(guest))
+    ended = False
+    def finish_execution(result):
+        nonlocal ended
+        if not ended:
+            ended = True
+            if on_ended is not None:
+                on_ended(result)
+    if lifetime_options:
+        lifetime_options["on_execution_end"] = finish_execution
     def attach(target):
         if request.get("measure_target", False):
             # The task execution lock is already held while the gate is
@@ -206,16 +237,17 @@ def _execute_agent(task, request, before_resume, on_output, cancelled, resources
                                     timeout=request.get("timeout", getattr(task, "agent_timeout", 900)), output_limit=256 * 1024,
                                     gate="application", before_resume=attach,
                                     preparation_timeout=90,
-                                    on_output=on_output, cancelled=ForwardingCancellation(cancelled, relays))
-    if on_ended is not None:
-        on_ended(result)
+                                    on_output=on_output, cancelled=ForwardingCancellation(cancelled, relays),
+                                    **lifetime_options)
+    finish_execution(result)
     for relay in relays:
         relay.check()
     observation = {key: result.get(key) for key in ["exit_code", "timed_out", "cancelled",
                    "output_truncated", "elapsed_seconds", "preparation_seconds", "target"]}
     try:
-        metadata = task.checked(["cat", "/opt/asb-private/attempt/agent-result.json"], output_limit=1024 * 1024)
-        result["metadata"] = json.loads(metadata)
+        if not result.get("workload_processes_retained"):
+            metadata = task.checked(["cat", "/opt/asb-private/attempt/agent-result.json"], output_limit=1024 * 1024)
+            result["metadata"] = json.loads(metadata)
         if not isinstance(result["metadata"], dict):
             raise ExecutionError("guest result is not a structured record")
     except (ExecutionError, ValueError):
@@ -223,9 +255,15 @@ def _execute_agent(task, request, before_resume, on_output, cancelled, resources
         # Unknown usage is never invented from text or an expected minimum.
         result["metadata"] = {"schema_version": 1, "exit_code": result["exit_code"],
                               "final_response": None, "token_usage": {}, "steps": None}
-    if result["metadata"].get("tree_quiesced") is not True:
+    if result.get("workload_processes_retained"):
+        if (not lifetime_options or result["metadata"].get("workload_owner") != guest["workload_owner"]
+                or result["metadata"].get("tree_quiesced") is not False):
+            raise ExecutionError("workload retained services without confirmed ownership")
+        observation["agent_tree_cleanup"] = "delegated-owned-workload"
+    elif result["metadata"].get("tree_quiesced") is not True:
         task.workspace.quiesce_unconfirmed_agent()
         result["metadata"]["tree_quiesced"] = True
+        result["metadata"]["workload_owner"] = None
         observation["agent_tree_cleanup"] = "owned-container-reset"
     else:
         observation["agent_tree_cleanup"] = "supervisor-confirmed"

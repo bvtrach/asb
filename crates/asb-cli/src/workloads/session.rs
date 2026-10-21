@@ -12,6 +12,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static NEXT_ATTEMPT: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum ProcessLifetime {
+    #[default]
+    Quiesce,
+    ThroughEvaluation,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DatasetIdentity {

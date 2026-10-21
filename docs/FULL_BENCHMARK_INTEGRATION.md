@@ -2296,3 +2296,50 @@ those suites; nine public import/reporting cases also passed separately.
 Strict Clippy, formatting and `make build` including rustdoc, full diagrams,
 interactive views and completions passed. Source packaging and separately
 compiled packaged/hosted tests follow.
+
+### Workload-owned service lifetime through evaluation
+
+The population audit identified original tasks that explicitly require live
+background services during verification. Default guest quiescence killed those
+services at principal exit, and the controller's fallback reset would likewise
+discard them. A generic adapter-declared process lifetime now distinguishes
+quiescent submissions from services delegated to the owning private workload
+PID namespace through evaluation. Native/SWE execution keeps its old contract;
+the Terminal family chooses service retention. No runner branch names a task.
+
+The controller probes the actual guest namespace, verifies owned/private scope
+and gives its guest driver a per-execution token. Principal-end and ready frames
+bind the paused gate PID/token, with elapsed time and timeout status checked
+against bounded private metadata before accepting the handoff. Execution ends
+before grading, while inherited service output is drained rather than closed
+with SIGPIPE. Client capture is bounded and frozen; later service logs do not
+become fabricated usage/response data. The idle subreaper reaps exited adopted
+services. Original SDK cleanup stops/removes the namespace and joins held output
+transport; malformed/unconfirmed execution retains the reset/preservation path.
+
+Provider-free protocol tests cover split frames, wrong owner/PID, inconsistent
+metadata, repeated/out-of-order boundaries, bounded output, lifecycle publication
+once, private namespace rejection and service/transport lifetime. Rust checks
+cover default quiescence plus refused controller-namespace retention and frozen
+service-pipe draining. Actual original `jupyter-notebook-server` qualification
+passed in 70.905 seconds at `original-service-lifetime-e0tycyj3`: a synthetic
+client launched the known reference through ASB's registered agent adapter, the
+background HTTPS server remained reachable after client exit, all four original
+SDK verifier checks passed, and only then were the owned containers/transport
+removed. No live LLM was contacted. This is service-lifetime qualification, not
+AI task solving, full-population qualification, or proof that arbitrary agent
+interactive-shell state is preserved. Exact-source regression/hosted checks
+follow; the full delivery checklist remains unchanged and incomplete.
+
+The idle service supervisor additionally reaps adopted exited children without
+signalling live ones. Repeated original Jupyter qualification passed in 57.330
+seconds at `original-service-lifetime-yht6huw8`. Mixed real-Pi/synthetic-provider
+SWE-bench Lite/original Terminal-Bench execution passed in 96.489 seconds at
+`parallel-original-tasks-iq4yc04b`, including independent grades, lifecycle
+collection, SVG/HTML, unchanged cached resume, reconciliation and grade imports.
+Final source gates passed 447 unit tests, 87 offline CLI tests, nineteen benchmark
+protocol suites, ten guest/lifecycle checks and the remaining diagram/parallel/
+partial/replay/unmeasured integrations. Strict Clippy, formatting and `make build`
+(rustdoc, complete diagrams, interactive views and completions) passed. The
+retained Harbor grading/reconstruction/continuation and final full-goal delivery
+requirements remain unfinished; package and exact-head hosted checks follow.

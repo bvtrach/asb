@@ -27,6 +27,26 @@ impl DescendantScope {
         })
     }
 
+    /// Reap exited adopted services without signalling any live process.
+    /// Only an exclusive supervisor may use this after reaping its principal.
+    pub(crate) fn reap_exited(&self) -> io::Result<()> {
+        if self.owner != std::process::id() {
+            return Err(io::Error::other(
+                "workload service supervisor changed process",
+            ));
+        }
+        let children = children(self.owner)?;
+        if children.len() > 65536 {
+            return Err(io::Error::other(
+                "workload service child list exceeded its bound",
+            ));
+        }
+        for pid in children {
+            signal_and_reap_owned_child(pid, None)?;
+        }
+        Ok(())
+    }
+
     /// Called after the principal client is reaped, before accepting its
     /// submission. A short TERM grace is followed by KILL; repeated sweeps
     /// retain and reap double-forked helpers as their parents exit.

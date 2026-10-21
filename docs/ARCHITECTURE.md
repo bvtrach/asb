@@ -270,9 +270,22 @@ configuration and negotiated connection, and the owning session returns
 separate process output, adapter-parsed results and observed execution time.
 The runner does not choose container images, dataset formats or graders.
 The Linux guest driver and native process gate are exclusive child
-supervisors. They retain double-forked helpers as subreapers, verify kernel
-child ownership through pidfds, stop/reap remaining helpers after the principal
-client exits, and only then publish a completed result. A 500 ms TERM grace is
+supervisors. They retain double-forked helpers as subreapers and verify kernel
+child ownership through pidfds. By default they stop/reap remaining helpers
+after the principal client exits, and only then publish a completed result.
+An adapter-owned `ProcessLifetime::ThroughEvaluation` instead keeps guest
+services alive in its private workload PID namespace through official grading.
+The SDK controller and guest bind that delegation to a distinct namespace and
+per-execution token, confirming principal exit separately from a bounded private
+result handoff. Execution accounting stops at principal exit, not evaluator
+completion. Bounded output readers freeze client capture while continuing to
+drain inherited service pipes; the idle subreaper reaps exited services without
+signalling live ones. SDK stop/removal owns final service teardown and joins the
+held Docker output transport. Errors before confirmed handoff retain the
+container-reset/preservation path. Terminal-Bench adapters select this policy;
+native and SWE-bench sessions remain quiescent. This service policy does not
+claim preservation of arbitrary interactive shell state across guest execution.
+A 500 ms TERM grace is
 followed by KILL with a five-second teardown bound; the required kernel APIs
 are probed before client launch. The shared multi-run process never takes this
 ownership role. Guest output-consumer errors also trigger owned-child cleanup.
@@ -289,7 +302,8 @@ tree; process-tree totals include that instrumentation overhead. The watcher
 is created before cgroup attachment, so it remains outside the new accounting
 leaf; the supervisor and subsequently launched client are inside it.
 Container task measurements continue to target their guest driver separately.
-If guest metadata cannot confirm quiescence, the workload controller waits for
+If guest metadata confirms neither quiescence nor the declared namespace-owned
+service handoff, the workload controller waits for
 its owned private-PID-namespace container to stop and restarts its original
 entry point before grading partial work. The filesystem is retained, the
 client failure remains separate from the task grade, and the execution journal

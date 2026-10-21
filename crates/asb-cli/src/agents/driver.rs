@@ -13,7 +13,33 @@ const REQUEST: &str = "ASB_GUEST_AGENT_REQUEST";
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
+pub(crate) struct WorkloadOwner {
+    pub controller_namespace: u64,
+    pub guest_namespace: u64,
+    pub token: String,
+}
+
+pub(crate) fn namespace_id() -> Result<u64, Error> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata("/proc/self/ns/pid")
+            .map(|metadata| metadata.ino())
+            .map_err(crate::io_error)
+    }
+    #[cfg(not(target_os = "linux"))]
+    Err(Error::Input(
+        "workload process ownership requires Linux PID namespaces".into(),
+    ))
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct GuestRequest {
+    #[serde(default)]
+    pub process_lifetime: crate::workloads::session::ProcessLifetime,
+    #[serde(default)]
+    pub workload_owner: Option<WorkloadOwner>,
     pub config: BenchmarkConfig,
     pub connection: Connection,
     pub prompt: String,
@@ -34,6 +60,12 @@ fn default_timeout() -> f64 {
 
 #[derive(Deserialize, Serialize)]
 pub(crate) struct GuestResult {
+    #[serde(default)]
+    pub elapsed_ms: Option<u64>,
+    #[serde(default)]
+    pub timed_out: bool,
+    #[serde(default)]
+    pub workload_owner: Option<WorkloadOwner>,
     pub schema_version: u32,
     pub exit_code: Option<i32>,
     pub final_response: Option<String>,
@@ -163,6 +195,28 @@ fn prepare(request: &GuestRequest) -> Result<Command, Error> {
 }
 
 fn run(request: GuestRequest) -> Result<u8, Error> {
+    let retained =
+        request.process_lifetime == crate::workloads::session::ProcessLifetime::ThroughEvaluation;
+    if retained {
+        let owner = request
+            .workload_owner
+            .as_ref()
+            .ok_or_else(|| Error::Input("workload lifetime has no namespace owner".into()))?;
+        if owner.controller_namespace <= 1
+            || owner.guest_namespace != namespace_id()?
+            || owner.guest_namespace == owner.controller_namespace
+            || owner.token.len() != 32
+            || !owner.token.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(Error::Input(
+                "workload lifetime is not bound to a distinct owned PID namespace".into(),
+            ));
+        }
+    } else if request.workload_owner.is_some() {
+        return Err(Error::Input(
+            "quiescent guest execution cannot declare retained ownership".into(),
+        ));
+    }
     let mut command = prepare(&request)?;
     fs::create_dir_all(&request.run_dir)
         .map_err(|error| Error::Io(format!("cannot create private guest artifacts: {error}")))?;
@@ -189,12 +243,53 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
     return Err(Error::Run(
         "guest agent gate currently requires Unix signals".into(),
     ));
-    let output = crate::runner::run_guest_process(
-        &mut command,
-        &mut std::io::stdout(),
-        &mut std::io::stderr(),
-        std::time::Duration::from_secs_f64(request.timeout_seconds),
-    )?;
+    #[cfg(target_os = "linux")]
+    let held = if retained {
+        Some(crate::runner::workload_process::start(
+            &mut command,
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+            std::time::Duration::from_secs_f64(request.timeout_seconds),
+            |status, elapsed, timed_out| {
+                let owner = request
+                    .workload_owner
+                    .as_ref()
+                    .expect("retained owner validated");
+                println!(
+                    "\n__ASB_AGENT_ENDED__:{}:{}:{}:{}:{}",
+                    std::process::id(),
+                    owner.token,
+                    status.code().unwrap_or(1),
+                    elapsed,
+                    u8::from(timed_out)
+                );
+                std::io::stdout().flush().map_err(crate::io_error)
+            },
+        )?)
+    } else {
+        None
+    };
+    let output = if retained {
+        #[cfg(target_os = "linux")]
+        {
+            held.as_ref().expect("retained process").output.clone()
+        }
+        #[cfg(not(target_os = "linux"))]
+        return Err(Error::Input(
+            "retained workload processes require Linux".into(),
+        ));
+    } else {
+        crate::runner::run_guest_process(
+            &mut command,
+            &mut std::io::stdout(),
+            &mut std::io::stderr(),
+            std::time::Duration::from_secs_f64(request.timeout_seconds),
+        )?
+    };
+    #[cfg(target_os = "linux")]
+    if held.as_ref().is_some_and(|held| held.truncated) {
+        return Err(Error::Run("retained client output exceeded its capture limit; grading must preserve the incomplete attempt".into()));
+    }
     let namespace_collectors = capture
         .as_mut()
         .map(|session| session.export_execution_namespace_state())
@@ -221,6 +316,15 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
     );
     let usage = crate::measurements::with_artifact_usage(usage, artifacts.token_usage);
     let result = GuestResult {
+        #[cfg(target_os = "linux")]
+        elapsed_ms: held.as_ref().map(|held| held.elapsed_ms),
+        #[cfg(not(target_os = "linux"))]
+        elapsed_ms: None,
+        #[cfg(target_os = "linux")]
+        timed_out: held.as_ref().is_some_and(|held| held.timed_out),
+        #[cfg(not(target_os = "linux"))]
+        timed_out: false,
+        workload_owner: request.workload_owner,
         schema_version: 1,
         exit_code: output.status.code(),
         final_response: super::final_response(
@@ -232,8 +336,18 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
         steps: artifacts
             .steps
             .or_else(|| adapter.step_count(&stdout, &stderr)),
-        execution_failure: adapter.execution_failure(&stdout, &stderr),
-        tree_quiesced: cfg!(target_os = "linux"),
+        execution_failure: {
+            #[cfg(target_os = "linux")]
+            let timed_out = held.as_ref().is_some_and(|held| held.timed_out);
+            #[cfg(not(target_os = "linux"))]
+            let timed_out = false;
+            if timed_out {
+                Some("agent execution exceeded its time budget".into())
+            } else {
+                adapter.execution_failure(&stdout, &stderr)
+            }
+        },
+        tree_quiesced: cfg!(target_os = "linux") && !retained,
         namespace_collectors,
     };
     let destination = request.run_dir.join("agent-result.json");
@@ -257,6 +371,21 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
         .map_err(|error| Error::Io(error.to_string()))?;
     for path in artifacts.cleanup_paths {
         let _ = fs::remove_file(path);
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(held) = held {
+        let owner = result
+            .workload_owner
+            .as_ref()
+            .expect("retained namespace owner");
+        println!(
+            "\n__ASB_WORKLOAD_READY__:{}:{}:{}",
+            std::process::id(),
+            owner.token,
+            output.status.code().unwrap_or(1)
+        );
+        std::io::stdout().flush().map_err(crate::io_error)?;
+        held.hold_for_evaluation();
     }
     Ok(output
         .status

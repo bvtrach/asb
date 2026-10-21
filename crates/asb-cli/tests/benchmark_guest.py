@@ -43,6 +43,55 @@ class Container:
 
 
 class GuestBootstrapTests(unittest.TestCase):
+    def test_owned_service_handoff_uses_guest_metadata_without_reset_or_duplicate_end(self):
+        import os
+        with tempfile.TemporaryDirectory() as directory:
+            controller = os.stat("/proc/self/ns/pid").st_ino
+            container = SimpleNamespace(
+                attrs={"Config":{"Labels":{"asb.owner":"asb", "asb.attempt":"owned"}}, "HostConfig":{"PidMode":"private"}},
+                reload=lambda:None,
+                exec_run=lambda argv:SimpleNamespace(exit_code=0, output=str(controller+1).encode()))
+            calls, ends = [], []
+            def execute(_argv, **options):
+                request = json.loads(options["environment"]["ASB_GUEST_AGENT_REQUEST"])
+                self.assertEqual(request["workload_owner"], options["workload_owner"])
+                self.assertNotEqual(request["workload_owner"]["guest_namespace"], controller)
+                result = {"stdout":b"", "stderr":b"", "exit_code":0, "elapsed_seconds":.123,
+                    "workload_processes_retained":True, "metadata":{
+                        "workload_owner":request["workload_owner"], "tree_quiesced":False}}
+                options["on_execution_end"](dict(result))
+                calls.append(options)
+                return result
+            def forbidden(*_args, **_kwargs):
+                raise AssertionError("confirmed service handoff must not reset the container or reread unbound metadata")
+            task = SimpleNamespace(artifacts=Path(directory), agent_timeout=5, checked=forbidden,
+                workspace=SimpleNamespace(attempt="owned", container=container, execute=execute, quiesce_unconfirmed_agent=forbidden))
+            with patch("asb_guest.prepare_agent", return_value=({"process_lifetime":"through-evaluation"}, {})):
+                result = execute_agent(task, {}, None, None, None, on_ended=ends.append)
+            self.assertTrue(result["workload_processes_retained"])
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(ends), 1)
+            self.assertEqual(json.loads((task.artifacts / "execution.json").read_text())["agent_tree_cleanup"],
+                             "delegated-owned-workload")
+
+    def test_shared_or_unowned_namespace_cannot_retain_services(self):
+        import os
+        for mode, owner, namespace in [("host", "asb", 99), ("private", "foreign", 99),
+                                        ("private", "asb", os.stat("/proc/self/ns/pid").st_ino)]:
+            with self.subTest(mode=mode, owner=owner), tempfile.TemporaryDirectory() as directory:
+                container = SimpleNamespace(
+                    attrs={"Config":{"Labels":{"asb.owner":owner,"asb.attempt":"owned"}}, "HostConfig":{"PidMode":mode}},
+                    reload=lambda:None,
+                    exec_run=lambda argv:SimpleNamespace(exit_code=0, output=str(namespace).encode()))
+                def forbidden(*_args, **_kwargs):
+                    raise AssertionError("invalid lifetime launched a client")
+                task = SimpleNamespace(artifacts=Path(directory), workspace=SimpleNamespace(
+                    attempt="owned", container=container, execute=forbidden))
+                with patch("asb_guest.prepare_agent", return_value=({"process_lifetime":"through-evaluation"}, {})):
+                    with self.assertRaises(ExecutionError):
+                        execute_agent(task, {}, None, None, None)
+                self.assertFalse((task.artifacts / "execution.json").exists())
+
     def test_unconfirmed_tree_cannot_publish_a_result_when_container_reset_fails(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

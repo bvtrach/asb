@@ -45,7 +45,7 @@ class HarborTests(unittest.TestCase):
             with self.subTest(fail=fail), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 task = subject.HarborTask(Mock(),"catalog","instance",root)
-                task.workspace = SimpleNamespace(container=object(),cleanup_status="pending")
+                task.workspace = SimpleNamespace(container=object(),cleanup_status="pending",join_held_executions=Mock())
                 calls = []
                 class Environment:
                     async def prepare_logs_for_host(self):

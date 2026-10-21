@@ -14,6 +14,9 @@ pub(super) struct TerminalBenchAdapter {
 }
 
 impl super::WorkloadAdapter for TerminalBenchAdapter {
+    fn process_lifetime(&self) -> crate::workloads::session::ProcessLifetime {
+        crate::workloads::session::ProcessLifetime::ThroughEvaluation
+    }
     fn grade_retained(
         &self,
         context: &crate::workloads::recovery::RecoveryContext<'_>,

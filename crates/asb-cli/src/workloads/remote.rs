@@ -278,6 +278,7 @@ pub(crate) fn runtime_inputs(
 }
 
 struct Session {
+    process_lifetime: super::session::ProcessLifetime,
     controller: Controller,
     invocation: TaskInvocation,
     baseline: BaselineEvidence,
@@ -497,6 +498,9 @@ pub(crate) fn launch(
         }
     };
     Ok(Box::new(Session {
+        process_lifetime: super::adapters::find(workload)
+            .ok_or("workload adapter disappeared before execution")?
+            .process_lifetime(),
         controller,
         invocation: TaskInvocation {
             identity,
@@ -580,7 +584,7 @@ impl Session {
             "tools_root":tools_root, "bootstrap":bootstrap, "measure_target":context.measurements.is_some(),
             "project_configuration":toml::to_string(&project).map_err(|_| "cannot encode guest project configuration")?,
             "environment":environment, "network":std::env::var("ASB_BENCHMARK_NETWORK").ok(),
-            "request":{"config":config,"connection":connection,"prompt":self.invocation.prompt,
+            "request":{"process_lifetime":self.process_lifetime,"config":config,"connection":connection,"prompt":self.invocation.prompt,
                 "project_root":"/opt/asb-project","runtime_dir":"/opt/asb-private","run_dir":"/opt/asb-private/attempt","replay":context.replay,
                 "namespace_collectors":namespace_collectors}}))?;
         let deadline = Instant::now() + self.agent_timeout + Duration::from_secs(1820);
@@ -652,7 +656,17 @@ impl Session {
                     let metadata: crate::agents::driver::GuestResult =
                         serde_json::from_value(result["metadata"].clone())
                             .map_err(|_| "guest returned invalid agent result metadata")?;
-                    if !metadata.tree_quiesced {
+                    let delegated = self.process_lifetime
+                        == super::session::ProcessLifetime::ThroughEvaluation
+                        && result["workload_processes_retained"].as_bool() == Some(true)
+                        && metadata.workload_owner.as_ref().is_some_and(|owner| {
+                            owner.controller_namespace > 1
+                                && owner.guest_namespace > 1
+                                && owner.controller_namespace != owner.guest_namespace
+                                && owner.token.len() == 32
+                                && owner.token.bytes().all(|byte| byte.is_ascii_hexdigit())
+                        });
+                    if !metadata.tree_quiesced && !delegated {
                         return Err("isolated agent process tree was not confirmed stopped before evaluation".into());
                     }
                     if let Some(session) = context.measurements.as_deref_mut() {
@@ -903,6 +917,7 @@ mod tests {
             .receive(Instant::now() + Duration::from_secs(3))
             .unwrap();
         Session {
+            process_lifetime: super::super::session::ProcessLifetime::Quiesce,
             controller,
             invocation: TaskInvocation {
                 identity: TaskIdentity::local("fixture", Some("original-task")),

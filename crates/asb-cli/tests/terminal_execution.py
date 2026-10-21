@@ -74,7 +74,7 @@ class TerminalExecutionTests(unittest.TestCase):
             manager = Mock(asb_config="owned-compose.json")
             manager._run_docker_compose_command.side_effect = ExecutionError("down failed")
             task.terminal = SimpleNamespace(_sessions={}, _compose_manager=manager)
-            task.workspace = SimpleNamespace(cleanup_status="pending")
+            task.workspace = SimpleNamespace(cleanup_status="pending", join_held_executions=Mock())
             with self.assertRaisesRegex(ExecutionError, "down failed"):
                 task.__exit__(None, None, None)
             self.assertEqual(task.workspace.cleanup_status, "cleanup_failed")

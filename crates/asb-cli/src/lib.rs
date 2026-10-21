@@ -32,6 +32,15 @@ use std::process::ExitCode;
 /// Run the process CLI.
 #[must_use]
 pub fn entry(args: Vec<OsString>) -> ExitCode {
+    if args.first().is_some_and(|arg| arg == "__asb-namespace") {
+        return match agents::driver::namespace_id() {
+            Ok(namespace) => {
+                println!("{namespace}");
+                ExitCode::SUCCESS
+            }
+            Err(_) => ExitCode::from(2),
+        };
+    }
     if args.first().is_some_and(|arg| arg == "__asb-target") {
         return workloads::target::entry(&args[1..]);
     }

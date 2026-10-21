@@ -5,6 +5,7 @@ gate reports both namespace and daemon-host PIDs before the caller attaches
 collectors and resumes execution. Docker-daemon PIDs are deliberately not
 claimed to be local-host PIDs: the caller must establish that separately.
 """
+import json
 import re
 import threading
 import time
@@ -17,6 +18,61 @@ class ExecutionError(RuntimeError):
 GATE = 'printf "__ASB_GATE__:%s\\n" "$$"; kill -STOP "$$"; exec "$@"'
 STOPPED = 'while IFS=: read -r key value; do case "$key" in State) case "$value" in *T*) exit 0;; esac;; esac; done < "/proc/$1/status"; exit 1'
 MAX_ARGUMENT_BYTES = 1024 * 1024
+
+
+class WorkloadFrames:
+    """Bounded framing for a namespace-owned supervisor, never agent stdout metadata.
+
+    Ordinary bytes remain ordinary output; control frames require the current
+    controller token and gate PID. The principal exit boundary precedes private
+    result parsing and is distinct from the lifetime of workload services.
+    """
+    def __init__(self, pid, owner, ended):
+        self.pid, self.owner, self.ended = pid, owner, ended
+        self.pending = bytearray()
+        self.result = None
+        self.ready = False
+
+    def feed(self, chunk):
+        self.pending.extend(chunk)
+        output = bytearray()
+        while b"\n" in self.pending:
+            line, _, remaining = self.pending.partition(b"\n")
+            self.pending = bytearray(remaining)
+            if line.startswith((b"__ASB_AGENT_ENDED__:", b"__ASB_WORKLOAD_READY__:")):
+                if len(line) > 256:
+                    raise ExecutionError("workload supervisor frame exceeds its bound")
+                parts = line.split(b":")
+                if (len(parts) < 3 or parts[1] != str(self.pid).encode()
+                        or parts[2] != self.owner["token"].encode()):
+                    raise ExecutionError("workload supervisor frame does not match its owner")
+                if parts[0] == b"__ASB_AGENT_ENDED__":
+                    if (self.result is not None or len(parts) != 6
+                            or not all(part.isdigit() for part in parts[3:])
+                            or not 0 <= int(parts[3]) <= 255 or not 0 <= int(parts[4]) <= 86410000
+                            or parts[5] not in [b"0", b"1"]):
+                        raise ExecutionError("invalid or repeated workload execution boundary")
+                    self.result = {"exit_code":int(parts[3]), "elapsed_seconds":int(parts[4]) / 1000,
+                                   "timed_out":parts[5] == b"1"}
+                    if self.ended is not None:
+                        self.ended(dict(self.result))
+                else:
+                    if (self.result is None or self.ready or len(parts) != 4
+                            or parts[3] != str(self.result["exit_code"]).encode()):
+                        raise ExecutionError("workload readiness preceded or contradicted execution completion")
+                    self.ready = True
+                    # Output after readiness belongs to retained services, not
+                    # the now-frozen client observation.
+                    self.pending.clear()
+                    break
+            else:
+                output.extend(line + b"\n")
+        if len(self.pending) > 512:
+            if self.pending.startswith(b"__ASB_"):
+                raise ExecutionError("workload supervisor frame exceeds its bound")
+            output.extend(self.pending[:-512])
+            del self.pending[:-512]
+        return bytes(output)
 
 
 class ManagedDockerWorkspace:
@@ -56,6 +112,7 @@ class ManagedDockerWorkspace:
         self.journal = journal
         self.active = threading.Lock()
         self.cleanup_status = "not_created"
+        self.held_executions = []
         self.image_identity = {"image_id": image.id, "repository_digests": image.attrs.get("RepoDigests", []),
                                "architecture": image.attrs.get("Architecture"), "os": image.attrs.get("Os")}
 
@@ -81,17 +138,20 @@ class ManagedDockerWorkspace:
             raise
 
     def execute(self, argv, environment=None, timeout=900, output_limit=256 * 1024, before_resume=None,
-                on_output=None, cancelled=None, gate="shell", preparation_timeout=None):
+                on_output=None, cancelled=None, gate="shell", preparation_timeout=None,
+                workload_owner=None, on_execution_end=None):
         if self.container is None:
             raise ExecutionError("workspace is not running")
         if not self.active.acquire(blocking=False):
             raise ExecutionError("one command is already running in this task workspace")
         try:
-            return self._execute(argv, environment or {}, timeout, output_limit, before_resume, on_output, cancelled, gate, preparation_timeout)
+            return self._execute(argv, environment or {}, timeout, output_limit, before_resume, on_output, cancelled, gate, preparation_timeout,
+                                 workload_owner, on_execution_end)
         finally:
             self.active.release()
 
-    def _execute(self, argv, environment, timeout, output_limit, before_resume, on_output, cancelled, gate, preparation_timeout):
+    def _execute(self, argv, environment, timeout, output_limit, before_resume, on_output, cancelled, gate, preparation_timeout,
+                 workload_owner, on_execution_end):
         if (not isinstance(argv, list) or not argv or len(argv) > 10000
                 or any(not isinstance(value, str) or "\x00" in value for value in argv)
                 or not isinstance(environment, dict)
@@ -109,6 +169,15 @@ class ManagedDockerWorkspace:
             raise ExecutionError("execution was cancelled before starting")
         if gate not in ["shell", "application"]:
             raise ExecutionError("unknown execution gate protocol")
+        if workload_owner is not None:
+            if (gate != "application" or self.held_executions or not isinstance(workload_owner, dict)
+                    or set(workload_owner) != {"controller_namespace", "guest_namespace", "token"}
+                    or any(type(workload_owner[key]) is not int or workload_owner[key] <= 1
+                           for key in ["controller_namespace", "guest_namespace"])
+                    or workload_owner["guest_namespace"] == workload_owner["controller_namespace"]
+                    or not isinstance(workload_owner["token"], str)
+                    or re.fullmatch(r"[0-9a-f]{32}", workload_owner["token"]) is None):
+                raise ExecutionError("invalid owned workload execution lifetime")
         container, api = self.container, self.client.api
         done, expired, interrupted = threading.Event(), threading.Event(), threading.Event()
         reset_needed = threading.Event()
@@ -186,7 +255,9 @@ class ManagedDockerWorkspace:
                         or (cancelled is not None and cancelled.is_set())):
                     raise ExecutionError("container execution preparation was cancelled or exceeded its deadline")
                 execution_started = time.monotonic()
-                phase_deadline[0] = execution_started + timeout
+                # The guest enforces the exact principal budget. Leave bounded
+                # time for private artifact parsing/publication after it exits.
+                phase_deadline[0] = execution_started + timeout + (15 if workload_owner else 0)
             # Minimal official task images may have only the POSIX shell's
             # kill builtin, not a standalone /bin/kill executable.
             resumed = container.exec_run(["/bin/sh", "-c", 'kill -CONT "$1"', "asb-resume", str(namespace_pid)])
@@ -194,7 +265,10 @@ class ManagedDockerWorkspace:
                 raise ExecutionError("container execution gate could not be resumed")
             stdout, stderr = bytearray(), bytearray()
             truncated = False
+            frames = WorkloadFrames(namespace_pid, workload_owner, on_execution_end) if workload_owner else None
             for out, err in stream:
+                if frames is not None and out:
+                    out = frames.feed(out)
                 for name, destination, chunk in [("stdout", stdout, out), ("stderr", stderr, err)]:
                     if chunk:
                         if on_output is not None:
@@ -203,6 +277,43 @@ class ManagedDockerWorkspace:
                         room = max(0, output_limit - len(destination))
                         truncated |= len(chunk) > room
                         destination.extend(chunk[:room])
+                if frames is not None and frames.ready:
+                    if expired.is_set() or interrupted.is_set() or (cancelled is not None and cancelled.is_set()):
+                        raise ExecutionError("retained workload handoff was cancelled")
+                    metadata = container.exec_run(["cat", "/opt/asb-private/attempt/agent-result.json"])
+                    if metadata.exit_code != 0 or len(metadata.output) > 1024 * 1024:
+                        raise ExecutionError("retained workload has no bounded private result")
+                    try:
+                        metadata = json.loads(metadata.output)
+                    except (ValueError, TypeError):
+                        raise ExecutionError("retained workload returned malformed result metadata") from None
+                    if (not isinstance(metadata, dict) or metadata.get("workload_owner") != workload_owner
+                            or metadata.get("tree_quiesced") is not False
+                            or (metadata.get("exit_code") if type(metadata.get("exit_code")) is int
+                                else 1 if metadata.get("exit_code") is None else -1) != frames.result["exit_code"]
+                            or type(metadata.get("elapsed_ms")) is not int
+                            or metadata["elapsed_ms"] != round(frames.result["elapsed_seconds"] * 1000)
+                            or metadata.get("timed_out") is not frames.result["timed_out"]):
+                        raise ExecutionError("retained workload metadata contradicts its supervisor")
+                    result = dict(frames.result, stdout=bytes(stdout), stderr=bytes(stderr), cancelled=False,
+                                  output_truncated=truncated, preparation_seconds=execution_started-started,
+                                  target=target, workload_processes_retained=True, metadata=metadata)
+                    done.set()
+                    watchdog.join(timeout=125)
+                    if watchdog.is_alive() or watchdog_error or expired.is_set() or interrupted.is_set():
+                        raise ExecutionError("retained workload handoff exceeded its execution lifetime")
+                    self._hold_execution(stream)
+                    stream = None
+                    break
+            if result is not None:
+                return result
+            if frames is not None and frames.pending:
+                chunk = bytes(frames.pending)
+                room = max(0, output_limit - len(stdout))
+                truncated |= len(chunk) > room
+                stdout.extend(chunk[:room])
+                if on_output is not None:
+                    on_output("stdout", chunk)
             inspection = api.exec_inspect(exec_id)
             status = inspection.get("ExitCode")
             if not isinstance(status, int) or inspection.get("Running"):
@@ -243,6 +354,41 @@ class ManagedDockerWorkspace:
             raise ExecutionError("Docker could not stop the timed-out execution tree")
         return result
 
+    @staticmethod
+    def _close_stream(stream):
+        try:
+            stream.close()
+        finally:
+            response = getattr(stream, "_response", None)
+            if response is not None:
+                response.close()
+
+    def _hold_execution(self, stream):
+        def drain():
+            try:
+                for _chunk in stream:
+                    pass
+            except Exception:
+                # Namespace teardown closes Docker's attached stream. Grading
+                # and cleanup status come from the owning SDK, not this drain.
+                pass
+            finally:
+                self._close_stream(stream)
+        worker = threading.Thread(target=drain, daemon=True)
+        self.held_executions.append((stream, worker))
+        worker.start()
+
+    def join_held_executions(self):
+        """Call after the owning SDK stops/removes its namespace, never before grading."""
+        for stream, worker in self.held_executions:
+            worker.join(timeout=2)
+            if worker.is_alive():
+                self._close_stream(stream)
+                worker.join(timeout=2)
+            if worker.is_alive():
+                raise ExecutionError("owned workload output transport did not stop after namespace teardown")
+        self.held_executions.clear()
+
     def quiesce_unconfirmed_agent(self):
         """Stop every process in this owned PID namespace, retaining its files.
 
@@ -281,6 +427,7 @@ class ManagedDockerWorkspace:
             raise ExecutionError("refused cleanup of a container outside this attempt")
         try:
             self.container.remove(force=True)
+            self.join_held_executions()
             self.cleanup_status = "removed"
             self.container = None
         except Exception:

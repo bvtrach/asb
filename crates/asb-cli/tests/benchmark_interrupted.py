@@ -61,7 +61,7 @@ class InterruptedTests(unittest.TestCase):
                     client.images.values[tag] = image
                     if mismatch:
                         owned.attrs["Config"]["Labels"]["asb.recovery"] = "foreign"
-                    workspace = SimpleNamespace(container=owned, cleanup_status="pending", close=Mock())
+                    workspace = SimpleNamespace(container=owned, cleanup_status="pending", close=Mock(), join_held_executions=Mock())
                     task.workspace = workspace
                     task.terminal = Mock()
                     task.environment = Mock()

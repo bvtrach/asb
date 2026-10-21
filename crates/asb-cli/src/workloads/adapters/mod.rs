@@ -31,6 +31,9 @@ mod terminal_bench_1_0;
 mod terminal_bench_2_1;
 
 pub(super) trait WorkloadAdapter: Sync {
+    fn process_lifetime(&self) -> super::session::ProcessLifetime {
+        super::session::ProcessLifetime::Quiesce
+    }
     fn grade_retained(
         &self,
         _context: &super::recovery::RecoveryContext<'_>,
