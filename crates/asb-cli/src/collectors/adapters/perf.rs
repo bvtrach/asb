@@ -64,7 +64,7 @@ impl CollectorAdapter for PerfCollector {
         Ok(())
     }
     fn graceful_shutdown(&self, name: &str) -> bool {
-        name == "perf"
+        matches!(name, "perf" | "perf-stat")
     }
     fn process(
         &self,
@@ -84,8 +84,17 @@ fn process(
 ) -> Result<ProcessData, String> {
     let mut result = ProcessData::from_output(context);
     if context.name == "perf-stat" {
-        result.metrics = parse_perf_stat_metrics(context.stderr);
-        result.series = parse_perf_stat_series(context.stderr);
+        let file = File::open(context.stderr_path)
+            .map_err(|error| format!("cannot read complete perf stat output: {error}"))?;
+        let parsed = parse_perf_stat(std::io::BufReader::new(file))?;
+        if parsed.metrics.is_empty() {
+            return Err(
+                "perf stat produced no supported numeric counters; no totals published".into(),
+            );
+        }
+        result.metrics = parsed.metrics;
+        result.series = parsed.series;
+        result.timestamps = parsed.timestamps;
         if context.status.code().is_none() && !context.stderr.is_empty() {
             result.status = "completed".into();
         }
@@ -153,10 +162,10 @@ fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
 }
 
 use crate::collectors;
-use crate::measurements::parse_float;
 use crate::measurements::{Collector, env_true, measurement_interval_ms, write_unavailable};
 use std::collections::BTreeMap;
 use std::fs::File;
+use std::io::{BufRead, Read};
 use std::time::Instant;
 
 #[derive(Default)]
@@ -244,52 +253,148 @@ impl measurements::Session {
     }
 }
 
-pub(crate) fn parse_perf_stat_series(output: &str) -> BTreeMap<String, Vec<f64>> {
-    let mut series: BTreeMap<String, Vec<f64>> = BTreeMap::new();
-    for line in output.lines() {
+// These are explicit failure bounds, never silent prefix limits. Diagnostics
+// keep their separate 256 KiB bound. A measurement exceeding a bound fails
+// without publishing plausible-looking partial totals or compressed timelines.
+const MAX_STAT_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_STAT_LINE: usize = 16 * 1024;
+const MAX_STAT_POINTS: usize = 100_000;
+
+#[derive(Default)]
+struct PerfStat {
+    metrics: BTreeMap<String, f64>,
+    series: BTreeMap<String, Vec<f64>>,
+    timestamps: BTreeMap<String, Vec<f64>>,
+}
+
+fn parse_perf_stat(reader: impl BufRead) -> Result<PerfStat, String> {
+    parse_perf_stat_bounded(reader, MAX_STAT_BYTES)
+}
+
+fn parse_perf_stat_bounded(mut reader: impl BufRead, max_bytes: u64) -> Result<PerfStat, String> {
+    let mut parsed = PerfStat::default();
+    let mut line = Vec::new();
+    let mut bytes = 0_u64;
+    loop {
+        line.clear();
+        let count = reader
+            .by_ref()
+            .take(MAX_STAT_LINE as u64 + 1)
+            .read_until(b'\n', &mut line)
+            .map_err(|error| format!("cannot read complete perf stat output: {error}"))?;
+        if count == 0 {
+            break;
+        }
+        bytes += count as u64;
+        if count > MAX_STAT_LINE || bytes > max_bytes {
+            return Err(
+                "perf stat output exceeds measurement parsing bounds; no partial totals published"
+                    .into(),
+            );
+        }
+        if !line.ends_with(b"\n") {
+            return Err("unterminated perf stat output; no partial totals published".into());
+        }
+        let line = std::str::from_utf8(&line)
+            .map_err(|_| "perf stat output is not UTF-8; no partial totals published")?;
         let fields = line.split(',').map(str::trim).collect::<Vec<_>>();
-        let Some(event_index) = fields.iter().position(|field| {
-            matches!(
-                *field,
-                "task-clock"
-                    | "context-switches"
-                    | "cpu-migrations"
-                    | "page-faults"
-                    | "cycles"
-                    | "instructions"
-            )
-        }) else {
+        let Some(event_index) = fields
+            .iter()
+            .position(|field| perf_metric_name(field).is_some())
+        else {
+            if line.contains(',') && !line.trim_start().starts_with('#') {
+                return Err("unrecognized perf stat CSV row; no partial totals published".into());
+            }
             continue;
         };
-        let Some(value) = event_index
+        if !matches!(event_index, 2 | 3) || fields.len() < event_index + 2 {
+            return Err("malformed perf stat CSV row; no partial totals published".into());
+        }
+        let raw_value = event_index
             .checked_sub(2)
             .and_then(|index| fields.get(index))
-            .and_then(|field| parse_float(field))
-        else {
+            .ok_or("malformed perf stat counter; no partial totals published")?;
+        if matches!(*raw_value, "<not counted>" | "<not supported>") {
             continue;
-        };
+        }
+        let value: f64 = raw_value
+            .parse()
+            .ok()
+            .filter(|value: &f64| value.is_finite())
+            .ok_or("invalid perf stat counter; no partial totals published")?;
         let Some(name) = perf_metric_name(fields[event_index]) else {
             continue;
         };
-        series
-            .entry(format!("perf.{name}"))
-            .or_default()
-            .push(value);
+        if value < 0.0 {
+            return Err("negative perf stat counter; no partial totals published".into());
+        }
+        let name = format!("perf.{name}");
+        let timestamp = if event_index == 3 {
+            Some(
+                fields[0]
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|value| value.is_finite() && *value >= 0.0)
+                    .ok_or("invalid perf stat interval timestamp; no partial totals published")?,
+            )
+        } else {
+            None
+        };
+        let total = parsed.metrics.entry(name.clone()).or_default();
+        *total += value;
+        if !total.is_finite() {
+            return Err("perf stat counter overflow; no partial totals published".into());
+        }
+        let values = parsed.series.entry(name.clone()).or_default();
+        let timestamps = parsed.timestamps.entry(name).or_default();
+        if let Some(timestamp) = timestamp {
+            if timestamps.len() != values.len()
+                || timestamps.last().is_some_and(|last| timestamp < *last)
+            {
+                return Err(
+                    "inconsistent perf stat interval timestamps; no partial totals published"
+                        .into(),
+                );
+            }
+            // Hybrid CPUs may emit separate core/atom hardware counters for
+            // the same interval. Sum those into one observed time point.
+            if timestamps.last() == Some(&timestamp) {
+                *values.last_mut().expect("timestamp has paired value") += value;
+                continue;
+            }
+            timestamps.push(timestamp);
+        } else if !timestamps.is_empty() {
+            return Err(
+                "mixed interval and aggregate perf stat output; no partial totals published".into(),
+            );
+        }
+        if values.len() >= MAX_STAT_POINTS {
+            return Err(
+                "perf stat series exceeds measurement point bound; no partial totals published"
+                    .into(),
+            );
+        }
+        values.push(value);
     }
-    series
+    parsed.timestamps.retain(|_, values| !values.is_empty());
+    Ok(parsed)
 }
 
+#[cfg(test)]
+pub(crate) fn parse_perf_stat_series(output: &str) -> BTreeMap<String, Vec<f64>> {
+    parse_perf_stat(std::io::Cursor::new(output))
+        .map(|parsed| parsed.series)
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
 pub(crate) fn parse_perf_stat_metrics(output: &str) -> BTreeMap<String, f64> {
     // `perf stat -I` emits deltas, not cumulative snapshots. Scalar run
     // counters must sum those same observations used by the interval graphs.
     // A single non-interval observation retains its existing value.
-    parse_perf_stat_series(output)
-        .into_iter()
-        .filter_map(|(name, values)| {
-            let total: f64 = values.into_iter().sum();
-            total.is_finite().then_some((name, total))
-        })
-        .collect()
+    parse_perf_stat(std::io::Cursor::new(output))
+        .map(|parsed| parsed.metrics)
+        .unwrap_or_default()
 }
 
 fn perf_metric_name(event: &str) -> Option<&'static str> {
@@ -298,8 +403,10 @@ fn perf_metric_name(event: &str) -> Option<&'static str> {
         "context-switches" => Some("context_switches"),
         "cpu-migrations" => Some("cpu_migrations"),
         "page-faults" => Some("page_faults"),
-        "cycles" => Some("cycles"),
-        "instructions" => Some("instructions"),
+        "cycles" | "cpu_core/cycles/" | "cpu_atom/cycles/" => Some("cycles"),
+        "instructions" | "cpu_core/instructions/" | "cpu_atom/instructions/" => {
+            Some("instructions")
+        }
         _ => None,
     }
 }
@@ -311,6 +418,118 @@ pub(crate) fn perf_permission_error() -> String {
 #[cfg(test)]
 mod tests {
     use super::{record_args, stat_args};
+
+    #[test]
+    fn complete_perf_stat_file_not_diagnostic_prefix_drives_totals_and_timestamps() {
+        use std::io::Write;
+        let dir = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("perf-complete", None).attempt_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("perf-stat.stderr");
+        let mut file = std::fs::File::create(&path).unwrap();
+        // More than the former diagnostic cap; 800 observed seconds with a
+        // deliberate missing interval must stay 800s, not compress to 799s.
+        for interval in 1..=8000 {
+            if interval == 500 {
+                continue;
+            }
+            writeln!(
+                file,
+                "{:.3},2.00,msec,task-clock,100000000,100.00,,",
+                interval as f64 / 10.0
+            )
+            .unwrap();
+        }
+        drop(file);
+        assert!(path.metadata().unwrap().len() > 256 * 1024);
+        let mut session =
+            crate::measurements::Session::start_with_collectors(&dir, &[], None).unwrap();
+        let status = std::process::Command::new("true").status().unwrap();
+        let data = super::process(
+            &mut session,
+            &crate::collectors::ProcessContext {
+                name: "perf-stat",
+                status: &status,
+                stdout: "",
+                stderr: "diagnostic prefix only",
+                stderr_path: &path,
+            },
+        )
+        .unwrap();
+        assert_eq!(data.status, "completed");
+        assert_eq!(data.metrics["perf.task_clock_ms"], 15998.0);
+        assert_eq!(data.series["perf.task_clock_ms"].len(), 7999);
+        assert_eq!(data.timestamps["perf.task_clock_ms"].last(), Some(&800.0));
+        assert_eq!(data.timestamps["perf.task_clock_ms"][499], 50.1);
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            super::process(
+                &mut session,
+                &crate::collectors::ProcessContext {
+                    name: "perf-stat",
+                    status: &status,
+                    stdout: "",
+                    stderr: "1,,cycles,1,",
+                    stderr_path: &path,
+                }
+            )
+            .err()
+            .unwrap()
+            .contains("cannot read complete")
+        );
+        drop(session);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn perf_stat_gaps_and_hybrid_counters_preserve_real_interval_offsets() {
+        let parsed = super::parse_perf_stat(std::io::Cursor::new(
+            "0.1,4,,cpu_core/cycles/,1,\n0.1,3,,cpu_atom/cycles/,1,\n0.2,<not counted>,,cpu_core/cycles/,0,\n0.5,9,,cpu_core/cycles/,1,\n"
+        )).unwrap();
+        assert_eq!(parsed.metrics["perf.cycles"], 16.0);
+        assert_eq!(parsed.series["perf.cycles"], [7.0, 9.0]);
+        assert_eq!(parsed.timestamps["perf.cycles"], [0.1, 0.5]);
+    }
+
+    #[test]
+    fn perf_stat_refuses_partial_totals_on_invalid_or_excessive_input() {
+        let two_rows = "0.1,2,,cycles,1,\n0.2,3,,cycles,1,\n";
+        assert!(super::parse_perf_stat_bounded(std::io::Cursor::new(two_rows), 20).is_err());
+        for suffix in [
+            "0.2,NaN,,cycles,1,\n",
+            "0.2,inf,,cycles,1,\n",
+            "0.2,-1,,cycles,1,\n",
+            "0.05,3,,cycles,1,\n",
+            "not-time,3,,cycles,1,\n",
+            "3,,cycles,1,\n",
+            "0.2,4,,cpu_core/cyc",
+            "0.2,4,,cycles",
+            "0.2,4,,unknown-event,1,\n",
+            "cycles,1,\n",
+            "0.2,4,msec,extra,task-clock,1,\n",
+            "0.2,4,,cycles\n",
+        ] {
+            let input = format!("0.1,2,,cycles,1,\n{suffix}");
+            assert!(
+                super::parse_perf_stat(std::io::Cursor::new(input)).is_err(),
+                "{suffix}"
+            );
+        }
+        assert!(
+            super::parse_perf_stat(std::io::Cursor::new(vec![b'x'; super::MAX_STAT_LINE + 1]))
+                .is_err()
+        );
+        assert!(super::parse_perf_stat(std::io::Cursor::new(vec![0xff, b'\n'])).is_err());
+        let input = "1,,cycles,1,\n".repeat(super::MAX_STAT_POINTS + 1);
+        assert!(super::parse_perf_stat(std::io::Cursor::new(input)).is_err());
+        struct Fails;
+        impl std::io::Read for Fails {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("fixture read failure"))
+            }
+        }
+        assert!(super::parse_perf_stat(std::io::BufReader::new(Fails)).is_err());
+    }
 
     #[test]
     fn scalar_perf_counters_sum_intervals_instead_of_reporting_the_final_sample() {

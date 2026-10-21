@@ -579,6 +579,10 @@ pub(crate) fn resolve(id: &str, project_root: &Path, tools_dir: &str) -> Option<
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/agent_contract.rs"]
+mod contract_tests;
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn final_result_counter_uses_the_latest_native_value_without_summing() {

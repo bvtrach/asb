@@ -812,6 +812,10 @@ fn model_ids(models: &[ModelInfo]) -> Vec<String> {
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/models.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

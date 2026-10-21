@@ -6,7 +6,12 @@ tracks work, not a claim that the whole audit is complete. Each repair class
 needs an independently reviewed PR, ordinary and packaged offline CI tests,
 post-merge verification, and a patch release. Coverage additionally needs a
 required 90% production-code gate; excluded production files or lowered
-thresholds are not acceptable substitutes for tests.
+thresholds are not acceptable substitutes for tests. That coverage prerequisite
+is now delivered by PR #264, merged as
+`cbfaa4c1ebc2ea3880916f7767ed08bd64b6c2f7`: the required
+`coverage-90-percent` check independently gates both aggregate and production
+coverage, without production-file exclusions or reduced thresholds. Individual
+repair classes still need their own exact-head validation and release.
 
 ## 1. Endpoint preparation invariants
 
@@ -23,7 +28,11 @@ replace production panic fallbacks with errors containing protocol metadata
 only, never URLs or credentials. Registry-wide tests exercise every rejected
 interface/authentication pair and all advertised pairs without executing a
 client or contacting a provider. Independent review found no blocking issue.
-Delivery (PR/main CI/release): pending.
+Delivery candidate: PR #256, patch version **0.2.4**, rebased by merging current
+main after the coverage prerequisite landed. Endpoint behavior and the complete
+matrix are unchanged from the independently reviewed candidate. Exact-head PR
+checks, merge, post-merge CI and release remain required; this entry does not
+mark the broader audit complete.
 
 ## 2. Report identities and shared path handling
 

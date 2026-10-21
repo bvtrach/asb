@@ -11,10 +11,17 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::process::Command;
 
+#[cfg(test)]
+#[path = "catalog/download_tests.rs"]
+mod download_tests;
+
 const HELPER: &str = include_str!("../../../../assets/benchmarks/asb_terminal_catalog.py");
 const ORIGINAL_TASKS: &str =
     include_str!("../../../../assets/benchmarks/terminal_bench_1_tasks.json");
 const LIMIT: u64 = 16 * 1024 * 1024;
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

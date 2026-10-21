@@ -46,6 +46,10 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+Perf-stat regression fixtures process a complete synthetic file larger than
+the diagnostic cap, retain missing-interval timestamps and hybrid CPU counter
+totals, and reject invalid or excessive input without publishing partial totals.
+They need neither perf permissions nor a live agent/provider.
 `cargo test --locked --offline --test compare_setup` checks repeated CLI setup
 selections, scoped models/trials, dependency expansion, non-overwriting sweep
 publication, standalone measured/unmeasured reports and an injected browser
@@ -88,8 +92,37 @@ The agent-process sampler regression launches a bounded local Node fixture,
 changes its process title and checks two seconds of continued sampling, an
 unrelated Node process and the original process's exit. It uses no provider,
 agent package, container or privileged collector.
+The deterministic pre-exec regression holds an owned child before exec using
+a bounded pipe handshake. Matching inherited identity must not enter the
+historical worker census or RSS total; executing the selected entry point
+still qualifies. The existing concurrent Node fixture retains exact worker
+counts and unrelated-script/tool exclusions. Fork-only workers remain an
+explicitly unclassified lower bound, not a guessed count.
 Run `asb run` with credentials only as an explicit local
 smoke/benchmark operation.
+
+CI's `coverage-90-percent` check requires at least 90% executable-line coverage.
+Run the same offline check locally with:
+
+```sh
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --version 0.9.0 --locked
+bash scripts/check-coverage.sh
+```
+
+Both LLVM's complete aggregate and production-only coverage must pass. The
+production denominator comes from LLVM's non-test `asb` executable map, without
+excluding any production modules; unit and integration tests contribute the
+execution counts, but adding test-body lines cannot inflate that denominator.
+Isolated test subprocesses discard inherited state and credentials while
+retaining only LLVM's coverage-output setting. Reports and uncovered-file
+summaries are retained under `target/coverage/`, including on CI failures.
+Each invocation removes only its four generated report files before checking or
+building, so an early failure cannot leave a stale green summary; unrelated
+evidence files remain intact. Workspace coverage objects and raw profiles are
+cleaned while dependency compilation caches are retained. This also prevents
+obsolete test-binary maps from distorting totals after version or feature changes.
+No live provider, real agent installation, or privileged collector is necessary.
 
 Token accounting has synthetic, provider-free regression fixtures for all
 registered agent families, plus replay CLI checks for JSON, logs, and
@@ -169,8 +202,14 @@ ordinary CI: service fixtures use local Unix sockets and mock daemons, check
 creator-thread exit, owner-process death, failed-client isolation, lease lifetime,
 and bounded log draining. Actual overlapping captures remain an opt-in local
 qualification; mock ownership tests do not prove real scheduler coverage.
-The ignored `live_perfetto_streaming_preserves_markers_beyond_the_old_ring_capacity`
-test writes fixed, non-secret marker pressure beyond the old 64 MiB service
+The normal-shutdown lease regression deliberately keeps the same locked file
+description in an independent pipe-blocked child. Once owned daemons are reaped,
+the lease must be reacquirable while that incidental child remains alive. This
+deterministically covers a fork-before-exec inheritance window without relying
+on scheduling sleeps. Separate tests keep inherited ownership on uncertain
+cleanup and retain the unchanged owner-SIGKILL daemon-shutdown contract.
+The ignored `live_perfetto_streaming_preserves_markers_beyond_the_service_ring_capacity`
+test writes fixed, non-secret marker pressure beyond the configured 128 MiB service
 buffer, then requires complete, loss-free capture and scoped agent measurements.
 The ordinary offline coverage fixtures reject missing/duplicate boundaries,
 data loss and malformed processor output. The ignored
@@ -228,6 +267,12 @@ test separately checks default/disabled collection, nonzero agent exits with
 valid grades, unresolved tasks, comparison regeneration and cached resume.
 Ordinary CI
 uses synthetic provider-free protocol tests.
+The remote execution unit tests use a private prepared-bootstrap fixture to
+exercise controller dispatch, output, metadata, lifecycle failures, deadlines and
+preserving cancellation independently of installation. This fixture does not
+qualify an installed runtime, SDK or workload container. Production execution
+always validates the runtime and performs checksum-pinned bootstrap preparation;
+there is no CLI, configuration or environment switch to bypass that phase.
 `benchmark_live_resources.py` additionally checks actual abrupt controller
 SIGKILL with an installed SWE-bench task image: the durable ownership journal
 quiesces only its recorded container, retains a partial output file and an
