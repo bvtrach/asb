@@ -8,7 +8,45 @@ use std::ffi::OsString;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
+/// Use the parser's schema for completions. Tool suggestions come from their
+/// registry without restricting actual parsing of explicit custom tools.
+pub(crate) fn completion_command() -> clap::Command {
+    Cli::command().mut_subcommand("tool", |tool| {
+        tool.mut_subcommand("install", |install| {
+            install.mut_arg("name", |name| {
+                name.value_parser(clap::builder::PossibleValuesParser::new(
+                    install::tool_names(),
+                ))
+            })
+        })
+    })
+}
+
 pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Write) -> u8 {
+    // Like the native gate helpers, completion generation is an internal entry
+    // point, not a public option to duplicate in generated shell candidates.
+    const COMPLETION_FLAG: &str = "--__generate-completion";
+    let separate = args.first().is_some_and(|arg| arg == COMPLETION_FLAG);
+    let joined = args
+        .first()
+        .and_then(|arg| arg.to_str())
+        .and_then(|arg| arg.strip_prefix(COMPLETION_FLAG))
+        .and_then(|suffix| suffix.strip_prefix('='));
+    if separate || joined.is_some() {
+        if args.len() != if separate { 2 } else { 1 } {
+            return fail(
+                stderr,
+                "completion helper requires exactly one shell: bash or zsh",
+            );
+        }
+        let shell = if separate { args[1].to_str() } else { joined };
+        let result = match shell {
+            Some("bash") => completion::bash(stdout),
+            Some("zsh") => completion::zsh(stdout),
+            _ => Err(Error::Input("completion shell must be bash or zsh".into())),
+        };
+        return result.map_or_else(|error| fail(stderr, &error.to_string()), |_| 0);
+    }
     let mut argv = Vec::with_capacity(args.len() + 1);
     argv.push(OsString::from("asb"));
     argv.extend_from_slice(args);
@@ -27,14 +65,6 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
             return error.exit_code() as u8;
         }
     };
-    if let Some(shell) = cli.completion.as_deref() {
-        let result = match shell {
-            "bash" => completion::bash(stdout),
-            "zsh" => completion::zsh(stdout),
-            _ => Err(Error::Input("completion shell must be bash or zsh".into())),
-        };
-        return result.map_or_else(|error| fail(stderr, &error.to_string()), |_| 0);
-    }
     let result = match cli.command {
         None => stdout
             .write_all(Cli::command().render_help().to_string().as_bytes())
@@ -194,8 +224,6 @@ fn io_error(error: io::Error) -> CliError {
     about = "Agent Systems Benchmark command line interface"
 )]
 struct Cli {
-    #[arg(long = "__generate-completion", value_name = "SHELL", hide = true)]
-    completion: Option<String>,
     #[command(subcommand)]
     command: Option<CommandLine>,
 }
@@ -488,6 +516,75 @@ struct ToolInstallArgs {
 mod tests {
     use super::Cli;
     use clap::Parser;
+
+    #[test]
+    fn internal_completion_forms_errors_and_writer_failure_are_explicit() {
+        for shell in ["bash", "zsh"] {
+            for args in [
+                vec!["--__generate-completion".into(), shell.into()],
+                vec![format!("--__generate-completion={shell}").into()],
+            ] {
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                assert_eq!(super::run(&args, &mut stdout, &mut stderr), 0);
+                assert!(String::from_utf8(stdout).unwrap().contains("_asb"));
+                assert!(stderr.is_empty());
+            }
+        }
+        for args in [
+            vec!["--__generate-completion".into()],
+            vec![
+                "--__generate-completion".into(),
+                "bash".into(),
+                "unexpected".into(),
+            ],
+            vec!["--__generate-completion=bash".into(), "unexpected".into()],
+            vec!["--__generate-completion=fish".into()],
+            vec!["--__generate-completion=".into()],
+            vec!["--__generate-completion".into(), "fish".into()],
+        ] {
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            assert_eq!(super::run(&args, &mut stdout, &mut stderr), 2);
+            assert!(stdout.is_empty());
+            assert!(!stderr.is_empty());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let args = [
+                "--__generate-completion".into(),
+                std::ffi::OsString::from_vec(vec![0xff]),
+            ];
+            assert_eq!(super::run(&args, &mut Vec::new(), &mut Vec::new()), 2);
+        }
+        struct Broken;
+        impl std::io::Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "fixture",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let args = ["--__generate-completion=bash".into()];
+        let mut stderr = Vec::new();
+        assert_eq!(super::run(&args, &mut Broken, &mut stderr), 2);
+        assert!(!stderr.is_empty());
+        // Suggestions must not constrain requests for explicit custom binaries.
+        Cli::try_parse_from([
+            "asb",
+            "tool",
+            "install",
+            "private-source",
+            "--source",
+            "fixture-binary",
+        ])
+        .expect("registry suggestions must not constrain actual custom-tool parsing");
+    }
 
     #[test]
     fn all_setup_options_are_typed_and_order_independent() {
