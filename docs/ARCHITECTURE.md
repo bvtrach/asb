@@ -555,6 +555,19 @@ the actual source cassette directories, including rebased/preserved history
 paths. Record cassettes are outputs, not replay inputs. Interpreter and native
 loader dependencies are added by shared runtime discovery, not inferred merely
 from an executable's pathname.
+On Unix, runtime discovery owns one nonblocking duplex exchange, with a 1 MiB
+serialized request and 4 MiB complete response, a single 60-second exchange
+deadline and bounded cleanup. Linux launches the exact typed command through
+the invoking ASB's native gate, retaining detached helper descendants until
+quiescence; no raw process-group signal or blocking pipe-thread join is used.
+Other Unix hosts retain only direct-child custody. Nested POSIX Python/loader
+probes enforce 1 MiB stdout and 64 KiB stderr limits during reads and use the
+remaining discovery budget. One pre-established Python direct-child keeper
+per helper retains uncertain cleanup and refuses further probe admission.
+Outside the enclosing Linux discovery gate, that keeper does not establish
+descendant or crash-persistent ownership. Non-Unix Rust exchange and Python
+probe fallbacks preserve their prior healthy behavior but retain their legacy
+blocking/capture limitations; they are not qualified by Linux tests.
 After workload cleanup and measurement completion, the runner writes private
 `.asb-completions/` outcome records beside the run log, including unresolved
 outcomes, actual task identity, cleanup status and workload-owned evaluator
@@ -1017,6 +1030,18 @@ candidate falls back to the project, a present unusable candidate stops launch,
 and neither case changes project-local installed status. Only explicitly
 host-backed tool recipes retain their separate host-availability fallback;
 host agents and external overrides are not project installations.
+
+Installer recipes prepare typed local-path/URL and project/runtime inputs before
+dispatch. Ordinary Host and pinned Goose binaries share bounded staged-file
+publication, while automatic dependencies retain no-clobber semantics and
+package managers keep their existing installation authority. A probe-visible
+file is identity/content/mode/bounds checked, detached into private custody,
+then copied from its admitted handle into an unexposed commit stage. Cleanup
+also detaches exposed entries before deleting only positively owned files or
+empty directories; foreign arrivals and failed explicit settlements remain
+reported evidence, without a Drop retry. This is ordinary private quiet custody,
+not a hostile same-UID sandbox or package-manager rollback. Details and current
+qualification limits are in [the recipe repair contract](INSTALLER_RECIPE_REPAIR.md).
 
 All three TUI installation flows share one owned process operation. A private
 versioned helper runs synchronous tool, workload or collector-dependency

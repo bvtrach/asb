@@ -247,6 +247,19 @@ impl Service {
         command
     }
 
+    pub fn collector_command(
+        &self,
+        applet: &str,
+    ) -> Result<(Command, crate::launch::CommandRoute), String> {
+        let mut launch = crate::launch::ProcessLaunch::new(&self.executable);
+        launch.arg(applet);
+        let (mut command, route) = crate::measurements::producer_command(&mut launch)?;
+        command
+            .env("PERFETTO_PRODUCER_SOCK_NAME", &self.producer)
+            .env("PERFETTO_CONSUMER_SOCK_NAME", &self.consumer);
+        Ok((command, route))
+    }
+
     fn check_alive(&self) -> Result<(), String> {
         let mut children = self
             .children

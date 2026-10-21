@@ -14,6 +14,26 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+Latest verified delivery: installer repair [PR #302](https://github.com/martin-beck/asb/pull/302)
+merged as `1a88ed8547270bdb4bb70cc88183fe2c449be0d5`. Exact-head CI
+`39679529018` and both enabled post-merge jobs `39681422803` passed. Signed
+annotated tag `v0.2.37` (`f5621819d283b5fd12d16b2e9762aaa4f39000e7`)
+targets that commit; GitHub reports its signature valid. The release was
+published on 21 October at 21:58:26 UTC.
+
+Earlier v0.2.35 artifact delivery is also complete: PR #300 merged as
+`8a115715e312b25b17385a0505c78d49994495b0`, exact-head `39676012093` and
+both post-merge `39677637820` passed, release published at 21:29:24 UTC.
+Recording cleanup PR #301 merged as
+`574d9661f2211fb21e961312961c4b557c948833`, exact-head `39677762299` and
+both post-merge `39679248531` passed, signed v0.2.36 published at 21:40:48 UTC.
+
+Runtime discovery PR #303 passed exact-head CI `39681539596` and merged with
+an identical tree as `54ecdcd1c62099a65a3da87ebffdb4d4f619f900`.
+Post-merge run `39683034184` and signed v0.2.38 remain pending here. Earlier
+staged/local proof below is historical; its then-pending statements do not
+override these later delivery checks or qualify other unfinished repairs.
+
 Recording raw-source custody, staged patch **0.2.36**: integrated source
 `05ebf11d` retains the exact reviewed raw core from `bd2dea5e` alongside artifact,
 publication and bounded controller stack `b25d9f11`. The fresh focused matrix

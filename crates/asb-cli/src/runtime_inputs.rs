@@ -2,10 +2,19 @@
 use crate::{Error, project};
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
-use std::io::{Read, Write};
+#[cfg(not(unix))]
+use std::io::Read;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+#[cfg(any(not(unix), test))]
+use std::process::Stdio;
+use std::time::Duration;
+#[cfg(any(not(unix), test))]
+use std::time::Instant;
+
+#[cfg(unix)]
+mod exchange;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -133,14 +142,26 @@ pub(crate) fn for_plan(
 }
 
 pub(crate) fn discover(python: &Path, dependencies: &[Dependency]) -> Result<Vec<PathBuf>, Error> {
-    let mut dependencies = dependencies.to_vec();
-    dependencies.sort();
-    dependencies.dedup();
-    if dependencies.len() > 4096 {
-        return Err(Error::Input(
-            "runtime input declaration exceeds its component bound".into(),
-        ));
+    discover_with_timeout(python, dependencies, Duration::from_secs(60))
+}
+
+// Keep production policy unchanged while real-child fixtures exercise the
+// complete exchange and custody against a short watchdog.
+fn discover_with_timeout(
+    python: &Path,
+    dependencies: &[Dependency],
+    timeout: Duration,
+) -> Result<Vec<PathBuf>, Error> {
+    let mut bounded = std::collections::BTreeSet::new();
+    for dependency in dependencies {
+        bounded.insert(dependency);
+        if bounded.len() > 4096 {
+            return Err(Error::Input(
+                "runtime input declaration exceeds its component bound".into(),
+            ));
+        }
     }
+    let dependencies = bounded;
     // Load the same production ELF inspection code used by guest staging.
     // Its execution module is pure definitions; discovery starts no workload.
     let modules = [
@@ -159,10 +180,48 @@ pub(crate) fn discover(python: &Path, dependencies: &[Dependency]) -> Result<Vec
         serde_json::to_string(&modules).map_err(|_| unavailable())?,
         include_str!("../assets/benchmarks/asb_runtime_inputs.py")
     );
-    let request = serde_json::to_vec(&dependencies).map_err(|_| unavailable())?;
-    if request.len() > 1024 * 1024 {
+    struct Request(Vec<u8>);
+    impl Write for Request {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > (1024 * 1024usize).saturating_sub(self.0.len()) {
+                return Err(std::io::Error::other("runtime request exceeds its bound"));
+            }
+            self.0.reserve_exact(bytes.len());
+            self.0.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut request = Request(Vec::new());
+    serde_json::to_writer(&mut request, &dependencies).map_err(|_| unavailable())?;
+    let request = request.0;
+    #[cfg(unix)]
+    let bytes = exchange::run(python, &source, &request, timeout).map_err(|reason| {
+        Error::Input(format!("runtime inputs could not be fully discovered within their limits; no input values were logged; {reason}"))
+    })?;
+    // Preserve the existing non-Unix route; it is not part of the Unix bounded
+    // exchange qualification. A cancellable Windows writer remains separate.
+    #[cfg(not(unix))]
+    let bytes = legacy_exchange(python, &source, request, timeout)?;
+    let result: Discovered = serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
+    if result.schema_version != 1
+        || result.paths.len() > 100000
+        || result.paths.iter().any(|path| !path.is_absolute())
+    {
         return Err(unavailable());
     }
+    Ok(result.paths)
+}
+
+#[cfg(not(unix))]
+fn legacy_exchange(
+    python: &Path,
+    source: &str,
+    request: Vec<u8>,
+    timeout: Duration,
+) -> Result<Vec<u8>, Error> {
     let mut command = Command::new(python);
     command
         .args(["-I", "-S", "-B", "-c"])
@@ -170,11 +229,6 @@ pub(crate) fn discover(python: &Path, dependencies: &[Dependency]) -> Result<Vec
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
     let mut child = command.spawn().map_err(|_| unavailable())?;
     // Drain the bounded response concurrently so a legitimate manifest cannot
     // deadlock a pipe while the parent waits for discovery to exit.
@@ -188,7 +242,7 @@ pub(crate) fn discover(python: &Path, dependencies: &[Dependency]) -> Result<Vec
     });
     let mut input = child.stdin.take().expect("runtime discovery stdin");
     let sender = std::thread::spawn(move || input.write_all(&request));
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + timeout;
     let success = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status.success(),
@@ -208,34 +262,18 @@ pub(crate) fn discover(python: &Path, dependencies: &[Dependency]) -> Result<Vec
     if !success || !sent || bytes.len() > 4 * 1024 * 1024 {
         return Err(unavailable());
     }
-    let result: Discovered = serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
-    if result.schema_version != 1
-        || result.paths.len() > 100000
-        || result.paths.iter().any(|path| !path.is_absolute())
-    {
-        return Err(unavailable());
-    }
-    Ok(result.paths)
+    Ok(bytes)
 }
 
 fn unavailable() -> Error {
     Error::Input("runtime inputs could not be fully discovered within their limits; no input values were logged".into())
 }
 
+#[cfg(not(unix))]
 fn stop_owned(child: &mut std::process::Child) {
     if !matches!(child.try_wait(), Ok(None)) {
         return;
     }
-    // The unreaped child is the leader of the new group created above. Its
-    // PID cannot be reused while this handle is retained. Never signal a host
-    // service, inherited group, arbitrary PID or unrelated benchmark worker.
-    #[cfg(unix)]
-    let _ = Command::new("/bin/kill")
-        .args(["-KILL", "--", &format!("-{}", child.id())])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
     let _ = child.kill();
 }
 
@@ -255,6 +293,164 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn inherited_stdout_after_successful_helper_exit_is_bounded() {
+        bounded_exchange_case("held-stdout");
+    }
+
+    #[test]
+    fn descendant_held_stdin_after_successful_nonreader_exit_is_bounded() {
+        bounded_exchange_case("held-stdin");
+    }
+
+    #[test]
+    fn nested_probe_inherited_writer_settles_under_outer_gate() {
+        bounded_exchange_case("nested-probe");
+    }
+
+    fn bounded_exchange_case(case: &str) {
+        use crate::test_support::IsolatedEnvironment;
+        use std::os::unix::fs::PermissionsExt;
+        const CASE: &str = "ASB_RUNTIME_DISCOVERY_RED_CASE";
+        const ROOT: &str = "ASB_RUNTIME_DISCOVERY_RED_ROOT";
+        let test = match case {
+            "held-stdout" => {
+                "runtime_inputs::tests::inherited_stdout_after_successful_helper_exit_is_bounded"
+            }
+            "held-stdin" => {
+                "runtime_inputs::tests::descendant_held_stdin_after_successful_nonreader_exit_is_bounded"
+            }
+            "nested-probe" => {
+                "runtime_inputs::tests::nested_probe_inherited_writer_settles_under_outer_gate"
+            }
+            _ => unreachable!("private test case"),
+        };
+        if std::env::var(CASE).as_deref() == Ok(case) {
+            let root = PathBuf::from(std::env::var_os(ROOT).unwrap());
+            let dependencies = if case == "held-stdin" {
+                (0..512)
+                    .map(|index| {
+                        Dependency::file(format!(
+                            "/PRIVATE_RUNTIME_COMPONENT/{index}/{}",
+                            vec!["x".repeat(128); 8].join("/")
+                        ))
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                vec![Dependency::file("/fixture/absent-file")]
+            };
+            let result = discover_with_timeout(
+                &root.join("fake-python"),
+                &dependencies,
+                Duration::from_millis(150),
+            );
+            if case == "held-stdin" {
+                let error = result.unwrap_err().to_string();
+                assert!(!error.contains("PRIVATE_RUNTIME_COMPONENT"));
+            } else {
+                assert!(
+                    result.is_ok(),
+                    "a complete response may succeed after owned descendants settle"
+                );
+            }
+            std::fs::write(root.join("returned"), "exchange returned").unwrap();
+            return;
+        }
+        let root = Directory::new();
+        let script = format!(
+            "#!/usr/bin/python3\nimport os,pathlib,sys,time\nroot=pathlib.Path({})\ncase={}\nif case=='held-stdout': sys.stdin.buffer.read()\npid=os.fork()\nif pid==0:\n os.setsid()\n if case=='held-stdin': os.close(1)\n else: os.close(0)\n time.sleep(30)\n os._exit(0)\n(root/'descendant.pid').write_text(str(pid))\nos.write(1,b'{{\"schema_version\":1,\"paths\":[]}}\\n')\n(root/'helper-parent-exited').write_text('zero exit')\nos._exit(0)\n",
+            serde_json::to_string(&root.0).unwrap(),
+            serde_json::to_string(case).unwrap()
+        );
+        let script = if case == "nested-probe" {
+            let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/benchmarks");
+            let nested = format!(
+                "import os,pathlib,time\npid=os.fork()\nif pid==0:\n os.setsid()\n time.sleep(30)\n os._exit(0)\npathlib.Path({}).write_text(str(pid))\nos._exit(0)\n",
+                serde_json::to_string(&root.0.join("descendant.pid")).unwrap()
+            );
+            format!(
+                "#!/usr/bin/python3\nimport sys,pathlib,time\nsys.path.insert(0,{})\nimport asb_runtime\nsys.stdin.buffer.read()\ntry:\n asb_runtime.bounded_probe([sys.executable,'-I','-S','-B','-c',{}],deadline=time.monotonic()+.05)\nexcept asb_runtime.ExecutionError as error:\n assert 'deadline' in str(error)\nelse: raise AssertionError('inherited writer accepted')\npathlib.Path({}).write_text('zero exit')\nprint('{{\"schema_version\":1,\"paths\":[]}}')\n",
+                serde_json::to_string(&assets).unwrap(),
+                serde_json::to_string(&nested).unwrap(),
+                serde_json::to_string(&root.0.join("helper-parent-exited")).unwrap()
+            )
+        } else {
+            script
+        };
+        let helper = root.0.join("fake-python");
+        std::fs::write(&helper, script).unwrap();
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let binary = executable.parent().unwrap().parent().unwrap().join("asb");
+        assert!(binary.is_file(), "build the actual ASB binary first");
+        let spawn = |program: &std::ffi::OsStr, arguments: &[&str], fixture: bool| {
+            let mut launch = crate::launch::ProcessLaunch::new(program);
+            for argument in arguments {
+                launch.arg(argument);
+            }
+            let (mut command, route) = launch.native(Some(&binary));
+            command
+                .isolated_env()
+                .env("PATH", "/usr/bin:/bin")
+                .env("ASB_RUNTIME_EXECUTABLE", &binary)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            if fixture {
+                command.env(CASE, case).env(ROOT, &root.0);
+            }
+            let mut gate =
+                crate::process_gate::Admission::new(route.validate_gate(&mut command).unwrap())
+                    .unwrap()
+                    .spawn()
+                    .unwrap();
+            gate.resume().unwrap();
+            gate
+        };
+        let mut sentinel = spawn(OsStr::new("/bin/sleep"), &["30"], false);
+        let mut fixture = spawn(
+            executable.as_os_str(),
+            &["--exact", test, "--nocapture"],
+            true,
+        );
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            if let Some(status) = fixture.try_wait().unwrap() {
+                break Some(status);
+            }
+            if Instant::now() >= deadline {
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        // Red regressions must fail only after the real supervisor confirms
+        // complete fixture-tree quiescence; no raw PGID/PID cleanup is used.
+        fixture
+            .stop()
+            .expect("red watchdog must quiesce its owned fixture tree");
+        assert!(
+            sentinel.try_wait().unwrap().is_none(),
+            "unrelated sentinel was affected"
+        );
+        sentinel.stop().unwrap();
+        assert!(
+            root.0.join("helper-parent-exited").is_file(),
+            "fixture never reached successful helper exit"
+        );
+        let descendant: u32 = std::fs::read_to_string(root.0.join("descendant.pid"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(
+            !Path::new(&format!("/proc/{descendant}")).exists(),
+            "watchdog left an owned descendant"
+        );
+        assert!(
+            status.is_some_and(|status| status.success()) && root.0.join("returned").exists(),
+            "runtime discovery exceeded its short exchange budget after zero-exit helper ({case}); outer watchdog reaped the entire fixture tree"
+        );
     }
 
     #[test]
@@ -308,56 +504,109 @@ mod tests {
         assert!(error.contains("runtime inputs"));
     }
 
+    fn helper(root: &Directory, source: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = root.0.join("helper");
+        std::fs::write(&path, format!("#!/usr/bin/python3\n{source}")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        path
+    }
+
     #[test]
-    fn cancellation_stops_only_the_owned_discovery_group() {
-        use std::io::BufRead;
-        use std::os::unix::process::CommandExt;
-        struct ChildGuard {
-            child: std::process::Child,
-            group: bool,
+    fn duplex_response_bounds_and_silent_active_deadlines_are_enforced() {
+        for (source, accepted) in [
+            (
+                "import sys\nsys.stdin.buffer.read()\nsys.stdout.write('{\"schema_version\":1,\"paths\":[]}'+ ' '*(4*1024*1024-31))\n",
+                true,
+            ),
+            (
+                "import sys\nsys.stdin.buffer.read()\nsys.stdout.write('x'*(4*1024*1024+1))\n",
+                false,
+            ),
+            ("import time\ntime.sleep(30)\n", false),
+            ("import os\nwhile True: os.write(1,b'x'*16384)\n", false),
+        ] {
+            let root = Directory::new();
+            let python = helper(&root, source);
+            let started = Instant::now();
+            let result = discover_with_timeout(&python, &[], Duration::from_millis(300));
+            assert_eq!(result.is_ok(), accepted, "{result:?}");
+            assert!(started.elapsed() < Duration::from_secs(2));
         }
-        impl Drop for ChildGuard {
-            fn drop(&mut self) {
-                if self.group {
-                    stop_owned(&mut self.child);
-                } else {
-                    let _ = self.child.kill();
-                }
-                let _ = self.child.wait();
-            }
-        }
-        let mut unrelated = ChildGuard {
-            child: Command::new("sleep").arg("30").spawn().unwrap(),
-            group: false,
-        };
-        let child = Command::new("python3").args(["-I","-S","-B","-c",
-            "import subprocess,time; p=subprocess.Popen(['sleep','30']); print(p.pid,flush=True); time.sleep(30)"])
-            .process_group(0).stdout(Stdio::piped()).spawn().unwrap();
-        let mut owned = ChildGuard { child, group: true };
-        let mut line = String::new();
-        std::io::BufReader::new(owned.child.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
-        let descendant: u32 = line.trim().parse().unwrap();
-        stop_owned(&mut owned.child);
-        assert!(!owned.child.wait().unwrap().success());
-        assert!(unrelated.child.try_wait().unwrap().is_none());
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            let state = std::fs::read_to_string(format!("/proc/{descendant}/stat"))
-                .ok()
-                .and_then(|text| {
-                    text.rsplit_once(") ")
-                        .map(|(_, fields)| fields.chars().next().unwrap())
-                });
-            if state.is_none_or(|state| state == 'Z') {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "owned discovery descendant survived cancellation"
+    }
+
+    #[test]
+    fn exact_request_limit_is_delivered_and_one_byte_over_never_spawns() {
+        let root = Directory::new();
+        let marker = root.0.join("received");
+        let python = helper(
+            &root,
+            &format!(
+                "import pathlib,sys\nsys.stdout.write('{{\"schema_version\":1,\"paths\":[]}}'+' '*(4*1024*1024-31))\nsys.stdout.flush()\nrequest=sys.stdin.buffer.read()\nassert len(request)==1024*1024\npathlib.Path({}).write_text('received')\n",
+                serde_json::to_string(&marker).unwrap()
+            ),
+        );
+        let empty = serde_json::to_vec(&[Dependency::file("/")]).unwrap().len();
+        for excess in [0, 1] {
+            let dependencies = [Dependency::file(format!(
+                "/{}",
+                "a".repeat(1024 * 1024 - empty + excess)
+            ))];
+            assert_eq!(
+                serde_json::to_vec(&dependencies).unwrap().len(),
+                1024 * 1024 + excess
             );
-            std::thread::sleep(Duration::from_millis(10));
+            let result = discover_with_timeout(&python, &dependencies, Duration::from_secs(2));
+            assert_eq!(result.is_ok(), excess == 0, "{result:?}");
+            if excess == 0 {
+                std::fs::remove_file(&marker).unwrap();
+            } else {
+                assert!(!marker.exists());
+            }
+        }
+    }
+
+    #[test]
+    fn faults_unwind_and_keeper_exhaustion_keep_custody_and_redact_inputs() {
+        let root = Directory::new();
+        let marker = root.0.join("must-not-start");
+        let python = helper(
+            &root,
+            &format!(
+                "import pathlib,sys,time\npathlib.Path({}).write_text('started')\nsys.stdout.write('{{\"schema_version\":1,\"paths\":[]}}');sys.stdout.flush()\ntime.sleep(30)\n",
+                serde_json::to_string(&marker).unwrap()
+            ),
+        );
+        let receipts = crate::process_cleanup::test_support::Scope::new();
+        crate::process_cleanup::test_support::set_creation_failure(true);
+        assert!(discover_with_timeout(&python, &[], Duration::from_millis(200)).is_err());
+        crate::process_cleanup::test_support::set_creation_failure(false);
+        assert!(!marker.exists());
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                exchange::faults::set(0);
+            }
+        }
+        for fault in [1, 2, 3] {
+            let reset = Reset;
+            exchange::faults::set(fault);
+            let result = std::panic::catch_unwind(|| {
+                discover_with_timeout(&python, &[], Duration::from_millis(200))
+            });
+            if fault == 2 {
+                assert!(result.is_err());
+            } else {
+                let error = result.unwrap().unwrap_err().to_string();
+                assert!(error.contains(if fault == 3 {
+                    "cleanup remains unconfirmed"
+                } else {
+                    "read failed"
+                }));
+                assert!(!error.contains(root.0.to_str().unwrap()));
+            }
+            drop(reset);
+            receipts.wait_finished();
         }
     }
 }

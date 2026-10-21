@@ -64,8 +64,11 @@ impl CollectorAdapter for PerfettoCollector {
             super::super::selected_or_environment("perfetto", selected);
         Ok(())
     }
-    fn graceful_shutdown(&self, _: &str) -> bool {
-        true
+    fn producer_policy(&self, _: &str) -> measurements::ProducerPolicy {
+        measurements::ProducerPolicy {
+            stream_bytes: 256 * 1024 * 1024,
+            graceful: Some(Duration::from_secs(5)),
+        }
     }
     fn process(
         &self,
@@ -156,14 +159,6 @@ fn process(
         .as_ref()
         .filter(|path| path.is_file())
         .map(|path| measurements::file_name(path));
-    if context.status.code().is_none()
-        && state
-            .trace
-            .as_ref()
-            .is_some_and(|path| path.metadata().is_ok_and(|metadata| metadata.len() > 0))
-    {
-        result.status = "completed".into();
-    }
     if context.stderr.contains("FtraceController") {
         result.status = "unavailable".into();
     } else if !state.capture_complete {
@@ -302,7 +297,6 @@ fn probe_trace_processor(tool_dir: Option<&Path>) -> Result<(), String> {
     }
 }
 
-use crate::collectors;
 use crate::measurements::{
     Collector, bounded, env_true, escape_svg, parse_float, safe_svg_name, write_unavailable,
 };
@@ -328,6 +322,31 @@ struct PerfettoState {
     capture_complete: bool,
     tracepoint_count: u64,
     metrics: BTreeMap<String, f64>,
+}
+
+fn wait_for_capture_ready(collector: &mut Collector, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(completion) = collector.producer.poll()? {
+            return Err(format!(
+                "capture exited before readiness: {:?}; {}",
+                completion.exit,
+                completion.error.unwrap_or_default()
+            ));
+        }
+        // Positional inspection preserves every notification/output byte for
+        // the final capture, rather than taking a blocking reader thread.
+        let notification = collector.captures[0].startup_diagnostic(1)?;
+        match notification.as_bytes().first() {
+            Some(0) => return Ok(()),
+            Some(byte) => return Err(format!("unexpected readiness notification {byte}")),
+            None => (),
+        }
+        if Instant::now() >= deadline {
+            return Err("readiness notification deadline exceeded".into());
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 impl measurements::Session {
@@ -374,51 +393,32 @@ impl measurements::Session {
             crate::evidence::Capture::create(&stderr_path)?,
         ];
         let mut marker_output = open_trace_marker(marker)?;
-        let mut command = if let Some(service) = &service {
-            service.command("perfetto")
+        let (mut command, route) = if let Some(service) = &service {
+            service.collector_command("perfetto")?
         } else {
-            let mut command = Command::new(measurements::resolve_executable(
-                self.tool_dir.as_deref(),
-                "perfetto",
-            ));
+            let (mut command, route) = self.collector_command("perfetto")?;
             command.arg("perfetto");
-            command
+            (command, route)
         };
-        let child = command
+        command
             .args(["--txt", "--notify-fd", "1", "-c"])
             .arg(&config)
             .args(["-o"])
-            .arg(&trace)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::from(captures[1].writer()?))
-            .spawn();
-        match child {
-            Ok(mut child) => {
-                let mut pipe = child
-                    .stdout
-                    .take()
-                    .ok_or_else(|| "cannot receive Perfetto readiness notification".to_owned())?;
-                let (tx, rx) = std::sync::mpsc::sync_channel(1);
-                std::thread::spawn(move || {
-                    let mut status = [1u8];
-                    let result = pipe.read_exact(&mut status).map(|()| status[0]);
-                    let _ = tx.send(result);
-                });
-                let ready = rx.recv_timeout(Duration::from_secs(35));
-                if !matches!(ready, Ok(Ok(0))) {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!(
-                        "Perfetto did not report that tracing is ready: {ready:?}"
-                    ));
+            .arg(&trace);
+        let dependency = service
+            .as_ref()
+            .map(|service| Arc::clone(service) as Arc<dyn Send + Sync>);
+        match Collector::spawn_with_dependency(
+            "perfetto", &ADAPTER, command, route, captures, dependency,
+        ) {
+            Ok(mut collector) => {
+                if let Err(error) = wait_for_capture_ready(&mut collector, Duration::from_secs(35))
+                {
+                    return Err(collector.startup_failure(format!(
+                        "Perfetto did not report that tracing is ready: {error}"
+                    )));
                 }
-                self.collectors.push(Collector {
-                    name: "perfetto".into(),
-                    adapter: collectors::find("perfetto").expect("registered collector"),
-                    child,
-                    started: Instant::now(),
-                    captures,
-                });
+                self.collectors.push(collector);
                 // Register the child before validating the live marker, so
                 // Session's drop path stops it if validation fails. A
                 // container tracefs instance may reject marker writes with
@@ -1557,7 +1557,7 @@ print(json.dumps(c.execute(sys.argv[1]).fetchall()))
             .start_perfetto_with_marker(&marker, None)
             .unwrap_err();
         assert!(error.contains("tracing is off"), "{error}");
-        let pid = session.collectors[0].child.id();
+        let pid = session.collectors[0].producer.id().unwrap();
         drop(session);
         assert!(
             !Command::new("kill")

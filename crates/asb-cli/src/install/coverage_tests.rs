@@ -71,6 +71,13 @@ fn host_dependency_publication_is_no_clobber_and_removes_owned_temporaries() {
 }
 
 #[test]
+fn host_recipe_replacement_never_follows_destination_symlink() {
+    let fixture = Fixture::new();
+    fixture.script("fixture-host-tool", "printf 'fixture host tool\\n'");
+    fixture.run("host-replacement");
+}
+
+#[test]
 fn npm_recipe_uses_local_cache_manifest_and_reports_installer_failures() {
     let fixture = Fixture::new();
     fixture.script("node", "printf 'v22.20.0\\n'");
@@ -180,6 +187,43 @@ fn installation_fixture_child() {
     };
     let root = PathBuf::from(std::env::var_os("ASB_FIXTURE_ROOT").unwrap());
     match case.as_str() {
+        "host-replacement" => {
+            let tool_root = root.join("tools/fixture-host-tool");
+            let destination = tool_root.join("bin/fixture-host-tool");
+            fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            let foreign = root.join("foreign-executable");
+            fs::write(&foreign, b"keep foreign bytes and permissions").unwrap();
+            fs::set_permissions(&foreign, fs::Permissions::from_mode(0o640)).unwrap();
+            symlink(&foreign, &destination).unwrap();
+            install_recipe(
+                Recipe::Host {
+                    executable: "fixture-host-tool",
+                },
+                &tool_root,
+                &root,
+                &mut Vec::new(),
+                &mut |_, _| {},
+            )
+            .unwrap();
+            assert_eq!(
+                fs::read(&foreign).unwrap(),
+                b"keep foreign bytes and permissions"
+            );
+            assert_eq!(
+                fs::metadata(&foreign).unwrap().permissions().mode() & 0o777,
+                0o640
+            );
+            assert!(
+                !fs::symlink_metadata(&destination)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(
+                fs::read(destination).unwrap(),
+                fs::read(root.join("bin/fixture-host-tool")).unwrap()
+            );
+        }
         "host" => host_contract(&root),
         "npm" => npm_contract(&root),
         "python" => python_contract(&root),
