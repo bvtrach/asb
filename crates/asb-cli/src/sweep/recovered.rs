@@ -59,6 +59,10 @@ pub(super) fn reporting_summary(entry: &PlannedBenchmark, report: &Value) -> Val
     let mut value = report.clone();
     let object = value.as_object_mut().expect("validated inspected grade");
     object.remove("evidence");
+    // Official-grade inspection is not an observation of the agent process.
+    // Never carry execution facts forward from an extensible grading record.
+    object.insert("process_termination".into(), Value::Null);
+    object.remove("process_termination_diagnostic");
     object.insert("legacy_evaluation_provenance".into(), json!(provenance));
     // Schema 2 controls scoring; this is not a RunSummary and lacks a cohort
     // because no execution observations are being recovered.

@@ -32,6 +32,7 @@ const Y_TICKS: usize = 5;
 
 #[derive(Debug)]
 struct BenchmarkData {
+    observation: crate::process_termination::Observation,
     id: RowId,
     planning: Option<Value>,
     effective_budgets: Option<Value>,
@@ -518,7 +519,7 @@ fn write_html_report(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
             host_details,
             metrics_details,
             artifacts,
-            benchmark.status.as_ref().map_or(String::new(), |status| format!("<span class=\"status\">{}</span>", escape(status))),
+            format_args!("<p>{}</p>{}", escape(&benchmark.observation.description()), benchmark.status.as_ref().map_or(String::new(), |status| format!("<span class=\"status\">{}</span>", escape(status)))),
             ));
     }
     html.push_str("</tbody></table></div></section>");

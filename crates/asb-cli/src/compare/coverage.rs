@@ -370,6 +370,7 @@ mod tests {
         use crate::workloads::outcome::*;
         let task = crate::workloads::TaskIdentity::local("bug-fix", Some("case"));
         BenchmarkData {
+            observation: Default::default(),
             id: crate::compare::RowId {
                 configuration: 0,
                 replica: if missing { 2 } else { 1 },

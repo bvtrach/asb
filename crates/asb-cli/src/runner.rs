@@ -93,6 +93,8 @@ struct RunResult<'a> {
     adapter_smoke_success: Option<bool>,
     elapsed_ms: u128,
     exit_code: Option<i32>,
+    #[serde(flatten)]
+    observation: crate::process_termination::Observation,
     token_usage: measurements::TokenUsage,
     steps: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -813,54 +815,65 @@ fn run_mode(
             output,
         );
         let mut issues = AttemptIssues::default();
-        let (child, run_dir, guest, execution_elapsed_ms, runtime_output, artifact_owner) =
-            if let Some(result) = isolated {
-                let result = result.map_err(Error::Run)?;
-                issues.collector_errors = result.collector_errors;
-                issues.output_error = result.output_error;
-                (
-                    result.output,
-                    PathBuf::new(),
-                    Some(result.metadata),
-                    result
-                        .elapsed_ms
-                        .unwrap_or_else(|| started.elapsed().as_millis()),
-                    None,
-                    None,
-                )
-            } else {
-                let native = native::NativePlan {
-                    config_path,
-                    config: &config,
-                    project_root: &project_root,
-                    project_config: &project_config,
-                    invocation: prepared.workload.invocation(),
-                    fresh_state: options.batch.is_some(),
-                    route: native::NativeRoute {
-                        connection: connection.as_ref(),
-                        provider_endpoint,
-                        provider_credentials,
-                        tape_url,
-                        tape_mode,
-                    },
-                }
-                .prepare(prepared.measurements.as_mut())?;
-                let (evidence, native_issues) =
-                    native.execute(prepared.measurements.as_mut(), show_output, output, launch)?;
-                issues = native_issues;
-                (
-                    evidence.output,
-                    evidence.run_dir,
-                    evidence.guest,
-                    evidence.elapsed_ms,
-                    evidence.runtime_output,
-                    evidence.artifact_owner,
-                )
-            };
+        let (
+            child,
+            run_dir,
+            guest,
+            execution_elapsed_ms,
+            runtime_output,
+            artifact_owner,
+            observation,
+        ) = if let Some(result) = isolated {
+            let result = result.map_err(Error::Run)?;
+            issues.collector_errors = result.collector_errors;
+            issues.output_error = result.output_error;
+            let observation = result.metadata.observation;
+            (
+                result.output,
+                PathBuf::new(),
+                Some(result.metadata),
+                result
+                    .elapsed_ms
+                    .unwrap_or_else(|| started.elapsed().as_millis()),
+                None,
+                None,
+                observation,
+            )
+        } else {
+            let native = native::NativePlan {
+                config_path,
+                config: &config,
+                project_root: &project_root,
+                project_config: &project_config,
+                invocation: prepared.workload.invocation(),
+                fresh_state: options.batch.is_some(),
+                route: native::NativeRoute {
+                    connection: connection.as_ref(),
+                    provider_endpoint,
+                    provider_credentials,
+                    tape_url,
+                    tape_mode,
+                },
+            }
+            .prepare(prepared.measurements.as_mut())?;
+            let (evidence, native_issues) =
+                native.execute(prepared.measurements.as_mut(), show_output, output, launch)?;
+            issues = native_issues;
+            (
+                evidence.output,
+                evidence.run_dir,
+                evidence.guest,
+                evidence.elapsed_ms,
+                evidence.runtime_output,
+                evidence.artifact_owner,
+                evidence.observation,
+            )
+        };
         let capture_complete = issues.capture_error.is_none();
         let mut settled = prepared
             .executed(
                 ExecutionEvidence {
+                    observation,
                     capture_complete,
                     artifact_owner,
                     output: child,
@@ -914,6 +927,7 @@ fn run_mode(
             measurements: measurement_session,
             evidence:
                 ExecutionEvidence {
+                    observation,
                     artifact_owner: _,
                     capture_complete,
                     output: child,
@@ -1118,6 +1132,7 @@ fn run_mode(
             adapter_smoke_success: (evaluation_kind == "adapter-smoke").then_some(success),
             elapsed_ms: run_metrics.elapsed_ms,
             exit_code: child.status.code(),
+            observation,
             token_usage,
             steps,
             cassette: tape_cassette
@@ -1426,11 +1441,13 @@ fn run_measured_agent_with_launch(
             .validate_gate(command)
             .map_err(|error| Error::Run(format!("cannot validate ASB gate launch: {error}")))?;
         Some(
-            crate::process_gate::Admission::new(validated).map_err(|error| {
-                Error::Run(format!(
-                    "cannot establish ASB process gate custody: {error}"
-                ))
-            })?,
+            crate::process_gate::Admission::with_principal_observation(validated).map_err(
+                |error| {
+                    Error::Run(format!(
+                        "cannot establish ASB process gate custody: {error}"
+                    ))
+                },
+            )?,
         )
     } else {
         None
@@ -1569,6 +1586,7 @@ fn run_measured_agent_with_launch(
                 issues.run_error(error);
             }
             Ok(MeasuredOutput {
+                observation: captured.observation,
                 output: captured.output,
                 elapsed_ms,
                 issues,
@@ -1710,6 +1728,7 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
         "model": result.model,
         "task": result.task,
         "process_success": result.process_success,
+        "process_termination": result.observation.process_termination,
         "workload_success": result.workload_success,
         "workload_resource_disposition": result.workload_resource_disposition,
         "workload_artifacts": result.workload_artifacts,
@@ -1725,6 +1744,10 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
         "steps": result.steps,
         "token_usage": result.token_usage,
     });
+    if let Some(diagnostic) = result.observation.process_termination_diagnostic {
+        summary["process_termination_diagnostic"] =
+            serde_json::to_value(diagnostic).map_err(|error| Error::Io(error.to_string()))?;
+    }
     if let Some(recording) = &result.recording {
         summary["recording"] =
             serde_json::to_value(recording).map_err(|error| Error::Io(error.to_string()))?;
@@ -2387,6 +2410,7 @@ mod tests {
             .unwrap();
         session
             .finish(crate::measurements::RunMeasurement {
+                observation: Default::default(),
                 workload_resource_disposition: None,
                 workload_artifacts: &[],
                 execution_plan_fingerprint: None,
@@ -2710,6 +2734,7 @@ mod tests {
 
     fn result<'a>() -> RunResult<'a> {
         RunResult {
+            observation: Default::default(),
             recording: None,
             execution: None,
             planning: crate::planning::resolve(

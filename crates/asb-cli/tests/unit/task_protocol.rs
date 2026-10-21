@@ -68,6 +68,51 @@ fn completion() -> Value {
 }
 
 #[test]
+fn optional_guest_termination_is_independent_of_carrier_and_cleanup_permission() {
+    for exact in [
+        json!({"kind":"code","code":143}),
+        json!({"kind":"signal","signal":15}),
+    ] {
+        let mut value = completion();
+        value["result"]["exit_code"] = json!(1);
+        value["result"]["metadata"]["process_termination"] = exact.clone();
+        let result = CompletedExecution::decode(&value, ProcessLifetime::Quiesce)
+            .unwrap()
+            .into_execution()
+            .unwrap();
+        assert_eq!(result.output.status.code(), Some(1));
+        assert!(result.metadata.tree_quiesced);
+        assert_eq!(
+            serde_json::to_value(result.metadata.observation.process_termination).unwrap(),
+            exact
+        );
+        value["result"]["process_termination"] = json!({"kind":"code","code":7});
+        let result = CompletedExecution::decode(&value, ProcessLifetime::Quiesce)
+            .unwrap()
+            .into_execution()
+            .unwrap();
+        assert_eq!(
+            result.metadata.observation,
+            crate::process_termination::Observation::malformed()
+        );
+        assert_eq!(result.output.status.code(), Some(1));
+        assert!(result.metadata.tree_quiesced);
+    }
+    let mut value = completion();
+    value["result"]["metadata"]["process_termination"] = json!({"kind":"signal","signal":0});
+    let decoded = CompletedExecution::decode(&value, ProcessLifetime::Quiesce).unwrap();
+    assert_eq!(
+        decoded.metadata().observation,
+        crate::process_termination::Observation::malformed()
+    );
+    value["result"]["metadata"]["tree_quiesced"] = json!(false);
+    assert!(
+        CompletedExecution::decode(&value, ProcessLifetime::Quiesce).is_err(),
+        "optional diagnostics cannot rescue missing ownership proof"
+    );
+}
+
+#[test]
 fn completed_view_preserves_observations_defaults_and_quiescence_proof() {
     let value = completion();
     let result = CompletedExecution::decode(&value, ProcessLifetime::Quiesce)

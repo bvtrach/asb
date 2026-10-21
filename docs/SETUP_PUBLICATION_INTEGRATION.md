@@ -89,4 +89,3 @@ Collector PR #304 passed exact-head CI and merged; its two post-merge jobs and
 signed v0.2.39 release remain prerequisites to merging this setup class. Require
 this class's exact-head hosted/package CI and both post-merge jobs before its
 signed v0.2.40 release. The removed 90% coverage gate stays removed.
-

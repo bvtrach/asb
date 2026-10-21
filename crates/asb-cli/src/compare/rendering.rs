@@ -49,6 +49,8 @@ pub(super) fn render(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
     }
     let benchmark_rows = benchmark_data.iter().map(|benchmark| json!({
             "name": benchmark.label,
+            "process_termination": benchmark.observation.process_termination,
+            "process_termination_diagnostic": benchmark.observation.process_termination_diagnostic,
             "planning": benchmark.planning,
             "effective_budgets": benchmark.effective_budgets,
             "module": benchmark.module,

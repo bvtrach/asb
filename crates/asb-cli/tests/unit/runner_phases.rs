@@ -163,6 +163,7 @@ fn prepared(
 fn evidence(exit: i32, guest: bool) -> ExecutionEvidence {
     use std::os::unix::process::ExitStatusExt;
     ExecutionEvidence {
+        observation: Default::default(),
         artifact_owner: None,
         capture_complete: true,
         output: Output {
@@ -1028,6 +1029,7 @@ fn recording_setup_failure_retains_partial_bytes_with_unknown_outcomes() {
 
 fn result() -> RunResult<'static> {
     RunResult {
+        observation: Default::default(),
         recording: None,
         execution: None,
         workload_resource_disposition: Some(workloads::ResourceDisposition::Removed),
@@ -1274,6 +1276,159 @@ fn full_runner_entry_bounded_capture_preserves_independent_file_grades_without_r
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn actual_native_termination_keeps_grades_and_optional_faults_do_not_change_completion() {
+    isolated_full_entry_cases(&[
+        "termination-true-code137",
+        "termination-false-code137",
+        "termination-pending-code137",
+        "termination-true-code143",
+        "termination-false-code143",
+        "termination-pending-code143",
+        "termination-true-signal9",
+        "termination-false-signal9",
+        "termination-pending-signal9",
+        "termination-true-signal15",
+        "termination-false-signal15",
+        "termination-pending-signal15",
+        "termination-true-code0",
+        "termination-false-code0",
+        "termination-pending-code0",
+        "termination-true-observation-fault",
+        "termination-false-observation-fault",
+        "termination-pending-observation-fault",
+        "termination-repeat-true-code0",
+        "termination-repeat-false-code0",
+        "termination-repeat-true-observation-fault",
+        "termination-repeat-false-observation-fault",
+    ]);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn actual_guest_termination_reaches_true_false_pending_grade_phases_without_reexecution() {
+    use std::io::Read;
+    use std::os::unix::fs::PermissionsExt;
+    use support::IsolatedEnvironment;
+    let runtime = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("asb");
+    for (ending, exact, carrier) in [
+        (
+            "exit 137",
+            serde_json::json!({"kind":"code","code":137}),
+            137,
+        ),
+        (
+            "exit 143",
+            serde_json::json!({"kind":"code","code":143}),
+            143,
+        ),
+        (
+            "kill -KILL $$",
+            serde_json::json!({"kind":"signal","signal":9}),
+            1,
+        ),
+        (
+            "kill -TERM $$",
+            serde_json::json!({"kind":"signal","signal":15}),
+            1,
+        ),
+    ] {
+        for grade in [0, 1, 4] {
+            let fixture = Fixture::new();
+            let root = fixture.0.canonicalize().unwrap();
+            for name in [".asb", "tools/pi/bin", "workspace"] {
+                std::fs::create_dir_all(root.join(name)).unwrap();
+            }
+            std::fs::write(
+                root.join(".asb/project.toml"),
+                "tools_dir='tools'\nworkloads_dir='workloads'\nworkspace_dir='workspace'\n",
+            )
+            .unwrap();
+            let program = root.join("tools/pi/bin/pi");
+            std::fs::write(&program,format!("#!/bin/sh\nprintf 'called\\n' >> '{}'\nprintf '%s\\n' '{{\"type\":\"result\",\"result\":\"submission\"}}'\n{ending}\n",root.join("client-calls").display())).unwrap();
+            std::fs::set_permissions(program, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let request = serde_json::json!({"config":{"agent":"pi","provider":"openrouter","model":"fixture","workload":"fixture","workspace":root.join("workspace")},"connection":{"interface":"open_ai_chat","authentication":"bearer","base_url":"http://127.0.0.1:1/v1","credential":"fixture"},"prompt":"offline","project_root":root,"runtime_dir":root.join("private"),"run_dir":root.join("private/attempt")});
+            let mut command = Command::new(&runtime);
+            command
+                .arg("__asb-agent")
+                .isolated_env()
+                .env("PATH", std::env::var_os("PATH").unwrap())
+                .env("HOME", &root)
+                .env("ASB_GUEST_AGENT_REQUEST", request.to_string())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            let mut child = OwnedChild::spawn_direct(&mut command).unwrap();
+            let stdout = child.take_stdout().unwrap();
+            child.resume().unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let status = loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    break status;
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(5));
+            };
+            assert_eq!(status.code(), Some(carrier));
+            let mut bytes = Vec::new();
+            stdout.take(4096).read_to_end(&mut bytes).unwrap();
+            let metadata: agents::driver::GuestResult = serde_json::from_slice(
+                &std::fs::read(root.join("private/attempt/agent-result.json")).unwrap(),
+            )
+            .unwrap();
+            assert!(metadata.tree_quiesced);
+            assert_eq!(
+                serde_json::to_value(metadata.observation.process_termination).unwrap(),
+                exact
+            );
+            let (prepared, operations) = prepared(&fixture, grade, false, None);
+            let final_state = prepared
+                .executed(
+                    ExecutionEvidence {
+                        observation: metadata.observation,
+                        artifact_owner: None,
+                        output: Output {
+                            status,
+                            stdout: bytes,
+                            stderr: Vec::new(),
+                        },
+                        capture_complete: true,
+                        run_dir: PathBuf::new(),
+                        guest: Some(metadata),
+                        elapsed_ms: 1,
+                        runtime_output: None,
+                    },
+                    AttemptIssues::default(),
+                )
+                .settle(None)
+                .evaluate("submission")
+                .finish();
+            assert_eq!(
+                final_state.outcome.success(),
+                match grade {
+                    0 => Some(true),
+                    1 => Some(false),
+                    _ => None,
+                }
+            );
+            assert!(final_state.cleanup_confirmed);
+            assert!(final_state.issues.run_error.is_none());
+            assert_eq!(final_state.evidence.output.status.code(), Some(carrier));
+            assert_eq!(
+                std::fs::read_to_string(root.join("client-calls")).unwrap(),
+                "called\n"
+            );
+            assert_eq!(operations.borrow().as_slice(), ["evaluate", "finish"]);
+        }
+    }
+}
+
+#[test]
 fn actual_unmeasured_sweep_capture_failure_keeps_grades_reporting_only() {
     isolated_full_entry_cases(&[
         "capture-sweep-true-limit",
@@ -1516,6 +1671,7 @@ fn full_entry_child(case: &str) {
     let publication_case = case.contains("publication-");
     let capture_case = case.starts_with("capture-");
     let capture_sweep = case.starts_with("capture-sweep-");
+    let termination_case = case.starts_with("termination-");
     let fixture = Fixture::new();
     let root = fixture.0.canonicalize().unwrap();
     let project = project::ProjectConfig {
@@ -1557,7 +1713,11 @@ fn full_entry_child(case: &str) {
     };
     let row = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body.to_string()},"response":{"status":200,"headers":{"content-type":"application/json"},"body":response_body}});
     std::fs::write(&cassette, format!("{row}\n")).unwrap();
-    if artifact_case || provider_case || capture_case || (disposition_case && !case.contains("run"))
+    if artifact_case
+        || provider_case
+        || capture_case
+        || termination_case
+        || (disposition_case && !case.contains("run"))
     {
         let node = crate::tools::host_executable(Path::new("node")).unwrap();
         let answer = if case == "provider-false-failed-finish"
@@ -1585,10 +1745,27 @@ fn full_entry_child(case: &str) {
                 "require('node:fs').writeFileSync('fixture-file-grade','{}');{artifact_js}console.log(JSON.stringify({{usage:{{prompt_tokens:499,completion_tokens:500,total_tokens:999}}}}));process.stdout.write('x'.repeat(9*1024*1024));",
                 !case.contains("false")
             )
+        } else if termination_case {
+            format!(
+                "require('node:fs').writeFileSync('fixture-file-grade','{}');",
+                !case.contains("false")
+            )
         } else {
             String::new()
         };
-        std::fs::write(&agent, format!("#!{}\nrequire('node:fs').appendFileSync({counter_js},'called\\n');fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw new Error('fixture request failed');await r.text();{capture_js}console.log(JSON.stringify({response}));process.exitCode={exit};}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
+        let ending = if termination_case {
+            match case.rsplit('-').next().unwrap() {
+                "code137" => "process.exitCode=137;",
+                "code143" => "process.exitCode=143;",
+                "signal9" => "process.kill(process.pid,'SIGKILL');",
+                "signal15" => "process.kill(process.pid,'SIGTERM');",
+                _ => "process.exitCode=0;",
+            }
+            .to_owned()
+        } else {
+            format!("process.exitCode={exit};")
+        };
+        std::fs::write(&agent, format!("#!{}\nrequire('node:fs').appendFileSync({counter_js},'called\\n');fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw new Error('fixture request failed');await r.text();{capture_js}console.log(JSON.stringify({response}));{ending}}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
         if artifact_case {
             let trajectory = serde_json::json!({"trajectory_format":"mini-swe-agent-1.1", "info":{"model_stats":{"api_calls":4}},
                 "messages":[{"role":"assistant","content":"src/cli.py src/registry.py lookup",
@@ -1608,6 +1785,79 @@ fn full_entry_child(case: &str) {
     }
     let config_path = root.join("benchmark.toml");
     std::fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
+    #[cfg(target_os = "linux")]
+    if case.starts_with("termination-repeat-") {
+        use std::sync::Arc;
+        let _fault = case
+            .contains("observation-fault")
+            .then(crate::process_gate::observation_fault::SharedScope::enter);
+        let finishes = Arc::new(AtomicUsize::new(0));
+        let observed = finishes.clone();
+        let _scope = entry_test_support::SharedProviderScope::new(
+            &root,
+            Arc::new(move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }),
+        );
+        let mut output = Vec::new();
+        let result = super::super::repeated::run(
+            &config_path,
+            config,
+            2,
+            RunOptions {
+                json: true,
+                mode: Some(tape::Mode::Replay),
+                cassette: Some(cassette.to_str().unwrap()),
+                ..Default::default()
+            },
+            &mut output,
+            &Mutex::new(BTreeSet::new()),
+        );
+        assert_eq!(result.is_ok(), !case.contains("false"), "{result:?}");
+        let rows: Vec<serde_json::Value> = String::from_utf8(output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let summaries: Vec<_> = rows
+            .iter()
+            .filter(|row| row.get("task").is_some())
+            .collect();
+        assert_eq!(summaries.len(), 2, "both repeat batches must be admitted");
+        for row in summaries {
+            assert_eq!(row["process_success"], true);
+            assert_eq!(row["workload_success"], !case.contains("false"));
+            assert_eq!(
+                row["process_termination"],
+                if case.contains("observation-fault") {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!({"kind":"code","code":0})
+                }
+            );
+            assert_eq!(row["benchmark_outcome"]["cleanup_confirmed"], true);
+        }
+        assert_eq!(finishes.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            std::fs::read_to_string(counter).unwrap().lines().count(),
+            2,
+            "no retry"
+        );
+        let campaign = PathBuf::from(rows[0]["path"].as_str().unwrap())
+            .parent()
+            .unwrap()
+            .to_owned();
+        assert!(campaign.join("batch-2").is_dir());
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(
+                &std::fs::read(campaign.join("finished.json")).unwrap()
+            )
+            .unwrap()["stopped"],
+            false
+        );
+        return;
+    }
     if case.starts_with("provider-repeat-") {
         repeated_provider_finish_child(case, &root, &config_path, config, &cassette);
         return;
@@ -1634,7 +1884,7 @@ fn full_entry_child(case: &str) {
         .then(super::capture::test_support::Scope::read_failure);
     let _scope = if artifact_case {
         entry_test_support::Scope::artifact(&root, calls.clone(), !case.ends_with("disabled"))
-    } else if disposition_case || capture_case {
+    } else if disposition_case || capture_case || termination_case {
         entry_test_support::Scope::disposition(&root, calls.clone(), case)
     } else if provider_case {
         entry_test_support::Scope::provider(
@@ -1702,9 +1952,14 @@ fn full_entry_child(case: &str) {
         mode: Some(tape::Mode::Replay),
         cassette: Some(cassette.to_str().unwrap()),
         on_completion: Some(&observer),
-        execution_cohort: (provider_case || disposition_case || capture_case).then_some(&cohort),
+        execution_cohort: (provider_case || disposition_case || capture_case || termination_case)
+            .then_some(&cohort),
         ..Default::default()
     };
+    #[cfg(target_os = "linux")]
+    let _observation_fault = case
+        .contains("observation-fault")
+        .then(crate::process_gate::observation_fault::Scope::enter);
     let result = run_mode(
         &config_path,
         config,
@@ -1712,6 +1967,110 @@ fn full_entry_child(case: &str) {
         &mut output,
         &Mutex::new(BTreeSet::new()),
     );
+    if termination_case {
+        let summary: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+        let measured: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("measurements/run.json")).unwrap())
+                .unwrap();
+        let log: serde_json::Value = serde_json::from_str(
+            std::fs::read_to_string(root.join("run.jsonl"))
+                .unwrap()
+                .lines()
+                .last()
+                .unwrap(),
+        )
+        .unwrap();
+        let exact = if case.contains("observation-fault") {
+            serde_json::Value::Null
+        } else if case.ends_with("signal9") {
+            serde_json::json!({"kind":"signal","signal":9})
+        } else if case.ends_with("signal15") {
+            serde_json::json!({"kind":"signal","signal":15})
+        } else {
+            serde_json::json!({"kind":"code","code":if case.ends_with("code137") {137} else if case.ends_with("code143") {143} else {0}})
+        };
+        let process_ok = case.ends_with("code0") || case.contains("observation-fault");
+        for record in [&summary, &log, &measured] {
+            assert_eq!(record["process_termination"], exact, "{case}");
+            assert_eq!(record["process_success"], process_ok, "{case}");
+            assert_eq!(
+                record["benchmark_outcome"]["cleanup_confirmed"], true,
+                "{case}"
+            );
+            assert_eq!(
+                record["workload_success"],
+                if case.contains("pending") {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::json!(!case.contains("false"))
+                },
+                "{case}"
+            );
+            assert_eq!(
+                record.get("process_termination_diagnostic").is_some(),
+                case.contains("observation-fault"),
+                "{case}"
+            );
+        }
+        assert_eq!(
+            result.is_ok(),
+            process_ok && !case.contains("false"),
+            "{case}: {result:?}"
+        );
+        assert_eq!(
+            observer.completed.load(Ordering::SeqCst),
+            1,
+            "optional evidence does not change private outcome publication: {case}"
+        );
+        assert_eq!(
+            calls.borrow().as_slice(),
+            ["evaluate", "finish", "provider-finish"]
+        );
+        assert_eq!(std::fs::read_to_string(&counter).unwrap(), "called\n");
+        let completions: Vec<_> = std::fs::read_dir(root.join(".asb-completions"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(completions.len(), 1);
+        let private: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&completions[0]).unwrap()).unwrap();
+        assert_eq!(private["summary"]["process_termination"], exact);
+        assert_eq!(private["summary"], summary);
+        let report =
+            crate::compare::generate(config_path.to_str().unwrap(), &mut Vec::new()).unwrap();
+        let comparison = report.with_file_name("comparison.json");
+        let original_json = std::fs::read(&comparison).unwrap();
+        let document: serde_json::Value = serde_json::from_slice(&original_json).unwrap();
+        assert_eq!(document["benchmarks"][0]["process_termination"], exact);
+        let original_html = std::fs::read(&report).unwrap();
+        assert!(
+            String::from_utf8_lossy(&original_html).contains("principal termination")
+                || String::from_utf8_lossy(&original_html).contains("principal exit code")
+                || String::from_utf8_lossy(&original_html).contains("principal signal")
+        );
+        if case == "termination-true-code137" {
+            for bad in [
+                serde_json::json!({"kind":"signal","signal":9}),
+                serde_json::json!({"kind":"signal","signal":0}),
+            ] {
+                let mut changed = measured.clone();
+                changed["process_termination"] = bad;
+                let bytes = serde_json::to_vec(&changed).unwrap();
+                std::fs::write(root.join("measurements/run.json"), &bytes).unwrap();
+                assert!(
+                    crate::compare::generate(config_path.to_str().unwrap(), &mut Vec::new())
+                        .is_err()
+                );
+                assert_eq!(std::fs::read(&comparison).unwrap(), original_json);
+                assert_eq!(std::fs::read(&report).unwrap(), original_html);
+                assert_eq!(
+                    std::fs::read(root.join("measurements/run.json")).unwrap(),
+                    bytes
+                );
+            }
+        }
+        return;
+    }
     if artifact_case {
         let error = result.unwrap_err().to_string();
         assert!(
