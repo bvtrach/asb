@@ -1749,6 +1749,7 @@ print(json.dumps(c.execute(sys.argv[1]).fetchall()))
             let mut sudo_collectors = std::collections::BTreeSet::new();
             let mut context = PreflightContext {
                 project_root: None,
+                states: &mut crate::collectors::CollectorStates::default(),
                 measurement_dir: &root,
                 selected: &[],
                 tool_dir: Some(&tools),

@@ -25,8 +25,11 @@ fn isolated_bpftrace_preflight_and_attachment_failures() {
             "builtin-sudo",
             "builtin-no-sudo",
             "custom",
+            "custom-replaced",
+            "custom-deleted",
             "custom-invalid",
             "custom-missing",
+            "custom-failed-ready",
             "missing-executable",
             "unexecutable",
             "failed-ready",
@@ -38,7 +41,7 @@ fn isolated_bpftrace_preflight_and_attachment_failures() {
             fs::create_dir_all(directory.join("commands")).unwrap();
             let program = directory.join("program.bt");
             if case != "custom-missing" {
-                fs::write(&program,if case=="custom-invalid"{"tracepoint:syscalls:sys_enter_read { @host = count(); }\n"}else{"tracepoint:syscalls:sys_enter_read /@asb_tree[pid]/ { @asb_reads = count(); }\n"}).unwrap();
+                fs::write(&program,if case=="custom-invalid"{"tracepoint:syscalls:sys_enter_read { @host = count(); @limit=ASB_PARAM_LIMIT; }\n"}else{"tracepoint:syscalls:sys_enter_read /@asb_tree[pid]/ { if (ASB_PARAM_LIMIT > 0) { @asb_reads = count(); } }\n"}).unwrap();
             }
             if !matches!(
                 case,
@@ -49,8 +52,14 @@ fn isolated_bpftrace_preflight_and_attachment_failures() {
             ) {
                 let path = directory.join("commands/bpftrace");
                 let body = match case {
+                    "custom-replaced" => {
+                        "#!/bin/sh\nprintf 'kprobe:do_sys_open { @host_unscoped=count(); }' > \"$ASB_BPFTRACE_CAPTURE_ROOT/program.bt\"\nprintf '%s\\n' \"$@\" >> \"$ASB_BPFTRACE_CAPTURE_ROOT/arguments\"\nprintf 'ASB_BPFTRACE_READY\\n'\n"
+                    }
+                    "custom-deleted" => {
+                        "#!/bin/sh\n/bin/rm -f -- \"$ASB_BPFTRACE_CAPTURE_ROOT/program.bt\"\nprintf '%s\\n' \"$@\" >> \"$ASB_BPFTRACE_CAPTURE_ROOT/arguments\"\nprintf 'ASB_BPFTRACE_READY\\n'\n"
+                    }
                     "builtin-sudo" | "builtin-no-sudo" => "#!/bin/sh\nexit 2\n",
-                    "failed-ready" => {
+                    "failed-ready" | "custom-failed-ready" => {
                         "#!/bin/sh\nif [ \"$1\" = -e ]; then exit 0; fi\nprintf 'fixture attachment failed\\n' >&2\nexit 2\n"
                     }
                     _ => {
@@ -77,11 +86,13 @@ fn isolated_bpftrace_preflight_and_attachment_failures() {
             fs::set_permissions(sudo, fs::Permissions::from_mode(0o700)).unwrap();
             let mut command = Command::new(std::env::current_exe().unwrap());
             command
+                .env_clear()
                 .args(["--exact", &name, "--nocapture"])
                 .current_dir(&directory)
                 .env(CASE, case)
                 .env("ASB_BPFTRACE_CAPTURE_ROOT", &directory)
                 .env("PATH", directory.join("commands"))
+                .env("HOME", &directory)
                 .env_remove("ASB_BPFTRACE_PROFILES")
                 .env_remove("ASB_BPFTRACE_PROGRAMS")
                 .env(
@@ -95,10 +106,13 @@ fn isolated_bpftrace_preflight_and_attachment_failures() {
                         "0"
                     },
                 );
+            if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+                command.env("LLVM_PROFILE_FILE", profile);
+            }
             if case.starts_with("custom") {
                 command.env(
                     "ASB_BPFTRACE_PROGRAMS",
-                    format!("{}?limit=5&unit=ns", program.display()),
+                    format!("{}?ASB_PARAM_LIMIT=5", program.display()),
                 );
             }
             let result = command.output().unwrap();
@@ -127,10 +141,15 @@ fn isolated_bpftrace_preflight_and_attachment_failures() {
         selected: &selected,
         tool_dir: None,
         sudo_collectors: &mut sudo,
+        states: &mut crate::collectors::CollectorStates::default(),
     };
     if !matches!(
         case.as_str(),
-        "custom-missing-start" | "builtin-unavailable" | "builtin-hard-missing"
+        "custom-missing-start"
+            | "custom-replaced"
+            | "custom-deleted"
+            | "builtin-unavailable"
+            | "builtin-hard-missing"
     ) {
         let result = ADAPTER.preflight(&mut context);
         match case.as_str() {
@@ -168,15 +187,49 @@ fn isolated_bpftrace_preflight_and_attachment_failures() {
             }
         }
     }
+    if matches!(case.as_str(), "custom-replaced" | "custom-deleted") {
+        // The real session path performs preflight, transfers the generic cache
+        // and configures before returning. The fake capability executable has
+        // already replaced/deleted the source, so any re-read must fail this.
+        let mut session = measurements::Session::start_with_collectors(
+            &root.join("immutable-measurements"),
+            &[],
+            None,
+        )
+        .unwrap();
+        ADAPTER
+            .attach_pid(&mut session, std::process::id())
+            .unwrap();
+        assert!(session.collectors[0].child.wait().unwrap().success());
+        let arguments = fs::read_to_string(root.join("arguments")).unwrap();
+        assert!(arguments.contains("if (5 > 0)"));
+        assert!(!arguments.contains("@host_unscoped"));
+        assert!(!arguments.lines().any(|line| line == "-D"));
+        if case == "custom-deleted" {
+            assert!(!root.join("program.bt").exists());
+        }
+        return;
+    }
     let mut session = measurements::Session::start_in_execution_namespace(
         &root.join("measurements"),
         &["agent-memory".into()],
     )
     .unwrap();
+    // Transfer the same prepared data into this protocol-only session, just as
+    // production transfers its generic typed cache without re-reading files.
+    let prepared = if matches!(
+        case.as_str(),
+        "custom-missing-start" | "builtin-unavailable" | "builtin-hard-missing"
+    ) {
+        prepare_state(&selected).unwrap()
+    } else {
+        context.states.state::<BpftraceState>().borrow().clone()
+    };
+    *session.state::<BpftraceState>().borrow_mut() = prepared;
     ADAPTER.configure(&mut session, &selected).unwrap();
     let result = ADAPTER.attach_pid(&mut session, std::process::id());
     match case.as_str() {
-        "failed-ready" => {
+        "failed-ready" | "custom-failed-ready" => {
             let error = result.unwrap_err();
             assert!(error.contains("did not become ready"));
             assert!(error.contains("fixture attachment failed"));
@@ -213,7 +266,8 @@ fn isolated_bpftrace_preflight_and_attachment_failures() {
             assert!(session.dir.join("bpftrace-0.stdout").exists());
             assert!(session.dir.join("bpftrace-0.stderr").exists());
             let arguments = fs::read_to_string(root.join("arguments")).unwrap();
-            assert!(arguments.contains("-D\nlimit=5\n-D\nunit=ns"));
+            assert!(!arguments.lines().any(|line| line == "-D"));
+            assert!(arguments.contains("if (5 > 0)"));
             assert!(arguments.contains(&format!("-p\n{}", std::process::id())));
             assert!(arguments.contains("@asb_tree["));
         }

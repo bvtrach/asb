@@ -635,6 +635,25 @@ alias mutation, nested roots/views, replaced/symlink sources, remote daemons,
 aggregate exhaustion/cancellation and actual owned fixture cleanup. This component
 is still a design, not implemented coverage.
 
+The joint bind planner must group identical source paths using a logical
+service/mount representative, while retaining every binding's own exclusions.
+For each group, hide only the intersection of hidden prefix subtrees across
+views: exclusions `{a}` and `{a/b}` yield `{a/b}`, and any unrestricted view
+yields no hidden subtree. Rebase semantic exclusions exactly as the guest root
+sampler does; a host census must not reintroduce intentionally omitted SDK/Git
+material. Distinct nested source roots stay distinct to preserve inode aliases.
+The existing helper groups regular-file inodes but not symlink inodes: extend
+the same grouping to hardlinked symlinks before claiming complete visible alias
+coverage, with target/attribute consistency checks and dedicated regressions.
+
+`ObservationBudget.observations` bounds the initial aggregate allowance, not the
+number of helper invocations. Allocate its bounded multiplier once (never above
+32), share remaining allowance across host and guest calls, and refuse honest
+exhaustion without resetting or silently enlarging per-call maxima. A host bind
+observer must reuse the exact host executable and prove local daemon/kernel and
+source-root identities before reading; a guest runtime bundle can have a
+different architecture and is not the host helper.
+
 ### Remaining Terminal 1.0 installed-client same-shell execution
 
 The pinned SDK's installed-agent contract launches its coding CLI commands in

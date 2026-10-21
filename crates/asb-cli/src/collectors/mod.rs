@@ -46,6 +46,23 @@ pub(crate) struct PreflightContext<'a> {
     pub selected: &'a [String],
     pub tool_dir: Option<&'a Path>,
     pub sudo_collectors: &'a mut BTreeSet<String>,
+    pub states: &'a mut CollectorStates,
+}
+
+/// Per-attempt typed data prepared before launch and retained by its session.
+/// No process-wide cache or on-disk re-read bridges the preparation boundary.
+#[derive(Default)]
+pub(crate) struct CollectorStates(BTreeMap<std::any::TypeId, Box<dyn std::any::Any>>);
+
+impl CollectorStates {
+    pub(crate) fn state<T: Default + 'static>(&mut self) -> std::rc::Rc<std::cell::RefCell<T>> {
+        self.0
+            .entry(std::any::TypeId::of::<T>())
+            .or_insert_with(|| Box::new(std::rc::Rc::new(std::cell::RefCell::new(T::default()))))
+            .downcast_ref::<std::rc::Rc<std::cell::RefCell<T>>>()
+            .expect("state is keyed by its concrete type")
+            .clone()
+    }
 }
 
 pub(crate) struct UsageContext<'a> {
