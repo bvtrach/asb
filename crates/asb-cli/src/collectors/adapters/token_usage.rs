@@ -12,8 +12,8 @@ impl CollectorAdapter for TokenUsageCollector {
     fn usage(&self, context: &UsageContext<'_>) -> Option<TokenUsage> {
         Some(collect(context))
     }
-    fn usage_file(&self, path: &Path) -> Option<TokenUsage> {
-        Some(from_path(path))
+    fn usage_document(&self, value: &serde_json::Value) -> Option<TokenUsage> {
+        Some(usage_from_text(&value.to_string()).with_derived_total())
     }
 }
 fn collect(context: &UsageContext<'_>) -> TokenUsage {
@@ -172,6 +172,7 @@ fn usage_from_cassette(text: &str, input_includes_cache: bool) -> TokenUsage {
 
 /// Read a bounded machine-readable agent artifact (for example mini-SWE's
 /// trajectory) and normalize any usage events it contains.
+#[cfg(test)]
 fn from_path(path: &Path) -> TokenUsage {
     read_bounded_text(path, 16 * 1024 * 1024)
         .map(|text| usage_from_text(&text).with_derived_total())

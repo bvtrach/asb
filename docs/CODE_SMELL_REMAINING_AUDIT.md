@@ -243,3 +243,86 @@ publication faults, broken presentation and grade/identity/receipt checks.
 
 Usage sharing remains conservative and lower priority than evidence integrity.
 Delivery of earlier queued classes does not close these residual obligations.
+
+## Independent matrix and official-engine follow-up
+
+### Recording raw-cleanup replacement window: separate observed-red repair
+
+Independent review of peer recording main
+`cabaa57668d3a03c2ef922d24edf420446c613d7` / recording source
+`06c47a9e7237da0637ab491bb5ff93003b14355f` identified a separate residual in
+`runner/recording.rs::cleanup_raw`:
+after the final pathname metadata verification (line 467 in that baseline),
+`remove_file` at line 468 re-resolves the pathname. A replacement in that window
+could therefore remove a foreign entry. Existing `raw_cleanup` tests replace
+the entry before function admission, not after the last verification. This is a
+source finding; the later separate observed-red evidence is below. It is not a
+hostile-same-UID sandbox claim.
+
+A separate follow-up must first add a deterministic private after-final-check
+fault and actually reproduce regular-file, symlink and parent replacements.
+Proposed repair: pin the parent, move the relative entry into a private owned
+stage, recheck the moved identity, then delete only the matched entry; restore
+or retain/report a foreign entry without overwrite. Preserve archive commit,
+immutable producer/attempt association and confirmed producer-cleanup
+prerequisites. Keep a post-unlink directory-sync failure distinct from an
+unchanged pre-unlink failure. No recording production change is included in
+the publication34 cross-feature test checkpoint.
+
+Later evidence, kept outside publication34: the dedicated
+`asb-recording-raw-custody` source checkpoint `248bf2ab` and docs checkpoint
+`d0abb112d640c67265342efbb1c1d4c758abcc3e` actually exercised all three regular,
+symlink and replaced-parent variants. Every variant unlinked the foreign entry
+and returned `Ok(())`; the test exited 101, zero passed/one failed/zero skipped
+in 0.03 seconds. Libtest SHA-256 remained
+`2c1c8eab1aef2fa03d9c1cd8e2761e84b84a412fdcc1728783be5fb0bd4c5849`.
+That worktree retains `target/recording-raw-red.log`,
+`target/recording-raw-red-build-final.log` and before/after hashes. Independent
+review approved the red/design; a separate implementation is in progress.
+No production fix, green qualification or delivery of that repair is claimed
+by this publication34 documentation update.
+
+A separate agent reviewed exact main `1bcc8253`, the original report, setup
+callers and downstream readers. The later peer main `cabaa576` leaves
+`config/matrix.rs` unchanged. No reachable empty-index panic was found: required
+selections, nonempty expansions/models/trials and publication checks precede it.
+
+Concrete source gaps remain: scalar `fs::write` can truncate the old ready
+configuration before a failed write; sweep configuration files and the final
+create-new manifest become visible incrementally, so failed writes/sync can
+leave partial final files and an unlocatable partial configuration directory.
+Setup checks population count but not the downstream 64 KiB/configuration,
+32 MiB aggregate-configuration and 16 MiB manifest serialized-byte budgets.
+
+Root then reproduced the per-configuration mismatch using the unchanged actual
+patch-32 CLI (production matches `cabaa576`) and a new private fixture project,
+an empty environment, an explicit model and a 70,000-character workspace option.
+`asb setup` returned **0**, wrote a **70,443-byte** TOML and instructed the user
+to run it. `asb run` immediately returned **2** with "benchmark configuration is
+larger than 64 KiB", before preparing tools, clients or providers. This proves
+inconsistent producer/consumer bounds, not validity of that oversized filesystem
+pathname or any agent execution. The actual binary SHA-256 stayed
+`4bad6979166c39b8c00f9dc38b5820def40239fb8bf5312ae30ff195f9bfd243`.
+Fixture/configuration and command logs are retained under
+`target/matrix-budget-repros/candidate.sm7k6X/`. No host setting, credentials,
+package installation, network provider or benchmark execution was used.
+
+The coherent follow-up needs prepared selection/population proof and bounded
+serialization of all outputs before final-path mutation. Preserve intentional
+scalar replacement versus sweep no-clobber, publish a complete manifest last,
+track exact created entries and report post-commit presentation failures honestly.
+Required offline tests include exact/+1 escaped/aggregate byte limits,
+short/Interrupted/WriteZero/ENOSPC/sync/rename faults, competing manifest creators,
+old scalar bytes/mode preservation, late-invalid selections and foreign arrivals
+in cleanup windows. No multi-file atomicity or rollback of committed files is
+claimed; these source/reproduction observations are not an implemented repair.
+
+The same independent review found no new functional defect from official-engine
+duplication alone. SWE Patch/FreshEnvironment and Terminal
+EnvironmentState/InPlace/ThroughEvaluation, SDK/helper selection, catalog and
+dataset identity, resource requirements and verifier retry rules are different
+contracts. A narrow immutable engine binding can share inspect/verify/recover/
+preflight envelopes, with catalog validation and preparation staying in owners.
+Any refactor must retain all five golden descriptors/fingerprints, both official
+grade outcomes, unknown/pending semantics, exact SDK/tool/dataset mismatch
+refusal and existing retained/import/grading/reconstruction fixtures.

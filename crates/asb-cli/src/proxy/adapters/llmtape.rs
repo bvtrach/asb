@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(8);
 const BUILTIN_PROXY: &str = include_str!("../../../assets/scripts/llmtape.mjs");
 const NETWORK_FETCH: &str = include_str!("../../../assets/scripts/network-fetch.mjs");
+const CAPTURE_SESSION: &str = include_str!("../../../assets/scripts/capture-session.mjs");
+const TAPE_NORMALIZATION: &str = include_str!("../../../assets/scripts/tape-normalization.mjs");
 static NEXT_SESSION: AtomicU64 = AtomicU64::new(0);
 static START_LOCK: Mutex<()> = Mutex::new(());
 
@@ -35,6 +37,8 @@ struct RunningLlmtape {
     cassette: PathBuf,
     mode: Mode,
     cleanup_confirmed: bool,
+    capture_request: Option<crate::proxy::capture::Request>,
+    capture: Option<crate::proxy::capture::CaptureEvidence>,
     _scratch: Scratch,
 }
 
@@ -77,19 +81,10 @@ impl ProxyAdapter for LlmtapeAdapter {
         let request = settings
             .and_then(|settings| settings.downcast_ref::<Settings>())
             .ok_or_else(|| Error::Input("llmtape requires record/replay settings".into()))?;
-        let cassette = &request.cassette;
-        if request.mode == Mode::Record {
-            let parent = cassette
-                .parent()
-                .filter(|path| !path.as_os_str().is_empty())
-                .unwrap_or_else(|| Path::new("."));
-            std::fs::create_dir_all(parent).map_err(|error| {
-                Error::Run(format!(
-                    "cannot create cassette directory {}: {error}",
-                    parent.display()
-                ))
-            })?;
-        }
+        let recording = (request.mode == Mode::Record)
+            .then(|| recording_destination(&request.cassette))
+            .transpose()?;
+        let cassette = recording.as_ref().unwrap_or(&request.cassette);
         let parent = cassette
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
@@ -121,6 +116,18 @@ impl ProxyAdapter for LlmtapeAdapter {
         let mut command = executable.command();
         command.env_remove("ASB_TAPE_READY_FILE");
         command.env_remove("ASB_TAPE_OWNER_PIPE");
+        command.env_remove("ASB_TAPE_CAPTURE_RECEIPT");
+        command.env_remove("ASB_TAPE_CAPTURE_NONCE");
+        let capture = (builtin && request.mode == Mode::Record).then(|| {
+            (
+                scratch.path.join("capture.json"),
+                crate::tools::runtime::unique_id(),
+            )
+        });
+        if let Some((receipt, nonce)) = &capture {
+            command.env("ASB_TAPE_CAPTURE_RECEIPT", receipt);
+            command.env("ASB_TAPE_CAPTURE_NONCE", nonce);
+        }
         if builtin {
             command.env("ASB_TAPE_READY_FILE", &ready_file);
             // The parent retains the write end in Child.stdin. CLOEXEC keeps
@@ -185,6 +192,12 @@ impl ProxyAdapter for LlmtapeAdapter {
             port,
             STARTUP_TIMEOUT,
         )?;
+        let capture_request = capture.map(|(receipt, nonce)| crate::proxy::capture::Request {
+            receipt,
+            output: cassette.clone(),
+            nonce,
+            pid: child.0.as_ref().expect("ready child").id(),
+        });
         Ok(Box::new(RunningLlmtape {
             child: child.0.take(),
             builtin,
@@ -194,8 +207,37 @@ impl ProxyAdapter for LlmtapeAdapter {
             cassette: cassette.clone(),
             mode: request.mode,
             cleanup_confirmed: false,
+            capture_request,
+            capture: None,
             _scratch: scratch,
         }))
+    }
+}
+
+/// Resolve the existing parent using filesystem semantics (including symlink/..)
+/// once. The producer and receipt verifier receive this identical destination.
+fn recording_destination(path: &Path) -> Result<PathBuf, Error> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .ok_or_else(|| Error::Input("recording destination requires a filename".into()))?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        Error::Run(format!(
+            "cannot create cassette directory {}: {error}",
+            parent.display()
+        ))
+    })?;
+    let destination = parent.canonicalize().map_err(crate::io_error)?.join(name);
+    match std::fs::symlink_metadata(&destination) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(destination),
+        Err(error) => Err(crate::io_error(error)),
+        Ok(_) => Err(Error::Input(format!(
+            "recording destination {} already exists; choose a new cassette instead of overwriting retained evidence",
+            destination.display()
+        ))),
     }
 }
 
@@ -295,6 +337,9 @@ impl ProxySession for RunningLlmtape {
     fn cleanup_confirmed(&self) -> bool {
         self.cleanup_confirmed
     }
+    fn capture_evidence(&self) -> Option<crate::proxy::capture::CaptureEvidence> {
+        self.capture.clone()
+    }
     fn url(&self) -> &str {
         &self.url
     }
@@ -305,7 +350,35 @@ impl ProxySession for RunningLlmtape {
         };
         let stopped = stop_proxy(&mut child, self.builtin);
         self.cleanup_confirmed = stopped.is_ok();
-        stopped.map_err(|error| Error::Run(format!("could not stop proxy adapter: {error}")))?;
+        // A valid receipt survives a later cleanup failure. Verify it even when
+        // exit status cannot establish resource cleanup, and keep both facts.
+        let captured = self
+            .capture_request
+            .take()
+            .map(|request| request.read(NAME));
+        let capture_error = match captured {
+            Some(Ok(evidence)) => {
+                self.capture = Some(evidence);
+                None
+            }
+            Some(Err(error)) => Some(error),
+            None => None,
+        };
+        if stopped.is_err() || capture_error.is_some() {
+            self._scratch.retain = true;
+        }
+        stopped.map_err(|error| {
+            Error::Run(format!(
+                "could not stop proxy adapter: {error}; retained recorder state at {}",
+                self._scratch.path.display()
+            ))
+        })?;
+        if let Some(error) = capture_error {
+            return Err(Error::Run(format!(
+                "{error}; retained recorder state at {}",
+                self._scratch.path.display()
+            )));
+        }
         if self.mode == Mode::Replay {
             let progress = self
                 .progress
@@ -348,6 +421,7 @@ impl ProxySession for RunningLlmtape {
     fn abort(&mut self) {
         if let Some(mut child) = self.child.take() {
             self.cleanup_confirmed = stop_proxy(&mut child, self.builtin).is_ok();
+            self._scratch.retain |= !self.cleanup_confirmed;
         }
     }
 }
@@ -397,6 +471,13 @@ fn resolve_executable(directory: &Path) -> Result<ProxyExecutable, Error> {
     let script = directory.join(".asb-tape-proxy.mjs");
     std::fs::write(directory.join("network-fetch.mjs"), NETWORK_FETCH)
         .map_err(|error| Error::Run(format!("cannot materialize tape network client: {error}")))?;
+    std::fs::write(directory.join("capture-session.mjs"), CAPTURE_SESSION).map_err(|error| {
+        Error::Run(format!(
+            "cannot materialize tape capture component: {error}"
+        ))
+    })?;
+    std::fs::write(directory.join("tape-normalization.mjs"), TAPE_NORMALIZATION)
+        .map_err(|error| Error::Run(format!("cannot materialize tape normalization: {error}")))?;
     std::fs::write(&script, BUILTIN_PROXY).map_err(|error| {
         Error::Run(format!(
             "cannot materialize ASB's built-in tape proxy at {}: {error}",
@@ -425,6 +506,7 @@ fn execution_input_files(override_path: Option<&str>) -> Result<Vec<PathBuf>, Er
 // Created exclusively, so teardown only removes files owned by this session.
 struct Scratch {
     path: PathBuf,
+    retain: bool,
 }
 
 impl Scratch {
@@ -439,7 +521,12 @@ impl Scratch {
                 builder.mode(0o700);
             }
             match builder.create(&path) {
-                Ok(()) => return Ok(Self { path }),
+                Ok(()) => {
+                    return Ok(Self {
+                        path,
+                        retain: false,
+                    });
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
                 Err(error) => {
                     let help = if error.kind() == std::io::ErrorKind::PermissionDenied {
@@ -469,7 +556,9 @@ fn shell_quote(path: &Path) -> String {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
+        if !self.retain {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
     }
 }
 
@@ -512,6 +601,8 @@ mod tests {
                 cassette: root.join("tape"),
                 mode: Mode::Record,
                 cleanup_confirmed: false,
+                capture_request: None,
+                capture: None,
                 _scratch: super::Scratch::create(&root).unwrap(),
             };
             assert_eq!(session.finish().is_ok(), code == 0);
@@ -883,7 +974,15 @@ mod tests {
         .unwrap();
         let original = r#"{"model":"m","messages":[{"content":"work in /tmp/original-workspace"}],"tools":[{"type":"function"}]}"#;
         assert!(request(&session, original).contains("200 OK"));
-        session.stop().unwrap();
+        let completed = session.finish();
+        completed.result.unwrap();
+        assert!(completed.evidence.cleanup_confirmed);
+        assert_eq!(completed.evidence.captures.len(), 1);
+        let capture = &completed.evidence.captures[0];
+        assert!(capture.complete);
+        assert_eq!(capture.inference_requests, 1);
+        assert_eq!(capture.output, cassette);
+        assert_eq!(capture.bytes, std::fs::metadata(&cassette).unwrap().len());
         server.join().unwrap();
         let session = Session::start(
             Mode::Replay,

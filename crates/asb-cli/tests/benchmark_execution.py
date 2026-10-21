@@ -201,6 +201,40 @@ class ExecutionTests(unittest.TestCase):
                     self.assertEqual(workspace.held_executions, [])
                     self.assertTrue(api.stream.closed)
 
+    def test_artifact_publication_status_never_substitutes_for_retained_owner_evidence(self):
+        # Consumer/grader-admission seam with the production managed transport;
+        # not a real SDK verifier. A pending ancillary status is not quiescence.
+        for publication in ["missing-first", "pending-final", "settlement-failed"]:
+            with self.subTest(publication=publication):
+                workspace, container, api = self.retained_workspace({
+                    "artifact_error": "scratch settlement pending" if publication == "pending-final"
+                        else "scratch settlement failed"})
+                if publication == "missing-first":
+                    previous = container.exec_run
+                    def missing(argv):
+                        if argv == ["cat", "/opt/asb-private/attempt/agent-result.json"]:
+                            return SimpleNamespace(exit_code=1, output=b"missing")
+                        return previous(argv)
+                    container.exec_run = missing
+                grades = []
+                with workspace:
+                    try:
+                        result = workspace.execute(["asb", "__asb-agent"], gate="application",
+                            workload_owner=self.owner())
+                    except RUNTIME.ExecutionError:
+                        self.assertEqual(publication, "missing-first")
+                        self.assertIn("kill", container.events)
+                    else:
+                        self.assertNotEqual(publication, "missing-first")
+                        self.assertTrue(result["workload_processes_retained"])
+                        self.assertEqual(result["metadata"]["workload_owner"], self.owner())
+                        self.assertFalse(result["metadata"]["tree_quiesced"])
+                        grades.append("one admitted grade")
+                self.assertEqual(len(grades), 0 if publication == "missing-first" else 1)
+                self.assertEqual(container.events.count("remove"), 1)
+                self.assertTrue(api.stream.closed)
+                self.assertEqual(workspace.held_executions, [])
+
     def test_workload_parent_release_follows_validated_metadata_and_preserves_transport_ownership(self):
         for fault in [None,"metadata","release"]:
             with self.subTest(fault=fault):

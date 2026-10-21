@@ -281,6 +281,7 @@ mod tests {
             dataset_sha256: None,
             prompt_sha256: "a".repeat(64),
             material_sha256: "b".repeat(64),
+            protocol_sha256: None,
         }
     }
 

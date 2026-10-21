@@ -1,7 +1,9 @@
 //! Immutable recording intent/start/commit records under one output owner.
+mod evidence;
 mod publication;
 use super::{Error, Limits, Manifest, Statistics, Track, digest};
 use crate::output_lock::OutputLock;
+pub use evidence::TrackEvidence;
 pub use publication::Publication;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
@@ -75,8 +77,16 @@ impl RecordingJournal {
                 "a new recording journal must start with an empty track catalogue".into(),
             ));
         }
-        validate_count(repeat, manifest.concurrency, limits)?;
-        let (destination, root, name, owner) = paths_and_lock(destination)?;
+        let count = validate_count(repeat, manifest.concurrency, limits)?;
+        let (_, _, name) = recording_paths(destination)?;
+        let intent = Intent {
+            manifest,
+            repeat,
+            destination_name: name,
+        };
+        let encoded = serde_json::to_vec(&intent).map_err(json_error)?;
+        reserve_metadata(&intent, count, encoded.len() as u64, limits)?;
+        let (destination, root, _, owner) = paths_and_lock(destination)?;
         if exists(&destination)? {
             return Err(Error(
                 "recording destination already exists; choose a new cassette name".into(),
@@ -90,17 +100,6 @@ impl RecordingJournal {
         }
         builder.create(&root).map_err(io_error)?;
         let root_identity = fs::symlink_metadata(&root).map_err(io_error)?;
-        let intent = Intent {
-            manifest,
-            repeat,
-            destination_name: name,
-        };
-        let encoded = serde_json::to_vec(&intent).map_err(json_error)?;
-        if encoded.len() as u64 > limits.max_manifest_bytes {
-            return Err(Error(
-                "recording intent exceeds manifest limit; partial directory retained".into(),
-            ));
-        }
         publish_new(&root, "intent.json", &encoded, &PublicationFault::default())?;
         sync_directory(root.parent().expect("canonical parent"))?;
         Ok(Self {
@@ -431,20 +430,7 @@ impl RecordingJournal {
     }
 
     fn check_root_identity(&self) -> Result<(), Error> {
-        let current = fs::symlink_metadata(&self.root).map_err(io_error)?;
-        if !current.is_dir() {
-            return Err(Error("recording partial directory was replaced".into()));
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            if current.dev() != self.root_identity.dev()
-                || current.ino() != self.root_identity.ino()
-            {
-                return Err(Error("recording partial directory identity changed".into()));
-            }
-        }
-        Ok(())
+        check_root_identity(&self.root, &self.root_identity)
     }
 
     fn ensure_recording(&self) -> Result<(), Error> {
@@ -488,6 +474,21 @@ impl RecordingJournal {
     }
 }
 
+fn check_root_identity(root: &Path, original: &fs::Metadata) -> Result<(), Error> {
+    let current = fs::symlink_metadata(root).map_err(io_error)?;
+    if !current.is_dir() {
+        return Err(Error("recording partial directory was replaced".into()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if current.dev() != original.dev() || current.ino() != original.ino() {
+            return Err(Error("recording partial directory identity changed".into()));
+        }
+    }
+    Ok(())
+}
+
 fn validate_count(repeat: u64, concurrency: u64, limits: Limits) -> Result<u64, Error> {
     repeat
         .checked_mul(concurrency)
@@ -497,7 +498,82 @@ fn validate_count(repeat: u64, concurrency: u64, limits: Limits) -> Result<u64, 
         })
 }
 
+/// Reserve the complete planned population before creating any output or
+/// admitting clients. Numeric observations may grow to u64::MAX and nullable
+/// outcomes may become false; reserve their longest valid JSON representation.
+/// One maximum-width slot bounds every slot without allocating the population.
+fn reserve_metadata(
+    intent: &Intent,
+    count: u64,
+    intent_bytes: u64,
+    limits: Limits,
+) -> Result<(), Error> {
+    let track = Track {
+        id: count,
+        batch: intent.repeat,
+        replica: intent.manifest.concurrency,
+        complete: false,
+        process_success: Some(false),
+        workload_success: Some(false),
+        bytes: limits.max_track_bytes,
+        sha256: "f".repeat(64),
+        statistics: Statistics {
+            tokens: Some(u64::MAX),
+            duration_ms: Some(u64::MAX),
+            requests: Some(u64::MAX),
+            steps: Some(u64::MAX),
+        },
+    };
+    let start = Started {
+        recording_id: intent.manifest.recording_id.clone(),
+        id: count,
+        batch: intent.repeat,
+        replica: intent.manifest.concurrency,
+    };
+    let track_bytes = serde_json::to_vec(&track).map_err(json_error)?.len() as u64;
+    let start_bytes = serde_json::to_vec(&start).map_err(json_error)?.len() as u64;
+    let commit_bytes = serde_json::to_vec(&Committed {
+        recording_id: intent.manifest.recording_id.clone(),
+        track,
+    })
+    .map_err(json_error)?
+    .len() as u64;
+    let manifest_bytes = serde_json::to_vec(&intent.manifest)
+        .map_err(json_error)?
+        .len() as u64;
+    let journal = start_bytes
+        .checked_add(commit_bytes)
+        .and_then(|slot| slot.checked_mul(count))
+        .and_then(|slots| slots.checked_add(intent_bytes));
+    let catalogue = track_bytes
+        .checked_add(1)
+        .and_then(|slot| slot.checked_mul(count))
+        .and_then(|slots| slots.checked_sub(1))
+        .and_then(|slots| slots.checked_add(manifest_bytes));
+    if start_bytes > MAX_RECORD_BYTES
+        || commit_bytes > MAX_RECORD_BYTES
+        || journal.is_none_or(|bytes| bytes > limits.max_manifest_bytes)
+        || catalogue.is_none_or(|bytes| bytes > limits.max_manifest_bytes)
+    {
+        return Err(Error("planned recording metadata exceeds the manifest budget; reduce repeat/concurrency or choose larger explicit limits".into()));
+    }
+    Ok(())
+}
+
 fn paths_and_lock(destination: &Path) -> Result<(PathBuf, PathBuf, String, OutputLock), Error> {
+    let (destination, root, name) = recording_paths(destination)?;
+    let owner = OutputLock::acquire(
+        &destination
+            .parent()
+            .expect("canonical parent")
+            .join(format!(".{name}.recording.lock")),
+        "another writer owns this cassette recording",
+    )
+    .map_err(Error)?;
+    Ok((destination, root, name, owner))
+}
+
+fn recording_paths(destination: &Path) -> Result<(PathBuf, PathBuf, String), Error> {
     let name = destination
         .file_name()
         .and_then(|value| value.to_str())
@@ -510,16 +586,10 @@ fn paths_and_lock(destination: &Path) -> Result<(PathBuf, PathBuf, String, Outpu
         .unwrap_or(Path::new("."))
         .canonicalize()
         .map_err(io_error)?;
-    let owner = OutputLock::acquire(
-        &parent.join(format!(".{name}.recording.lock")),
-        "another writer owns this cassette recording",
-    )
-    .map_err(Error)?;
     Ok((
         parent.join(&name),
         parent.join(format!(".{name}.partial")),
         name,
-        owner,
     ))
 }
 

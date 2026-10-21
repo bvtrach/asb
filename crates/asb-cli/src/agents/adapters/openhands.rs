@@ -82,7 +82,7 @@ fn collect(context: &CollectionContext<'_>) -> AgentArtifacts {
                 && context.anthropic_input_includes_cache,
         )),
         steps: None,
-        cleanup_paths: Vec::new(),
+        final_response: None,
     }
 }
 
@@ -183,7 +183,7 @@ mod tests {
         let doc = r#"{"stats":{"usage_to_metrics":{"agent":{"response_latencies":[{}],"token_usages":[{"prompt_tokens":10,"completion_tokens":3,"cache_read_tokens":0}]}}}}"#;
         std::fs::write(conversations.join("first/base_state.json"), doc).unwrap();
         let context = CollectionContext {
-            workspace: &root,
+            frozen: &Default::default(),
             run_dir: &root,
             interface: None,
             anthropic_input_includes_cache: false,

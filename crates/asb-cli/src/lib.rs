@@ -157,7 +157,8 @@ mod adapter_layout_tests {
             CategoryLayout {
                 category: "agents",
                 ids: super::agents::names().collect(),
-                root_modules: &["mod.rs", "driver.rs"],
+                // Attempt artifact ownership is generic adapter infrastructure.
+                root_modules: &["mod.rs", "driver.rs", "artifacts.rs"],
                 root_directories: &[],
             },
             CategoryLayout {
@@ -192,7 +193,8 @@ mod adapter_layout_tests {
             CategoryLayout {
                 category: "proxy",
                 ids: super::proxy::names().collect(),
-                root_modules: &["mod.rs"],
+                // Category-wide capture evidence, not a provider/target adapter.
+                root_modules: &["mod.rs", "capture.rs"],
                 root_directories: &[],
             },
             CategoryLayout {

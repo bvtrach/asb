@@ -383,7 +383,9 @@ success flag. Reports disclose actual recorded failures independently of that
 legacy flag, and otherwise preserve healthy pending/native outcomes. Historical
 status/failure strings remain display data, not strict enum-deserialization
 boundaries; workload evaluation kinds remain adapter-extensible and unknown
-historical grader categories remain unscored. Post-publication errors retain
+historical grader categories remain unscored. Recording commit failure updates
+the typed operational disposition before log/measurement publication, preserving
+any earlier primary failure and all independent grades/rewards. Post-publication errors retain
 their separate ancillary policy rather than rewriting an immutable disposition.
 
 Post-execution lifecycle failures are ancillary `AttemptIssues`, not missing
@@ -911,8 +913,71 @@ wire interface. OpenHands may itself report a cache count of zero when its SDK
 does not distinguish a missing cache field from zero. Those run-specific state
 directories can contain agent session transcripts and remain beside the run
 workspace. OpenHands and OpenJiuwen use
-machine-readable output; mini-SWE writes a project-local trajectory that
-is parsed for nested provider usage before it is removed. Their terminal output is intentionally limited to success
+machine-readable output. Mini-SWE's trajectory and Hermes's usage ledger now
+belong to fresh private per-attempt namespaces outside the task workspace.
+The adapters declare and configure their own artifact paths, including the
+guest's explicit mounted run directory; generic execution has no agent-ID
+branch for file answers. After execution, each bounded regular JSON file is
+opened without following symlinks and frozen once. Answer, usage and steps use
+that same document rather than independently refreshing a workspace pathname.
+Existing workspace trajectories are neither interpreted nor deleted.
+The namespace handle stays pinned from preparation. Unix `openat` and Windows
+rooted `NtCreateFile` resolve the child relative to that handle, not a second
+full-path traversal after checking the namespace. Explicit consuming scratch
+settlement checks file identity and frozen size/time observations. On Unix it
+atomically moves the source entry into a create-new, owner-only custody directory
+before rechecking and unlinking the custody entry; a replacement in the source
+check-to-move window is retained there, never deleted. Windows disposition acts
+on the checked open file handle. Replaced namespace paths and foreign source
+entries are never path-deleted. Empty private namespaces/custody directories can
+remain intentionally. This is normal concurrency protection, not an atomic
+conditional-unlink sandbox against a hostile same-UID actor invading the private
+custody directory itself. Fixed per-artifact reasons identify only declared
+namespace/filename and failure class, never file contents or raw OS/JSON errors.
+Malformed/oversized/unreadable snapshots are retained. Before freezing, unwind
+has a best-effort guard; after freezing, unwind retains evidence for inspection.
+Explicit failed settlement is never retried by Drop, which never prints.
+Before native scratch settlement, each valid frozen snapshot is transferred to
+`<private-runtime>/runs/<attempt>/mini-swe/frozen-trajectory.json` (or the
+declaring adapter's equivalent `frozen-<filename>`). This writes the exact
+already-validated bytes, never a second source-path read or JSON re-encoding.
+Create-new, nofollow, pinned-relative creation refuses existing files/symlinks.
+Unix files use mode 0600 inside the owned 0700 namespace and synchronize both
+file and namespace; Windows retains its namespace ACL and uses rooted
+write-through creation plus file flush (source qualification only, not a claim
+of portable directory flushing). Failed creation/write/synchronization prevents
+source consumption, records a fixed attempt-relative diagnostic and still allows
+the independent publishers to run. Original deletion retains the existing
+identity/version and custody checks. The durable evidence copy is intentionally
+retained even after successful publication, not counted as unremoved scratch.
+It can contain complete agent conversation/usage and sensitive data; do not
+share it as a harmless diagnostic. Each raw snapshot/copy is at most 16 MiB,
+with at most 16 declared artifacts (256 MiB raw-copy storage per attempt at the
+API ceiling; currently one for each owning adapter). Frozen raw bytes also stay
+in bounded memory alongside the parsed document until handoff. Copies accumulate
+across attempts: there is no project-wide storage quota or automatic evidence
+expiry. Disk-full errors retain the original and are not a reason to retry the
+agent. These file/namespace flushes are not a multi-file publication transaction.
+Log/measurement publishers still consume one immutable result exactly once;
+their failures disclose locatable attempt-relative frozen evidence when available.
+Scratch retention is ancillary run failure, not unconfirmed workload/container
+quiescence: official grading and independent workload/provider cleanup and
+publication still run once. Guest metadata carries a separate optional artifact
+diagnostic while retaining the existing process/namespace ownership facts.
+Guest publication first synchronizes a usable result marked scratch-settlement
+pending, then consumes settlement and publishes its final ancillary status.
+Failed first publication retains raw source. Failed final publication leaves
+the honest pending result available for grading; it never asserts cleanup.
+These two publications are not a multi-file transaction. A retained-service
+workload still requires the existing durable result/owner/READY authorization;
+missing first publication does not fabricate that authority.
+Unix file identity is qualified with offline fixtures. Windows retains a
+handle-based volume/128-bit-file-ID implementation with reparse-point refusal,
+root-relative access and handle-based disposition;
+its source is reviewed but Linux execution does not qualify Windows runtime.
+An identity-unavailable filesystem/platform still runs and freezes isolated
+evidence, but refuses destructive settlement and reports retained scratch.
+Their terminal output is intentionally limited to success
 rate, elapsed time, and token usage; `--json` changes only the representation
 of those metrics.
 Pass `--show-output` to stream the agent's stdout and stderr live for interactive
@@ -1502,7 +1567,24 @@ batch evidence verification reuses one archive index. Sweep and cassette output
 owners share a private persistent-inode lock implementation, with domain-owned
 paths and diagnostics. Finalization requires the caller to stop/join recording
 producers; freezing the journal does not drain a proxy itself. This backend is a
-delivery foundation, not yet a change to run/sweep's JSONL CLI behavior. See
+delivery foundation integrated by the run-owned recording/replay coordinators.
+After confirmed archive publication and observed producer cleanup, raw recording
+consumption pins the producer namespace and moves a candidate into fresh private
+custody before identity/digest revalidation. Only that private candidate can be
+unlinked; the original source name and replacement namespaces are never deletion
+targets. Foreign candidates are restored without replacement or retained with a
+locatable diagnostic. Actual unlink followed by failed namespace synchronization
+is reported as removed but durability-unconfirmed, not falsely retained. Empty
+private custody directories remain; no recursive/Drop retry cleanup is implied.
+Run recordings publish ZIP bundles from fresh executions; replay freezes a
+selection plan before any client admission, selectively stages private JSONL,
+and compares the source identity with adapter-observed initial material at the
+shared preparation gate. Per-batch aliases project the selected track IDs while
+each proxy owns independent progress. Provider adapters and proxy protocols do
+not parse archives or choose tracks. Legacy no-selector JSONL replay retains
+its previous workspace behavior; explicit repeats/track selections are fresh.
+Sweep bundle/resume/report integration and the offline viewer remain separate
+delivery steps. See
 [multi-track delivery contracts](MULTITRACK.md) for the integration sequence.
 
 Recording and replay are implemented as a separate `tape` module behind the
@@ -1519,9 +1601,9 @@ from agent to provider to configure additional registered adapters; an empty
 list is rejected when record/replay is enabled. Provider adapters continue to
 own endpoint routing, record-mode upstream resolution, and optional local-
 bridge lifecycle. The runner and sweep executor retain no provider-specific
-proxy knowledge and tear every hop down after the child exits. `--record`
-writes a JSONL cassette with a bounded `delay_ms` response latency for every
-interaction; `--replay` requires that cassette and never starts cli2key or a
+proxy knowledge and tear every hop down after the child exits. The recorder
+writes internal JSONL captures with a bounded `delay_ms` response latency for
+every interaction; replay consumes selected JSONL and never starts cli2key or a
 live provider. Passing `--respect-record-timings` with `--replay` makes llmtape
 match each request first, then wait for its recorded delay before returning the
 response. The same option is available on `asb sweep`. This keeps the

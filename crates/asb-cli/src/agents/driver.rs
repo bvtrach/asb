@@ -78,6 +78,8 @@ pub(crate) struct GuestResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_workspace: Option<PathBuf>,
     #[serde(default)]
+    pub artifact_error: Option<String>,
+    #[serde(default)]
     pub elapsed_ms: Option<u64>,
     #[serde(default)]
     pub timed_out: bool,
@@ -184,10 +186,15 @@ fn execution_workspace(request: &GuestRequest) -> Result<PathBuf, Error> {
     }
 }
 
-#[derive(Debug)]
 struct PreparedGuest {
     command: Command,
+    artifact_owner: super::ArtifactOwner,
     instrumentation: Option<crate::workloads::staging::Guard>,
+}
+impl std::fmt::Debug for PreparedGuest {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        output.write_str("PreparedGuest { private command, instrumentation and owned artifacts }")
+    }
 }
 impl std::ops::Deref for PreparedGuest {
     type Target = Command;
@@ -313,6 +320,7 @@ fn prepare(request: &GuestRequest) -> Result<PreparedGuest, Error> {
     // Do not replace a benchmark's Python PATH with the agent's interpreter.
     // Agent entry points/wrappers use their own absolute venv interpreter.
     crate::tools::apply_runtime_path(&mut command, &request.project_root, &project.tools_dir)?;
+    let artifact_owner = super::ArtifactOwner::prepare(&request.run_dir, adapter.artifact_specs())?;
     adapter.prepare(&mut super::PreparationContext {
         command: &mut command,
         model: &request.config.model,
@@ -322,6 +330,7 @@ fn prepare(request: &GuestRequest) -> Result<PreparedGuest, Error> {
     })?;
     Ok(PreparedGuest {
         command,
+        artifact_owner,
         instrumentation,
     })
 }
@@ -349,7 +358,11 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
             "quiescent guest execution cannot declare retained ownership".into(),
         ));
     }
-    let mut command = prepare(&request)?;
+    let PreparedGuest {
+        mut command,
+        mut artifact_owner,
+        instrumentation,
+    } = prepare(&request)?;
     // Keep the same launch identity even if a tool renames/deletes its cwd.
     // Looking up current_dir again after execution can erase a valid outcome.
     let workspace = command
@@ -370,7 +383,7 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
         session.attach_pid(std::process::id()).map_err(Error::Run)?;
         Some(session)
     };
-    if let (Some(guard), Some(owner)) = (&command.instrumentation, &request.owned_instrumentation) {
+    if let (Some(guard), Some(owner)) = (&instrumentation, &request.owned_instrumentation) {
         guard.revalidate(owner)?;
     }
     // Preparation and command construction are complete before the outer
@@ -455,8 +468,9 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     let adapter = super::find(&request.config.agent).expect("validated agent");
+    let frozen = artifact_owner.freeze();
     let artifacts = adapter.collect(&super::CollectionContext {
-        workspace: &workspace,
+        frozen: &frozen,
         run_dir: &request.run_dir,
         interface: Some(request.connection.interface),
         anthropic_input_includes_cache: crate::providers::anthropic_input_includes_cache(
@@ -471,7 +485,12 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
         None,
     );
     let usage = crate::measurements::with_artifact_usage(usage, artifacts.token_usage);
-    let result = GuestResult {
+    // Until the first durable publication transfers the frozen evidence, Drop
+    // retains raw artifacts. This interim record never asserts settlement.
+    let mut result = GuestResult {
+        artifact_error: Some(
+            "agent scratch settlement pending; source or custody may remain".into(),
+        ),
         owned_instrumentation: request.owned_instrumentation.clone(),
         execution_workspace: Some(workspace.clone()),
         #[cfg(target_os = "linux")]
@@ -485,7 +504,9 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
         workload_owner: request.workload_owner,
         schema_version: 1,
         exit_code: output.status.code(),
-        final_response: super::final_response(&request.config.agent, &stdout, &workspace),
+        final_response: artifacts
+            .final_response
+            .or_else(|| super::final_response(&request.config.agent, &stdout, &workspace)),
         token_usage: usage,
         steps: artifacts
             .steps
@@ -504,28 +525,9 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
         tree_quiesced: cfg!(target_os = "linux") && !retained,
         namespace_collectors,
     };
-    let destination = request.run_dir.join("agent-result.json");
-    let temporary = request
-        .run_dir
-        .join(format!(".agent-result-{}", std::process::id()));
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(&temporary)
-        .map_err(|error| Error::Io(error.to_string()))?;
-    serde_json::to_writer(&mut file, &result)
-        .map_err(|_| Error::Io("cannot encode guest result".into()))?;
-    file.sync_all()
-        .and_then(|()| fs::rename(&temporary, &destination))
-        .map_err(|error| Error::Io(error.to_string()))?;
-    for path in artifacts.cleanup_paths {
-        let _ = fs::remove_file(path);
-    }
+    publish_artifacts(&mut result, artifact_owner, frozen.diagnostic(), |result| {
+        publish_result(&request.run_dir, result)
+    })?;
     #[cfg(target_os = "linux")]
     if let Some(held) = held {
         let owner = result
@@ -548,6 +550,55 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
         .unwrap_or(1))
 }
 
+fn publish_artifacts(
+    result: &mut GuestResult,
+    artifact_owner: super::ArtifactOwner,
+    snapshot_error: Option<String>,
+    mut publish: impl FnMut(&GuestResult) -> Result<(), Error>,
+) -> Result<(), Error> {
+    if artifact_owner.is_empty() {
+        result.artifact_error = snapshot_error;
+        return publish(result);
+    }
+    publish(result)?;
+    result.artifact_error = match (snapshot_error, artifact_owner.settle().err()) {
+        (Some(snapshot), Some(settlement)) => Some(format!("{snapshot}; {settlement}")),
+        (snapshot, settlement) => snapshot.or(settlement),
+    };
+    // If final publication fails, the earlier durable record truthfully says
+    // pending. Continue the existing workload/grade lifetime rather than losing
+    // a usable submission or inventing a workload-quiescence failure.
+    if publish(result).is_err() {
+        result.artifact_error = Some("agent scratch settlement final publication unavailable; inspect pending result and source or custody".into());
+    }
+    Ok(())
+}
+
+fn publish_result(run_dir: &Path, result: &GuestResult) -> Result<(), Error> {
+    let destination = run_dir.join("agent-result.json");
+    let temporary = run_dir.join(format!(".agent-result-{}", std::process::id()));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&temporary)
+        .map_err(|error| Error::Io(error.to_string()))?;
+    serde_json::to_writer(&mut file, result)
+        .map_err(|_| Error::Io("cannot encode guest result".into()))?;
+    file.sync_all()
+        .and_then(|()| fs::rename(&temporary, &destination))
+        .map_err(|error| Error::Io(error.to_string()))?;
+    #[cfg(unix)]
+    fs::File::open(run_dir)
+        .and_then(|directory| directory.sync_all())
+        .map_err(crate::io_error)?;
+    Ok(())
+}
+
 pub(crate) fn entry() -> std::process::ExitCode {
     let result = (|| {
         let text = std::env::var(REQUEST)
@@ -564,6 +615,99 @@ pub(crate) fn entry() -> std::process::ExitCode {
         Err(error) => {
             eprintln!("ASB guest agent could not execute: {error}");
             std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod artifact_publication_tests {
+    use super::*;
+
+    #[test]
+    fn actual_first_and_final_publication_failures_keep_honest_evidence() {
+        for first_write_fails in [true, false] {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/agent-artifact-publication")
+                .join(crate::workloads::TaskIdentity::local("publication", None).attempt_id);
+            fs::create_dir_all(&root).unwrap();
+            let mut owner = super::super::ArtifactOwner::prepare(
+                &root,
+                &[super::super::ArtifactSpec {
+                    namespace: "scratch",
+                    filename: "evidence.json",
+                }],
+            )
+            .unwrap();
+            let raw = root.join("scratch/evidence.json");
+            fs::write(&raw, r#"{"answer":"submission","usage":34,"steps":4}"#).unwrap();
+            let frozen = owner.freeze();
+            let mut result = GuestResult {
+                owned_instrumentation: None,
+                execution_workspace: None,
+                artifact_error: Some(
+                    "agent scratch settlement pending; source or custody may remain".into(),
+                ),
+                elapsed_ms: None,
+                timed_out: false,
+                workload_owner: None,
+                schema_version: 1,
+                exit_code: Some(0),
+                final_response: Some("submission".into()),
+                token_usage: crate::measurements::TokenUsage {
+                    input_tokens: Some(13),
+                    output_tokens: Some(21),
+                    total_tokens: Some(34),
+                    ..Default::default()
+                },
+                steps: Some(4),
+                execution_failure: None,
+                tree_quiesced: true,
+                namespace_collectors: Default::default(),
+            };
+            let destination = root.join("agent-result.json");
+            if first_write_fails {
+                fs::create_dir(&destination).unwrap();
+            }
+            let mut writes = 0;
+            let publication =
+                publish_artifacts(&mut result, owner, frozen.diagnostic(), |result| {
+                    writes += 1;
+                    if writes == 2 {
+                        // Real OS failure in the exact publisher, after the first
+                        // record has transferred usable evidence. No product hook.
+                        fs::create_dir(root.join(format!(".agent-result-{}", std::process::id())))
+                            .unwrap();
+                    }
+                    publish_result(&root, result)
+                });
+            if first_write_fails {
+                assert!(publication.is_err());
+                assert_eq!(writes, 1);
+                assert_eq!(
+                    fs::read_to_string(&raw).unwrap(),
+                    r#"{"answer":"submission","usage":34,"steps":4}"#
+                );
+            } else {
+                publication.unwrap();
+                assert_eq!(writes, 2);
+                let durable: GuestResult =
+                    serde_json::from_slice(&fs::read(&destination).unwrap()).unwrap();
+                assert!(durable.artifact_error.unwrap().contains("pending"));
+                assert_eq!(durable.final_response.as_deref(), Some("submission"));
+                assert_eq!(durable.steps, Some(4));
+                assert_eq!(durable.token_usage.total_tokens, Some(34));
+                assert!(
+                    durable.tree_quiesced,
+                    "scratch publication never rewrites process ownership"
+                );
+                assert!(
+                    result
+                        .artifact_error
+                        .unwrap()
+                        .contains("final publication unavailable")
+                );
+            }
+            fs::remove_dir_all(root).unwrap();
         }
     }
 }

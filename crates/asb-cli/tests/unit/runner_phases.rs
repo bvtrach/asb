@@ -163,6 +163,7 @@ fn prepared(
 fn evidence(exit: i32, guest: bool) -> ExecutionEvidence {
     use std::os::unix::process::ExitStatusExt;
     ExecutionEvidence {
+        artifact_owner: None,
         capture_complete: true,
         output: Output {
             status: std::process::ExitStatus::from_raw(exit << 8),
@@ -197,7 +198,7 @@ fn native_guest_grade_and_cleanup_matrix_preserves_independent_facts() {
                         .collector_errors
                         .push("capture shutdown failed".into());
                     let execution = evidence(exit, guest);
-                    let agent = execution.agent_outcome("fixture", &fixture.0);
+                    let agent = execution.agent_outcome("fixture", &fixture.0, None);
                     assert_eq!(agent.failure.is_none(), exit == 0);
                     let final_state = prepared
                         .executed(execution, issues)
@@ -438,6 +439,7 @@ fn native_launch_waits_for_siblings_and_refuses_an_unverifiable_sibling_gate() {
             dataset_sha256: None,
             prompt_sha256: "a".repeat(64),
             material_sha256: "b".repeat(64),
+            protocol_sha256: None,
         }
     }
     fn run(
@@ -561,7 +563,7 @@ fn native_and_guest_apply_the_same_adapter_terminal_answer_policy() {
         if let Some(metadata) = execution.guest.as_mut() {
             metadata.final_response = None;
         }
-        let outcome = execution.agent_outcome("openjiuwen", &fixture.0);
+        let outcome = execution.agent_outcome("openjiuwen", &fixture.0, None);
         assert!(
             outcome
                 .failure
@@ -574,7 +576,7 @@ fn native_and_guest_apply_the_same_adapter_terminal_answer_policy() {
         } else {
             execution.output.stdout = b"{\"type\":\"answer\",\"payload\":\"finished\"}".to_vec();
         }
-        let outcome = execution.agent_outcome("openjiuwen", &fixture.0);
+        let outcome = execution.agent_outcome("openjiuwen", &fixture.0, None);
         assert!(outcome.failure.is_none());
         assert_eq!(outcome.final_response.as_deref(), Some("finished"));
     }
@@ -889,11 +891,144 @@ fn native_postexecution_event_failure_retains_actual_child_output_and_grade() {
     }
 }
 
+#[path = "runner_bundle_publication.rs"]
+mod bundle_publication;
 #[path = "runner_publication.rs"]
 mod publication;
 
+fn recording_identity(result: &RunResult<'_>) -> crate::cassette::Compatibility {
+    crate::cassette::Compatibility {
+        agent: result.agent.into(),
+        provider: result.provider.into(),
+        model: result.model.into(),
+        workload: result.workload.into(),
+        task: result.task.task_id.clone(),
+        dataset_sha256: None,
+        prompt_sha256: "a".repeat(64),
+        material_sha256: "b".repeat(64),
+        protocol_sha256: Some("c".repeat(64)),
+    }
+}
+
+#[test]
+fn recording_association_binds_actual_attempt_and_preserves_uncertain_raw_capture() {
+    let fixture = Fixture::new();
+    let campaign = fixture.0.canonicalize().unwrap().join("campaign-1");
+    std::fs::create_dir_all(campaign.join("batch-1")).unwrap();
+    let destination =
+        super::super::recording::preflight(&fixture.0.join("recording.asb.zip")).unwrap();
+    let recorder = super::super::recording::Recorder::new(
+        destination,
+        campaign.clone(),
+        "campaign-1".into(),
+        1,
+        1,
+    );
+    let result = result();
+    let identity = recording_identity(&result);
+    recorder.prepare(&identity, 1).unwrap();
+    let producer = super::super::recording::base(&campaign, 1);
+    std::fs::write(&producer, b"{}\n").unwrap();
+    let capture = crate::proxy::capture::CaptureEvidence {
+        adapter: "llmtape".into(),
+        output: producer.clone(),
+        complete: true,
+        accepted: 1,
+        completed: 1,
+        failed: 0,
+        recorded: 1,
+        inference_requests: 1,
+        bytes: 3,
+        sha256: crate::cassette::digest(b"{}\n"),
+    };
+    let proxy = crate::proxy::Evidence {
+        captures: vec![capture.clone()],
+        output_files: vec![producer.clone()],
+        cleanup_confirmed: false,
+    };
+    let evidence = recorder
+        .commit(1, replica::Identity::default(), &result, &proxy)
+        .unwrap();
+    let mut bytes = Vec::new();
+    render_json(&result, &mut bytes).unwrap();
+    let mut summary: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    summary["execution"] =
+        serde_json::json!({"campaign":"campaign-1","batch":1,"replica":1,"slot":1});
+    evidence
+        .validate_summary(&summary, &proxy.captures)
+        .unwrap();
+    for (field, value) in [
+        ("batch", serde_json::json!(2)),
+        ("replica", serde_json::json!(2)),
+        ("slot", serde_json::json!(2)),
+        ("campaign", serde_json::json!("foreign")),
+    ] {
+        let mut altered = summary.clone();
+        altered["execution"][field] = value;
+        assert!(
+            evidence
+                .validate_summary(&altered, &proxy.captures)
+                .is_err(),
+            "{field}"
+        );
+    }
+    let mut forged = evidence.clone();
+    forged.attempt_id = "another-attempt".into();
+    let mut altered = summary.clone();
+    altered["task"]["attempt_id"] = serde_json::json!("another-attempt");
+    assert!(
+        forged
+            .validate_summary(&altered, &proxy.captures)
+            .unwrap_err()
+            .to_string()
+            .contains("association changed")
+    );
+    assert!(
+        evidence
+            .validate_summary(&summary, &[capture.clone(), capture])
+            .is_err()
+    );
+    assert!(evidence.validate_summary(&summary, &[]).is_err());
+    let published = recorder.finalize(false).unwrap().unwrap();
+    assert!(!published.cleanup_complete);
+    assert!(producer.exists());
+    evidence
+        .validate_summary(&summary, &proxy.captures)
+        .unwrap();
+}
+
+#[test]
+fn recording_setup_failure_retains_partial_bytes_with_unknown_outcomes() {
+    let fixture = Fixture::new();
+    let campaign = fixture.0.canonicalize().unwrap().join("campaign-1");
+    std::fs::create_dir_all(campaign.join("batch-1")).unwrap();
+    let destination =
+        super::super::recording::preflight(&fixture.0.join("partial.asb.zip")).unwrap();
+    let recorder = super::super::recording::Recorder::new(
+        destination.clone(),
+        campaign.clone(),
+        "campaign-1".into(),
+        1,
+        1,
+    );
+    recorder.prepare(&recording_identity(&result()), 1).unwrap();
+    let producer = super::super::recording::base(&campaign, 1);
+    std::fs::write(&producer, b"partial trace").unwrap();
+    recorder.finalize(false).unwrap().unwrap();
+    let mut archive =
+        crate::cassette::Archive::open(&destination, crate::cassette::Limits::default()).unwrap();
+    let track = &archive.manifest().tracks[0];
+    assert!(!track.complete);
+    assert_eq!(track.process_success, None);
+    assert_eq!(track.workload_success, None);
+    assert_eq!(track.statistics, crate::cassette::Statistics::default());
+    assert_eq!(archive.read_track(1).unwrap(), b"partial trace");
+    assert!(producer.exists());
+}
+
 fn result() -> RunResult<'static> {
     RunResult {
+        recording: None,
         execution: None,
         workload_resource_disposition: Some(workloads::ResourceDisposition::Removed),
         workload_artifacts: Vec::new(),
@@ -1092,6 +1227,11 @@ fn full_runner_entry_observer_warning_is_redacted_and_broken_warning_writer_keep
 }
 
 #[test]
+fn full_runner_native_artifact_handoff_survives_publication_loss_without_repeating_owners() {
+    isolated_full_entry_cases(&["artifact-loss-disabled", "artifact-loss-failed-measurement"]);
+}
+
+#[test]
 fn full_runner_entry_explicit_provider_finish_preserves_grades_and_primary_failures() {
     isolated_full_entry_cases(&[
         "provider-true-failed-finish",
@@ -1222,6 +1362,7 @@ fn early_provider_teardown_notifies_material_peers_before_waiting_for_cleanup() 
                 dataset_sha256: None,
                 prompt_sha256: "a".repeat(64),
                 material_sha256: "b".repeat(64),
+                protocol_sha256: None,
             };
             assert!(
                 peer.ready(identity)
@@ -1337,6 +1478,10 @@ fn repeated_provider_finish_child(
 }
 
 fn full_entry_child(case: &str) {
+    if case.starts_with("bundle-publication-") {
+        bundle_publication::run(case);
+        return;
+    }
     use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Observer {
@@ -1365,6 +1510,7 @@ fn full_entry_child(case: &str) {
             }
         }
     }
+    let artifact_case = case.starts_with("artifact-loss-");
     let provider_case = case.starts_with("provider-");
     let disposition_case = case.starts_with("disposition-");
     let publication_case = case.contains("publication-");
@@ -1387,8 +1533,12 @@ fn full_entry_child(case: &str) {
     std::fs::create_dir(root.join("workloads")).unwrap();
     workloads::populate(&root.join("workloads")).unwrap();
     let mini_swe_case = case == "capture-mini-swe-read-failure";
-    let agent_id = if mini_swe_case { "mini-swe" } else { "pi" };
-    let agent = root.join(if mini_swe_case {
+    let agent_id = if mini_swe_case || artifact_case {
+        "mini-swe"
+    } else {
+        "pi"
+    };
+    let agent = root.join(if mini_swe_case || artifact_case {
         "tools/mini-swe/bin/mini"
     } else {
         "tools/pi/bin/pi"
@@ -1407,7 +1557,8 @@ fn full_entry_child(case: &str) {
     };
     let row = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body.to_string()},"response":{"status":200,"headers":{"content-type":"application/json"},"body":response_body}});
     std::fs::write(&cassette, format!("{row}\n")).unwrap();
-    if provider_case || capture_case || (disposition_case && !case.contains("run")) {
+    if artifact_case || provider_case || capture_case || (disposition_case && !case.contains("run"))
+    {
         let node = crate::tools::host_executable(Path::new("node")).unwrap();
         let answer = if case == "provider-false-failed-finish"
             || case.contains("false")
@@ -1425,7 +1576,7 @@ fn full_entry_child(case: &str) {
         };
         let counter_js = serde_json::to_string(&counter).unwrap();
         let artifact_js = if mini_swe_case {
-            "require('node:fs').writeFileSync('.asb-mini-swe.traj.json',JSON.stringify({trajectory_format:'mini-swe-agent-1.1',info:{model_stats:{api_calls:4}},messages:[{extra:{response:{usage:{prompt_tokens:11,completion_tokens:13}}}}]}));"
+            "require('node:fs').writeFileSync(process.argv[process.argv.indexOf('--output')+1],JSON.stringify({trajectory_format:'mini-swe-agent-1.1',info:{model_stats:{api_calls:4}},messages:[{extra:{response:{usage:{prompt_tokens:11,completion_tokens:13}}}}]}));"
         } else {
             ""
         };
@@ -1438,6 +1589,12 @@ fn full_entry_child(case: &str) {
             String::new()
         };
         std::fs::write(&agent, format!("#!{}\nrequire('node:fs').appendFileSync({counter_js},'called\\n');fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw new Error('fixture request failed');await r.text();{capture_js}console.log(JSON.stringify({response}));process.exitCode={exit};}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
+        if artifact_case {
+            let trajectory = serde_json::json!({"trajectory_format":"mini-swe-agent-1.1", "info":{"model_stats":{"api_calls":4}},
+                "messages":[{"role":"assistant","content":"src/cli.py src/registry.py lookup",
+                "extra":{"response":{"usage":{"prompt_tokens":13,"completion_tokens":21}}}}]});
+            std::fs::write(&agent, format!("#!{}\nconst fs=require('node:fs');fs.appendFileSync({counter_js},'called\\n');const out=process.argv[process.argv.indexOf('--output')+1];fs.writeFileSync(out,JSON.stringify({trajectory}));fetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw Error('fixture replay');await r.text();}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
+        }
     }
     if case == "provider-early-failed-finish" {
         std::fs::write(root.join("workspace"), "blocking fixture file").unwrap();
@@ -1446,13 +1603,16 @@ fn full_entry_child(case: &str) {
     if case.starts_with("provider-repeat-") {
         config.concurrency = 2;
     }
+    if artifact_case && case.ends_with("disabled") {
+        config.measurements = None;
+    }
     let config_path = root.join("benchmark.toml");
     std::fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
     if case.starts_with("provider-repeat-") {
         repeated_provider_finish_child(case, &root, &config_path, config, &cassette);
         return;
     }
-    let blocked_log = case.starts_with("blocked-log");
+    let blocked_log = artifact_case || case.starts_with("blocked-log");
     if blocked_log {
         std::fs::create_dir(root.join("run.jsonl")).unwrap();
     }
@@ -1472,7 +1632,9 @@ fn full_entry_child(case: &str) {
     let _capture_scope = case
         .contains("read-failure")
         .then(super::capture::test_support::Scope::read_failure);
-    let _scope = if disposition_case || capture_case {
+    let _scope = if artifact_case {
+        entry_test_support::Scope::artifact(&root, calls.clone(), !case.ends_with("disabled"))
+    } else if disposition_case || capture_case {
         entry_test_support::Scope::disposition(&root, calls.clone(), case)
     } else if provider_case {
         entry_test_support::Scope::provider(
@@ -1550,6 +1712,58 @@ fn full_entry_child(case: &str) {
         &mut output,
         &Mutex::new(BTreeSet::new()),
     );
+    if artifact_case {
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("run log publication failed after task evaluation"),
+            "{error}"
+        );
+        assert!(error.contains("retained frozen agent evidence"), "{error}");
+        if !case.ends_with("disabled") {
+            assert!(error.contains("measurement finalization failed"), "{error}");
+            assert!(
+                error.find("run log publication failed").unwrap()
+                    < error.find("measurement finalization failed").unwrap()
+            );
+        }
+        let summary: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+        assert_eq!(summary["workload_success"], true);
+        assert_eq!(summary["token_usage"]["total_tokens"], 34);
+        assert_eq!(summary["steps"], 4);
+        assert_eq!(summary["benchmark_outcome"]["cleanup_confirmed"], true);
+        assert_eq!(
+            calls.borrow().as_slice(),
+            ["evaluate", "finish", "provider-finish"]
+        );
+        assert_eq!(std::fs::read_to_string(counter).unwrap(), "called\n");
+        assert_eq!(observer.completed.load(Ordering::SeqCst), 0);
+        assert!(!root.join(".asb-completions").exists());
+        let runs = replica::runtime_path(&root.join("workspace")).join("runs");
+        let attempts: Vec<_> = std::fs::read_dir(runs)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(attempts.len(), 1);
+        let frozen = attempts[0].join("mini-swe/frozen-trajectory.json");
+        let raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&frozen).unwrap()).unwrap();
+        assert_eq!(raw["info"]["model_stats"]["api_calls"], 4);
+        assert_eq!(
+            raw["messages"][0]["extra"]["response"]["usage"]["prompt_tokens"],
+            13
+        );
+        assert_eq!(
+            raw["messages"][0]["content"],
+            "src/cli.py src/registry.py lookup"
+        );
+        assert!(!attempts[0].join("mini-swe/trajectory.json").exists());
+        assert_eq!(
+            output.bytes.iter().filter(|byte| **byte == b'\n').count(),
+            1,
+            "one summary, never append a corrected duplicate"
+        );
+        return;
+    }
     if publication_case {
         publication::check(
             case,

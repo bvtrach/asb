@@ -8,6 +8,7 @@ use disposition::RunStatus;
 use disposition::{FailureKind, RunDisposition, RunFacts, RunFailure};
 mod native;
 mod phases;
+pub(crate) mod recording;
 mod repeated;
 use phases::{
     AdmittedAttempt, AttemptIssues, ExecutionEvidence, FinalizedAttempt, MeasuredOutput,
@@ -61,6 +62,8 @@ fn emit_warning(
 #[derive(Serialize)]
 struct RunResult<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
+    recording: Option<recording::Evidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     execution: Option<repeated::ExecutionIdentity>,
     planning: crate::planning::ResolvedPlan,
     effective_budgets: crate::planning::EffectiveBudgets,
@@ -104,6 +107,9 @@ struct RunResult<'a> {
 /// Execution choices shared by single runs, replicas, and sweeps.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RunOptions<'a> {
+    pub track: Option<crate::cassette::Selector>,
+    pub replay_seed: Option<u64>,
+    pub recording: Option<&'a recording::Recorder>,
     pub repeat: Option<u64>,
     pub batch: Option<&'a repeated::BatchIdentity>,
     pub verify_initial_material: bool,
@@ -141,7 +147,23 @@ pub(crate) fn run_with_diagnostics(
     let text = read_config(config_path)?;
     let config: BenchmarkConfig = toml::from_str(&text)
         .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
-    if let Some(repeat) = options.repeat {
+    if (options.track.is_some() || options.replay_seed.is_some())
+        && options.mode != Some(tape::Mode::Replay)
+    {
+        return Err(Error::Input("--track and --seed require --replay".into()));
+    }
+    let bundled_replay = if options.mode == Some(tape::Mode::Replay) {
+        let source = replay_cassette(config_path, &config, options.cassette)?;
+        crate::cassette::Source::is_bundle(&source)
+            .map_err(|error| Error::Input(error.to_string()))?
+    } else {
+        false
+    };
+    if let Some(repeat) = options.repeat.or((bundled_replay
+        || options.track.is_some()
+        || options.replay_seed.is_some())
+    .then_some(1))
+    {
         return repeated::run(config_path, config, repeat, options, output, warnings);
     }
     run_loaded(config_path, config, options, output, warnings)
@@ -380,20 +402,7 @@ fn parallel_path(value: &str, index: usize) -> String {
 }
 
 fn append_path_suffix(path: &Path, index: usize) -> PathBuf {
-    let stem = path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("benchmark");
-    let extension = path.extension().and_then(|value| value.to_str());
-    let name = match extension {
-        Some(extension) => format!("{stem}-concurrency-{index}.{extension}"),
-        None => format!("{stem}-concurrency-{index}"),
-    };
-    if let Some(parent) = path.parent() {
-        parent.join(name)
-    } else {
-        PathBuf::from(name)
-    }
+    crate::benchmark_paths::replica_path(path, index)
 }
 
 fn run_mode(
@@ -688,6 +697,16 @@ fn run_mode(
                         workload_session.invocation().input.instructions.as_bytes(),
                     ),
                     material_sha256,
+                    protocol_sha256: Some(crate::cassette::digest(
+                        &serde_json::to_vec(&serde_json::json!({
+                            "contract":"asb-bundled-replay-v1",
+                            "agent_input":agents::REPLAY_INPUT_CONTRACT,
+                            "tape_matching":tape::REPLAY_MATCHING_CONTRACT,
+                            "material_scope":workloads::session::REPLAY_MATERIAL_CONTRACT,
+                            "module":module,"metric_policy":metric_policy
+                        }))
+                        .map_err(|error| Error::Run(error.to_string()))?,
+                    )),
                 })
             })();
             let ready = identity.and_then(|identity| arrival.ready(identity));
@@ -794,7 +813,7 @@ fn run_mode(
             output,
         );
         let mut issues = AttemptIssues::default();
-        let (child, run_dir, guest, execution_elapsed_ms, runtime_output) =
+        let (child, run_dir, guest, execution_elapsed_ms, runtime_output, artifact_owner) =
             if let Some(result) = isolated {
                 let result = result.map_err(Error::Run)?;
                 issues.collector_errors = result.collector_errors;
@@ -806,6 +825,7 @@ fn run_mode(
                     result
                         .elapsed_ms
                         .unwrap_or_else(|| started.elapsed().as_millis()),
+                    None,
                     None,
                 )
             } else {
@@ -834,13 +854,15 @@ fn run_mode(
                     evidence.guest,
                     evidence.elapsed_ms,
                     evidence.runtime_output,
+                    evidence.artifact_owner,
                 )
             };
         let capture_complete = issues.capture_error.is_none();
-        let settled = prepared
+        let mut settled = prepared
             .executed(
                 ExecutionEvidence {
                     capture_complete,
+                    artifact_owner,
                     output: child,
                     run_dir,
                     guest,
@@ -850,7 +872,38 @@ fn run_mode(
                 issues,
             )
             .settle(tape_cassette.as_ref());
-        let agent_outcome = settled.evidence.agent_outcome(&config.agent, &workspace);
+        let mut artifact_owner = settled.evidence.artifact_owner.take();
+        let frozen = artifact_owner
+            .as_mut()
+            .map(|owner| owner.freeze())
+            .unwrap_or_default();
+        if frozen.error {
+            settled.issues.run_error(
+                frozen
+                    .diagnostic()
+                    .unwrap_or_else(|| "agent artifact snapshot unavailable".into()),
+            );
+        }
+        let adapter_artifacts = if settled.evidence.guest.is_none() {
+            agents::find(&config.agent)
+                .map(|adapter| {
+                    adapter.collect(&agents::CollectionContext {
+                        frozen: &frozen,
+                        run_dir: &settled.evidence.run_dir,
+                        interface: connection.as_ref().map(|connection| connection.interface),
+                        anthropic_input_includes_cache:
+                            crate::providers::anthropic_input_includes_cache(&config.provider),
+                    })
+                })
+                .unwrap_or_default()
+        } else {
+            Default::default()
+        };
+        let agent_outcome = settled.evidence.agent_outcome(
+            &config.agent,
+            &workspace,
+            adapter_artifacts.final_response.as_deref(),
+        );
         let process_success = agent_outcome.failure.is_none();
         let agent_failure = agent_outcome.failure;
         let final_response = agent_outcome.final_response;
@@ -861,9 +914,10 @@ fn run_mode(
             measurements: measurement_session,
             evidence:
                 ExecutionEvidence {
+                    artifact_owner: _,
                     capture_complete,
                     output: child,
-                    run_dir,
+                    run_dir: _,
                     guest,
                     elapsed_ms,
                     runtime_output,
@@ -873,8 +927,8 @@ fn run_mode(
             outcome,
             evaluator_evidence,
             cleanup_confirmed: workload_cleanup_confirmed,
+            mut issues,
             resource_disposition: workload_resource_disposition,
-            issues,
         } = settled
             .evaluate_with_policy(
                 final_response.as_deref().unwrap_or_default(),
@@ -901,6 +955,20 @@ fn run_mode(
         let provider_cleanup_error = providers::finish_session(&mut bridge)
             .err()
             .map(|error| error.to_string());
+        let mut artifact_evidence = Vec::new();
+        if let Some(owner) = artifact_owner {
+            let report = owner.handoff_and_settle();
+            artifact_evidence = report.evidence;
+            if let Some(error) = report.error {
+                issues.run_error(error);
+            }
+        }
+        if let Some(error) = guest
+            .as_ref()
+            .and_then(|metadata| metadata.artifact_error.as_ref())
+        {
+            issues.run_error(error.clone());
+        }
         let workload_success = outcome.success();
         let grading_failure = RunFailure::evaluation(&outcome.evaluation);
         let evaluation = outcome.evaluation;
@@ -930,20 +998,6 @@ fn run_mode(
                     kind: failure.kind.as_str(),
                     reason: failure.reason.clone(),
                 });
-        let adapter_artifacts = guest
-            .is_none()
-            .then(|| agents::find(&config.agent))
-            .flatten()
-            .map(|adapter| {
-                adapter.collect(&agents::CollectionContext {
-                    workspace: &workspace,
-                    run_dir: &run_dir,
-                    interface: connection.as_ref().map(|connection| connection.interface),
-                    anthropic_input_includes_cache:
-                        crate::providers::anthropic_input_includes_cache(&config.provider),
-                })
-            })
-            .unwrap_or_default();
         let token_usage = measurements::token_usage_from_sources(
             &config.provider,
             &config.agent,
@@ -968,9 +1022,6 @@ fn run_mode(
             token_usage,
             guest.as_ref().map(|metadata| metadata.token_usage.clone()),
         );
-        for path in adapter_artifacts.cleanup_paths {
-            let _ = std::fs::remove_file(path);
-        }
         let steps = if let Some(metadata) = guest.as_ref() {
             metadata.steps
         } else {
@@ -1018,7 +1069,8 @@ fn run_mode(
             elapsed_ms,
             success,
         });
-        let result = RunResult {
+        let mut result = RunResult {
+            recording: None,
             execution: options.batch.map(|batch| batch.execution(options.replica)),
             planning: policy,
             effective_budgets,
@@ -1079,9 +1131,26 @@ fn run_mode(
             stdout: bounded(&child.stdout),
             stderr,
         };
+        // A recording failure changes command completion, never the actual
+        // process or official workload grade. Commit before sealing outputs.
+        let recording_error = options.recording.and_then(|recorder| {
+            let batch = options.batch.expect("campaign-owned recording");
+            match recorder.commit(batch.number(), options.replica, &result, &proxy_evidence) {
+                Ok(evidence) => {
+                    result.recording = Some(evidence);
+                    None
+                }
+                Err(error) => Some(error),
+            }
+        });
+        if let Some(error) = &recording_error {
+            result.disposition.recording_failed(error.to_string());
+        }
         let log_publication =
-            phases::LogPublication::publish(config_path, &config.log_file, &result);
-        let measurement_completion = phases::finish_measurements(measurement_session, &result);
+            phases::LogPublication::publish(config_path, &config.log_file, &result)
+                .with_artifact_evidence(&artifact_evidence);
+        let measurement_completion = phases::finish_measurements(measurement_session, &result)
+            .with_artifact_evidence(&artifact_evidence);
         // This private record preserves evaluator outcomes, including unresolved
         // tasks. Its absence never changes a benchmark grade or blocks execution;
         // a future continuation must also validate its input and evidence seals.
@@ -1107,6 +1176,7 @@ fn run_mode(
         if log_publication.confirmed()
             && measurement_completion.confirmed()
             && provider_cleanup_error.is_none()
+            && recording_error.is_none()
             && capture_complete
         {
             match completion::persist(
@@ -1172,6 +1242,13 @@ fn run_mode(
             None => outcome,
         };
         let outcome = diagnostics::preserve_primary(outcome, presentation);
+        let outcome = match recording_error {
+            Some(error) => Err(Error::Io(match outcome {
+                Ok(()) => error.to_string(),
+                Err(primary) => format!("{primary}; {error}"),
+            })),
+            None => outcome,
+        };
         if let Some(cleanup) = provider_cleanup_error {
             match outcome {
                 Ok(()) => Err(Error::Run(cleanup)),
@@ -1552,6 +1629,40 @@ fn default_cassette(config_path: &Path, config: &BenchmarkConfig) -> std::path::
         ))
 }
 
+/// Explicit paths win. Preserve historical JSONL/base-or-replica routing when
+/// present; otherwise discover the new default ZIP recording. Presence includes
+/// invalid files/links, which must fail normally rather than silently fall back.
+fn replay_cassette(
+    config_path: &Path,
+    config: &BenchmarkConfig,
+    requested: Option<&str>,
+) -> Result<PathBuf, Error> {
+    if let Some(path) = requested {
+        return Ok(PathBuf::from(path));
+    }
+    let legacy = default_cassette(config_path, config);
+    for path in std::iter::once(legacy.clone()).chain(
+        (1..=crate::benchmark::MAX_CONCURRENCY)
+            .map(|replica| crate::benchmark_paths::replica_path(&legacy, replica)),
+    ) {
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => return Ok(legacy),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(io_error(error)),
+        }
+    }
+    let bundle = default_bundle_cassette(config_path, config);
+    match std::fs::symlink_metadata(&bundle) {
+        Ok(_) => Ok(bundle),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(legacy),
+        Err(error) => Err(io_error(error)),
+    }
+}
+
+fn default_bundle_cassette(config_path: &Path, config: &BenchmarkConfig) -> PathBuf {
+    default_cassette(config_path, config).with_extension("asb.zip")
+}
+
 fn write_log(
     config_path: &Path,
     configured_path: &str,
@@ -1582,7 +1693,7 @@ pub(crate) fn resolve_log_path(config_path: &Path, configured_path: &str) -> Pat
 }
 
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
-    let summary = serde_json::json!({
+    let mut summary = serde_json::json!({
         "execution": result.execution,
         "planning": result.planning,
         "effective_budgets": result.effective_budgets,
@@ -1614,6 +1725,10 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
         "steps": result.steps,
         "token_usage": result.token_usage,
     });
+    if let Some(recording) = &result.recording {
+        summary["recording"] =
+            serde_json::to_value(recording).map_err(|error| Error::Io(error.to_string()))?;
+    }
     // Sweep output is JSONL: keep each run summary on exactly one line so
     // callers can stream and parse it without having to recover pretty JSON
     // objects from a mixed human transcript.
@@ -2507,6 +2622,7 @@ mod tests {
                 true,
                 &evidence,
                 &crate::proxy::Evidence {
+                    captures: Vec::new(),
                     output_files: Vec::new(),
                     cleanup_confirmed: true,
                 },
@@ -2579,6 +2695,7 @@ mod tests {
                     true,
                     &[],
                     &crate::proxy::Evidence {
+                        captures: Vec::new(),
                         output_files: Vec::new(),
                         cleanup_confirmed: true
                     },
@@ -2593,6 +2710,7 @@ mod tests {
 
     fn result<'a>() -> RunResult<'a> {
         RunResult {
+            recording: None,
             execution: None,
             planning: crate::planning::resolve(
                 &toml::from_str(
@@ -2748,10 +2866,31 @@ mod tests {
             measurements: None,
         };
         let mini = command_for(&base, Some("http://127.0.0.1:3456/v1"), "prompt").unwrap();
-        assert!(
-            mini.args
-                .windows(2)
-                .any(|pair| pair[0] == "--output" && pair[1] == ".asb-mini-swe.traj.json")
+        assert!(!mini.args.iter().any(|argument| argument == "--output"));
+        let mut prepared = std::process::Command::new(&mini.program);
+        prepared.args(&mini.args);
+        let connection = crate::endpoint::Connection {
+            interface: crate::endpoint::Interface::OpenAiChat,
+            authentication: crate::endpoint::Authentication::Bearer,
+            base_url: "http://127.0.0.1:1/v1".into(),
+            credential: None,
+        };
+        let run = std::path::Path::new("fixture-private-run");
+        crate::agents::find("mini-swe")
+            .unwrap()
+            .prepare(&mut crate::agents::PreparationContext {
+                command: &mut prepared,
+                model: &base.model,
+                connection: &connection,
+                runtime_dir: std::path::Path::new("fixture-private"),
+                run_dir: run,
+            })
+            .unwrap();
+        let args: Vec<_> = prepared.get_args().collect();
+        assert_eq!(args[args.len() - 2], "--output");
+        assert_eq!(
+            std::path::Path::new(args[args.len() - 1]),
+            run.join("mini-swe/trajectory.json")
         );
 
         let mut openjiuwen = base.clone();
