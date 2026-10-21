@@ -17,10 +17,31 @@ pub(crate) struct ProcessContext<'a> {
     pub status: &'a std::process::ExitStatus,
     pub stdout: &'a str,
     pub stderr: &'a str,
-    pub stdout_path: &'a Path,
-    /// Complete stopped-collector output, available only during processing.
-    /// The strings above remain bounded diagnostics, not measurement inputs.
-    pub stderr_path: &'a Path,
+    /// Opened admitted sources, not mutable filesystem names. Only positional
+    /// readers are exposed to processing; prefixes above are diagnostics.
+    sources: [&'a crate::evidence::Capture; 2],
+}
+impl<'a> ProcessContext<'a> {
+    pub fn new(
+        name: &'a str,
+        status: &'a std::process::ExitStatus,
+        diagnostics: [&'a str; 2],
+        sources: [&'a crate::evidence::Capture; 2],
+    ) -> Self {
+        Self {
+            name,
+            status,
+            stdout: diagnostics[0],
+            stderr: diagnostics[1],
+            sources,
+        }
+    }
+    pub fn stdout_reader(&self) -> Result<impl std::io::Read + '_, String> {
+        self.sources[0].reader()
+    }
+    pub fn stderr_reader(&self) -> Result<impl std::io::Read + '_, String> {
+        self.sources[1].reader()
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -47,6 +68,7 @@ impl ProcessData {
 }
 
 pub(crate) struct PreflightContext<'a> {
+    pub project_root: Option<&'a Path>,
     pub measurement_dir: &'a Path,
     pub selected: &'a [String],
     pub tool_dir: Option<&'a Path>,

@@ -177,6 +177,7 @@ class ExecutionTests(unittest.TestCase):
             self.assertEqual(result["metadata"]["workload_owner"], self.owner())
             self.assertEqual(len(ended), 1)
             self.assertFalse(api.stream.closed)
+            self.assertIsInstance(workspace.held_executions[0][0],RUNTIME.DockerExecTransport)
             self.assertTrue(workspace.held_executions[0][1].is_alive())
             self.assertTrue(workspace.active.acquire(blocking=False))
             workspace.active.release()
@@ -233,6 +234,29 @@ class ExecutionTests(unittest.TestCase):
                 self.assertEqual(container.events.count("remove"), 1)
                 self.assertTrue(api.stream.closed)
                 self.assertEqual(workspace.held_executions, [])
+
+    def test_workload_parent_release_follows_validated_metadata_and_preserves_transport_ownership(self):
+        for fault in [None,"metadata","release"]:
+            with self.subTest(fault=fault):
+                workspace,container,api = self.retained_workspace({"tree_quiesced":True} if fault == "metadata" else None)
+                released = []
+                class Transport(RUNTIME.DockerExecTransport):
+                    def release_workload_parent(self):
+                        released.append(True)
+                        if fault == "release":raise RUNTIME.ExecutionError("parent return unconfirmed")
+                with workspace:
+                    if fault is None:
+                        result = workspace.execute(["asb"],gate="application",workload_owner=self.owner(),transport_factory=Transport)
+                        self.assertTrue(result["workload_processes_retained"])
+                        self.assertFalse(result["metadata"]["tree_quiesced"])
+                        self.assertFalse(api.stream.closed)
+                        self.assertEqual(len(workspace.held_executions),1)
+                    else:
+                        with self.assertRaises(RUNTIME.ExecutionError):
+                            workspace.execute(["asb"],gate="application",workload_owner=self.owner(),transport_factory=Transport)
+                        self.assertIn("kill",container.events)
+                        self.assertEqual(workspace.held_executions,[])
+                self.assertEqual(released,[] if fault == "metadata" else [True])
 
     def test_invalid_retention_never_launches_an_execution(self):
         for owner in [{}, dict(self.owner(), guest_namespace=100), dict(self.owner(), token="bad")]:
@@ -313,6 +337,200 @@ class ExecutionTests(unittest.TestCase):
         with workspace:
             self.assertEqual(workspace.execute(["/opt/asb/asb", "__asb-agent"], gate="application")["exit_code"], 0)
             self.assertEqual(api.calls[0]["cmd"], ["/opt/asb/asb", "__asb-agent"])
+
+    def alternate_transport(self, api, targets=None, status=7):
+        transports = []
+        class Transport(RUNTIME.DockerExecTransport):
+            def __init__(self,*args):
+                super().__init__(*args)
+                self.close_calls = 0
+                transports.append(self)
+            def target(self,namespace_pid):
+                target = {"container_id":self.container.id,"exec_id":self.exec_id,
+                    "namespace_pid":namespace_pid,"daemon_pid":222,"pid_scope":"docker-daemon-host"}
+                target.update(targets or {})
+                return target
+            def exit_status(self):
+                return status
+            def close(self):
+                self.close_calls += 1
+                super().close()
+        def forbidden_inspection(*args):
+            raise AssertionError("generic execution must not identify the bridge as the agent")
+        api.exec_inspect = forbidden_inspection
+        return Transport,transports
+
+    def test_alternate_transport_supplies_actual_target_and_child_status_not_bridge(self):
+        workspace, container, api, _ = self.workspace()
+        factory,transports = self.alternate_transport(api)
+        with workspace:
+            observed = []
+            result = workspace.execute(["agent"],transport_factory=factory,before_resume=observed.append)
+            self.assertEqual(observed[0]["daemon_pid"],222)
+            self.assertNotEqual(observed[0]["daemon_pid"],api.pid)
+            self.assertEqual(result["exit_code"],7)
+            self.assertEqual((result["stdout"],result["stderr"]),(b"stdout",b"stderr"))
+            self.assertEqual(transports[0].close_calls,1)
+            self.assertTrue(api.stream.closed)
+            self.assertTrue(api.stream._response.closed)
+
+    def test_namespace_only_transport_never_invents_a_host_pid_or_resumes_refused_collectors(self):
+        for measured in [False,True]:
+            workspace, container, api, _ = self.workspace()
+            factory,transports = self.alternate_transport(api,
+                {"daemon_pid":None,"pid_scope":"container-namespace"})
+            def attach(target):
+                self.assertIsNone(target["daemon_pid"])
+                if measured:raise RUNTIME.ExecutionError("host collectors need a verified local process")
+            with workspace:
+                if measured:
+                    with self.assertRaisesRegex(RUNTIME.ExecutionError,"verified local process"):
+                        workspace.execute(["agent"],transport_factory=factory,before_resume=attach)
+                    self.assertFalse(container.resumed)
+                    self.assertIn("kill",container.events)
+                else:
+                    self.assertEqual(workspace.execute(["agent"],transport_factory=factory,
+                        before_resume=attach)["exit_code"],7)
+                    self.assertTrue(container.resumed)
+                self.assertEqual(transports[0].close_calls,1)
+
+    def test_transport_cannot_change_gate_container_or_launch_identity(self):
+        for changed in [{"namespace_pid":43},{"container_id":"another-container"},
+                {"exec_id":"another-exec"},{"pid_scope":"unknown"},{"daemon_pid":None},
+                {"pid_scope":"container-namespace"}]:
+            with self.subTest(changed=changed):
+                workspace, container, api, _ = self.workspace()
+                factory,transports = self.alternate_transport(api,changed)
+                with workspace,self.assertRaisesRegex(RUNTIME.ExecutionError,"contradictory target"):
+                    workspace.execute(["agent"],transport_factory=factory)
+                self.assertFalse(container.resumed)
+                self.assertIn("kill",container.events)
+                self.assertEqual(transports[0].close_calls,1)
+
+    def test_transport_start_is_inside_shared_preparation_deadline_and_cancellation(self):
+        for cancel in [False,True]:
+            workspace,container,api,_ = self.workspace()
+            cancelled = threading.Event()
+            def start(*args):
+                if cancel:cancelled.set()
+                self.assertTrue(container.killed.wait(2),"shared watchdog must cover transport construction")
+                raise RUNTIME.ExecutionError("transport start interrupted")
+            with workspace,self.assertRaisesRegex(RUNTIME.ExecutionError,"start interrupted"):
+                workspace.execute(["agent"],transport_factory=start,cancelled=cancelled,
+                    timeout=60,preparation_timeout=.02)
+            self.assertFalse(container.resumed)
+            self.assertEqual(container.events[-4:],["kill","wait","start","remove"])
+
+    def test_preparation_failure_notifies_peers_before_namespace_kill(self):
+        for fault in ["transport","attach"]:
+            workspace,container,api,_ = self.workspace()
+            order = []
+            original_kill = container.kill
+            def kill():
+                order.append("kill")
+                original_kill()
+            container.kill = kill
+            def fail(*_args):
+                raise RUNTIME.ExecutionError("preparation failed")
+            with workspace,self.assertRaisesRegex(RUNTIME.ExecutionError,"preparation failed"):
+                workspace.execute(["agent"],
+                    transport_factory=fail if fault == "transport" else None,
+                    before_resume=fail if fault == "attach" else None,
+                    on_preparation_failure=lambda:order.append("notify"))
+            self.assertEqual(order[0],"notify")
+            self.assertFalse(container.resumed)
+
+    def test_alternate_transport_stream_uses_shared_execution_deadline_and_cancel(self):
+        for cancel in [False,True]:
+            workspace,container,api,_ = self.workspace()
+            factory,transports = self.alternate_transport(api)
+            api.hang = True
+            cancelled = threading.Event()
+            def attach(_):
+                if cancel:cancelled.set()
+            with workspace:
+                if cancel:
+                    with self.assertRaises(RUNTIME.ExecutionError):
+                        workspace.execute(["agent"],transport_factory=factory,cancelled=cancelled,
+                            before_resume=attach)
+                    self.assertFalse(container.resumed)
+                else:
+                    result = workspace.execute(["agent"],transport_factory=factory,timeout=.02,
+                        preparation_timeout=1)
+                    self.assertTrue(result["timed_out"])
+                self.assertIn("kill",container.events)
+                self.assertEqual(transports[0].close_calls,1)
+
+    def test_transport_exit_status_must_describe_a_completed_child(self):
+        for status in [None,True,-1,256,"0"]:
+            with self.subTest(status=status):
+                workspace, container, api, _ = self.workspace()
+                factory,transports = self.alternate_transport(api,status=status)
+                with workspace,self.assertRaisesRegex(RUNTIME.ExecutionError,"valid child exit status"):
+                    workspace.execute(["agent"],transport_factory=factory)
+                self.assertIn("kill",container.events)
+                self.assertEqual(transports[0].close_calls,1)
+
+    def test_transport_close_failure_quiesces_namespace_instead_of_claiming_completion(self):
+        workspace,container,api,_ = self.workspace()
+        class FailedClose(RUNTIME.DockerExecTransport):
+            def close(self):
+                super().close()
+                raise RUNTIME.ExecutionError("launcher worker did not settle")
+        with workspace,self.assertRaisesRegex(RUNTIME.ExecutionError,"launcher worker"):
+            workspace.execute(["agent"],transport_factory=FailedClose)
+        self.assertIn("kill",container.events)
+
+    def test_default_transport_close_is_idempotent_but_never_forgets_failure(self):
+        class Cancelled(BaseException):pass
+        for error_type in [None,ValueError,Cancelled]:
+            workspace,container,api,_ = self.workspace()
+            transport = RUNTIME.DockerExecTransport(api,container,["agent"],{},"/task")
+            closes = []
+            def close():
+                closes.append("close")
+                if error_type:raise error_type("fixture close failure")
+            api.stream.close = close
+            if error_type:
+                with self.assertRaisesRegex(error_type,"fixture close failure"):transport.close()
+                with self.assertRaisesRegex(RUNTIME.ExecutionError,"remains unconfirmed"):transport.close()
+            else:
+                transport.close();transport.close()
+            self.assertEqual(closes,["close"])
+            self.assertTrue(api.stream._response.closed)
+
+    def test_default_transport_needs_explicit_boolean_running_evidence(self):
+        for final in [False,True]:
+            for malformed in [None,0,1,"false","true", "missing"]:
+                with self.subTest(final=final,malformed=malformed):
+                    workspace,container,api,_ = self.workspace()
+                    inspect = api.exec_inspect
+                    def changed(exec_id):
+                        value = inspect(exec_id)
+                        if api.completed == final:
+                            value.pop("Running")
+                            if malformed != "missing":value["Running"] = malformed
+                        return value
+                    api.exec_inspect = changed
+                    with workspace,self.assertRaises(RUNTIME.ExecutionError):
+                        workspace.execute(["agent"])
+                    if not final:self.assertFalse(container.resumed)
+                    self.assertIn("kill",container.events)
+
+    def test_retained_transport_close_failure_is_not_lost_in_background_drain(self):
+        class Cancelled(BaseException):pass
+        for error_type in [RUNTIME.ExecutionError,Cancelled]:
+            workspace,container,api = self.retained_workspace()
+            class FailedClose(RUNTIME.DockerExecTransport):
+                def close(self):
+                    super().close()
+                    raise error_type("retained launcher did not settle")
+            workspace.__enter__()
+            workspace.execute(["agent"],gate="application",transport_factory=FailedClose,
+                workload_owner=self.owner())
+            with self.assertRaisesRegex(RUNTIME.ExecutionError,"transport closure remains unconfirmed"):
+                workspace.close()
+            self.assertEqual(workspace.cleanup_status,"error")
 
     def test_nonzero_exit_preserves_workspace_and_output_is_bounded(self):
         workspace, container, api, _ = self.workspace()

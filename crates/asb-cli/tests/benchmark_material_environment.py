@@ -1,0 +1,318 @@
+"""Whole-environment ordering, exact runtime semantics and global storage tests."""
+import copy
+import json
+from pathlib import Path
+import sys
+import tempfile
+import threading
+import time
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+
+sys.dont_write_bytecode = True
+sys.path.insert(0,str(Path(__file__).parents[1]/"assets/benchmarks"))
+from asb_material import MaterialError
+from asb_material_exec import ObservationBudget
+from asb_resources import ResourceJournal
+import asb_material_runtime as runtime
+import asb_material_environment as subject
+from benchmark_resources import client,Container
+
+
+def files(hostname="fixture",name="fixture-container"):
+    return [{"name":key,"text":text,"mode":0o644,"uid":0,"gid":0,
+        "inode_group":key,"attributes_sha256":"a"*64} for key,text in [
+        ("hosts",f"127.0.0.1 localhost\n127.0.1.1 {hostname} {name}\n"),
+        ("hostname",hostname+"\n"),("resolv.conf","nameserver 127.0.0.53\n")]]
+
+
+class RuntimeTests(unittest.TestCase):
+    def test_only_exact_generated_tokens_are_normalized_and_comments_literals_remain(self):
+        def observe(identity,name,explicit=None,comment=""):
+            attrs = {"Id":identity,"Config":{"Hostname":identity[:12]},"HostConfig":{}}
+            raw = files(identity[:12],name)
+            raw[0]["text"] += comment
+            return runtime.normalize(raw,"main",attrs,{"hostname":explicit},{name:"main"})
+        a,b = "1"*64,"2"*64
+        self.assertEqual(observe(a,"owned-first"),observe(b,"owned-second"))
+        self.assertNotEqual(observe(a,"owned-first",a[:12]),observe(b,"owned-second",b[:12]))
+        self.assertNotEqual(observe(a,"owned-first",comment="# "+a[:12]+"\n"),
+            observe(b,"owned-second",comment="# "+b[:12]+"\n"))
+        literal = files(a[:12],"literal-generated_hostname:main")
+        attrs = {"Id":a,"Config":{"Hostname":a[:12]},"HostConfig":{}}
+        self.assertNotEqual(runtime.normalize(literal,"main",attrs,{"hostname":None},{}),observe(a,"owned-first"))
+        original = files(a[:12],"owned-first")
+        for key in ["text","mode","attributes_sha256"]:
+            changed = copy.deepcopy(original)
+            changed[2][key] = {"text":"nameserver 192.0.2.1\n","mode":0o600,"attributes_sha256":"b"*64}[key]
+            self.assertNotEqual(runtime.normalize(original,"main",attrs,{"hostname":None},{}),
+                runtime.normalize(changed,"main",attrs,{"hostname":None},{}))
+
+    def test_private_runtime_file_transport_debits_shared_budget_and_rejects_invalid_dtos(self):
+        raw = files()
+        usage = {"entries":3,"names":39,"bytes":sum(len(item["text"]) for item in raw),"attributes":0}
+        budget = ObservationBudget({key:value*2 for key,value in usage.items()})
+        with patch.object(runtime,"run",return_value=json.dumps({"files":raw,"usage":usage}).encode()) as run:
+            for _ in range(2):
+                self.assertEqual(runtime.read_files(["fixture"],budget,deadline=time.monotonic()+3,cancelled=None),raw)
+            self.assertEqual(run.call_args.kwargs["output_limit"],65536)
+            with self.assertRaisesRegex(MaterialError,"exhausted"):
+                runtime.read_files(["fixture"],budget,deadline=time.monotonic()+3,cancelled=None)
+        for changed in [{"files":raw[:2],"usage":usage},{"files":raw,"usage":{**usage,"names":38}},
+                        {"files":raw,"usage":{**usage,"attributes":65537}}]:
+            with patch.object(runtime,"run",return_value=json.dumps(changed).encode()):
+                with self.assertRaises(MaterialError):
+                    runtime.read_files(["fixture"],ObservationBudget(),deadline=time.monotonic()+3,cancelled=None)
+
+
+class EnvironmentTests(unittest.TestCase):
+    def fixture(self,letter="a",volumes=None,single=False,binds=False):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        owner = "asb-"+letter*32
+        api = client()
+        journal = ResourceJournal(api,root,owner)
+        self.addCleanup(journal.close)
+        config = {"services":{role:{"container_name":owner+"-"+role} for role in ["main","database"]}}
+        if single:
+            config["services"].pop("database")
+        if volumes:
+            config["volumes"] = {role:{"name":owner+"-"+role} for role in (["data"] if volumes == "shared" else ["left","right"])}
+        if binds:
+            for role,service in config["services"].items():
+                source = root/("source-"+role)
+                source.mkdir();(source/"input").write_text("equal material")
+                service["volumes"] = [{"type":"bind","source":str(source),"target":"/data"}]
+        journal.compose(config)
+        for index,(role,item) in enumerate(sorted(config["services"].items())):
+            resource = Container(item["container_name"],journal.labels)
+            resource.id = str(index+1 if letter == "a" else index+3)*64
+            resource.attrs.update({"Id":resource.id,"HostConfig":{"NetworkMode":"none","IpcMode":"private"},
+                "Mounts":[],"NetworkSettings":{"Networks":{"none":{}}}})
+            resource.attrs["Config"].update(Hostname=resource.id[:12],Domainname="",WorkingDir="/",Cmd=["sleep","infinity"])
+            resource.attrs["State"]["Pid"] = 1000+index
+            if volumes:
+                volume_role = "data" if volumes == "shared" else ["left","right"][index]
+                name = config["volumes"][volume_role]["name"]
+                api.volumes.values[name] = SimpleNamespace(name=name,attrs={"Labels":journal.labels,"Driver":"local","Scope":"local","Options":{}})
+                resource.attrs["Mounts"] = [{"Type":"volume","Name":name,"Source":"/private/"+name,
+                    "Destination":"/data","Driver":"local","RW":True,"Mode":"","Propagation":""}]
+            if binds:
+                resource.attrs["Mounts"] = [{"Type":"bind","Source":item["volumes"][0]["source"],
+                    "Destination":"/data","RW":True,"Mode":"","Propagation":"rprivate"}]
+            api.containers.values[resource.name] = resource
+        main = api.containers.values[owner+"-main"]
+        return SimpleNamespace(journal=journal,client=api,cancelled=threading.Event(),artifacts=root,
+            workspace=SimpleNamespace(container=main,workdir="/"))
+
+    def capture(self,task,mutate=None,host=None):
+        events = []
+        roles = {item["container"]:role for role,item in task.journal.material_services["services"].items()}
+        identities = {resource.id:roles[name] for name,resource in task.client.containers.values.items()}
+        budgets = []
+        def prepare(context,*args):
+            role = identities[context.workspace.container.id]
+            events.append(("prepare",role))
+            def sample(budget):
+                events.append(("sample",role)); budgets.append(budget)
+                usage = {"entries":1,"names":1,"bytes":0,"attributes":0}
+                budget.consume(usage,budget.allowance())
+                if mutate:
+                    mutate(task,role,events)
+                return {"files":{"sha256":getattr(task,"sample_digest","f"*64),"entries":1,"bytes":0}}
+            def views():
+                if ("sample",role) not in events:
+                    raise MaterialError("guest bind inode has not been validated")
+                from asb_material_binds import verify
+                binds = verify(task.journal,context.workspace.container)
+                topology = subject.plan(context.workspace.container.attrs,binds,{},subject.RUNTIME)
+                return [{"name":root["name"],"source":binds[root["path"]]["source"],
+                    "identity":binds[root["path"]]["chain"][-1],"exclusions":root["exclusions"]}
+                    for root in topology["roots"] if root["path"] in binds]
+            sample.bind_views = views
+            return sample
+        def read(command,budget,**kwargs):
+            identity = command[3]
+            role = identities[identity]
+            events.append(("runtime",role)); budgets.append(budget)
+            resource = next(item for item in task.client.containers.values.values() if item.id == identity)
+            result = files(resource.attrs["Config"]["Hostname"],resource.name)
+            if getattr(task,"runtime_suffix",None):
+                result[0]["text"] += task.runtime_suffix
+            budget.consume({"entries":3,"names":39,"bytes":sum(len(item["text"]) for item in result),"attributes":0},budget.allowance())
+            return result
+        def observe(command,roots,*,budget,**kwargs):
+            events.append(("host",len([event for event in events if event[0] == "host"])+1))
+            budgets.append(budget)
+            budget.consume({"entries":1,"names":1,"bytes":0,"attributes":0},budget.allowance())
+            if host:return host(command,roots,events)
+            return {"sha256":"e"*64,"entries":1,"bytes":0}
+        with patch.object(subject,"prepare",side_effect=prepare),patch.object(subject,"read_files",side_effect=read), \
+             patch.object(subject,"observe",side_effect=observe), \
+             patch("asb_docker.docker_command",return_value=["fixture-docker"]):
+            result = subject.capture(task,{"task":"fixture"},[],"/not-run",time.monotonic()+3)
+        self.assertEqual(len({id(budget) for budget in budgets}),1)
+        return result,events
+
+    def test_disjoint_service_binds_use_joint_host_graph_after_complete_guest_proof(self):
+        task = self.fixture(binds=True)
+        def host(command,roots,events):
+            self.assertEqual(command,["/not-run","__asb-material"])
+            self.assertGreaterEqual(len([event for event in events if event[0] == "sample"]),2)
+            self.assertEqual([root["name"] for root in roots],["bind-001","bind-002"])
+            self.assertTrue(all(root["path"].startswith(str(task.artifacts)+"/") for root in roots))
+            return {"sha256":"e"*64,"entries":1,"bytes":0}
+        first,events = self.capture(task,host=host)
+        self.assertEqual(len([event for event in events if event[0] == "host"]),4)
+        self.assertEqual(len([event for event in events if event[0] == "sample"]),6)
+        second,_ = self.capture(self.fixture("b",binds=True))
+        self.assertEqual(first,second,"physical source names/inodes do not enter public identity")
+
+    def test_primary_capture_and_bootstrap_share_task_custody_without_copying_sidecar_state(self):
+        task = self.fixture()
+        task.attempt = "asb-"+"a"*32
+        sentinel = object()
+        task._material_runtime = sentinel
+        self.capture(task)
+        contexts = task._material_service_contexts
+        self.assertIs(contexts["main"],task)
+        self.assertIs(task._material_runtime,sentinel)
+        self.assertIsNot(contexts["database"],task)
+        self.assertEqual(contexts["database"].attempt,task.attempt)
+        self.assertFalse(hasattr(contexts["database"],"_material_runtime"))
+        self.capture(task)
+        self.assertIs(task._material_service_contexts["main"],task)
+        contexts["main"] = SimpleNamespace(workspace=task.workspace)
+        with self.assertRaisesRegex(MaterialError,"service identity changed"):
+            self.capture(task)
+
+    def test_failed_or_changed_initial_guest_round_prevents_all_host_content_reads(self):
+        for failure in [True,False]:
+            task = self.fixture(binds=True)
+            def mutate(task,role,events):
+                if failure:raise MaterialError("guest inode mismatch")
+                if role == "main":task.workspace.container.attrs["Config"]["Cmd"] = ["changed"]
+            host = unittest.mock.Mock(side_effect=AssertionError("must not read host material"))
+            with self.assertRaises(MaterialError):self.capture(task,mutate,host=host)
+            host.assert_not_called()
+
+    def test_initial_guest_baseline_is_not_replaced_by_later_agreement(self):
+        task = self.fixture(binds=True)
+        def mutate(task,role,events):
+            if len([event for event in events if event[0] == "sample"]) > 2:
+                task.sample_digest = "a"*64
+        with self.assertRaisesRegex(MaterialError,"complete service round"):
+            self.capture(task,mutate)
+
+    def test_host_alias_mutation_and_source_replacement_refuse(self):
+        for replace in [False,True]:
+            task = self.fixture(binds=True)
+            def host(command,roots,events):
+                count = len([event for event in events if event[0] == "host"])
+                if replace and count == 1:
+                    source = Path(roots[0]["path"])
+                    source.rename(source.with_name("retained-source"));source.mkdir()
+                return {"sha256":("a" if count == 1 else "b")*64,"entries":1,"bytes":0}
+            with self.assertRaises(MaterialError):self.capture(task,host=host)
+
+    def test_initial_validation_and_host_reads_cannot_reset_aggregate_allowance(self):
+        task = self.fixture(binds=True)
+        host = unittest.mock.Mock(side_effect=AssertionError("exhausted budget must not read host"))
+        limits = {"entries":20,"names":1000,"bytes":1024**2,"attributes":1000}
+        budget = ObservationBudget(limits)
+        with patch.object(subject,"ObservationBudget",return_value=budget) as allocation:
+            with self.assertRaisesRegex(MaterialError,"exhausted"):
+                self.capture(task,host=host)
+        allocation.assert_called_once_with(observations=10)
+        host.assert_not_called()
+
+    def test_whole_rounds_follow_all_preparation_and_rebased_ids_names_are_canonical(self):
+        first,events = self.capture(self.fixture())
+        second,_ = self.capture(self.fixture("b"))
+        self.assertEqual(first,second)
+        self.assertEqual(events[:2],[("prepare","database"),("prepare","main")])
+        self.assertEqual([item for item in events if item[0] == "sample"],
+            [("sample","database"),("sample","main")]*2)
+
+    def test_cross_service_shared_storage_is_not_independent_equal_content(self):
+        shared,_ = self.capture(self.fixture(volumes="shared"))
+        independent,_ = self.capture(self.fixture("b",volumes="independent"))
+        self.assertNotEqual(shared,independent)
+
+    def test_daemon_mount_enumeration_order_is_not_runtime_mutation(self):
+        import copy
+        task = self.fixture(volumes="independent")
+        resources = list(task.client.containers.values.values())
+        for resource,other in zip(resources,reversed(resources)):
+            mount = copy.deepcopy(other.attrs["Mounts"][0])
+            mount["Destination"] = "/other"
+            resource.attrs["Mounts"].append(mount)
+        baseline,_ = self.capture(task)
+        def reorder(_task,role,_events):
+            resource = next(item for item in resources if item.name.endswith("-"+role))
+            resource.attrs["Mounts"].reverse()
+        observed,_ = self.capture(task,reorder)
+        self.assertEqual(baseline,observed)
+
+    def test_mount_source_and_access_mutations_are_not_enumeration_changes(self):
+        for key,value in [("Source","/changed-storage"),("RW",False)]:
+            with self.subTest(key=key):
+                task = self.fixture(volumes="shared")
+                def mutate(_task,role,_events):
+                    if role == "main":
+                        task.workspace.container.attrs["Mounts"][0][key] = value
+                with self.assertRaisesRegex(MaterialError,"complete service round"):
+                    self.capture(task,mutate)
+
+    def test_single_network_none_binds_runtime_files_and_configuration(self):
+        task = self.fixture(single=True)
+        baseline,events = self.capture(task)
+        self.assertEqual([event for event in events if event[0] == "runtime"],
+            [("runtime","main")]*4)
+        fresh,_ = self.capture(self.fixture("b",single=True))
+        self.assertEqual(baseline,fresh)
+        task.runtime_suffix = "\n# workload-visible runtime change\n"
+        changed,_ = self.capture(task)
+        self.assertNotEqual(baseline,changed)
+        task.runtime_suffix = None
+        for section,key,value in [("Config","Env",["WORKLOAD_SETTING=changed"]),
+                                  ("HostConfig","Memory",536870912)]:
+            with self.subTest(section=section,key=key):
+                mapping = task.workspace.container.attrs[section]
+                previous = mapping.get(key)
+                mapping[key] = value
+                changed,_ = self.capture(task)
+                self.assertNotEqual(baseline,changed)
+                if previous is None:
+                    mapping.pop(key)
+                else:
+                    mapping[key] = previous
+
+    def test_runtime_mutation_and_owner_replacement_cannot_be_hidden_by_normalization(self):
+        def mutate(task,role,events):
+            if role == "main":
+                task.workspace.container.attrs["Config"]["Cmd"] = ["changed"]
+        with self.assertRaisesRegex(MaterialError,"complete service round"):
+            self.capture(self.fixture(),mutate)
+        def replace(task,role,events):
+            if role == "main":
+                task.workspace.container.id = "e"*64
+                task.workspace.container.attrs["Id"] = "e"*64
+        with self.assertRaises(MaterialError):
+            self.capture(self.fixture("b"),replace)
+
+    def test_external_network_namespaces_and_devices_fail_before_staging(self):
+        for key,value in [("NetworkMode","bridge"),("PidMode","host"),("CgroupnsMode","host"),
+                          ("Privileged",True),("VolumesFrom",["external"]),("DeviceRequests",[{}])]:
+            task = self.fixture()
+            task.workspace.container.attrs["HostConfig"][key] = value
+            with patch.object(subject,"prepare") as prepare:
+                with self.assertRaises(MaterialError):
+                    subject.capture(task,{},[],"/not-run",time.monotonic()+3)
+                prepare.assert_not_called()
+
+
+if __name__ == "__main__":
+    unittest.main()

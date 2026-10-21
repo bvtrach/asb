@@ -1,5 +1,112 @@
 # Development
 
+`benchmark_sdk_session.py` tests the private SDK-shell launch protocol without
+Docker, providers or installed clients. The opt-in
+`benchmark_live_sdk_session.py` instead needs the installed Terminal-Bench SDK
+Python interpreter, `ASB_TEST_BENCHMARK_ASB` pointing to a frozen executable and
+`ASB_TEST_SWECATALOG_ROOT` pointing to the owned benchmark project. It exercises
+the original SDK shell with fake clients and the actual registered-adapter guest
+driver: parent identity/user/cwd/env, nonzero/zero status and real child-versus-
+bridge measurement target. `benchmark_live_lifetime.py` exercises the lazy
+same-shell production hook with a fixture executable, retained Jupyter service
+and original SDK grader, requiring the same parent before/after grading.
+Neither is an installed coding-client, non-root or full repeated-batch
+qualification. Successful owned
+resources are removed; failures are stopped/preserved with private evidence.
+
+`benchmark_live_sdk_agent.py` uses the same explicit SDK/project/frozen-binary
+opt-ins with the REAL pinned Pi package and unpatched production bootstrap.
+Prefetch the pinned Node archive and public npm cache before running: guest
+installation deliberately sets npm offline and never falls back to a fake
+client. An isolated `asb tool install pi --dir DIR` can populate the project's
+public cache without replacing existing tools. Inference uses a synthetic
+loopback provider with fixture-only credentials; the known upstream reference
+solution still needs ordinary bridge egress for Debian/PyPI tool dependencies.
+Its verbose installation output goes to a private guest log, returning only a
+summary or a bounded failure tail. Neither production capture bounds nor the
+original official grader is changed. Assertions require one actual tool call,
+two provider calls, exact package identity, unchanged original SDK parent and a
+resolved original grade. Failed attempts are retained, not silently retried or
+promoted into successful qualification evidence.
+
+`benchmark_live_repeated_original.py` exercises the public `asb run --repeat 2`
+path at concurrency two. With `ASB_TEST_BENCHMARK_SUITE=terminal-bench-1.0`, its
+default hello-world task qualifies normal completion and the explicit
+`ASB_TEST_BENCHMARK_FAULT=block-verifier-once` continuation case. Select
+`ASB_TEST_BENCHMARK_TASK=jupyter-notebook-server` for the original true same-shell
+task with an installed Pi client, four official grades and a retained background
+service. Only this qualification creates a dedicated owned egress bridge for the
+reference solution's real Debian/PyPI dependencies; inference stays synthetic.
+It reads the unchanged upstream solution, captures verbose installs privately,
+checks per-attempt client context/log identity and compares baseline, admission,
+planning and fingerprint evidence across both batches. Successful resources are
+removed; failed resources are stopped/preserved, with the owned network retained
+when still attached. It does not claim live LLM task solving or all SDK/client
+context combinations. Use the same frozen-binary/project opt-ins and original
+SDK Python interpreter as the single-client qualification above.
+
+Real workload qualifications must use a separate frozen executable, not
+`target/debug/asb`. Cargo package verification can replace the ordinary build
+output even though the extracted packaged-crate tests use another target tree.
+Build first, allocate a new project-local qualification directory, copy the
+executable there, and pass that exact copy to `ASB_TEST_BENCHMARK_ASB`:
+
+```sh
+cargo build --offline --locked
+mkdir -p target/qualification
+asb_qualification_dir=$(mktemp -d "$PWD/target/qualification/frozen.XXXXXX")
+install -m 755 target/debug/asb "$asb_qualification_dir/asb"
+sha256sum "$asb_qualification_dir/asb"
+```
+
+Keep the copy unchanged and verify its hash after qualification. Ordinary
+build/package gates may then run without replacing the selected executable.
+Fresh per-campaign artifacts and actual running-process executable identities
+remain required; a frozen copy is not evidence that a workload or grader passed.
+
+The repeated-original qualification's normal test requires all four official
+grades to pass. Its separate opt-in Terminal 1.0 fault case uses
+`ASB_TEST_BENCHMARK_FAULT=block-verifier-once` and test method
+`RepeatedOriginalQualification.test_confirmed_preserved_grader_error_continues_new_batches_without_retry`.
+It modifies only the first fresh guest's `/tests` path, deliberately preventing
+verifier injection. It requires four distinct attempts, continued fresh batches,
+an overall failure and unknown grade with positively stopped-preserved artifacts.
+The exclusive grading-start marker binds the original attempt; protocol unit
+tests separately count the single evaluate request and cached cancellation.
+Neither test retries a retained verifier or converts a missing grade into zero.
+
+`benchmark_live_material_environment.py` uses the same explicit image/binary/
+artifact-parent opt-ins as the mounted-root qualification below. It prepares
+two network-none services per fixture, checks independent fresh generated
+identities, shared-volume mutation and shared-versus-independent equal-content
+storage, then removes successful owned fixtures only. Failed fixtures are
+stopped/preserved. No agent, provider or evaluator runs. The separate ordinary
+`benchmark_material_environment.py` suite tests whole-round ordering, one shared
+budget, generated-file normalization, private resource replacement and refusal
+of uncovered namespaces/networks/devices. These are not routed-network or
+complete original-catalog qualifications.
+
+The same environment qualification has explicit disjoint-bind and shared-bind
+view tests. They use declared local source directories beneath each owned
+attempt, distinguish shared regular/symlink inodes from equal independent
+copies, and exercise overlapping tmpfs-hidden views. A source subtree hidden
+from every guest must not affect identity; material visible through either view
+must. Run the named tests with the same frozen executable and cached-image
+opt-ins. Ordinary planner/root/environment tests additionally cover source
+replacement, prior/failed guest validation, local-kernel refusal, initial round
+mutation and shared-budget exhaustion before any host content read.
+
+`benchmark_live_material_mounts.py` is an opt-in mounted-root qualification.
+Set `ASB_TEST_MATERIAL_IMAGE` to an already cached Linux image ID,
+`ASB_TEST_BENCHMARK_ASB` to the built binary and `ASB_TEST_SWECATALOG_ROOT` to
+an existing project artifact parent; run with the installed Docker SDK Python.
+It creates two journal-owned containers with local binds, a named volume and
+both tmpfs option forms, checks stable fresh material and volume mutation,
+then removes only successful owned fixtures. Failed fixtures are stopped and
+preserved for inspection. No image download, provider, agent or evaluator runs.
+Do not rebuild the selected binary while qualification is running. This checks
+single-container mount composition, not multiple services or complete networks.
+
 Keep the project small and offline-buildable after dependencies are installed.
 New behavior belongs in one of the three CLI modules and should preserve the
 existing `setup` and `run` command forms.
@@ -28,6 +135,16 @@ interactive` adds the local HTML renderings. These diagrams explicitly show
 source relationships but never publish local paths or branch names. They
 supplement the maintained architecture overview and should be regenerated when
 reviewing public or private type relationships.
+
+`benchmark_live_execution_transport.py` qualifies the default owned Docker
+transport with `ASB_TEST_MATERIAL_IMAGE` and `ASB_TEST_SWECATALOG_ROOT` opt-ins.
+It checks the actual stopped target's namespace mapping, separate stdout/stderr,
+nonzero child status, execution timeout, cancellation, malformed-gate recovery
+and confirmed resource removal. Short execution budgets use an independent
+preparation budget. It starts no coding agent, provider or grader, and is not
+SDK-shell qualification. Success removes only its declared container; failure
+stops and preserves that owned fixture. Its receipt binds the exact Python
+transport source hash, which must stay unchanged during execution.
 
 Function-level dataflow/control diagrams use Graphviz's packed `osage` layout.
 This keeps module boxes and every directed call/label, including cross-module
@@ -101,6 +218,38 @@ suite or integrated-current-main qualification is implied by these focused gates
 The native handoff checkpoint passed 63 adapter tests, 73 runner tests (three
 explicit opt-in cases ignored), the layout guard, the extended actual-entry
 fixture, strict all-target/all-feature Clippy, formatting and binary build.
+
+`cargo test --locked --offline --lib runner::capture` uses real local children
+for simultaneous stdout/stderr pressure, finite capture, closed/held pipes,
+execution/drain deadlines, writer failure, unwind and uncertain cleanup custody.
+An isolated Linux subreaper fixture owns and reaps the held-pipe descendant;
+unrelated sentinels survive. Deterministic private faults distinguish interrupted
+reads from permanent read failure and exercise pre-spawn keeper exhaustion and
+cleanup polling uncertainty. No output-reader thread or unbounded queue is used.
+The Unix transport fixture pressures an unread socket, checks cancellation and
+flag restoration, and rejects nonpipe output without changing its flags.
+`cargo test --locked --offline --lib full_runner_entry_bounded_capture` needs the
+current actual ASB binary built first. Five replay-only full-entry cases preserve
+true/false/native file grades, exactly-once grading/provider/workload cleanup and
+report outcomes while withholding receipts after capture limits/read faults.
+They retain validated cassette usage and independent mini-SWE artifact usage and
+steps, but reject usage inferred from the incomplete transcript. These qualify
+Linux execution, not native Windows or arbitrary blocking borrowed writers;
+the Windows private-pipe pump retains a source implementation, and non-Unix guest
+presentation remains caller-controlled. Retained workload services keep their
+existing ThroughEvaluation supervisor and are covered by the separate guest
+agent/owner-loss tests.
+`cargo test --locked --offline --lib actual_unmeasured_sweep_capture_failure`
+also runs actual sequential sweeps with true/false and nullable native rewards,
+automatic comparison, repeat regeneration and resume refusal without another
+client. Latest-log configuration/task/slot mutations and malformed trailing
+records must leave the previous report and source bytes unchanged. These use
+the same private process-local evaluator fixture; the native fixture declares
+matching selection metadata before normal saved-plan publication, not by
+editing retained evidence or adding an SDK capability. The bounded log fallback
+is reporting-only and cannot create missing completion receipts. Separate log
+tests reject latest-attempt conflicts with older private outcomes and ambiguous
+multi-replica slots, while preserving private record bytes.
 `cargo test --locked --offline --test tui_install` exercises the actual ASB
 install helper and real terminal backend with local fake npm/node executables.
 Closing the backend's output pipe forces EPIPE while the input PTY stays open:
@@ -149,6 +298,13 @@ cases cover external execution overrides, broken/non-executable/symlink
 candidates, host-tool policy and custom project roots. The Codex adapter also
 checks its native-package preference and explicit-source precedence. No package
 manager, provider, real agent or download is invoked by these path-policy tests.
+The native preparation regression combines Codex native-package preference with
+fresh HOME/CODEX_HOME, explicit override precedence and unusable-candidate refusal.
+`offline_cli::unusable_selected_agent_never_falls_back_to_a_different_path_installation`
+also runs the actual CLI with a valid marker-writing PATH fixture: non-executable
+and dangling project selections must refuse launch, while removing the local
+selection must actually launch that fixture. It uses legacy loopback replay and
+never contacts a provider or runs an installed coding client.
 
 `cargo test --locked --offline --lib install::source` checks atomic installation
 with local fake downloads and version probes. The shared private `OwnedReaper`
@@ -277,6 +433,98 @@ stages, checking active-owner exclusion and recovery without new attempts. No
 agent/provider/container runs. Fault hooks exist only in test builds and have no
 environment/configuration surface in the installed CLI. The backend does not yet
 expose new run/sweep flags; integration follows MULTITRACK.md.
+`cargo test --locked --lib runner::batch` checks the internal cancellable
+preparation gate and runner no-launch/cancellation wiring. Material regressions
+live in `workloads::material` and `workloads::session`: bounded canonical files,
+unsupported links, immutable initial identity and evaluator side effects. These
+provider-free tests qualify the native preparation foundation, not the pending
+repeat/bundle CLI or official environment identity integration. See
+MULTITRACK-EXECUTION-DESIGN.md for the remaining requirements.
+`cargo test --locked --test benchmark_protocol` includes pure Python qualification
+of the official prepared-material protocol and bounded raw TAR reader. These
+fixtures need no Docker, SDK installation or provider. They cover the current
+single-container/non-root/unmounted declaration, semantic Git state, rejected
+uncovered services/mounts/ancestors, archive bounds and cancellation. They do not
+qualify real installed environments or the remaining broader material coverage.
+The separate opt-in `benchmark_live_material.py` uses the installed SWE-bench
+SDK interpreter and `ASB_TEST_SWECATALOG_ROOT` to compare two actual original
+Lite preparations, repeat capture, change Git configuration and reject a dirty
+worktree. It launches no agent, provider or evaluator. Its fixture containers
+are normally removed; diagnostic artifacts stay in the selected project. This
+is representative single-container qualification, not full-population or
+root/mount/service coverage. Do not treat a skipped opt-in as a passing live test.
+Set `ASB_TEST_BENCHMARK_ASB` as well to qualify the actual root-helper path in
+those two fresh preparations. `benchmark_material_root.py` and
+`benchmark_material_exec.py` supply provider/Docker-free composition, exact
+staging verification and transport-fault tests through `benchmark_protocol`.
+`benchmark_live_repeated_original.py` drives public `run --repeat 2` with
+concurrency two, the installed Pi client and four original SWE-bench Lite attempts
+against a synthetic loopback provider supplying a known repair. It uses the same
+ASB/project opt-ins, may download public client packages into isolated guests,
+and never uses a real provider key or calls an LLM. This qualifies the
+controller/runner/grade path, not AI solving or full mount/service coverage.
+Set `ASB_TEST_BENCHMARK_SUITE=terminal-bench-1.0` or `terminal-bench-2.1`
+to apply the same counts, isolation, compatibility, official grading and cleanup
+assertions to those installed original SDK classes. Missing installation fails
+explicitly; these opt-ins are not claimed green merely because SWE-bench passed.
+The same opt-in checks actual Docker root-header metadata inspection, retained
+120-second socket read timeout and early response closure. Pure
+`benchmark_docker.py` tests response ownership before the first read, after a
+partial read, at EOF and on error. Directory-header inspection never advances
+to descendants in the pure material fixture. Separate per-path archive hashes
+are not used as an environment identity: they cannot preserve cross-path inode
+relationships and multiply RPC cost over large change inventories.
+`cargo test --locked --lib workloads::census` qualifies descriptor-pinned Linux
+declared-root observations and global resource accounting. `cargo test --locked
+--test material_census` exercises the private actual-binary protocol with an empty
+environment, strict bounded input and redacted hash/count-only output. These
+components do not establish privileged-attribute, mount, complete-namespace or
+snapshot coverage. Visible xattrs/ACLs are read and hashed by
+`workloads::attributes`; run `cargo test --locked --lib workloads::attributes`
+for binary names/values, bounded probes, OverlayFS filtering, two-pass mutation,
+shared budgets and symlink replacement tests. The census additionally checks
+attribute changes and root-level symlink target isolation. ASB does not request
+extra privileges to enumerate hidden attributes; that coverage stays unclaimed.
+Selective v3 census tests additionally cover image-anchor/selector bounds,
+cross-root hardlink closure, mixed full/selective roots, exact directory and
+symlink selection and replacement before deferred reads. Selective mode still
+walks metadata/attributes but explicitly does not claim all file bytes were read;
+the enclosing adapter must validate the real image and complete change inventory.
+The opt-in `benchmark_live_census.py` needs the installed SWE SDK interpreter,
+`ASB_TEST_SWECATALOG_ROOT` and `ASB_TEST_BENCHMARK_ASB`. It stages the same ASB
+runtime in a newly owned original task, checks cross-root hardlinks versus copies,
+reads the original repository and verifies normal container removal. Its
+attribute mutation case changes only a new fixture file and confirms that binary
+values affect identity without appearing in output. The fixture also compares
+two actual image-anchored root observations plus full-content shared memory;
+it does not establish full mount/service/network equivalence. Its declared
+root subprocesses have a separate 90-second watchdog; the helper's own 60-second
+deadline is cooperative between filesystem operations. A subprocess timeout takes
+the enclosing owned workload's stopped-preservation path; killing a Docker CLI
+alone does not prove guest-exec termination. No provider, real client,
+evaluator or host mount is used; artifacts stay in the selected project.
+`cargo test --locked --test repeated_run` exercises the native repeat prototype
+through the real CLI with a fake client and loopback replay. It verifies exact
+counts, overlap/sequential batches, fresh material, private replay input copies,
+failure disposition, output closure and measurement override paths without
+credentials, real agents, containers or privileged tracing.
+Its capture-overflow regression retains independent true/false file grades,
+finishes the already-admitted sibling, withholds the incomplete slot's private
+outcome/receipts and stops before batch two. The common capture fixtures also
+require shared-launch failure notification before stopping the owned child.
+The repeat suite also routes Perfetto preflight through the actual CLI with
+external measurement destinations, including one inside a differently configured
+project. It uses fake tool probes and stops before tracing/agent launch, verifying
+that capability authority comes only from the benchmark project, not output paths.
+The opt-in `benchmark_live_repeated.py` instead needs
+`ASB_TEST_PERFETTO_PROJECT` pointing to an already delegated benchmark project
+and `ASB_TEST_BENCHMARK_ASB` pointing to the current executable. It runs two
+sequential batches of two synthetic replay clients with real Perfetto captures,
+including one ordinary client failure and a nested foreign measurement project.
+It verifies overlap, later-batch admission, four complete scoped traces and
+released project leases. It never configures host tracing, installs clients,
+contacts an LLM or uses Docker. Artifacts remain under the selected project;
+do not rebuild/replace the selected executable during qualification.
 The cli2key concurrency regression uses two mock bridge listeners and mock
 clients, with fixture-only credentials. Both authenticated local requests must
 overlap and reach different owned servers; both servers must be reaped afterward.
@@ -291,6 +539,13 @@ credentials or provider. The same guard/reaper remains owned on success.
 The caller's cleanup wait has one five-second budget across both children and
 readers; unconfirmed children retain fallback custody rather than being
 dropped. This does not establish descendant or abrupt-crash cleanup.
+Repeated-run provider fixtures exercise actual two-replica batches: uncertain
+provider finish preserves true/false grades but prevents admission of another
+batch; confirmed finish permits later negative-grade attempts. A channel-driven
+early-error fixture requires waiting material peers to observe cancellation
+before provider teardown can complete. Output failures retain their I/O class
+when provider cleanup also fails. These fixtures use replay and root-scoped
+test-only provider sessions, not live credentials or provider processes.
 The `provider_finish` library fixtures additionally run seven actual replay-only
 benchmark attempts: true/false grades, client failure, early preparation failure
 and successful finish. They require explicit finish once, preserve each grade
@@ -450,6 +705,35 @@ DIR` when a host profile is needed; keep `ASB_MEASURE_*` collectors disabled in
 CI. Measurement JSON must remain bounded and must not contain credentials,
 provider responses, or full agent transcripts.
 
+Owned guest staging uses the shared `asb_staging` helper for both material
+capture and client bootstrap. Fixed prefixes are created once with the task's
+configured numeric UID/GID, and uploaded files receive those owners directly.
+Capture-to-bootstrap reuse verifies the exact runtime tree and directory identity;
+it does not restage or recursively change ownership. The guest keeps directory
+descriptors and an attempt-bound private receipt through preparation. A genuine
+task cwd of `/` is allowed with that receipt; a workspace inside an instrumentation
+prefix, including through a symlink alias, is not. These are local lifecycle and
+consistency checks, not an authentication or signing prerequisite. Read-only
+whole-root observation may run as root inside the owned container; installers,
+clients and SDK shells retain the configured user and environment.
+
+`benchmark_staging.py` and the Rust staging tests cover ownership, reuse,
+replacement and malformed receipt failures without Docker. Opt-in
+`benchmark_live_staging.py` requires `ASB_TEST_BENCHMARK_ASB` (a separately copied,
+hashed ASB binary), `ASB_TEST_STAGING_IMAGE` (an explicitly selected cached Linux
+image with `/bin/sh`, `id`, `mkdir`, `tail` and `cat`), and
+`ASB_TEST_SWECATALOG_ROOT` (an evidence directory). Run it using a Python with
+Docker SDK installed. It uses an isolated networkless container, numeric nonroot
+UID/GID, the real guest driver and a fixture client at cwd `/`, with no provider
+or grading. It also checks that protected root-owned material is unreadable by
+that client identity, is stable across privileged read-only observations, and
+changes its census fingerprint when the fixture controller edits its content.
+It removes its successful container; a failed one is stopped and
+preserved. `benchmark_live_sdk_session.py` additionally exercises the actual
+original SDK shell and root cwd, using the installed Terminal SDK/catalog.
+Both retain binary and all bundled Python source hashes. Neither is evidence of
+AI solving, a full repeated workload run, or live-provider qualification.
+
 Lifecycle events are sent through the collector interface, and an ordered,
 bounded `lifecycle.json` journal is written for measured runs, including early
 failures. Optional live Perfetto tests require a project-local installation and
@@ -505,6 +789,44 @@ unrelated-process survival despite an earlier failing adapter or full journal.
 The native-plan fixture verifies wrapper/endpoint/replay preparation without
 executing an installed client. All fixtures are provider-free and unprivileged;
 controller fixtures do not qualify Docker, SDK installation or a live benchmark.
+`cargo test --locked --offline --lib evidence::` checks private staged writes,
+short/Interrupted/zero/ENOSPC writes, serializer failures, file/directory sync
+and rename faults, regular-file restrictions and coordinated real-process
+writers. Measurement publication fixtures preserve malformed summary bytes and
+unknown history metadata. `runner::phases::tests::publication` drives eleven
+actual replay-only attempts with Boolean/native/pending grades, client and
+presentation failure, partial log/measurement writes and post-commit durability
+uncertainty. Client/evaluation/cleanup counts, identities, independent final
+outputs and withheld receipts are checked together. Reports refuse stale or
+malformed retained evidence instead of presenting it as the current attempt.
+The pre-fix serializer, malformed-history and two-process interleaving failures
+were observed before implementation; logs remain local qualification evidence.
+Extended review fixtures reproduce the exact-bound unterminated log and raw
+collector deletion before failed/unconfirmed publication. Stopped local child
+fixtures require raw-byte retention, sibling exports and independent run/
+lifecycle/summary finalization. Success consumes only identity-bound sources;
+an adapter replacement, a deterministic check/move race and refused cleanup
+retain foreign/owned bytes with actionable paths. Two additional actual entry
+cases retain native/pending grades and exact-once evaluation/cleanup through
+collector-result staging and post-commit sync failure, including broken output.
+Platform-confirmation regressions exercise all three policy decisions on Linux:
+only Unix invokes the directory-sync callback, Windows move flags exclude
+copy/deferred operations, and a missing/uninspectable private source is never
+called an unchanged precommit failure. A real Linux rename followed by an
+injected native-outcome failure retains its staging directory without a Drop
+cleanup/retry or a false published/unpublished claim. Existing short/zero/ENOSPC,
+file-sync, postcommit confirmation and cleanup tests remain required. Windows
+API declarations/semantics are source-reviewed only: no Windows target compile
+or runtime was performed, and Linux policy tests do not qualify native Windows
+rename behavior or portable directory durability.
+The independent-offset fixture keeps its producer at offset five while full,
+prefix and interleaved frozen readers run; this assertion also remains enabled
+on Windows. An additional cross-platform source-replacement fixture must read
+admitted A=17, never replacement B=99. Shared pure file-ID decisions compare all
+128 bits and preserve unknown-ID semantics. A Windows-only future-native test
+checks the reopened description is read-only. These tests do not constitute
+native Windows execution in the Linux qualification; the ReOpenFile declaration,
+sharing/access/inheritability flags and full ID layout are source-reviewed.
 Human-terminal write/flush failures stop further presentation but finish an
 already-admitted execution, evaluation and explicit cleanup; broken guest-owner
 transport still cancels/preserves. Tests cover both policies. The elapsed clock
@@ -609,6 +931,38 @@ preserving cancellation independently of installation. This fixture does not
 qualify an installed runtime, SDK or workload container. Production execution
 always validates the runtime and performs checksum-pinned bootstrap preparation;
 there is no CLI, configuration or environment switch to bypass that phase.
+`cargo test --locked --offline --lib workloads::task_protocol` covers private
+ready/completion/grade constructors, delegated namespace-owner mutations,
+normal versus preserving cleanup acknowledgements and exact Rust/Python wire
+identifiers, including initial-material dispatch and preparation-failure events.
+Shared-launch fixtures require the typed agent request to preserve its remaining
+preparation allowance and notify peers before cancellation. Positive preserved
+settlement is cached independently of grade permission; failed normal removal
+retains its diagnostic without fabricating unknown cleanup. Remote execution
+fixtures additionally pair the actual Python
+task-server loop with the actual Rust controller/session; only SDK/agent work
+is replaced by an inert process-local fixture. Both grades retain a nonzero
+client exit and binary output, then consume normal-close permission. A second
+bad grade or evaluator exception revokes the first grade's permission and
+requires stopped preservation without normal close. Generic controller tests
+retain untagged inspection, sanitized errors, framing limits and cancellation
+draining, including unknown in-flight events. These are offline protocol tests,
+not original SDK/container qualification.
+`cargo test --locked --offline --lib workloads::controller::transport_tests`
+qualifies the Unix caller-side transport with actual non-reading children,
+duplex pipe pressure, bounded queued events, exact/oversized/unterminated frames,
+one write/response deadline and one cleanup acknowledgement/exit deadline.
+A Linux fixture retains only its own child's stdout writer through `/proc`,
+then proves Controller destruction releases the parent read descriptor without
+waiting for that writer. It creates no orphan descendant. Fault fixtures pin
+the direct child with a pidfd, force pending/error exit observation and unwind
+after admission, require the pre-established keeper to reap it and leave an
+unrelated sentinel alive. Worker creation failure launches no controller; pipe
+setup failure remains inside the existing custody guard. No fixture needs a
+genuinely kernel-stuck task. Python fake-monotonic-clock tests account for delayed
+polls and reject a late queued close instead of authorizing teardown. These
+checks do not qualify Docker resources, arbitrary descendants, OS spawn latency
+or the retained legacy non-Unix blocking transport.
 `benchmark_live_resources.py` additionally checks actual abrupt controller
 SIGKILL with an installed SWE-bench task image: the durable ownership journal
 quiesces only its recorded container, retains a partial output file and an
@@ -838,6 +1192,11 @@ or retarget its executable; every case must fail before a child or reaper is
 created. Validation consumes the one-shot route, and admission exclusively
 borrows that configured command until spawn. Create a fresh launch command for
 another attempt rather than reusing pre-exec descriptor callbacks.
+Repeated native admission retains this descriptor route: tests separately inspect
+the actual client (not gate framing), verify fresh adapter state and executable
+precedence, wait for siblings without resuming the first target, and cancel a
+verified stopped guardian without ever launching its application. The selected
+execution clock still starts only after shared readiness releases the batch.
 Do not reconstruct an opaque `Command` from `get_envs`/`get_args`: those APIs
 do not reveal environment clearing, credentials, I/O and arbitrary callbacks.
 Rust 1.93 runs pre-exec callbacks before applying its prepared environment;

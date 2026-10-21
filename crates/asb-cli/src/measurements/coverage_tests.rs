@@ -5,11 +5,37 @@ use serde_json::{Value, json};
 
 struct Fixture(PathBuf);
 
+#[cfg(target_os = "linux")]
+#[test]
+fn capture_creation_failure_precedes_any_sampler_or_lifecycle_child() {
+    let fixture = Fixture::new();
+    let mut session = Session::start_with_collectors(&fixture.0, &[], None).unwrap();
+    let sentinel = session.dir.join("agent-memory.stderr");
+    fs::write(&sentinel, "previous capture sentinel").unwrap();
+    let error = session
+        .start_tree_snapshot(
+            "agent-memory",
+            true,
+            Path::new("/bin/false"),
+            std::process::id(),
+            Box::new(|_| panic!("capture failure must precede worker admission")),
+        )
+        .unwrap_err();
+    assert!(error.contains("cannot create owned raw capture"), "{error}");
+    assert!(session.collectors.is_empty());
+    assert!(session.process_tree_snapshots.is_empty());
+    assert_eq!(
+        fs::read_to_string(&sentinel).unwrap(),
+        "previous capture sentinel"
+    );
+}
+
 #[test]
 fn prepared_typed_collector_data_reaches_configure_without_cross_session_sharing() {
     #[derive(Default)]
     struct Prepared {
         directory: PathBuf,
+        project_root: Option<PathBuf>,
         configured: bool,
     }
     struct Adapter;
@@ -19,24 +45,36 @@ fn prepared_typed_collector_data_reaches_configure_without_cross_session_sharing
             "fixture-prepared-state"
         }
         fn preflight(&self, context: &mut collectors::PreflightContext<'_>) -> Result<(), String> {
-            context.states.state::<Prepared>().borrow_mut().directory =
-                context.measurement_dir.to_path_buf();
+            let state = context.states.state::<Prepared>();
+            let mut state = state.borrow_mut();
+            state.directory = context.measurement_dir.to_path_buf();
+            state.project_root = context.project_root.map(Path::to_path_buf);
             Ok(())
         }
         fn configure(&self, session: &mut Session, _: &[String]) -> Result<(), String> {
             let state = session.state::<Prepared>();
             let mut state = state.borrow_mut();
             assert_eq!(state.directory, session.dir);
+            assert_eq!(state.project_root, session.project_root);
             state.configured = true;
             Ok(())
         }
     }
     let first = Fixture::new();
     let second = Fixture::new();
-    let mut one =
-        Session::start_with_adapters(&first.0, &[], None, None, vec![&ADAPTER], true).unwrap();
+    let mut one = Session::start_with_adapters(
+        &first.0,
+        &[],
+        None,
+        None,
+        vec![&ADAPTER],
+        true,
+        Some(&first.0),
+    )
+    .unwrap();
     let mut two =
-        Session::start_with_adapters(&second.0, &[], None, None, vec![&ADAPTER], true).unwrap();
+        Session::start_with_adapters(&second.0, &[], None, None, vec![&ADAPTER], true, None)
+            .unwrap();
     let a = one.state::<Prepared>();
     let b = two.state::<Prepared>();
     assert!(a.borrow().configured && b.borrow().configured);
@@ -61,6 +99,16 @@ fn process_tree_snapshots_record_owned_target_output_and_command_failures() {
         let root = ProcessIdentity::read(child.0.id()).unwrap();
         let output = fixture.0.join("stdout");
         let errors = fixture.0.join("stderr");
+        let captures = [
+            crate::evidence::Capture::create(&output).unwrap(),
+            crate::evidence::Capture::create(&errors).unwrap(),
+        ];
+        let admitted_output = fixture.0.join("admitted-stdout");
+        fs::rename(&output, &admitted_output).unwrap();
+        fs::write(&output, "foreign stdout sentinel").unwrap();
+        let admitted_errors = fixture.0.join("admitted-stderr");
+        fs::rename(&errors, &admitted_errors).unwrap();
+        fs::write(&errors, "foreign stderr sentinel").unwrap();
         let snapshot = ProcessTreeSnapshot::start(
             root,
             if executable_exists {
@@ -72,11 +120,15 @@ fn process_tree_snapshots_record_owned_target_output_and_command_failures() {
                 assert_eq!(pids.len(), 1);
                 vec!["owned-process-observation".into()]
             }),
-            output.clone(),
-            errors.clone(),
+            captures[0].writer().unwrap(),
+            captures[1].writer().unwrap(),
         )
         .unwrap();
-        let wanted = if executable_exists { &output } else { &errors };
+        let wanted = if executable_exists {
+            &admitted_output
+        } else {
+            &admitted_errors
+        };
         let deadline = Instant::now() + Duration::from_secs(5);
         while fs::read_to_string(wanted).map_or(true, |text| text.is_empty())
             && Instant::now() < deadline
@@ -84,6 +136,14 @@ fn process_tree_snapshots_record_owned_target_output_and_command_failures() {
             std::thread::sleep(Duration::from_millis(10));
         }
         snapshot.stop();
+        assert_eq!(
+            fs::read_to_string(&output).unwrap(),
+            "foreign stdout sentinel"
+        );
+        assert_eq!(
+            fs::read_to_string(&errors).unwrap(),
+            "foreign stderr sentinel"
+        );
         let text = fs::read_to_string(wanted).unwrap();
         if executable_exists {
             assert!(text.contains("# asb-snapshot-elapsed-seconds"));
@@ -107,7 +167,7 @@ impl Fixture {
         Self(root)
     }
     fn session(&self) -> Session {
-        Session::start_with_adapters(&self.0, &[], None, None, vec![], true).unwrap()
+        Session::start_with_adapters(&self.0, &[], None, None, vec![], true, None).unwrap()
     }
 }
 impl Drop for Fixture {
@@ -237,7 +297,8 @@ fn lifecycle_population_is_bounded_and_invalid_namespace_selection_fails_before_
     assert_eq!(session.lifecycle.len(), 256);
     let file = fixture.0.join("not-a-directory");
     fs::write(&file, "block directory creation").unwrap();
-    let result = Session::start_with_adapters(&file.join("child"), &[], None, None, vec![], true);
+    let result =
+        Session::start_with_adapters(&file.join("child"), &[], None, None, vec![], true, None);
     let Err(error) = result else {
         panic!("non-directory parent accepted");
     };
@@ -255,11 +316,18 @@ fn unavailable_artifacts_and_bounded_read_failures_never_fabricate_metrics() {
     assert_eq!(record["stderr"], "permission denied by fixture");
     assert_eq!(record["metrics"], json!({}));
     assert!(record["exit_code"].is_null());
-    assert!(read_bounded(&fixture.0.join("absent")).is_empty());
+    assert!(crate::evidence::Capture::open(&fixture.0.join("absent")).is_err());
     let file = fixture.0.join("oversized");
     fs::write(&file, vec![b'x'; MAX_CAPTURE + 1]).unwrap();
-    assert_eq!(read_bounded(&file).len(), MAX_CAPTURE);
-    assert!(read_bounded(&fixture.0).is_empty());
+    assert_eq!(
+        crate::evidence::Capture::open(&file)
+            .unwrap()
+            .diagnostic(MAX_CAPTURE)
+            .unwrap()
+            .len(),
+        MAX_CAPTURE
+    );
+    assert!(crate::evidence::Capture::open(&fixture.0).is_err());
     assert!(
         check_measurement_directory(&fixture.0.join("missing"))
             .unwrap_err()
@@ -359,6 +427,8 @@ fn summary_retention_is_bounded_and_unscored_success_is_not_a_resolved_task() {
         .collect::<Vec<_>>();
     fs::write(&path, serde_json::to_vec(&json!({"runs":runs})).unwrap()).unwrap();
     let run = RunMeasurement {
+        workload_resource_disposition: None,
+        workload_artifacts: &[],
         execution_plan_fingerprint: None,
         module: None,
         benchmark_outcome: None,

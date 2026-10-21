@@ -50,6 +50,7 @@ impl<'a> Admission<'a> {
             admitted: false,
             complete: None,
             observed: None,
+            startup_deadline: Instant::now() + STARTUP,
         })
     }
 }
@@ -61,6 +62,7 @@ pub(crate) struct ManagedGate {
     admitted: bool,
     complete: Option<ExitStatus>,
     observed: Option<ExitStatus>,
+    startup_deadline: Instant,
 }
 
 impl ManagedGate {
@@ -81,7 +83,17 @@ impl ManagedGate {
     }
 
     pub(crate) fn resume(&mut self) -> io::Result<()> {
-        let deadline = Instant::now() + STARTUP;
+        self.wait_stopped()?;
+        if unsafe { libc::kill(self.id() as i32, libc::SIGCONT) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Establish current-ABI custody without admitting the application. This
+    /// is also revalidated before CONT after any shared launch rendezvous.
+    pub(crate) fn wait_stopped(&mut self) -> io::Result<()> {
+        let deadline = self.startup_deadline;
         loop {
             self.receiver.poll(self.id()).map_err(incompatible)?;
             if let Some(status) = self.child.as_mut().expect("owned gate").try_wait()? {
@@ -96,9 +108,6 @@ impl ManagedGate {
                     // From here this current-ABI gate owns all cleanup. Never
                     // send KILL to it, even if CONT or a later receipt fails.
                     self.admitted = true;
-                    if unsafe { libc::kill(self.id() as i32, libc::SIGCONT) } != 0 {
-                        return Err(io::Error::last_os_error());
-                    }
                     return Ok(());
                 }
             }
@@ -144,6 +153,7 @@ impl ManagedGate {
         Ok(status)
     }
 
+    #[cfg(test)]
     pub(crate) fn wait(&mut self) -> io::Result<ExitStatus> {
         loop {
             if let Some(status) = self.try_wait()? {

@@ -251,6 +251,7 @@ else: raise AssertionError('unrecognized fixture role')
         let selected = vec!["flamegraph".to_owned()];
         let tools = root.join("tools");
         let mut context = crate::collectors::PreflightContext {
+            project_root: Some(&root),
             measurement_dir: &root,
             selected: &selected,
             tool_dir: Some(&tools),
@@ -355,7 +356,10 @@ else: raise AssertionError('unrecognized fixture role')
         "folded-unlinked" => (2, Some("cannot open collapsed flamegraph output")),
         "svg-blocked" => (2, Some("cannot create flamegraph.svg")),
         "render-spawn-fails" => (2, Some("cannot start flamegraph renderer")),
-        "status-blocked" => (3, Some("cannot create")),
+        "status-blocked" => (
+            3,
+            Some("evidence not published: destination must be a regular file"),
+        ),
         "render-fails" | "render-timeout" | "success" => (3, None),
         _ => (2, None),
     };
@@ -377,6 +381,12 @@ else: raise AssertionError('unrecognized fixture role')
         );
     }
     observer.assert_reaped(count);
+    if case == "status-blocked" {
+        assert!(
+            session.dir.join("flamegraph.json").is_dir(),
+            "publication must preserve the obstructing entry"
+        );
+    }
     if case == "worker-start-fails" || case == "no-samples" {
         assert!(!root.join("tool-started").exists());
     }

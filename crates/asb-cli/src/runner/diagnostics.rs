@@ -41,6 +41,10 @@ impl Stage {
 fn safe_reason(error: &Error) -> &'static str {
     let text = error.to_string();
     for (needle, reason) in [
+        (
+            "output capture is incomplete",
+            "agent output capture is incomplete; preserve results for inspection",
+        ),
         ("Permission denied", "permission denied"),
         ("No space left", "storage is full"),
         ("Read-only file system", "storage is read-only"),
@@ -159,9 +163,20 @@ pub(crate) fn preserve_primary(
     match (primary, presentation) {
         (primary, Ok(())) => primary,
         (Ok(()), Err(error)) => Err(error),
-        (Err(primary), Err(output)) => Err(Error::Run(format!(
-            "{primary}; result or continuation diagnostic output also failed: {output}"
-        ))),
+        (Err(primary), Err(output)) => {
+            let detail = format!(
+                "{primary}; result or continuation diagnostic output also failed: {output}"
+            );
+            // Preserve the primary diagnostic, but never classify broken
+            // result output as an ordinary completed agent/grader failure.
+            // Repeated admission must stop after a presentation IO error.
+            Err(match output {
+                Error::Io(_) => Error::Io(detail),
+                Error::Input(_) => Error::Input(detail),
+                Error::Usage(_) => Error::Input(detail),
+                Error::Run(_) => Error::Run(detail),
+            })
+        }
     }
 }
 

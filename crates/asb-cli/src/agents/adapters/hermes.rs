@@ -28,6 +28,7 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     namespace: "hermes",
     filename: "usage.json",
 }])
+.with_state_environment_vars(&["HERMES_HOME"])
 .with_final_response(final_response);
 
 fn command(context: &CommandContext<'_>) -> CommandSpec {

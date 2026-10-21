@@ -12,10 +12,31 @@ struct Hook {
     pending: bool,
     grader_error: bool,
     cleanup_error: bool,
+    capture_publication: bool,
+    admission_replacement: bool,
+    capture_grade: Option<bool>,
 }
 thread_local! { static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) }; }
 
 pub(crate) struct Scope;
+
+pub(crate) fn module_descriptor(
+    name: &str,
+    mut descriptor: Option<workloads::contracts::ModuleDescriptor>,
+) -> Option<workloads::contracts::ModuleDescriptor> {
+    HOOK.with_borrow(|slot| {
+        if name == "repository-navigation"
+            && slot.as_ref().is_some_and(|hook| hook.native_reward)
+            && let Some(module) = descriptor.as_mut()
+        {
+            // This process-local fixture's declared protocol feeds normal
+            // planning, fingerprints and runtime before any evidence is saved.
+            module.protocol.score_policy = "metric:accuracy@1".into();
+        }
+    });
+    descriptor
+}
+
 impl Scope {
     pub fn artifact(
         root: &Path,
@@ -42,6 +63,9 @@ impl Scope {
                 pending: false,
                 grader_error: false,
                 cleanup_error: false,
+                capture_publication: false,
+                admission_replacement: false,
+                capture_grade: None,
             });
         });
         Self
@@ -64,6 +88,9 @@ impl Scope {
                 pending: false,
                 grader_error: false,
                 cleanup_error: false,
+                capture_publication: false,
+                admission_replacement: false,
+                capture_grade: None,
             });
         });
         Self
@@ -83,6 +110,11 @@ impl Scope {
                 pending: case.contains("pending"),
                 grader_error: case.contains("grader"),
                 cleanup_error: case.contains("cleanup"),
+                capture_publication: case.contains("publication-") && case.contains("capture"),
+                admission_replacement: case.contains("admission"),
+                capture_grade: case
+                    .starts_with("capture-")
+                    .then_some(!case.contains("false")),
             });
         });
         Self
@@ -101,6 +133,25 @@ pub(crate) fn configure_measurements(root: &Path, session: Option<&mut measureme
             && let Some(session) = session
         {
             session.test_event_failure = hook.event;
+            if hook.capture_publication {
+                crate::measurements::publication_tests::stopped_fixture(
+                    session,
+                    if hook.admission_replacement {
+                        "admission"
+                    } else {
+                        "capture-fixture"
+                    },
+                );
+                crate::measurements::publication_tests::stopped_fixture(session, "capture-sibling");
+                if hook.admission_replacement {
+                    std::fs::rename(
+                        session.dir.join("admission.stdout"),
+                        session.dir.join("admission.saved"),
+                    )
+                    .unwrap();
+                    std::fs::write(session.dir.join("admission.stdout"), "A=99\n").unwrap();
+                }
+            }
         }
     });
 }
@@ -110,6 +161,14 @@ pub(crate) fn observe_provider(
     root: &Path,
     original: Option<Box<dyn providers::ProviderSession>>,
 ) -> Option<Box<dyn providers::ProviderSession>> {
+    let shared = SHARED_PROVIDERS.lock().unwrap().get(root).cloned();
+    if let Some(finish) = shared {
+        assert!(
+            original.is_none(),
+            "shared provider fixture requires replay"
+        );
+        return Some(Box::new(SharedProvider { finish }));
+    }
     HOOK.with(|slot| {
         let slot = slot.borrow();
         let Some(hook) = slot
@@ -128,6 +187,46 @@ pub(crate) fn observe_provider(
             finished: false,
         }))
     })
+}
+type SharedFinish = dyn Fn() -> Result<(), Error> + Send + Sync;
+static SHARED_PROVIDERS: std::sync::Mutex<
+    std::collections::BTreeMap<PathBuf, std::sync::Arc<SharedFinish>>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Root-scoped fixture shared with actual concurrent runner threads. No runtime
+/// environment switches or production provider registry changes are involved.
+pub(crate) struct SharedProviderScope(PathBuf);
+impl SharedProviderScope {
+    pub fn new(root: &Path, finish: std::sync::Arc<SharedFinish>) -> Self {
+        let root = root.canonicalize().unwrap();
+        assert!(
+            SHARED_PROVIDERS
+                .lock()
+                .unwrap()
+                .insert(root.clone(), finish)
+                .is_none()
+        );
+        Self(root)
+    }
+}
+impl Drop for SharedProviderScope {
+    fn drop(&mut self) {
+        SHARED_PROVIDERS.lock().unwrap().remove(&self.0);
+    }
+}
+struct SharedProvider {
+    finish: std::sync::Arc<SharedFinish>,
+}
+impl providers::ProviderSession for SharedProvider {
+    fn api_key(&self) -> &str {
+        "fixture-key"
+    }
+    fn base_url(&self) -> &str {
+        "http://127.0.0.1:1/v1"
+    }
+    fn finish(&mut self) -> Result<(), Error> {
+        (self.finish)()
+    }
 }
 struct Provider {
     calls: Rc<RefCell<Vec<&'static str>>>,
@@ -174,18 +273,22 @@ pub(crate) fn observe_workload(
                     hook.pending,
                     hook.grader_error,
                     hook.cleanup_error,
+                    hook.capture_grade,
                 )
             })
     });
     match calls {
-        Some((calls, native_reward, pending, grader_error, cleanup_error)) => Box::new(Observed {
-            inner: workload,
-            calls,
-            native_reward,
-            pending,
-            grader_error,
-            cleanup_error,
-        }),
+        Some((calls, native_reward, pending, grader_error, cleanup_error, capture_grade)) => {
+            Box::new(Observed {
+                inner: workload,
+                calls,
+                native_reward,
+                pending,
+                grader_error,
+                cleanup_error,
+                capture_grade,
+            })
+        }
         None => workload,
     }
 }
@@ -196,6 +299,7 @@ struct Observed {
     pending: bool,
     grader_error: bool,
     cleanup_error: bool,
+    capture_grade: Option<bool>,
 }
 impl workloads::WorkloadSession for Observed {
     fn invocation(&self) -> &workloads::session::TaskInvocation {
@@ -215,9 +319,32 @@ impl workloads::WorkloadSession for Observed {
     }
     fn evaluate(&mut self, response: &str) -> Result<workloads::Evaluation, String> {
         self.calls.borrow_mut().push("evaluate");
+        if let Some(expected) = self.capture_grade
+            && !self.native_reward
+        {
+            let grade =
+                std::fs::read_to_string(self.invocation().workspace.join("fixture-file-grade"))
+                    .unwrap();
+            assert_eq!(grade, if expected { "true" } else { "false" });
+            return Ok(if expected {
+                workloads::Evaluation::Passed
+            } else {
+                workloads::Evaluation::Failed("independent fixture file grade".into())
+            });
+        }
         self.inner.evaluate(response)
     }
     fn evaluate_outcome(&mut self, response: &str) -> workloads::outcome::EvaluationOutcome {
+        if self.capture_grade.is_some() && !self.native_reward {
+            return match self.evaluate(response).unwrap() {
+                workloads::Evaluation::Passed => {
+                    workloads::outcome::EvaluationOutcome::binary(true)
+                }
+                workloads::Evaluation::Failed(_) => {
+                    workloads::outcome::EvaluationOutcome::binary(false)
+                }
+            };
+        }
         self.calls.borrow_mut().push("evaluate");
         if self.pending {
             return workloads::outcome::EvaluationOutcome::Pending {
@@ -269,7 +396,7 @@ impl workloads::WorkloadSession for Observed {
             module
         })
     }
-    fn finish(&mut self) -> Result<(), String> {
+    fn finish(&mut self) -> Result<workloads::session::ResourceSettlement, String> {
         self.calls.borrow_mut().push("finish");
         let result = self.inner.finish();
         if self.cleanup_error {

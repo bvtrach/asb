@@ -143,28 +143,25 @@ fn process_hook_exports_profile_results_without_attaching_a_collector() {
     let status = std::process::ExitStatus::from_raw(0);
     let stdout_path = fixture.0.join("bpftrace-custom.stdout");
     fs::write(&stdout_path, "@asb_events: 2\n@asb_events: 7\n").unwrap();
-    let context = ProcessContext {
-        name: "bpftrace-custom",
-        status: &status,
-        stdout: "@asb_events: 2\n@asb_events: 7\n",
-        stdout_path: &stdout_path,
-        stderr: "",
-        stderr_path: &fixture.0.join("bpftrace-custom.stderr"),
-    };
+    let capture = crate::evidence::Capture::open(&stdout_path).unwrap();
+    let context = ProcessContext::new(
+        "bpftrace-custom",
+        &status,
+        ["@asb_events: 2\n@asb_events: 7\n", ""],
+        [&capture, &capture],
+    );
     let result = ADAPTER.process(&mut session, &context).unwrap();
     assert_eq!(result.status, "completed");
     assert_eq!(result.metrics["bpftrace.custom.events"], 7.0);
     assert_eq!(result.series["bpftrace.custom.events"], [2.0, 7.0]);
     assert!(fixture.0.join("bpftrace-custom.svg").is_file());
     let failed = std::process::ExitStatus::from_raw(2 << 8);
-    let context = ProcessContext {
-        name: "unrelated",
-        status: &failed,
-        stdout: "@asb_events: 9",
-        stdout_path: &fixture.0.join("unrelated.stdout"),
-        stderr: "error",
-        stderr_path: &fixture.0.join("unrelated.stderr"),
-    };
+    let context = ProcessContext::new(
+        "unrelated",
+        &failed,
+        ["@asb_events: 9", "error"],
+        [&capture, &capture],
+    );
     let result = ADAPTER.process(&mut session, &context).unwrap();
     assert_eq!(result.status, "failed");
     assert!(result.metrics.is_empty());

@@ -15,6 +15,7 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     prepare_adapter,
 )
 .with_replay_credential_vars(&["CONTINUE_API_KEY"])
+.with_state_environment_vars(&["CONTINUE_CONFIG", "CONTINUE_GLOBAL_DIR"])
 .with_collection(collect);
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
