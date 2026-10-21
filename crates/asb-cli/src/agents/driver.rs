@@ -420,9 +420,24 @@ fn run(request: GuestRequest) -> Result<u8, Error> {
             "retained workload processes require Linux".into(),
         ));
     } else {
+        #[cfg(unix)]
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_secs_f64(request.timeout_seconds);
+        #[cfg(unix)]
+        let mut transport_out = crate::runner::GuestTransport::new(&std::io::stdout(), deadline)
+            .map_err(crate::io_error)?;
+        #[cfg(unix)]
+        let mut transport_err = crate::runner::GuestTransport::new(&std::io::stderr(), deadline)
+            .map_err(crate::io_error)?;
         crate::runner::run_guest_process(
             &mut command,
+            #[cfg(unix)]
+            &mut transport_out,
+            #[cfg(not(unix))]
             &mut std::io::stdout(),
+            #[cfg(unix)]
+            &mut transport_err,
+            #[cfg(not(unix))]
             &mut std::io::stderr(),
             std::time::Duration::from_secs_f64(request.timeout_seconds),
         )?

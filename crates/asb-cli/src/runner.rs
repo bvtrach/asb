@@ -33,11 +33,10 @@ use crate::tape;
 use crate::workloads;
 use serde::Serialize;
 use std::collections::BTreeSet;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::sync::Mutex;
-use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 use std::time::Instant;
 
@@ -856,9 +855,11 @@ fn run_mode(
                     evidence.runtime_output,
                 )
             };
+        let capture_complete = issues.capture_error.is_none();
         let settled = prepared
             .executed(
                 ExecutionEvidence {
+                    capture_complete,
                     output: child,
                     run_dir,
                     guest,
@@ -879,6 +880,7 @@ fn run_mode(
             measurements: measurement_session,
             evidence:
                 ExecutionEvidence {
+                    capture_complete,
                     output: child,
                     run_dir,
                     guest,
@@ -964,8 +966,16 @@ fn run_mode(
         let token_usage = measurements::token_usage_from_sources(
             &config.provider,
             &config.agent,
-            &String::from_utf8_lossy(&child.stdout),
-            &String::from_utf8_lossy(&child.stderr),
+            &if capture_complete {
+                String::from_utf8_lossy(&child.stdout)
+            } else {
+                "".into()
+            },
+            &if capture_complete {
+                String::from_utf8_lossy(&child.stderr)
+            } else {
+                "".into()
+            },
             tape_cassette
                 .as_ref()
                 .filter(|_| cassette_usage_verified)
@@ -984,11 +994,15 @@ fn run_mode(
             metadata.steps
         } else {
             adapter_artifacts.steps.or_else(|| {
-                measurements::steps_from_sources(
-                    &config.agent,
-                    &bounded(&child.stdout),
-                    &bounded(&child.stderr),
-                )
+                capture_complete
+                    .then(|| {
+                        measurements::steps_from_sources(
+                            &config.agent,
+                            &bounded(&child.stdout),
+                            &bounded(&child.stderr),
+                        )
+                    })
+                    .flatten()
             })
         };
         let mut stderr = bounded(&child.stderr);
@@ -1114,10 +1128,22 @@ fn run_mode(
             completion_outputs.push(path);
         }
         let mut continuation_warnings = Vec::new();
+        if !capture_complete {
+            continuation_warnings.push(diagnostics::Warning::new(
+                diagnostics::Stage::Outcome,
+                config_path,
+                &completion::directory(config_path, &config.log_file),
+                &Error::Input(
+                    "agent output capture is incomplete; continuation evidence cannot be published"
+                        .into(),
+                ),
+            ));
+        }
         if log_publication.confirmed()
             && measurement_completion.confirmed()
             && provider_cleanup_error.is_none()
             && recording_error.is_none()
+            && capture_complete
         {
             match completion::persist(
                 config_path,
@@ -1331,6 +1357,18 @@ struct NativeLaunch<'a> {
     runtime: Duration,
 }
 
+fn native_launch_failure(
+    child: &mut OwnedChild,
+    launch: Option<&dyn workloads::session::LaunchReadiness>,
+    primary: impl std::fmt::Display,
+) -> Error {
+    // Release waiting siblings before potentially slow bounded child cleanup.
+    if let Some(launch) = launch {
+        launch.abort();
+    }
+    Error::Run(child.failure(primary))
+}
+
 fn run_measured_agent_with_launch(
     command: &mut Command,
     target: &crate::launch::TargetLaunch,
@@ -1386,10 +1424,10 @@ fn run_measured_agent_with_launch(
         #[cfg(target_os = "linux")]
         let spawned = match admission {
             Some(admission) => admission.spawn().map(OwnedChild::Gated),
-            None => command.spawn().map(OwnedChild::Direct),
+            None => OwnedChild::spawn_direct(command),
         };
         #[cfg(not(target_os = "linux"))]
-        let spawned = command.spawn().map(OwnedChild::Direct);
+        let spawned = OwnedChild::spawn_direct(command);
         match spawned {
             Ok(child) => child,
             Err(error) => {
@@ -1410,16 +1448,20 @@ fn run_measured_agent_with_launch(
         }
     };
     let _launch_failure = workloads::session::LaunchFailureGuard(launch);
-    if let Some(session) = session.as_deref_mut() {
-        session
-            .event(LifecycleEvent::AgentStarted)
-            .map_err(Error::Run)?;
+    if let Some(session) = session.as_deref_mut()
+        && let Err(error) = session.event(LifecycleEvent::AgentStarted)
+    {
+        return Err(native_launch_failure(&mut child, launch, error));
     }
     #[cfg(unix)]
-    if launch.is_some() {
-        child
-            .wait_stopped()
-            .map_err(|error| Error::Run(format!("native launch target is not stopped: {error}")))?;
+    if launch.is_some()
+        && let Err(error) = child.wait_stopped()
+    {
+        return Err(native_launch_failure(
+            &mut child,
+            launch,
+            format!("native launch target is not stopped: {error}"),
+        ));
     }
     if let Some(session) = session.as_deref_mut()
         && let Err(error) = session.attach_pid(child.id())
@@ -1433,22 +1475,26 @@ fn run_measured_agent_with_launch(
                 primary.push_str(&format!("; {secondary}"));
             }
         }
-        return Err(Error::Run(primary));
+        return Err(native_launch_failure(&mut child, launch, primary));
     }
     if let Some(launch) = launch {
-        launch.ready().map_err(Error::Run)?;
-        if let Some(session) = session.as_deref_mut() {
-            session
-                .event(LifecycleEvent::AgentExecuteBegin)
-                .map_err(Error::Run)?;
+        if let Err(error) = launch.ready() {
+            return Err(native_launch_failure(&mut child, Some(launch), error));
+        }
+        if let Some(session) = session.as_deref_mut()
+            && let Err(error) = session.event(LifecycleEvent::AgentExecuteBegin)
+        {
+            return Err(native_launch_failure(&mut child, Some(launch), error));
         }
         started = Instant::now();
     }
     #[cfg(unix)]
-    if gated {
-        child.resume().map_err(|error| {
-            Error::Run(format!("could not resume measured agent process: {error}"))
-        })?;
+    if gated && let Err(error) = child.resume() {
+        return Err(native_launch_failure(
+            &mut child,
+            launch,
+            format!("could not resume measured agent process: {error}"),
+        ));
     }
     let mut execution_finished = None;
     let result = capture_with_output_streams(
@@ -1484,6 +1530,10 @@ fn run_measured_agent_with_launch(
     match result {
         Ok(captured) => {
             issues.output_error = captured.output_error;
+            if let Some(error) = captured.capture_error {
+                issues.capture_error = Some(error.clone());
+                issues.run_error(error);
+            }
             Ok(MeasuredOutput {
                 output: captured.output,
                 elapsed_ms,
@@ -1792,107 +1842,20 @@ fn process_failure_reason(
     }
 }
 
-enum OutputChunk {
-    Stdout(Vec<u8>),
-    Stderr(Vec<u8>),
-    Finished,
+// Direct and gated children retain explicit custody on every return path.
+#[cfg(test)]
+pub(crate) fn fixture_module_descriptor(
+    name: &str,
+    descriptor: Option<workloads::contracts::ModuleDescriptor>,
+) -> Option<workloads::contracts::ModuleDescriptor> {
+    phases::entry_test_support::module_descriptor(name, descriptor)
 }
 
-// std::process::Child does not stop a process on drop. Own it from spawn
-// through all collector attachment, output and wait error paths.
-enum OwnedChild {
-    Direct(Child),
-    #[cfg(target_os = "linux")]
-    Gated(crate::process_gate::ManagedGate),
-}
+mod capture;
+#[cfg(unix)]
+pub(crate) use capture::transport::GuestTransport;
+use capture::{OwnedChild, PresentationPolicy, capture_with_output_streams};
 
-impl OwnedChild {
-    #[cfg(unix)]
-    fn wait_stopped(&mut self) -> std::io::Result<()> {
-        match self {
-            #[cfg(target_os = "linux")]
-            Self::Gated(gate) => gate.wait_stopped(),
-            Self::Direct(_) => Err(std::io::Error::other(
-                "shared launch refuses a direct child without gate custody",
-            )),
-        }
-    }
-    fn stop(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        match self {
-            Self::Direct(child) => {
-                let _ = child.kill();
-                child.wait()
-            }
-            #[cfg(target_os = "linux")]
-            Self::Gated(gate) => gate.stop(),
-        }
-    }
-    fn id(&self) -> u32 {
-        match self {
-            Self::Direct(child) => child.id(),
-            #[cfg(target_os = "linux")]
-            Self::Gated(gate) => gate.id(),
-        }
-    }
-    fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
-        match self {
-            Self::Direct(child) => child.try_wait(),
-            #[cfg(target_os = "linux")]
-            Self::Gated(gate) => gate.try_wait(),
-        }
-    }
-    fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        match self {
-            Self::Direct(child) => child.wait(),
-            #[cfg(target_os = "linux")]
-            Self::Gated(gate) => gate.wait(),
-        }
-    }
-    fn take_stdout(&mut self) -> Option<std::process::ChildStdout> {
-        match self {
-            Self::Direct(child) => child.stdout.take(),
-            #[cfg(target_os = "linux")]
-            Self::Gated(gate) => gate.take_stdout(),
-        }
-    }
-    fn take_stderr(&mut self) -> Option<std::process::ChildStderr> {
-        match self {
-            Self::Direct(child) => child.stderr.take(),
-            #[cfg(target_os = "linux")]
-            Self::Gated(gate) => gate.take_stderr(),
-        }
-    }
-    #[cfg(unix)]
-    fn resume(&mut self) -> std::io::Result<()> {
-        match self {
-            Self::Direct(child) => crate::process_gate::resume(child),
-            #[cfg(target_os = "linux")]
-            Self::Gated(gate) => gate.resume(),
-        }
-    }
-}
-
-impl Drop for OwnedChild {
-    fn drop(&mut self) {
-        // ManagedGate owns its own bounded cancellation/handoff policy. Never
-        // follow it with an unconditional raw wait in this outer owner.
-        match self {
-            Self::Direct(child) => {
-                if child.try_wait().ok().flatten().is_none() {
-                    let _ = child.kill();
-                }
-                let _ = child.wait();
-            }
-            #[cfg(target_os = "linux")]
-            Self::Gated(_) => {}
-        }
-    }
-}
-
-/// Wait for an agent while optionally forwarding both output streams live.
-/// Readers run independently so a verbose agent cannot deadlock on a full
-/// stdout or stderr pipe. Capture is returned for logging and token parsing;
-/// this helper does not impose a stream-memory bound.
 #[cfg(test)]
 fn wait_with_output(
     child: OwnedChild,
@@ -1918,9 +1881,7 @@ pub(crate) fn run_guest_process(
     #[cfg(target_os = "linux")]
     let mut descendants = crate::process_gate::DescendantScope::new()
         .map_err(|error| Error::Run(format!("cannot retain guest agent descendants: {error}")))?;
-    let child = command
-        .spawn()
-        .map(OwnedChild::Direct)
+    let child = OwnedChild::spawn_direct(command)
         .map_err(|error| Error::Run(format!("cannot start guest agent: {error}")))?;
     wait_with_output_streams(child, true, stdout, Some(stderr), runtime, &mut || {
         #[cfg(target_os = "linux")]
@@ -1939,7 +1900,7 @@ fn wait_with_output_streams(
     runtime: Duration,
     after_exit: &mut dyn FnMut() -> std::io::Result<()>,
 ) -> std::io::Result<Output> {
-    capture_with_output_streams(
+    let captured = capture_with_output_streams(
         child,
         show_output,
         output,
@@ -1947,149 +1908,11 @@ fn wait_with_output_streams(
         runtime,
         PresentationPolicy::CancelOnTransportFailure,
         after_exit,
-    )
-    .map(|captured| captured.output)
-}
-
-enum PresentationPolicy {
-    /// Human presentation is optional after admission: retain the evidence and
-    /// finish this attempt even if its terminal stops accepting writes.
-    PreserveEvidence,
-    /// Losing the guest/controller transport is owner loss, not a terminal.
-    CancelOnTransportFailure,
-}
-
-struct CapturedOutput {
-    output: Output,
-    output_error: Option<String>,
-}
-
-fn capture_with_output_streams(
-    mut child: OwnedChild,
-    mut show_output: bool,
-    output: &mut dyn Write,
-    mut error_output: Option<&mut dyn Write>,
-    runtime: Duration,
-    policy: PresentationPolicy,
-    after_exit: &mut dyn FnMut() -> std::io::Result<()>,
-) -> std::io::Result<CapturedOutput> {
-    let stdout = child
-        .take_stdout()
-        .ok_or_else(|| std::io::Error::other("agent stdout was not piped"))?;
-    let stderr = child
-        .take_stderr()
-        .ok_or_else(|| std::io::Error::other("agent stderr was not piped"))?;
-    let (sender, receiver) = mpsc::channel();
-    let stdout_sender = sender.clone();
-    std::thread::spawn(move || read_stream(stdout, OutputStream::Stdout, stdout_sender));
-    std::thread::spawn(move || read_stream(stderr, OutputStream::Stderr, sender));
-
-    let mut stdout_capture = Vec::new();
-    let mut stderr_capture = Vec::new();
-    let mut output_error = None;
-    let mut finished_streams = 0;
-    let mut status = None;
-    let mut quiesced = false;
-    let deadline = Instant::now() + runtime;
-    let mut timed_out = false;
-    while (finished_streams < 2 || status.is_none()) && !timed_out {
-        match receiver.recv_timeout(Duration::from_millis(50)) {
-            Ok(OutputChunk::Stdout(chunk)) => {
-                stdout_capture.extend_from_slice(&chunk);
-                if show_output
-                    && let Err(error) = output.write_all(&chunk).and_then(|()| output.flush())
-                {
-                    if matches!(policy, PresentationPolicy::CancelOnTransportFailure) {
-                        return Err(error);
-                    }
-                    output_error = Some(format!("cannot write agent output: {error}"));
-                    show_output = false;
-                }
-            }
-            Ok(OutputChunk::Stderr(chunk)) => {
-                stderr_capture.extend_from_slice(&chunk);
-                if show_output {
-                    let written = if let Some(error_output) = error_output.as_deref_mut() {
-                        error_output
-                            .write_all(&chunk)
-                            .and_then(|()| error_output.flush())
-                    } else {
-                        output.write_all(&chunk).and_then(|()| output.flush())
-                    };
-                    if let Err(error) = written {
-                        if matches!(policy, PresentationPolicy::CancelOnTransportFailure) {
-                            return Err(error);
-                        }
-                        output_error = Some(format!("cannot write agent output: {error}"));
-                        show_output = false;
-                    }
-                }
-            }
-            Ok(OutputChunk::Finished) => finished_streams += 1,
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => break,
-        }
-        if status.is_none() {
-            status = child.try_wait()?;
-            if status.is_some() {
-                after_exit()?;
-                quiesced = true;
-            }
-        }
-        if status.is_none() && Instant::now() >= deadline {
-            timed_out = true;
-            status = Some(child.stop()?);
-            after_exit()?;
-            quiesced = true;
-        }
+    )?;
+    if let Some(error) = captured.capture_error {
+        return Err(std::io::Error::other(error));
     }
-    let status = status.unwrap_or(child.wait()?);
-    if !quiesced {
-        after_exit()?;
-    }
-    if timed_out {
-        stderr_capture.extend_from_slice(
-            format!(
-                "agent execution exceeded {} seconds\n",
-                runtime.as_secs_f64()
-            )
-            .as_bytes(),
-        );
-    }
-    Ok(CapturedOutput {
-        output: Output {
-            status,
-            stdout: stdout_capture,
-            stderr: stderr_capture,
-        },
-        output_error,
-    })
-}
-
-enum OutputStream {
-    Stdout,
-    Stderr,
-}
-
-fn read_stream<R: Read>(mut stream: R, kind: OutputStream, sender: mpsc::Sender<OutputChunk>) {
-    let mut buffer = [0_u8; 16 * 1024];
-    loop {
-        match stream.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(size) => {
-                let chunk = buffer[..size].to_vec();
-                let message = match kind {
-                    OutputStream::Stdout => OutputChunk::Stdout(chunk),
-                    OutputStream::Stderr => OutputChunk::Stderr(chunk),
-                };
-                if sender.send(message).is_err() {
-                    return;
-                }
-            }
-            Err(_) => break,
-        }
-    }
-    let _ = sender.send(OutputChunk::Finished);
+    Ok(captured.output)
 }
 
 type CommandSpec = agents::CommandSpec;
@@ -2649,12 +2472,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn child_is_killed_and_reaped_if_collector_attachment_aborts() {
-        let child = std::process::Command::new("sleep")
-            .arg("10")
-            .spawn()
-            .unwrap();
+        let child =
+            super::OwnedChild::spawn_direct(std::process::Command::new("sleep").arg("10")).unwrap();
         let pid = child.id();
-        let owned = super::OwnedChild::Direct(child);
+        let owned = child;
         // Simulate returning from the runner after attachment fails.
         drop(owned);
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
@@ -2672,16 +2493,15 @@ mod tests {
                 Ok(())
             }
         }
-        let child = std::process::Command::new("sh")
-            .args(["-c", "printf ready; exec sleep 10"])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
+        let child = super::OwnedChild::spawn_direct(
+            std::process::Command::new("sh")
+                .args(["-c", "printf ready; exec sleep 10"])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped()),
+        )
+        .unwrap();
         let pid = child.id();
-        let error =
-            super::wait_with_output(super::OwnedChild::Direct(child), true, &mut FailingWriter)
-                .unwrap_err();
+        let error = super::wait_with_output(child, true, &mut FailingWriter).unwrap_err();
         assert!(error.to_string().contains("fixture output failure"));
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
     }

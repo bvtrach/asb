@@ -153,6 +153,7 @@ impl ManagedGate {
         Ok(status)
     }
 
+    #[cfg(test)]
     pub(crate) fn wait(&mut self) -> io::Result<ExitStatus> {
         loop {
             if let Some(status) = self.try_wait()? {

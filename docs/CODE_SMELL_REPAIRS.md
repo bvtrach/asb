@@ -14,13 +14,66 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
-Current consuming sweep-phase integration is staged as **0.2.28**, on qualified
+Integrated candidate, staged patch **0.2.29**: independently source-approved
+bounded capture `823f5081` is combined with newly qualified sweep checkpoint
+`1657ae18`, preserving repeated native/official execution, fresh preparation,
+resource/artifact contracts and typed sweep/disposition ownership. Independent
+integration source review approved `8dabf284`. Focused
+offline checks passed 335 tests with five explicit optional skips: 103 runner,
+70 comparison, 74 sweep, one shared-isolation test and 87 tests across nine
+actual CLI/protocol targets. The actual binary was built first; strict
+all-target/all-feature Clippy and formatting passed. Shared launch failures
+abort peers before bounded owned-child settlement. Actual repeated-run capture
+overflow preserves independent true/false file grades and the already-admitted
+sibling, but cannot publish the incomplete slot's outcome or admit batch two.
+The unmeasured true/false/native reporting regressions retain resource/artifact
+fields and recorded planning/cap metadata without authorizing continuation.
+The private native fixture remains test-only, not new SDK qualification. The older
+qualification below is historical, not evidence for this new combined tree.
+The fresh all-target/all-feature offline suite at reviewed `8dabf284` passed
+1,193 tests with zero failures and 21 explicit optional skips across 22 targets.
+Strict Clippy, formatting and sequential build/private Rust docs/pinned AutoUML
+0.7.2/flows/interactive views/bash and zsh completions passed. Actual executable
+SHA-256 stayed unchanged before/after tests and final build:
+`3acc60d2381d4f6037159d1a7c41fb5f6ae6d0ed2b9acd64183de388934d59a6`.
+Exact-head hosted/package CI, main-ancestry publication review, merge, post-merge
+verification and release remain pending. This does not qualify optional skipped
+host/provider tests, runtime discovery, or the remaining overall audit.
+The subsequent signed ancestry merge retains actual main
+`46d20e382b7781c3fb3bf48216e6090ca4b37998` with a tree identical to qualified
+`650b3944`; production, tests, Cargo files and the qualified executable are
+unchanged. No redundant full test run substitutes for that exact tree check.
+
+Prior pre-main integration qualification: independently source-approved
+bounded capture/reporting repair `823f5081` is combined with qualified sweep
+phase stack `48609d50`. The original capture-failed unmeasured-sweep regression
+remains covered by true/false/native-reward replay fixtures; reporting-only logs
+cannot authorize continuation. Saved-mode wire values, joined sweep settlement
+and preserved report metadata remain intact. Matching logs can retain original
+planning/cap objects omitted by an older private outcome, while conflicting
+objects are rejected rather than plotted as measurements. The actual integrated
+binary builds; focused runner/sweep/report tests passed 84/73/68 tests with five
+explicit opt-in skips, followed by 21 actual CLI tests, strict Clippy and
+formatting. Independent integration source review approved `64a44bc1`.
+Its full all-target/all-feature offline suite passed **1,090 tests** with
+21 explicit optional skips and no failures across twenty targets. Strict Clippy,
+formatting and sequential build/private Rust docs/pinned AutoUML 0.7.2/flow
+diagrams/interactive views/shell completions all passed. The actual executable
+SHA-256 stayed `46792b8401bc9ca7bb0052cbcaac3e2a2c05cc0ea00bb926218d56d74aba1ad4`
+before/after the full suite and final build. Hosted/package CI, PR merge,
+post-merge verification and a patch release remain pending. This entry neither
+closes other audit classes nor restores the removed coverage gate.
+
+The parent consuming sweep-phase integration is staged as **0.2.28**, on qualified
 typed-disposition checkpoint `6553da9c`. Independent integration source review
 approved `b1459a9f`; its fresh all-target/all-feature offline qualification
 passed 1,178 tests with zero failures and 21 explicit optional skips across
 22 targets. Strict Clippy, formatting and sequential build/private docs/pinned
-AutoUML/flows/interactive views/completions passed. Hosted delivery remains
-pending; the earlier 1,077-test sweep evidence is not substituted for these checks.
+AutoUML/flows/interactive views/completions passed. Exact-head hosted/package CI
+passed in runs `39653948153` and `39653949094`; PR #293 merged as
+`46d20e382b7781c3fb3bf48216e6090ca4b37998`. Post-merge run `39655443641` and
+release remain pending. The earlier 1,077-test sweep evidence is not substituted
+for these checks.
 
 The parent typed run-disposition integration is staged as **0.2.27**, on the
 independently source-reviewed selection-identity integration **0.2.26**, after
@@ -51,7 +104,9 @@ run `39651552412`; **0.2.26** is released from that exact commit with
 GitHub-verified valid annotated tag `6643f6676d114c1b143ecb251b4eaf56909f1a67`.
 For **0.2.27**, exact-head hosted/package CI passed in runs `39651772993` and
 `39651776713`; PR #292 merged as `a0be2ed445fddb56231447adc03260607eb76f87`.
-Post-merge run `39653471931` and its release remain pending. The sweep candidate's
+Both post-merge jobs passed in run `39653471931`; **0.2.27** is released at
+that exact commit with GitHub-verified valid annotated tag
+`74934951a88a675e13b74ddf5fa961464ac33f1b`. The parent sweep candidate's
 current-main ancestry merge changes no production, test or Cargo bytes from
 qualified `1657ae18`.
 
@@ -216,6 +271,32 @@ planning changes. Exact-head ordinary/package CI and both post-merge jobs
 passed (run `39630284995`); **v0.2.15** is signed and released from that
 commit. Coverage is optional, not a delivery gate. This does
 not claim arbitrary descendant or crash-persistent cleanup.
+
+Bounded child-capture candidate, staged patch **0.2.29** (original source
+`823f5081` independently approved; integration `64a44bc1` source-approved and
+offline-qualified above; hosted delivery and release pending): the common runner no longer accumulates an
+unbounded channel/transcript, treats read failures as EOF, eagerly waits after
+pipe closure, or leaves blocking reader threads behind. Owned nonblocking pipe
+pumping caps evidence during capture, preserves the confirmed child-exit clock
+(including the existing native-gate quiescence boundary), and separately bounds
+execution, post-exit drain and direct-child cleanup.
+Pre-established fallback custody retains an unconfirmed direct child. Native
+presentation failure preserves evidence; Unix quiescent-guest controller pipes
+use owned deadline-aware transport and cancel on failure. Independent official
+grades, adapter-file metrics and validated cassette usage survive capture
+uncertainty, while transcript-derived claims and continuation receipts do not.
+Unmeasured sweeps retain those independent grades through a validated, bounded
+latest-isolated-log reporting fallback; source transcripts never enter reports,
+conflicting latest attempts fail before publication, and no resume/outcome or
+completion receipt is created. Actual sequential sweep fixtures exercise both
+binary grades, nullable native rewards and refusal to resume without retry.
+Borrowed writers cannot be made generically cancellable; non-Unix guest writes
+retain that limitation. Windows pipe pumping is source-only here, not native
+runtime qualification. Non-Unix/non-Windows direct execution fails before spawn
+until a platform backend exists. Real-child, fault, custody and replay full-entry
+regressions cover these boundaries. Retained ThroughEvaluation services and
+ancillary adapter-file deletion diagnostics remain separate classes. This
+candidate does not close the overall cleanup or driver/orchestration audit.
 
 ## 4. Typed domain and wire contracts
 

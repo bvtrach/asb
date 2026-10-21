@@ -46,6 +46,7 @@ impl<'a> AdmittedAttempt<'a> {
 #[derive(Default)]
 pub(super) struct AttemptIssues {
     pub run_error: Option<String>,
+    pub capture_error: Option<String>,
     pub collector_errors: Vec<String>,
     pub output_error: Option<String>,
 }
@@ -107,6 +108,7 @@ impl std::ops::Deref for MeasuredOutput {
 
 pub(super) struct ExecutionEvidence {
     pub output: Output,
+    pub capture_complete: bool,
     pub run_dir: PathBuf,
     pub guest: Option<agents::driver::GuestResult>,
     pub elapsed_ms: u128,
@@ -126,17 +128,29 @@ impl ExecutionEvidence {
         // scanning that whole transcript would incorrectly fail the run.
         let child = &self.output;
         let guest = &self.guest;
+        let stdout = if self.capture_complete {
+            bounded(&child.stdout)
+        } else {
+            String::new()
+        };
         let final_response = match guest.as_ref() {
             Some(metadata) => metadata.final_response.clone(),
-            None => agents::final_response(agent, &bounded(&child.stdout), workspace),
+            None => agents::final_response(agent, &stdout, workspace),
         };
-        let adapter_failure = guest
-            .as_ref()
-            .and_then(|metadata| metadata.execution_failure.clone())
+        let adapter_failure = (!self.capture_complete)
+            .then(|| {
+                "agent output capture incomplete; transcript interpretation unavailable".to_owned()
+            })
             .or_else(|| {
-                agents::find(agent).and_then(|adapter| {
-                    adapter.execution_failure(&bounded(&child.stdout), &bounded(&child.stderr))
-                })
+                guest
+                    .as_ref()
+                    .and_then(|metadata| metadata.execution_failure.clone())
+                    .or_else(|| {
+                        agents::find(agent).and_then(|adapter| {
+                            adapter
+                                .execution_failure(&bounded(&child.stdout), &bounded(&child.stderr))
+                        })
+                    })
             });
         let agent_failure = if adapter_failure.is_some() {
             adapter_failure
@@ -194,9 +208,11 @@ pub(super) struct SettledAttempt {
 
 impl ExecutedAttempt {
     pub fn settle(mut self, cassette: Option<&(tape::Mode, PathBuf)>) -> SettledAttempt {
+        let mut proxy_validated = false;
         let proxy_evidence = match self.prepared.tape.take() {
             Some(session) => {
                 let completed = session.finish();
+                proxy_validated = completed.result.is_ok();
                 if let Err(error) = completed.result {
                     self.issues.run_error(error.to_string());
                 }
@@ -210,7 +226,7 @@ impl ExecutedAttempt {
         };
         // A partially served replay does not establish usage of its whole tape.
         let cassette_usage_verified =
-            !matches!(cassette, Some((tape::Mode::Replay, _))) || self.issues.run_error.is_none();
+            !matches!(cassette, Some((tape::Mode::Replay, _))) || proxy_validated;
         if let Some((tape::Mode::Record, cassette)) = cassette {
             match std::fs::metadata(cassette) {
                 Ok(metadata) if metadata.len() > 0 => {}

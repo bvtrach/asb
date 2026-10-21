@@ -300,9 +300,20 @@ pub(crate) fn load_run(
     config_path: &Path,
     config: &crate::benchmark::BenchmarkConfig,
 ) -> Result<BTreeMap<usize, Recorded>, Error> {
+    load_logs(config_path, config, |_| true)
+}
+
+fn load_logs(
+    config_path: &Path,
+    config: &crate::benchmark::BenchmarkConfig,
+    include: impl Fn(usize) -> bool,
+) -> Result<BTreeMap<usize, Recorded>, Error> {
     use std::io::{Seek, SeekFrom};
     let mut records = BTreeMap::new();
     for index in 1..=config.concurrency {
+        if !include(index) {
+            continue;
+        }
         let selected = crate::runner::replica::configuration(
             config,
             Identity {
@@ -322,11 +333,22 @@ pub(crate) fn load_run(
             }
             Ok(_) => (),
         }
-        let mut file = match fs::File::open(&path) {
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let mut file = match options.open(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             result => result.map_err(|error| invalid(&path, &error.to_string()))?,
         };
-        let size = file.metadata().map_err(crate::io_error)?.len();
+        let metadata = file.metadata().map_err(crate::io_error)?;
+        if !metadata.is_file() {
+            return Err(invalid(&path, "run log must be a regular file"));
+        }
+        let size = metadata.len();
         let offset = size.saturating_sub(super::MAX_BYTES);
         file.seek(SeekFrom::Start(offset))
             .map_err(crate::io_error)?;
@@ -377,6 +399,58 @@ pub(crate) fn load_run(
         );
     }
     Ok(records)
+}
+
+/// Sweep execution owns these fixed isolated log paths. Logs supply reporting
+/// evidence only, never completion records or resume/sealing permission. Compare
+/// subsequently validates selected configuration/task/policy/cohort bindings.
+pub(crate) fn add_sweep_logs(
+    records: &mut BTreeMap<usize, Recorded>,
+    directory: &Path,
+    configuration: &crate::benchmark::BenchmarkConfig,
+) -> Result<(), Error> {
+    let mut isolated = configuration.clone();
+    // Ignore the source benchmark's user-controlled log location: the actual
+    // sweep executor rewrites it into this isolated result directory.
+    isolated.log_file = std::path::absolute(directory.join("run.log"))
+        .map_err(crate::io_error)?
+        .to_string_lossy()
+        .into_owned();
+    // Explicit retained-grade imports/closures intentionally leave execution
+    // observations unknown. Their partial logs stay diagnostic, not competing
+    // execution evidence, and may be incomplete or malformed after interruption.
+    let logs = load_logs(&directory.join("benchmark.toml"), &isolated, |slot| {
+        !records.get(&slot).is_some_and(|record| {
+            matches!(
+                record.source,
+                "imported-official-grade" | "recovered-official-grade"
+            )
+        })
+    })?;
+    for (slot, log) in logs {
+        let declared = log.summary["replica_index"].as_u64();
+        if declared.is_some_and(|index| index != slot as u64)
+            || (configuration.concurrency > 1 && declared != Some(slot as u64))
+        {
+            return Err(invalid(
+                &log.path,
+                "latest sweep log does not match its replica slot",
+            ));
+        }
+        if let Some(recorded) = records.get_mut(&slot) {
+            // A newer/different log cannot silently borrow an older outcome's
+            // grade or cleanup. Reject conflicting observations before publish.
+            recorded.check_measurement(&log.summary)?;
+            for field in ["planning", "effective_budgets"] {
+                if let Some(value) = recorded_object(&log.summary, Some(recorded), field)? {
+                    recorded.summary[field] = value;
+                }
+            }
+        } else {
+            records.insert(slot, log);
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn add_imports(

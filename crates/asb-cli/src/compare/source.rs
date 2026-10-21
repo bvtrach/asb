@@ -259,18 +259,14 @@ fn load_configuration(
     let mut result_dir = sweep_results.join(format!("{index:03}-{}", benchmark_stem(&config)));
     let text = &request.configurations[&config];
     let (agent, workload, provider, model, concurrency) = benchmark_identity_text(&config, text)?;
-    let standalone = if single {
-        Some(
-            toml::from_str::<crate::benchmark::BenchmarkConfig>(text).map_err(|error| {
-                Error::Input(format!(
-                    "cannot parse benchmark {}: {error}",
-                    config.display()
-                ))
-            })?,
-        )
-    } else {
-        None
-    };
+    let configuration =
+        toml::from_str::<crate::benchmark::BenchmarkConfig>(text).map_err(|error| {
+            Error::Input(format!(
+                "cannot parse benchmark {}: {error}",
+                config.display()
+            ))
+        })?;
+    let standalone = single.then(|| configuration.clone());
     if let Some(configuration) = &standalone {
         result_dir = crate::runner::resolve_log_path(&config, &configuration.log_file)
             .parent()
@@ -320,6 +316,9 @@ fn load_configuration(
         return Err(Error::Input(
             "retained grades require their original saved sweep plan".into(),
         ));
+    }
+    if !single {
+        outcomes::add_sweep_logs(&mut outcomes, &result_dir, &configuration)?;
     }
     Ok(Configuration {
         index,

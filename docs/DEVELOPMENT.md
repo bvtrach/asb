@@ -164,6 +164,37 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+`cargo test --locked --offline --lib runner::capture` uses real local children
+for simultaneous stdout/stderr pressure, finite capture, closed/held pipes,
+execution/drain deadlines, writer failure, unwind and uncertain cleanup custody.
+An isolated Linux subreaper fixture owns and reaps the held-pipe descendant;
+unrelated sentinels survive. Deterministic private faults distinguish interrupted
+reads from permanent read failure and exercise pre-spawn keeper exhaustion and
+cleanup polling uncertainty. No output-reader thread or unbounded queue is used.
+The Unix transport fixture pressures an unread socket, checks cancellation and
+flag restoration, and rejects nonpipe output without changing its flags.
+`cargo test --locked --offline --lib full_runner_entry_bounded_capture` needs the
+current actual ASB binary built first. Five replay-only full-entry cases preserve
+true/false/native file grades, exactly-once grading/provider/workload cleanup and
+report outcomes while withholding receipts after capture limits/read faults.
+They retain validated cassette usage and independent mini-SWE artifact usage and
+steps, but reject usage inferred from the incomplete transcript. These qualify
+Linux execution, not native Windows or arbitrary blocking borrowed writers;
+the Windows private-pipe pump retains a source implementation, and non-Unix guest
+presentation remains caller-controlled. Retained workload services keep their
+existing ThroughEvaluation supervisor and are covered by the separate guest
+agent/owner-loss tests.
+`cargo test --locked --offline --lib actual_unmeasured_sweep_capture_failure`
+also runs actual sequential sweeps with true/false and nullable native rewards,
+automatic comparison, repeat regeneration and resume refusal without another
+client. Latest-log configuration/task/slot mutations and malformed trailing
+records must leave the previous report and source bytes unchanged. These use
+the same private process-local evaluator fixture; the native fixture declares
+matching selection metadata before normal saved-plan publication, not by
+editing retained evidence or adding an SDK capability. The bounded log fallback
+is reporting-only and cannot create missing completion receipts. Separate log
+tests reject latest-attempt conflicts with older private outcomes and ambiguous
+multi-replica slots, while preserving private record bytes.
 `cargo test --locked --offline --test tui_install` exercises the actual ASB
 install helper and real terminal backend with local fake npm/node executables.
 Closing the backend's output pipe forces EPIPE while the input PTY stays open:
@@ -434,6 +465,10 @@ through the real CLI with a fake client and loopback replay. It verifies exact
 counts, overlap/sequential batches, fresh material, private replay input copies,
 failure disposition, output closure and measurement override paths without
 credentials, real agents, containers or privileged tracing.
+Its capture-overflow regression retains independent true/false file grades,
+finishes the already-admitted sibling, withholds the incomplete slot's private
+outcome/receipts and stops before batch two. The common capture fixtures also
+require shared-launch failure notification before stopping the owned child.
 The repeat suite also routes Perfetto preflight through the actual CLI with
 external measurement destinations, including one inside a differently configured
 project. It uses fake tool probes and stops before tracing/agent launch, verifying
