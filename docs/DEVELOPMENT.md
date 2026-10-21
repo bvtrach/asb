@@ -164,6 +164,21 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+`cargo test --locked --offline --lib executables::tests` installs local shell
+fixtures through every registered agent/tool source-install route, then checks
+readiness and actually executes the selected fixture. Isolated subprocess
+cases cover external execution overrides, broken/non-executable/symlink
+candidates, host-tool policy and custom project roots. The Codex adapter also
+checks its native-package preference and explicit-source precedence. No package
+manager, provider, real agent or download is invoked by these path-policy tests.
+The native preparation regression combines Codex native-package preference with
+fresh HOME/CODEX_HOME, explicit override precedence and unusable-candidate refusal.
+`offline_cli::unusable_selected_agent_never_falls_back_to_a_different_path_installation`
+also runs the actual CLI with a valid marker-writing PATH fixture: non-executable
+and dangling project selections must refuse launch, while removing the local
+selection must actually launch that fixture. It uses legacy loopback replay and
+never contacts a provider or runs an installed coding client.
+
 `cargo test --locked --offline --lib install::source` checks atomic installation
 with local fake downloads and version probes. The shared private `OwnedReaper`
 is established fallibly before each downloader or version subprocess starts.
@@ -431,6 +446,16 @@ and local path-package sources stay in the denominator; no product module is exc
 Missing-project capability fixtures test the same private initialized-file guard
 used by production, and ancestor discovery uses an owned fixture parent/child.
 They never assume TMPDIR has no real ancestor project or pass one to host setup.
+
+`cargo test --locked --offline --lib project::` includes the shared host-setup
+request/consent/capability policy tests. Fake executors exercise the actual sysctl
+and cgroup orchestration, every prerequisite failure, interactive versus
+passwordless mode, independent group consent, `--yes`, invalid/empty/EOF answers,
+and reader/writer/flush errors. These tests execute no host commands. Existing
+isolated fake-sudo/proc-input fixtures additionally check production argv/stdin
+construction without changing sysctls or cgroups. A prompt or pre-execution
+output failure grants no approval; execution failures remain best-effort and
+never imply rollback of commands that already succeeded.
 
 Token accounting has synthetic, provider-free regression fixtures for all
 registered agent families, plus replay CLI checks for JSON, logs, and

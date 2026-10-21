@@ -25,6 +25,10 @@ pub(crate) trait AgentAdapter: Sync {
     fn executable(&self) -> &'static str;
     /// Project-local installation recipe for this exact adapter executable.
     fn recipe(&self) -> Recipe;
+    /// Adapter-owned package entry points, after an explicit local bin override.
+    fn preferred_executables(&self, _installation_root: &Path) -> Vec<PathBuf> {
+        Vec::new()
+    }
     fn runtime_inputs(
         &self,
         context: &crate::runtime_inputs::Context<'_>,
@@ -215,6 +219,7 @@ type FinalResponseHook = fn(&str, &Path) -> Option<String>;
 type ProcessHook = fn(&str) -> Result<Command, Error>;
 type StepCountHook = fn(&str, &str) -> Option<u64>;
 type FailureHook = fn(&str, &str) -> Option<String>;
+type PreferredExecutablesHook = fn(&Path) -> Vec<PathBuf>;
 type ResponseFailureHook = fn(Option<&str>) -> Option<String>;
 
 /// Trait-object implementation whose behavior is supplied by individual files.
@@ -234,6 +239,7 @@ pub(super) struct StaticAdapter {
     response_failure: Option<ResponseFailureHook>,
     replay_credential_vars: &'static [&'static str],
     state_environment_vars: &'static [&'static str],
+    preferred_executables: Option<PreferredExecutablesHook>,
 }
 impl StaticAdapter {
     pub(super) const fn new(
@@ -260,11 +266,20 @@ impl StaticAdapter {
             response_failure: None,
             replay_credential_vars: &[],
             state_environment_vars: &[],
+            preferred_executables: None,
         }
     }
 
     pub(super) const fn with_collection(mut self, collect: CollectionHook) -> Self {
         self.collect = Some(collect);
+        self
+    }
+
+    pub(super) const fn with_preferred_executables(
+        mut self,
+        hook: PreferredExecutablesHook,
+    ) -> Self {
+        self.preferred_executables = Some(hook);
         self
     }
 
@@ -326,6 +341,11 @@ impl AgentAdapter for StaticAdapter {
     }
     fn recipe(&self) -> Recipe {
         self.recipe
+    }
+    fn preferred_executables(&self, root: &Path) -> Vec<PathBuf> {
+        self.preferred_executables
+            .map(|hook| hook(root))
+            .unwrap_or_default()
     }
     fn supported_endpoints(&self) -> &'static [Support] {
         self.supported_endpoints
@@ -554,64 +574,39 @@ fn text_value(value: &serde_json::Value) -> Option<String> {
     }
 }
 
-pub(crate) fn resolve_executable(
-    id: &str,
-    executable: &str,
-    project_root: &Path,
-    tools_dir: &str,
-) -> Option<String> {
-    let mut candidates = Vec::new();
-    if let Some(directory) = std::env::var_os("ASB_TOOL_DIR") {
-        candidates.push(std::path::PathBuf::from(directory).join(executable));
-    }
-    let tools_root = project::resolve(project_root, tools_dir);
-    candidates.extend(executable_candidates(id, executable, &tools_root));
-    candidates
-        .into_iter()
-        .find(|candidate| candidate.is_file())
-        .and_then(|candidate| candidate.canonicalize().ok())
-        .map(|candidate| candidate.to_string_lossy().into_owned())
+pub(crate) fn local_lookup(id: &str, tools_root: &Path) -> crate::executables::Lookup {
+    let Some(adapter) = find(id) else {
+        return crate::executables::Lookup::Missing;
+    };
+    crate::executables::project_lookup(
+        tools_root,
+        adapter.id(),
+        adapter.executable(),
+        adapter.preferred_executables(&tools_root.join(adapter.id())),
+    )
 }
 
-fn executable_candidates(id: &str, executable: &str, tools_root: &Path) -> Vec<PathBuf> {
-    let root = tools_root.join(id);
-    let mut candidates = vec![
-        root.join("bin").join(executable),
-        root.join("node_modules/.bin").join(executable),
-        root.join("venv/bin").join(executable),
-        Path::new(".asb-tools/bin").join(executable),
-    ];
-    // The npm Codex launcher injects package-management metadata and can
-    // inherit host integration state.  Prefer its bundled native executable
-    // so benchmark runs are isolated from the enclosing Codex session.
-    if id == "codex" {
-        let (platform_package, target) = match (std::env::consts::OS, std::env::consts::ARCH) {
-            ("linux", "x86_64") => ("codex-linux-x64", "x86_64-unknown-linux-musl"),
-            ("linux", "aarch64") => ("codex-linux-arm64", "aarch64-unknown-linux-musl"),
-            ("macos", "x86_64") => ("codex-darwin-x64", "x86_64-apple-darwin"),
-            ("macos", "aarch64") => ("codex-darwin-arm64", "aarch64-apple-darwin"),
-            ("windows", "x86_64") => ("codex-win32-x64", "x86_64-pc-windows-msvc"),
-            ("windows", "aarch64") => ("codex-win32-arm64", "aarch64-pc-windows-msvc"),
-            _ => ("", ""),
-        };
-        if !platform_package.is_empty() {
-            candidates.insert(
-                0,
-                root.join("node_modules")
-                    .join("@openai")
-                    .join(platform_package)
-                    .join("vendor")
-                    .join(target)
-                    .join("bin")
-                    .join(executable),
-            );
+pub(crate) fn execution_lookup(
+    id: &str,
+    project_root: &Path,
+    tools_dir: &str,
+) -> crate::executables::Lookup {
+    let Some(adapter) = find(id) else {
+        return crate::executables::Lookup::Missing;
+    };
+    if let Some(directory) = std::env::var_os("ASB_TOOL_DIR") {
+        match crate::executables::lookup([PathBuf::from(directory).join(adapter.executable())]) {
+            crate::executables::Lookup::Missing => {}
+            other => return other,
         }
     }
-    candidates
+    local_lookup(id, &project::resolve(project_root, tools_dir))
 }
+
 pub(crate) fn resolve(id: &str, project_root: &Path, tools_dir: &str) -> Option<String> {
-    let adapter = find(id)?;
-    resolve_executable(adapter.id(), adapter.executable(), project_root, tools_dir)
+    execution_lookup(id, project_root, tools_dir)
+        .path()
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]

@@ -83,9 +83,17 @@ impl NativePlan<'_> {
             connection.as_ref().map(|connection| connection.interface),
         )?;
         let mut program = specification.program;
-        if let Some(local) = agents::resolve(&config.agent, project_root, &project_config.tools_dir)
-        {
-            program = local;
+        match agents::execution_lookup(&config.agent, project_root, &project_config.tools_dir) {
+            crate::executables::Lookup::Found(local) => {
+                program = local.to_string_lossy().into_owned();
+            }
+            crate::executables::Lookup::Missing => {}
+            crate::executables::Lookup::Unusable(path) => {
+                return Err(Error::Input(format!(
+                    "selected agent executable {} is not a usable executable file; repair the installation or explicit override before running",
+                    path.display()
+                )));
+            }
         }
         let mut command = agents::find(&config.agent).map_or_else(
             || Ok(Command::new(&program)),
@@ -227,6 +235,105 @@ impl PreparedNative {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn codex_native_preference_retains_fresh_session_configuration() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/native-plan-fixtures")
+            .join(workloads::TaskIdentity::local("codex-native", None).attempt_id);
+        let adapter = agents::find("codex").unwrap();
+        let Some(tool) = adapter
+            .preferred_executables(&root.join("tools/codex"))
+            .into_iter()
+            .next()
+        else {
+            return; // The adapter declares no native package on this platform.
+        };
+        std::fs::create_dir_all(tool.parent().unwrap()).unwrap();
+        std::fs::write(&tool, "#!/bin/sh\nexit 99\n").unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config: BenchmarkConfig = toml::from_str(
+            "agent='codex'\nprovider='openrouter'\nmodel='fixture'\nworkload='fixture'\n",
+        )
+        .unwrap();
+        let project = project::ProjectConfig {
+            tools_dir: "tools".into(),
+            ..Default::default()
+        };
+        let invocation = workloads::session::TaskInvocation {
+            identity: workloads::TaskIdentity::local("fixture", None),
+            input: "private fixture prompt".into(),
+            workspace: root.join("workspace"),
+        };
+        let connection = crate::endpoint::Connection {
+            interface: crate::endpoint::Interface::OpenAiResponses,
+            authentication: crate::endpoint::Authentication::Bearer,
+            base_url: "http://127.0.0.1:1/v1".into(),
+            credential: Some("asb-replay".into()),
+        };
+        let prepare = || {
+            NativePlan {
+                config_path: &root.join("benchmark.toml"),
+                config: &config,
+                project_root: &root,
+                project_config: &project,
+                invocation: &invocation,
+                fresh_state: true,
+                route: NativeRoute {
+                    connection: Some(&connection),
+                    provider_endpoint: Some(&connection.base_url),
+                    provider_credentials: None,
+                    tape_url: Some("http://127.0.0.1:1"),
+                    tape_mode: Some(tape::Mode::Replay),
+                },
+            }
+            .prepare(None)
+        };
+        let prepared = prepare().unwrap();
+        assert_eq!(prepared.command.get_program(), tool.canonicalize().unwrap());
+        let vars: std::collections::HashMap<_, _> = prepared.command.get_envs().collect();
+        let home = prepared.run_dir.join("state/home");
+        let codex_home = prepared.runtime_path.join("codex/config");
+        assert_eq!(vars[std::ffi::OsStr::new("HOME")], Some(home.as_os_str()));
+        assert_eq!(
+            vars[std::ffi::OsStr::new("CODEX_HOME")],
+            Some(codex_home.as_os_str())
+        );
+        assert!(home.is_dir());
+        assert!(codex_home.join("config.toml").is_file());
+        assert!(!codex_home.starts_with(&invocation.workspace));
+        assert_eq!(vars[std::ffi::OsStr::new("CODEX_SESSION_ID")], None);
+        let explicit = root.join("tools/codex/bin/codex");
+        std::fs::create_dir_all(explicit.parent().unwrap()).unwrap();
+        std::fs::write(&explicit, "#!/bin/sh\nexit 98\n").unwrap();
+        std::fs::set_permissions(&explicit, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            prepare().unwrap().command.get_program(),
+            explicit.canonicalize().unwrap()
+        );
+        // A broken explicit override cannot silently choose the valid native package.
+        std::fs::set_permissions(&explicit, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(
+            prepare()
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("not a usable executable")
+        );
+        std::fs::remove_file(&explicit).unwrap();
+        // Nor may a broken native package become a host-PATH launch.
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(
+            prepare()
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("not a usable executable")
+        );
+        std::fs::remove_file(&tool).unwrap();
+        assert_eq!(prepare().unwrap().command.get_program(), "codex");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn prepared_command_keeps_adapter_wrapper_route_and_replay_guard_before_gating() {

@@ -369,6 +369,8 @@ mod tests {
         use crate::workloads::outcome::*;
         let task = crate::workloads::TaskIdentity::local("bug-fix", Some("case"));
         BenchmarkData {
+            planning: None,
+            effective_budgets: None,
             legacy_evaluation_provenance: None,
             execution_plan_fingerprint: (!missing).then(|| "plan-P".into()),
             module: None,

@@ -17,6 +17,16 @@ impl Fixture {
         fs::write(&path, "fixture, never executed").unwrap();
         path
     }
+    fn executable(&self, path: &str) -> PathBuf {
+        let path = self.file(path);
+        fs::write(&path, "#!/bin/sh\nexit 99\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        path
+    }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -186,8 +196,11 @@ fn local_resolution_and_runtime_declarations_share_layout_and_helper_identity() 
         project: &project,
     };
     assert!(resolve("unknown-tool", &fixture.0, "tools").is_none());
-    let processor = fixture.file("tools/perfetto/bin/trace_processor_shell");
+    let processor = fixture.executable("tools/perfetto/bin/trace_processor_shell");
     let binary = fixture.file("tools/perfetto/bin/tracebox");
+    #[cfg(unix)]
+    assert!(resolve("perfetto", &fixture.0, "tools").is_none());
+    fixture.executable("tools/perfetto/bin/tracebox");
     let expected = binary.canonicalize().unwrap();
     assert_eq!(
         resolve("perfetto", &fixture.0, "tools"),
@@ -197,7 +210,7 @@ fn local_resolution_and_runtime_declarations_share_layout_and_helper_identity() 
     assert!(dependencies.contains(&crate::runtime_inputs::Dependency::program(processor)));
     assert!(dependencies.iter().any(|dependency|matches!(dependency,crate::runtime_inputs::Dependency::Program{path,..}if path==&expected)));
     fs::remove_file(binary).unwrap();
-    let binary = fixture.file("tools/perfetto/node_modules/.bin/tracebox");
+    let binary = fixture.executable("tools/perfetto/node_modules/.bin/tracebox");
     assert_eq!(
         resolve("perfetto", &fixture.0, "tools"),
         Some(
@@ -209,7 +222,7 @@ fn local_resolution_and_runtime_declarations_share_layout_and_helper_identity() 
         )
     );
     fs::remove_file(binary).unwrap();
-    let binary = fixture.file("tools/perfetto/venv/bin/tracebox");
+    let binary = fixture.executable("tools/perfetto/venv/bin/tracebox");
     assert_eq!(
         resolve("perfetto", &fixture.0, "tools"),
         Some(
@@ -220,7 +233,7 @@ fn local_resolution_and_runtime_declarations_share_layout_and_helper_identity() 
                 .into_owned()
         )
     );
-    fixture.file("tools/swebench/venv/bin/swebench");
+    fixture.executable("tools/swebench/venv/bin/swebench");
     let dependencies = find("swebench").unwrap().runtime_inputs(&context).unwrap();
     assert!(dependencies.iter().any(|dependency|matches!(dependency,crate::runtime_inputs::Dependency::Python{path,site:true}if path==&fixture.0.join("tools/swebench/venv/bin/python"))));
     assert_eq!(names().count(), all().len());

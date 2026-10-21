@@ -11,7 +11,29 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     command,
     prepare_adapter,
 )
-.with_state_environment_vars(&["CODEX_HOME"]);
+.with_state_environment_vars(&["CODEX_HOME"])
+.with_preferred_executables(preferred_executables);
+
+fn preferred_executables(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    // The npm launcher injects package-management metadata. Prefer the native
+    // package entry point, unless the project selected an explicit bin override.
+    let (package, target) = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => ("codex-linux-x64", "x86_64-unknown-linux-musl"),
+        ("linux", "aarch64") => ("codex-linux-arm64", "aarch64-unknown-linux-musl"),
+        ("macos", "x86_64") => ("codex-darwin-x64", "x86_64-apple-darwin"),
+        ("macos", "aarch64") => ("codex-darwin-arm64", "aarch64-apple-darwin"),
+        ("windows", "x86_64") => ("codex-win32-x64", "x86_64-pc-windows-msvc"),
+        ("windows", "aarch64") => ("codex-win32-arm64", "aarch64-pc-windows-msvc"),
+        _ => return Vec::new(),
+    };
+    vec![
+        root.join("node_modules/@openai")
+            .join(package)
+            .join("vendor")
+            .join(target)
+            .join("bin/codex"),
+    ]
+}
 fn command(context: &CommandContext<'_>) -> CommandSpec {
     CommandSpec {
         program: "codex".into(),
@@ -84,6 +106,50 @@ fn configure(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn native_package_preference_is_owned_here_and_explicit_source_still_wins() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/codex-path-fixtures")
+            .join(crate::tools::runtime::unique_id());
+        let installation = root.join("codex");
+        let preferred = preferred_executables(&installation);
+        if preferred.is_empty() {
+            return;
+        }
+        let native = &preferred[0];
+        let wrapper = installation.join("node_modules/.bin/codex");
+        let explicit = installation.join("bin/codex");
+        for path in [native, &wrapper] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "#!/bin/sh\nexit 0\n").unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert_eq!(
+            crate::agents::local_lookup("codex", &root).path(),
+            Some(native.canonicalize().unwrap())
+        );
+        assert!(crate::install::tool_available("codex", &root));
+        std::fs::create_dir_all(explicit.parent().unwrap()).unwrap();
+        std::fs::write(&explicit, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&explicit, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            crate::agents::local_lookup("codex", &root).path(),
+            Some(explicit.canonicalize().unwrap())
+        );
+        std::fs::remove_file(&explicit).unwrap();
+        std::fs::set_permissions(native, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(crate::agents::local_lookup("codex", &root).path().is_none());
+        assert!(!crate::install::tool_available("codex", &root));
+        std::fs::remove_file(native).unwrap();
+        assert_eq!(
+            crate::agents::local_lookup("codex", &root).path(),
+            Some(wrapper.canonicalize().unwrap())
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn provider_configuration_uses_safe_values_and_generic_credentials() {
         let directory =

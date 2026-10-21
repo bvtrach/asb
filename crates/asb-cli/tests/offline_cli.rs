@@ -91,6 +91,78 @@ fn expect_success(output: &Output) {
 }
 
 #[cfg(unix)]
+#[test]
+fn unusable_selected_agent_never_falls_back_to_a_different_path_installation() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let project = Project::new();
+    project.init();
+    project.write("benchmark.toml", "agent='codex'\nworkload='bug-fix'\nprovider='openrouter'\nmodel='fixture/model'\nworkspace='workspace'\nlog_file='run.log'\n");
+    let marker = project.0.join("host-agent-started");
+    project.write(
+        "host-bin/codex",
+        &format!(
+            "#!/bin/sh\nprintf started > '{}'\nexit 7\n",
+            marker.display()
+        ),
+    );
+    std::fs::set_permissions(
+        project.0.join("host-bin/codex"),
+        std::fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    let path = std::env::join_paths(std::iter::once(project.0.join("host-bin")).chain(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+    ))
+    .unwrap();
+    let body = serde_json::json!({"model":"fixture/model", "input":"fixture", "tools":[{"type":"function", "name":"fixture"}]}).to_string();
+    let interaction = serde_json::json!({"request":{"method":"POST","url":"/v1/responses","body":body},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{}"}});
+    project.write("input.jsonl", &format!("{interaction}\n"));
+    let run = || {
+        project.command_with_env(
+            &[
+                "run",
+                "benchmark.toml",
+                "--replay",
+                "--cassette",
+                "input.jsonl",
+            ],
+            &[("PATH", path.to_str().unwrap())],
+        )
+    };
+    let selected = project.0.join(".asb-tools/codex/bin/codex");
+    project.write(".asb-tools/codex/bin/codex", "not executable");
+    std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o600)).unwrap();
+    for broken_symlink in [false, true] {
+        if broken_symlink {
+            std::fs::remove_file(&selected).unwrap();
+            symlink(project.0.join("absent-native-package"), &selected).unwrap();
+        }
+        let output = run();
+        assert!(!output.status.success());
+        assert!(
+            stderr(&output).contains("not a usable executable"),
+            "{}",
+            stderr(&output)
+        );
+        assert!(
+            !marker.exists(),
+            "an unusable selection must never start the host agent"
+        );
+    }
+    std::fs::remove_file(&selected).unwrap();
+    let output = run();
+    assert!(
+        !output.status.success(),
+        "fixture agent deliberately exits unsuccessfully"
+    );
+    assert!(
+        marker.is_file(),
+        "genuinely missing local installation must retain PATH fallback: {}",
+        stderr(&output)
+    );
+}
+
+#[cfg(unix)]
 fn fake_perf_distribution(project: &Project, bin: &str) {
     use std::os::unix::fs::PermissionsExt;
     for (name, script) in [
