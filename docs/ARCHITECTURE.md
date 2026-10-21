@@ -58,6 +58,12 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   executable mismatches or disappearance revoke it and require fresh entry-point
   validation on re-entry. Title changes before initial admission can still leave
   the sampler unavailable; no initial executable-only fallback is guessed.
+  New admissions also require Linux `PF_FORKNOEXEC` to be clear in the
+  generation-checked proc stat read. A pending tool launch can otherwise expose
+  its parent's agent executable and arguments before exec. Fork-without-exec
+  workers are unclassified: passive entry-point inspection cannot distinguish
+  them from pending tool children. This limitation applies to both RSS and
+  worker-count lower bounds; no observation delay or guessed worker is added.
   This is sampled identity, not detection of an exec that preserves both the
   PID lifetime and identical interpreter executable between observations.
   Only matching descendants contribute to aggregate RSS or distinct PID/start-time

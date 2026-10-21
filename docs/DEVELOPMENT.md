@@ -77,6 +77,12 @@ The agent-process sampler regression launches a bounded local Node fixture,
 changes its process title and checks two seconds of continued sampling, an
 unrelated Node process and the original process's exit. It uses no provider,
 agent package, container or privileged collector.
+The deterministic pre-exec regression holds an owned child before exec using
+a bounded pipe handshake. Matching inherited identity must not enter the
+historical worker census or RSS total; executing the selected entry point
+still qualifies. The existing concurrent Node fixture retains exact worker
+counts and unrelated-script/tool exclusions. Fork-only workers remain an
+explicitly unclassified lower bound, not a guessed count.
 Run `asb run` with credentials only as an explicit local
 smoke/benchmark operation.
 
