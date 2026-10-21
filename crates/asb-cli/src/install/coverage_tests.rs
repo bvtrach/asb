@@ -361,6 +361,7 @@ fn download_contract(root: &Path) {
             .to_string()
             .contains("could not download fixture from https://fixture.invalid/failure")
     );
+    assert_eq!(fs::read(&destination).unwrap(), b"fixture data");
     let error = install_source_with_limit(
         "https://fixture.invalid/oversize",
         &root.join("oversize"),
@@ -371,7 +372,7 @@ fn download_contract(root: &Path) {
     assert!(error.to_string().contains("installation size limit"));
     assert_eq!(
         fs::read_to_string(root.join("download-invocations")).unwrap(),
-        "0 https://fixture.invalid/success\n0 https://fixture.invalid/failure\n1 https://fixture.invalid/oversize\n"
+        "1 https://fixture.invalid/success\n1 https://fixture.invalid/failure\n1 https://fixture.invalid/oversize\n"
     );
     fs::remove_file(root.join("bin/curl")).unwrap();
     let error =
