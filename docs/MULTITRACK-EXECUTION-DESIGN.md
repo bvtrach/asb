@@ -41,11 +41,13 @@ capture takes the existing stopped-preservation cancellation path.
 
 The three original SDK adapter implementations share an owned-container capture
 helper. It verifies the active resource journal, selected daemon and exact
-declared container before reading material. The current implementation covers a
-single non-root work directory with no mounts and no changes outside that root,
-apart from explicitly enumerated Docker runtime files/pseudo-filesystems. Root
-workspaces, changed ancestors, mounted inputs and additional services are refused;
-this foundation is not full original-environment support.
+declared container before reading material. The CLI supplies its running
+executable to stage and invoke the guest census for a single owned container's
+root filesystem plus full-content shared memory. Root workspaces and changes
+outside the work directory are covered. Actual mounts, additional services and
+complete runtime/network topology still need composition; this is not full
+original-environment support. The old non-root TAR path remains for direct
+protocol fixtures without a binary, never as a verified CLI fallback.
 
 Within that coverage, identity binds image filesystem layers and declared runtime
 configuration, adapter task/dataset/SDK definitions and actual prepared file
@@ -61,6 +63,35 @@ capture. Only raw index timestamp caches and raw reflog timestamps are normalize
 configuration, hooks, attributes and other Git files remain content-bound. The
 ASB-owned reset uses a stable per-command committer identity, not a global Git
 configuration change.
+
+### Controller-to-root observation integration
+
+`asb_material_root` binds two complete root observations, each bracketed by
+actual image/runtime and canonical Docker change inventories, including deletion
+facts. Exact Git-policy exclusions are rebased beneath the task workspace.
+Kernel pseudo-filesystems and enumerated Docker identity files retain explicit
+external-runtime exclusions; `/dev/shm` is read separately.
+
+Helper staging requires an absent destination and a real `/opt` ancestor. The
+existing bounded TAR reader verifies the exact file set, bytes, lengths and
+modes before execution and after each observation. Links, extras and substitutions
+are rejected. Reuse also requires the original verified metadata digest, not
+just a cached pathname; changed staging is never silently reuploaded.
+
+The private transport bounds input at 1 MiB and stdout/stderr at 4 KiB each,
+drains concurrently, supervises blocked stdin, inherited output, deadline and
+cancellation, and exposes no raw SDK/guest diagnostics. Local child reaping has
+a one-second bound; unresolved cleanup explicitly requires workload preservation.
+Stopping that CLI does not establish guest termination. SDK calls check the
+shared 420-second deadline around operations, but a blocked read can overshoot
+it by its 120-second socket timeout. The Rust controller's 600-second observation
+deadline is the outer watchdog; cancellation takes stopped preservation.
+
+Pure tests cover nonempty/deleted inventories, exact staged-tree reuse/mutation,
+two-round disagreement, no fallback and cancelled/blocked/oversized/unreapable
+transports. Supplying `ASB_TEST_BENCHMARK_ASB` to the opt-in original SWE material
+fixture qualifies this root path across two fresh preparations. A narrow or
+skipped fixture does not establish root integration.
 
 ### Broader coverage design constraints
 
@@ -213,8 +244,8 @@ not sweep resume receipts or permission to retry started attempts.
   ownership labels and attempt tags differ per execution, so raw source-build
   image IDs cannot by themselves represent stable material equality. Stable
   definition/content identity must remain distinct from actual-image provenance.
-  Extend the protocol foundation to root workspaces, declared mounts, multiple
-  services and changes outside the work directory, then qualify real installed
+  Extend root integration to declared mounts, multiple services and complete
+  runtime/network topology, then qualify real installed
   SDK environments. Do not replace missing coverage with definition-only hashes.
 - Integrate durable recording journals and saved bundle replay selections with
   the execution campaign, preserving diagnostics before a compatibility anchor

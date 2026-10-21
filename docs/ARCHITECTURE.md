@@ -241,9 +241,13 @@ service registry. Official sessions now expose an
 on-demand versioned material identity through the workload controller, separate
 from evaluator baseline evidence. The shared capture verifies declared resource
 ownership and binds actual prepared file content plus image/runtime definition.
-Its current single-container, non-root, unmounted scope explicitly rejects
-uncovered roots, mounts, services and outside-root changes. The bounded TAR
-reader never extracts files; legacy runs never request the capture. Broader
+The controller stages the running ASB helper into an absent owned root, verifies
+its exact bounded TAR tree before reuse/execution, and composes two complete
+image-anchored root observations with change/deletion inventories plus
+full-content shared memory. Actual mounts, services and complete runtime/network
+topology still need composition; unsupported coverage has no narrow fallback in
+verified CLI execution. The TAR reader never extracts files; legacy runs never
+request the capture. Broader
 official material coverage and real SDK qualification, bundled recording/replay
 and campaign-aware comparison remain integration work; see
 [the execution design](MULTITRACK-EXECUTION-DESIGN.md).

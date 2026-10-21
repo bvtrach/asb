@@ -100,7 +100,7 @@ class SweBenchTask:
         atomic_write(self.artifacts / "submission.json", encoded(submission))
         return submission
 
-    def initial_material(self):
+    def initial_material(self, binary=None):
         from asb_material import MaterialError, capture_task
         if self.invocation is None:
             raise ExecutionError("official task must be prepared before material capture")
@@ -129,7 +129,7 @@ class SweBenchTask:
         try:
             result = capture_task(self, {"baseline":self.invocation["baseline"],
                 "dataset":self.invocation["identity"]["dataset"],"sdk":self.invocation["sdk"],"git":before},
-                exclusions=[".git/index", ".git/logs"], deadline=deadline)
+                exclusions=[".git/index", ".git/logs"], deadline=deadline, binary=binary)
         except MaterialError as error:
             raise ExecutionError(str(error)) from None
         except Exception as error:

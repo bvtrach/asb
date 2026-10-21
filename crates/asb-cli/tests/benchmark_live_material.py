@@ -45,18 +45,19 @@ class PreparedMaterialQualification(unittest.TestCase):
                             self.assertTrue(chunks.closed)
                         finally:
                             chunks.close()
-                    first = task.initial_material()
-                    self.assertEqual(first, task.initial_material())
+                    binary = os.environ.get("ASB_TEST_BENCHMARK_ASB")
+                    first = task.initial_material(binary=binary)
+                    self.assertEqual(first, task.initial_material(binary=binary))
                     self.assertEqual(first["scope"], "prepared-workload-material-v1")
                     identities.append(first)
                     if index == 0:
                         # Intentional mutation is confined to this new task.
                         task.checked(["git", "config", "asb.materialQualification", "changed"])
-                        self.assertNotEqual(first, task.initial_material())
+                        self.assertNotEqual(first, task.initial_material(binary=binary))
                         task.checked(["git", "config", "--unset", "asb.materialQualification"])
                         task.checked(["touch", "asb-material-qualification-untracked.txt"])
                         with self.assertRaises(ExecutionError):
-                            task.initial_material()
+                            task.initial_material(binary=binary)
                 cleanup = json.loads((directory / "task-cleanup.json").read_bytes())
                 self.assertEqual(cleanup["status"], "removed")
         self.assertEqual(identities[0], identities[1])
@@ -64,6 +65,7 @@ class PreparedMaterialQualification(unittest.TestCase):
             "scope": "two-original-swe-preparations-not-full-population",
             "identities": identities, "agent_started": False,
             "provider_called": False, "evaluator_started": False,
+            "root_helper":bool(os.environ.get("ASB_TEST_BENCHMARK_ASB")),
         }, sort_keys=True) + "\n")
 
 

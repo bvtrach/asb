@@ -1,6 +1,16 @@
 //! Provider-free tests of the upstream workload protocol's pure data layer.
 
 #[test]
+fn owned_root_material_composes_complete_rounds_without_definition_fallbacks() {
+    python_protocol("benchmark_material_root.py");
+}
+
+#[test]
+fn material_helper_transport_is_bounded_cancellable_and_provider_free() {
+    python_protocol("benchmark_material_exec.py");
+}
+
+#[test]
 fn prepared_material_archive_identity_is_bounded_canonical_and_provider_free() {
     python_protocol("benchmark_material.py");
 }

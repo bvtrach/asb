@@ -68,6 +68,19 @@ class ProtocolTests(unittest.TestCase):
             source.close()
         return status, [json.loads(line) for line in output.getvalue().splitlines()], task
 
+    def test_material_runtime_is_forwarded_privately_without_agent_dispatch(self):
+        class MaterialTask(Task):
+            def initial_material(self, binary=None):
+                self.binary = binary
+                return {"schema_version":1,"scope":"prepared-workload-material-v1","sha256":"a"*64}
+        task = MaterialTask()
+        status, events, _ = self.run_protocol([{"op":"initial-material","binary":"/private/fixture-helper"},
+                                              {"op":"close"}], task)
+        self.assertEqual(status,0)
+        self.assertEqual(task.binary,"/private/fixture-helper")
+        self.assertEqual(task.commands,[])
+        self.assertNotIn("/private/fixture-helper",json.dumps(events))
+
     def test_selected_command_and_credentials_stay_in_private_request_not_events(self):
         status, events, task = self.run_protocol([
             {"op": "execute", "argv": ["selected-agent", "literal ; argument"], "environment": {"API_KEY": "fixture-key"}},

@@ -245,11 +245,11 @@ def grade_retained(retained, catalog_path, cancelled):
 
 
 class TerminalBenchTask:
-    def initial_material(self):
+    def initial_material(self, binary=None):
         from asb_material import MaterialError, capture_task
         try:
             return capture_task(self, {"baseline":self.invocation["baseline"],
-                "dataset":self.invocation["identity"]["dataset"],"sdk":self.invocation["sdk"]})
+                "dataset":self.invocation["identity"]["dataset"],"sdk":self.invocation["sdk"]}, binary=binary)
         except MaterialError as error:
             raise ExecutionError(str(error)) from None
         except Exception as error:

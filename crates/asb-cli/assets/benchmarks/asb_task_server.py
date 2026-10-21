@@ -108,7 +108,7 @@ def serve(task, source, destination, idle_timeout=900):
                         capture = getattr(task, "initial_material", None)
                         if capture is None:
                             raise ExecutionError("workload adapter has not declared prepared material coverage")
-                        emit("initial-material", material=capture())
+                        emit("initial-material", material=capture(binary=request["binary"]) if "binary" in request else capture())
                     else:
                         raise ExecutionError("unknown task protocol operation")
                 except ExecutionError as error:

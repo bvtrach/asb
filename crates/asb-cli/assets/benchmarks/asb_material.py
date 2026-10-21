@@ -89,7 +89,7 @@ def image_digest(attributes, configuration):
         "runtime": runtime}, "asb-image-material-v1")
 
 
-def capture_task(task, definition, exclusions=(), deadline=None):
+def capture_task(task, definition, exclusions=(), deadline=None, binary=None):
     """Verify the complete declared service set before the single-root path."""
     from asb_resources import RecoveryError, daemon_identity, owned_resource
     deadline = time.monotonic() + 420 if deadline is None else deadline
@@ -112,6 +112,9 @@ def capture_task(task, definition, exclusions=(), deadline=None):
         raise MaterialError("prepared material resource ownership could not be confirmed") from None
     if resource is None or resource.id != task.workspace.container.id:
         raise MaterialError("prepared material resource differs from the task container")
+    if binary is not None:
+        from asb_material_root import capture
+        return capture(task, definition, exclusions, binary, deadline)
     return capture_workdir(task.workspace, definition, exclusions, task.cancelled, deadline)
 
 
@@ -269,14 +272,33 @@ def pax_fields(payload):
     return result
 
 
+def validate_expected_entries(expected_entries, exclusions, root_metadata_only, max_file_bytes):
+    if expected_entries is not None:
+        if (not isinstance(expected_entries, dict) or not 1 <= len(expected_entries) <= 128
+                or exclusions or root_metadata_only):
+            raise MaterialError("invalid expected material tree declaration")
+        for name, item in expected_entries.items():
+            if (not isinstance(name,str) or (name and path_name(name) != name)
+                    or not isinstance(item,dict) or set(item) not in [{"kind","mode"},{"kind","mode","sha256","bytes"}]
+                    or item.get("kind") not in ["file","5"]
+                    or type(item.get("mode")) is not int or not 0 <= item["mode"] <= 0o7777
+                    or (item["kind"] == "file" and (set(item) != {"kind","mode","sha256","bytes"}
+                        or type(item["bytes"]) is not int or not 0 <= item["bytes"] <= max_file_bytes
+                        or not isinstance(item["sha256"],str) or len(item["sha256"]) != 64
+                        or any(char not in "0123456789abcdef" for char in item["sha256"])))
+                    or (item["kind"] == "5" and set(item) != {"kind","mode"})):
+                raise MaterialError("invalid expected material tree declaration")
+
+
 def tar_digest(chunks, prefix, exclusions=(), *, cancelled=None, deadline=None,
                max_entries=100000, max_bytes=2 * 1024**3, max_file_bytes=256 * 1024**2,
                max_names=16 * 1024**2, max_wire=3 * 1024**3, root_metadata_only=False,
-               expected_root_kind=None):
+               expected_root_kind=None, expected_entries=None):
     """Hash one declared tree; no file is extracted or symlink followed."""
     source = Reader(chunks, max_wire, time.monotonic() + 600 if deadline is None else deadline, cancelled)
     entries, seen, pending, headers, required_directories = {}, set(), {}, 0, set()
     try:
+        validate_expected_entries(expected_entries, exclusions, root_metadata_only, max_file_bytes)
         filesystem_root = root_metadata_only and prefix == "/"
         prefix = "" if filesystem_root else path_name(prefix)
         if not isinstance(exclusions, (list, tuple)) or len(exclusions) > 128:
@@ -401,6 +423,11 @@ def tar_digest(chunks, prefix, exclusions=(), *, cancelled=None, deadline=None,
         raise MaterialError("material archive omitted its declared root")
     if any(name not in entries or entries[name]["kind"] != "5" for name in required_directories):
         raise MaterialError("material archive omitted directory metadata")
+    if expected_entries is not None:
+        if set(entries) != set(expected_entries) or any(
+                any(entries[name].get(key) != value for key,value in expected.items())
+                for name,expected in expected_entries.items()):
+            raise MaterialError("staged material differs from its exact owned declaration")
     # TAR writers may choose different first names for the same hardlinked
     # inode. Canonicalize each group by its lowest path, not archive order.
     groups = {}

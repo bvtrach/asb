@@ -554,7 +554,7 @@ pub(crate) fn launch(
 }
 
 fn request_initial_material(controller: &mut Controller) -> Result<String, String> {
-    controller.send(&json!({"op":"initial-material"}))?;
+    controller.send(&json!({"op":"initial-material", "binary":runtime_binary()?}))?;
     let response = controller.receive(Instant::now() + Duration::from_secs(600))?;
     if response["event"] != "initial-material" {
         return Err(

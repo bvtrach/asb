@@ -89,6 +89,16 @@ worktree. It launches no agent, provider or evaluator. Its fixture containers
 are normally removed; diagnostic artifacts stay in the selected project. This
 is representative single-container qualification, not full-population or
 root/mount/service coverage. Do not treat a skipped opt-in as a passing live test.
+Set `ASB_TEST_BENCHMARK_ASB` as well to qualify the actual root-helper path in
+those two fresh preparations. `benchmark_material_root.py` and
+`benchmark_material_exec.py` supply provider/Docker-free composition, exact
+staging verification and transport-fault tests through `benchmark_protocol`.
+`benchmark_live_repeated_original.py` drives public `run --repeat 2` with
+concurrency two, the installed Pi client and four original SWE-bench Lite attempts
+against a synthetic loopback provider supplying a known repair. It uses the same
+ASB/project opt-ins, may download public client packages into isolated guests,
+and never uses a real provider key or calls an LLM. This qualifies the
+controller/runner/grade path, not AI solving or full mount/service coverage.
 The same opt-in checks actual Docker root-header metadata inspection, retained
 120-second socket read timeout and early response closure. Pure
 `benchmark_docker.py` tests response ownership before the first read, after a
