@@ -44,13 +44,25 @@ def capture(task, definition, exclusions, binary, deadline):
     if contexts is None:
         contexts = {}
         for role,resource in resources.items():
-            workdir = task.workspace.workdir if role == primary else resource.attrs["Config"].get("WorkingDir") or "/"
+            if role == primary:
+                if resource.id != task.workspace.container.id:
+                    raise MaterialError("prepared primary service differs from its task workspace")
+                # The primary task owns capture AND bootstrap. Keep verified
+                # runtime custody on that same object, not on a detached copy
+                # that bootstrap could mistake for an unstaged environment.
+                contexts[role] = task
+                continue
+            workdir = resource.attrs["Config"].get("WorkingDir") or "/"
             contexts[role] = SimpleNamespace(client=task.client,journal=task.journal,
                 artifacts=task.artifacts,cancelled=task.cancelled,
-                identity=resource.id,
+                attempt=getattr(task,"attempt",None),
                 workspace=SimpleNamespace(container=resource,workdir=workdir))
         task._material_service_contexts = contexts
-    if (set(contexts) != set(resources) or any(contexts[role].identity != resource.id
+        task._material_service_ids = {role:resource.id for role,resource in resources.items()}
+    service_ids = getattr(task,"_material_service_ids",{})
+    if (set(contexts) != set(resources) or contexts.get(primary) is not task
+            or service_ids != {role:resource.id for role,resource in resources.items()}
+            or any(contexts[role].workspace.container.id != resource.id
             for role,resource in resources.items())):
         raise MaterialError("prepared service identity changed after instrumentation")
     has_binds = any(item["Type"] == "bind" for resource in resources.values()
@@ -69,7 +81,7 @@ def capture(task, definition, exclusions, binary, deadline):
         check()
         current,live,current_primary = resolve(task,deadline)
         if current != receipt or current_primary != primary or any(
-                resource.id != contexts[role].identity for role,resource in live.items()):
+                resource.id != service_ids[role] for role,resource in live.items()):
             raise MaterialError("prepared service set changed during environment observation")
         network,addresses = network_snapshot(live)
         volume_attributes = {}
@@ -126,7 +138,7 @@ def capture(task, definition, exclusions, binary, deadline):
         check()
         current,live,current_primary = resolve(task,deadline)
         if current != receipt or current_primary != primary or any(
-                resource.id != contexts[role].identity for role,resource in live.items()):
+                resource.id != service_ids[role] for role,resource in live.items()):
             raise MaterialError("prepared bind service authority changed")
         views = []
         for role,sampler in samplers.items():

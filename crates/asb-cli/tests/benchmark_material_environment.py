@@ -170,6 +170,24 @@ class EnvironmentTests(unittest.TestCase):
         second,_ = self.capture(self.fixture("b",binds=True))
         self.assertEqual(first,second,"physical source names/inodes do not enter public identity")
 
+    def test_primary_capture_and_bootstrap_share_task_custody_without_copying_sidecar_state(self):
+        task = self.fixture()
+        task.attempt = "asb-"+"a"*32
+        sentinel = object()
+        task._material_runtime = sentinel
+        self.capture(task)
+        contexts = task._material_service_contexts
+        self.assertIs(contexts["main"],task)
+        self.assertIs(task._material_runtime,sentinel)
+        self.assertIsNot(contexts["database"],task)
+        self.assertEqual(contexts["database"].attempt,task.attempt)
+        self.assertFalse(hasattr(contexts["database"],"_material_runtime"))
+        self.capture(task)
+        self.assertIs(task._material_service_contexts["main"],task)
+        contexts["main"] = SimpleNamespace(workspace=task.workspace)
+        with self.assertRaisesRegex(MaterialError,"service identity changed"):
+            self.capture(task)
+
     def test_failed_or_changed_initial_guest_round_prevents_all_host_content_reads(self):
         for failure in [True,False]:
             task = self.fixture(binds=True)
