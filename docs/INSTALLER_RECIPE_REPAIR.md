@@ -15,7 +15,7 @@ preserving the foreign target. Automatic dependency installation has a separate
 intentional no-clobber contract; that behavior must not be replaced with the
 ordinary explicit reinstall policy.
 
-The shared staged-source installer validates regular-file identity, bounds and
+The shared staged-source installer validates regular-file type, bounds and
 checksum before invoking its optional version/probe callback. It then reopens
 the pathname and renames it without checking those obligations again. Two
 proposed regressions simulate a successful probe changing bytes or replacing
@@ -64,3 +64,29 @@ defects, not Goose failure behavior or whole-installer qualification.
 Independent review, actual red/green evidence, focused/full offline tests,
 Clippy/formatting/documentation gates, PR CI, merge, both post-merge jobs and a
 signed patch release remain required. The removed 90% coverage gate stays removed.
+
+## Independent review of the observed-red checkpoint
+
+A separate agent reviewed `cce58fa4` and the documentation-only `55ef7683`,
+confirmed all three source defects and approved the regressions and repair
+direction. This is not approval of an unimplemented production fix. Additional
+required coverage and design constraints:
+
+- Reject a different staged regular file even with identical content, size,
+  mode and matching checksum. Without a supplied checksum, still reject changed
+  same-inode content, lost executable mode, empty output and oversized output.
+- Exercise replacement between final validation and commit or explicit cleanup.
+  Verify namespace/source identity; never publish or delete a foreign arrival.
+  State private quiet-custody assumptions honestly, not a same-UID sandbox claim.
+  Explicit failed settlement must not silently retry in Drop.
+- Preserve old Host/Goose bytes and mode after copy, mode, probe, checksum,
+  sync and rename failures. Automatic dependency no-clobber also needs a real
+  concurrent-creator fixture, not only a preexisting destination.
+- Preserve raw OS paths for both local sources and project/destination names.
+  Goose checksum argv currently uses `to_string_lossy`; fix that path too,
+  rather than only adding a typed local-source wrapper.
+- Extraction failures, partial archives and unexpected extra entries must
+  retain unknown scratch with actionable diagnostics, never recursive deletion.
+- Include a real local successful version probe that mutates its own file,
+  plus healthy probe and multicall-basename tests. Keep pre-spawn cleanup
+  custody, existing bounded child waits and adapter-owned progress ordering.
