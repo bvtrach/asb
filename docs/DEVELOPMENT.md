@@ -403,6 +403,19 @@ working tracefs permissions: set `ASB_TEST_PERFETTO_TOOLS` to the project's
 tools directory and run the ignored `live_perfetto` tests serially. They use an
 offline replay fixture, not a live provider; ordinary CI does not require
 privileged tracing.
+`cargo test --locked --offline --lib disposition` checks the private operational
+decision matrix and twelve isolated actual-runner cases. Pending evaluation
+combined with collector, output, client, run or cleanup failure retains its
+evaluator state but records failed run status. True/false grades and native
+numeric rewards with null resolution survive broken streaming presentation.
+The fixtures check log/measurement/report/return consistency, private outcome
+records (not completed receipts), and exactly-once evaluation/workload/provider
+cleanup. Existing checkpoint invariants continue to reject pending/error or
+uncertain cleanup for sealing. No JSONL status field or public async evaluator
+is added. `unknown_historical_run_categories_remain_display_only_and_unscored`
+checks real report generation without rejecting extension strings.
+Build the actual binary first, as for the phase tests below.
+
 Runner phase regressions use `cargo test --locked --offline --lib runner::phases`
 and `cargo test --locked --offline --lib workloads::remote::execution_tests`.
 For a focused library-only invocation, run `cargo build --locked --offline`

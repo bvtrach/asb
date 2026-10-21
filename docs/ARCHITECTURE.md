@@ -337,6 +337,21 @@ on aborted transitions preserves unfinished resources rather than calling
 destructive normal-close from Drop. Provider bridge ownership remains outside
 these transitions until proxy settlement and evaluation have finished.
 
+After explicit cleanup, private `RunDisposition::from_facts` derives one
+operational status, primary `RunFailure` and success decision from independent
+execution, evaluation, cleanup, collector and presentation facts. `RunStatus`
+and `FailureKind` serialize the existing log/measurement strings; failure keys
+remain nullable and the public JSONL summary gains no status field. A pending
+evaluation remains pending even when an operational failure makes the run
+status failed. Numeric rewards, nullable resolution and Boolean grades do not
+change. Legacy measurement `success` remains grade-derived, not an operational
+success flag. Reports disclose actual recorded failures independently of that
+legacy flag, and otherwise preserve healthy pending/native outcomes. Historical
+status/failure strings remain display data, not strict enum-deserialization
+boundaries; workload evaluation kinds remain adapter-extensible and unknown
+historical grader categories remain unscored. Post-publication errors retain
+their separate ancillary policy rather than rewriting an immutable disposition.
+
 Post-execution lifecycle failures are ancillary `AttemptIssues`, not missing
 submissions or replacement grades. Dispatch attempts every collector hook and
 execution-scoped shutdown even after a hook fails. Before execution/resume,

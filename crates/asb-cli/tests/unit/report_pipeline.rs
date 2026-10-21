@@ -90,6 +90,46 @@ fn series(values: Value, timestamps: Option<Value>) -> TimeSeries {
 }
 
 #[test]
+fn unknown_historical_run_categories_remain_display_only_and_unscored() {
+    let fixture = Fixture::new();
+    let manifest = fixture.seed("", 4);
+    for index in 0..4 {
+        let evaluation_kind = match index {
+            2 => "adapter-smoke",
+            3 => "invalid-baseline",
+            _ => "historical-extension-grader",
+        };
+        fixture.write(&format!("sweep-results/{index:03}-{index}/measurements/run.json"), json!({
+            "status":if index < 2 {"historical-extension-status"} else {"unscored"},"success":true,"process_success":true,
+            "workload_success":true,"success_rate":1.0,"elapsed_ms":12,
+            "workload_evaluation":evaluation_kind,
+            "failure_kind":if index == 0 {Value::Null} else {json!("historical-extension-failure")},
+            "failure_reason":if index == 0 {Value::Null} else {json!("original historical diagnostic")}
+        }).to_string());
+    }
+    let report = generate(manifest.to_str().unwrap(), &mut Vec::new()).unwrap();
+    let comparison: Value =
+        serde_json::from_slice(&fs::read(report.with_file_name("comparison.json")).unwrap())
+            .unwrap();
+    let rows = comparison["benchmarks"].as_array().unwrap();
+    assert_eq!(rows[0]["status"], "historical-extension-status");
+    for row in &rows[1..] {
+        assert!(
+            row["status"]
+                .as_str()
+                .unwrap()
+                .contains("original historical diagnostic")
+        );
+    }
+    for row in rows {
+        assert!(row["metrics"].get("success_rate").is_none());
+    }
+    let html = fs::read_to_string(report).unwrap();
+    assert!(html.contains("historical-extension-status"));
+    assert!(html.contains("original historical diagnostic"));
+}
+
+#[test]
 fn structured_native_rewards_keep_missing_coverage_and_plan_partitions_after_publication() {
     use crate::workloads::outcome::*;
     let fixture = Fixture::new();

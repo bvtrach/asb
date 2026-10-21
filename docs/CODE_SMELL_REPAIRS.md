@@ -164,6 +164,34 @@ serialized representations and backwards reading. Add malformed/unknown
 protocol fixtures, round-trip and compatibility tests. Trial-set display
 suffixes should not serve as hidden identifiers. Pending.
 
+Run-disposition candidate (source review/qualification pending): an actual
+inconsistency allowed pending evaluator output to report `evaluation-pending`
+while collector/presentation errors recorded a primary failure. Private
+`RunDisposition::from_facts` now derives status, typed primary failure and
+operational success together, preserving existing failure precedence and wire
+strings through `RunStatus`/`FailureKind`. Evaluation outcomes, numeric rewards,
+nullable resolution, legacy grade fields, schema and nullability remain intact;
+public JSONL summaries do not gain status. Workload evaluation-kind extension
+strings and unrelated protocols are deliberately not closed by this class.
+Measurement producers use the typed decision; reports disclose recorded failures
+even when legacy measurement `success` preserves a true grade, and avoid inventing
+a run failure for healthy pending evaluation. Historical categories remain
+readable/display-only with unknown grader scopes unscored. The offline matrix
+covers true/false/native/pending/error outcomes and independent operational
+faults. Twelve actual replay-only full-entry cases bind logs, measurements,
+private outcome records, report JSON/HTML and return errors while requiring
+evaluation and cleanup exactly once even under broken presentation. Existing
+completed-outcome validation remains authoritative for reusable receipts.
+Focused offline qualification passed: runner 73 tests (three optional skips),
+report pipeline 27 (one optional browser skip), completed-outcome invariants 28,
+actual replay CLI two, continuation-diagnostics CLI six and unmeasured-sweep CLI
+two. The binary stayed unchanged throughout the final focused run. Strict
+all-target/all-feature Clippy and formatting pass. Independent source review,
+full-suite qualification and delivery remain pending; no version change or
+live-provider/host qualification is claimed.
+This is not a controller/dispatch protocol rewrite, workload-kind registry
+closure, live-provider qualification or delivery of every string-typing item.
+
 ## 5. Orchestration and structural decomposition
 
 Split the responsibilities of runner execution, comparison loading/rendering,
