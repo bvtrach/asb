@@ -3,7 +3,7 @@
 use super::*;
 use std::io::Write;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 #[path = "project_proc_boundaries.rs"]
 mod proc_boundaries;
 
