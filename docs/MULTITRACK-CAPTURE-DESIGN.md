@@ -68,6 +68,10 @@ Each batch gets aliases for its own selected IDs; proxies retain independent
 progress/cursors. Later batches never reopen the user source. Current prepared
 material is still derived by workload adapters: the bundle identity is an
 expectation at the first material gate, not a substitute for current observation.
+Known completeness is retained with each selected input in the saved plan.
+Explicit incomplete selection emits a prelaunch human warning or structured
+JSON `replay-warning`, without disabling matching/full-consumption validation;
+legacy completeness stays unknown rather than being guessed.
 
 CLI `--track` and `--seed` require replay. ZIP replay defaults to one fresh batch,
 regardless of extension. Explicit numeric legacy selection is supported without

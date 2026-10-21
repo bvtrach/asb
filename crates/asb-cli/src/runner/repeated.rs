@@ -86,6 +86,8 @@ struct Slot {
 #[derive(Serialize)]
 struct ReplayInput {
     #[serde(skip_serializing_if = "Option::is_none")]
+    complete: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     track: Option<u64>,
     source: PathBuf,
     private: PathBuf,
@@ -284,6 +286,7 @@ pub(super) fn run(
             .map_err(io_error)?;
         }
     }
+    replay::disclose_incomplete(&plan.replay_inputs, options.json, output)?;
     let mut reference: Option<Compatibility> = replay
         .as_ref()
         .and_then(|replay| replay.compatibility.clone());
@@ -595,6 +598,7 @@ fn replay_inputs(
                 .ok_or_else(|| Error::Input("replay inputs exceed 2 GiB aggregate bound".into()))?;
             let id = inputs.len();
             inputs.push(ReplayInput {
+                complete: None,
                 track: None,
                 source: source.clone(),
                 private: PathBuf::from(format!("inputs/recording-{}.jsonl", id + 1)),

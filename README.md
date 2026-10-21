@@ -425,7 +425,8 @@ saved before launch, independent of scheduling; output discloses the seed,
 algorithm and track IDs. `--track` accepts a positive ID or
 `min|max|median:tokens|duration|requests`. Unknown statistics are excluded from
 metric selection; ties use the lowest ID and median uses the lower middle.
-Explicit numeric selection can attempt an incomplete trace but never bypasses
+Explicit numeric selection warns before launch when a trace is incomplete
+(a structured `replay-warning` under `--json`) but never bypasses
 strict request matching and full-consumption checks. Each execution has private
 workspace/session state and proxy progress. Repeat/concurrency/measurements may
 differ from recording; agent/provider/model, prompt and workload/harness material

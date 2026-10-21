@@ -103,9 +103,15 @@ impl Prepared {
             let index = if let Some(index) = seen.get(id) {
                 *index
             } else {
-                let (path, bytes, sha256) = if let Some(manifest) = self.source.manifest() {
+                let (path, bytes, sha256, complete) = if let Some(manifest) = self.source.manifest()
+                {
                     let track = manifest.track(*id).map_err(input_error)?;
-                    (self.path.clone(), track.bytes, track.sha256.clone())
+                    (
+                        self.path.clone(),
+                        track.bytes,
+                        track.sha256.clone(),
+                        Some(track.complete),
+                    )
                 } else {
                     let track = self
                         .source
@@ -113,7 +119,7 @@ impl Prepared {
                         .iter()
                         .find(|track| track.id == *id)
                         .ok_or_else(|| Error::Input("selected legacy track disappeared".into()))?;
-                    (track.path.clone(), track.bytes, track.sha256.clone())
+                    (track.path.clone(), track.bytes, track.sha256.clone(), None)
                 };
                 total = total
                     .checked_add(bytes)
@@ -123,6 +129,7 @@ impl Prepared {
                     })?;
                 let index = inputs.len();
                 inputs.push(ReplayInput {
+                    complete,
                     track: Some(*id),
                     source: path,
                     private: PathBuf::from(format!("inputs/track-{id}.jsonl")),
@@ -202,6 +209,37 @@ fn generated_seed() -> u64 {
     let identity = crate::workloads::TaskIdentity::local("replay-selection-seed", None);
     let hash = Sha256::digest(identity.attempt_id.as_bytes());
     u64::from_le_bytes(hash[..8].try_into().expect("SHA-256 prefix"))
+}
+
+/// Explicit selection permits incomplete traces but must disclose their status
+/// before any material/client admission. Unknown legacy status stays unknown.
+pub(super) fn disclose_incomplete(
+    inputs: &[ReplayInput],
+    json: bool,
+    output: &mut dyn std::io::Write,
+) -> Result<(), Error> {
+    let ids: Vec<_> = inputs
+        .iter()
+        .filter(|input| input.complete == Some(false))
+        .filter_map(|input| input.track)
+        .collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    if json {
+        serde_json::to_writer(
+            &mut *output,
+            &serde_json::json!({
+                "type":"replay-warning", "code":"incomplete-track", "track_ids":ids,
+                "complete":false, "strict_matching":true, "full_consumption_required":true
+            }),
+        )
+        .map_err(|error| Error::Io(error.to_string()))?;
+        writeln!(output).map_err(crate::io_error)?;
+    } else {
+        writeln!(output, "Warning: selected track(s) {} are incomplete; strict matching and full consumption are still required.", ids.iter().map(u64::to_string).collect::<Vec<_>>().join(", ")).map_err(crate::io_error)?;
+    }
+    Ok(())
 }
 
 fn input_error(error: crate::cassette::Error) -> Error {

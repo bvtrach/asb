@@ -271,6 +271,15 @@ fn replay_bundle(project: &Project, extra: &[&str]) -> Output {
 }
 
 fn replay_from(project: &Project, cassette: Option<&str>, extra: &[&str]) -> Output {
+    replay_with_format(project, cassette, extra, true)
+}
+
+fn replay_with_format(
+    project: &Project,
+    cassette: Option<&str>,
+    extra: &[&str],
+    json: bool,
+) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_asb"));
     command
         .current_dir(&project.0)
@@ -278,7 +287,10 @@ fn replay_from(project: &Project, cassette: Option<&str>, extra: &[&str]) -> Out
         .env("HOME", &project.0)
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("OPENROUTER_BASE_URL", "http://127.0.0.1:1")
-        .args(["run", "benchmark.toml", "--replay", "--json"]);
+        .args(["run", "benchmark.toml", "--replay"]);
+    if json {
+        command.arg("--json");
+    }
     if let Some(cassette) = cassette {
         command.args(["--cassette", cassette]);
     }
@@ -558,6 +570,32 @@ fn incomplete_numeric_track_keeps_strict_full_consumption_and_continues_complete
     );
     let explicit = replay_bundle(&project, &["--repeat", "2", "--track", "1"]);
     assert!(!explicit.status.success());
+    let disclosure = records(&explicit.stdout);
+    let warning_index = disclosure
+        .iter()
+        .position(|row| row["type"] == "replay-warning")
+        .unwrap();
+    let warning = &disclosure[warning_index];
+    assert_eq!(warning["code"], "incomplete-track");
+    assert_eq!(warning["track_ids"], json!([1]));
+    assert_eq!(warning["complete"], false);
+    assert_eq!(warning["strict_matching"], true);
+    assert_eq!(warning["full_consumption_required"], true);
+    assert!(
+        warning_index
+            < disclosure
+                .iter()
+                .position(|row| row.get("task").is_some())
+                .unwrap()
+    );
+    let plan_path = disclosure
+        .iter()
+        .find(|row| row["type"] == "execution-plan")
+        .unwrap()["path"]
+        .as_str()
+        .unwrap();
+    let plan: Value = serde_json::from_slice(&fs::read(plan_path).unwrap()).unwrap();
+    assert_eq!(plan["replay_inputs"][0]["complete"], false);
     assert!(
         String::from_utf8_lossy(&explicit.stderr).contains("consumed 1 of 2"),
         "{}",
@@ -576,6 +614,19 @@ fn incomplete_numeric_track_keeps_strict_full_consumption_and_continues_complete
         rows.iter()
             .all(|row| row["process_success"] == true && row["workload_success"] == true)
     );
+    let human = replay_with_format(
+        &project,
+        Some("new-recording.jsonl"),
+        &["--track", "1"],
+        false,
+    );
+    assert!(!human.status.success());
+    let text = String::from_utf8(human.stdout).unwrap();
+    let warning = text
+        .find("Warning: selected track(s) 1 are incomplete")
+        .unwrap();
+    assert!(warning < text.find("success_rate=").unwrap());
+    assert!(text.contains("strict matching and full consumption are still required"));
 }
 
 #[test]
