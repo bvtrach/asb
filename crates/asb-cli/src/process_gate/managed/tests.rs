@@ -2,6 +2,7 @@ use super::*;
 use crate::process_cleanup::test_support;
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::process::Stdio;
 
 fn root() -> std::path::PathBuf {
@@ -12,13 +13,17 @@ fn root() -> std::path::PathBuf {
     root
 }
 
-fn command() -> Command {
-    let mut command = Command::new("unused-client");
+fn command(gate: &Path, program: &str, args: &[String]) -> (Command, crate::launch::CommandRoute) {
+    let mut launch = crate::launch::ProcessLaunch::new(program);
+    for arg in args {
+        launch.arg(arg);
+    }
+    let (mut command, route) = launch.native(Some(gate));
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    command
+    (command, route)
 }
 
 struct ReleaseOnDrop(std::path::PathBuf);
@@ -32,7 +37,8 @@ impl Drop for ReleaseOnDrop {
 fn failed_keeper_creation_never_spawns_a_launcher() {
     let scope = test_support::Scope::new();
     test_support::set_creation_failure(true);
-    let result = Admission::new(&mut command(), Path::new("/missing"), "/bin/true", &[]);
+    let (mut command, route) = command(Path::new("/missing"), "/bin/true", &[]);
+    let result = Admission::new(route.validate_gate(&mut command).unwrap());
     test_support::set_creation_failure(false);
     assert!(
         result
@@ -59,9 +65,9 @@ fn startup_poll_error_transfers_real_child_custody_without_resuming_it() {
     )
     .unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let mut command = command();
-    let admission = Admission::new(&mut command, &launcher, "/bin/true", &[]).unwrap();
-    let mut gate = admission.spawn(&mut command).unwrap();
+    let (mut command, route) = command(&launcher, "/bin/true", &[]);
+    let admission = Admission::new(route.validate_gate(&mut command).unwrap()).unwrap();
+    let mut gate = admission.spawn().unwrap();
     let pid = gate.id();
     let error = gate
         .stop_starting_before(Instant::now() + Duration::from_secs(1), |_| {
@@ -96,9 +102,9 @@ fn legacy_stopped_launcher_is_never_resumed_on_admission_failure() {
     )
     .unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let mut command = command();
-    let admission = Admission::new(&mut command, &launcher, "/bin/true", &[]).unwrap();
-    let mut gate = admission.spawn(&mut command).unwrap();
+    let (mut command, route) = command(&launcher, "/bin/true", &[]);
+    let admission = Admission::new(route.validate_gate(&mut command).unwrap()).unwrap();
+    let mut gate = admission.spawn().unwrap();
     let error = gate.resume().unwrap_err().to_string();
     assert!(error.contains("ABI is incompatible"), "{error}");
     assert!(error.contains("rebuild ASB"));
@@ -123,10 +129,10 @@ fn actual_gate_confirms_nonzero_status_and_hides_its_proof_descriptor() {
         binary.is_file(),
         "build current ASB binary before this test"
     );
-    let mut command = command();
     let args = vec!["-c".into(), "test -z \"${ASB_GATE_RECEIPT_FD+x}\" || exit 88; printf captured; printf diagnostic >&2; exit 7".into()];
-    let admission = Admission::new(&mut command, &binary, "/bin/sh", &args).unwrap();
-    let mut gate = admission.spawn(&mut command).unwrap();
+    let (mut command, route) = command(&binary, "/bin/sh", &args);
+    let admission = Admission::new(route.validate_gate(&mut command).unwrap()).unwrap();
+    let mut gate = admission.spawn().unwrap();
     let mut stdout = gate.take_stdout().unwrap();
     let mut stderr = gate.take_stderr().unwrap();
     gate.resume().unwrap();
@@ -147,11 +153,11 @@ fn protocol_fixture_exit_without_quiescence_is_never_a_clean_completion() {
     let scope = test_support::Scope::new();
     let root = root();
     let launcher = root.join("protocol-only.py");
-    std::fs::write(&launcher, "#!/usr/bin/python3\nimport os,signal,socket,struct\ns=socket.socket(fileno=int(os.environ['ASB_GATE_RECEIPT_FD']))\ns.sendall(b'ASBGATE1'+bytes([1,0,0,0])+struct.pack('<I',os.getpid()))\nos.kill(os.getpid(),signal.SIGSTOP)\nos._exit(0)\n").unwrap();
+    std::fs::write(&launcher, "#!/usr/bin/python3\nimport os,signal,socket,struct\ns=socket.socket(fileno=int(os.environ['ASB_GATE_RECEIPT_FD']))\ns.sendall(b'ASBGATE2'+bytes([1,0,0,0])+struct.pack('<I',os.getpid()))\nos.kill(os.getpid(),signal.SIGSTOP)\nos._exit(0)\n").unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let mut command = command();
-    let admission = Admission::new(&mut command, &launcher, "/bin/true", &[]).unwrap();
-    let mut gate = admission.spawn(&mut command).unwrap();
+    let (mut command, route) = command(&launcher, "/bin/true", &[]);
+    let admission = Admission::new(route.validate_gate(&mut command).unwrap()).unwrap();
+    let mut gate = admission.spawn().unwrap();
     gate.resume().unwrap();
     let error = gate.wait().unwrap_err().to_string();
     assert!(error.contains("without a quiescence receipt"), "{error}");
@@ -174,9 +180,35 @@ fn malformed_hello_is_rejected_without_admitting_the_fixture_client() {
     let marker = root.join("must-not-run");
     std::fs::write(&launcher, format!("#!/usr/bin/python3\nimport os,signal,socket\ns=socket.socket(fileno=int(os.environ['ASB_GATE_RECEIPT_FD']))\ns.sendall(b'not-compatible!!')\nos.kill(os.getpid(),signal.SIGSTOP)\nopen({:?},'w').write('unsafe')\n",marker.to_str().unwrap())).unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let mut command = command();
-    let admission = Admission::new(&mut command, &launcher, "/bin/true", &[]).unwrap();
-    let mut gate = admission.spawn(&mut command).unwrap();
+    let (mut command, route) = command(&launcher, "/bin/true", &[]);
+    let admission = Admission::new(route.validate_gate(&mut command).unwrap()).unwrap();
+    let mut gate = admission.spawn().unwrap();
+    assert!(
+        gate.resume()
+            .unwrap_err()
+            .to_string()
+            .contains("ABI is incompatible")
+    );
+    gate.stop().unwrap();
+    drop(gate);
+    scope.wait_finished();
+    assert!(!marker.exists());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn previous_real_abi_hello_is_rejected_before_new_target_wire_can_execute() {
+    let scope = test_support::Scope::new();
+    let root = root();
+    let launcher = root.join("previous-abi.py");
+    let marker = root.join("must-not-run");
+    // ASBGATE1 was the prior valid ABI, not random malformed input. It cannot
+    // interpret the new explicit target-argv0 framing and must not get CONT.
+    std::fs::write(&launcher, format!("#!/usr/bin/python3\nimport os,signal,socket,struct\ns=socket.socket(fileno=int(os.environ['ASB_GATE_RECEIPT_FD']))\ns.sendall(b'ASBGATE1'+bytes([1,0,0,0])+struct.pack('<I',os.getpid()))\nos.kill(os.getpid(),signal.SIGSTOP)\nopen({:?},'w').write('old runtime admitted incompatible arguments')\n",marker.to_str().unwrap())).unwrap();
+    std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let (mut command, route) = command(&launcher, "/bin/true", &[]);
+    let admission = Admission::new(route.validate_gate(&mut command).unwrap()).unwrap();
+    let mut gate = admission.spawn().unwrap();
     assert!(
         gate.resume()
             .unwrap_err()
@@ -199,11 +231,11 @@ fn cancellation_deadline_retains_a_live_protocol_guardian_until_its_own_finish()
     let complete = root.join("quiescent");
     // Protocol/keeper fixture only: actual descendant qualification is covered
     // by the native gate integration matrix, not this controllable stand-in.
-    std::fs::write(&launcher, format!("#!/usr/bin/python3\nimport os,signal,socket,struct,time\nfrom pathlib import Path\nsignal.signal(signal.SIGTERM,signal.SIG_IGN)\ns=socket.socket(fileno=int(os.environ['ASB_GATE_RECEIPT_FD']))\ns.sendall(b'ASBGATE1'+bytes([1,0,0,0])+struct.pack('<I',os.getpid()))\nos.kill(os.getpid(),signal.SIGSTOP)\nwhile not Path({:?}).exists(): time.sleep(.005)\nPath({:?}).write_text('finished under retained custody')\nos._exit(0)\n", release.to_str().unwrap(), complete.to_str().unwrap())).unwrap();
+    std::fs::write(&launcher, format!("#!/usr/bin/python3\nimport os,signal,socket,struct,time\nfrom pathlib import Path\nsignal.signal(signal.SIGTERM,signal.SIG_IGN)\ns=socket.socket(fileno=int(os.environ['ASB_GATE_RECEIPT_FD']))\ns.sendall(b'ASBGATE2'+bytes([1,0,0,0])+struct.pack('<I',os.getpid()))\nos.kill(os.getpid(),signal.SIGSTOP)\nwhile not Path({:?}).exists(): time.sleep(.005)\nPath({:?}).write_text('finished under retained custody')\nos._exit(0)\n", release.to_str().unwrap(), complete.to_str().unwrap())).unwrap();
     std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let mut command = command();
-    let admission = Admission::new(&mut command, &launcher, "/bin/true", &[]).unwrap();
-    let mut gate = admission.spawn(&mut command).unwrap();
+    let (mut command, route) = command(&launcher, "/bin/true", &[]);
+    let admission = Admission::new(route.validate_gate(&mut command).unwrap()).unwrap();
+    let mut gate = admission.spawn().unwrap();
     let _release_on_failure = ReleaseOnDrop(release.clone());
     gate.resume().unwrap();
     let pid = gate.id();
@@ -254,15 +286,9 @@ fn managed_cancellation_quiesces_real_double_forked_term_resistant_writers() {
         release.to_str().unwrap(),
         late_write.to_str().unwrap()
     );
-    let mut command = command();
-    let admission = Admission::new(
-        &mut command,
-        &binary,
-        "/usr/bin/python3",
-        &["-c".into(), script],
-    )
-    .unwrap();
-    let mut gate = admission.spawn(&mut command).unwrap();
+    let (mut command, route) = command(&binary, "/usr/bin/python3", &["-c".into(), script]);
+    let admission = Admission::new(route.validate_gate(&mut command).unwrap()).unwrap();
+    let mut gate = admission.spawn().unwrap();
     gate.resume().unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     while !helper_pid.exists() {

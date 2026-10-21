@@ -862,9 +862,9 @@ impl Session {
         self.shared_artifacts.get(&kind).map(PathBuf::as_path)
     }
 
-    pub(crate) fn agent_launch_prepared(&mut self, command: &Command) {
+    pub(crate) fn agent_launch_prepared(&mut self, target: &crate::launch::TargetLaunch) {
         for collector in self.adapters.clone() {
-            collector.agent_launch_prepared(self, command);
+            collector.agent_launch_prepared(self, target);
         }
     }
 

@@ -484,6 +484,30 @@ kills an admitted guardian. Parent exit still wakes the independently owned
 gate through its existing pinned watcher. This is not a promise that an
 unkillable kernel task disappears within the caller deadline, nor a repair of
 the separate pre-exec allocation and output-reader resource-limit classes.
+The staged launch-descriptor repair separates an adapter's `ProcessLaunch`
+(raw OS executable, argument prefix and explicit client argv[0]) from its actual
+native `Command`. That command is constructed as the gate before any provider,
+adapter, environment, working-directory or I/O configuration and is never
+rebuilt from getters. Rust therefore applies the real `env_clear`, removals,
+overrides, stdio, child credentials and custom process settings. The remaining
+ASB pre-exec callback only changes the private receipt descriptor's CLOEXEC
+flag using `fcntl` and captures an OS error; it allocates no argument/environment
+buffers and never reads the environment after fork. A typed target view keeps
+collectors from treating the gate executable and private framing as the agent.
+The same adapter descriptor constructs direct commands for guest execution and
+runtime input discovery. Client argv[0] belongs in the descriptor, not in the
+gate command's argv[0]. Private `ASBGATE2` admission refuses the previous
+`ASBGATE1` runtime before CONT because it cannot interpret the new target frame.
+The actual native child retains PATH lookup under its final environment. A
+collector cannot infer inheritance versus `env_clear` from `Command` getters;
+bare targets without a provable explicit PATH and unsupported byte-level
+identities remain unavailable instead of being guessed from host PATH.
+Before establishing cleanup custody, the private route verifies the original
+gate executable, exact OS-string target framing and initial adapter arguments.
+A changed carrier, replaced prefix or truncation fails without spawning a child
+or creating a reaper. Admission
+accepts only that validated gated-route token and holds its exclusive command
+borrow through spawn, so there is no mutable configuration gap after checking.
 The native supervisor and its idle watcher are part of the measured process
 tree; process-tree totals include that instrumentation overhead. The watcher
 is created before cgroup attachment, so it remains outside the new accounting
