@@ -68,6 +68,7 @@ row = json.dumps({'batch':batch,'replica':replica,'workspace':str(workspace),'be
 fd = os.open(root/'attempts.jsonl',os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
 os.write(fd,row.encode()); os.close(fd)
 if batch == 1 and replica == 1:
+    if (root/'block-outcome-first').exists(): (workspace.parent/'.asb-completions').write_text('retain this blocking fixture')
     if (root/'grader-error-first').exists(): (workspace/'src/parser.py').write_bytes(bytes([255]))
     if (root/'mutate-source').exists(): (root/'input.jsonl').write_text('changed after planning')
     if (root/'mutate-prompt').exists(): (root/'workloads/bug-fix.txt').write_text('Changed instructions must not launch another batch.')
@@ -115,6 +116,39 @@ fn records(bytes: &[u8]) -> Vec<Value> {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
+}
+
+#[test]
+fn missing_optional_outcome_keeps_grade_but_stops_repeated_batch_admission() {
+    let project = Project::new();
+    project.config(1);
+    fs::write(
+        project.0.join("block-outcome-first"),
+        "inject outcome storage failure",
+    )
+    .unwrap();
+    let output = project.run("2");
+    assert!(!output.status.success());
+    let rows = records(&output.stdout);
+    let summaries: Vec<_> = rows
+        .iter()
+        .filter(|row| row.get("process_success").is_some())
+        .collect();
+    assert_eq!(summaries.len(), 1, "{rows:?}");
+    assert_eq!(summaries[0]["process_success"], true);
+    assert_eq!(summaries[0]["workload_success"], true);
+    assert!(
+        rows.iter().any(|row| row["event"] == "continuation_warning"
+            && row["code"] == "task_outcome_unavailable")
+    );
+    assert_eq!(
+        fs::read_to_string(project.0.join("attempts.jsonl"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    assert!(!project.0.join("barrier-2-1").exists());
 }
 
 #[test]
@@ -575,10 +609,26 @@ fn sparse_legacy_replica_64_is_resolved_bound_and_replayed() {
 
 #[test]
 fn closed_output_stops_admission_after_joining_the_current_batch() {
+    closed_output_stops_admission(false);
+}
+
+#[test]
+fn closed_output_with_grader_failure_stops_after_joining_the_current_batch() {
+    closed_output_stops_admission(true);
+}
+
+fn closed_output_stops_admission(grader_failure: bool) {
     use std::io::BufRead;
     use std::process::Stdio;
     let project = Project::new();
     project.config(2);
+    if grader_failure {
+        fs::write(
+            project.0.join("grader-error-first"),
+            "inject grader failure",
+        )
+        .unwrap();
+    }
     let mut child = Command::new(env!("CARGO_BIN_EXE_asb"))
         .current_dir(&project.0)
         .isolated_env()
@@ -620,6 +670,28 @@ fn closed_output_stops_admission_after_joining_the_current_batch() {
         fs::read_dir(root.join("batch-1/outcomes")).unwrap().count(),
         2
     );
+    if grader_failure {
+        let summaries: Vec<Value> = fs::read_dir(root.join("batch-1/outcomes"))
+            .unwrap()
+            .map(|entry| {
+                let link: Value =
+                    serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap();
+                let outcome: Value = serde_json::from_slice(
+                    &fs::read(root.join(link["path"].as_str().unwrap())).unwrap(),
+                )
+                .unwrap();
+                outcome["summary"].clone()
+            })
+            .collect();
+        assert_eq!(
+            summaries
+                .iter()
+                .filter(|row| row["failure_kind"] == "grader_error"
+                    && row["workload_success"].is_null())
+                .count(),
+            1
+        );
+    }
 }
 
 #[test]

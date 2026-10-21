@@ -4,6 +4,10 @@
 //! extensible catalog of collector-specific adapters.
 
 pub(crate) mod adapters;
+mod output;
+#[cfg(test)]
+pub(crate) use output::process_output_fixture;
+pub(crate) use output::{read_complete_output, validate_processed_output};
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -13,11 +17,13 @@ pub(crate) struct ProcessContext<'a> {
     pub status: &'a std::process::ExitStatus,
     pub stdout: &'a str,
     pub stderr: &'a str,
+    pub stdout_path: &'a Path,
     /// Complete stopped-collector output, available only during processing.
     /// The strings above remain bounded diagnostics, not measurement inputs.
     pub stderr_path: &'a Path,
 }
 
+#[derive(serde::Serialize)]
 pub(crate) struct ProcessData {
     pub status: String,
     pub metrics: BTreeMap<String, f64>,

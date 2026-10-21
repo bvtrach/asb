@@ -11,6 +11,13 @@ pub(super) struct Context<'a> {
     pub outputs: &'a [PathBuf],
 }
 
+pub(super) fn directory(config: &Path, log: &str) -> PathBuf {
+    resolve_log_path(config, log)
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(".asb-completions")
+}
+
 pub(super) fn persist(
     config: &Path,
     log: &str,
@@ -23,11 +30,8 @@ pub(super) fn persist(
     if !context.replica.valid() {
         return Err(Error::Input("invalid completion replica identity".into()));
     }
+    let directory = directory(config, log);
     let log = resolve_log_path(config, log);
-    let directory = log
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(".asb-completions");
     if let Ok(metadata) = std::fs::symlink_metadata(&directory)
         && !metadata.is_dir()
     {

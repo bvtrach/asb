@@ -192,7 +192,7 @@ impl Inputs {
             "index":index,"entry":entry,"input_digest":self.initial.digest})
     }
 
-    fn completion_path(&self, index: usize) -> PathBuf {
+    pub(in crate::sweep) fn completion_path(&self, index: usize) -> PathBuf {
         self.directory
             .join("completed")
             .join(format!("{index:06}.json"))
