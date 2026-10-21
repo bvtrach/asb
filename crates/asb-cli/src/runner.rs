@@ -1728,6 +1728,7 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
         "model": result.model,
         "task": result.task,
         "process_success": result.process_success,
+        "process_termination": result.observation.process_termination,
         "workload_success": result.workload_success,
         "workload_resource_disposition": result.workload_resource_disposition,
         "workload_artifacts": result.workload_artifacts,
@@ -1743,6 +1744,10 @@ fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Err
         "steps": result.steps,
         "token_usage": result.token_usage,
     });
+    if let Some(diagnostic) = result.observation.process_termination_diagnostic {
+        summary["process_termination_diagnostic"] =
+            serde_json::to_value(diagnostic).map_err(|error| Error::Io(error.to_string()))?;
+    }
     if let Some(recording) = &result.recording {
         summary["recording"] =
             serde_json::to_value(recording).map_err(|error| Error::Io(error.to_string()))?;
