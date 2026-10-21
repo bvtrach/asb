@@ -300,6 +300,9 @@ impl Inputs {
                 "the previous sweep does not have stable or pending declared inputs",
             ));
         }
+        if plan.execution.is_some() {
+            campaigns::verify_private_inputs(results, plan)?;
+        }
         let current = Self::build(parent, results, plan, mode, replay_sources)?;
         if current.initial != saved.initial {
             return Err(resume_error(

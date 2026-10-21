@@ -146,3 +146,69 @@ fn later_invalid_campaign_reference_cannot_become_an_input_declaration() {
     fs::write(later, original).unwrap();
     assert!(input_roots(&results, &plan).is_ok());
 }
+
+#[test]
+fn continuation_private_inputs_match_original_declarations_without_source_archives() {
+    let (_fixture, plan, results) = published(crate::tape::Mode::Replay);
+    let layouts = plan.read_campaigns(&results).unwrap();
+    for layout in &layouts {
+        fs::remove_file(layout.plan.replay_source.as_ref().unwrap()).unwrap();
+    }
+    verify_private_inputs(&results, &plan).unwrap();
+    let paths: Vec<_> = layouts
+        .iter()
+        .map(|layout| layout.root.join(&layout.plan.replay_inputs[0].private))
+        .collect();
+    // Matching length alone, including bytes sealed after staging corruption,
+    // cannot stand in for the original declared selected-track checksum.
+    fs::write(&paths[0], b"[]\n").unwrap();
+    assert!(
+        verify_private_inputs(&results, &plan)
+            .unwrap_err()
+            .to_string()
+            .contains("bytes differ")
+    );
+    // The whole metadata population is checked before the first payload hash.
+    fs::write(&paths[1], b"too long\n").unwrap();
+    assert!(
+        verify_private_inputs(&results, &plan)
+            .unwrap_err()
+            .to_string()
+            .contains("length differs")
+    );
+    fs::write(&paths[0], b"{}\n").unwrap();
+    fs::write(&paths[1], b"{}\n").unwrap();
+    verify_private_inputs(&results, &plan).unwrap();
+    for layout in &layouts {
+        assert!(!layout.root.join("batch-1").exists());
+    }
+    assert!(!results.join(".checkpoint").exists());
+}
+
+#[test]
+fn continuation_private_input_aliases_are_rejected_without_modifying_targets() {
+    use std::os::unix::fs::symlink;
+    let (fixture, plan, results) = published(crate::tape::Mode::Replay);
+    let layouts = plan.read_campaigns(&results).unwrap();
+    let input = layouts[1]
+        .root
+        .join(&layouts[1].plan.replay_inputs[0].private);
+    let foreign = fixture.0.join("foreign.jsonl");
+    fs::write(&foreign, b"{}\n").unwrap();
+    fs::remove_file(&input).unwrap();
+    symlink(&foreign, &input).unwrap();
+    assert!(verify_private_inputs(&results, &plan).is_err());
+    assert_eq!(fs::read(&foreign).unwrap(), b"{}\n");
+    fs::remove_file(&input).unwrap();
+    fs::write(&input, b"{}\n").unwrap();
+    let parent = input.parent().unwrap();
+    let retained = parent.with_extension("retained");
+    fs::rename(parent, &retained).unwrap();
+    symlink(&retained, parent).unwrap();
+    assert!(verify_private_inputs(&results, &plan).is_err());
+    assert_eq!(
+        fs::read(retained.join(input.file_name().unwrap())).unwrap(),
+        b"{}\n"
+    );
+    assert!(!results.join(".checkpoint").exists());
+}

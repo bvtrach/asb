@@ -7,19 +7,7 @@ pub(super) fn input_roots(results: &Path, plan: &SweepPlan) -> Result<Vec<Root>,
     // Share the exact index/configuration/selection/capacity binding used by
     // comparison. No outcome, growing journal or recording payload is read.
     let layouts = plan.read_campaigns(results)?;
-    let mut cost = InputCost::default();
-    for layout in &layouts {
-        cost = cost.checked_add(InputCost {
-            inputs: layout.plan.replay_inputs.len(),
-            bytes: layout
-                .plan
-                .replay_inputs
-                .iter()
-                .map(|input| input.bytes)
-                .sum(),
-            ..Default::default()
-        })?;
-    }
+    admit_cost(&layouts)?;
     let mut roots = Vec::new();
     for (index, layout) in layouts.iter().enumerate() {
         roots.push(Root::path(
@@ -38,6 +26,37 @@ pub(super) fn input_roots(results: &Path, plan: &SweepPlan) -> Result<Vec<Root>,
         }
     }
     Ok(roots)
+}
+
+fn admit_cost(layouts: &[crate::runner::campaign::reading::Layout]) -> Result<(), Error> {
+    let mut cost = InputCost::default();
+    for layout in layouts {
+        cost = cost.checked_add(InputCost {
+            inputs: layout.plan.replay_inputs.len(),
+            bytes: layout
+                .plan
+                .replay_inputs
+                .iter()
+                .map(|input| input.bytes)
+                .sum(),
+            ..Default::default()
+        })?;
+    }
+    Ok(())
+}
+
+/// Original private payload declarations must agree before a modern input seal
+/// can authorize further continuation checks. No directory or receipt is made.
+pub(super) fn verify_private_inputs(results: &Path, plan: &SweepPlan) -> Result<(), Error> {
+    let layouts = plan.read_campaigns(results)?;
+    admit_cost(&layouts)?;
+    for layout in &layouts {
+        layout.inspect_private_replay()?;
+    }
+    for layout in &layouts {
+        layout.verify_private_replay()?;
+    }
+    Ok(())
 }
 
 #[cfg(all(test, unix))]

@@ -55,6 +55,57 @@ fn bounded_file(file: File, limit: u64) -> Result<Vec<u8>, Error> {
 }
 
 impl Layout {
+    fn replay_file(&self, input: &super::ReplayInput) -> Result<File, Error> {
+        #[cfg(unix)]
+        let file = rooted::open(&self.root, &input.private)?;
+        #[cfg(not(unix))]
+        let file = OpenOptions::new()
+            .read(true)
+            .open(self.root.join(&input.private))
+            .map_err(io_error)?;
+        let metadata = file.metadata().map_err(io_error)?;
+        if !metadata.is_file() || metadata.len() != input.bytes {
+            return Err(invalid(
+                "private replay input type or length differs from plan",
+            ));
+        }
+        Ok(file)
+    }
+
+    /// Metadata-only admission: callers inspect every campaign before hashing
+    /// any private payload. This does not read the original source archive.
+    pub(crate) fn inspect_private_replay(&self) -> Result<(), Error> {
+        for input in &self.plan.replay_inputs {
+            self.replay_file(input)?;
+        }
+        Ok(())
+    }
+
+    /// Bind staged bytes to their original declaration, not merely a later
+    /// stability seal. Streaming uses one descriptor and a fixed-size buffer.
+    /// This alone proves neither slot settlement nor permission to resume.
+    pub(crate) fn verify_private_replay(&self) -> Result<(), Error> {
+        use sha2::{Digest, Sha256};
+        for input in &self.plan.replay_inputs {
+            let mut file = self.replay_file(input)?.take(input.bytes + 1);
+            let mut digest = Sha256::new();
+            let mut bytes = 0u64;
+            let mut buffer = [0u8; 64 * 1024];
+            loop {
+                let count = file.read(&mut buffer).map_err(io_error)?;
+                if count == 0 {
+                    break;
+                }
+                bytes += count as u64;
+                digest.update(&buffer[..count]);
+            }
+            if bytes != input.bytes || format!("{:x}", digest.finalize()) != input.sha256 {
+                return Err(invalid("private replay input bytes differ from plan"));
+            }
+        }
+        Ok(())
+    }
+
     pub fn read(path: &Path) -> Result<Self, Error> {
         let bytes = bounded(path, MAX_PLAN_BYTES)?;
         let layout = Self::decode(path, &bytes)?;

@@ -366,6 +366,16 @@ and private inputs from disk. Historical plans without this optional field
 remain inspectable; absence must never authorize pending bundled continuation.
 Continuation still needs the input and slot checks above before using it.
 
+The modern input-resume primitive now validates all campaign references and
+aggregate selected-input costs, checks every private file's metadata, then
+streams each payload against its original saved length and SHA-256. On Unix,
+descriptor-relative opens reject intermediate and final symlinks. Verification
+uses one payload descriptor and a fixed 64 KiB buffer; it neither decodes the
+original archive nor creates receipts. Tests cover same-length corruption,
+later metadata rejection, removed original sources and both alias levels.
+This guards the gap between staging and initial sealing, but is not an atomic
+filesystem snapshot or permission to resume: full slot admission remains pending.
+
 The first current-main integrated suite retained one library failure: Linux
 returned `ETXTBSY` when the native-gate argument/environment fixture executed its
 new mock script; all other library and integration targets completed normally.
