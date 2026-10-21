@@ -324,12 +324,7 @@ pub fn configure_host(
 ) -> Result<(), Error> {
     let start = root.unwrap_or_else(|| PathBuf::from("."));
     let (root, mut config) = load(&start)?;
-    let path = root.join(CONFIG_DIR).join(CONFIG_FILE);
-    if !path.is_file() {
-        return Err(Error::Input(
-            "no initialized project found; run `asb init` first".into(),
-        ));
-    }
+    let path = initialized_config_path(&root)?;
     config.cgroup_parent = configure_host_capabilities(output, yes)?.or(config.cgroup_parent);
     let instances = perfetto::configure(&root, output, yes)?;
     if !instances.is_empty() {
@@ -339,6 +334,18 @@ pub fn configure_host(
     fs::write(&path, text)
         .map_err(|error| Error::Io(format!("cannot update project capabilities: {error}")))?;
     writeln!(output, "Updated host capability configuration; existing tools, workloads, configurations and results were preserved.").map_err(super::io_error)
+}
+
+// Kept separate so missing-project tests never need to discover or configure
+// an unrelated real ancestor project. Production uses the exact same guard.
+fn initialized_config_path(root: &Path) -> Result<PathBuf, Error> {
+    let path = root.join(CONFIG_DIR).join(CONFIG_FILE);
+    if !path.is_file() {
+        return Err(Error::Input(
+            "no initialized project found; run `asb init` first".into(),
+        ));
+    }
+    Ok(path)
 }
 
 /// Apply host-wide collector prerequisites after explicit user consent. Init
@@ -828,6 +835,10 @@ pub fn resolve(root: &Path, value: &str) -> PathBuf {
         root.join(path)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/project_capabilities.rs"]
+mod coverage_tests;
 
 #[cfg(test)]
 mod tests {

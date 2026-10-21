@@ -229,6 +229,10 @@ pub(crate) fn add_to_path(command: &mut Command, root: &Path, program: &Path) ->
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/python_runtime_boundaries.rs"]
+mod boundary_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

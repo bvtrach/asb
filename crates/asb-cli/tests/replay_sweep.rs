@@ -2,22 +2,21 @@
 
 #![cfg(unix)]
 
+mod support;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
+use support::IsolatedEnvironment;
 
 fn asb(root: &Path, args: &[&str]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_asb"));
     command
         .current_dir(root)
         .args(args)
-        .env_clear()
+        .isolated_env()
         .env("HOME", root)
         .env("PATH", std::env::var_os("PATH").unwrap_or_default());
-    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
-        command.env("LLVM_PROFILE_FILE", profile);
-    }
     command.output().expect("ASB starts")
 }
 

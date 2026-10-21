@@ -1,7 +1,9 @@
 //! Offline public CLI coverage for setup matrices and standalone reports.
 use serde_json::{Value, json};
+mod support;
 use std::path::PathBuf;
 use std::process::{Command, Output};
+use support::IsolatedEnvironment;
 
 struct Project(PathBuf);
 impl Project {
@@ -30,7 +32,7 @@ impl Project {
     fn command_with(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_asb"))
             .current_dir(&self.0)
-            .env_clear()
+            .isolated_env()
             .env("HOME", &self.0)
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .envs(env.iter().copied())

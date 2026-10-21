@@ -68,6 +68,17 @@ also check that bars, series/legends and composition rows carry benchmark groups
 Reserved-`all` tests cover complete registry expansion, enabled/original trial
 populations, catalog-name collisions and provider-scoped model discovery using
 only a bounded loopback HTTP fixture with no real provider credentials.
+The agent endpoint matrix tests every declared interface/authentication pair
+and rejects every undeclared pair before configuration or command mutation.
+These are protocol-only fixtures: no agent/provider is executed. See the
+[independently checked repair ledger](CODE_SMELL_REPAIRS.md) for the broader
+code-smell audit and remaining delivery classes.
+Report identity regressions cover literal dots/brackets versus nested paths,
+empty/backslash keys, Unicode and colliding/long graph filenames, case-insensitive
+aliases, repeated configuration stems and deterministic regeneration. Numeric
+paths escape object-key separators; use `comparison.json`'s graph list rather
+than constructing filenames for unusual metric names. Conflicting collector
+identities fail explicitly instead of silently replacing a prior observation.
 `cargo test --locked cassette::` exercises the provider-free multi-track backend:
 manifest and compatibility bounds, stable seeded choices, selector edge cases,
 bounded metadata inspection, selective corruption checks and durable publication.
@@ -95,6 +106,36 @@ counts and unrelated-script/tool exclusions. Fork-only workers remain an
 explicitly unclassified lower bound, not a guessed count.
 Run `asb run` with credentials only as an explicit local
 smoke/benchmark operation.
+
+CI's `coverage-90-percent` check requires at least 90% executable-line coverage.
+Run the same offline check locally with:
+
+```sh
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --version 0.9.0 --locked
+bash scripts/check-coverage.sh
+```
+
+Both LLVM's complete aggregate and production-only coverage must pass. The
+production denominator comes from LLVM's non-test `asb` executable map, without
+excluding any production modules; unit and integration tests contribute the
+execution counts, but adding test-body lines cannot inflate that denominator.
+Isolated test subprocesses discard inherited state and credentials while
+retaining only LLVM's coverage-output setting. Reports and uncovered-file
+summaries are retained under `target/coverage/`, including on CI failures.
+Each invocation removes only its four generated report files before checking or
+building, so an early failure cannot leave a stale green summary; unrelated
+evidence files remain intact. Workspace coverage objects and raw profiles are
+cleaned while dependency compilation caches are retained. This also prevents
+obsolete test-binary maps from distorting totals after version or feature changes.
+No live provider, real agent installation, or privileged collector is necessary.
+The production map excludes only registry/git package directories identified by
+locked offline host-filtered Cargo metadata (including relocated/symlinked caches).
+Unbuilt cross-target packages need not be downloaded for native coverage. Workspace
+and local path-package sources stay in the denominator; no product module is excluded.
+Missing-project capability fixtures test the same private initialized-file guard
+used by production, and ancestor discovery uses an owned fixture parent/child.
+They never assume TMPDIR has no real ancestor project or pass one to host setup.
 
 Token accounting has synthetic, provider-free regression fixtures for all
 registered agent families, plus replay CLI checks for JSON, logs, and
@@ -180,6 +221,12 @@ the lease must be reacquirable while that incidental child remains alive. This
 deterministically covers a fork-before-exec inheritance window without relying
 on scheduling sleeps. Separate tests keep inherited ownership on uncertain
 cleanup and retain the unchanged owner-SIGKILL daemon-shutdown contract.
+The daemon-identity fixture separately waits for an atomically published,
+child-authored post-exec PID/descriptor observation before checking absent
+versus deliberately inherited lease descriptors. Process creation alone is
+not that observation: a spawn fast path can resume its parent during exec,
+before close-on-exec cleanup. Both live-child lease assertions and rejection
+of the subsequently reaped child remain mandatory; no tracing service runs.
 The ignored `live_perfetto_streaming_preserves_markers_beyond_the_service_ring_capacity`
 test writes fixed, non-secret marker pressure beyond the configured 128 MiB service
 buffer, then requires complete, loss-free capture and scoped agent measurements.
@@ -239,6 +286,12 @@ test separately checks default/disabled collection, nonzero agent exits with
 valid grades, unresolved tasks, comparison regeneration and cached resume.
 Ordinary CI
 uses synthetic provider-free protocol tests.
+The remote execution unit tests use a private prepared-bootstrap fixture to
+exercise controller dispatch, output, metadata, lifecycle failures, deadlines and
+preserving cancellation independently of installation. This fixture does not
+qualify an installed runtime, SDK or workload container. Production execution
+always validates the runtime and performs checksum-pinned bootstrap preparation;
+there is no CLI, configuration or environment switch to bypass that phase.
 `benchmark_live_resources.py` additionally checks actual abrupt controller
 SIGKILL with an installed SWE-bench task image: the durable ownership journal
 quiesces only its recorded container, retains a partial output file and an
