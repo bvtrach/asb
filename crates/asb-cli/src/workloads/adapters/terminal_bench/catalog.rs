@@ -16,6 +16,9 @@ const ORIGINAL_TASKS: &str =
     include_str!("../../../../assets/benchmarks/terminal_bench_1_tasks.json");
 const LIMIT: u64 = 16 * 1024 * 1024;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Catalog {
