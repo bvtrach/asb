@@ -1342,6 +1342,9 @@ pub(crate) fn make_executable(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(all(test, unix))]
+mod coverage_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
