@@ -1,8 +1,9 @@
 # Installer recipe preparation and publication repair
 
 Source baseline: qualified publication stack `5516c4e9`, version 0.2.32.
-This initial checkpoint adds proposed regressions only. No executed red result,
-production fix, full qualification, PR or release is claimed yet.
+The initial test checkpoint is `cce58fa4`. Its three regressions were actually
+executed and failed as described below. No production fix, full qualification,
+PR or release is claimed yet.
 
 ## Source-confirmed gaps and first regressions
 
@@ -21,6 +22,23 @@ proposed regressions simulate a successful probe changing bytes or replacing
 its staged executable with a symlink. Neither may publish or disturb the prior
 ready installation. These tests require no network, package manager, provider,
 host permission change or installed coding agent.
+
+## Observed-red evidence
+
+Built the baseline libtest offline with one compile job and incremental output
+disabled, then ran that unchanged executable directly. Both source-probe tests
+failed with exit 101 (zero passed, two failed, 0.02 seconds): changed bytes and
+a replacement symlink were actually published. The separate ordinary Host
+recipe test also exited 101 (zero passed, one failed): the foreign target's
+bytes were replaced by the fixture host executable. Its isolated child uses
+an empty environment with only fixture-owned paths and optional LLVM output.
+
+The libtest hash was identical before and after both invocations:
+`e2409209561c7c32d1f3040023d9c0bbd24f9f5a436c4e6bcf2969f61baafd1d`.
+Retained local evidence: `target/installer36-red-build.log`,
+`target/installer36-red-probe.log`, `target/installer36-red-host.log` and the
+matching before/after SHA-256 records. This confirms these three precise
+defects, not Goose failure behavior or whole-installer qualification.
 
 ## Intended coherent repair
 
