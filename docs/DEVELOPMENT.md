@@ -221,6 +221,41 @@ The cli2key concurrency regression uses two mock bridge listeners and mock
 clients, with fixture-only credentials. Both authenticated local requests must
 overlap and reach different owned servers; both servers must be reaped afterward.
 It does not use the installed cli2key package or a backend subscription.
+`cargo test --locked --offline --lib cli2key` additionally checks real local
+startup fixtures with oversized/unterminated output, excessive messages/bytes,
+silent startup, post-readiness draining and cleanup while another output
+writer remains open. Reader/reaper creation fails before child admission.
+Injected errors and unwinding after either spawn, shared-deadline/poll-error
+handoff, pidfd-pinned reaping and unrelated sentinel survival require no host
+credentials or provider. The same guard/reaper remains owned on success.
+The caller's cleanup wait has one five-second budget across both children and
+readers; unconfirmed children retain fallback custody rather than being
+dropped. This does not establish descendant or abrupt-crash cleanup.
+The `provider_finish` library fixtures additionally run seven actual replay-only
+benchmark attempts: true/false grades, client failure, early preparation failure
+and successful finish. They require explicit finish once, preserve each grade
+and primary error, report cleanup uncertainty and withhold completion receipts.
+Native completed rewards with nullable resolution remain valid through normal
+finish; provider uncertainty preserves their numeric reward and execution
+observation while setting structured cleanup confirmation false.
+Loopback catalog fixtures cover successful parsing, invalid JSON and HTTP failure
+combined with finish failure. Both use only fixture credentials. Output-worker
+exit receipts confirm cooperative exit even after the caller releases an
+unfinished thread handle at its deadline; no unconditional join is used.
+Final admission also rechecks both children after proxy readiness. A pinned
+two-child fixture makes the bridge exit after its key and before the proxy's
+marker, then requires rejection, complete direct-child reaping and sentinel
+survival. An actual embedded Node compatibility hop routes through a held
+loopback HTTP fixture using its real owned curl child. Explicit finish must
+close the outbound connection, reap curl and exit cooperatively with status
+zero. An ignored-EOF fixture verifies escalation after the two-second grace
+inside the same five-second caller budget, with an uncertainty diagnostic.
+The same embedded fixture aborts an unfinished POST while a sibling outbound
+request completes, then shuts down with another partial POST still open. Body
+collection/URL/forwarding errors remain inside one handler envelope, and closing
+or destroyed responses receive no late 502. Request-event receipts establish
+the partial-body states without relying on a sleep. The concurrent CLI fixture
+retains bounded fixture-only Node stderr when reporting a startup failure.
 The agent-process sampler regression launches a bounded local Node fixture,
 changes its process title and checks two seconds of continued sampling, an
 unrelated Node process and the original process's exit. It uses no provider,
@@ -601,6 +636,11 @@ inspection, and checks no replacement receipt or changed outcome bytes. Valid
 earlier/sibling receipts stay unchanged. The allocated unit fixture separately
 proves all-candidate validation precedes publication; neither fixture qualifies
 an original task runtime.
+Structured-outcome checkpoint fixtures additionally seal completed native
+rewards with null resolution and both process results, preserving legacy
+structured/unstructured Boolean grades. Independent mutations reject pending,
+error, missing primary rewards, policy/module, lineage, process/resolution,
+cleanup and evaluator-root mismatches through the same validated constructor.
 
 An opt-in complete-catalog planning/reporting check runs with no agent,
 provider, Docker or evaluator execution:

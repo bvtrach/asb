@@ -12,6 +12,11 @@ pub(crate) fn render_reused(
     let mut unknown = 0;
     let mut unresolved_grades = 0;
     for summary in summaries {
+        let structured =
+            crate::workloads::outcome::BenchmarkOutcome::read(summary).map_err(Error::Input)?;
+        let native_completed = structured
+            .as_ref()
+            .is_some_and(|o| o.evaluation.completed() && o.evaluation.resolution().is_none());
         if json {
             let mut summary = summary.clone();
             summary["reused"] = Value::Bool(true);
@@ -33,6 +38,8 @@ pub(crate) fn render_reused(
                 },
                 if summary["workload_success"] == true {
                     "resolved"
+                } else if native_completed {
+                    "evaluated (native rewards; resolution not applicable)"
                 } else {
                     "unresolved"
                 }
@@ -43,7 +50,7 @@ pub(crate) fn render_reused(
             unknown += 1;
             unresolved_grades += usize::from(summary["workload_success"] == false);
         } else if summary["process_success"] != true
-            || summary["workload_success"] != true
+            || (summary["workload_success"] != true && !native_completed)
             || !summary["failure_reason"].is_null()
         {
             failed += 1;
@@ -67,6 +74,24 @@ pub(crate) fn render_reused(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn native_rewards_reuse_without_inventing_boolean_resolution() {
+        let summary = json!({"task":{"task_id":"partial"},"process_success":true,"workload_success":null,
+            "benchmark_outcome":{"schema_version":1,"execution_success":true,
+            "evaluation":{"status":"completed","resolution":null,"rewards":{"accuracy":0.25}},
+            "cleanup_confirmed":true,"evidence":["verifier.json"],
+            "policy":{"id":"accuracy","version":1,"reward":"accuracy","aggregation":"task-mean","rewards":{"accuracy":{"unit":"ratio","range":[0,1]}}},
+            "lineage":{"execution_attempt":"attempt","evaluation_id":"evaluation","supersedes":null}}});
+        let mut output = Vec::new();
+        render_reused(std::slice::from_ref(&summary), false, &mut output).unwrap();
+        assert!(
+            String::from_utf8(output)
+                .unwrap()
+                .contains("native rewards")
+        );
+        assert!(summary["workload_success"].is_null());
+    }
 
     #[test]
     fn grade_only_reuse_reports_false_grades_and_never_invents_process_success() {

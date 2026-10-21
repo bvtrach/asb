@@ -1813,6 +1813,7 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
                     for trial in trials {
                         let name = format!("asb-test-{stamp}-{index:03}.toml");
                         let config = BenchmarkConfig {
+                            planning: None,
                             agent: agent.clone(),
                             workload: workload.clone(),
                             provider: provider.clone(),

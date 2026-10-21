@@ -83,9 +83,7 @@ fn discover_for_model(
         ))
     })?;
     if let Some(bridge) = providers::discovery_session(provider)? {
-        let url = format!("{}/models", bridge.base_url().trim_end_matches('/'));
-        let body = fetch_authenticated(spec, &url, bridge.api_key())?;
-        return parse_models(&body, spec.kind, provider, free_only);
+        return discover_session_models(spec, provider, free_only, bridge);
     }
     let public_catalog =
         providers::public_catalog(provider, providers::credential(provider).is_some());
@@ -116,6 +114,22 @@ fn discover_for_model(
     let body = fetch_pages(request_spec, &url)?;
     let body = providers::enrich_catalog(provider, body)?;
     parse_models(&body, spec.kind, provider, free_only)
+}
+
+fn discover_session_models(
+    spec: providers::ModelSpec,
+    provider: &str,
+    free_only: bool,
+    bridge: Box<dyn providers::ProviderSession>,
+) -> Result<Vec<ModelInfo>, Error> {
+    let mut session = Some(bridge);
+    let bridge = session.as_deref().unwrap();
+    let result = (|| {
+        let url = format!("{}/models", bridge.base_url().trim_end_matches('/'));
+        let body = fetch_authenticated(spec, &url, bridge.api_key())?;
+        parse_models(&body, spec.kind, provider, free_only)
+    })();
+    providers::finish_result(result, &mut session)
 }
 
 /// Discover tool-capable models for interactive setup without rendering them.
@@ -759,6 +773,10 @@ fn model_ids(models: &[ModelInfo]) -> Vec<String> {
         .map(|model| model.id.clone())
         .collect()
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/model_provider_finish.rs"]
+mod provider_finish_tests;
 
 #[cfg(test)]
 #[path = "../tests/unit/models.rs"]

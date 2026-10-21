@@ -352,6 +352,7 @@ mod tests {
             &fixture.reference.workload,
             fixture.reference.dataset.clone(),
             &super::super::PreparationContext {
+                budgets: Default::default(),
                 on_allocation: Some(&refused),
                 workload: &fixture.reference.workload,
                 trial: Some(&fixture.reference.task_id),

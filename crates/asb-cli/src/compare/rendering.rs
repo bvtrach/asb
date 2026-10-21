@@ -54,6 +54,7 @@ pub(super) fn render(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
         "selection_plan": plan.as_ref().map(|plan| json!({"run_id":plan.run_id,"configuration_match":true,"execution_mode":plan.execution_mode,"respect_record_timings":plan.respect_record_timings,"scheduling":plan.scheduling})),
         "evaluation_coverage":evaluation_coverage,
         "population_coverage":population_coverage,
+        "metric_groups": prepared.metric_groups,
         "input": sweep_path,
         "input_kind": if single { "benchmark" } else { "sweep" },
         "sweep": if single { Value::Null } else { json!(sweep_path) },
@@ -62,6 +63,10 @@ pub(super) fn render(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
         "report": "report.html",
         "benchmarks": benchmark_data.iter().map(|benchmark| json!({
             "name": benchmark.label,
+            "module": benchmark.module,
+            "legacy_evaluation_provenance": benchmark.legacy_evaluation_provenance,
+            "execution_plan_fingerprint": benchmark.execution_plan_fingerprint,
+            "benchmark_outcome": benchmark.benchmark_outcome,
             "directory": benchmark.directory,
             "agent": benchmark.agent,
             "workload": benchmark.workload,

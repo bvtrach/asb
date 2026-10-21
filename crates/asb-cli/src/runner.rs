@@ -35,7 +35,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 const MAX_OUTPUT: usize = 1024 * 1024;
-const MAX_AGENT_RUNTIME: Duration = Duration::from_secs(15 * 60);
+const MAX_AGENT_RUNTIME: Duration =
+    Duration::from_secs(crate::planning::DEFAULT_NATIVE_EXECUTION_SECONDS);
 
 fn emit_warning(
     warnings: &Mutex<BTreeSet<String>>,
@@ -54,6 +55,12 @@ fn emit_warning(
 
 #[derive(Serialize)]
 struct RunResult<'a> {
+    planning: crate::planning::ResolvedPlan,
+    effective_budgets: crate::planning::EffectiveBudgets,
+    execution_plan: Option<PathBuf>,
+    execution_plan_fingerprint: Option<crate::planning::ExecutionPlanFingerprint>,
+    module: Option<workloads::contracts::ModuleDescriptor>,
+    benchmark_outcome: Option<workloads::outcome::BenchmarkOutcome>,
     replica_index: Option<usize>,
     execution_cohort: Option<&'a measurements::ExecutionCohort>,
     schema_version: u32,
@@ -89,6 +96,7 @@ struct RunResult<'a> {
 /// Execution choices shared by single runs, replicas, and sweeps.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RunOptions<'a> {
+    pub policy: Option<&'a crate::planning::ResolvedPlan>,
     pub execution_cohort: Option<&'a measurements::ExecutionCohort>,
     pub json: bool,
     pub show_output: bool,
@@ -120,6 +128,7 @@ pub(crate) fn run_with_diagnostics(
     let text = read_config(config_path)?;
     let config: BenchmarkConfig = toml::from_str(&text)
         .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
+    crate::planning::resolve_snapshot(&config, options.measurement_dir.is_some(), options.policy)?;
     if !options.replica.valid() {
         return Err(Error::Input("invalid benchmark replica identity".into()));
     }
@@ -354,6 +363,11 @@ fn run_mode(
     output: &mut dyn Write,
     warnings: &Mutex<BTreeSet<String>>,
 ) -> Result<(), Error> {
+    let policy = crate::planning::resolve_snapshot(
+        &config,
+        options.measurement_dir.is_some(),
+        options.policy,
+    )?;
     let AdmittedAttempt {
         config,
         options,
@@ -379,6 +393,7 @@ fn run_mode(
         )
     });
     let _network_project = project::network_project(&project_root);
+    let _initial_policy = crate::planning::persist(&project_root, &policy, None, None)?;
     let configured_measurements = config
         .measurements
         .as_ref()
@@ -387,17 +402,24 @@ fn run_mode(
     let measurement_path = measurement_dir
         .map(std::path::PathBuf::from)
         .or(configured_measurements);
-    let measurement_collectors = config
-        .measurements
-        .as_ref()
-        .filter(|value| value.enabled)
-        .map_or(&[][..], |value| value.collectors.as_slice());
+    let measurement_collectors: Vec<_> = policy
+        .collectors
+        .iter()
+        .filter(|collector| collector.selected)
+        .map(|collector| collector.id.clone())
+        .collect();
+    let active_collectors: Vec<_> = policy
+        .collectors
+        .iter()
+        .map(|collector| collector.id.clone())
+        .collect();
     let mut measurement_session = measurement_path
         .as_deref()
         .map(|dir| {
-            measurements::Session::start_with_collectors_and_parent(
+            measurements::Session::start_with_resolved_collectors_and_parent(
                 dir,
-                measurement_collectors,
+                &measurement_collectors,
+                &active_collectors,
                 Some(&project::resolve(&project_root, &project_config.tools_dir)),
                 std::env::var_os("ASB_CGROUP_PARENT")
                     .is_none()
@@ -447,474 +469,600 @@ fn run_mode(
         },
     )?;
     let tape_mode = tape_request.map(|(mode, _)| mode);
-    let bridge = instrument_phase(
-        measurement_session.as_mut(),
-        LifecyclePhase::ProviderSetup,
-        || {
-            let bridge = providers::start_local_bridge(
-                &config.provider,
-                &project_root,
-                &project_config.tools_dir,
-                tape_mode == Some(tape::Mode::Replay),
-            )?;
-            if tape_mode != Some(tape::Mode::Replay) {
-                let endpoint =
-                    providers::local_bridge_endpoint(&config.provider, bridge.as_deref());
-                let bridge_catalog = providers::local_bridge_credentials(
+    let mut bridge = None;
+    let attempt = (|| {
+        instrument_phase(
+            measurement_session.as_mut(),
+            LifecyclePhase::ProviderSetup,
+            || {
+                bridge = providers::start_local_bridge(
                     &config.provider,
-                    bridge.as_deref(),
-                    endpoint,
-                )
-                .map(|(key, url)| (url, key));
-                if discovered_tool_support == Some(false) {
-                    return Err(Error::Input(format!(
-                        "provider metadata reports that model `{}` does not support tools",
-                        config.model
-                    )));
-                }
-                if !models::ensure_tool_capable(&config.provider, &config.model, bridge_catalog)?
-                    && discovered_tool_support != Some(true)
-                    && !json
+                    &project_root,
+                    &project_config.tools_dir,
+                    tape_mode == Some(tape::Mode::Replay),
+                )?;
+                #[cfg(all(test, unix))]
                 {
-                    emit_warning(
-                        warnings,
-                        output,
-                        format!(
-                            "Warning: provider `{}` lists model `{}` but does not report whether it supports tools; the agent may fail if the model cannot use tools.",
-                            config.provider, config.model
-                        ),
-                    )?;
+                    bridge =
+                        phases::entry_test_support::observe_provider(&project_root, bridge.take());
                 }
-            }
-            Ok(bridge)
-        },
-    )?;
-    let workspace_name = if config.workspace == "asb-workspace" {
-        &project_config.workspace_dir
-    } else {
-        &config.workspace
-    };
-    let workspace = project::resolve(&project_root, workspace_name);
-    let workload_directory = std::env::var_os("ASB_WORKLOAD_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir));
-    let allocation = |reference: &workloads::recovery::AttemptReference| {
-        options.on_completion.map_or(Ok(()), |observer| {
-            observer
-                .allocated(options.replica, reference)
-                .map_err(|error| error.to_string())
-        })
-    };
-    let workload_session = instrument_phase(
-        measurement_session.as_mut(),
-        LifecyclePhase::WorkloadPreparation,
-        || {
-            workloads::preflight(
-                &config.workload,
-                &workloads::PreflightContext {
+                if tape_mode != Some(tape::Mode::Replay) {
+                    let endpoint =
+                        providers::local_bridge_endpoint(&config.provider, bridge.as_deref());
+                    let bridge_catalog = providers::local_bridge_credentials(
+                        &config.provider,
+                        bridge.as_deref(),
+                        endpoint,
+                    )
+                    .map(|(key, url)| (url, key));
+                    if discovered_tool_support == Some(false) {
+                        return Err(Error::Input(format!(
+                            "provider metadata reports that model `{}` does not support tools",
+                            config.model
+                        )));
+                    }
+                    if !models::ensure_tool_capable(
+                        &config.provider,
+                        &config.model,
+                        bridge_catalog,
+                    )? && discovered_tool_support != Some(true)
+                        && !json
+                    {
+                        emit_warning(
+                            warnings,
+                            output,
+                            format!(
+                                "Warning: provider `{}` lists model `{}` but does not report whether it supports tools; the agent may fail if the model cannot use tools.",
+                                config.provider, config.model
+                            ),
+                        )?;
+                    }
+                }
+                Ok(())
+            },
+        )?;
+        let workspace_name = if config.workspace == "asb-workspace" {
+            &project_config.workspace_dir
+        } else {
+            &config.workspace
+        };
+        let workspace = project::resolve(&project_root, workspace_name);
+        let workload_directory = std::env::var_os("ASB_WORKLOAD_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| project::resolve(&project_root, &project_config.workloads_dir));
+        let allocation = |reference: &workloads::recovery::AttemptReference| {
+            options.on_completion.map_or(Ok(()), |observer| {
+                observer
+                    .allocated(options.replica, reference)
+                    .map_err(|error| error.to_string())
+            })
+        };
+        let workload_session = instrument_phase(
+            measurement_session.as_mut(),
+            LifecyclePhase::WorkloadPreparation,
+            || {
+                workloads::preflight(
+                    &config.workload,
+                    &workloads::PreflightContext {
+                        project_root: &project_root,
+                        project_config: &project_config,
+                        agent: &config.agent,
+                    },
+                )?;
+                std::fs::create_dir_all(&workspace).map_err(|error| {
+                    Error::Run(format!(
+                        "cannot create workspace {}: {error}",
+                        workspace.display()
+                    ))
+                })?;
+                let workload = workloads::prepare_task(&workloads::PreparationContext {
+                    budgets: policy.budgets,
+                    on_allocation: Some(&allocation),
+                    workload: &config.workload,
+                    trial: config.trial.as_deref(),
+                    trial_set: config.trial_set.as_deref(),
+                    workload_directory: &workload_directory,
+                    workspace: &workspace,
                     project_root: &project_root,
                     project_config: &project_config,
-                    agent: &config.agent,
-                },
-            )?;
-            std::fs::create_dir_all(&workspace).map_err(|error| {
-                Error::Run(format!(
-                    "cannot create workspace {}: {error}",
-                    workspace.display()
-                ))
-            })?;
-            let workload = workloads::prepare_task(&workloads::PreparationContext {
-                on_allocation: Some(&allocation),
-                workload: &config.workload,
-                trial: config.trial.as_deref(),
-                trial_set: config.trial_set.as_deref(),
-                workload_directory: &workload_directory,
-                workspace: &workspace,
-                project_root: &project_root,
-                project_config: &project_config,
-            })
-            .map_err(Error::Run)?;
-            #[cfg(all(test, unix))]
-            let workload = phases::entry_test_support::observe_workload(&project_root, workload);
-            Ok(workload)
-        },
-    )?;
-    let workspace = workload_session.invocation().workspace.clone();
-    let workload_baseline = workload_session.baseline_evidence();
-    let workload_baseline_passed = workload_baseline.measured_passed();
-    if !json && workload_baseline_passed == Some(true) {
-        emit_warning(warnings, output, "The workload already passes before the agent starts. Files are preserved, but this run cannot earn task-resolution credit. Use a fresh workspace for a new benchmark attempt.".into())?;
-    }
-    if !json
-        && !workload_baseline.supports(workload_session.evaluation_kind())
-        && workload_baseline_passed != Some(true)
-        && workloads::resolution_eligible(workload_session.evaluation_kind())
-    {
-        emit_warning(warnings, output, "The initial workload baseline could not be verified. This run cannot earn task-resolution credit. Inspect the workload fixture and use a fresh workspace.".into())?;
-    }
-    if !json && workload_session.evaluation_kind() == "adapter-smoke" {
-        emit_warning(warnings, output, "Selected external workload runs only an adapter smoke exercise, not an upstream benchmark task. Benchmark task success will be unavailable; an official dataset and evaluator are not integrated yet.".into())?;
-    }
-    let tape_session = instrument_phase(
-        measurement_session.as_mut(),
-        LifecyclePhase::ProxyPreparation,
-        || {
-            if let Some((mode, cassette)) = tape_cassette.as_ref() {
-                let bridge_url =
-                    providers::local_bridge_endpoint(&config.provider, bridge.as_deref());
-                let upstream = if *mode == tape::Mode::Replay {
-                    None
-                } else if let Some(offer) = selected_offer.as_ref() {
-                    Some(providers::selected_tape_upstream(
-                        &config.provider,
-                        offer.clone(),
-                        bridge_url,
-                    )?)
-                } else {
-                    providers::tape_upstream(&config.provider, bridge_url)
-                };
-                Ok(Some(tape::Session::start(
-                    *mode,
-                    cassette,
-                    upstream.as_deref(),
-                    respect_record_timings,
-                    &workspace,
-                )?))
-            } else {
-                Ok(None)
-            }
-        },
-    )?;
-    let mut prepared = PreparedAttempt {
-        workload: workload_session,
-        measurements: measurement_session,
-        tape: tape_session,
-    };
-    let tape_url = prepared.tape.as_ref().map(|session| session.url());
-    let provider_endpoint =
-        tape_url.or_else(|| providers::local_bridge_endpoint(&config.provider, bridge.as_deref()));
-    let provider_credentials =
-        providers::local_bridge_credentials(&config.provider, bridge.as_deref(), provider_endpoint);
-    let connection = selected_offer
-        .map(|offer| {
-            providers::endpoint_connection(
-                &config.provider,
-                offer,
-                provider_credentials,
-                tape_url.zip(tape_mode).map(|(url, mode)| (mode, url)),
-            )
-        })
-        .transpose()?;
-    let started = Instant::now();
-    let isolated = prepared.workload.execute(
-        &mut workloads::ExecutionContext {
-            config: &config,
-            connection: connection.as_ref(),
-            project_root: &project_root,
-            project_config: &project_config,
-            replay: tape_mode == Some(tape::Mode::Replay),
-            measurements: prepared.measurements.as_mut(),
-            show_output,
-        },
-        output,
-    );
-    let mut issues = AttemptIssues::default();
-    let (child, run_dir, guest, execution_elapsed_ms, runtime_output) =
-        if let Some(result) = isolated {
-            let result = result.map_err(Error::Run)?;
-            issues.collector_errors = result.collector_errors;
-            issues.output_error = result.output_error;
-            (
-                result.output,
-                PathBuf::new(),
-                Some(result.metadata),
-                result
-                    .elapsed_ms
-                    .unwrap_or_else(|| started.elapsed().as_millis()),
-                None,
-            )
-        } else {
-            let native = native::NativePlan {
-                config_path,
-                config: &config,
-                project_root: &project_root,
-                project_config: &project_config,
-                invocation: prepared.workload.invocation(),
-                route: native::NativeRoute {
-                    connection: connection.as_ref(),
-                    provider_endpoint,
-                    provider_credentials,
-                    tape_url,
-                    tape_mode,
-                },
-            }
-            .prepare(prepared.measurements.as_mut())?;
-            let (evidence, native_issues) =
-                native.execute(prepared.measurements.as_mut(), show_output, output)?;
-            issues = native_issues;
-            (
-                evidence.output,
-                evidence.run_dir,
-                evidence.guest,
-                evidence.elapsed_ms,
-                evidence.runtime_output,
-            )
-        };
-    let settled = prepared
-        .executed(
-            ExecutionEvidence {
-                output: child,
-                run_dir,
-                guest,
-                elapsed_ms: execution_elapsed_ms,
-                runtime_output,
+                })
+                .map_err(Error::Run)?;
+                #[cfg(all(test, unix))]
+                let workload =
+                    phases::entry_test_support::observe_workload(&project_root, workload);
+                Ok(workload)
             },
-            issues,
-        )
-        .settle(tape_cassette.as_ref());
-    let agent_outcome = settled.evidence.agent_outcome(&config.agent, &workspace);
-    let process_success = agent_outcome.failure.is_none();
-    let agent_failure = agent_outcome.failure;
-    let final_response = agent_outcome.final_response;
-    // A usable submission can survive a failed client or proxy teardown.
-    // Evaluator errors and process failures are recorded independently.
-    let FinalizedAttempt {
-        workload: workload_session,
-        measurements: measurement_session,
-        evidence:
-            ExecutionEvidence {
-                output: child,
-                run_dir,
-                guest,
-                elapsed_ms,
-                runtime_output,
-            },
-        proxy_evidence,
-        cassette_usage_verified,
-        outcome,
-        cleanup_confirmed: workload_cleanup_confirmed,
-        issues,
-    } = settled
-        .evaluate(final_response.as_deref().unwrap_or_default())
-        .finish();
-    let workload_success = outcome.success();
-    let grading_failure = outcome.failure();
-    let collector_error = issues.collector_failure();
-    let run_error = issues.run_error;
-    let output_error = issues.output_error;
-    let success = run_error.is_none()
-        && collector_error.is_none()
-        && output_error.is_none()
-        && process_success
-        && workload_success == Some(true);
-    let workload_failure =
-        grading_failure
-            .as_ref()
-            .map(|(kind, reason)| workloads::EvaluationFailure {
-                kind,
-                reason: reason.clone(),
-            });
-    let failure = if let Some(error) = run_error.as_ref() {
-        Some(("run_error", error.clone()))
-    } else if let Some(error) = agent_failure {
-        Some(("agent_failure", error))
-    } else {
-        grading_failure
-            .or_else(|| collector_error.map(|error| ("collector_error", error)))
-            .or_else(|| {
-                output_error
-                    .as_ref()
-                    .map(|error| ("output_error", error.clone()))
-            })
-    };
-    let adapter_artifacts = guest
-        .is_none()
-        .then(|| agents::find(&config.agent))
-        .flatten()
-        .map(|adapter| {
-            adapter.collect(&agents::CollectionContext {
-                workspace: &workspace,
-                run_dir: &run_dir,
-                interface: connection.as_ref().map(|connection| connection.interface),
-                anthropic_input_includes_cache: crate::providers::anthropic_input_includes_cache(
-                    &config.provider,
-                ),
-            })
-        })
-        .unwrap_or_default();
-    let token_usage = measurements::token_usage_from_sources(
-        &config.provider,
-        &config.agent,
-        &String::from_utf8_lossy(&child.stdout),
-        &String::from_utf8_lossy(&child.stderr),
-        tape_cassette
-            .as_ref()
-            .filter(|_| cassette_usage_verified)
-            .map(|(_, cassette)| cassette.as_path()),
-    );
-    let token_usage = measurements::with_artifact_usage(token_usage, adapter_artifacts.token_usage);
-    let token_usage = measurements::with_artifact_usage(
-        token_usage,
-        guest.as_ref().map(|metadata| metadata.token_usage.clone()),
-    );
-    for path in adapter_artifacts.cleanup_paths {
-        let _ = std::fs::remove_file(path);
-    }
-    let steps = if let Some(metadata) = guest.as_ref() {
-        metadata.steps
-    } else {
-        adapter_artifacts.steps.or_else(|| {
-            measurements::steps_from_sources(
-                &config.agent,
-                &bounded(&child.stdout),
-                &bounded(&child.stderr),
-            )
-        })
-    };
-    let mut stderr = bounded(&child.stderr);
-    if let Some(error) = output_error.as_ref() {
-        stderr.push_str("\nASB presentation error: ");
-        stderr.push_str(error);
-        stderr.push('\n');
-    }
-    for error in &issues.collector_errors {
-        stderr.push_str("\nASB collector error: ");
-        stderr.push_str(error);
-        stderr.push('\n');
-    }
-    if let Some(error) = run_error.as_deref() {
-        stderr.push_str("\nASB run error: ");
-        stderr.push_str(error);
-        stderr.push('\n');
-    }
-    if let Some((kind, reason)) = &failure {
-        stderr.push_str("\nASB failure (");
-        stderr.push_str(kind);
-        stderr.push_str("): ");
-        stderr.push_str(reason);
-        stderr.push('\n');
-    }
-    let run_metrics = crate::collectors::run_metrics(&crate::collectors::RunObservation {
-        elapsed_ms,
-        success,
-    });
-    let configured_kind = workload_session.evaluation_kind();
-    let evaluation_kind = workloads::scored_kind(configured_kind, &workload_baseline);
-    let resolution_eligible = workloads::resolution_eligible(evaluation_kind);
-    let result = RunResult {
-        replica_index: Some(options.replica.index),
-        execution_cohort: options.execution_cohort,
-        schema_version: 2,
-        status: if success && evaluation_kind == "invalid-baseline" {
-            "unscored"
-        } else if success && !resolution_eligible {
-            "smoke-passed"
-        } else if success {
-            "completed"
-        } else {
-            "failed"
-        },
-        agent: &config.agent,
-        workload: &config.workload,
-        task: workload_session.invocation().identity.clone(),
-        provider: &config.provider,
-        model: &config.model,
-        process_success,
-        workload_success: resolution_eligible.then_some(workload_success).flatten(),
-        workload_evaluation: evaluation_kind,
-        workload_baseline_passed,
-        workload_baseline,
-        workload_failure,
-        failure_kind: failure.as_ref().map(|(kind, _)| *kind),
-        failure_reason: failure.as_ref().map(|(_, reason)| reason.clone()),
-        success_rate: resolution_eligible.then_some(if workload_success == Some(true) {
-            1.0
-        } else {
-            0.0
-        }),
-        adapter_smoke_success: (evaluation_kind == "adapter-smoke").then_some(success),
-        elapsed_ms: run_metrics.elapsed_ms,
-        exit_code: child.status.code(),
-        token_usage,
-        steps,
-        cassette: tape_cassette
-            .as_ref()
-            .map(|(_, cassette)| cassette.display().to_string()),
-        measurement_directory: measurement_path
-            .as_ref()
-            .map(std::path::absolute)
-            .transpose()
-            .map_err(io_error)?,
-        stdout: bounded(&child.stdout),
-        stderr,
-    };
-    let log_publication = phases::LogPublication::publish(config_path, &config.log_file, &result);
-    let measurement_completion = phases::finish_measurements(measurement_session, &result, success);
-    // This private record preserves evaluator outcomes, including unresolved
-    // tasks. Its absence never changes a benchmark grade or blocks execution;
-    // a future continuation must also validate its input and evidence seals.
-    let mut completion_outputs = vec![workspace.clone()];
-    if let Some(path) = measurement_path.as_ref() {
-        completion_outputs.push(path.clone());
-    }
-    if let Some(path) = runtime_output {
-        completion_outputs.push(path);
-    }
-    let mut continuation_warnings = Vec::new();
-    if log_publication.confirmed() && measurement_completion.confirmed() {
-        match completion::persist(
-            config_path,
-            &config.log_file,
-            &result,
-            workload_cleanup_confirmed,
-            &workload_session.checkpoint_evidence(),
-            &proxy_evidence,
-            &completion::Context {
-                replica: options.replica,
-                outputs: &completion_outputs,
-            },
-        ) {
-            Ok(record) => {
-                if let Some(observer) = options.on_completion
-                    && let Err(error) = observer.completed(options.replica, &record)
-                {
-                    let destination = observer.evidence_destination(options.replica);
-                    let warning = diagnostics::Warning::new(
-                        diagnostics::Stage::Replica,
-                        config_path,
-                        destination.as_deref().unwrap_or(&record),
-                        &error,
-                    );
-                    continuation_warnings.push(if destination.is_some() {
-                        warning
+        )?;
+        // Capture provenance at execution time; report rendering never consults
+        // today's adapter registry to label a historical record.
+        workload_session
+            .invocation()
+            .input
+            .validate_for_agent(&config.agent)
+            .map_err(Error::Input)?;
+        let mut effective_budgets = workload_session.effective_budgets();
+        if policy.backend == "native" {
+            effective_budgets.execution_seconds = Some(
+                policy
+                    .budgets
+                    .execution_seconds
+                    .unwrap_or(MAX_AGENT_RUNTIME.as_secs()) as f64,
+            );
+        }
+        let execution_plan = crate::planning::persist(
+            &project_root,
+            &policy,
+            Some(effective_budgets),
+            Some(&workload_session.invocation().identity),
+        )?;
+        let execution_plan_fingerprint = crate::planning::protocol_fingerprint(
+            &config,
+            &policy,
+            effective_budgets,
+            options.replica.total,
+        )?;
+        let module = workload_session.module_descriptor();
+        let metric_policy = workload_session.metric_policy();
+        if !metric_policy.valid()
+            || (module.is_none() && metric_policy != workloads::outcome::MetricPolicy::default())
+            || module
+                .as_ref()
+                .is_some_and(|m| !m.valid() || !metric_policy.matches_module(m))
+        {
+            return Err(Error::Run(
+                "module metric policy differs from its declared scoring protocol".into(),
+            ));
+        }
+        let workspace = workload_session.invocation().workspace.clone();
+        let workload_baseline = workload_session.baseline_evidence();
+        let workload_baseline_passed = workload_baseline.measured_passed();
+        if !json && workload_baseline_passed == Some(true) {
+            emit_warning(warnings, output, "The workload already passes before the agent starts. Files are preserved, but this run cannot earn task-resolution credit. Use a fresh workspace for a new benchmark attempt.".into())?;
+        }
+        if !json
+            && !workload_baseline.supports(workload_session.evaluation_kind())
+            && workload_baseline_passed != Some(true)
+            && workloads::resolution_eligible(workload_session.evaluation_kind())
+        {
+            emit_warning(warnings, output, "The initial workload baseline could not be verified. This run cannot earn task-resolution credit. Inspect the workload fixture and use a fresh workspace.".into())?;
+        }
+        if !json && workload_session.evaluation_kind() == "adapter-smoke" {
+            emit_warning(warnings, output, "Selected external workload runs only an adapter smoke exercise, not an upstream benchmark task. Benchmark task success will be unavailable; an official dataset and evaluator are not integrated yet.".into())?;
+        }
+        let tape_session = instrument_phase(
+            measurement_session.as_mut(),
+            LifecyclePhase::ProxyPreparation,
+            || {
+                if let Some((mode, cassette)) = tape_cassette.as_ref() {
+                    let bridge_url =
+                        providers::local_bridge_endpoint(&config.provider, bridge.as_deref());
+                    let upstream = if *mode == tape::Mode::Replay {
+                        None
+                    } else if let Some(offer) = selected_offer.as_ref() {
+                        Some(providers::selected_tape_upstream(
+                            &config.provider,
+                            offer.clone(),
+                            bridge_url,
+                        )?)
                     } else {
-                        warning.source_outcome()
-                    });
+                        providers::tape_upstream(&config.provider, bridge_url)
+                    };
+                    Ok(Some(tape::Session::start(
+                        *mode,
+                        cassette,
+                        upstream.as_deref(),
+                        respect_record_timings,
+                        &workspace,
+                    )?))
+                } else {
+                    Ok(None)
                 }
-            }
-            Err(error) => continuation_warnings.push(diagnostics::Warning::new(
-                diagnostics::Stage::Outcome,
-                config_path,
-                &completion::directory(config_path, &config.log_file),
-                &error,
-            )),
-        }
-    }
-    let presentation = (|| {
-        if json {
-            render_json(&result, output)?;
+            },
+        )?;
+        let mut prepared = PreparedAttempt {
+            workload: workload_session,
+            measurements: measurement_session,
+            tape: tape_session,
+        };
+        let tape_url = prepared.tape.as_ref().map(|session| session.url());
+        let provider_endpoint = tape_url
+            .or_else(|| providers::local_bridge_endpoint(&config.provider, bridge.as_deref()));
+        let provider_credentials = providers::local_bridge_credentials(
+            &config.provider,
+            bridge.as_deref(),
+            provider_endpoint,
+        );
+        let connection = selected_offer
+            .map(|offer| {
+                providers::endpoint_connection(
+                    &config.provider,
+                    offer,
+                    provider_credentials,
+                    tape_url.zip(tape_mode).map(|(url, mode)| (mode, url)),
+                )
+            })
+            .transpose()?;
+        let started = Instant::now();
+        let isolated = prepared.workload.execute(
+            &mut workloads::ExecutionContext {
+                config: &config,
+                connection: connection.as_ref(),
+                project_root: &project_root,
+                project_config: &project_config,
+                replay: tape_mode == Some(tape::Mode::Replay),
+                measurements: prepared.measurements.as_mut(),
+                show_output,
+            },
+            output,
+        );
+        let mut issues = AttemptIssues::default();
+        let (child, run_dir, guest, execution_elapsed_ms, runtime_output) =
+            if let Some(result) = isolated {
+                let result = result.map_err(Error::Run)?;
+                issues.collector_errors = result.collector_errors;
+                issues.output_error = result.output_error;
+                (
+                    result.output,
+                    PathBuf::new(),
+                    Some(result.metadata),
+                    result
+                        .elapsed_ms
+                        .unwrap_or_else(|| started.elapsed().as_millis()),
+                    None,
+                )
+            } else {
+                let native = native::NativePlan {
+                    config_path,
+                    config: &config,
+                    project_root: &project_root,
+                    project_config: &project_config,
+                    invocation: prepared.workload.invocation(),
+                    route: native::NativeRoute {
+                        connection: connection.as_ref(),
+                        provider_endpoint,
+                        provider_credentials,
+                        tape_url,
+                        tape_mode,
+                    },
+                }
+                .prepare(prepared.measurements.as_mut())?;
+                let (evidence, native_issues) =
+                    native.execute(prepared.measurements.as_mut(), show_output, output)?;
+                issues = native_issues;
+                (
+                    evidence.output,
+                    evidence.run_dir,
+                    evidence.guest,
+                    evidence.elapsed_ms,
+                    evidence.runtime_output,
+                )
+            };
+        let settled = prepared
+            .executed(
+                ExecutionEvidence {
+                    output: child,
+                    run_dir,
+                    guest,
+                    elapsed_ms: execution_elapsed_ms,
+                    runtime_output,
+                },
+                issues,
+            )
+            .settle(tape_cassette.as_ref());
+        let agent_outcome = settled.evidence.agent_outcome(&config.agent, &workspace);
+        let process_success = agent_outcome.failure.is_none();
+        let agent_failure = agent_outcome.failure;
+        let final_response = agent_outcome.final_response;
+        // A usable submission can survive a failed client or proxy teardown.
+        // Evaluator errors and process failures are recorded independently.
+        let FinalizedAttempt {
+            workload: workload_session,
+            measurements: measurement_session,
+            evidence:
+                ExecutionEvidence {
+                    output: child,
+                    run_dir,
+                    guest,
+                    elapsed_ms,
+                    runtime_output,
+                },
+            proxy_evidence,
+            cassette_usage_verified,
+            outcome,
+            evaluator_evidence,
+            cleanup_confirmed: workload_cleanup_confirmed,
+            issues,
+        } = settled
+            .evaluate_with_policy(
+                final_response.as_deref().unwrap_or_default(),
+                &metric_policy,
+            )
+            .finish();
+        let provider_cleanup_error = providers::finish_session(&mut bridge)
+            .err()
+            .map(|error| error.to_string());
+        let workload_success = outcome.success();
+        let grading_failure = outcome.failure();
+        let evaluation = outcome.evaluation;
+        let collector_error = issues.collector_failure();
+        let run_error = issues.run_error;
+        let output_error = issues.output_error;
+        let success = provider_cleanup_error.is_none()
+            && run_error.is_none()
+            && collector_error.is_none()
+            && output_error.is_none()
+            && process_success
+            && evaluation.completed()
+            && workload_success != Some(false);
+        let workload_failure =
+            grading_failure
+                .as_ref()
+                .map(|(kind, reason)| workloads::EvaluationFailure {
+                    kind,
+                    reason: reason.clone(),
+                });
+        let failure = if let Some(error) = run_error.as_ref() {
+            Some(("run_error", error.clone()))
+        } else if let Some(error) = agent_failure {
+            Some(("agent_failure", error))
         } else {
-            render_human(&result, output)?;
+            grading_failure
+                .or_else(|| collector_error.map(|error| ("collector_error", error)))
+                .or_else(|| {
+                    output_error
+                        .as_ref()
+                        .map(|error| ("output_error", error.clone()))
+                })
+                .or_else(|| {
+                    provider_cleanup_error
+                        .as_ref()
+                        .map(|error| ("provider_cleanup_error", error.clone()))
+                })
+        };
+        let adapter_artifacts = guest
+            .is_none()
+            .then(|| agents::find(&config.agent))
+            .flatten()
+            .map(|adapter| {
+                adapter.collect(&agents::CollectionContext {
+                    workspace: &workspace,
+                    run_dir: &run_dir,
+                    interface: connection.as_ref().map(|connection| connection.interface),
+                    anthropic_input_includes_cache:
+                        crate::providers::anthropic_input_includes_cache(&config.provider),
+                })
+            })
+            .unwrap_or_default();
+        let token_usage = measurements::token_usage_from_sources(
+            &config.provider,
+            &config.agent,
+            &String::from_utf8_lossy(&child.stdout),
+            &String::from_utf8_lossy(&child.stderr),
+            tape_cassette
+                .as_ref()
+                .filter(|_| cassette_usage_verified)
+                .map(|(_, cassette)| cassette.as_path()),
+        );
+        let token_usage =
+            measurements::with_artifact_usage(token_usage, adapter_artifacts.token_usage);
+        let token_usage = measurements::with_artifact_usage(
+            token_usage,
+            guest.as_ref().map(|metadata| metadata.token_usage.clone()),
+        );
+        for path in adapter_artifacts.cleanup_paths {
+            let _ = std::fs::remove_file(path);
         }
-        for warning in continuation_warnings {
-            warning.emit(json, output, warnings)?;
+        let steps = if let Some(metadata) = guest.as_ref() {
+            metadata.steps
+        } else {
+            adapter_artifacts.steps.or_else(|| {
+                measurements::steps_from_sources(
+                    &config.agent,
+                    &bounded(&child.stdout),
+                    &bounded(&child.stderr),
+                )
+            })
+        };
+        let mut stderr = bounded(&child.stderr);
+        if let Some(error) = provider_cleanup_error.as_ref() {
+            stderr.push_str("\nASB provider cleanup error: ");
+            stderr.push_str(error);
+            stderr.push('\n');
         }
-        Ok(())
+        if let Some(error) = output_error.as_ref() {
+            stderr.push_str("\nASB presentation error: ");
+            stderr.push_str(error);
+            stderr.push('\n');
+        }
+        for error in &issues.collector_errors {
+            stderr.push_str("\nASB collector error: ");
+            stderr.push_str(error);
+            stderr.push('\n');
+        }
+        if let Some(error) = run_error.as_deref() {
+            stderr.push_str("\nASB run error: ");
+            stderr.push_str(error);
+            stderr.push('\n');
+        }
+        if let Some((kind, reason)) = &failure {
+            stderr.push_str("\nASB failure (");
+            stderr.push_str(kind);
+            stderr.push_str("): ");
+            stderr.push_str(reason);
+            stderr.push('\n');
+        }
+        let run_metrics = crate::collectors::run_metrics(&crate::collectors::RunObservation {
+            elapsed_ms,
+            success,
+        });
+        let configured_kind = workload_session.evaluation_kind();
+        let evaluation_kind = workloads::scored_kind(configured_kind, &workload_baseline);
+        let resolution_eligible = workloads::resolution_eligible(evaluation_kind);
+        let evaluation_pending = matches!(
+            &evaluation,
+            workloads::outcome::EvaluationOutcome::Pending { .. }
+        );
+        let result = RunResult {
+            planning: policy,
+            effective_budgets,
+            execution_plan: Some(execution_plan),
+            execution_plan_fingerprint: Some(execution_plan_fingerprint),
+            module,
+            benchmark_outcome: Some(workloads::outcome::BenchmarkOutcome {
+                schema_version: 1,
+                execution_success: Some(process_success),
+                evaluation,
+                cleanup_confirmed: Some(
+                    workload_cleanup_confirmed
+                        && proxy_evidence.cleanup_confirmed
+                        && provider_cleanup_error.is_none(),
+                ),
+                evidence: evaluator_evidence,
+                policy: metric_policy,
+                lineage: workloads::outcome::EvaluationLineage {
+                    execution_attempt: workload_session.invocation().identity.attempt_id.clone(),
+                    evaluation_id: workloads::TaskIdentity::local("evaluation", None).attempt_id,
+                    supersedes: None,
+                },
+            }),
+            replica_index: Some(options.replica.index),
+            execution_cohort: options.execution_cohort,
+            schema_version: 2,
+            status: if evaluation_pending
+                && process_success
+                && run_error.is_none()
+                && provider_cleanup_error.is_none()
+            {
+                "evaluation-pending"
+            } else if success && evaluation_kind == "invalid-baseline" {
+                "unscored"
+            } else if success && !resolution_eligible {
+                "smoke-passed"
+            } else if success {
+                "completed"
+            } else {
+                "failed"
+            },
+            agent: &config.agent,
+            workload: &config.workload,
+            task: workload_session.invocation().identity.clone(),
+            provider: &config.provider,
+            model: &config.model,
+            process_success,
+            workload_success: resolution_eligible.then_some(workload_success).flatten(),
+            workload_evaluation: evaluation_kind,
+            workload_baseline_passed,
+            workload_baseline,
+            workload_failure,
+            failure_kind: failure.as_ref().map(|(kind, _)| *kind),
+            failure_reason: failure.as_ref().map(|(_, reason)| reason.clone()),
+            success_rate: resolution_eligible
+                .then_some(workload_success)
+                .flatten()
+                .map(|resolved| if resolved { 1.0 } else { 0.0 }),
+            adapter_smoke_success: (evaluation_kind == "adapter-smoke").then_some(success),
+            elapsed_ms: run_metrics.elapsed_ms,
+            exit_code: child.status.code(),
+            token_usage,
+            steps,
+            cassette: tape_cassette
+                .as_ref()
+                .map(|(_, cassette)| cassette.display().to_string()),
+            measurement_directory: measurement_path
+                .as_ref()
+                .map(std::path::absolute)
+                .transpose()
+                .map_err(io_error)?,
+            stdout: bounded(&child.stdout),
+            stderr,
+        };
+        let log_publication =
+            phases::LogPublication::publish(config_path, &config.log_file, &result);
+        let measurement_completion =
+            phases::finish_measurements(measurement_session, &result, success);
+        // This private record preserves evaluator outcomes, including unresolved
+        // tasks. Its absence never changes a benchmark grade or blocks execution;
+        // a future continuation must also validate its input and evidence seals.
+        let mut completion_outputs = vec![workspace.clone()];
+        if let Some(path) = measurement_path.as_ref() {
+            completion_outputs.push(path.clone());
+        }
+        if let Some(path) = runtime_output {
+            completion_outputs.push(path);
+        }
+        let mut continuation_warnings = Vec::new();
+        if log_publication.confirmed()
+            && measurement_completion.confirmed()
+            && provider_cleanup_error.is_none()
+        {
+            match completion::persist(
+                config_path,
+                &config.log_file,
+                &result,
+                workload_cleanup_confirmed,
+                &workload_session.checkpoint_evidence(),
+                &proxy_evidence,
+                &completion::Context {
+                    replica: options.replica,
+                    outputs: &completion_outputs,
+                },
+            ) {
+                Ok(record) => {
+                    if let Some(observer) = options.on_completion
+                        && let Err(error) = observer.completed(options.replica, &record)
+                    {
+                        let destination = observer.evidence_destination(options.replica);
+                        let warning = diagnostics::Warning::new(
+                            diagnostics::Stage::Replica,
+                            config_path,
+                            destination.as_deref().unwrap_or(&record),
+                            &error,
+                        );
+                        continuation_warnings.push(if destination.is_some() {
+                            warning
+                        } else {
+                            warning.source_outcome()
+                        });
+                    }
+                }
+                Err(error) => continuation_warnings.push(diagnostics::Warning::new(
+                    diagnostics::Stage::Outcome,
+                    config_path,
+                    &completion::directory(config_path, &config.log_file),
+                    &error,
+                )),
+            }
+        }
+        let presentation = (|| {
+            if json {
+                render_json(&result, output)?;
+            } else {
+                render_human(&result, output)?;
+            }
+            for warning in continuation_warnings {
+                warning.emit(json, output, warnings)?;
+            }
+            Ok(())
+        })();
+        let outcome = diagnostics::preserve_primary(
+            phases::final_outcome(failure, log_publication, measurement_completion),
+            presentation,
+        );
+        if let Some(cleanup) = provider_cleanup_error {
+            match outcome {
+                Ok(()) => Err(Error::Run(cleanup)),
+                Err(primary) if result.failure_kind == Some("provider_cleanup_error") => {
+                    Err(primary)
+                }
+                Err(primary) => Err(Error::Run(format!(
+                    "{primary}; provider cleanup failed: {cleanup}"
+                ))),
+            }
+        } else {
+            outcome
+        }
     })();
-    diagnostics::preserve_primary(
-        phases::final_outcome(failure, log_publication, measurement_completion),
-        presentation,
-    )
+    providers::finish_result(attempt, &mut bridge)
 }
 
 /// Prevent replayed agents from contacting any live provider, updater, or
@@ -978,13 +1126,34 @@ fn instrument_phase<T>(
 
 /// Run the agent while delivering every lifecycle event through the collector
 /// interface, including failures after the execution span has begun.
+#[cfg(test)]
 fn run_measured_agent(
+    command: &mut Command,
+    target: &crate::launch::TargetLaunch,
+    route: Option<crate::launch::CommandRoute>,
+    session: Option<&mut measurements::Session>,
+    show_output: bool,
+    output: &mut dyn Write,
+) -> Result<MeasuredOutput, Error> {
+    run_measured_agent_with_budget(
+        command,
+        target,
+        route,
+        session,
+        show_output,
+        output,
+        MAX_AGENT_RUNTIME,
+    )
+}
+
+fn run_measured_agent_with_budget(
     command: &mut Command,
     target: &crate::launch::TargetLaunch,
     route: Option<crate::launch::CommandRoute>,
     mut session: Option<&mut measurements::Session>,
     show_output: bool,
     output: &mut dyn Write,
+    runtime: Duration,
 ) -> Result<MeasuredOutput, Error> {
     let started = Instant::now();
     let gated = route
@@ -1072,7 +1241,7 @@ fn run_measured_agent(
         show_output,
         output,
         None,
-        MAX_AGENT_RUNTIME,
+        runtime,
         PresentationPolicy::PreserveEvidence,
         &mut || {
             execution_finished = Some(Instant::now());
@@ -1205,6 +1374,12 @@ pub(crate) fn resolve_log_path(config_path: &Path, configured_path: &str) -> Pat
 
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
     let summary = serde_json::json!({
+        "planning": result.planning,
+        "effective_budgets": result.effective_budgets,
+        "execution_plan": result.execution_plan,
+        "execution_plan_fingerprint": result.execution_plan_fingerprint,
+        "module": result.module,
+        "benchmark_outcome": result.benchmark_outcome,
         "replica_index": result.replica_index,
         "execution_cohort": result.execution_cohort,
         "schema_version": result.schema_version,
@@ -2102,6 +2277,9 @@ mod tests {
             .unwrap();
         session
             .finish(crate::measurements::RunMeasurement {
+                execution_plan_fingerprint: None,
+                module: None,
+                benchmark_outcome: None,
                 replica_index: None,
                 execution_cohort: None,
                 schema_version: 1,
@@ -2272,6 +2450,12 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("asb-replay-no-cassette-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(root.join(".asb")).unwrap();
+        std::fs::write(
+            root.join(".asb/project.toml"),
+            toml::to_string(&crate::project::ProjectConfig::default()).unwrap(),
+        )
+        .unwrap();
         let config = root.join("benchmark.toml");
         std::fs::write(&config, "agent='pi'\nworkload='bug-fix'\nprovider='not-a-provider'\nmodel='model'\nconcurrency=8\n").unwrap();
         let error = run_with_tape(
@@ -2286,6 +2470,13 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("replay cassette"), "{message}");
         assert!(!message.contains("unsupported provider"), "{message}");
+        assert_eq!(
+            std::fs::read_dir(root.join(".asb/execution-plans"))
+                .unwrap()
+                .count(),
+            8,
+            "each admitted replica must keep its policy in the isolated fixture project"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2392,6 +2583,18 @@ mod tests {
 
     fn result<'a>() -> RunResult<'a> {
         RunResult {
+            planning: crate::planning::resolve(
+                &toml::from_str(
+                    "agent='pi'\nprovider='fixture'\nmodel='fixture'\nworkload='bug-fix'",
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+            effective_budgets: Default::default(),
+            execution_plan: None,
+            execution_plan_fingerprint: None,
+            module: None,
+            benchmark_outcome: None,
             replica_index: None,
             execution_cohort: None,
             schema_version: 2,
@@ -2494,6 +2697,7 @@ mod tests {
     #[test]
     fn cli2key_command_mappings_place_workload_once() {
         let config = BenchmarkConfig {
+            planning: None,
             agent: "openhands".into(),
             workload: "bug-fix".into(),
             provider: "cli2key".into(),
@@ -2516,6 +2720,7 @@ mod tests {
     #[test]
     fn token_reporting_commands_request_machine_readable_agent_output() {
         let base = BenchmarkConfig {
+            planning: None,
             agent: "mini-swe".into(),
             workload: "bug-fix".into(),
             provider: "cli2key".into(),
@@ -2554,6 +2759,7 @@ mod tests {
             ("continue", "cn", "--auto"),
         ] {
             let config = BenchmarkConfig {
+                planning: None,
                 agent: agent.into(),
                 workload: "bug-fix".into(),
                 provider: "cli2key".into(),
@@ -2579,6 +2785,7 @@ mod tests {
     #[test]
     fn pi_cli2key_uses_openai_bridge_and_print_mode() {
         let config = BenchmarkConfig {
+            planning: None,
             agent: "pi".into(),
             workload: "bug-fix".into(),
             provider: "cli2key".into(),
@@ -2725,6 +2932,7 @@ mod tests {
     #[test]
     fn opencode_command_uses_generic_provider_model_namespace() {
         let config = BenchmarkConfig {
+            planning: None,
             agent: "opencode".into(),
             workload: "bug-fix".into(),
             provider: "opencode-zen".into(),
@@ -2753,6 +2961,7 @@ mod tests {
     #[test]
     fn unknown_agent_suggests_a_close_match() {
         let config = BenchmarkConfig {
+            planning: None,
             agent: "opencod".into(),
             workload: "bug-fix".into(),
             provider: "local".into(),
