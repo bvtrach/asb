@@ -175,7 +175,7 @@ Simplify checkpoint validation into named invariants without losing checks.
 Review broad parameter lists, result structs, visibility, dead API surface and
 module names in those owning boundaries. Pending.
 
-Checkpoint candidate: completion group/replica sealing, partial continuation
+Checkpoint candidate, staged patch **0.2.20**: completion group/replica sealing, partial continuation
 and retained-outcome reconciliation now consume a private validated outcome
 instead of passing an unchecked wire record after a long Boolean expression.
 Named protocol/cleanup, cohort, identity, grade/baseline and evidence-path
@@ -188,8 +188,13 @@ invalid native member's group/slot receipts additionally proves public CLI
 unsealed-slot validation reaches the exact named invariant before allocation
 inspection, without republishing those receipts. Earlier valid native seals
 remain intact; all-candidate publication ordering is covered separately by the
-allocated unit fixture, not claimed as original-runtime qualification. Independent review
-and hosted delivery remain pending. This does not close other structural items.
+allocated unit fixture, not claimed as original-runtime qualification. Independent
+source review approved `9d0c6f3f`; a separate execution passed all 23 checkpoint
+tests and both public CLI tests. The worker's stable-binary full qualification
+passed 933 tests with 20 explicit optional skips, followed sequentially by fmt
+and strict Clippy, with unchanged executable hashes. Integrated-version and
+ordinary/package hosted CI, merge and post-merge release verification remain
+pending. This does not close other structural items.
 
 Runner candidate, staged patch **0.2.10** (not yet merged/released): private consuming admission,
 preparation, execution-evidence, proxy-settlement, evaluation and finalization
