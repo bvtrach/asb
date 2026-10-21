@@ -575,3 +575,25 @@ fn alternate_eocd_and_cross_boundary_headers_cannot_bypass_preflight() {
         assert!(Archive::open(&path, Limits::default()).is_err());
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn nonregular_archive_paths_are_rejected_without_opening_a_blocking_stream() {
+    let fixture = Fixture::new();
+    let path = fixture.0.join("stream.zip");
+    assert!(
+        std::process::Command::new("mkfifo")
+            .arg(&path)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Archive::open(&path, Limits::default())
+            .unwrap_err_text()
+            .contains("regular file")
+    );
+    let mut value = serde_json::to_value(manifest(1)).unwrap();
+    value["unknown_manifest_field"] = true.into();
+    assert!(serde_json::from_value::<Manifest>(value).is_err());
+}

@@ -2,7 +2,7 @@
 use super::metadata::MetadataReader;
 use super::{Error, Manifest, digest};
 use std::collections::BTreeMap;
-use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::Path;
 use zip::{
@@ -72,7 +72,15 @@ impl Archive {
     /// when selected. Schema one uses bounded single-disk ZIP32, not ZIP64.
     pub fn open(path: &Path, limits: Limits) -> Result<Self, Error> {
         limits.validate()?;
-        let file = File::open(path).map_err(io_error)?;
+        let mut options = OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            // Opening a FIFO must not block before the regular-file check.
+            options.custom_flags(libc::O_NONBLOCK);
+        }
+        let file = options.open(path).map_err(io_error)?;
         if !file.metadata().map_err(io_error)?.is_file() {
             return Err(Error("cassette archive must be a regular file".into()));
         }
