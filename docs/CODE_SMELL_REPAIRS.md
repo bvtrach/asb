@@ -14,6 +14,17 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+Integrated candidate, staged patch **0.2.18**: the independently reviewed
+launch-descriptor/one-shot admission repair (`b1a54fde`) is combined with the
+reviewed workload-wizard stack (`cbe3e0ed`), retaining shared benchmark paths,
+bounded flamegraph cleanup, host prerequisite consent and adapter-owned
+executable readiness. Adapter package preferences and source readiness coexist
+with the raw-OS launch descriptor; native command configuration and exclusive
+gate admission remain intact. Fresh full offline source and package
+qualification, independent integration review, exact-head hosted CI, PR merge,
+post-merge verification and a patch release remain pending. This staging entry
+does not claim delivery or close the other audit repair classes.
+
 ## 1. Endpoint preparation invariants
 
 Eight production adapter branches used `unreachable!` for unsupported wire
@@ -46,6 +57,32 @@ nested-versus-literal keys, then consolidate genuinely equivalent sanitizers
 without changing established result/workspace identities unintentionally.
 Also review duplicated manifest reference validation and executable resolution;
 same names alone do not prove equivalent semantics. Pending.
+
+Executable-policy candidate, staged patch **0.2.16**: project-local source
+installation, readiness and launch share one registry-neutral executable lookup.
+Explicit source overrides precede adapter-owned package preferences; unusable
+present candidates cannot silently fall through to stale fallback code. Codex
+owns its native-package preference, and host discovery cannot claim a project
+installation. Root independently reviewed the original production repair and
+reran all seven isolated policy fixtures after current-stack integration. These
+exercise actual source installation and execution for every registered agent
+and tool, custom roots, override precedence, broken/non-executable/symlink
+entries and host-only discovery. Existing installer regressions now call the
+same shared executable predicate rather than a removed duplicate. Final full
+source/package checks, review of integration, PR merge, post-merge verification
+and the patch release remain pending.
+
+Shared benchmark-path candidate, staged patch **0.2.13**: all five equivalent legacy normalizers now
+use one component/stem policy, and both sweep execution and comparison use the
+same checked TOML-reference contract. Filename prefixes, Unicode-per-character
+replacement, non-UTF-8 fallback and existing symlink behavior are unchanged.
+The graph allocator still owns collision-free identities; the shared lossy
+normalizer is not a uniqueness or confinement mechanism. Tests preserve those
+boundaries and exercise actual CLI rejection in both commands before artifact
+creation. Independent source review found no blocker. Ordinary source tests
+and strict Clippy passed; release-head functional package/hosted checks, PR,
+post-merge validation and a patch release remain pending. This does not close
+the separate executable-resolution or orchestration classes.
 
 Candidate report repair: flatten numeric paths with escaped object separators
 and empty-key identities; reserve bounded portable SVG names, using digest
@@ -104,6 +141,18 @@ release-head qualification and delivery remain pending. Main `398c36cc` removed
 the hosted coverage gate and the user explicitly confirmed keeping that removal;
 local measurements are optional diagnostics, not a required hosted check.
 
+Flamegraph cleanup candidate, staged patch **0.2.14**: the perf-script/stack-collapse/render pipeline
+owns every directly spawned stage. A failure, timeout or unwind signals all
+remaining stages before polling against one shared cleanup deadline, preserving
+the original error and retaining unconfirmed children in the shared private
+`OwnedReaper` established before any spawn. It no longer selects processes by
+parent PID or returns from an upstream failure while forgetting a downstream
+child. Offline real-child tests cover stage/file/spawn failures, timeout,
+unwind, fallback-custody handoff, actual reaping and unrelated sentinel survival.
+The reviewed source is integrated with current main; fresh ordinary/package
+qualification, coverage, a PR, post-merge checks and a patch release remain
+pending. This does not claim arbitrary descendant or crash-persistent cleanup.
+
 ## 4. Typed domain and wire contracts
 
 Review run status/evaluation/failure categories, execution mode, result source,
@@ -159,6 +208,15 @@ their adapters. Audit mutable globals for necessary scope: atomics for unique
 names and synchronized process ownership are not intrinsically defects.
 Avoid removing synchronization without an ownership replacement. Pending.
 
+Host prerequisite consent/probes now have a separate candidate repair: private
+typed requests, consumed approvals, one capability probe per sysctl/cgroup setup,
+and explicit independent-versus-dependent failure policies. Sysctls retain
+approved interactive fallback; cgroup delegation remains passwordless-only and
+requires separate consent. Offline fake-executor tests and the existing isolated
+fake-sudo fixtures cover both routes. This candidate does not repair wizard
+worker ownership or change tracefs lease/installation semantics; independent
+review and delivery are still pending.
+
 Process-gate inspection found an additional launch-contract problem: its
 `pre_exec` closure allocates buffers and enumerates the environment after fork
 in a multithreaded process. That needs async-signal-safety review and a launch
@@ -187,7 +245,7 @@ argument and environment bytes, explicit client argv[0], current UID/GID,
 an owned process group, an existing async-safe callback and launch failures.
 This does not expand the separate runtime-fingerprint JSON wire to arbitrary
 filesystem byte encodings or fix output-reader memory/wait limits. Full
-independent review and fresh ordinary/package CI remain required.
+independent integration review and fresh ordinary/package CI remain required.
 
 Independent review additionally found that wizard installation workers are
 detached: a draw error can return while an installer still mutates project
@@ -215,10 +273,19 @@ the reviewed runner publication repairs and current development policy;
 fresh exact-head functional/package CI, independent review, merge and
 post-merge release verification remain required.
 
-Coverage-driven inspection also found a wizard transition defect: saving
-trials consumes `selected_workload`, so the advertised next Enter reopens
-trial selection instead of finishing. Add bounded event-loop/PTY regressions,
-not only helper tests, and repair the explicit save/finish state in this class.
+Workload-wizard candidate, staged patch **0.2.17**: explicit browsing, editing
+and saved states repair the advertised Enter-to-finish action. Saved subsets
+are restored when editing, replaced rather than appended, retained across
+deselection, and published only for selected workloads. Every selected subset
+must be nonempty and present in the reloaded catalog; all configurations are
+validated and serialized before the first write. This is semantic validation,
+not a claim of transactional multi-file I/O. Independent source review approved
+`6758b426`; a separate execution passed all 39 TUI unit tests and both terminal
+integration tests, including ten actual PTY workflow scenarios and terminal
+restoration. Worker full offline qualification passed 956 tests with 20 explicit
+optional skips. Version/package, exact-head hosted CI, merge and post-merge
+release verification remain pending. Detached installation-worker custody and
+other TUI structural issues remain separate repair classes.
 
 ## 7. Limits, diagnostics and CLI consistency
 
@@ -233,8 +300,10 @@ second completion definition. PR #260 targets patch **0.2.8**, following the
 installer repair in PR #259 and BPF scope/startup repair in PR #268.
 The current-main coverage regressions remain in
 place with an explicit test-module import after removing the old generator.
-Exact-head source/package tests, hosted functional CI, merge,
-post-merge verification and release remain required.
+PR #260 merged as `0897aeb4e4ee5656b80f2e998b52dbe48acee8fe` after final
+source/package/install-smoke CI passed in run `39611418478`. Post-merge
+verification and the signed v0.2.8 release are tracked in the PR. Coverage is
+optional under the user-confirmed policy above, not a remaining release gate.
 
 Unify intended limits (including TUI concurrency versus benchmark maximum),
 replace positional pane access and scattered protocol deadlines with named
@@ -252,8 +321,8 @@ Ordinary CI must use offline/synthetic inputs, not live provider credentials,
 privileged collectors or paid requests. New regression tests run in the
 ordinary suite and extracted package. Maintain honest null/unavailable
 measurements and preserve existing original-task evaluation evidence. A green
-focused test does not establish completion of a whole repair class. Local
-coverage measurements are informational under the current delivery policy.
+focused test does not establish completion of a whole repair class or replace
+the required functional source/package and post-merge checks.
 
 Additional safety finding from coverage tests: custom BPFTrace scope validation
 can skip multiline probe headers and accepts an OR-true predicate containing

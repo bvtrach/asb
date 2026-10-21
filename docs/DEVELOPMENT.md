@@ -47,6 +47,21 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+`cargo test --locked --offline --test tui_terminal` drives the actual current
+binary through a bounded PTY. Workload fixtures use only local fake catalogs:
+advertised Enter finishes, Tab edits, Back discards, saved choices reopen,
+edits replace subsets, and deselected workloads are excluded. Checkpoints
+inspect disk before finish and cancellation, then verify exact published
+subsets and terminal echo/canonical-mode restoration. No agent/provider runs
+or host changes are needed.
+`cargo test --locked --offline --lib executables::tests` installs local shell
+fixtures through every registered agent/tool source-install route, then checks
+readiness and actually executes the selected fixture. Isolated subprocess
+cases cover external execution overrides, broken/non-executable/symlink
+candidates, host-tool policy and custom project roots. The Codex adapter also
+checks its native-package preference and explicit-source precedence. No package
+manager, provider, real agent or download is invoked by these path-policy tests.
+
 `cargo test --locked --offline --lib install::source` checks atomic installation
 with local fake downloads and version probes. The shared private `OwnedReaper`
 is established fallibly before each downloader or version subprocess starts.
@@ -71,6 +86,20 @@ Perf-stat regression fixtures process a complete synthetic file larger than
 the diagnostic cap, retain missing-interval timestamps and hybrid CPU counter
 totals, and reject invalid or excessive input without publishing partial totals.
 They need neither perf permissions nor a live agent/provider.
+Flamegraph pipeline regressions use synthetic local tools and pin each direct
+child's identity with a pidfd. Success, stage failures, output-file errors,
+preflight failures, timeout and unwinding must stop and reap every admitted
+stage while leaving an unrelated sentinel alive. Cleanup signals only owned
+direct children, never a process-name/PID-parent search. The caller's cleanup
+wait is bounded; an unconfirmed kernel-stuck child remains owned by a fallback
+reaper and is reported as a cleanup failure, not a completed graph. These
+fixtures neither invoke host perf nor qualify arbitrary tool descendants.
+The fallback worker is created fallibly before any tool is spawned. Creation
+failure starts no tools; cleanup transfers uncertain direct children through
+a private ownership slot, without spawning a thread or waiting on that worker.
+Deterministic test-only faults cover worker-creation failure and uncertain
+cleanup polling. Exit receipts also check idle, failed and unwinding workers;
+these tests do not need a genuinely kernel-stuck process.
 CPU/I/O and BPF adapter fixtures likewise place final samples/cumulative maps
 beyond 256 KiB, pass unrelated diagnostic strings and require full-file means,
 series and final values. Shared output tests reject incomplete, oversized,
@@ -212,6 +241,16 @@ and local path-package sources stay in the denominator; no product module is exc
 Missing-project capability fixtures test the same private initialized-file guard
 used by production, and ancestor discovery uses an owned fixture parent/child.
 They never assume TMPDIR has no real ancestor project or pass one to host setup.
+
+`cargo test --locked --offline --lib project::` includes the shared host-setup
+request/consent/capability policy tests. Fake executors exercise the actual sysctl
+and cgroup orchestration, every prerequisite failure, interactive versus
+passwordless mode, independent group consent, `--yes`, invalid/empty/EOF answers,
+and reader/writer/flush errors. These tests execute no host commands. Existing
+isolated fake-sudo/proc-input fixtures additionally check production argv/stdin
+construction without changing sysctls or cgroups. A prompt or pre-execution
+output failure grants no approval; execution failures remain best-effort and
+never imply rollback of commands that already succeeded.
 
 Token accounting has synthetic, provider-free regression fixtures for all
 registered agent families, plus replay CLI checks for JSON, logs, and
