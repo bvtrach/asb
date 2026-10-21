@@ -360,7 +360,7 @@ fn explicit_runtime_launcher_is_preserved_for_high_fd_exec_handoff() {
     std::fs::write(
         &launcher,
         format!(
-            "#!/bin/sh\nprintf 'invoked\\n' >> '{}'\nexec '{}' \"$@\"\n",
+            "#!/bin/sh\nprintf '%s|%s\\n' \"$$\" \"$1\" >> '{}'\nexec '{}' \"$@\"\n",
             marker.display(),
             actual.display()
         ),
@@ -376,7 +376,7 @@ fn explicit_runtime_launcher_is_preserved_for_high_fd_exec_handoff() {
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap())
         .env("HOME", &root)
-        .env(CHILD, "1")
+        .env(CHILD, &marker)
         .env("ASB_RUNTIME_EXECUTABLE", &launcher)
         .args(["--exact", &name, "--nocapture"]);
     if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
@@ -389,10 +389,7 @@ fn explicit_runtime_launcher_is_preserved_for_high_fd_exec_handoff() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        std::fs::read_to_string(marker).unwrap().lines().count() >= 3,
-        "configured launcher was bypassed"
-    );
+    assert!(!std::fs::read_to_string(marker).unwrap().is_empty());
 }
 
 fn embedded_proxy_finish_fixture(high_descriptor: bool) {
@@ -404,7 +401,31 @@ fn embedded_proxy_finish_fixture(high_descriptor: bool) {
     let root = root.canonicalize().unwrap();
     std::fs::write(root.join("proxy.mjs"), super::super::BUILTIN_COMPAT_PROXY).unwrap();
     std::fs::write(root.join("network-fetch.mjs"), super::super::NETWORK_FETCH).unwrap();
-    std::fs::write(root.join("observe.mjs"), "import http from 'node:http';import {writeFileSync} from 'node:fs';process.on('exit',code=>writeFileSync('exit-status',String(code)));const create=http.createServer;http.createServer=function(...args){const server=create.apply(this,args);server.on('request',request=>{if(request.url==='/v1/abort'||request.url==='/v1/unfinished'){const name=request.url==='/v1/abort'?'abort':'unfinished';writeFileSync(name+'-seen','yes');request.once('aborted',()=>writeFileSync(name+'-aborted','yes'));}});return server;};\n").unwrap();
+    std::fs::write(root.join("observe.mjs"), r#"import http from 'node:http';
+import childProcess from 'node:child_process';
+import {syncBuiltinESMExports} from 'node:module';
+import {writeFileSync,appendFileSync} from 'node:fs';
+process.on('exit',code=>writeFileSync('exit-status',String(code)));
+const spawn=childProcess.spawn;
+childProcess.spawn=function(program,args,...options){
+  const child=spawn.call(this,program,args,...options);
+  appendFileSync('spawn-observed.jsonl',JSON.stringify({program,mode:args[0],pid:child.pid})+'\n',{mode:0o600});
+  return child;
+};
+syncBuiltinESMExports();
+const create=http.createServer;
+http.createServer=function(...args){
+  const server=create.apply(this,args);
+  server.on('request',request=>{
+    if(request.url==='/v1/abort'||request.url==='/v1/unfinished'){
+      const name=request.url==='/v1/abort'?'abort':'unfinished';
+      writeFileSync(name+'-seen','yes');
+      request.once('aborted',()=>writeFileSync(name+'-aborted','yes'));
+    }
+  });
+  return server;
+};
+"#).unwrap();
     let node = crate::tools::host_executable(std::path::Path::new("node")).unwrap();
     let curl = crate::tools::host_executable(std::path::Path::new("curl")).unwrap();
     let held = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -563,6 +584,39 @@ fn embedded_proxy_finish_fixture(high_descriptor: bool) {
     drop(request);
     drop(upstream);
     drop(held);
+    if let Some(marker) = std::env::var_os("ASB_OWNED_EXEC_LAUNCHER_FIXTURE") {
+        let observed = std::fs::read_to_string(root.join("spawn-observed.jsonl")).unwrap();
+        let launches: Vec<serde_json::Value> = observed
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert!(!launches.is_empty());
+        let expected_launcher = std::env::var("ASB_RUNTIME_EXECUTABLE").unwrap();
+        let mut expected: Vec<_> = launches
+            .iter()
+            .map(|launch| {
+                assert_eq!(
+                    launch["program"], expected_launcher,
+                    "an actual spawn bypassed the configured launcher"
+                );
+                assert_eq!(launch["mode"], "__asb-owned-fd-exec");
+                format!("{}|__asb-owned-fd-exec", launch["pid"].as_u64().unwrap())
+            })
+            .collect();
+        let text = std::fs::read_to_string(&marker).unwrap();
+        let mut actual: Vec<_> = text.lines().map(str::to_owned).collect();
+        actual.sort();
+        expected.sort();
+        assert_eq!(
+            actual, expected,
+            "every actual outbound child must execute through the configured launcher in the SAME PID"
+        );
+        std::fs::write(
+            std::path::Path::new(&marker).with_extension("spawn-proof.jsonl"),
+            observed,
+        )
+        .unwrap();
+    }
     std::fs::remove_dir_all(root).unwrap();
     // Intentional high-FD reproduction asserts only AFTER confirmed proxy,
     // curl, connection and reservation cleanup above.

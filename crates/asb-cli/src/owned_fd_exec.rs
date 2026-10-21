@@ -71,8 +71,12 @@ fn sanitize(claims: &[(i32, u64, u64, Kind)]) -> Result<(), ()> {
             return Err(());
         }
         let metadata = unsafe { metadata.assume_init() };
-        if metadata.st_dev as u64 != device
-            || metadata.st_ino as u64 != inode
+        // Unix aliases differ by platform; retain the explicit u64 result
+        // without assuming either native field already has that Rust type.
+        let observed_device: u64 = metadata.st_dev as _;
+        let observed_inode: u64 = metadata.st_ino as _;
+        if observed_device != device
+            || observed_inode != inode
             || metadata.st_mode & libc::S_IFMT != kind.mode()
         {
             // A prior exec may have closed this number, or it may now denote
