@@ -58,6 +58,12 @@ direct children, never a process-name/PID-parent search. The caller's cleanup
 wait is bounded; an unconfirmed kernel-stuck child remains owned by a fallback
 reaper and is reported as a cleanup failure, not a completed graph. These
 fixtures neither invoke host perf nor qualify arbitrary tool descendants.
+The fallback worker is created fallibly before any tool is spawned. Creation
+failure starts no tools; cleanup transfers uncertain direct children through
+a private ownership slot, without spawning a thread or waiting on that worker.
+Deterministic test-only faults cover worker-creation failure and uncertain
+cleanup polling. Exit receipts also check idle, failed and unwinding workers;
+these tests do not need a genuinely kernel-stuck process.
 `cargo test --locked --offline --test compare_setup` checks repeated CLI setup
 selections, scoped models/trials, dependency expansion, non-overwriting sweep
 publication, standalone measured/unmeasured reports and an injected browser
