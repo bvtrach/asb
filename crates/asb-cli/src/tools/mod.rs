@@ -278,6 +278,10 @@ pub(crate) fn resolve(id: &str, project_root: &Path, tools_dir: &str) -> Option<
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/tools.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

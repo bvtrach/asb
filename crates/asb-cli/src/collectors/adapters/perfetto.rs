@@ -1170,6 +1170,10 @@ fn perfetto_probe(service: &Service, measurement_dir: &Path) -> Result<bool, Str
 }
 
 #[cfg(test)]
+#[path = "perfetto/coverage_tests.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod marker_tests {
     use super::*;
 
@@ -1734,6 +1738,7 @@ print(json.dumps(c.execute(sys.argv[1]).fetchall()))
             let tools = root.join("tools");
             let mut sudo_collectors = std::collections::BTreeSet::new();
             let mut context = PreflightContext {
+                states: &mut crate::collectors::CollectorStates::default(),
                 measurement_dir: &root,
                 selected: &[],
                 tool_dir: Some(&tools),

@@ -6,6 +6,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(target_os = "linux")]
+mod host_setup;
 pub(crate) mod perfetto;
 
 thread_local! {
@@ -324,12 +326,7 @@ pub fn configure_host(
 ) -> Result<(), Error> {
     let start = root.unwrap_or_else(|| PathBuf::from("."));
     let (root, mut config) = load(&start)?;
-    let path = root.join(CONFIG_DIR).join(CONFIG_FILE);
-    if !path.is_file() {
-        return Err(Error::Input(
-            "no initialized project found; run `asb init` first".into(),
-        ));
-    }
+    let path = initialized_config_path(&root)?;
     config.cgroup_parent = configure_host_capabilities(output, yes)?.or(config.cgroup_parent);
     let instances = perfetto::configure(&root, output, yes)?;
     if !instances.is_empty() {
@@ -341,225 +338,134 @@ pub fn configure_host(
     writeln!(output, "Updated host capability configuration; existing tools, workloads, configurations and results were preserved.").map_err(super::io_error)
 }
 
-/// Apply host-wide collector prerequisites after explicit user consent. Init
-/// never changes system-wide tracing settings silently: it prints the exact
-/// sysctl commands and requires an explicit `y` or `n` answer. If passwordless
-/// sudo is unavailable, an approved change may use interactive sudo so the
-/// user can enter the password at the normal sudo prompt.
+// Kept separate so missing-project tests never need to discover or configure
+// an unrelated real ancestor project. Production uses the exact same guard.
+fn initialized_config_path(root: &Path) -> Result<PathBuf, Error> {
+    let path = root.join(CONFIG_DIR).join(CONFIG_FILE);
+    if !path.is_file() {
+        return Err(Error::Input(
+            "no initialized project found; run `asb init` first".into(),
+        ));
+    }
+    Ok(path)
+}
+
+/// Apply optional host prerequisites through one consent/capability policy.
 fn configure_host_capabilities(
     output: &mut dyn std::io::Write,
     yes: bool,
 ) -> Result<Option<String>, Error> {
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = output;
-        return Ok(None);
+        let _ = (output, yes);
+        Ok(None)
     }
-
     #[cfg(target_os = "linux")]
     {
-        let current = |setting: &str| {
+        let mut reader = std::io::stdin().lock();
+        let mut executor = host_setup::SystemExecutor;
+        let mut policy = host_setup::Policy::new(&mut reader, &mut executor);
+        configure_host_capabilities_with(output, yes, &mut policy, |setting| {
             let proc_name = setting.strip_prefix("kernel.").unwrap_or(setting);
             fs::read_to_string(format!("/proc/sys/kernel/{proc_name}")).ok()
-        };
-
-        let pending = HOST_SETTINGS
-            .iter()
-            .filter(|(setting, wanted, _)| {
-                current(setting).is_none_or(|value| value.trim() != *wanted)
-            })
-            .copied()
-            .collect::<Vec<_>>();
-        if pending.is_empty() {
-            writeln!(
-                output,
-                "Checking passwordless sudo with: sudo -n true (read-only capability probe)."
-            )
-            .map_err(super::io_error)?;
-            let sudo_ready = passwordless_sudo_available();
-            configure_host_capabilities_with(output, sudo_ready, current, |_| true)?;
-            if sudo_ready {
-                return configure_cgroup_parent(output, yes);
-            }
-        } else {
-            writeln!(
-                output,
-                "Host capability setup needs to change these system-wide kernel tracing settings:"
-            )
-            .map_err(super::io_error)?;
-            for (setting, wanted, purpose) in &pending {
-                writeln!(output, "  sudo sysctl -w {setting}={wanted}  ({purpose})")
-                    .map_err(super::io_error)?;
-            }
-            writeln!(
-                output,
-                "These changes affect the whole host. Enter y or n explicitly; pressing Enter is not accepted."
-            )
-            .map_err(super::io_error)?;
-            if request_sudo_consent(output, yes)? {
-                writeln!(
-                    output,
-                    "Checking passwordless sudo with: sudo -n true (read-only capability probe)."
-                )
-                .map_err(super::io_error)?;
-                let sudo_ready = passwordless_sudo_available();
-                if sudo_ready {
-                    writeln!(
-                        output,
-                        "Applying the commands above with passwordless sudo."
-                    )
-                    .map_err(super::io_error)?;
-                } else {
-                    writeln!(output, "Passwordless sudo is unavailable. Because you explicitly approved the commands above, sudo will now ask for your password.")
-                        .map_err(super::io_error)?;
-                }
-                {
-                    for (setting, wanted, purpose) in pending {
-                        let assignment = format!("{setting}={wanted}");
-                        if run_sysctl(&assignment, sudo_ready) {
-                            writeln!(
-                                output,
-                                "Host capability setup: changed {assignment} ({purpose})."
-                            )
-                            .map_err(super::io_error)?;
-                        } else {
-                            writeln!(output, "Host capability setup: could not change {assignment}; continuing without changing that setting ({purpose}).")
-                                .map_err(super::io_error)?;
-                        }
-                    }
-                }
-                if sudo_ready {
-                    return configure_cgroup_parent(output, yes);
-                }
-            } else {
-                writeln!(
-                    output,
-                    "Host capability setup: system-wide tracing settings unchanged by user request."
-                )
-                .map_err(super::io_error)?;
-                writeln!(
-                    output,
-                    "Checking passwordless sudo with: sudo -n true (read-only capability probe)."
-                )
-                .map_err(super::io_error)?;
-                if passwordless_sudo_available() {
-                    return configure_cgroup_parent(output, yes);
-                }
-            }
-        }
-        Ok(None)
+        })
     }
 }
 
 #[cfg(target_os = "linux")]
 fn configure_host_capabilities_with(
     output: &mut dyn std::io::Write,
-    sudo_ready: bool,
+    yes: bool,
+    policy: &mut host_setup::Policy<'_>,
     current: impl Fn(&str) -> Option<String>,
-    set: impl Fn(&str) -> bool,
-) -> Result<(), Error> {
-    if !sudo_ready {
-        writeln!(
-            output,
-            "Host capability setup: passwordless sudo is unavailable; no host settings were changed."
-        )
-        .map_err(super::io_error)?;
-        return Ok(());
-    }
-
-    for (setting, wanted, purpose) in HOST_SETTINGS {
-        if current(setting).is_some_and(|value| value.trim() == *wanted) {
+) -> Result<Option<String>, Error> {
+    use host_setup::{FailurePolicy, Operation, Request, Requirement};
+    let mut pending = Vec::new();
+    for &(setting, wanted, purpose) in HOST_SETTINGS {
+        if current(setting).is_some_and(|value| value.trim() == wanted) {
             writeln!(
                 output,
                 "Host capability setup: {setting}={wanted} already enabled ({purpose})."
             )
             .map_err(super::io_error)?;
-            continue;
+        } else {
+            pending.push((setting, wanted, purpose));
         }
-
-        let assignment = format!("{setting}={wanted}");
-        if set(&assignment) {
-            writeln!(
-                output,
-                "Host capability setup: changed {setting}={wanted} using passwordless sudo ({purpose})."
-            )
-            .map_err(super::io_error)?;
+    }
+    if !pending.is_empty() {
+        let request = Request {
+            heading: "Host capability setup needs to change these system-wide kernel tracing settings:",
+            explanation: "These changes affect the whole host. Enter y or n explicitly; pressing Enter is not accepted.",
+            operations: pending
+                .iter()
+                .map(|(setting, wanted, _)| {
+                    Operation::command(&["sysctl", "-w", &format!("{setting}={wanted}")], true)
+                })
+                .collect(),
+            requirement: Requirement::AllowInteractive,
+            failure: FailurePolicy::Continue,
+        };
+        if let host_setup::Decision::Approved(approved) = policy.approve(output, yes, request)? {
+            for ((setting, wanted, purpose), success) in
+                pending.iter().zip(policy.execute(approved))
+            {
+                if success {
+                    writeln!(
+                        output,
+                        "Host capability setup: changed {setting}={wanted} ({purpose})."
+                    )
+                    .map_err(super::io_error)?;
+                } else {
+                    writeln!(output, "Host capability setup: could not change {setting}={wanted}; continuing without changing that setting ({purpose}).")
+                        .map_err(super::io_error)?;
+                }
+            }
         } else {
             writeln!(
                 output,
-                "Host capability setup: could not change {setting}={wanted}; continuing without changing host settings ({purpose})."
+                "Host capability setup: system-wide tracing settings unchanged by user request."
             )
             .map_err(super::io_error)?;
         }
     }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn parse_host_settings_confirmation(answer: &str) -> Option<bool> {
-    match answer.trim() {
-        "y" | "Y" => Some(true),
-        "n" | "N" => Some(false),
-        _ => None,
+    // Preserve the prior group policy: interactive approval for sysctls never
+    // escalates cgroup setup. It requires the original passwordless capability
+    // and a separate consent, even if interactive sudo refreshed credentials.
+    if policy.passwordless(output)? {
+        configure_cgroup_parent_with(output, yes, policy)
+    } else {
+        writeln!(output, "Host capability setup: passwordless sudo is unavailable; no delegated project cgroup was created.")
+            .map_err(super::io_error)?;
+        Ok(None)
     }
 }
 
 #[cfg(target_os = "linux")]
 fn request_sudo_consent(output: &mut dyn std::io::Write, yes: bool) -> Result<bool, Error> {
-    if yes {
-        writeln!(
-            output,
-            "Privileged host setup approved by --yes; no confirmation prompt will be shown."
-        )
-        .map_err(super::io_error)?;
-        return Ok(true);
-    }
-    write!(output, "Apply the listed privileged commands? y/N: ").map_err(super::io_error)?;
-    output.flush().map_err(super::io_error)?;
-    let mut answer = String::new();
-    std::io::stdin()
-        .read_line(&mut answer)
-        .map_err(|error| Error::Io(format!("cannot read host capability confirmation: {error}")))?;
-    match parse_host_settings_confirmation(&answer) {
-        Some(value) => Ok(value),
-        None => {
-            writeln!(output, "Host capability setup: no valid y/n answer was provided; privileged commands were not run.")
-                .map_err(super::io_error)?;
-            Ok(false)
-        }
-    }
+    host_setup::consent(&mut std::io::stdin().lock(), output, yes)
 }
 
-#[cfg(target_os = "linux")]
-fn passwordless_sudo_available() -> bool {
-    Command::new("sudo")
-        .args(["-n", "true"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+#[cfg(all(test, target_os = "linux"))]
+fn parse_host_settings_confirmation(answer: &str) -> Option<bool> {
+    host_setup::parse_confirmation(answer)
 }
 
-#[cfg(target_os = "linux")]
-fn run_sysctl(assignment: &str, passwordless: bool) -> bool {
-    let mut command = Command::new("sudo");
-    if passwordless {
-        command.arg("-n");
-    }
-    command
-        .args(["sysctl", "-w", assignment])
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
-#[cfg(target_os = "linux")]
+#[cfg(all(test, target_os = "linux"))]
 fn configure_cgroup_parent(
     output: &mut dyn std::io::Write,
     yes: bool,
+) -> Result<Option<String>, Error> {
+    let mut reader = std::io::stdin().lock();
+    let mut executor = host_setup::SystemExecutor;
+    let mut policy = host_setup::Policy::new(&mut reader, &mut executor);
+    configure_cgroup_parent_with(output, yes, &mut policy)
+}
+
+#[cfg(target_os = "linux")]
+fn configure_cgroup_parent_with(
+    output: &mut dyn std::io::Write,
+    yes: bool,
+    policy: &mut host_setup::Policy<'_>,
 ) -> Result<Option<String>, Error> {
     use std::os::unix::fs::MetadataExt;
 
@@ -619,48 +525,67 @@ fn configure_cgroup_parent(
     let enable_cpu = controller_file.is_file()
         && !read_trimmed_path(&controller_file)
             .is_some_and(|value| value.split_whitespace().any(|item| item == "cpu"));
-    writeln!(
+    apply_cgroup_parent(
         output,
-        "Host capability setup may run these privileged commands:"
+        yes,
+        policy,
+        &path,
+        &owner,
+        &controller_file.to_string_lossy(),
+        enable_cpu,
     )
-    .map_err(super::io_error)?;
-    writeln!(output, "  sudo -n mkdir -p {path}").map_err(super::io_error)?;
-    writeln!(output, "  sudo -n chown {owner} {path}").map_err(super::io_error)?;
-    writeln!(output, "  sudo -n chmod 0750 {path}").map_err(super::io_error)?;
-    let controller_path = controller_file.to_string_lossy().into_owned();
+}
+
+#[cfg(target_os = "linux")]
+fn apply_cgroup_parent(
+    output: &mut dyn std::io::Write,
+    yes: bool,
+    policy: &mut host_setup::Policy<'_>,
+    path: &str,
+    owner: &str,
+    controller_path: &str,
+    enable_cpu: bool,
+) -> Result<Option<String>, Error> {
+    use host_setup::{FailurePolicy, Operation, Request, Requirement};
+    let mut operations = vec![
+        Operation::command(&["mkdir", "-p", path], false),
+        Operation::command(&["chown", owner, path], false),
+        Operation::command(&["chmod", "0750", path], false),
+    ];
     if enable_cpu {
-        writeln!(
-            output,
-            "  printf '+cpu\\n' | sudo -n tee {controller_path} >/dev/null"
-        )
-        .map_err(super::io_error)?;
+        operations.push(Operation::write(controller_path, b"+cpu\n"));
     }
-    writeln!(output, "These commands create a user-owned delegated cgroup and enable CPU accounting; they do not change resource limits or sudoers.")
-        .map_err(super::io_error)?;
-    if !request_sudo_consent(output, yes)? {
+    let request = Request {
+        heading: "Host capability setup may run these privileged commands:",
+        explanation: "These commands create a user-owned delegated cgroup and enable CPU accounting; they do not change resource limits or sudoers.",
+        operations,
+        requirement: Requirement::Passwordless,
+        failure: FailurePolicy::Stop,
+    };
+    let decision = policy.approve(output, yes, request)?;
+    let host_setup::Decision::Approved(approved) = decision else {
         writeln!(
             output,
-            "Host capability setup: delegated cgroup commands were not run by user request."
+            "Host capability setup: delegated cgroup commands were not run; sampled process accounting remains available."
         )
         .map_err(super::io_error)?;
         return Ok(None);
-    }
-    let created = run_sudo_status(&["mkdir", "-p", &path])
-        && run_sudo_status(&["chown", &owner, &path])
-        && run_sudo_status(&["chmod", "0750", &path]);
+    };
+    let results = policy.execute(approved);
+    let created = results.len() >= 3 && results[..3].iter().all(|success| *success);
     if !created {
         writeln!(output, "Host capability setup: passwordless sudo could not create or delegate {path}; sampled process accounting remains available.")
             .map_err(super::io_error)?;
         return Ok(None);
     }
-    if enable_cpu && !run_sudo_write(&controller_path, b"+cpu\n") {
+    if enable_cpu && results.get(3) != Some(&true) {
         writeln!(output, "Host capability setup: created {path}, but could not enable the CPU controller; sampled process accounting remains available.")
             .map_err(super::io_error)?;
         return Ok(None);
     }
     writeln!(output, "Host capability setup: created writable delegated cgroup parent {path} for process-tree CPU accounting.")
         .map_err(super::io_error)?;
-    Ok(Some(path))
+    Ok(Some(path.into()))
 }
 
 #[cfg(target_os = "linux")]
@@ -670,36 +595,32 @@ fn read_trimmed_path(path: &Path) -> Option<String> {
         .map(|value| value.trim().to_owned())
 }
 
-#[cfg(target_os = "linux")]
-fn run_sudo_status(args: &[&str]) -> bool {
-    Command::new("sudo")
-        .args(["-n"])
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+#[cfg(all(test, target_os = "linux"))]
+fn passwordless_sudo_available() -> bool {
+    use host_setup::Executor;
+    host_setup::SystemExecutor.passwordless()
 }
-
-#[cfg(target_os = "linux")]
+#[cfg(all(test, target_os = "linux"))]
+fn run_sysctl(assignment: &str, passwordless: bool) -> bool {
+    use host_setup::{Executor, Operation, SudoMode};
+    host_setup::SystemExecutor.execute(
+        if passwordless {
+            SudoMode::Passwordless
+        } else {
+            SudoMode::Interactive
+        },
+        &Operation::command(&["sysctl", "-w", assignment], true),
+    )
+}
+#[cfg(all(test, target_os = "linux"))]
+fn run_sudo_status(args: &[&str]) -> bool {
+    use host_setup::{Executor, Operation, SudoMode};
+    host_setup::SystemExecutor.execute(SudoMode::Passwordless, &Operation::command(args, false))
+}
+#[cfg(all(test, target_os = "linux"))]
 fn run_sudo_write(path: &str, contents: &[u8]) -> bool {
-    use std::io::Write;
-    let Ok(mut child) = Command::new("sudo")
-        .args(["-n", "tee", path])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    else {
-        return false;
-    };
-    let wrote = child
-        .stdin
-        .take()
-        .and_then(|mut stdin| stdin.write_all(contents).ok())
-        .is_some();
-    wrote && child.wait().is_ok_and(|status| status.success())
+    use host_setup::{Executor, Operation, SudoMode};
+    host_setup::SystemExecutor.execute(SudoMode::Passwordless, &Operation::write(path, contents))
 }
 
 fn reset_project(root: &Path, config_path: &Path) -> Result<(), Error> {
@@ -828,6 +749,10 @@ pub fn resolve(root: &Path, value: &str) -> PathBuf {
         root.join(path)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/project_capabilities.rs"]
+mod coverage_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1005,53 +930,6 @@ mod tests {
                 .is_file()
         );
         let _ = fs::remove_dir_all(&root);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn host_capability_setup_is_best_effort_without_passwordless_sudo() {
-        let mut output = Vec::new();
-        let set_called = std::cell::Cell::new(false);
-        configure_host_capabilities_with(
-            &mut output,
-            false,
-            |_| None,
-            |_| {
-                set_called.set(true);
-                true
-            },
-        )
-        .expect("capability setup reports unavailable sudo");
-        let text = String::from_utf8(output).unwrap();
-        assert!(text.contains("passwordless sudo is unavailable"));
-        assert!(!set_called.get());
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn host_capability_setup_reports_existing_and_changed_settings() {
-        let mut output = Vec::new();
-        let assignments = std::cell::RefCell::new(Vec::new());
-        configure_host_capabilities_with(
-            &mut output,
-            true,
-            |setting| match setting {
-                "kernel.perf_event_paranoid" => Some("-1".into()),
-                _ => Some("0".into()),
-            },
-            |assignment| {
-                assignments.borrow_mut().push(assignment.to_owned());
-                true
-            },
-        )
-        .expect("capability setup succeeds");
-        let text = String::from_utf8(output).unwrap();
-        assert!(text.contains("kernel.perf_event_paranoid=-1 already enabled"));
-        assert!(text.contains("changed kernel.sched_schedstats=1"));
-        assert_eq!(
-            assignments.into_inner(),
-            vec!["kernel.sched_schedstats=1".to_owned()]
-        );
     }
 
     #[cfg(target_os = "linux")]

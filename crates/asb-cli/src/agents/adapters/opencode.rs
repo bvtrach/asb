@@ -81,7 +81,7 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
         crate::endpoint::Interface::AnthropicMessages => "@ai-sdk/anthropic",
         crate::endpoint::Interface::OpenAiChat => "@ai-sdk/openai-compatible",
         crate::endpoint::Interface::OpenAiResponses => "@ai-sdk/openai",
-        _ => unreachable!("unsupported OpenCode endpoint"),
+        _ => return Err(context.unsupported_endpoint("opencode")),
     };
     context
         .command

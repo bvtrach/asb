@@ -11,6 +11,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
+mod source;
+pub(crate) use source::check_executable_version;
+
 const GOOSE_X86_64_URL: &str = "https://github.com/aaif-goose/goose/releases/download/v1.54.0/goose-x86_64-unknown-linux-gnu.tar.gz";
 const GOOSE_X86_64_SHA256: &str =
     "ab396c95aebbd28b4d38c175234be8d4a3ea0c96e7ccb24c307e4618c9be57e1";
@@ -33,10 +36,15 @@ const NPM_INSTALL_MANIFEST: &str = r#"{
 
 pub(crate) trait LoggedStatus {
     fn logged_status(&mut self) -> io::Result<ExitStatus>;
+    fn logged_spawn(&mut self) -> io::Result<std::process::Child>;
 }
 
 impl LoggedStatus for Command {
     fn logged_status(&mut self) -> io::Result<ExitStatus> {
+        self.logged_spawn()?.wait()
+    }
+
+    fn logged_spawn(&mut self) -> io::Result<std::process::Child> {
         project::apply_network_proxy(self, Path::new("."))
             .map_err(|error| io::Error::other(error.to_string()))?;
         let log_path = Path::new(".asb/install.log");
@@ -50,7 +58,7 @@ impl LoggedStatus for Command {
         let stderr = stdout.try_clone()?;
         self.stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
-            .status()
+            .spawn()
     }
 }
 
@@ -103,6 +111,18 @@ pub(crate) struct GuestBootstrap {
     runtime_tools: Vec<&'static str>,
     assets: Vec<tools::GuestAsset>,
     public_package_cache: bool,
+}
+
+#[cfg(test)]
+impl GuestBootstrap {
+    /// A protocol fixture is not qualification of a client/runtime installation.
+    pub(crate) fn fixture_empty() -> Self {
+        Self {
+            runtime_tools: Vec::new(),
+            assets: Vec::new(),
+            public_package_cache: false,
+        }
+    }
 }
 
 /// Prefetch primary-source artifacts on the host, not via a task image's curl.
@@ -359,8 +379,7 @@ pub fn tool_with_progress(
         progress(20, "copying source");
         fs::create_dir_all(destination.parent().expect("bin parent"))
             .map_err(|error| Error::Io(format!("cannot create {}: {error}", root.display())))?;
-        install_source(&source, &destination, "tool")?;
-        make_executable(&destination)?;
+        install_executable_source(&source, &destination, "tool")?;
         progress(100, "ready");
         writeln!(output, "Installed tool {id} at {}", destination.display())
             .map_err(super::io_error)?;
@@ -1044,28 +1063,11 @@ fn install_goose(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<Path
     Ok(destination)
 }
 
-pub(crate) fn verify_sha256(
-    destination: &Path,
-    expected_hash: &str,
-    label: &str,
-) -> Result<(), Error> {
-    verify_sha256_inner(destination, expected_hash, label, true)
-}
-
 /// Inspect cached inputs without destroying evidence needed for repair.
 pub(crate) fn verify_sha256_preserving(
     destination: &Path,
     expected_hash: &str,
     label: &str,
-) -> Result<(), Error> {
-    verify_sha256_inner(destination, expected_hash, label, false)
-}
-
-fn verify_sha256_inner(
-    destination: &Path,
-    expected_hash: &str,
-    label: &str,
-    remove_invalid: bool,
 ) -> Result<(), Error> {
     let digest = command_output(
         &PathBuf::from("sha256sum"),
@@ -1074,9 +1076,6 @@ fn verify_sha256_inner(
     )?;
     let actual_hash = digest.split_whitespace().next().unwrap_or_default();
     if actual_hash != expected_hash {
-        if remove_invalid {
-            let _ = fs::remove_file(destination);
-        }
         return Err(Error::Io(format!(
             "{label} checksum mismatch: expected {expected_hash}, got {actual_hash}"
         )));
@@ -1245,6 +1244,47 @@ pub(crate) fn install_source(source: &str, destination: &Path, kind: &str) -> Re
     install_source_with_limit(source, destination, kind, None)
 }
 
+/// Publish an unsigned executable only after its complete source is available.
+pub(crate) fn install_executable_source(
+    source: &str,
+    destination: &Path,
+    kind: &str,
+) -> Result<(), Error> {
+    source::install(
+        source,
+        destination,
+        source::Options {
+            kind,
+            limit: source::MAX_SOURCE_BYTES,
+            checksum: None,
+            executable: true,
+        },
+        |_| Ok(()),
+    )
+}
+
+/// Verify pinned bytes and any executable-specific probe before publication.
+pub(crate) fn install_verified_source(
+    source: &str,
+    destination: &Path,
+    kind: &str,
+    checksum: &str,
+    executable: bool,
+    validate: impl FnOnce(&Path) -> Result<(), Error>,
+) -> Result<(), Error> {
+    source::install(
+        source,
+        destination,
+        source::Options {
+            kind,
+            limit: source::MAX_SOURCE_BYTES,
+            checksum: Some(checksum),
+            executable,
+        },
+        validate,
+    )
+}
+
 pub(crate) fn install_runtime_source(source: &str, destination: &Path) -> Result<(), Error> {
     install_source_with_limit(
         source,
@@ -1260,60 +1300,17 @@ fn install_source_with_limit(
     kind: &str,
     limit: Option<u64>,
 ) -> Result<(), Error> {
-    if source.starts_with("https://") || source.starts_with("http://") {
-        let mut command = Command::new("curl");
-        command.args([
-            "--fail",
-            "--location",
-            "--silent",
-            "--show-error",
-            "--output",
-        ]);
-        command.arg(destination);
-        if let Some(limit) = limit {
-            command.args(["--max-time", "300", "--max-filesize", &limit.to_string()]);
-        }
-        let status = command
-            .arg(source)
-            .logged_status()
-            .map_err(|error| missing_dependency("curl", kind, error))?;
-        if !status.success() {
-            return Err(Error::Io(format!(
-                "could not download {kind} from {source}"
-            )));
-        }
-        if let Some(limit) = limit
-            && fs::metadata(destination)
-                .map_err(|error| Error::Io(error.to_string()))?
-                .len()
-                > limit
-        {
-            return Err(Error::Input(format!(
-                "{kind} exceeds the installation size limit"
-            )));
-        }
-        return Ok(());
-    }
-    let source_path = Path::new(source);
-    let metadata = fs::metadata(source_path)
-        .map_err(|error| Error::Input(format!("cannot read {kind} source {source}: {error}")))?;
-    if !metadata.is_file() {
-        return Err(Error::Input(format!(
-            "{kind} source is not a file: {source}"
-        )));
-    }
-    if limit.is_some_and(|limit| metadata.len() > limit) {
-        return Err(Error::Input(format!(
-            "{kind} exceeds the installation size limit"
-        )));
-    }
-    fs::copy(source_path, destination).map_err(|error| {
-        Error::Io(format!(
-            "cannot install {kind} at {}: {error}",
-            destination.display()
-        ))
-    })?;
-    Ok(())
+    source::install(
+        source,
+        destination,
+        source::Options {
+            kind,
+            limit: limit.unwrap_or(source::MAX_SOURCE_BYTES),
+            checksum: None,
+            executable: false,
+        },
+        |_| Ok(()),
+    )
 }
 
 pub(crate) fn make_executable(path: &Path) -> Result<(), Error> {
@@ -1333,6 +1330,9 @@ pub(crate) fn make_executable(path: &Path) -> Result<(), Error> {
     }
     Ok(())
 }
+
+#[cfg(all(test, unix))]
+mod coverage_tests;
 
 #[cfg(test)]
 mod tests {

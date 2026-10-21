@@ -39,7 +39,7 @@ fn prepare_adapter(context: &mut PreparationContext<'_>) -> Result<(), Error> {
             ("anthropic", connection.base_url.trim_end_matches("/v1"))
         }
         crate::endpoint::Interface::OpenAiChat => ("openai", connection.base_url.as_str()),
-        _ => unreachable!("unsupported OpenHands endpoint"),
+        _ => return Err(context.unsupported_endpoint("openhands")),
     };
     context
         .command

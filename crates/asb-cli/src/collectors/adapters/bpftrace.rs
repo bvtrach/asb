@@ -6,6 +6,8 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
+mod custom_scope;
+mod startup;
 pub(super) struct BpftraceCollector;
 pub(super) static ADAPTER: BpftraceCollector = BpftraceCollector;
 
@@ -44,12 +46,11 @@ impl CollectorAdapter for BpftraceCollector {
     fn configure(
         &self,
         session: &mut measurements::Session,
-        selected: &[String],
+        _selected: &[String],
     ) -> Result<(), String> {
-        let state = session.state::<BpftraceState>();
-        let mut state = state.borrow_mut();
-        state.enabled = super::super::selected_or_environment("bpftrace", selected);
-        state.profiles = selected_bpftrace_profiles(selected)?;
+        if !session.state::<BpftraceState>().borrow().prepared {
+            return Err("bpftrace preparation state is missing; validate the selected programs during collector preflight before configuring the session".into());
+        }
         Ok(())
     }
     fn graceful_shutdown(&self, _: &str) -> bool {
@@ -73,35 +74,26 @@ fn process(
 ) -> Result<ProcessData, String> {
     let mut result = ProcessData::from_output(context);
     if let Some(profile) = context.name.strip_prefix("bpftrace-") {
-        result.metrics = parse_bpftrace_metrics(profile, context.stdout);
-        result.series = parse_bpftrace_series(profile, context.stdout);
+        let output = super::super::read_complete_output(context.stdout_path)?;
+        result.metrics = parse_bpftrace_metrics(profile, &output);
+        result.series = parse_bpftrace_series(profile, &output);
+        super::super::validate_processed_output(&result)?;
         write_bpftrace_profile_svg(&session.dir, profile, &result.status, &result.metrics)?;
     }
     Ok(result)
 }
 
 fn preflight(context: &mut PreflightContext<'_>) -> Result<(), String> {
-    let profiles = selected_bpftrace_profiles(context.selected)?;
-    let custom = super::super::selected_or_environment("bpftrace", context.selected)
-        && std::env::var_os("ASB_BPFTRACE_PROGRAMS").is_some();
+    let prepared = prepare_state(context.selected)?;
+    let enabled = prepared.enabled;
+    let profiles = prepared.profiles.clone();
+    let custom = !prepared.custom.is_empty();
+    *context.states.state::<BpftraceState>().borrow_mut() = prepared;
     if !custom && profiles.is_empty() {
-        if super::super::selected_or_environment("bpftrace", context.selected) {
+        if enabled {
             return Err("bpftrace is enabled but no program or profile is configured. Select a profile, or set `ASB_BPFTRACE_PROFILES=all` and retry.".into());
         }
         return Ok(());
-    }
-    if custom {
-        for (program, _) in custom_programs()? {
-            fs::File::open(&program).map_err(|error| {
-                let quoted = format!("'{}'", program.replace('\'', "'\\''"));
-                if error.kind() == std::io::ErrorKind::PermissionDenied {
-                    format!("cannot read bpftrace program {program}: {error}. Check parent-directory access; if you own the file, run `chmod u+r -- {quoted}` and retry.")
-                } else {
-                    format!("cannot read bpftrace program {program}: {error}. Check the configured path in `ASB_BPFTRACE_PROGRAMS` and retry.")
-                }
-            })?;
-            validate_custom_program_scope(Path::new(&program))?;
-        }
     }
     let executable = measurements::resolve_executable(context.tool_dir, "bpftrace");
     let args = ["-e", "BEGIN { exit(); }"];
@@ -168,65 +160,109 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::time::Instant;
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct BpftraceState {
+    prepared: bool,
     enabled: bool,
     profiles: Vec<BpftraceProfile>,
+    custom: Vec<PreparedCustomProgram>,
+}
+
+#[derive(Clone)]
+struct PreparedCustomProgram {
+    path: String,
+    source: std::sync::Arc<str>,
+}
+
+fn custom_command(mut command: Command, program: &PreparedCustomProgram, pids: &[u32]) -> Command {
+    // -p activates USDT probes; the injected map, not -p, proves event scope.
+    for pid in pids {
+        command.args(["-p", &pid.to_string()]);
+    }
+    let source = format!(
+        "{}\n{}",
+        process_tree_prelude_from_pids(pids.iter().copied()),
+        program.source
+    );
+    command.args(["-B", "line", "-e", &source]);
+    command
+}
+
+fn prepare_state(selected: &[String]) -> Result<BpftraceState, String> {
+    let enabled = super::super::selected_or_environment("bpftrace", selected);
+    let mut custom = Vec::new();
+    let mut total = 0usize;
+    if enabled && std::env::var_os("ASB_BPFTRACE_PROGRAMS").is_some() {
+        for (path, parameters) in custom_programs()? {
+            let source = custom_scope::read(Path::new(&path), &parameters).map_err(|error| {
+                format!("{error}. Check the program path and parameters in ASB_BPFTRACE_PROGRAMS, then retry")
+            })?;
+            total += source.len();
+            if total > 1024 * 1024 {
+                return Err("custom bpftrace sources exceed the 1 MiB combined limit".into());
+            }
+            custom.push(PreparedCustomProgram {
+                path,
+                source: source.into(),
+            });
+        }
+        if custom.is_empty() {
+            return Err("ASB_BPFTRACE_PROGRAMS is empty; name a scoped program or unset it to select built-in profiles".into());
+        }
+    }
+    Ok(BpftraceState {
+        prepared: true,
+        enabled,
+        profiles: selected_bpftrace_profiles(selected)?,
+        custom,
+    })
 }
 
 impl measurements::Session {
     pub(crate) fn attach_bpftrace(&mut self, pid: u32) -> Result<(), String> {
-        if self.state::<BpftraceState>().borrow().enabled
-            && std::env::var_os("ASB_BPFTRACE_PROGRAMS").is_some()
-        {
+        if !self.state::<BpftraceState>().borrow().prepared {
+            return Err("bpftrace preparation state is missing; collector attachment cannot re-read program files".into());
+        }
+        if self.state::<BpftraceState>().borrow().enabled {
             self.start_bpftrace(pid)?;
         }
         self.start_bpftrace_profiles(pid)
     }
 
     fn start_bpftrace(&mut self, pid: u32) -> Result<(), String> {
-        for (index, (program, params)) in custom_programs()?.into_iter().enumerate() {
-            let source = scoped_custom_program(Path::new(&program), pid)?;
-            let mut command = self.command("bpftrace");
-            // Attach every process that already belongs to the tree.  The
-            // injected fork map keeps tracepoint programs scoped as helpers
-            // are created after this command starts.
-            for target in measurements::process_tree_pids(pid) {
-                command.args(["-p", &target.to_string()]);
-            }
-            command.args(["-e", &source]);
-            for (key, value) in params {
-                command.args(["-D", &format!("{key}={value}")]);
-            }
+        let programs = self.state::<BpftraceState>().borrow().custom.clone();
+        for (index, program) in programs.into_iter().enumerate() {
+            let mut command = custom_command(
+                self.command("bpftrace"),
+                &program,
+                &measurements::process_tree_pids(pid),
+            );
             let stdout_path = self.dir.join(format!("bpftrace-{index}.stdout"));
             let stderr_path = self.dir.join(format!("bpftrace-{index}.stderr"));
-            let child = match command
+            command
                 .stdout(Stdio::from(
                     File::create(&stdout_path)
                         .map_err(|e| format!("cannot create bpftrace output: {e}"))?,
                 ))
                 .stderr(Stdio::from(File::create(&stderr_path).map_err(|e| {
                     format!("cannot create bpftrace error output: {e}")
-                })?))
-                .spawn()
-            {
-                Ok(child) => child,
-                Err(error) if !env_true("ASB_MEASURE_BPFTRACE") => {
-                    write_unavailable(
-                        &self.dir.join(format!("bpftrace-{index}.json")),
-                        &format!("bpftrace-{index}"),
-                        error.to_string(),
-                    )?;
-                    continue;
-                }
-                Err(error) => {
-                    return Err(format!("cannot start bpftrace program {program}: {error}"));
-                }
-            };
+                })?));
+            let mut child = startup::StartupChild::spawn(&mut command, &program.path)?;
+            if let Err(error) = wait_for_profile_ready(
+                child.child(),
+                &stdout_path,
+                &stderr_path,
+                std::time::Duration::from_secs(30),
+            ) {
+                return Err(child.failure(format!(
+                    "bpftrace program {} did not become ready: {error}",
+                    program.path
+                )));
+            }
             self.collectors.push(Collector {
                 name: format!("bpftrace-{index}"),
                 adapter: collectors::find("bpftrace").expect("registered collector"),
-                child,
+                child: child.ready(),
                 started: Instant::now(),
                 stdout_path,
                 stderr_path,
@@ -299,62 +335,14 @@ impl measurements::Session {
 
 const MAX_CUSTOM_PROGRAM: u64 = 256 * 1024;
 
+#[cfg(test)]
 fn validate_custom_program_scope(path: &Path) -> Result<(), String> {
-    let metadata = fs::metadata(path).map_err(|error| {
-        format!(
-            "cannot inspect bpftrace program {}: {error}",
-            path.display()
-        )
-    })?;
-    if metadata.len() > MAX_CUSTOM_PROGRAM {
-        return Err(format!(
-            "bpftrace program {} is too large ({} bytes; limit {}); keep custom collectors bounded and retry",
-            path.display(),
-            metadata.len(),
-            MAX_CUSTOM_PROGRAM
-        ));
-    }
-    let source = fs::read_to_string(path)
-        .map_err(|error| format!("cannot read bpftrace program {}: {error}", path.display()))?;
-    // A substring check is insufficient: a comment or an unrelated helper map
-    // must not make an otherwise host-wide probe acceptable. Require every
-    // process-observing probe to carry the tree predicate in its probe clause.
-    let mut saw_probe = false;
-    for line in source.lines() {
-        let line = line.split("//").next().unwrap_or("").trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some(open) = line.find('{') else { continue };
-        let header = line[..open].trim();
-        if !header.contains(':') || header.starts_with("BEGIN") || header.starts_with("END") {
-            continue;
-        }
-        saw_probe = true;
-        let predicate = header
-            .split_once('/')
-            .and_then(|(_, rest)| rest.split_once('/').map(|(value, _)| value))
-            .unwrap_or("");
-        if !predicate.contains("@asb_tree[") {
-            return Err(format!(
-                "bpftrace program {} contains an unscoped probe and is not process-tree scoped; every probe must use a predicate containing `@asb_tree[pid]` (comments and unused references do not count)",
-                path.display()
-            ));
-        }
-    }
-    if !saw_probe {
-        return Err(format!(
-            "bpftrace program {} has no process-tree-scoped probe; add predicates using `@asb_tree[pid]` (or the relevant tracepoint PID) so it cannot measure unrelated host processes",
-            path.display()
-        ));
-    }
-    Ok(())
+    custom_scope::read(path, &[]).map(|_| ())
 }
 
+#[cfg(test)]
 fn scoped_custom_program(path: &Path, root: u32) -> Result<String, String> {
-    validate_custom_program_scope(path)?;
-    let source = fs::read_to_string(path)
-        .map_err(|error| format!("cannot read bpftrace program {}: {error}", path.display()))?;
+    let source = custom_scope::read(path, &[])?;
     Ok(format!("{}\n{}", process_tree_prelude(root), source))
 }
 
@@ -363,20 +351,42 @@ type CustomProgram = (String, Vec<(String, String)>);
 fn custom_programs() -> Result<Vec<CustomProgram>, String> {
     let specs = std::env::var("ASB_BPFTRACE_PROGRAMS")
         .map_err(|_| "ASB_MEASURE_BPFTRACE=1 requires ASB_BPFTRACE_PROGRAMS".to_owned())?;
+    parse_custom_programs(&specs)
+}
+
+fn parse_custom_programs(specs: &str) -> Result<Vec<CustomProgram>, String> {
+    if specs.len() > 16 * 1024 {
+        return Err("ASB_BPFTRACE_PROGRAMS exceeds the 16 KiB specification limit".into());
+    }
     let mut programs = Vec::new();
     for spec in specs.split(';').filter(|s| !s.trim().is_empty()) {
         let (program, params) = spec.split_once('?').map_or((spec, ""), |parts| parts);
         let mut parsed = Vec::new();
+        let mut names = std::collections::BTreeSet::new();
         for parameter in params.split('&').filter(|s| !s.is_empty()) {
             let (key, value) = parameter.split_once('=').ok_or_else(|| {
-                format!("invalid bpftrace parameter `{parameter}`; use PROGRAM?name=value")
+                "invalid bpftrace parameter; use PROGRAM?ASB_PARAM_LIMIT=12".to_owned()
             })?;
-            if key.is_empty() || value.is_empty() {
-                return Err(format!("invalid bpftrace parameter `{parameter}`"));
+            custom_scope::parameter(key, value)?;
+            if !names.insert(key.to_owned()) {
+                return Err(format!(
+                    "duplicate bpftrace parameter {key}; specify each parameter once"
+                ));
             }
             parsed.push((key.into(), value.into()));
+            if parsed.len() > 32 {
+                return Err(
+                    "a custom bpftrace program supports at most 32 numeric parameters".into(),
+                );
+            }
+        }
+        if program.trim().is_empty() {
+            return Err("custom bpftrace program path is empty".into());
         }
         programs.push((program.into(), parsed));
+        if programs.len() > 8 {
+            return Err("ASB_BPFTRACE_PROGRAMS supports at most 8 custom programs".into());
+        }
     }
     Ok(programs)
 }
@@ -695,8 +705,44 @@ pub(crate) fn parse_bpftrace_series(profile: &str, output: &str) -> BTreeMap<Str
 }
 
 #[cfg(test)]
+#[path = "../../../tests/unit/bpftrace_capture.rs"]
+mod capture_tests;
+
+#[cfg(test)]
+#[path = "bpftrace/tests.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{BPFTRACE_PROFILES, profile_probe_program, validate_custom_program_scope};
+
+    #[test]
+    fn bpf_processing_includes_final_cumulative_maps_beyond_the_diagnostic_cap() {
+        let mut input = "@asb_syscalls: 2\n".to_owned();
+        input.push_str(&"# ignored fixture filler\n".repeat(15000));
+        input.push_str("@asb_syscalls: 900\n");
+        assert!(input.len() > 256 * 1024);
+        let result = crate::collectors::process_output_fixture(
+            &super::ADAPTER,
+            "bpftrace-syscall-rate",
+            &input,
+        )
+        .unwrap();
+        assert_eq!(result.status, "completed");
+        assert_eq!(result.metrics["bpftrace.syscall-rate.syscalls"], 900.0);
+        assert_eq!(
+            result.series["bpftrace.syscall-rate.syscalls"],
+            [2.0, 900.0]
+        );
+        assert!(
+            crate::collectors::process_output_fixture(
+                &super::ADAPTER,
+                "bpftrace-syscall-rate",
+                "@asb_syscalls: 9"
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn optional_wait_profiles_have_explicit_semantics_and_requirements() {

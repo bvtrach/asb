@@ -6,6 +6,8 @@ import ctypes
 import os
 from pathlib import Path
 import signal
+import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -20,6 +22,13 @@ def until(predicate, description, seconds=8):
         time.sleep(0.005)
 
 
+def publish_pid(path, pid):
+    """A pathname becomes ready only after the complete PID is visible."""
+    temporary = path.with_name(f"{path.name}.{pid}.tmp")
+    temporary.write_text(str(pid))
+    temporary.replace(path)
+
+
 def client(root):
     assert "ASB_GATE_OWNER_PID" not in os.environ
     first = os.fork()
@@ -28,29 +37,49 @@ def client(root):
         if os.fork() != 0:
             os._exit(0)
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        (root / "helper").write_text(str(os.getpid()))
+        publish_pid(root / "helper", os.getpid())
         time.sleep(2)
         (root / "late-write").write_text("candidate mutated after owner loss")
         time.sleep(30)
         os._exit(0)
     os.waitpid(first, 0)
-    (root / "principal").write_text(str(os.getpid()))
+    publish_pid(root / "principal", os.getpid())
     time.sleep(30)
 
 
-def owner(binary, root, threaded):
+def owner(binary, root, threaded, receipts=False):
     for selected in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM):
         signal.signal(selected, lambda *_: os._exit(0))
     def spawn():
+        environment = {**os.environ, "ASB_GATE_OWNER_PID": str(os.getpid())}
+        inherited = ()
+        if receipts:
+            reader, writer = socket.socketpair()
+            environment["ASB_GATE_RECEIPT_FD"] = str(writer.fileno())
+            inherited = (writer.fileno(),)
         gate = subprocess.Popen(
             [binary, "__asb-gate", sys.executable, __file__, "--client", str(root)],
-            env={**os.environ, "ASB_GATE_OWNER_PID": str(os.getpid())},
+            env=environment, pass_fds=inherited,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-        (root / "gate").write_text(str(gate.pid))
+        if receipts:
+            writer.close()
+            reader.settimeout(5)
+            hello = bytearray()
+            while len(hello) < 16:
+                chunk = reader.recv(16 - len(hello))
+                assert chunk, "gate exited without Hello"
+                hello.extend(chunk)
+            assert hello == b"ASBGATE1" + bytes([1, 0, 0, 0]) + struct.pack("<I", gate.pid)
+            # Publish this explicit protocol barrier only after validating the
+            # gate-authored Hello. The owner retains its reader until exit.
+            (root / "hello").touch()
+            channels.append(reader)
+        publish_pid(root / "gate", gate.pid)
         # Keep Popen alive without making a shared fixture process its owner.
         children.append(gate)
     children = []
+    channels = []
     if threaded:
         thread = threading.Thread(target=spawn)
         thread.start()
@@ -100,13 +129,19 @@ def guardian(binary, root):
     assert ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
     sibling = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(60)"])
     try:
-        for index, phase in enumerate(["startup"] * 8 + ["paused", "running", "threaded", "cancel", "cancel-paused", "cancel-int", "cancel-hup", "group-int", "group-paused"]):
-            case = root / f"{index}-{phase}"
+        phases = ["startup"] * 8 + ["paused", "running", "threaded", "cancel", "cancel-paused", "cancel-int", "cancel-hup", "group-int", "group-paused"]
+        phases += ["receipt-hello", "receipt-paused", "receipt-running", "receipt-threaded"]
+        for index, original_phase in enumerate(phases):
+            receipts = original_phase.startswith("receipt-")
+            phase = original_phase.removeprefix("receipt-")
+            case = root / f"{index}-{original_phase}"
             case.mkdir()
-            process = subprocess.Popen([sys.executable, __file__, "--owner", binary, str(case), phase], start_new_session=True)
+            process = subprocess.Popen([sys.executable, __file__, "--owner-receipt" if receipts else "--owner", binary, str(case), phase], start_new_session=True)
             until(lambda: (case / "gate").exists(), "owner did not publish its gate")
             gate = int((case / "gate").read_text())
-            if phase != "startup":
+            if receipts:
+                assert (case / "hello").exists(), "owner failed to retain validated Hello"
+            if phase not in ("startup", "hello"):
                 until(lambda: "\nState:\tT" in Path(f"/proc/{gate}/status").read_text(),
                       "gate never paused")
             if phase in ("running", "threaded", "cancel", "cancel-int", "cancel-hup", "group-int"):
@@ -149,6 +184,8 @@ def guardian(binary, root):
                     pid = int((case / name).read_text())
                     assert not Path(f"/proc/{pid}").exists(), f"{name} survived {phase}"
             assert not (case / "late-write").exists(), f"candidate mutated during {phase}"
+            if phase in ("startup", "hello", "paused"):
+                assert not (case / "principal").exists(), f"client was admitted after owner loss in {phase}"
             assert sibling.poll() is None, "unrelated sibling was stopped"
             if phase.startswith("cancel"):
                 process.kill()
@@ -165,7 +202,7 @@ def guardian(binary, root):
 if __name__ == "__main__":
     if sys.argv[1] == "--client":
         client(Path(sys.argv[2]))
-    elif sys.argv[1] == "--owner":
-        owner(sys.argv[2], Path(sys.argv[3]), sys.argv[4] == "threaded")
+    elif sys.argv[1] in ("--owner", "--owner-receipt"):
+        owner(sys.argv[2], Path(sys.argv[3]), sys.argv[4] == "threaded", sys.argv[1] == "--owner-receipt")
     else:
         guardian(sys.argv[1], Path(sys.argv[2]))

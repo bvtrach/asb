@@ -11,9 +11,15 @@ use std::process::Command;
 #[cfg(target_os = "linux")]
 mod descendants;
 #[cfg(target_os = "linux")]
+mod managed;
+#[cfg(target_os = "linux")]
 mod owner;
 #[cfg(target_os = "linux")]
+mod receipt;
+#[cfg(target_os = "linux")]
 pub(crate) use descendants::DescendantScope;
+#[cfg(target_os = "linux")]
+pub(crate) use managed::{Admission, ManagedGate};
 
 /// A loader-bundled runtime uses its launcher for recursive ASB execution.
 pub(crate) fn executable() -> io::Result<std::path::PathBuf> {
@@ -36,12 +42,22 @@ pub(crate) fn executable() -> io::Result<std::path::PathBuf> {
     std::env::current_exe()
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, any(test, not(target_os = "linux"))))]
 pub(crate) fn install(
     command: &mut Command,
     gate_executable: &Path,
     target: &str,
     args: &[String],
+) {
+    install_with_receipt(command, gate_executable, target, args, None);
+}
+
+fn install_with_receipt(
+    command: &mut Command,
+    gate_executable: &Path,
+    target: &str,
+    args: &[String],
+    receipt_fd: Option<i32>,
 ) {
     use std::os::unix::process::CommandExt;
     let gate_executable = gate_executable.to_owned();
@@ -55,6 +71,12 @@ pub(crate) fn install(
         .collect::<Vec<_>>();
     unsafe {
         command.pre_exec(move || {
+            if let Some(fd) = receipt_fd {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
             let mut values = vec![
                 gate_executable.as_os_str().to_owned(),
                 OsString::from("__asb-gate"),
@@ -156,7 +178,7 @@ pub(crate) fn pause_current() -> io::Result<()> {
 
 /// Cooperatively cancel an owned gate, allowing its subreaper to finish.
 /// Repeated CONT closes cancellation racing with the gate's initial STOP.
-#[cfg(target_os = "linux")]
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) fn cancel_gate(child: &mut std::process::Child) -> io::Result<std::process::ExitStatus> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
     loop {
@@ -164,10 +186,8 @@ pub(crate) fn cancel_gate(child: &mut std::process::Child) -> io::Result<std::pr
             return Ok(status);
         }
         if std::time::Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
             return Err(io::Error::other(
-                "native gate cleanup deadline exceeded; descendant cleanup is unconfirmed",
+                "native gate cleanup deadline exceeded; descendant cleanup is unconfirmed; supervision must remain owned",
             ));
         }
         // This unreaped Child belongs exclusively to this caller; its PID
@@ -186,6 +206,14 @@ pub(crate) fn run_gate(args: &[OsString]) -> std::process::ExitCode {
         return std::process::ExitCode::from(2);
     };
     #[cfg(target_os = "linux")]
+    let mut receipt = match receipt::Sender::from_environment() {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            eprintln!("asb process gate receipt setup failed: {error}");
+            return std::process::ExitCode::from(2);
+        }
+    };
+    #[cfg(target_os = "linux")]
     let mut descendants = match DescendantScope::new() {
         Ok(scope) => scope,
         Err(error) => {
@@ -194,13 +222,20 @@ pub(crate) fn run_gate(args: &[OsString]) -> std::process::ExitCode {
         }
     };
     #[cfg(target_os = "linux")]
-    let owner = match owner::Owner::bind() {
+    let owner = match owner::Owner::bind(receipt.as_ref().map(receipt::Sender::descriptor)) {
         Ok(owner) => owner,
         Err(error) => {
             eprintln!("asb process gate could not bind its owner: {error}");
             return std::process::ExitCode::from(2);
         }
     };
+    #[cfg(target_os = "linux")]
+    if let Some(receipt) = receipt.as_mut()
+        && let Err(error) = receipt.hello()
+    {
+        eprintln!("asb process gate admission receipt failed: {error}");
+        return std::process::ExitCode::from(2);
+    }
     if pause_current().is_err() {
         return std::process::ExitCode::from(2);
     }
@@ -219,17 +254,33 @@ pub(crate) fn run_gate(args: &[OsString]) -> std::process::ExitCode {
     #[cfg(target_os = "linux")]
     owner.stop_waker();
     #[cfg(target_os = "linux")]
-    if let Err(error) = descendants.quiesce() {
-        eprintln!("asb process gate could not stop owned agent descendants: {error}");
-        return std::process::ExitCode::from(2);
-    }
-    match status {
-        Ok(status) => std::process::ExitCode::from(status.code().unwrap_or(1).clamp(0, 255) as u8),
-        Err(error) => {
-            eprintln!("asb process gate: {error}");
-            std::process::ExitCode::from(127)
+    {
+        let mut reported = false;
+        while let Err(error) = descendants.quiesce() {
+            if !reported {
+                eprintln!(
+                    "asb process gate retains supervision: owned descendants are not yet quiescent: {error}"
+                );
+                reported = true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }
+    let code = match status {
+        Ok(status) => status.code().unwrap_or(1).clamp(0, 255) as u8,
+        Err(error) => {
+            eprintln!("asb process gate: {error}");
+            127
+        }
+    };
+    #[cfg(target_os = "linux")]
+    if let Some(receipt) = receipt.as_mut()
+        && let Err(error) = receipt.quiescent(code)
+    {
+        eprintln!("asb process gate completion receipt failed: {error}");
+        return std::process::ExitCode::from(2);
+    }
+    std::process::ExitCode::from(code)
 }
 
 /// Keep descendants that daemonize or outlive an intermediate helper attached
@@ -247,3 +298,7 @@ fn become_child_subreaper() -> io::Result<()> {
         Err(io::Error::last_os_error())
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "process_gate/coverage_tests.rs"]
+mod coverage_tests;

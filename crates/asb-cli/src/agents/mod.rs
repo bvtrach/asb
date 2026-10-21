@@ -77,6 +77,10 @@ pub(crate) trait AgentAdapter: Sync {
     fn execution_failure(&self, _stdout: &str, _stderr: &str) -> Option<String> {
         None
     }
+    /// Validate a terminal answer independently of the native/guest launcher.
+    fn final_response_failure(&self, _response: Option<&str>) -> Option<String> {
+        None
+    }
 }
 
 pub(crate) struct PreparationContext<'a> {
@@ -87,6 +91,16 @@ pub(crate) struct PreparationContext<'a> {
     pub runtime_dir: &'a Path,
     /// A unique path for artifacts belonging to this individual run.
     pub run_dir: &'a Path,
+}
+
+impl PreparationContext<'_> {
+    /// Describe only protocol metadata: credentials and endpoint URLs may contain secrets.
+    fn unsupported_endpoint(&self, agent: &str) -> Error {
+        Error::Run(format!(
+            "agent `{agent}` cannot configure endpoint interface {:?} with {:?} authentication; choose a compatible agent/provider endpoint",
+            self.connection.interface, self.connection.authentication
+        ))
+    }
 }
 
 pub(crate) struct CommandContext<'a> {
@@ -198,6 +212,7 @@ type ProcessHook = fn(&str) -> Result<Command, Error>;
 type StepCountHook = fn(&str, &str) -> Option<u64>;
 type FailureHook = fn(&str, &str) -> Option<String>;
 type PreferredExecutablesHook = fn(&Path) -> Vec<PathBuf>;
+type ResponseFailureHook = fn(Option<&str>) -> Option<String>;
 
 /// Trait-object implementation whose behavior is supplied by individual files.
 pub(super) struct StaticAdapter {
@@ -213,6 +228,7 @@ pub(super) struct StaticAdapter {
     process: Option<ProcessHook>,
     step_count: Option<StepCountHook>,
     failure: Option<FailureHook>,
+    response_failure: Option<ResponseFailureHook>,
     replay_credential_vars: &'static [&'static str],
     preferred_executables: Option<PreferredExecutablesHook>,
 }
@@ -238,6 +254,7 @@ impl StaticAdapter {
             process: None,
             step_count: None,
             failure: None,
+            response_failure: None,
             replay_credential_vars: &[],
             preferred_executables: None,
         }
@@ -276,6 +293,11 @@ impl StaticAdapter {
         self
     }
 
+    pub(super) const fn with_final_response_failure(mut self, hook: ResponseFailureHook) -> Self {
+        self.response_failure = Some(hook);
+        self
+    }
+
     pub(super) const fn with_process(mut self, hook: ProcessHook) -> Self {
         self.process = Some(hook);
         self
@@ -311,6 +333,16 @@ impl AgentAdapter for StaticAdapter {
         (self.command)(context)
     }
     fn prepare(&self, context: &mut PreparationContext<'_>) -> Result<(), Error> {
+        // Validate deserialized guest connections as well as normally negotiated ones,
+        // before an adapter can publish configuration or mutate the child environment.
+        if !self.supported_endpoints.iter().any(|support| {
+            support.interface == context.connection.interface
+                && support
+                    .authentication
+                    .contains(&context.connection.authentication)
+        }) {
+            return Err(context.unsupported_endpoint(self.id));
+        }
         (self.prepare)(context)
     }
     fn process(&self, executable: &str) -> Result<Command, Error> {
@@ -345,6 +377,9 @@ impl AgentAdapter for StaticAdapter {
     }
     fn execution_failure(&self, stdout: &str, stderr: &str) -> Option<String> {
         self.failure.and_then(|hook| hook(stdout, stderr))
+    }
+    fn final_response_failure(&self, response: Option<&str>) -> Option<String> {
+        self.response_failure.and_then(|hook| hook(response))
     }
 }
 pub(crate) fn prepare(agent: &str, context: &mut PreparationContext<'_>) -> Result<(), Error> {
@@ -544,6 +579,10 @@ pub(crate) fn resolve(id: &str, project_root: &Path, tools_dir: &str) -> Option<
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/agent_contract.rs"]
+mod contract_tests;
+
+#[cfg(test)]
 mod tests {
     #[test]
     fn final_result_counter_uses_the_latest_native_value_without_summing() {
@@ -702,6 +741,65 @@ mod tests {
     }
 
     #[test]
+    fn every_agent_rejects_unadvertised_endpoint_pairs_before_side_effects() {
+        use crate::endpoint::{Authentication, Connection, Interface};
+        let root = std::env::temp_dir().join(format!(
+            "asb-agent-rejected-endpoints-{}",
+            std::process::id()
+        ));
+        assert!(!root.exists());
+        let mut rejected = 0;
+        for adapter in all() {
+            for interface in [
+                Interface::OpenAiResponses,
+                Interface::OpenAiChat,
+                Interface::AnthropicMessages,
+                Interface::Gemini,
+            ] {
+                for authentication in [
+                    Authentication::Bearer,
+                    Authentication::ApiKey,
+                    Authentication::None,
+                ] {
+                    if adapter.supported_endpoints().iter().any(|support| {
+                        support.interface == interface
+                            && support.authentication.contains(&authentication)
+                    }) {
+                        continue;
+                    }
+                    let connection = Connection {
+                        interface,
+                        authentication,
+                        base_url: "https://secret-host.invalid/private?key=secret-query".into(),
+                        credential: Some("secret-credential".into()),
+                    };
+                    let mut command = Command::new("must-not-execute");
+                    command.arg("unchanged").env("FIXTURE", "unchanged");
+                    let before = format!("{command:?}");
+                    let error = adapter
+                        .prepare(&mut PreparationContext {
+                            command: &mut command,
+                            model: "unused",
+                            connection: &connection,
+                            runtime_dir: &root,
+                            run_dir: &root,
+                        })
+                        .expect_err("unadvertised pair must fail without panicking")
+                        .to_string();
+                    assert!(error.contains(adapter.id()), "{error}");
+                    assert!(error.contains(&format!("{interface:?}")), "{error}");
+                    assert!(error.contains(&format!("{authentication:?}")), "{error}");
+                    assert!(!error.contains("secret"), "{error}");
+                    assert_eq!(format!("{command:?}"), before);
+                    assert!(!root.exists(), "{} wrote configuration", adapter.id());
+                    rejected += 1;
+                }
+            }
+        }
+        assert!(rejected > 0);
+    }
+
+    #[test]
     fn every_agent_declares_and_prepares_every_advertised_interface() {
         let root =
             std::env::temp_dir().join(format!("asb-agent-interface-matrix-{}", std::process::id()));
@@ -713,23 +811,28 @@ mod tests {
                 adapter.id()
             );
             for (index, interface) in adapter.supported_endpoints().iter().enumerate() {
-                let runtime = root.join(adapter.id()).join(index.to_string());
-                let connection = crate::endpoint::Connection {
-                    interface: interface.interface,
-                    base_url: "http://127.0.0.1:4242/v1".into(),
-                    credential: Some("asb-replay".into()),
-                    authentication: interface.authentication[0],
-                };
-                let mut command = std::process::Command::new("unused");
-                adapter
-                    .prepare(&mut PreparationContext {
-                        command: &mut command,
-                        model: "example/model",
-                        connection: &connection,
-                        runtime_dir: &runtime,
-                        run_dir: &runtime,
-                    })
-                    .unwrap_or_else(|error| panic!("{} {interface:?}: {error}", adapter.id()));
+                assert!(!interface.authentication.is_empty(), "{}", adapter.id());
+                for authentication in interface.authentication {
+                    let runtime = root
+                        .join(adapter.id())
+                        .join(format!("{index}-{authentication:?}"));
+                    let connection = crate::endpoint::Connection {
+                        interface: interface.interface,
+                        base_url: "http://127.0.0.1:4242/v1".into(),
+                        credential: Some("asb-replay".into()),
+                        authentication: *authentication,
+                    };
+                    let mut command = std::process::Command::new("unused");
+                    adapter
+                        .prepare(&mut PreparationContext {
+                            command: &mut command,
+                            model: "example/model",
+                            connection: &connection,
+                            runtime_dir: &runtime,
+                            run_dir: &runtime,
+                        })
+                        .unwrap_or_else(|error| panic!("{} {interface:?}: {error}", adapter.id()));
+                }
             }
         }
         std::fs::remove_dir_all(root).unwrap();

@@ -125,19 +125,16 @@ pub(crate) fn start<'a>(
     let scope = crate::process_gate::DescendantScope::new()
         .map_err(|_| Error::Run("cannot own workload service descendants".into()))?;
     let started = Instant::now();
-    let mut child = OwnedChild(
+    let mut child = OwnedChild::Direct(
         command
             .spawn()
             .map_err(|error| Error::Run(format!("cannot start workload client: {error}")))?,
-        false,
     );
     let out = child
-        .stdout
-        .take()
+        .take_stdout()
         .ok_or_else(|| Error::Run("workload client stdout is not piped".into()))?;
     let err = child
-        .stderr
-        .take()
+        .take_stderr()
         .ok_or_else(|| Error::Run("workload client stderr is not piped".into()))?;
     let freeze = Arc::new(AtomicBool::new(false));
     let (sender, receiver) = mpsc::sync_channel(16);
@@ -230,6 +227,10 @@ pub(crate) fn start<'a>(
         _readers: readers,
     })
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/workload_process.rs"]
+mod coverage_tests;
 
 #[cfg(test)]
 mod tests {

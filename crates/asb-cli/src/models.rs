@@ -4,11 +4,12 @@ use crate::Error;
 use crate::providers;
 use crate::suggestions;
 use serde_json::Value;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-const MAX_RESPONSE: usize = 16 * 1024 * 1024;
+mod transport;
+
 const MAX_CATALOG: usize = 32 * 1024 * 1024;
 // Cassettes are bounded inputs, but multi-step agent runs can legitimately
 // exceed the former 16 MiB limit (for example Workbuddy/SWE-bench). Keep a
@@ -390,6 +391,8 @@ fn fetch_authenticated(spec: providers::ModelSpec, url: &str, key: &str) -> Resu
 pub(crate) fn fetch_config(config: String, provider: &str) -> Result<Vec<u8>, Error> {
     let mut command = Command::new("curl");
     crate::project::apply_network_proxy(&mut command, std::path::Path::new("."))?;
+    let io_timeout = transport::IO_TIMEOUT.as_secs().to_string();
+    let max_response = transport::MAX_RESPONSE.to_string();
     command.args([
         "--disable",
         "--config",
@@ -400,77 +403,23 @@ pub(crate) fn fetch_config(config: String, provider: &str) -> Result<Vec<u8>, Er
         "--connect-timeout",
         "10",
         "--max-time",
-        "30",
+        &io_timeout,
         "--max-filesize",
-        "16777216",
+        &max_response,
         "--proto",
         "=http,https",
         "--write-out",
         "%{stderr}\nASB_HTTP_STATUS=%{http_code}\nASB_PROXY_STATUS=%{http_connect}\nASB_CONTENT_TYPE=%{content_type}\n",
     ]);
-    let mut child = command
+    command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                Error::Io(format!(
-                    "model discovery needs `curl`, but it could not be started: {error}. Install it, then rerun the command. Suggested command:\n  sudo apt-get update && sudo apt-get install -y curl"
-                ))
-            } else {
-                Error::Io(format!("cannot start curl for model discovery: {error}"))
-            }
-        })?;
-    let stderr = child.stderr.take().expect("curl stderr configured");
-    let stderr_reader = std::thread::spawn(move || {
-        // Drain the entire stream to avoid blocking curl, but retain only the
-        // last 8 KiB containing its write-out metadata. Never expose curl's
-        // diagnostic text, which may contain proxy URLs or credentials.
-        let mut tail = Vec::new();
-        let mut stderr = stderr;
-        let mut chunk = [0u8; 4096];
-        while let Ok(count) = stderr.read(&mut chunk) {
-            if count == 0 {
-                break;
-            }
-            tail.extend_from_slice(&chunk[..count]);
-            if tail.len() > 8192 {
-                tail.drain(..tail.len() - 8192);
-            }
-        }
-        tail
-    });
-    if let Err(error) = child
-        .stdin
-        .take()
-        .expect("curl stdin configured")
-        .write_all(config.as_bytes())
-    {
-        let _ = child.kill();
-        let _ = child.wait();
-        let _ = stderr_reader.join();
-        return Err(Error::Io(format!(
-            "cannot send model discovery request: {error}"
-        )));
-    }
-    let mut body = Vec::new();
-    let read = child
-        .stdout
-        .take()
-        .expect("curl stdout configured")
-        .take(MAX_RESPONSE as u64 + 1)
-        .read_to_end(&mut body);
-    if read.is_err() || body.len() > MAX_RESPONSE {
-        let _ = child.kill();
-    }
-    let status = child
-        .wait()
-        .map_err(|error| Error::Io(format!("cannot finish model discovery request: {error}")))?;
-    let stderr = stderr_reader.join().unwrap_or_default();
-    let metadata = CurlMetadata::parse(&stderr);
-    read.map_err(|error| Error::Io(format!("cannot read model catalog for {provider}: {error}")))?;
-    if body.len() > MAX_RESPONSE || status.code() == Some(63) {
+        .stderr(Stdio::piped());
+    let captured = transport::capture(&mut command, config.as_bytes(), provider)?;
+    let status = captured.status;
+    let body = captured.stdout;
+    let metadata = CurlMetadata::parse(&captured.stderr);
+    if status.code() == Some(63) {
         return Err(Error::Input(format!(
             "model catalog for {provider} exceeds the 16 MiB response limit; retry later or contact the provider"
         )));
@@ -810,6 +759,10 @@ fn model_ids(models: &[ModelInfo]) -> Vec<String> {
         .map(|model| model.id.clone())
         .collect()
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/models.rs"]
+mod coverage_tests;
 
 #[cfg(test)]
 mod tests {

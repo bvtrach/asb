@@ -1,5 +1,6 @@
 //! Offline HTML/SVG reports for benchmark configurations and sweeps.
 
+use crate::benchmark_paths::{benchmark_stem, checked_benchmark_reference};
 use crate::{Error, read_config};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -10,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
 mod coverage;
+mod metric_identity;
+use metric_identity::{GraphNames, flatten_numbers, insert_unique, path_key};
 pub(crate) mod outcomes;
 mod reconciliation;
 const PLOT_TOP: f64 = 70.0;
@@ -95,8 +98,8 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
     let mut benchmark_data = Vec::new();
     let mut actual_attempts = BTreeSet::new();
     for (index, reference) in sweep.configs.iter().enumerate() {
-        let config = checked_reference(parent, reference, path)?;
-        let mut result_dir = sweep_results.join(format!("{index:03}-{}", safe_name(&config)));
+        let config = checked_benchmark_reference(parent, reference, path)?;
+        let mut result_dir = sweep_results.join(format!("{index:03}-{}", benchmark_stem(&config)));
         let (agent, workload, provider, model, concurrency) = benchmark_identity(&config)?;
         let standalone = if single {
             Some(
@@ -163,9 +166,12 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
         }
         for replica in 1..=concurrency {
             let label = if concurrency == 1 {
-                format!("{index:03}-{}", safe_name(&config))
+                format!("{index:03}-{}", benchmark_stem(&config))
             } else {
-                format!("{index:03}-{}-concurrency-{replica}", safe_name(&config))
+                format!(
+                    "{index:03}-{}-concurrency-{replica}",
+                    benchmark_stem(&config)
+                )
             };
             let measurement_dir = if let Some(configuration) = &standalone {
                 let selected = crate::runner::replica::configuration(
@@ -414,7 +420,7 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
                     .get("workload_success")
                     .and_then(Value::as_bool)
                     .is_some();
-            flatten_numbers("", &run_value, &mut metrics);
+            flatten_numbers("", &run_value, &mut metrics)?;
             // Correct old presentations without rewriting their raw evidence.
             if !crate::workloads::resolution_eligible(&workload_evaluation) {
                 metrics.remove("success_rate");
@@ -458,16 +464,16 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
                     .unwrap_or("collector");
                 if name == "system" {
                     host_metadata = Some(collector.clone());
-                    flatten_numbers("host", &collector, &mut metrics);
+                    flatten_numbers("host", &collector, &mut metrics)?;
                 }
                 if name == "components" {
                     components = Some(collector.clone());
                     if let Some(component_values) = collector.get("components") {
-                        flatten_numbers("component", component_values, &mut metrics);
+                        flatten_numbers("component", component_values, &mut metrics)?;
                     }
                 }
                 if let Some(collector_metrics) = collector.get("metrics") {
-                    flatten_numbers(name, collector_metrics, &mut metrics);
+                    flatten_numbers(&path_key(name), collector_metrics, &mut metrics)?;
                 }
                 // Collector stdout is retained for diagnosis, but is not a
                 // numerical series: scraping its last token created noisy and
@@ -481,7 +487,8 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
                             if points.len() < 2 {
                                 continue;
                             }
-                            series.insert(
+                            insert_unique(
+                                &mut series,
                                 metric.clone(),
                                 TimeSeries {
                                     values: points,
@@ -489,18 +496,19 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
                                         .and_then(|map| map.get(metric))
                                         .map(series_values),
                                 },
-                            );
+                            )?;
                         }
                     } else {
                         let points = series_values(collector_series);
                         if points.len() >= 2 {
-                            series.insert(
+                            insert_unique(
+                                &mut series,
                                 name.to_owned(),
                                 TimeSeries {
                                     values: points,
                                     timestamps_ms: None,
                                 },
-                            );
+                            )?;
                         }
                     }
                 }
@@ -577,17 +585,18 @@ pub(crate) fn generate(path: &str, output: &mut dyn Write) -> Result<PathBuf, Er
         }
     }
     let mut graphs = Vec::new();
+    let mut graph_names = GraphNames::default();
     let agent_labels: BTreeMap<_, _> = benchmark_data
         .iter()
         .map(|benchmark| (benchmark.label.clone(), benchmark.agent.clone()))
         .collect();
     for (name, values) in &metric_values {
-        let filename = format!("metric-{}.svg", safe_name_str(name));
+        let filename = graph_names.allocate("metric", name);
         write_bar_svg(&comparison_dir.join(&filename), name, values, &agent_labels)?;
         graphs.push(filename);
     }
     for (name, values) in &series_values {
-        let filename = format!("series-{}.svg", safe_name_str(name));
+        let filename = graph_names.allocate("series", name);
         write_line_svg(&comparison_dir.join(&filename), name, values)?;
         graphs.push(filename);
     }
@@ -1303,32 +1312,6 @@ const HTML_SCRIPT: &str = concat!(
     "\n</script></body></html>"
 );
 
-fn checked_reference(parent: &Path, reference: &str, sweep: &str) -> Result<PathBuf, Error> {
-    let path = Path::new(reference);
-    if path.is_absolute()
-        || path
-            .components()
-            .any(|component| component == std::path::Component::ParentDir)
-    {
-        return Err(Error::Input(format!(
-            "sweep {sweep} contains unsafe benchmark path {reference}"
-        )));
-    }
-    if path.extension().and_then(|value| value.to_str()) != Some("toml") {
-        return Err(Error::Input(format!(
-            "sweep {sweep} entry {reference} is not a .toml benchmark"
-        )));
-    }
-    let resolved = parent.join(path);
-    if !resolved.is_file() {
-        return Err(Error::Input(format!(
-            "sweep {sweep} references missing benchmark {}",
-            resolved.display()
-        )));
-    }
-    Ok(resolved)
-}
-
 fn read_json(path: &Path) -> Result<Value, Error> {
     let metadata = fs::metadata(path)
         .map_err(|error| Error::Input(format!("cannot read {}: {error}", path.display())))?;
@@ -1346,42 +1329,6 @@ fn read_json(path: &Path) -> Result<Value, Error> {
             path.display()
         ))
     })
-}
-
-fn flatten_numbers(prefix: &str, value: &Value, output: &mut BTreeMap<String, f64>) {
-    match value {
-        Value::Number(number) => {
-            if let Some(number) = number.as_f64()
-                && !prefix.is_empty()
-                && !prefix.ends_with("schema_version")
-                && !prefix.ends_with("started_unix_ms")
-                && !prefix.ends_with("collected_unix_ms")
-                && !prefix.ends_with("clock_ticks_per_second")
-            {
-                output.insert(prefix.to_owned(), number);
-            }
-        }
-        Value::Object(object) => {
-            for (key, child) in object {
-                if prefix.is_empty() && matches!(key.as_str(), "execution_cohort" | "replica_index")
-                {
-                    continue;
-                }
-                let next = if prefix.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{prefix}.{key}")
-                };
-                flatten_numbers(&next, child, output);
-            }
-        }
-        Value::Array(values) => {
-            for (index, child) in values.iter().enumerate() {
-                flatten_numbers(&format!("{prefix}[{index}]"), child, output);
-            }
-        }
-        _ => {}
-    }
 }
 
 fn series_values(value: &Value) -> Vec<f64> {
@@ -1771,31 +1718,16 @@ fn escape(value: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn safe_name(path: &Path) -> String {
-    safe_name_str(
-        path.file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or("benchmark"),
-    )
-}
-
-fn safe_name_str(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect()
-}
+#[cfg(test)]
+#[path = "../tests/unit/compare_boundaries.rs"]
+mod boundary_tests;
 
 #[cfg(test)]
 mod tests {
+    use super::GraphNames;
     use super::run;
     use serde_json::{Value, json};
+    use std::collections::{BTreeMap, BTreeSet};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -1806,7 +1738,8 @@ mod tests {
             &json!({"replica_index":2,"execution_cohort":{
             "id":"abcd","selected_replicas":3,"admitted_slots":[2]},"elapsed_ms":42}),
             &mut metrics,
-        );
+        )
+        .unwrap();
         assert_eq!(metrics.len(), 1);
         assert_eq!(metrics["elapsed_ms"], 42.0);
     }
@@ -1972,7 +1905,11 @@ mod tests {
                 .is_file()
         );
         assert!(
-            root.join("results/sweep-comparison/metric-component.agent.execute.cpu_user_ms.svg")
+            root.join("results/sweep-comparison")
+                .join(
+                    GraphNames::default()
+                        .allocate("metric", "component.agent\\.execute.cpu_user_ms")
+                )
                 .is_file()
         );
         let timeline = root.join("results/sweep-comparison/execution-timeline.svg");
@@ -1994,11 +1931,16 @@ mod tests {
         assert!(elapsed_svg.contains(">0</text>"));
         assert!(elapsed_svg.contains(">12</text>"));
         assert!(
-            root.join("results/sweep-comparison/metric-mpstat.cpu.user_pct.svg")
+            root.join("results/sweep-comparison")
+                .join(GraphNames::default().allocate("metric", "mpstat.cpu\\.user_pct"))
                 .is_file()
         );
         assert!(
-            root.join("results/sweep-comparison/metric-perfetto.perfetto.scheduler_events.svg")
+            root.join("results/sweep-comparison")
+                .join(
+                    GraphNames::default()
+                        .allocate("metric", "perfetto.perfetto\\.scheduler_events")
+                )
                 .is_file()
         );
         assert!(
@@ -2006,7 +1948,11 @@ mod tests {
                 .is_file()
         );
         assert!(
-            root.join("results/sweep-comparison/metric-bpftrace-sched-latency.bpftrace.sched-latency.wakeup_latency_events.svg")
+            root.join("results/sweep-comparison")
+                .join(GraphNames::default().allocate(
+                    "metric",
+                    "bpftrace-sched-latency.bpftrace\\.sched-latency\\.wakeup_latency_events"
+                ))
                 .is_file()
         );
         assert!(
@@ -2361,5 +2307,125 @@ mod tests {
         assert!(html.contains("100.0% (1/1)"));
         assert!(html.contains("No upstream task resolution was measured"));
         let _ = std::fs::remove_dir_all(root);
+    }
+    #[test]
+    fn report_preserves_colliding_metric_names_paths_and_repeated_config_stems() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-metric-identities-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("sweep.toml"),
+            "configs=['left/same.toml','right/same.toml']",
+        )
+        .unwrap();
+        for (index, side) in ["left", "right"].into_iter().enumerate() {
+            std::fs::create_dir_all(root.join(side)).unwrap();
+            std::fs::write(
+                root.join(side).join("same.toml"),
+                "agent='pi'\nworkload='bug-fix'\nprovider='local'\nmodel='m'\n",
+            )
+            .unwrap();
+            let measured = root.join(format!("sweep-results/{index:03}-same/measurements"));
+            std::fs::create_dir_all(&measured).unwrap();
+            std::fs::write(
+                measured.join("run.json"),
+                json!({"status":"completed","elapsed_ms":10+index}).to_string(),
+            )
+            .unwrap();
+            std::fs::write(
+                measured.join("custom.json"),
+                json!({
+                    "metrics":{"a/b":113,"a?b":227,"a.b":331,"a":{"b":449},"é":557,"ü":661},
+                    "series":{"custom.a/b":[1,2],"custom.a?b":[3,4]}
+                })
+                .to_string(),
+            )
+            .unwrap();
+        }
+        let manifest = root.join("sweep.toml");
+        run(manifest.to_str().unwrap(), &mut Vec::new()).unwrap();
+        let output = root.join("results/sweep-comparison");
+        let summary: Value =
+            serde_json::from_slice(&std::fs::read(output.join("comparison.json")).unwrap())
+                .unwrap();
+        let rows = summary["benchmarks"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_ne!(rows[0]["name"], rows[1]["name"]);
+        for row in rows {
+            for (key, value) in [
+                ("custom.a/b", 113),
+                ("custom.a?b", 227),
+                ("custom.a\\.b", 331),
+                ("custom.a.b", 449),
+                ("custom.é", 557),
+                ("custom.ü", 661),
+            ] {
+                assert_eq!(row["metrics"][key].as_f64(), Some(value as f64), "{row}");
+            }
+        }
+        let graphs = summary["graphs"].as_array().unwrap();
+        let names: BTreeSet<_> = graphs.iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(names.len(), graphs.len());
+        let html = std::fs::read_to_string(output.join("report.html")).unwrap();
+        let mut bar_titles = BTreeMap::new();
+        let mut series_titles = BTreeMap::new();
+        for name in names {
+            let svg = std::fs::read_to_string(output.join(name)).unwrap();
+            assert!(html.contains(name), "missing graph reference {name}");
+            let title = svg
+                .split("<title>")
+                .nth(1)
+                .unwrap()
+                .split("</title>")
+                .next()
+                .unwrap()
+                .to_owned();
+            if name.starts_with("metric-") {
+                assert_eq!(svg.matches("class=\"bar\"").count(), 2);
+                assert!(bar_titles.insert(title, svg).is_none());
+            } else if name.starts_with("series-") {
+                assert!(series_titles.insert(title, svg).is_none());
+            }
+        }
+        for (name, value) in [
+            ("custom.a/b", 113),
+            ("custom.a?b", 227),
+            ("custom.a\\.b", 331),
+            ("custom.a.b", 449),
+            ("custom.é", 557),
+            ("custom.ü", 661),
+        ] {
+            assert!(bar_titles[name].contains(&format!("data-value=\"{value}\"")));
+        }
+        assert!(series_titles.contains_key("custom.a/b"));
+        assert!(series_titles.contains_key("custom.a?b"));
+        let original_names = summary["graphs"].clone();
+        run(manifest.to_str().unwrap(), &mut Vec::new()).unwrap();
+        let regenerated: Value =
+            serde_json::from_slice(&std::fs::read(output.join("comparison.json")).unwrap())
+                .unwrap();
+        assert_eq!(regenerated["graphs"], original_names);
+        // Series keys are a shared collector contract. An ambiguous declaration
+        // must fail explicitly regardless of directory iteration order.
+        let conflict = root.join("sweep-results/000-same/measurements/other.json");
+        std::fs::write(
+            &conflict,
+            json!({"series":{"custom.a/b":[9,10]}}).to_string(),
+        )
+        .unwrap();
+        let error = run(manifest.to_str().unwrap(), &mut Vec::new())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("conflicting measurement identity `custom.a/b`"),
+            "{error}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

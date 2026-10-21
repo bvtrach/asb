@@ -1,9 +1,11 @@
 //! CLI contract tests using isolated local projects and no provider credentials.
 
+mod support;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use support::IsolatedEnvironment;
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -42,13 +44,10 @@ impl Project {
         command
             .current_dir(dir)
             .args(args)
-            .env_clear()
+            .isolated_env()
             .env("HOME", &self.0)
             .env("PATH", std::env::var_os("PATH").unwrap_or_default());
         // Preserve instrumentation for coverage runs, without inheriting keys.
-        if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
-            command.env("LLVM_PROFILE_FILE", profile);
-        }
         command.envs(extra.iter().copied());
         command.output().expect("ASB starts")
     }
@@ -151,7 +150,7 @@ fn tui_selection_installs_locally_before_enabling_agent_or_workload() {
             .arg(env!("CARGO_BIN_EXE_asb"))
             .arg(&project.0)
             .arg(mode)
-            .env_clear()
+            .isolated_env()
             .env("HOME", &project.0)
             .env("PATH", path)
             .env("TERM", "xterm-256color")
@@ -1208,7 +1207,7 @@ fn running_binary_replacement_does_not_break_measured_replay_gate() {
                 "--measurements",
                 "measurements",
             ])
-            .env_clear()
+            .isolated_env()
             .env("HOME", &project.0)
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .stdout(std::process::Stdio::piped())
@@ -1443,11 +1442,15 @@ fn live_bpftrace_socket_profile_captures_replay_and_generates_graphs() {
         "{json}"
     );
     let comparison = project.0.join("results/suite-comparison");
-    assert!(
-        comparison
-            .join("metric-bpftrace-socket-operations.bpftrace.socket-operations.socket_calls.svg")
-            .is_file()
-    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(comparison.join("comparison.json")).unwrap())
+            .unwrap();
+    assert!(report["graphs"].as_array().unwrap().iter().any(|graph| {
+        let svg = std::fs::read_to_string(comparison.join(graph.as_str().unwrap())).unwrap();
+        svg.contains(
+            r"<title>bpftrace-socket-operations.bpftrace\.socket-operations\.socket_calls</title>",
+        )
+    }));
     let html = std::fs::read_to_string(comparison.join("report.html")).unwrap();
     assert!(html.contains("bpftrace-socket-operations.svg"));
     assert!(html.contains("overlaps scheduler states"));
@@ -4500,7 +4503,7 @@ fn node_sidecar_uses_https_proxy_and_redacts_proxy_failure() {
     let output = Command::new("node")
         .args(["--input-type=module", "-e", "const {networkFetch}=await import(process.argv[1]); try {await networkFetch('https://provider.invalid/v1', {headers:{authorization:'Bearer secret-for-test'}}); process.exit(1)} catch(e) { console.log(e.message) }"])
         .arg(module)
-        .env_clear()
+        .isolated_env()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("https_proxy", proxy)
         .output().unwrap();
@@ -4553,7 +4556,7 @@ fn sidecar_cancels_active_proxy_request_and_removes_private_scratch() {
     let output = Command::new("node")
         .args(["--input-type=module", "-e", "const {networkFetch,cancelNetworkRequests}=await import(process.argv[1]); const request=networkFetch('http://provider.invalid/v1', {method:'POST',body:'sensitive test body'}); setTimeout(cancelNetworkRequests,300); try {await request;process.exit(1)} catch(e) {console.log(e.message)}"])
         .arg(module)
-        .env_clear()
+        .isolated_env()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("http_proxy", proxy)
         .output().unwrap();
@@ -4632,7 +4635,7 @@ fn sidecar_follows_same_origin_redirects_but_refuses_cross_origin_credentials() 
         });
         let output = Command::new("node")
             .args(["--input-type=module", "-e", "const {networkFetch}=await import(process.argv[1]); try {const r=await networkFetch('http://provider.invalid/first',{headers:{authorization:'Bearer fixture-secret'}}); let b='';for await(const c of r.body)b+=Buffer.from(c).toString();console.log('ok:'+b)}catch(e){console.log('error:'+e.message)}"])
-            .arg(module).env_clear().env("PATH", std::env::var_os("PATH").unwrap_or_default()).env("http_proxy", proxy).output().unwrap();
+            .arg(module).isolated_env().env("PATH", std::env::var_os("PATH").unwrap_or_default()).env("http_proxy", proxy).output().unwrap();
         let count = server.join().unwrap();
         expect_success(&output);
         if cross_origin {

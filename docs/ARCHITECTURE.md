@@ -1,8 +1,16 @@
 # Architecture
 
-The maintained overview below explains ASB's runtime boundaries. It is
-supplemented—not replaced—by the generated [Rust type diagram](asb-type-diagram.mmd)
-and its [SVG rendering](asb-type-diagram.svg). Regenerate both with `make uml`.
+Benchmark cassette/result labels and manifest references share the private
+`benchmark_paths` policy. Its legacy component normalization is lossy and keeps
+existing artifact names stable; it must not be used as a uniqueness allocator
+or standalone path sandbox. Comparison retains its collision-free graph-name
+allocator. Sweep execution and comparison share the relative-TOML reference
+checks, including existing symlink behavior and actionable path diagnostics.
+
+The maintained overview below explains ASB's runtime boundaries. It can be
+supplemented—not replaced—by generated Rust type, dataflow, and control-flow
+diagrams. Generate them locally with `make uml`, `make flows`, or
+`make interactive`; the derived files are intentionally not tracked.
 Private implementation items are documented by `make rust-doc` under `target/doc/`.
 
 ASB is deliberately split into a small CLI and a file-backed workload directory:
@@ -83,14 +91,36 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   under a machine-readable `metrics` object plus bounded `series` arrays.
   Process rows in the same observation are summed, not plotted as extra time
   points. `series_timestamps` uses monotonic observation-completion offsets;
+  CPU/I/O and BPF processing reads complete stopped stdout files, not their
+  256 KiB diagnostic prefix. Input is bounded to 16 MiB; truncated final lines,
+  invalid UTF-8, nonfinite parsed values or processed data above a 12 MiB
+  serialized budget fail the collector without prefix measurements. The
+  processed budget reserves worst-case sixfold JSON diagnostic escaping and
+  outer fields beneath comparison's 16 MiB
+  result limit. Temporary full output is removed after processing on either
+  success or failure; an optional collector error never erases an official grade.
   historical files fall back to pidstat clock offsets with midnight handling.
-  Average and child-summary rows are excluded. `perf stat` uses the same
+  Average and child-summary rows are excluded. CPU/I/O observations use the
+  millisecond series timestamp contract (both monotonic pidstat markers and
+  legacy clock offsets are converted from seconds before reporting).
+  `perf stat` uses the same
   interval contract. Perf scalar counters sum the emitted interval deltas,
   rather than reporting only the final interval. Unsupported counters remain
   absent, not zero. Parsing streams the complete stopped perf-stat file before
   deleting it; the separate 256 KiB diagnostic prefix never supplies totals.
   Original per-counter timestamps preserve missing intervals, and hybrid CPU
   core/atom hardware counters are summed at the same observed timestamp.
+  Perf's seconds are converted to the shared millisecond timestamp contract.
+  Perf-stat runs with `--no-scale`: hardware metrics are explicitly named
+  `perf.observed_cycles_count` and `perf.observed_instructions_count`, not
+  estimated whole-run totals. Unavailable intervals or multiplexing may omit
+  observations. `perf-stat-quality.json` retains each original PMU/event's
+  observed value, known runtime, running-percentage range and unavailable or
+  unknown-quality row counts. Missing observations remain null, not zero.
+  Running percentages are not CPU utilization, and rounded values (including
+  0.00%) are never inverted to reconstruct unscaled counts. Linux documents
+  [separate hybrid-PMU scaling](https://raw.githubusercontent.com/torvalds/linux/v6.12/tools/perf/Documentation/intel-hybrid.txt),
+  which makes naive sums of scaled core/atom estimates misleading.
   Limits of 256 MiB input, 16 KiB per line and 100,000 points per metric fail
   the collector without publishing partial counters. Malformed/nonfinite
   counters and inconsistent timestamps likewise fail rather than invent data.
@@ -100,7 +130,10 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   series with at least two points and expose the same hover, zoom, pan, reset,
   and enlarge controls as bar charts. Built-in BPFTrace profiles remain
   bounded cumulative one-second snapshots and final aggregates (custom
-  interval programs may add series), while Perfetto retains its timestamped
+  interval programs may add series). Their legacy arrays have no measured
+  timestamps and are sample-indexed, not qualified aligned clock series;
+  sparse per-CPU maps must not be assumed synchronized by array index.
+  Perfetto retains its timestamped
   trace. Process-attached collector processes stop at the agent-execution
   boundary (also on run failure), before grading. Report processing/export
   stays after workload evaluation; an optional processor failure becomes a
@@ -124,6 +157,12 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   are established; it survives deletion of `.asb`. Independent processes wait
   at most fifteen seconds for startup admission, not for another capture to finish.
   Reset rejects active instance leases, including inherited crash-cleanup leases.
+  Normal service destruction joins the owner and verifies every owned daemon
+  is reaped before explicitly unlocking the persistent instance lease. This
+  prevents incidental forked descriptor copies from retaining a finished
+  service's lock. Uncertain cleanup does not explicitly unlock. Owner SIGKILL
+  still skips destruction, so inherited daemon descriptors retain crash-time
+  ownership until shutdown; the lease inode is never unlinked.
   The probes daemon enters an unprivileged private user/mount namespace via
   util-linux `unshare`. An internal native helper rechecks owner/death-signal
   and inherited-lease state, verifies the namespace transition, and binds only
@@ -191,9 +230,20 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   every delegated-cgroup command (`mkdir`, `chown`, `chmod`, and, when needed,
   controller enablement) and asks for explicit approval before running them.
   `asb init --yes` (or `-y`) approves all listed setup groups without prompts.
-  Declining, an invalid answer, or a failed command leaves the setting or
-  delegation unchanged; init remains usable. It never edits sudoers or changes
+  Declining or an invalid answer runs no listed mutation commands. A failed
+  command is reported and init remains usable. It never edits sudoers or changes
   these settings silently.
+  The private `project::host_setup` policy separates declared operations,
+  capability, explicit consent, and execution. A consumed approval owns exactly
+  one command group. The initial passwordless-sudo probe is shared within the
+  sysctl/cgroup setup invocation, not across processes or independent groups.
+  An approved interactive sysctl does not promote cgroup setup to interactive
+  sudo, even if sudo refreshed credentials; this preserves the prior policy.
+  Sysctl failures do not suppress independent settings, while cgroup creation,
+  ownership, permissions and optional controller enabling stop at the first
+  failed prerequisite. Failure is best-effort, not rollback: earlier successful
+  operations may remain applied. Tracefs retains its separate lease and setup
+  contract, sharing only the explicit consent parser.
   On a systemd cgroup-v2 host, the same best-effort init path creates a
   user-owned `asb.slice` beneath the current user slice, enables the CPU
   controller, and records its parent in `.asb/project.toml`; measured runs use
@@ -230,6 +280,36 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
 - `workloads/`: one UTF-8 `.txt` prompt per workload name. Built-in supporting
   files are stored under `.asb/fixtures/<name>/` and materialized into the run
   workspace without overwriting existing edits.
+
+The runner uses private consuming attempt states rather than one shared mutable
+orchestration context. `AdmittedAttempt` publishes start intent before resolving
+the project; `PreparedAttempt` owns the workload, optional proxy and measurement
+sessions through execution. Native command intent becomes an owned
+`PreparedNative` only after adapter, endpoint, Python, runtime and replay
+preparation, so the gate executes that exact command. `ExecutionEvidence` owns
+captured output, guest observations and the frozen execution clock.
+Proxy settlement consumes execution into `SettledAttempt`; evaluation consumes
+that into `EvaluatedAttempt`, retaining an independent `EvaluationOutcome`.
+Explicit cleanup then yields `FinalizedAttempt`. Existing adapter cancellation
+on aborted transitions preserves unfinished resources rather than calling
+destructive normal-close from Drop. Provider bridge ownership remains outside
+these transitions until proxy settlement and evaluation have finished.
+
+Post-execution lifecycle failures are ancillary `AttemptIssues`, not missing
+submissions or replacement grades. Dispatch attempts every collector hook and
+execution-scoped shutdown even after a hook fails. Before execution/resume,
+required instrumentation errors still fail closed. After output exists, official
+evaluation and explicit cleanup run despite client/proxy/collector failures.
+Human presentation and guest-owner transport have distinct failure policies:
+broken presentation stops writes while already-admitted work completes; losing
+the owner transport still cancels/preserves. A final measurement-publication
+error leaves the immutable task outcome available and prevents a completion
+receipt, so an incomplete measurement cannot silently authorize continuation.
+Run-log publication is a separate typed obligation: a failed log write never
+skips final measurement publication or hides the grade from terminal rendering.
+Both log and measurement publication must be confirmed before a completion
+record/observer receipt is permitted. Original run failures precede ancillary
+log/measurement diagnostics; repairing reporting does not repeat the agent.
 
 `WorkloadAdapter` creates a distinct mutable `WorkloadSession` for each
 attempt. The session owns its task invocation, prepared workspace, initial
@@ -377,6 +457,29 @@ The native resume path confirms the stopped state before sending CONT, and
 cancellation uses TERM plus CONT with a bounded cleanup wait instead of
 immediately killing the supervisor. All watchers and signals are scoped to
 the attempt; no shared runner signal handler or process-group kill is used.
+Native runner custody is represented by `ManagedGate`, not a raw `Child`
+whose exit could be mistaken for descendant quiescence. Before spawn,
+`Admission` fallibly establishes a wait-only fallback owner and a private,
+nonblocking, versioned socket. The gate emits its PID-bound `Hello` only after
+the owner watcher exists; the runner validates both that receipt and stopped
+readiness before admitting execution with CONT. A stale launcher without this
+ABI is never resumed: startup cleanup uses KILL only, without TERM that could
+indirectly wake an old launcher's watcher. The diagnostic asks the user to
+rebuild/use the current ASB runtime; this is compatibility, not authorization.
+The socket is immediately CLOEXEC in the gate and explicitly closed in its
+forked wake-only child. The client cannot inherit the gate's proof writer.
+Normal completion requires both direct-child exit and a matching, ordered
+`Quiescent` frame, emitted only after owned descendants are stopped and reaped;
+EOF, principal exit and a helper result are not equivalent proofs. Receipt
+reads and writes are bounded and do not wait for EOF from duplicate writers.
+If a teardown sweep cannot establish quiescence, the gate retains supervision
+and retries rather than exiting and orphaning its tree. Caller cancellation
+waits at most six seconds before reporting explicit uncertainty and handing
+the still-owned gate to the precreated wait-only reaper. That reaper never
+kills an admitted guardian. Parent exit still wakes the independently owned
+gate through its existing pinned watcher. This is not a promise that an
+unkillable kernel task disappears within the caller deadline, nor a repair of
+the separate pre-exec allocation and output-reader resource-limit classes.
 The native supervisor and its idle watcher are part of the measured process
 tree; process-tree totals include that instrumentation overhead. The watcher
 is created before cgroup attachment, so it remains outside the new accounting
@@ -482,6 +585,16 @@ Model discovery reads the selected credential only long enough to send a catalog
 request; it sends it through curl's stdin configuration, never includes it in
 arguments or output, and never stores it. Authenticated requests do not follow
 redirects, which prevents a catalog redirect from forwarding a provider key.
+The generic catalog transport polls all three Unix pipes concurrently rather
+than blocking on request writes or stream-reader joins. Its absolute budget is
+35 seconds, with I/O ending by 30 seconds and cleanup consuming only the reserved
+remainder. The 16 MiB body and 8 KiB diagnostic-tail limits apply independently
+of curl's own limits. A privately owned direct child is stopped/reaped on errors;
+uncertain exit transfers to pre-established reaper custody and cannot produce a
+successful catalog. Inherited descendant pipe handles do not prolong the caller.
+This is not descendant supervision or a guarantee about uninterruptible kernel
+operations. Non-Unix discovery explicitly fails before spawn until a cancellable
+transport is implemented; no blocking compatibility fallback remains.
 For replay, ASB removes known provider and registered agent credential
 environment variables and supplies dummy values where needed before launching
 the agent. Replay is not a security sandbox:
@@ -570,6 +683,23 @@ and neither case changes project-local installed status. Only explicitly
 host-backed tool recipes retain their separate host-availability fallback;
 host agents and external overrides are not project installations.
 
+Source-file installation stages bytes in a private sibling directory before
+atomically replacing its destination. HTTP downloads ignore user curlrc files,
+use a ten-second connection limit and a five-minute total deadline, and are
+also watched by ASB for size/deadline violations. General sources are bounded
+to 1 GiB; runtime archives retain their 256 MiB bound. Local copies use the
+same publication path. File type, size, any recipe-owned checksum, executable
+permissions and any registered version probe are checked before replacement.
+Pinned Perfetto version probes have a separate ten-second deadline and their
+owned subprocess is stopped/reaped on timeout; this is not one global deadline
+over every step of a multi-artifact installation.
+Failed preparation leaves the prior destination and its permissions unchanged;
+destination symlinks are replaced rather than followed. This is per-file
+atomic publication, not an all-or-nothing transaction over a tool's multiple
+artifacts. Abrupt ASB termination can retain private staging files, but those
+are not published or considered installed. An explicit unsigned `--source`
+does not acquire a checksum that the user or recipe never supplied.
+
 `asb tool install` installs a pinned package recipe into the configured tools
 directory for supported agents and support tools, or downloads/copies an
 executable supplied with `--source`. Record/replay instead uses ASB's embedded
@@ -619,6 +749,12 @@ an explicit end event stops execution accounting before metadata transfer and
 official grading. Perfetto resolves the numeric PID to one process lifetime
 alive at the start marker; ambiguous PID generations leave metrics unavailable
 with a scope warning instead of silently mixing processes or inventing zeros.
+Remote sessions separate installation preparation from protocol execution with
+private typed prepared-bootstrap data. Production always constructs this data
+through runtime validation and checksum-pinned prefetch; protocol-only unit
+fixtures cannot enable a production preparation bypass. Dispatch, bounded event
+receipt, measured-target resume and completion decoding remain separate phases
+inside the same failure/cancellation envelope.
 Failed preparation/execution cancels the controller through EOF and drains its
 bounded protocol until cleanup acknowledgement and child exit, retaining the
 original error and any cleanup failure. Normal completion still requires a
@@ -887,6 +1023,20 @@ and SVG; comparison consumes only its `@asb_*` aggregate maps, embeds that
 profile SVG in the HTML artifact view, and emits one cross-run chart per
 numeric metric. NUMA topology and language-runtime data-structure probes remain
 custom profiles because their event layouts are neither portable nor stable.
+Custom sources are bounded, regular UTF-8 files, opened once during preflight.
+The adapter retains the exact validated and parameter-bound bytes in generic,
+session-owned typed collector state; configure and attachment never reopen the
+path or reconstruct configuration from the environment. Other adapters use the
+same state contract without collector-specific orchestration branches. Attachment
+adds ASB's process-tree tracking prelude and requires readiness before the agent
+resumes. A missing preparation state is an error, not permission to reread.
+Every custom process probe needs a positive, side-effect-free process-tree
+predicate. The validator handles complete multiline blocks and nested Boolean
+expressions, rejects membership mutation and opaque preprocessing, and reserves
+`@asb_tree` for the generated prelude. This is a process-scope contract, not a
+sandbox for arbitrary custom actions: custom programs remain trusted code.
+Numeric custom parameters use namespaced identifier substitution rather than
+the unsupported bpftrace `-D` option; see the development guide for migration.
 The `perfetto` recipe downloads SHA-256-pinned official Tracebox and trace
 processor binaries into the project tool directory. It supports Linux x86_64
 and aarch64. Ftrace itself is a tracefs interface provided by the running host
