@@ -6,12 +6,14 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 ASB = Path(sys.argv[1]).resolve()
-REPO = Path(__file__).resolve().parents[3]
-ROOT = REPO / "target" / f"agent-artifact-repro-{os.getpid()}"
-ROOT.mkdir(parents=True)
+CRATE = Path(__file__).resolve().parents[1]
+ARTIFACTS = CRATE / "target"
+ARTIFACTS.mkdir(exist_ok=True)
+ROOT = Path(tempfile.mkdtemp(prefix="agent-artifact-repro-", dir=ARTIFACTS))
 
 
 def project(name, scenario="normal"):
@@ -20,8 +22,8 @@ def project(name, scenario="normal"):
     (root / ".asb/project.toml").write_text(
         "tools_dir='tools'\nworkloads_dir='workloads'\nworkspace_dir='workspace'\n"
     )
-    shutil.copytree(REPO / "workloads", root / "workloads")
-    shutil.copytree(REPO / "workloads/fixtures", root / ".asb/fixtures")
+    shutil.copytree(CRATE / "assets/workloads", root / "workloads")
+    shutil.copytree(CRATE / "assets/workloads/fixtures", root / ".asb/fixtures")
     binary = root / "tools/mini-swe/bin/mini"
     binary.parent.mkdir(parents=True)
     node = shutil.which("node")
@@ -30,12 +32,16 @@ def project(name, scenario="normal"):
     # unlink, exercising the existing ignored remove_file failure naturally.
     binary.write_text(f"#!{node}\n" + r"""
 const fs=require('node:fs'), path=require('node:path');
+const index=process.argv.indexOf('--output');
+if (index<0 || !process.argv[index+1]) throw Error('missing private artifact output');
+const destination=path.resolve(process.argv[index+1]);
+const home=path.resolve(process.env.HOME);
+if (!destination.startsWith(home+path.sep) || !destination.endsWith(path.sep+path.join('mini-swe','trajectory.json')))
+ throw Error('artifact output outside fixture home');
 const marker=path.join(process.env.HOME,'executions');
 const previous=fs.existsSync(marker)?fs.readFileSync(marker,'utf8'):'';
 fs.appendFileSync(marker,'called\n');
 if (!previous) {
- const index=process.argv.indexOf('--output');
- const destination=process.argv[index+1];
  fs.mkdirSync(path.dirname(destination),{recursive:true});
  if (process.env.ASB_ARTIFACT_SCENARIO==='symlink') {
    const target=path.join(process.env.HOME,'foreign.json');

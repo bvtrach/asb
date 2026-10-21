@@ -55,3 +55,25 @@ held for independent integration review; build/docs/packaging, hosted PR CI,
 merge, both post-merge jobs and release remain pending. Native Windows/other
 Unix kernels and live providers are not runtime-qualified by Linux fixtures.
 No full suite, push or PR operation was performed here.
+
+## Independent review and package-fixture ancestry
+
+Independent review approved `98c51664` after reading the complete raw core,
+coordinator/integration delta, replacement/restoration tests, actual true/false
+selected replay and focused logs/hashes. Only the two raw-recording production
+paths differ from the reviewed artifact parent, and they are byte-identical to
+the reviewed `bd2dea5e` implementation. The 680-test focused proof remains tied
+to its actual source and frozen binary, not relabelled as full qualification.
+
+The subsequent source-only ancestry merge incorporates PR #300 fixture/ledger
+head `0f0680a7`. It updates only the packaged artifact fixture's crate-relative
+assets/fresh target directory and output-path validation plus historical proof.
+Version stays 0.2.36; production and raw tests do not change. The documentation
+conflict retains both the raw36 proof and artifact35 full/package-fixture history.
+Root reported a second hosted failure AFTER all packaged tests passed: removal
+of the extracted package encounters fixture-owned read-only directories. The
+artifact author is preparing narrowly scoped post-assertion permission
+restoration; that later reviewed fixture is not yet folded here. Fresh full
+execution remains held for that correction and explicit root clearance, even
+though the allocated BPF cache currently has no live matching process. No build,
+test, cache mutation, push, PR or release accompanied this source-only merge.
