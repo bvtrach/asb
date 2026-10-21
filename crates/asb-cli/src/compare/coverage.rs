@@ -5,6 +5,13 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
 fn metric_scope(benchmark: &BenchmarkData) -> Result<String, Error> {
+    metric_scope_with_fingerprint(benchmark, &benchmark.execution_plan_fingerprint)
+}
+
+fn metric_scope_with_fingerprint(
+    benchmark: &BenchmarkData,
+    fingerprint: &Option<String>,
+) -> Result<String, Error> {
     serde_json::to_string(&(
         &benchmark.agent,
         &benchmark.provider,
@@ -16,10 +23,45 @@ fn metric_scope(benchmark: &BenchmarkData) -> Result<String, Error> {
             .and_then(|s| s.dataset.as_ref())
             .or_else(|| benchmark.task.as_ref().and_then(|t| t.dataset.as_ref())),
         &benchmark.module,
-        &benchmark.execution_plan_fingerprint,
+        fingerprint,
         group_kind(benchmark),
     ))
     .map_err(|e| Error::Run(e.to_string()))
+}
+
+/// Missing slots have no observed protocol identity. Count them conservatively
+/// in each compatible observed cohort, preferring their own configuration's
+/// replicas. Never relabel an actual legacy record with a known identity.
+pub(super) fn fingerprints(
+    benchmark: &BenchmarkData,
+    benchmarks: &[BenchmarkData],
+) -> Result<BTreeSet<Option<String>>, Error> {
+    if benchmark.result_source != "missing" {
+        return Ok(BTreeSet::from([benchmark
+            .execution_plan_fingerprint
+            .clone()]));
+    }
+    let scope = metric_scope_with_fingerprint(benchmark, &None)?;
+    let mut local = BTreeSet::new();
+    let mut compatible = BTreeSet::new();
+    for peer in benchmarks
+        .iter()
+        .filter(|row| row.result_source != "missing")
+    {
+        if metric_scope_with_fingerprint(peer, &None)? == scope {
+            compatible.insert(peer.execution_plan_fingerprint.clone());
+            if peer.directory == benchmark.directory {
+                local.insert(peer.execution_plan_fingerprint.clone());
+            }
+        }
+    }
+    Ok(if !local.is_empty() {
+        local
+    } else if !compatible.is_empty() {
+        compatible
+    } else {
+        BTreeSet::from([None])
+    })
 }
 
 pub(super) fn metric_groups(
@@ -45,43 +87,52 @@ pub(super) fn metric_groups(
             .as_ref()
             .map(|o| o.policy.clone())
             .unwrap_or_default();
-        let scope = metric_scope(benchmark)?;
-        let task = benchmark
-            .task
-            .as_ref()
-            .map(|t| t.task_id.clone())
-            .or_else(|| benchmark.selection.as_ref().map(|s| s.task_id.clone()))
-            .unwrap_or_else(|| benchmark.label.clone());
-        let evaluation = benchmark
-            .benchmark_outcome
-            .as_ref()
-            .map(|o| o.evaluation.clone())
-            .unwrap_or_else(|| {
-                if benchmark.evaluation_completed {
-                    EvaluationOutcome::binary(benchmark.metrics.get("success_rate") == Some(&1.0))
-                } else {
-                    EvaluationOutcome::Pending {
-                        reason: "no completed evaluation recorded".into(),
+        for fingerprint in fingerprints(benchmark, benchmarks)? {
+            let scope = metric_scope_with_fingerprint(benchmark, &fingerprint)?;
+            let task = benchmark
+                .task
+                .as_ref()
+                .map(|t| t.task_id.clone())
+                .or_else(|| benchmark.selection.as_ref().map(|s| s.task_id.clone()))
+                .unwrap_or_else(|| benchmark.label.clone());
+            let evaluation = benchmark
+                .evaluation_completed
+                .then_some(benchmark)
+                .and_then(|benchmark| {
+                    benchmark
+                        .benchmark_outcome
+                        .as_ref()
+                        .map(|o| o.evaluation.clone())
+                })
+                .unwrap_or_else(|| {
+                    if benchmark.evaluation_completed {
+                        EvaluationOutcome::binary(
+                            benchmark.metrics.get("success_rate") == Some(&1.0),
+                        )
+                    } else {
+                        EvaluationOutcome::Pending {
+                            reason: "no completed evaluation recorded".into(),
+                        }
                     }
-                }
-            });
-        let mut policies = vec![policy];
-        // An absent attempt still belongs in every observed policy's coverage.
-        // Never make a custom score look complete by dropping missing rows.
-        if benchmark.benchmark_outcome.is_none()
-            && !benchmark.evaluation_completed
-            && let Some(known) = observed.get(&scope)
-        {
-            policies = known.clone();
-        }
-        for policy in policies {
-            let key =
-                serde_json::to_string(&(&scope, &policy)).map_err(|e| Error::Run(e.to_string()))?;
-            groups
-                .entry(key)
-                .or_insert_with(|| (policy, Vec::new()))
-                .1
-                .push((task.clone(), evaluation.clone()));
+                });
+            let mut policies = vec![policy.clone()];
+            // An absent attempt still belongs in every observed policy's coverage.
+            // Never make a custom score look complete by dropping missing rows.
+            if benchmark.benchmark_outcome.is_none()
+                && !benchmark.evaluation_completed
+                && let Some(known) = observed.get(&scope)
+            {
+                policies = known.clone();
+            }
+            for policy in policies {
+                let key = serde_json::to_string(&(&scope, &policy))
+                    .map_err(|e| Error::Run(e.to_string()))?;
+                groups
+                    .entry(key)
+                    .or_insert_with(|| (policy, Vec::new()))
+                    .1
+                    .push((task.clone(), evaluation.clone()));
+            }
         }
     }
     Ok(groups
@@ -245,36 +296,38 @@ pub(super) fn populations(
         }) {
             continue;
         }
-        let key = serde_json::to_string(&(
-            &benchmark.agent,
-            &benchmark.provider,
-            &benchmark.model,
-            &selection.workload,
-            dataset,
-            &benchmark.module,
-            &benchmark.execution_plan_fingerprint,
-        ))
-        .map_err(|error| Error::Run(error.to_string()))?;
-        let group = result.entry(key).or_insert_with(|| PopulationCoverage {
-            label: format!(
-                "{} / {} / {} / {}",
-                benchmark.agent, benchmark.provider, benchmark.model, selection.workload
-            ),
-            ..Default::default()
-        });
-        group.nonbinary |= benchmark
-            .benchmark_outcome
-            .as_ref()
-            .is_some_and(|o| o.evaluation.completed() && o.evaluation.resolution().is_none());
-        group.observe(
-            &selection.task_id,
-            population,
-            benchmark.evaluation_completed,
-            benchmark
-                .metrics
-                .get("success_rate")
-                .is_some_and(|rate| *rate == 1.0),
-        )?;
+        for fingerprint in fingerprints(benchmark, benchmarks)? {
+            let key = serde_json::to_string(&(
+                &benchmark.agent,
+                &benchmark.provider,
+                &benchmark.model,
+                &selection.workload,
+                dataset,
+                &benchmark.module,
+                &fingerprint,
+            ))
+            .map_err(|error| Error::Run(error.to_string()))?;
+            let group = result.entry(key).or_insert_with(|| PopulationCoverage {
+                label: format!(
+                    "{} / {} / {} / {}",
+                    benchmark.agent, benchmark.provider, benchmark.model, selection.workload
+                ),
+                ..Default::default()
+            });
+            group.nonbinary |= benchmark
+                .benchmark_outcome
+                .as_ref()
+                .is_some_and(|o| o.evaluation.completed() && o.evaluation.resolution().is_none());
+            group.observe(
+                &selection.task_id,
+                population,
+                benchmark.evaluation_completed,
+                benchmark
+                    .metrics
+                    .get("success_rate")
+                    .is_some_and(|rate| *rate == 1.0),
+            )?;
+        }
     }
     Ok(result)
 }
@@ -311,6 +364,85 @@ pub(super) fn html_table(benchmarks: &[BenchmarkData]) -> Result<String, Error> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn row(missing: bool) -> BenchmarkData {
+        use crate::workloads::outcome::*;
+        let task = crate::workloads::TaskIdentity::local("bug-fix", Some("case"));
+        BenchmarkData {
+            legacy_evaluation_provenance: None,
+            execution_plan_fingerprint: (!missing).then(|| "plan-P".into()),
+            module: None,
+            benchmark_outcome: (!missing).then(|| BenchmarkOutcome {
+                schema_version: 1,
+                execution_success: Some(true),
+                evaluation: EvaluationOutcome::binary(true),
+                cleanup_confirmed: Some(true),
+                evidence: vec![],
+                policy: MetricPolicy::default(),
+                lineage: EvaluationLineage {
+                    execution_attempt: task.attempt_id.clone(),
+                    evaluation_id: "evaluation".into(),
+                    supersedes: None,
+                },
+            }),
+            result_source: if missing { "missing" } else { "measurement" },
+            reconciled: false,
+            replica_index: None,
+            execution_cohort: None,
+            label: "case".into(),
+            directory: "same-configuration".into(),
+            agent: "fixture".into(),
+            workload: "bug-fix".into(),
+            task: (!missing).then_some(task),
+            selection: None,
+            evaluation_completed: !missing,
+            workload_evaluation: "bundled-fixture".into(),
+            provider: "fixture".into(),
+            model: "fixture".into(),
+            metrics: if missing {
+                BTreeMap::new()
+            } else {
+                BTreeMap::from([("success_rate".into(), 1.0)])
+            },
+            series: BTreeMap::new(),
+            host_metadata: None,
+            components: None,
+            status: None,
+            artifacts: vec![],
+        }
+    }
+
+    #[test]
+    fn unattributed_reward_cannot_contribute_a_grade() {
+        let mut unbound = row(false);
+        unbound.evaluation_completed = false;
+        let groups = metric_groups(&[unbound]).unwrap();
+        let group = groups.values().next().unwrap();
+        assert_eq!(group.rewarded_attempts, 0);
+        assert_eq!(group.evaluated_attempts, 0);
+        assert!(!group.complete);
+    }
+
+    #[test]
+    fn missing_replica_stays_in_known_protocol_coverage_without_relabeling_legacy() {
+        let rows = [row(false), row(true)];
+        let groups = metric_groups(&rows).unwrap();
+        assert_eq!(groups.len(), 1);
+        let group = groups.values().next().unwrap();
+        assert_eq!(group.selected_attempts, 2);
+        assert_eq!(group.rewarded_attempts, 1);
+        assert_eq!(group.estimate, Some(0.5));
+        assert!(!group.complete);
+        assert!(rows[1].execution_plan_fingerprint.is_none());
+        let mut legacy = row(false);
+        legacy.execution_plan_fingerprint = None;
+        let groups = metric_groups(&[row(false), legacy]).unwrap();
+        assert_eq!(
+            groups.len(),
+            2,
+            "actual legacy evidence keeps unknown identity"
+        );
+    }
 
     #[test]
     fn partial_populations_and_replicas_never_become_complete_one_attempt_scores() {
