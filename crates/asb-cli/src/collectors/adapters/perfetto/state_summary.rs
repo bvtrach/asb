@@ -219,6 +219,47 @@ mod tests {
     }
 
     #[test]
+    fn actual_scheduler_series_sql_clips_partial_buckets_and_rejects_invalid_roots() {
+        let script = r#"
+import csv,sqlite3,sys
+db=sqlite3.connect(':memory:')
+db.executescript('''
+CREATE TABLE process(upid INTEGER,pid INTEGER,parent_upid INTEGER,start_ts INTEGER,end_ts INTEGER);
+CREATE TABLE thread(utid INTEGER,tid INTEGER,upid INTEGER);
+CREATE TABLE slice(ts INTEGER,name TEXT);
+CREATE TABLE sched(ts INTEGER,dur INTEGER,utid INTEGER);
+INSERT INTO process VALUES(1,42,NULL,0,2000000000),(2,43,1,0,2000000000),(3,99,NULL,0,2000000000);
+INSERT INTO thread VALUES(1,42,1),(2,43,2),(3,99,3);
+INSERT INTO slice VALUES(0,'asb.agent.started.fixture'),(1250000000,'asb.agent.exited.fixture');
+INSERT INTO sched VALUES(-50000000,100000000,1),(900000000,300000000,1),(1100000000,400000000,2),(0,2000000000,3),(1250000000,100000000,1),(-100000000,100000000,1);
+''')
+if sys.argv[2]=='absent': db.execute('DELETE FROM process WHERE pid=42')
+if sys.argv[2]=='ambiguous': db.execute('INSERT INTO process VALUES(4,42,NULL,0,2000000000)')
+cursor=db.execute(sys.argv[1]);out=csv.writer(sys.stdout,lineterminator='\n');out.writerows(cursor)
+"#;
+        let (_, query) = perfetto_series_queries(Some(42), "fixture")
+            .into_iter()
+            .find(|(name, _)| name == "perfetto.scheduler_duration_ms_per_s")
+            .unwrap();
+        for (mode, expected) in [
+            ("valid", "0,150.0\n1,350.0\n"),
+            ("absent", ""),
+            ("ambiguous", ""),
+        ] {
+            let output = Command::new("python3")
+                .args(["-c", script, &query, mode])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(String::from_utf8(output.stdout).unwrap(), expected, "{mode}");
+        }
+    }
+
+    #[test]
     fn actual_sql_aggregates_beyond_svg_limit_clips_bounds_and_excludes_unfinished() {
         // Standard-library SQLite executes the actual product query, not a
         // mocked expected output. No native tracing or third-party SDK needed.
