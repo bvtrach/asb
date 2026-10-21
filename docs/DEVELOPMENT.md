@@ -21,12 +21,13 @@ make uml
 
 `make rust-doc` runs `cargo doc --locked --no-deps --document-private-items`,
 because the CLI implementation modules are intentionally private. `make uml`
-installs the pinned AutoUML release under `target/tools/`, regenerates
-`docs/asb-type-diagram.mmd`, normalizes AutoUML's source-path identifiers into
-stable logical names, and renders `docs/asb-type-diagram.svg`. The normalized
-diagram explicitly shows trait implementation edges and never publishes local
-paths or branch names. It supplements the maintained architecture overview;
-review both when changing public or private type relationships.
+installs the pinned AutoUML release under `target/tools/`, generates the local
+type-diagram sources and renderings, and leaves those derived files ignored.
+`make flows` generates local dataflow and control-flow diagrams; `make
+interactive` adds the local HTML renderings. These diagrams explicitly show
+source relationships but never publish local paths or branch names. They
+supplement the maintained architecture overview and should be regenerated when
+reviewing public or private type relationships.
 
 Function-level dataflow/control diagrams use Graphviz's packed `osage` layout.
 This keeps module boxes and every directed call/label, including cross-module
@@ -169,6 +170,13 @@ evidence files remain intact. Workspace coverage objects and raw profiles are
 cleaned while dependency compilation caches are retained. This also prevents
 obsolete test-binary maps from distorting totals after version or feature changes.
 No live provider, real agent installation, or privileged collector is necessary.
+The production map excludes only registry/git package directories identified by
+locked offline host-filtered Cargo metadata (including relocated/symlinked caches).
+Unbuilt cross-target packages need not be downloaded for native coverage. Workspace
+and local path-package sources stay in the denominator; no product module is excluded.
+Missing-project capability fixtures test the same private initialized-file guard
+used by production, and ancestor discovery uses an owned fixture parent/child.
+They never assume TMPDIR has no real ancestor project or pass one to host setup.
 
 Token accounting has synthetic, provider-free regression fixtures for all
 registered agent families, plus replay CLI checks for JSON, logs, and

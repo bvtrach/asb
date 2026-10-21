@@ -1,8 +1,9 @@
 # Architecture
 
-The maintained overview below explains ASB's runtime boundaries. It is
-supplemented—not replaced—by the generated [Rust type diagram](asb-type-diagram.mmd)
-and its [SVG rendering](asb-type-diagram.svg). Regenerate both with `make uml`.
+The maintained overview below explains ASB's runtime boundaries. It can be
+supplemented—not replaced—by generated Rust type, dataflow, and control-flow
+diagrams. Generate them locally with `make uml`, `make flows`, or
+`make interactive`; the derived files are intentionally not tracked.
 Private implementation items are documented by `make rust-doc` under `target/doc/`.
 
 ASB is deliberately split into a small CLI and a file-backed workload directory:
@@ -84,13 +85,27 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   Process rows in the same observation are summed, not plotted as extra time
   points. `series_timestamps` uses monotonic observation-completion offsets;
   historical files fall back to pidstat clock offsets with midnight handling.
-  Average and child-summary rows are excluded. `perf stat` uses the same
+  Average and child-summary rows are excluded. CPU/I/O observations use the
+  millisecond series timestamp contract (both monotonic pidstat markers and
+  legacy clock offsets are converted from seconds before reporting).
+  `perf stat` uses the same
   interval contract. Perf scalar counters sum the emitted interval deltas,
   rather than reporting only the final interval. Unsupported counters remain
   absent, not zero. Parsing streams the complete stopped perf-stat file before
   deleting it; the separate 256 KiB diagnostic prefix never supplies totals.
   Original per-counter timestamps preserve missing intervals, and hybrid CPU
   core/atom hardware counters are summed at the same observed timestamp.
+  Perf's seconds are converted to the shared millisecond timestamp contract.
+  Perf-stat runs with `--no-scale`: hardware metrics are explicitly named
+  `perf.observed_cycles_count` and `perf.observed_instructions_count`, not
+  estimated whole-run totals. Unavailable intervals or multiplexing may omit
+  observations. `perf-stat-quality.json` retains each original PMU/event's
+  observed value, known runtime, running-percentage range and unavailable or
+  unknown-quality row counts. Missing observations remain null, not zero.
+  Running percentages are not CPU utilization, and rounded values (including
+  0.00%) are never inverted to reconstruct unscaled counts. Linux documents
+  [separate hybrid-PMU scaling](https://raw.githubusercontent.com/torvalds/linux/v6.12/tools/perf/Documentation/intel-hybrid.txt),
+  which makes naive sums of scaled core/atom estimates misleading.
   Limits of 256 MiB input, 16 KiB per line and 100,000 points per metric fail
   the collector without publishing partial counters. Malformed/nonfinite
   counters and inconsistent timestamps likewise fail rather than invent data.
