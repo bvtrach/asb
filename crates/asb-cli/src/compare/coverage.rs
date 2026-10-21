@@ -94,7 +94,12 @@ pub(super) fn metric_html(benchmarks: &[BenchmarkData]) -> Result<String, Error>
         "<section><h2>Benchmark metric policies</h2><p>Estimates use completed named rewards only; incomplete coverage is not an official population score. Uncertainty is the standard error over independent task means, unavailable with fewer than two tasks or unequal repetition counts for attempt means. Repetitions are not pass@k.</p><table><tr><th>Group</th><th>Policy / reward</th><th>Reward coverage</th><th>Tasks</th><th>Estimate</th><th>Task standard error</th></tr>",
     );
     for (key, group) in metric_groups(benchmarks)? {
-        html.push_str(&format!("<tr><td>{}</td><td>{} v{} / {}</td><td>{}/{}</td><td>{}</td><td>{}</td><td>{}</td></tr>", super::escape(&key), super::escape(&group.policy.id), group.policy.version, super::escape(&group.policy.reward), group.rewarded_attempts, group.selected_attempts, group.unique_tasks, group.estimate.map_or_else(|| "Unavailable".into(), |v| format!("{v:.6}")), group.task_cluster_standard_error.map_or_else(|| "Unavailable".into(), |v| format!("{v:.6}"))));
+        let unit = group
+            .policy
+            .rewards
+            .get(&group.policy.reward)
+            .map_or("unknown", |spec| spec.unit.as_str());
+        html.push_str(&format!("<tr><td>{}</td><td>{} v{} / {} ({})</td><td>{}/{}</td><td>{}</td><td>{}</td><td>{}</td></tr>", super::escape(&key), super::escape(&group.policy.id), group.policy.version, super::escape(&group.policy.reward), super::escape(unit), group.rewarded_attempts, group.selected_attempts, group.unique_tasks, group.estimate.map_or_else(|| "Unavailable".into(), |v| format!("{v:.6}")), group.task_cluster_standard_error.map_or_else(|| "Unavailable".into(), |v| format!("{v:.6}"))));
     }
     html.push_str("</table></section>");
     Ok(html)

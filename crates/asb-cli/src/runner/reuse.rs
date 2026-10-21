@@ -80,8 +80,8 @@ mod tests {
         let summary = json!({"task":{"task_id":"partial"},"process_success":true,"workload_success":null,
             "benchmark_outcome":{"schema_version":1,"execution_success":true,
             "evaluation":{"status":"completed","resolution":null,"rewards":{"accuracy":0.25}},
-            "cleanup_confirmed":true,"evidence":[],
-            "policy":{"id":"accuracy","version":1,"reward":"accuracy","aggregation":"task-mean"},
+            "cleanup_confirmed":true,"evidence":["verifier.json"],
+            "policy":{"id":"accuracy","version":1,"reward":"accuracy","aggregation":"task-mean","rewards":{"accuracy":{"unit":"ratio","range":[0,1]}}},
             "lineage":{"execution_attempt":"attempt","evaluation_id":"evaluation","supersedes":null}}});
         let mut output = Vec::new();
         render_reused(std::slice::from_ref(&summary), false, &mut output).unwrap();

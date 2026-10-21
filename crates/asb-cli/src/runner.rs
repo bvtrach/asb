@@ -543,7 +543,18 @@ fn run_mode(
     let prompt = workload_session.invocation().prompt.clone();
     // Capture provenance at execution time; report rendering never consults
     // today's adapter registry to label a historical record.
-    let module = workloads::descriptor(&config.workload);
+    let module = workload_session.module_descriptor();
+    let policy = workload_session.metric_policy();
+    if !policy.valid()
+        || (module.is_none() && policy != workloads::outcome::MetricPolicy::default())
+        || module
+            .as_ref()
+            .is_some_and(|m| !m.valid() || !policy.matches_module(m))
+    {
+        return Err(Error::Run(
+            "module metric policy differs from its declared scoring protocol".into(),
+        ));
+    }
     let workspace = workload_session.invocation().workspace.clone();
     let workload_baseline = workload_session.baseline_evidence();
     let workload_baseline_passed = workload_baseline.measured_passed();
@@ -829,8 +840,17 @@ fn run_mode(
         || Ok(workload_session.evaluate_outcome(final_response.as_deref().unwrap_or_default())),
     )?
     .map_err(Error::Run)?;
-    if let Err(reason) = evaluation.validate() {
+    if let Err(reason) = policy.validate_evaluation(&evaluation) {
         evaluation = workloads::outcome::EvaluationOutcome::Error { reason };
+    }
+    let evaluator_evidence = workload_session.checkpoint_evidence();
+    if policy != workloads::outcome::MetricPolicy::default()
+        && evaluation.completed()
+        && evaluator_evidence.is_empty()
+    {
+        evaluation = workloads::outcome::EvaluationOutcome::Error {
+            reason: "native reward evaluator supplied no evidence artifacts".into(),
+        };
     }
     if matches!(
         evaluation,
@@ -991,8 +1011,8 @@ fn run_mode(
             execution_success: Some(process_success),
             evaluation,
             cleanup_confirmed: Some(workload_cleanup_confirmed && proxy_evidence.cleanup_confirmed),
-            evidence: workload_session.checkpoint_evidence(),
-            policy: workload_session.metric_policy(),
+            evidence: evaluator_evidence,
+            policy,
             lineage: workloads::outcome::EvaluationLineage {
                 execution_attempt: workload_session.invocation().identity.attempt_id.clone(),
                 evaluation_id: workloads::TaskIdentity::local("evaluation", None).attempt_id,

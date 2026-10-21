@@ -315,7 +315,12 @@ fn validate_outcome(record: &Outcome, entry: &PlannedBenchmark) -> Result<TaskId
         let module: crate::workloads::contracts::ModuleDescriptor =
             serde_json::from_value(summary["module"].clone())
                 .map_err(|_| invalid("malformed recorded module"))?;
-        if !module.valid() || entry.selection.module.as_ref() != Some(&module) {
+        if !module.valid()
+            || entry.selection.module.as_ref() != Some(&module)
+            || structured
+                .as_ref()
+                .is_some_and(|outcome| !outcome.policy.matches_module(&module))
+        {
             return Err(invalid("recorded module differs from selected protocol"));
         }
     }
