@@ -1,6 +1,7 @@
 //! Live execution of one configured benchmark.
 mod batch;
 mod completion;
+mod repeated;
 pub(crate) mod replica;
 pub(crate) mod reuse;
 #[cfg(target_os = "linux")]
@@ -47,6 +48,8 @@ fn emit_warning(
 
 #[derive(Serialize)]
 struct RunResult<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution: Option<repeated::ExecutionIdentity>,
     replica_index: Option<usize>,
     execution_cohort: Option<&'a measurements::ExecutionCohort>,
     schema_version: u32,
@@ -82,6 +85,8 @@ struct RunResult<'a> {
 /// Execution choices shared by single runs, replicas, and sweeps.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RunOptions<'a> {
+    pub repeat: Option<u64>,
+    pub batch: Option<&'a repeated::BatchIdentity>,
     pub verify_initial_material: bool,
     pub preparation_gate: Option<&'a batch::Gate>,
     pub execution_cohort: Option<&'a measurements::ExecutionCohort>,
@@ -115,6 +120,19 @@ pub(crate) fn run_with_diagnostics(
     let text = read_config(config_path)?;
     let config: BenchmarkConfig = toml::from_str(&text)
         .map_err(|error| Error::Input(format!("cannot parse {path}: {error}")))?;
+    if let Some(repeat) = options.repeat {
+        return repeated::run(config_path, config, repeat, options, output, warnings);
+    }
+    run_loaded(config_path, config, options, output, warnings)
+}
+
+fn run_loaded(
+    config_path: &Path,
+    config: BenchmarkConfig,
+    options: RunOptions<'_>,
+    output: &mut dyn Write,
+    warnings: &Mutex<BTreeSet<String>>,
+) -> Result<(), Error> {
     if !options.replica.valid() {
         return Err(Error::Input("invalid benchmark replica identity".into()));
     }
@@ -322,7 +340,7 @@ fn replica_cassette(mode: tape::Mode, base: &Path, index: usize) -> PathBuf {
         // recording. Reuse an existing replica recording rather than waiting
         // forever for a cassette that can never be produced. Keep the
         // requested path as the fail-closed fallback when no recording exists.
-        (1..=32)
+        (1..=crate::benchmark::MAX_CONCURRENCY)
             .map(|recorded| append_path_suffix(base, recorded))
             .find(|path| path.is_file())
             .unwrap_or(candidate)
@@ -995,6 +1013,7 @@ fn run_mode(
     let evaluation_kind = workloads::scored_kind(configured_kind, &workload_baseline);
     let resolution_eligible = workloads::resolution_eligible(evaluation_kind);
     let result = RunResult {
+        execution: options.batch.map(|batch| batch.execution(options.replica)),
         replica_index: Some(options.replica.index),
         execution_cohort: options.execution_cohort,
         schema_version: 2,
@@ -1364,6 +1383,7 @@ pub(crate) fn resolve_log_path(config_path: &Path, configured_path: &str) -> Pat
 
 fn render_json(result: &RunResult<'_>, output: &mut dyn Write) -> Result<(), Error> {
     let summary = serde_json::json!({
+        "execution": result.execution,
         "replica_index": result.replica_index,
         "execution_cohort": result.execution_cohort,
         "schema_version": result.schema_version,
@@ -2173,6 +2193,13 @@ mod tests {
             replica_cassette(crate::tape::Mode::Record, &base, 8),
             root.join("record-concurrency-8.jsonl")
         );
+        std::fs::remove_file(&recorded_replica).unwrap();
+        let last_replica = root.join("record-concurrency-64.jsonl");
+        std::fs::write(&last_replica, "test").unwrap();
+        assert_eq!(
+            replica_cassette(crate::tape::Mode::Replay, &base, 1),
+            last_replica
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -2301,6 +2328,7 @@ mod tests {
 
     fn result<'a>() -> RunResult<'a> {
         RunResult {
+            execution: None,
             replica_index: None,
             execution_cohort: None,
             schema_version: 2,

@@ -22,6 +22,7 @@ const SETUP_OPTIONS: &[&str] = &[
     "--output",
 ];
 const RUN_OPTIONS: &[&str] = &[
+    "--repeat",
     "--record",
     "--replay",
     "--cassette",

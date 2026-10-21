@@ -71,6 +71,11 @@ unsupported links, immutable initial identity and evaluator side effects. These
 provider-free tests qualify the native preparation foundation, not the pending
 repeat/bundle CLI or official environment identity integration. See
 MULTITRACK-EXECUTION-DESIGN.md for the remaining requirements.
+`cargo test --locked --test repeated_run` exercises the native repeat prototype
+through the real CLI with a fake client and loopback replay. It verifies exact
+counts, overlap/sequential batches, fresh material, private replay input copies,
+failure disposition, output closure and measurement override paths without
+credentials, real agents, containers or privileged tracing.
 The cli2key concurrency regression uses two mock bridge listeners and mock
 clients, with fixture-only credentials. Both authenticated local requests must
 overlap and reach different owned servers; both servers must be reaped afterward.

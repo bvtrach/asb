@@ -66,6 +66,7 @@ pub(crate) fn run(args: &[OsString], stdout: &mut dyn Write, stderr: &mut dyn Wr
             runner::run_with_tape(
                 &options.path,
                 runner::RunOptions {
+                    repeat: options.repeat,
                     json: options.json,
                     show_output: options.show_output,
                     measurement_dir: options.measurements.as_deref(),
@@ -280,6 +281,9 @@ impl From<SetupArgs> for config::SetupOptions {
 struct RunArgs {
     #[arg(value_name = "CONFIG")]
     path: String,
+    /// Sequential batches of fresh isolated executions at configured concurrency.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..=65533))]
+    repeat: Option<u64>,
     #[arg(long)]
     record: bool,
     #[arg(long)]

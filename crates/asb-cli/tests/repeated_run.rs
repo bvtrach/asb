@@ -1,0 +1,418 @@
+//! Provider-free real CLI qualification of fresh repeated execution.
+#![cfg(unix)]
+use serde_json::{Value, json};
+use std::fs;
+use std::path::PathBuf;
+use std::process::{Command, Output};
+
+struct Project(PathBuf);
+impl Project {
+    fn new() -> Self {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let path = std::env::temp_dir().join(format!(
+            "asb-repeated-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(path.join(".asb")).unwrap();
+        fs::write(
+            path.join(".asb/project.toml"),
+            "tools_dir='tools'\nworkloads_dir='workloads'\nworkspace_dir='workspace'\n",
+        )
+        .unwrap();
+        fs::create_dir(path.join("workloads")).unwrap();
+        fs::write(
+            path.join("workloads/bug-fix.txt"),
+            "Repair src/parser.py so parse_path ignores empty components.",
+        )
+        .unwrap();
+        fs::create_dir(path.join("workspace")).unwrap();
+        fs::write(
+            path.join("workspace/preserve-user-file"),
+            "untouched user material",
+        )
+        .unwrap();
+        let body = json!({"model":"fixture","tools":[{"type":"function","function":{"name":"fixture","parameters":{"type":"object"}}}],"messages":[]});
+        fs::write(path.join("input.jsonl"), format!("{}\n",json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body.to_string()},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{}"}}))).unwrap();
+        let script = path.join("fixture-agent");
+        fs::write(&script, r##"#!/usr/bin/env python3
+import json, os, pathlib, sys, time, urllib.request
+root = pathlib.Path(__file__).parent
+workspace = pathlib.Path.cwd()
+batch = int(workspace.parent.name.split('-')[-1])
+replica = int(workspace.name.split('-')[-1]) if '-concurrency-' in workspace.name else 1
+before = (workspace/'src/parser.py').read_text()
+runtime = pathlib.Path(str(workspace)+'.asb-agent-runtime')
+runtime.mkdir()
+(runtime/'session').write_text(str(os.getpid()))
+start = time.monotonic_ns()
+(root/f'barrier-{batch}-{replica}').write_text('ready')
+expected = int((root/'expected-concurrency').read_text())
+deadline = time.monotonic()+5
+while not all((root/f'barrier-{batch}-{index}').exists() for index in range(1,expected+1)):
+    assert time.monotonic()<deadline, 'replicas did not overlap'
+    time.sleep(.005)
+body = {'model':'fixture','tools':[{'type':'function','function':{'name':'fixture','parameters':{'type':'object'}}}],'messages':[]}
+url = os.environ['ASB_PROVIDER_BASE_URL'].rstrip('/')
+if url.endswith('/v1'): url = url[:-3]
+with urllib.request.urlopen(urllib.request.Request(url+'/v1/chat/completions',data=json.dumps(body).encode(),headers={'Content-Type':'application/json'}),timeout=5) as response:
+    assert response.status == 200
+time.sleep(.06)
+(workspace/'src/parser.py').write_text("def parse_path(value: str) -> list[str]:\n    return [segment for segment in value.split('/') if segment]\n")
+row = json.dumps({'batch':batch,'replica':replica,'workspace':str(workspace),'before':before,'runtime':str(runtime),'start':start,'end':time.monotonic_ns()})+'\n'
+fd = os.open(root/'attempts.jsonl',os.O_WRONLY|os.O_CREAT|os.O_APPEND,0o600)
+os.write(fd,row.encode()); os.close(fd)
+if batch == 1 and replica == 1:
+    if (root/'mutate-source').exists(): (root/'input.jsonl').write_text('changed after planning')
+    if (root/'mutate-prompt').exists(): (root/'workloads/bug-fix.txt').write_text('Changed instructions must not launch another batch.')
+sys.exit(7 if (root/'fail-first').exists() and batch == 1 and replica == 1 else 0)
+"##).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        Self(path)
+    }
+    fn config(&self, concurrency: usize) {
+        fs::write(self.0.join("expected-concurrency"), concurrency.to_string()).unwrap();
+        fs::write(self.0.join("benchmark.toml"),format!("agent='{}'\nprovider='fixture'\nmodel='fixture'\nworkload='bug-fix'\nworkspace='workspace'\nlog_file='original.log'\nconcurrency={concurrency}\n",self.0.join("fixture-agent").display())).unwrap();
+    }
+    fn run(&self, repeat: &str) -> Output {
+        self.run_extra(repeat, &[])
+    }
+    fn run_extra(&self, repeat: &str, extra: &[&str]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_asb"))
+            .current_dir(&self.0)
+            .env_clear()
+            .env("HOME", &self.0)
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .args([
+                "run",
+                "benchmark.toml",
+                "--replay",
+                "--cassette",
+                "input.jsonl",
+                "--repeat",
+                repeat,
+                "--json",
+            ])
+            .args(extra)
+            .output()
+            .unwrap()
+    }
+}
+impl Drop for Project {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+fn records(bytes: &[u8]) -> Vec<Value> {
+    String::from_utf8_lossy(bytes)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn repeats_fresh_batches_preserve_users_collect_all_outcomes_and_continue_ordinary_failures() {
+    let project = Project::new();
+    project.config(2);
+    fs::write(project.0.join("fail-first"), "fixture").unwrap();
+    let output = project.run("3");
+    assert!(!output.status.success());
+    let out = String::from_utf8_lossy(&output.stdout);
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        err.contains("1 failed batch(es)"),
+        "stdout={out} stderr={err}"
+    );
+    let attempts = records(&fs::read(project.0.join("attempts.jsonl")).unwrap());
+    assert_eq!(attempts.len(), 6);
+    let initial = attempts[0]["before"].as_str().unwrap();
+    assert!(initial.contains("split"));
+    assert!(attempts.iter().all(|row| row["before"] == initial));
+    let paths: std::collections::BTreeSet<_> = attempts
+        .iter()
+        .map(|row| row["workspace"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths.len(), 6);
+    for batch in 1..3 {
+        let previous = attempts
+            .iter()
+            .filter(|row| row["batch"] == batch)
+            .map(|row| row["end"].as_u64().unwrap())
+            .max()
+            .unwrap();
+        let next = attempts
+            .iter()
+            .filter(|row| row["batch"] == batch + 1)
+            .map(|row| row["start"].as_u64().unwrap())
+            .min()
+            .unwrap();
+        assert!(previous < next);
+    }
+    for batch in 1..=3 {
+        let latest_start = attempts
+            .iter()
+            .filter(|row| row["batch"] == batch)
+            .map(|row| row["start"].as_u64().unwrap())
+            .max()
+            .unwrap();
+        let earliest_end = attempts
+            .iter()
+            .filter(|row| row["batch"] == batch)
+            .map(|row| row["end"].as_u64().unwrap())
+            .min()
+            .unwrap();
+        assert!(
+            latest_start < earliest_end,
+            "batch {batch} replicas must overlap"
+        );
+    }
+    let rows = records(&output.stdout);
+    assert_eq!(rows.len(), 7);
+    assert_eq!(rows[0]["type"], "execution-plan");
+    let root = PathBuf::from(rows[0]["path"].as_str().unwrap());
+    let plan: Value = serde_json::from_slice(&fs::read(&root).unwrap()).unwrap();
+    assert_eq!(plan["slots"].as_array().unwrap().len(), 6);
+    assert_eq!(plan["replay_inputs"].as_array().unwrap().len(), 1);
+    let root = root.parent().unwrap();
+    for (index, row) in rows[1..].iter().enumerate() {
+        assert_eq!(row["execution"]["slot"], index + 1);
+        assert_eq!(row["workload_success"], true);
+        assert_eq!(row["execution"]["total"], 6);
+    }
+    for batch in 1..=3 {
+        assert!(root.join(format!("batch-{batch}/prepared.json")).is_file());
+        assert_eq!(
+            fs::read_dir(root.join(format!("batch-{batch}/outcomes")))
+                .unwrap()
+                .count(),
+            2
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(project.0.join("workspace/preserve-user-file")).unwrap(),
+        "untouched user material"
+    );
+    assert_eq!(
+        fs::read_dir(project.0.join("workspace")).unwrap().count(),
+        1
+    );
+    assert!(!project.0.join("original.log").exists());
+}
+
+#[test]
+fn replay_inputs_are_bound_and_private_even_when_original_changes_between_batches() {
+    let project = Project::new();
+    project.config(2);
+    let original = fs::read(project.0.join("input.jsonl")).unwrap();
+    fs::write(project.0.join("mutate-source"), "fixture").unwrap();
+    let output = project.run("2");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows = records(&output.stdout);
+    let path = PathBuf::from(rows[0]["path"].as_str().unwrap());
+    let plan: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        plan["replay_inputs"][0]["sha256"],
+        asb_cli::cassette::digest(&original)
+    );
+    assert_eq!(plan["replay_inputs"][0]["bytes"], original.len());
+    let private = path
+        .parent()
+        .unwrap()
+        .join(plan["replay_inputs"][0]["private"].as_str().unwrap());
+    assert_eq!(fs::read(private).unwrap(), original);
+    assert_ne!(fs::read(project.0.join("input.jsonl")).unwrap(), original);
+    assert_eq!(
+        records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+        4
+    );
+}
+
+#[test]
+fn changed_prompt_stops_later_agents_and_preparation_errors_retain_actionable_reason() {
+    for first_batch_failure in [false, true] {
+        let project = Project::new();
+        project.config(2);
+        if first_batch_failure {
+            fs::write(project.0.join("workloads/bug-fix.txt"), [255]).unwrap();
+        } else {
+            fs::write(project.0.join("mutate-prompt"), "fixture").unwrap();
+        }
+        let output = project.run("3");
+        assert!(!output.status.success());
+        let expected = if first_batch_failure {
+            "UTF-8"
+        } else {
+            "differs within/across batches"
+        };
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let rows = records(&output.stdout);
+        let plan = PathBuf::from(rows[0]["path"].as_str().unwrap());
+        let root = plan.parent().unwrap();
+        let failed_batch = if first_batch_failure { 1 } else { 2 };
+        let finished: Value = serde_json::from_slice(
+            &fs::read(root.join(format!("batch-{failed_batch}/finished.json"))).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            finished["failure_reason"]
+                .as_str()
+                .unwrap()
+                .contains(expected)
+        );
+        assert_eq!(finished["stopped"], true);
+        assert!(!root.join(format!("batch-{}/", failed_batch + 1)).exists());
+        if first_batch_failure {
+            assert!(!project.0.join("attempts.jsonl").exists());
+        } else {
+            assert_eq!(
+                records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+                2
+            );
+        }
+    }
+}
+
+#[test]
+fn measurement_override_only_relocates_measurement_outputs() {
+    let project = Project::new();
+    project.config(1);
+    let output = project.run_extra("1", &["--measurements", "alternate-measurements"]);
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows = records(&output.stdout);
+    let path = PathBuf::from(rows[0]["path"].as_str().unwrap());
+    assert!(path.starts_with(project.0.join("results/asb-executions")));
+    let plan: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let measurements = PathBuf::from(plan["measurement_root"].as_str().unwrap());
+    assert!(measurements.starts_with(project.0.join("alternate-measurements")));
+    assert!(measurements.join("batch-1/measurements/run.json").is_file());
+    assert!(!measurements.join("batch-1/workspace").exists());
+    assert!(
+        path.parent()
+            .unwrap()
+            .join("batch-1/workspace/src/parser.py")
+            .is_file()
+    );
+}
+
+#[test]
+fn sparse_legacy_replica_64_is_resolved_bound_and_replayed() {
+    let project = Project::new();
+    project.config(2);
+    fs::rename(
+        project.0.join("input.jsonl"),
+        project.0.join("input-concurrency-64.jsonl"),
+    )
+    .unwrap();
+    let output = project.run("1");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rows = records(&output.stdout);
+    let plan: Value =
+        serde_json::from_slice(&fs::read(rows[0]["path"].as_str().unwrap()).unwrap()).unwrap();
+    assert!(
+        plan["replay_inputs"][0]["source"]
+            .as_str()
+            .unwrap()
+            .ends_with("input-concurrency-64.jsonl")
+    );
+    assert_eq!(plan["slots"][0]["replay_input"], 0);
+    assert_eq!(plan["slots"][1]["replay_input"], 0);
+    assert_eq!(rows.len(), 3);
+}
+
+#[test]
+fn closed_output_stops_admission_after_joining_the_current_batch() {
+    use std::io::BufRead;
+    use std::process::Stdio;
+    let project = Project::new();
+    project.config(2);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_asb"))
+        .current_dir(&project.0)
+        .env_clear()
+        .env("HOME", &project.0)
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .args([
+            "run",
+            "benchmark.toml",
+            "--replay",
+            "--cassette",
+            "input.jsonl",
+            "--repeat",
+            "3",
+            "--json",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut source = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    source.read_line(&mut line).unwrap();
+    let event: Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(event["type"], "execution-plan");
+    drop(source);
+    let output = child.wait_with_output().unwrap();
+    assert!(!output.status.success());
+    let path = PathBuf::from(event["path"].as_str().unwrap());
+    let root = path.parent().unwrap();
+    let finished: Value =
+        serde_json::from_slice(&fs::read(root.join("batch-1/finished.json")).unwrap()).unwrap();
+    assert_eq!(finished["stopped"], true);
+    assert!(!root.join("batch-2").exists());
+    assert_eq!(
+        records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+        2
+    );
+    assert_eq!(
+        fs::read_dir(root.join("batch-1/outcomes")).unwrap().count(),
+        2
+    );
+}
+
+#[test]
+fn explicit_one_is_fresh_and_invalid_products_publish_nothing() {
+    let project = Project::new();
+    project.config(1);
+    let output = project.run("1");
+    assert!(
+        output.status.success(),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+        1
+    );
+    assert_eq!(
+        fs::read_dir(project.0.join("workspace")).unwrap().count(),
+        1
+    );
+    let invalid = Project::new();
+    invalid.config(64);
+    for repeat in ["0", "1024", "18446744073709551615"] {
+        assert!(!invalid.run(repeat).status.success());
+        assert!(!invalid.0.join("results").exists());
+        assert!(!invalid.0.join("attempts.jsonl").exists());
+    }
+}

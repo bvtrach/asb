@@ -193,8 +193,13 @@ evaluation and reject evaluator mutation. Workers retain their sessions locally;
 only immutable identities cross the cancellable rendezvous before proxy/agent
 startup. Early failure and timeout release peers, and explicit cancellation
 retains official workload preservation semantics. Legacy runs do not acquire
-these scans. Official prepared-material identity and fresh repeated execution
-remain integration work; see [the execution design](MULTITRACK-EXECUTION-DESIGN.md).
+these scans. The native `run --repeat` prototype publishes an intended-slot plan,
+allocates fresh campaigns and batches, freezes private legacy replay inputs and
+links every completed outcome. Batches continue only after confirmed preparation,
+complete output publication and cleanup. Measurement overrides relocate only
+measurements, not project-local workspaces/logs. Official prepared-material
+identity, bundled recording/replay and campaign-aware comparison remain
+integration work; see [the execution design](MULTITRACK-EXECUTION-DESIGN.md).
 Sweep planning caches this once per installed workload and saves a bounded
 `plan.json` before running anything. A `TaskSelection` is requested intent,
 not an actual `TaskIdentity`, measured baseline, or evaluator result. Compare

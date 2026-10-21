@@ -1,14 +1,17 @@
 //! Cancellable preparation rendezvous; never moves adapter sessions between threads.
 use super::replica::Identity;
 use crate::{Error, cassette::Compatibility};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 pub(crate) struct Gate {
     state: Mutex<State>,
     changed: Condvar,
     deadline: Instant,
+    observer: Option<Arc<PreparationObserver>>,
 }
+
+type PreparationObserver = dyn Fn(&Compatibility) -> Result<(), Error> + Send + Sync;
 
 struct State {
     registered: Vec<bool>,
@@ -52,7 +55,21 @@ impl Gate {
             deadline: Instant::now()
                 .checked_add(timeout)
                 .ok_or_else(|| Error::Input("preparation deadline overflows".into()))?,
+            observer: None,
         })
+    }
+
+    pub(crate) fn observe(mut self, observer: Arc<PreparationObserver>) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
+    pub(crate) fn confirmed_identity(&self) -> Result<Compatibility, Error> {
+        let state = self.state.lock().map_err(|_| unavailable())?;
+        if !state.released || state.aborted.is_some() {
+            return Err(Error::Run("batch preparation was not confirmed".into()));
+        }
+        state.identity.clone().ok_or_else(unavailable)
     }
 
     pub(crate) fn register(&self, replica: Identity) -> Result<Arrival<'_>, Error> {
@@ -110,7 +127,25 @@ impl Arrival<'_> {
             state.identity.get_or_insert(identity);
             state.ready[self.index] = true;
             if state.ready.iter().all(|ready| *ready) && state.aborted.is_none() {
-                state.released = true;
+                // Publication can block: do not hold the coordination mutex while
+                // writing it, so peers can still time out and abort admission.
+                let identity = state.identity.clone().ok_or_else(unavailable)?;
+                drop(state);
+                let published = self
+                    .gate
+                    .observer
+                    .as_ref()
+                    .map_or(Ok(()), |observe| observe(&identity));
+                state = self.gate.state.lock().map_err(|_| unavailable())?;
+                if let Err(error) = published {
+                    state.aborted =
+                        Some(format!("cannot publish prepared batch identity: {error}"));
+                } else if Instant::now() >= self.gate.deadline {
+                    state.aborted =
+                        Some("batch preparation timed out; no agent was admitted".into());
+                } else if state.aborted.is_none() {
+                    state.released = true;
+                }
             }
         }
         self.gate.changed.notify_all();
@@ -264,6 +299,59 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn failed_or_slow_prepared_publication_cannot_admit_agents_or_block_peer_timeout() {
+        let gate = Gate::new(1, None, Duration::from_secs(1))
+            .unwrap()
+            .observe(Arc::new(|_| {
+                Err(Error::Io("fixture publication failure".into()))
+            }));
+        assert!(
+            gate.register(Identity::default())
+                .unwrap()
+                .ready(material())
+                .unwrap_err()
+                .to_string()
+                .contains("publication failure")
+        );
+        assert!(gate.confirmed_identity().is_err());
+        let (begun_tx, begun_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        let gate = Gate::new(2, None, Duration::from_millis(100))
+            .unwrap()
+            .observe(Arc::new(move |_| {
+                begun_tx.send(()).unwrap();
+                release_rx
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(2))
+                    .unwrap();
+                Ok(())
+            }));
+        std::thread::scope(|scope| {
+            let (done_tx, done_rx) = mpsc::channel();
+            let mut first = gate.register(Identity { index: 1, total: 2 }).unwrap();
+            let mut second = gate.register(Identity { index: 2, total: 2 }).unwrap();
+            let first_done = done_tx.clone();
+            let a = scope.spawn(move || {
+                assert!(first.ready(material()).is_err());
+                first_done.send(()).unwrap();
+            });
+            let b = scope.spawn(move || {
+                assert!(second.ready(material()).is_err());
+                done_tx.send(()).unwrap();
+            });
+            begun_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            // The waiting peer must time out while publication remains blocked.
+            done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            release_tx.send(()).unwrap();
+            a.join().unwrap();
+            b.join().unwrap();
+            assert!(gate.confirmed_identity().is_err());
+        });
     }
 
     #[test]
