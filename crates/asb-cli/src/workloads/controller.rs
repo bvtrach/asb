@@ -44,6 +44,10 @@ pub(crate) fn publish_asset(path: &std::path::Path, source: &str) -> Result<(), 
 pub(crate) fn publish_support(root: &std::path::Path) -> Result<(), crate::Error> {
     for (name, source) in [
         (
+            "asb_harness.py",
+            include_str!("../../assets/benchmarks/asb_harness.py"),
+        ),
+        (
             "asb_retained.py",
             include_str!("../../assets/benchmarks/asb_retained.py"),
         ),
@@ -338,6 +342,48 @@ impl Drop for Controller {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn published_harbor_assets_import_without_the_terminal_bench_1_adapter() {
+        let root = std::env::temp_dir()
+            .join(crate::workloads::TaskIdentity::local("harbor-assets", None).attempt_id);
+        std::fs::create_dir(&root).unwrap();
+        super::publish_support(&root).unwrap();
+        for (name, source) in [
+            (
+                "asb_harbor.py",
+                include_str!("../../assets/benchmarks/asb_harbor.py"),
+            ),
+            (
+                "asb_terminal_catalog.py",
+                include_str!("../../assets/benchmarks/asb_terminal_catalog.py"),
+            ),
+        ] {
+            super::publish_asset(&root.join(name), source).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(root.join("asb_harness.py")).unwrap(),
+            include_str!("../../assets/benchmarks/asb_harness.py")
+        );
+        assert!(!root.join("asb_terminal_bench_1.py").exists());
+        let mut command = std::process::Command::new("python3");
+        command
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default());
+        if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+            command.env("LLVM_PROFILE_FILE", profile);
+        }
+        let output = command.args(["-I", "-B", "-c", "import sys; sys.path.insert(0, sys.argv[1]); import asb_harbor, asb_harness; assert asb_harbor.record_grading_start is asb_harness.record_grading_start; assert 'asb_terminal_bench_1' not in sys.modules"])
+            .arg(&root)
+            .output()
+            .unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn helper_publication_is_private_idempotent_and_does_not_follow_destination_symlinks() {

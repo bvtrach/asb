@@ -182,101 +182,15 @@ struct ExternalWorkload {
     source: &'static str,
 }
 
-struct BundleSpec {
-    archive: &'static str,
-    marker: &'static str,
-    prompt: &'static str,
-}
-
-const EXTERNAL_WORKLOADS: &[ExternalWorkload] = &[
-    ExternalWorkload {
-        name: "agentbench",
-        source: "https://raw.githubusercontent.com/THUDM/AgentBench/d1e4a10db08c87075c78972e48ecc182be03e2d5/README.md",
-    },
-    ExternalWorkload {
-        name: "agentdojo",
-        source: "https://raw.githubusercontent.com/ethz-spylab/agentdojo/089ed468cf3ed0322acc66b0211f26d9d90dbf60/README.md",
-    },
-    ExternalWorkload {
-        name: "aider-polyglot",
-        source: "https://raw.githubusercontent.com/Aider-AI/aider/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/README.md",
-    },
-    ExternalWorkload {
-        name: "bigcodebench",
-        source: "https://raw.githubusercontent.com/bigcode-project/bigcodebench/9059fb84d1188c02edeac4995361656a2fdecbef/README.md",
-    },
-    ExternalWorkload {
-        name: "core-bench",
-        source: "https://raw.githubusercontent.com/siegelz/core-bench/e32a2980e72fe6eb04ee04eb749458f570625663/README.md",
-    },
-    ExternalWorkload {
-        name: "evalplus",
-        source: "https://raw.githubusercontent.com/evalplus/evalplus/e5d0ed0bab96280b60b637ec7f15b5e4841b0cb2/README.md",
-    },
-    ExternalWorkload {
-        name: "livecodebench",
-        source: "https://raw.githubusercontent.com/LiveCodeBench/LiveCodeBench/28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24/README.md",
-    },
-    ExternalWorkload {
-        name: "swe-bench",
-        source: "https://raw.githubusercontent.com/SWE-bench/SWE-bench/02e7a74ffd0b707aab73d203fe87bdc7c76afc8e/README.md",
-    },
-    ExternalWorkload {
-        name: "swe-bench-lite",
-        source: "https://raw.githubusercontent.com/SWE-bench/SWE-bench/02e7a74ffd0b707aab73d203fe87bdc7c76afc8e/README.md",
-    },
-    ExternalWorkload {
-        name: "swe-bench-pro",
-        source: "https://raw.githubusercontent.com/scaleapi/SWE-bench_Pro-os/ca10a60a5fcae51e6948ffe1485d4153d421e6c5/README.md",
-    },
-    ExternalWorkload {
-        name: "swe-bench-verified",
-        source: "https://raw.githubusercontent.com/SWE-bench/SWE-bench/02e7a74ffd0b707aab73d203fe87bdc7c76afc8e/README.md",
-    },
-    ExternalWorkload {
-        name: "swe-efficiency",
-        source: "https://raw.githubusercontent.com/swefficiency/swefficiency/12d32a2d6800824a7d84bdb6797b5708e7b7957f/README.md",
-    },
-    ExternalWorkload {
-        name: "swe-lancer",
-        source: "https://raw.githubusercontent.com/openai/frontier-evals/51052cede8cc608f95bb00346635e03759013e5a/README.md",
-    },
-    ExternalWorkload {
-        name: "swe-perf",
-        source: "https://raw.githubusercontent.com/SWE-Perf/SWE-Perf/9e8fed285ed640b51baaf66b13773706dc95aa45/README.md",
-    },
-    ExternalWorkload {
-        name: "swe-rebench",
-        source: "https://raw.githubusercontent.com/SWE-rebench/SWE-bench-fork/e4907b7a90eafaa1f0a6428fd04fe31cdd8b4284/README.md",
-    },
-    ExternalWorkload {
-        name: "tau-bench",
-        source: "https://raw.githubusercontent.com/sierra-research/tau-bench/59a200c6d575d595120f1cb70fea53cef0632f6b/README.md",
-    },
-    ExternalWorkload {
-        name: "terminal-bench",
-        source: "https://raw.githubusercontent.com/harbor-framework/terminal-bench/452bf305c6daa62fc59061d22133a7cbc7c1572e/README.md",
-    },
-];
-
 fn external_workload(name: &str) -> Option<ExternalWorkload> {
-    EXTERNAL_WORKLOADS
-        .iter()
-        .find(|workload| workload.name == name)
-        .copied()
-        .or_else(|| {
-            workloads::registered_sources()
-                .find(|(id, _)| *id == name)
-                .map(|(name, source)| ExternalWorkload { name, source })
-        })
+    workloads::registered_sources()
+        .find(|(id, _)| *id == name)
+        .map(|(name, source)| ExternalWorkload { name, source })
 }
 
 /// Return the pinned external workloads that the TUIs can offer for install.
 pub fn external_workload_names() -> impl Iterator<Item = &'static str> {
-    EXTERNAL_WORKLOADS
-        .iter()
-        .map(|workload| workload.name)
-        .chain(workloads::registered_sources().map(|(id, _)| id))
+    workloads::registered_sources().map(|(id, _)| id)
 }
 
 /// Check whether an external workload has its runnable local bundle and
@@ -285,7 +199,7 @@ pub fn workload_available(name: &str, directory: &Path) -> bool {
     if let Some(available) = workloads::installed_available(name, directory) {
         return available;
     }
-    if bundle_spec(name).is_some() {
+    if workloads::source_bundle(name).is_some() {
         directory.join(name).join("ASB-BUNDLE").is_file()
             && directory.join(name).join("source").is_dir()
             && directory
@@ -300,17 +214,6 @@ pub fn workload_available(name: &str, directory: &Path) -> bool {
                     .join(name)
                     .join("asb-trial/ASB-ADAPTER-FIXTURE")
                     .is_file())
-    }
-}
-
-fn bundle_spec(name: &str) -> Option<BundleSpec> {
-    match name {
-        "terminal-bench" => Some(BundleSpec {
-            archive: "https://github.com/harbor-framework/terminal-bench/archive/452bf305c6daa62fc59061d22133a7cbc7c1572e.tar.gz",
-            marker: "terminal-bench/terminal-bench@452bf305c6daa62fc59061d22133a7cbc7c1572e",
-            prompt: "Use the installed upstream Terminal-Bench checkout in `external-workload`. Inspect its README, task definitions, and local runner instructions, then execute or improve a concrete terminal task using only the installed checkout and run its focused tests. Do not download additional data during the run.\n",
-        }),
-        _ => None,
     }
 }
 
@@ -648,7 +551,7 @@ pub fn workload_with_progress(
             return Ok(());
         }
     }
-    if let Some(bundle) = bundle_spec(&name) {
+    if let Some(bundle) = workloads::source_bundle(&name) {
         install_bundle(&name, bundle, &directory, output, progress)?;
         return Ok(());
     }
@@ -678,7 +581,7 @@ pub fn workload_with_progress(
 
 fn install_bundle(
     name: &str,
-    bundle: BundleSpec,
+    bundle: workloads::SourceBundle,
     directory: &Path,
     output: &mut dyn std::io::Write,
     progress: &mut dyn FnMut(u8, &str),
@@ -1601,24 +1504,75 @@ mod tests {
 
     #[test]
     fn external_workload_aliases_are_short_unique_and_pinned() {
+        use sha2::{Digest, Sha256};
+        let sources = workloads::registered_sources().collect::<Vec<_>>();
+        assert_eq!(
+            external_workload_names().collect::<Vec<_>>(),
+            vec![
+                "agentbench",
+                "agentdojo",
+                "aider-polyglot",
+                "bigcodebench",
+                "core-bench",
+                "evalplus",
+                "livecodebench",
+                "swe-bench",
+                "swe-bench-lite",
+                "swe-bench-pro",
+                "swe-bench-verified",
+                "swe-efficiency",
+                "swe-lancer",
+                "swe-perf",
+                "swe-rebench",
+                "tau-bench",
+                "terminal-bench",
+                "terminal-bench-1.0",
+                "terminal-bench-2.1",
+            ]
+        );
+        // Migration snapshot of the complete pre-extraction public alias list:
+        // order and exact URLs (including all five official adapters) stay fixed.
+        assert_eq!(
+            format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&sources).unwrap())
+            ),
+            "5864cbb271524bb4f72a0f71042e03f2d8307fb49a65dad21c2517ce81ff22b6",
+            "installation names/order/URLs changed from the original registry"
+        );
         let mut names = std::collections::BTreeSet::new();
-        for workload in EXTERNAL_WORKLOADS {
-            assert!(valid_name(workload.name));
-            assert!(names.insert(workload.name));
+        for (name, source) in workloads::registered_sources() {
+            assert!(valid_name(name));
             assert!(
-                workload
-                    .source
-                    .starts_with("https://raw.githubusercontent.com/")
+                names.insert(name),
+                "duplicate workload registration: {name}"
             );
-            assert!(workload.source.split('/').any(|part| part.len() == 40));
+            assert_eq!(external_workload(name).unwrap().source, source);
+            assert!(
+                source.starts_with("https://raw.githubusercontent.com/")
+                    || source.starts_with("https://github.com/")
+            );
+            assert!(source.split('/').any(|part| {
+                let revision = part.strip_suffix(".tar.gz").unwrap_or(part);
+                revision.len() == 40 && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+            }));
         }
         assert_eq!(
             external_workload("swe-bench").map(|item| item.name),
             Some("swe-bench")
         );
-        assert!(bundle_spec("swe-bench").is_none());
-        assert!(bundle_spec("terminal-bench").is_some());
+        assert!(workloads::source_bundle("swe-bench").is_none());
+        assert!(workloads::source_bundle("terminal-bench").is_some());
         assert!(external_workload("methodology-only").is_none());
+        assert!(workloads::source_bundle("methodology-only").is_none());
+        assert!(external_workload("bug-fix").is_none());
+        assert!(workloads::source_bundle("bug-fix").is_none());
+        for (name, _) in &sources {
+            assert_eq!(
+                workloads::source_bundle(name).is_some(),
+                *name == "terminal-bench"
+            );
+        }
         let installed = external_workload_names().collect::<std::collections::BTreeSet<_>>();
         let adapters =
             workloads::external_adapter_names().collect::<std::collections::BTreeSet<_>>();
@@ -1636,10 +1590,19 @@ mod tests {
         let bundle_dir = directory.join("terminal-bench");
         fs::create_dir_all(bundle_dir.join("source")).unwrap();
         fs::write(bundle_dir.join("source/README.md"), "local source").unwrap();
-        let spec = bundle_spec("terminal-bench").unwrap();
+        let spec = workloads::source_bundle("terminal-bench").unwrap();
+        assert_eq!(
+            spec.archive,
+            "https://github.com/harbor-framework/terminal-bench/archive/452bf305c6daa62fc59061d22133a7cbc7c1572e.tar.gz"
+        );
+        assert_eq!(
+            spec.marker,
+            "terminal-bench/terminal-bench@452bf305c6daa62fc59061d22133a7cbc7c1572e"
+        );
+        let mut stages = Vec::new();
         fs::write(bundle_dir.join("ASB-BUNDLE"), spec.marker).unwrap();
         let mut output = Vec::new();
-        let mut progress = |_percent: u8, _stage: &str| {};
+        let mut progress = |percent: u8, stage: &str| stages.push((percent, stage.to_owned()));
         install_bundle(
             "terminal-bench",
             spec,
@@ -1648,6 +1611,34 @@ mod tests {
             &mut progress,
         )
         .expect("existing bundle is reused");
+        assert_eq!(
+            stages.first().unwrap(),
+            &(80, "validating existing bundle".into())
+        );
+        assert_eq!(stages.last().unwrap(), &(100, "ready".into()));
+        assert!(workload_available("terminal-bench", &directory));
+        assert!(bundle_dir.join("asb-trial/ASB-ADAPTER-FIXTURE").is_file());
+        let prompt = fs::read(directory.join("terminal-bench.txt")).unwrap();
+        let mut changed = spec;
+        changed.marker = "unqualified-revision";
+        assert!(
+            install_bundle(
+                "terminal-bench",
+                changed,
+                &directory,
+                &mut Vec::new(),
+                &mut |_, _| {}
+            )
+            .is_err()
+        );
+        assert_eq!(
+            fs::read(directory.join("terminal-bench.txt")).unwrap(),
+            prompt
+        );
+        assert_eq!(
+            fs::read_to_string(bundle_dir.join("ASB-BUNDLE")).unwrap(),
+            spec.marker
+        );
         assert!(
             String::from_utf8(output)
                 .unwrap()
