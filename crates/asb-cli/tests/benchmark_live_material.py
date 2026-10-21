@@ -22,6 +22,7 @@ class PreparedMaterialQualification(unittest.TestCase):
     def test_original_swe_preparation_is_repeatable_and_rejects_dirty_material(self):
         from asb_docker import DockerSession
         from asb_execution import ExecutionError
+        from asb_material import tar_digest
         from asb_swebench_task import SweBenchTask
         root = Path(os.environ["ASB_TEST_SWECATALOG_ROOT"]).absolute()
         artifacts = Path(tempfile.mkdtemp(prefix="prepared-material-", dir=root))
@@ -32,6 +33,18 @@ class PreparedMaterialQualification(unittest.TestCase):
                 directory = artifacts / f"attempt-{index + 1}"
                 with SweBenchTask(client, root / "workloads/swe-bench-lite/catalog.json",
                                   "astropy__astropy-12907", directory) as task:
+                    if index == 0:
+                        chunks,metadata = task.workspace.container.get_archive(
+                            "/",chunk_size=512,encode_stream=False)
+                        try:
+                            self.assertEqual(metadata["name"],"/")
+                            raw = client.api._get_raw_response_socket(chunks.response)
+                            self.assertEqual(getattr(raw,"_sock",raw).gettimeout(),120)
+                            self.assertEqual(len(tar_digest(chunks,"/",root_metadata_only=True,
+                                expected_root_kind=b"5")),64)
+                            self.assertTrue(chunks.closed)
+                        finally:
+                            chunks.close()
                     first = task.initial_material()
                     self.assertEqual(first, task.initial_material())
                     self.assertEqual(first["scope"], "prepared-workload-material-v1")

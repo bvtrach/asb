@@ -237,6 +237,60 @@ class MaterialTests(unittest.TestCase):
             with self.subTest(change=change):
                 self.assertNotEqual(original,self.digest(content(**change)))
 
+    def test_directory_metadata_capture_closes_before_reading_descendants_including_root(self):
+        class HeaderOnly:
+            def __init__(self, header):
+                self.header,self.closed,self.reads = header,False,0
+            def __iter__(self):return self
+            def __next__(self):
+                self.reads += 1
+                if self.reads > 1:
+                    raise AssertionError("directory metadata capture read a descendant")
+                return self.header
+            def close(self):self.closed = True
+        def digest(mode=0o755, uid=0, root="root", kind=tarfile.DIRTYPE):
+            item = tarfile.TarInfo(root)
+            item.type,item.mode,item.uid = kind,mode,uid
+            chunks = HeaderOnly(item.tobuf(format=tarfile.USTAR_FORMAT))
+            try:
+                return MATERIAL.tar_digest(chunks,root,root_metadata_only=True)
+            finally:
+                self.assertTrue(chunks.closed)
+                self.assertEqual(chunks.reads,1)
+        original = digest()
+        self.assertEqual(original,digest(root="/"))
+        self.assertNotEqual(original,digest(mode=0o700))
+        self.assertNotEqual(original,digest(uid=1000))
+        with self.assertRaisesRegex(MATERIAL.MaterialError,"wrong kind"):
+            digest(kind=tarfile.REGTYPE)
+        with self.assertRaises(MATERIAL.MaterialError):
+            self.digest(archive([]),root_metadata_only=True,exclusions=["hidden"])
+
+    def test_writable_inventory_is_ordered_retains_deletions_and_rejects_ambiguity(self):
+        changes = [{"Path":"/data/gone","Kind":2},{"Path":"/","Kind":0},
+                   {"Path":"/data/new","Kind":1},{"Path":"/etc","Kind":0},
+                   {"Path":"/etc/hostname","Kind":0},{"Path":"/proc/temporary","Kind":1}]
+        expected = [("/",0),("/data/gone",2),("/data/new",1),("/etc",0)]
+        self.assertEqual(MATERIAL.change_inventory(changes),expected)
+        self.assertEqual(MATERIAL.change_inventory(list(reversed(changes))),expected)
+        for invalid in [changes + [changes[0]], [{"Path":"/a//b","Kind":1}],
+                        [{"Path":"/a/../b","Kind":1}],[{"Path":"/a","Kind":True}],
+                        [{"Path":"relative","Kind":0}], [{"Path":"/a","Kind":3}]]:
+            with self.subTest(invalid=invalid),self.assertRaises(MATERIAL.MaterialError):
+                MATERIAL.change_inventory(invalid)
+
+    def test_delta_root_type_cannot_silently_dereference_a_symlink(self):
+        # The path requested is reported as a symlink, but the archive contains
+        # a dereferenced regular file. That must not establish link identity.
+        target = io.BytesIO()
+        with tarfile.open(fileobj=target,mode="w") as output:
+            entry = tarfile.TarInfo("link"); entry.size = 1
+            output.addfile(entry,io.BytesIO(b"x"))
+        stream = Chunks(target.getvalue())
+        with self.assertRaisesRegex(MATERIAL.MaterialError,"requested root kind"):
+            MATERIAL.tar_digest(stream,"link",expected_root_kind=b"2")
+        self.assertTrue(stream.closed)
+
     def test_long_utf8_names_are_bounded_and_supported_without_extraction(self):
         name = "long/" + "ü"*120
         self.assertEqual(len(self.digest(archive([regular(name)]))),64)

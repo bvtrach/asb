@@ -84,6 +84,13 @@ worktree. It launches no agent, provider or evaluator. Its fixture containers
 are normally removed; diagnostic artifacts stay in the selected project. This
 is representative single-container qualification, not full-population or
 root/mount/service coverage. Do not treat a skipped opt-in as a passing live test.
+The same opt-in checks actual Docker root-header metadata inspection, retained
+120-second socket read timeout and early response closure. Pure
+`benchmark_docker.py` tests response ownership before the first read, after a
+partial read, at EOF and on error. Directory-header inspection never advances
+to descendants in the pure material fixture. Separate per-path archive hashes
+are not used as an environment identity: they cannot preserve cross-path inode
+relationships and multiply RPC cost over large change inventories.
 `cargo test --locked --test repeated_run` exercises the native repeat prototype
 through the real CLI with a fake client and loopback replay. It verifies exact
 counts, overlap/sequential batches, fresh material, private replay input copies,

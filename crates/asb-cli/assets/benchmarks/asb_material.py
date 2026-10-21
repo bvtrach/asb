@@ -14,6 +14,33 @@ class MaterialError(RuntimeError):
     pass
 
 
+RUNTIME_ROOTS = ("/proc", "/sys", "/dev")
+RUNTIME_FILES = ("/etc/hosts", "/etc/hostname", "/etc/resolv.conf")
+
+
+def change_inventory(changes):
+    """Stable writable-layer declarations, including explicit deletion facts."""
+    if not isinstance(changes, list) or len(changes) > 100000:
+        raise MaterialError("prepared material changes exceed coverage bounds")
+    result, remaining = {}, 16 * 1024**2
+    for change in changes:
+        path = change.get("Path") if isinstance(change, dict) else None
+        kind = change.get("Kind") if isinstance(change, dict) else None
+        if (not isinstance(path, str) or not path.startswith("/")
+                or type(kind) is not int or kind not in [0, 1, 2]):
+            raise MaterialError("prepared material returned invalid change coverage")
+        normalized = "/" + path_name(path[1:])
+        if normalized != path or path in result:
+            raise MaterialError("prepared material changes have ambiguous paths")
+        remaining -= len(path.encode())
+        if remaining < 0:
+            raise MaterialError("prepared material change names exceed bounds")
+        result[path] = kind
+    return [(path, kind) for path, kind in sorted(result.items())
+        if path not in RUNTIME_FILES and not any(path == root or path.startswith(root + "/")
+                                               for root in RUNTIME_ROOTS)]
+
+
 def canonical_digest(value, domain):
     remaining = [1024 * 1024, 10000]
 
@@ -111,20 +138,11 @@ def capture_workdir(workspace, definition, exclusions=(), cancelled=None, deadli
     check()
     if not isinstance(container.attrs.get("Mounts"), list) or container.attrs["Mounts"]:
         raise MaterialError("mounted prepared material requires explicit coverage")
-    changes = container.diff()
+    changes = change_inventory(container.diff())
     check()
-    if not isinstance(changes, list) or len(changes) > 100000:
-        raise MaterialError("prepared material changes exceed coverage bounds")
-    for change in changes:
-        path = change.get("Path") if isinstance(change, dict) else None
-        kind = change.get("Kind") if isinstance(change, dict) else None
-        if not isinstance(path, str) or not path.startswith("/") or kind not in [0, 1, 2]:
-            raise MaterialError("prepared material returned invalid change coverage")
-        path_name(path[1:])
+    for path, _kind in changes:
         covered = path == workdir or path.startswith(workdir + "/")
-        runtime = path in ["/etc/hosts", "/etc/hostname", "/etc/resolv.conf"] or any(
-            path == root or path.startswith(root + "/") for root in ["/proc", "/sys", "/dev"])
-        if not covered and not runtime:
+        if not covered:
             raise MaterialError("prepared material changed outside declared roots; explicit coverage is required")
     image = container.image
     image.reload()
@@ -143,7 +161,7 @@ def capture_workdir(workspace, definition, exclusions=(), cancelled=None, deadli
             close()
     sha256 = canonical_digest({"scope":"single-container-workdir-and-image-v1",
         "roots":[{"logical":"workspace", "exclusions":sorted(set(exclusions))}],
-        "external_runtime_exclusions":["/proc", "/sys", "/dev", "/etc/hosts", "/etc/hostname", "/etc/resolv.conf"],
+        "external_runtime_exclusions":list(RUNTIME_ROOTS + RUNTIME_FILES),
         "definition":definition,"image_sha256":image_sha256,"files_sha256":files},
         "asb-prepared-workload-material-v1")
     check()
@@ -253,17 +271,21 @@ def pax_fields(payload):
 
 def tar_digest(chunks, prefix, exclusions=(), *, cancelled=None, deadline=None,
                max_entries=100000, max_bytes=2 * 1024**3, max_file_bytes=256 * 1024**2,
-               max_names=16 * 1024**2, max_wire=3 * 1024**3):
+               max_names=16 * 1024**2, max_wire=3 * 1024**3, root_metadata_only=False,
+               expected_root_kind=None):
     """Hash one declared tree; no file is extracted or symlink followed."""
     source = Reader(chunks, max_wire, time.monotonic() + 600 if deadline is None else deadline, cancelled)
     entries, seen, pending, headers, required_directories = {}, set(), {}, 0, set()
     try:
-        prefix = path_name(prefix)
+        filesystem_root = root_metadata_only and prefix == "/"
+        prefix = "" if filesystem_root else path_name(prefix)
         if not isinstance(exclusions, (list, tuple)) or len(exclusions) > 128:
             raise MaterialError("material exclusions exceed bounds")
         exclusions = sorted(set(path_name(name) for name in exclusions))
-        if not prefix or any(not name for name in exclusions):
+        if (not prefix and not filesystem_root) or any(not name for name in exclusions):
             raise MaterialError("material root and exclusions must be explicit")
+        if root_metadata_only and exclusions:
+            raise MaterialError("directory metadata capture cannot exclude its root")
         while True:
             header = source.read(512)
             if not any(header):
@@ -296,10 +318,13 @@ def tar_digest(chunks, prefix, exclusions=(), *, cancelled=None, deadline=None,
             raw_name = text(header[:100])
             parent = text(header[345:500])
             raw_name = pending.get("path", (parent + "/" if parent else "") + raw_name)
-            full_name = path_name(raw_name)
+            full_name = "" if filesystem_root and raw_name in ["/", ".", "./"] else path_name(raw_name)
             if full_name != prefix and not full_name.startswith(prefix + "/"):
                 raise MaterialError("material archive entry escapes declared root")
             name = full_name[len(prefix):].lstrip("/")
+            actual_kind = b"0" if kind == b"\0" else kind
+            if not name and expected_root_kind is not None and actual_kind != expected_root_kind:
+                raise MaterialError("material archive changed the requested root kind")
             link = pending.get("linkpath", text(header[157:257]))
             max_names -= len(full_name.encode()) + len(link.encode())
             if max_names < 0 or name in seen or len(seen) >= max_entries:
@@ -348,6 +373,13 @@ def tar_digest(chunks, prefix, exclusions=(), *, cancelled=None, deadline=None,
                         record["inode_target"] = entries[record["link"]].get("inode_target", record["link"])
                 record["pax"] = {key: value for key, value in pending.items()
                     if key not in ["path", "linkpath", "size", "uid", "gid", "uname", "gname", "mtime", "atime", "ctime"]}
+            if root_metadata_only:
+                # Docker emits the requested directory first. Never advance to
+                # its descendants: a changed '/' is not a request to scan '/'.
+                if name or kind != b"5" or size or ignored:
+                    raise MaterialError("material directory metadata root is missing or has wrong kind")
+                source.check()
+                return canonical_digest(record, "asb-prepared-directory-metadata-v1")
             content, remaining = hashlib.sha256(), size
             while remaining:
                 block = source.read(min(remaining, 65536))

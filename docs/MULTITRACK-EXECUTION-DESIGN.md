@@ -62,6 +62,34 @@ configuration, hooks, attributes and other Git files remain content-bound. The
 ASB-owned reset uses a stable per-command committer identity, not a global Git
 configuration change.
 
+### Broader coverage design constraints
+
+The raw reader can capture only a directory's root metadata and close before
+reading descendants, including the Docker archive root named `/`. This is a
+building block, not complete root-filesystem coverage. Change inventories are
+bounded, canonicalized and retain deletion tombstones independently of parent
+directory changes. Duplicate, noncanonical and invalid paths are errors.
+
+A per-path archive experiment was rejected: separate archives lose hardlink
+relationships across paths, and a representative original preparation exposed
+over 2,000 changed paths, making one request per path unsuitable. Do not wire a
+set of independent file digests into the environment-identity protocol. Broader
+coverage needs grouped content plus canonical cross-root inode relationships,
+directory metadata and explicit deletion facts. Shared mounts, service roles
+and logical network topology must remain bound; copied content is not equivalent
+to shared writable storage. A before/after inventory check is not by itself a
+snapshot of concurrently changing services or external writers.
+
+The task-owned Docker client uses a raw-response stream that retains its read
+timeout for container archive endpoints and closes the actual HTTP response on
+early close, completion and read failure. Nonarchive TTY/log/attach streams
+retain the SDK's long-running stream semantics. Closing only the SDK's default
+raw generator is insufficient for bounded archive capture: that path
+also disables socket timeouts. The override is scoped to the owned client, not
+a global SDK patch. Root-header inspection must use this owned stream lifecycle.
+Construction errors close the response too, and transport-child cleanup runs
+even if the SDK client close fails.
+
 ## Implemented native repeated execution
 
 Explicit repetition, including `--repeat 1`, allocates a new project-local
