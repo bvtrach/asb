@@ -4,6 +4,10 @@ use super::*;
 use std::io::Write;
 
 #[cfg(target_os = "linux")]
+#[path = "project_proc_boundaries.rs"]
+mod proc_boundaries;
+
+#[cfg(target_os = "linux")]
 #[test]
 fn isolated_host_capability_consent_and_execution_diagnostics() {
     const CASE: &str = "ASB_PROJECT_CAPABILITY_CASE";
