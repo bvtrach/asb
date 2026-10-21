@@ -14,6 +14,29 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+Controller transport source integration, staged patch **0.2.33**: qualified
+old-main controller checkpoint `7472c33a` is combined with actual main
+`cabaa576` (peer PR #294, bundled recording/replay, version 0.2.31). The next
+0.2.32 slot is reserved for the separate cli2key fixture repair; that repair is
+not merged here. New run-owned recording/replay coordination, bounded capture
+receipts, immutable track/selection proofs, typed recording-failure disposition
+and checkpoint fields remain byte-identical to the incoming main. Provider and
+proxy archive/track authority boundaries, handler accounting, resource/grade
+independence, and raw-deletion confirmation semantics are unchanged.
+The retained controller delta still supplies nonblocking Unix duplex transport,
+pre-spawn custody, absolute preparation/material/response/cleanup budgets and
+monotonic Python task-loop waits without changing typed grade permission or
+positive resource settlement. Legacy non-Unix transport remains explicitly
+outside the Unix boundedness qualification. The only merge conflict was the
+test layout guard: the named category record and exact controller-directory
+allowance are retained alongside main's exact `proxy/capture.rs` allowance and
+all registered-adapter negative guards. Both parents' tests and new CI package
+asset checks remain present. This checkpoint is source-only: earlier full-suite
+evidence below does not qualify this new combined tree. Independent integration
+review, fresh build/focused/full checks, Clippy/formatting/build/docs, hosted CI,
+merge, post-merge verification and release remain pending. Publication/artifact
+repairs and runtime34/collector35 are not folded into this integration.
+
 Integrated candidate, staged patch **0.2.31**: the independently source-reviewed
 Unix controller transport `eec99cf8` is combined with typed-controller integration
 `cf658ba2`, repeated preparation and current capture. It retains the independent

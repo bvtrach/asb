@@ -191,7 +191,8 @@ mod adapter_layout_tests {
             CategoryLayout {
                 category: "proxy",
                 ids: super::proxy::names().collect(),
-                root_modules: &["mod.rs"],
+                // Category-wide capture evidence, not a provider/target adapter.
+                root_modules: &["mod.rs", "capture.rs"],
                 root_directories: &[],
             },
             CategoryLayout {

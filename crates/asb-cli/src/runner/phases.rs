@@ -219,6 +219,7 @@ impl ExecutedAttempt {
                 completed.evidence
             }
             None => crate::proxy::Evidence {
+                captures: Vec::new(),
                 output_files: Vec::new(),
                 cleanup_confirmed: true,
             },
