@@ -58,6 +58,10 @@ pub(crate) mod target;
 pub(crate) fn registered_sources() -> impl Iterator<Item = (&'static str, &'static str)> {
     adapters::sources()
 }
+pub(crate) use adapters::SourceBundle;
+pub(crate) fn source_bundle(name: &str) -> Option<SourceBundle> {
+    adapters::find(name).and_then(|adapter| adapter.source_bundle())
+}
 pub(crate) use selection::{PlanningCatalog, TaskSelection};
 pub(crate) use session::BaselineEvidence;
 pub use session::TaskIdentity;

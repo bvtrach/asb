@@ -63,6 +63,75 @@ impl Drop for Project {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn native_plan_executes_with_the_validated_budget_and_keeps_output_for_grading() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = Project::new();
+    let script = project.0.join("slow-native-fixture.sh");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\nprintf 'native-fixture-started\\n'\nexec sleep 5\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::create_dir_all(project.0.join("workloads")).unwrap();
+    std::fs::write(
+        project.0.join("workloads/bug-fix.txt"),
+        "Repair the parser in the provided workspace.",
+    )
+    .unwrap();
+    std::fs::write(project.0.join("benchmark.toml"), format!("agent='{}'\nprovider='cli2key'\nmodel='test-model'\nworkload='bug-fix'\nlog_file='native.log'\n[planning.budgets]\nexecution_seconds=1\n", script.display())).unwrap();
+    let cassette = serde_json::json!({"request":{"method":"POST","url":"/v1/responses","body":"{\"model\":\"test-model\",\"tools\":[{\"type\":\"function\"}]}"},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{}"}});
+    std::fs::write(project.0.join("fixture.jsonl"), format!("{cassette}\n")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_asb"))
+        .isolated_env()
+        .current_dir(&project.0)
+        .env("HOME", &project.0)
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .args([
+            "run",
+            "benchmark.toml",
+            "--replay",
+            "fixture.jsonl",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let text = std::fs::read_to_string(project.0.join("native.log"))
+        .unwrap_or_else(|error| panic!("{error}: {}", String::from_utf8_lossy(&output.stderr)));
+    let record: serde_json::Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+    assert!(
+        record["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("native-fixture-started")
+    );
+    assert!(
+        record["stderr"]
+            .as_str()
+            .unwrap()
+            .contains("agent execution exceeded 1 seconds")
+    );
+    assert!(
+        record["elapsed_ms"].as_u64().unwrap() < 4000,
+        "a default-budget execution would have waited five seconds"
+    );
+    assert_eq!(record["effective_budgets"]["execution_seconds"], 1.0);
+    assert_eq!(record["planning"]["budgets"]["execution_seconds"], 1);
+    assert!(
+        record["workload_success"].is_boolean(),
+        "a timed-out native client must still reach grading"
+    );
+    assert!(
+        record["execution_plan_fingerprint"]
+            .as_str()
+            .unwrap()
+            .starts_with("asb-protocol-v1:")
+    );
+}
+
 #[test]
 fn backend_and_full_preparation_deadlines_fail_before_side_effects() {
     let project = Project::new();
