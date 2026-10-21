@@ -109,7 +109,7 @@ pub(in crate::collectors::adapters) fn parse_samples(
                     .timestamps
                     .entry(name.clone())
                     .or_default()
-                    .push(observation.elapsed);
+                    .push(observation.elapsed * 1_000.0);
                 result.series.entry(name).or_default().push(value);
             }
         }
@@ -166,7 +166,7 @@ mod tests {
         let samples = parse_samples(input, &["%usr", "%CPU"], str::to_owned);
         assert_eq!(samples.series["%usr"], vec![40.0, 20.0]);
         assert_eq!(samples.series["%CPU"], vec![60.0, 30.0]);
-        assert_eq!(samples.timestamps["%CPU"], vec![1.0, 3.0]);
+        assert_eq!(samples.timestamps["%CPU"], vec![1_000.0, 3_000.0]);
         assert_eq!(parse_columns(input, &["%CPU"], str::to_owned)["%CPU"], 45.0);
     }
 
@@ -175,7 +175,7 @@ mod tests {
         let input = "# asb-snapshot-elapsed-seconds 1.25\nLinux test\n23:59:59 UID PID kB_rd/s Command\n00:00:00 1000 42 5 agent\n00:00:00 1000 43 7 child\n# asb-snapshot-elapsed-seconds 4.50\nLinux test\n10:00:00 UID PID kB_rd/s Command\n10:00:01 1000 42 3 agent\n";
         let samples = parse_samples(input, &["kB_rd/s"], str::to_owned);
         assert_eq!(samples.series["kB_rd/s"], vec![12.0, 3.0]);
-        assert_eq!(samples.timestamps["kB_rd/s"], vec![1.25, 4.5]);
+        assert_eq!(samples.timestamps["kB_rd/s"], vec![1_250.0, 4_500.0]);
         assert!(
             parse_samples("unavailable", &["%CPU"], str::to_owned)
                 .series
@@ -188,7 +188,7 @@ mod tests {
         let input = "11:59:59 PM UID PID %CPU Command\n12:00:01 AM 1000 42 3 agent\n";
         assert_eq!(
             parse_samples(input, &["%CPU"], str::to_owned).timestamps["%CPU"],
-            vec![2.0]
+            vec![2_000.0]
         );
         let invalid = "12:00:00 UID PID %CPU Command\n12:00:01 1000 42 NaN agent\n12:00:02 1000 43 -1 child\n12:00:03 1000 44 inf child\n";
         assert!(
