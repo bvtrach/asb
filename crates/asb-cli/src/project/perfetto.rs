@@ -237,6 +237,10 @@ pub(super) fn configure(
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/project_perfetto.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
