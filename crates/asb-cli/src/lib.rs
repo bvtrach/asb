@@ -121,21 +121,65 @@ impl std::fmt::Display for CliError {
 impl std::error::Error for CliError {}
 
 pub(crate) fn read_config(path: &std::path::Path) -> Result<String, CliError> {
-    const MAX_CONFIG_BYTES: u64 = 64 * 1024;
-    let metadata = std::fs::metadata(path)
-        .map_err(|error| CliError::Input(format!("cannot read {}: {error}", path.display())))?;
-    if metadata.len() > MAX_CONFIG_BYTES {
-        return Err(CliError::Input(
-            "benchmark configuration is larger than 64 KiB".into(),
-        ));
-    }
-    let mut file = std::fs::File::open(path)
-        .map_err(|error| CliError::Input(format!("cannot open {}: {error}", path.display())))?;
-    let mut contents = String::new();
-    file.read_to_string(&mut contents)
-        .map_err(|error| CliError::Input(format!("cannot read {}: {error}", path.display())))?;
-    Ok(contents)
+    read_config_after_inspection(path, || {})
 }
+
+fn read_config_after_inspection(
+    path: &std::path::Path,
+    inspected: impl FnOnce(),
+) -> Result<String, CliError> {
+    const MAX_CONFIG_BYTES: u64 = crate::benchmark::MAX_CONFIG_BYTES as u64;
+    let oversized = || {
+        CliError::Input(format!(
+            "benchmark configuration {} is larger than 64 KiB",
+            path.display()
+        ))
+    };
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Open the selected object without blocking on a FIFO; symlinks to
+        // ordinary configuration files retain their established behavior.
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options
+        .open(path)
+        .map_err(|error| CliError::Input(format!("cannot open {}: {error}", path.display())))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| CliError::Input(format!("cannot inspect {}: {error}", path.display())))?;
+    if !metadata.is_file() {
+        return Err(CliError::Input(format!(
+            "benchmark configuration {} must be a regular file",
+            path.display()
+        )));
+    }
+    if metadata.len() > MAX_CONFIG_BYTES {
+        return Err(oversized());
+    }
+    inspected();
+    let mut contents = Vec::new();
+    // A concurrent writer can grow a regular file after metadata inspection.
+    // Bound the actual read as well as the opened object's initial length.
+    file.take(MAX_CONFIG_BYTES + 1)
+        .read_to_end(&mut contents)
+        .map_err(|error| CliError::Input(format!("cannot read {}: {error}", path.display())))?;
+    if contents.len() as u64 > MAX_CONFIG_BYTES {
+        return Err(oversized());
+    }
+    String::from_utf8(contents).map_err(|error| {
+        CliError::Input(format!(
+            "benchmark configuration {} is not valid UTF-8: {error}",
+            path.display()
+        ))
+    })
+}
+
+#[cfg(test)]
+#[path = "../tests/unit/config_reader.rs"]
+mod config_reader_tests;
 
 pub(crate) use CliError as Error;
 

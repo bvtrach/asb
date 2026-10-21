@@ -1844,7 +1844,7 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
     {
         stamp = stamp.saturating_add(1);
     }
-    let mut configs = Vec::new();
+    let mut configs = crate::config::matrix::Population::default();
     let mut index = 0usize;
     for agent in &agents {
         for provider in &providers {
@@ -1872,7 +1872,7 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
                                 collectors: measures.clone(),
                             }),
                         };
-                        configs.push(config);
+                        configs.push(config)?;
                         index += 1;
                     }
                 }
@@ -1886,7 +1886,7 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
     }
     let sweep_name = format!("asb-sweep-{stamp}.toml");
     let sweep = app.root.join(&sweep_name);
-    crate::config::matrix::publish_sweep(&sweep, configs, &mut std::io::sink())?;
+    crate::config::matrix::publish_sweep(&sweep, configs.into_configs(), &mut std::io::sink())?;
     Ok(Generated {
         tests: index,
         sweep,

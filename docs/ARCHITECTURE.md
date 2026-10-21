@@ -1770,6 +1770,24 @@ deduplicated and retains the normal bounded sweep contract. `all` is reserved
 and cannot be a selectable identifier; dynamic catalogs reject collisions,
 the TUI excludes colliding entries and CI checks every static registry.
 
+Setup bounds concrete source-string storage and collection cardinality before
+pretty-TOML serialization, then enforces the exact encoded configuration,
+aggregate and manifest limits before creating output. Scalar files use synced
+atomic replacement while preserving an existing regular file's mode; sweep
+manifests use synced atomic no-replace linking only after all configurations
+and their generation directory have been synchronized. Failed generations are
+retained with their exact paths, never recursively cleaned. Small publication
+stages retain live identity owners and detach exposed entries into private quiet
+custody before commit/settlement; foreign arrivals remain recoverable evidence.
+Known committed-but-unconfirmed durability/presentation errors explicitly report
+publication; ambiguous actual commit errors instead retain evidence and require
+destination inspection without retry/rollback or a false nonpublication claim.
+Generated absolute runtime paths which cannot be represented in UTF-8 are
+refused before any setup mutation, never lossy-converted. These are not
+cross-file transactions or hostile same-UID sandbox
+guarantees. See [setup publication](SETUP_PUBLICATION_REPAIR.md) for platform,
+serializer and focused-qualification limits.
+
 The workload trial wizard reduces explicit browsing, editing and saved states.
 An editing state owns its workload and trial pane; saving replaces that
 workload's in-memory subset. In the saved state, Enter finishes and publishes,
