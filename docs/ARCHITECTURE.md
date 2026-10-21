@@ -276,6 +276,36 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   files are stored under `.asb/fixtures/<name>/` and materialized into the run
   workspace without overwriting existing edits.
 
+The runner uses private consuming attempt states rather than one shared mutable
+orchestration context. `AdmittedAttempt` publishes start intent before resolving
+the project; `PreparedAttempt` owns the workload, optional proxy and measurement
+sessions through execution. Native command intent becomes an owned
+`PreparedNative` only after adapter, endpoint, Python, runtime and replay
+preparation, so the gate executes that exact command. `ExecutionEvidence` owns
+captured output, guest observations and the frozen execution clock.
+Proxy settlement consumes execution into `SettledAttempt`; evaluation consumes
+that into `EvaluatedAttempt`, retaining an independent `EvaluationOutcome`.
+Explicit cleanup then yields `FinalizedAttempt`. Existing adapter cancellation
+on aborted transitions preserves unfinished resources rather than calling
+destructive normal-close from Drop. Provider bridge ownership remains outside
+these transitions until proxy settlement and evaluation have finished.
+
+Post-execution lifecycle failures are ancillary `AttemptIssues`, not missing
+submissions or replacement grades. Dispatch attempts every collector hook and
+execution-scoped shutdown even after a hook fails. Before execution/resume,
+required instrumentation errors still fail closed. After output exists, official
+evaluation and explicit cleanup run despite client/proxy/collector failures.
+Human presentation and guest-owner transport have distinct failure policies:
+broken presentation stops writes while already-admitted work completes; losing
+the owner transport still cancels/preserves. A final measurement-publication
+error leaves the immutable task outcome available and prevents a completion
+receipt, so an incomplete measurement cannot silently authorize continuation.
+Run-log publication is a separate typed obligation: a failed log write never
+skips final measurement publication or hides the grade from terminal rendering.
+Both log and measurement publication must be confirmed before a completion
+record/observer receipt is permitted. Original run failures precede ancillary
+log/measurement diagnostics; repairing reporting does not repeat the agent.
+
 `WorkloadAdapter` creates a distinct mutable `WorkloadSession` for each
 attempt. The session owns its task invocation, prepared workspace, initial
 baseline evidence and evaluator. The generic runner consumes those values
@@ -527,6 +557,16 @@ Model discovery reads the selected credential only long enough to send a catalog
 request; it sends it through curl's stdin configuration, never includes it in
 arguments or output, and never stores it. Authenticated requests do not follow
 redirects, which prevents a catalog redirect from forwarding a provider key.
+The generic catalog transport polls all three Unix pipes concurrently rather
+than blocking on request writes or stream-reader joins. Its absolute budget is
+35 seconds, with I/O ending by 30 seconds and cleanup consuming only the reserved
+remainder. The 16 MiB body and 8 KiB diagnostic-tail limits apply independently
+of curl's own limits. A privately owned direct child is stopped/reaped on errors;
+uncertain exit transfers to pre-established reaper custody and cannot produce a
+successful catalog. Inherited descendant pipe handles do not prolong the caller.
+This is not descendant supervision or a guarantee about uninterruptible kernel
+operations. Non-Unix discovery explicitly fails before spawn until a cancellable
+transport is implemented; no blocking compatibility fallback remains.
 For replay, ASB removes known provider and registered agent credential
 environment variables and supplies dummy values where needed before launching
 the agent. Replay is not a security sandbox:
