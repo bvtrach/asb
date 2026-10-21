@@ -101,8 +101,8 @@ real subprocess regressions. Independent source review and a separate execution
 of all 36 focused model tests passed. Non-Unix discovery fails before spawn;
 cancellable non-Unix transport remains a separate portability contract. Full
 release-head qualification and delivery remain pending. Main `398c36cc` removed
-the hosted coverage gate; the requested policy clarification is still pending,
-so local measurements must not be described as a required hosted check.
+the hosted coverage gate and the user explicitly confirmed keeping that removal;
+local measurements are optional diagnostics, not a required hosted check.
 
 ## 4. Typed domain and wire contracts
 
