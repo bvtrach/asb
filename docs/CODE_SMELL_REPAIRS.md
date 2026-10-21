@@ -83,9 +83,9 @@ distinguish receipt destinations from source outcomes and preserve every
 admitted configuration's failure after parallel-sweep output breaks, without
 further writes or retries. Independent source and fixture review approved
 candidate `16528073`; exact-head ordinary/package checks and both mandatory
-coverage gates passed before integration with newer main. Integration keeps
-the newer main's version; fresh release-head qualification and delivery remain
-pending. Other subprocess/publication cleanup
+coverage gates passed before integration with newer main. The integrated
+candidate stages patch **0.2.9**, after the shell-completion repair; fresh
+release-head qualification and delivery remain pending. Other subprocess/publication cleanup
 items in this class are not claimed complete.
 
 ## 4. Typed domain and wire contracts
@@ -202,9 +202,11 @@ predicate proof/mutation, multiline/UTF-8/malformed inputs, numeric binding,
 frozen bytes, real child identity/reaping and ownership transfer. The installed
 tool's unprivileged `-e SOURCE -V` check validates actual option routing only,
 not script compilation or privileged attachment. Custom actions remain trusted
-code, and other collector lifecycle paths are not claimed repaired. Exact-head
-independent review, ordinary/package tests, mandatory coverage, hosted checks,
-merge, post-merge verification and release remain required.
+code, and other collector lifecycle paths are not claimed repaired. Delivery:
+PR #268 merged as `49a8a2b722ed66d4a084ef17f5f373e80b7859cc`. All post-merge
+jobs passed in run `39602305053`, with 90.940026% production and 90.542923%
+aggregate coverage. **v0.2.7** was released from that exact commit with a
+GitHub-verified signed tag.
 
 Installer inspection found that HTTP downloads write directly to the published
 destination. A failed/truncated or oversized response can replace a usable
