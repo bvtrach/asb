@@ -31,7 +31,7 @@ pub(crate) trait AgentAdapter: Sync {
     ) -> Result<Vec<crate::runtime_inputs::Dependency>, Error> {
         let executable = resolve(self.id(), context.root, &context.project.tools_dir)
             .ok_or_else(|| Error::Input("selected agent runtime is not installed".into()))?;
-        let mut command = self.process(&executable)?;
+        let mut command = self.process(&executable)?.direct();
         project::apply_python_path(&mut command, context.root, Path::new(&executable))?;
         crate::tools::apply_runtime_path(&mut command, context.root, &context.project.tools_dir)?;
         let mut inputs = self.recipe().runtime_inputs(&context.tool_root(self.id()));
@@ -45,8 +45,8 @@ pub(crate) trait AgentAdapter: Sync {
     fn supported_endpoints(&self) -> &'static [Support];
     fn command(&self, context: &CommandContext<'_>) -> CommandSpec;
     fn prepare(&self, context: &mut PreparationContext<'_>) -> Result<(), Error>;
-    fn process(&self, executable: &str) -> Result<Command, Error> {
-        Ok(Command::new(executable))
+    fn process(&self, executable: &str) -> Result<crate::launch::ProcessLaunch, Error> {
+        Ok(crate::launch::ProcessLaunch::new(executable))
     }
     fn replay_credential_vars(&self) -> &'static [&'static str] {
         &[]
@@ -208,7 +208,7 @@ type PreparationHook = for<'a> fn(&mut PreparationContext<'a>) -> Result<(), Err
 type CollectionHook = for<'a> fn(&CollectionContext<'a>) -> AgentArtifacts;
 type UsageHook = fn(&str, &str, bool) -> crate::measurements::TokenUsage;
 type FinalResponseHook = fn(&str, &Path) -> Option<String>;
-type ProcessHook = fn(&str) -> Result<Command, Error>;
+type ProcessHook = fn(&str) -> Result<crate::launch::ProcessLaunch, Error>;
 type StepCountHook = fn(&str, &str) -> Option<u64>;
 type FailureHook = fn(&str, &str) -> Option<String>;
 type PreferredExecutablesHook = fn(&Path) -> Vec<PathBuf>;
@@ -345,9 +345,11 @@ impl AgentAdapter for StaticAdapter {
         }
         (self.prepare)(context)
     }
-    fn process(&self, executable: &str) -> Result<Command, Error> {
-        self.process
-            .map_or_else(|| Ok(Command::new(executable)), |hook| hook(executable))
+    fn process(&self, executable: &str) -> Result<crate::launch::ProcessLaunch, Error> {
+        self.process.map_or_else(
+            || Ok(crate::launch::ProcessLaunch::new(executable)),
+            |hook| hook(executable),
+        )
     }
     fn replay_credential_vars(&self) -> &'static [&'static str] {
         self.replay_credential_vars

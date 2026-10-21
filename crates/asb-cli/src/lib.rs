@@ -11,6 +11,7 @@ mod config;
 mod endpoint;
 mod executables;
 mod install;
+mod launch;
 mod measurements;
 mod models;
 mod output_lock;

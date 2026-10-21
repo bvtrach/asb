@@ -6,7 +6,7 @@ use std::os::unix::fs::FileTypeExt;
 use std::os::unix::net::UnixStream;
 
 pub(super) const ENV_FD: &str = "ASB_GATE_RECEIPT_FD";
-const MAGIC: &[u8; 8] = b"ASBGATE1";
+const MAGIC: &[u8; 8] = b"ASBGATE2";
 const FRAME: usize = 16;
 
 pub(super) struct Sender(File);

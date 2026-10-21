@@ -47,6 +47,13 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+`cargo test --locked --offline --test tui_terminal` drives the actual current
+binary through a bounded PTY. Workload fixtures use only local fake catalogs:
+advertised Enter finishes, Tab edits, Back discards, saved choices reopen,
+edits replace subsets, and deselected workloads are excluded. Checkpoints
+inspect disk before finish and cancellation, then verify exact published
+subsets and terminal echo/canonical-mode restoration. No agent/provider runs
+or host changes are needed.
 `cargo test --locked --offline --lib executables::tests` installs local shell
 fixtures through every registered agent/tool source-install route, then checks
 readiness and actually executes the selected fixture. Isolated subprocess
@@ -650,6 +657,23 @@ after a short-lived spawning thread exits, with double-forked TERM-resistant
 writers and an unrelated sentinel. Protocol stand-ins test malformed/absent
 receipts and bounded fallback custody only; they do not qualify kernel
 descendant teardown or a live provider. No root permissions are required.
+Launch-descriptor regressions use the actual current ASB binary with offline
+local programs. They cover cleared/removed/overridden environments, raw OS
+argument/environment bytes, explicit client argv[0], child-only PATH, working
+directory, stdin/stdout/stderr, current UID/GID, an owned process group and an
+existing async-signal-safe configuration callback. NUL inputs fail before
+spawn; missing clients cannot become success. The original binary-replacement,
+guest-wrapper and owner-loss matrices remain required. The previous valid
+ASBGATE1 Hello is explicitly rejected without resuming the old runtime.
+Full-entry gate-route regressions replace the carrier, shorten/change framing
+or retarget its executable; every case must fail before a child or reaper is
+created. Validation consumes the one-shot route, and admission exclusively
+borrows that configured command until spawn. Create a fresh launch command for
+another attempt rather than reusing pre-exec descriptor callbacks.
+Do not reconstruct an opaque `Command` from `get_envs`/`get_args`: those APIs
+do not reveal environment clearing, credentials, I/O and arbitrary callbacks.
+Rust 1.93 runs pre-exec callbacks before applying its prepared environment;
+see the [pinned execution order](https://github.com/rust-lang/rust/blob/1.93.0/library/std/src/sys/process/unix/unix.rs#L383-L408).
 The guest driver likewise owns a private child supervisor. By default both
 supervisors stop and reap leftover helpers before accepting an execution result.
 An adapter may instead delegate guest service lifetime through evaluation to

@@ -58,7 +58,7 @@ fn static_adapter_defaults_are_empty_and_preparation_command_hooks_are_called() 
     assert_eq!(command.program, "fixture");
     assert_eq!(command.args, ["fixture prompt"]);
     assert!(!command.append_prompt);
-    let mut process = adapter.process("not-executed").unwrap();
+    let mut process = adapter.process("not-executed").unwrap().direct();
     let connection = crate::endpoint::Connection {
         interface: Interface::OpenAiChat,
         authentication: crate::endpoint::Authentication::Bearer,
@@ -109,8 +109,8 @@ fn every_optional_hook_is_dispatched_without_changing_its_authoritative_values()
     fn failure(stdout: &str, stderr: &str) -> Option<String> {
         Some(format!("{stdout}/{stderr}"))
     }
-    fn process(executable: &str) -> Result<Command, Error> {
-        let mut command = Command::new(executable);
+    fn process(executable: &str) -> Result<crate::launch::ProcessLaunch, Error> {
+        let mut command = crate::launch::ProcessLaunch::new(executable);
         command.arg("hooked");
         Ok(command)
     }
@@ -146,6 +146,7 @@ fn every_optional_hook_is_dispatched_without_changing_its_authoritative_values()
         adapter
             .process("not-executed")
             .unwrap()
+            .direct()
             .get_args()
             .collect::<Vec<_>>(),
         ["hooked"]
@@ -181,7 +182,11 @@ impl AgentAdapter for MinimalAdapter {
 fn minimal_trait_implementation_has_conservative_optional_defaults() {
     let adapter = &MinimalAdapter as &dyn AgentAdapter;
     assert_eq!(
-        adapter.process("not-executed").unwrap().get_program(),
+        adapter
+            .process("not-executed")
+            .unwrap()
+            .direct()
+            .get_program(),
         "not-executed"
     );
     assert!(adapter.replay_credential_vars().is_empty());
