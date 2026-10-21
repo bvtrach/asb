@@ -136,6 +136,22 @@ impl ModuleDescriptor {
     pub(crate) fn valid(&self) -> bool {
         let bounded =
             |s: &str| !s.is_empty() && s.len() <= 1024 && !s.chars().any(char::is_control);
+        let score_policy = self.protocol.score_policy == "task-resolution"
+            || self
+                .protocol
+                .score_policy
+                .strip_prefix("metric:")
+                .and_then(|s| s.rsplit_once('@'))
+                .is_some_and(|(id, version)| {
+                    !id.is_empty()
+                        && id.len() <= 128
+                        && id
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                        && version
+                            .parse::<u32>()
+                            .is_ok_and(|v| v > 0 && v.to_string() == version)
+                });
         self.schema_version == 1
             && [
                 &self.id,
@@ -162,7 +178,7 @@ impl ModuleDescriptor {
                     self.dataset.is_some()
                         && self.harness.is_some()
                         && self.protocol.environment == EnvironmentKind::LocalDocker
-                        && self.protocol.score_policy == "task-resolution"
+                        && score_policy
                 }
                 SupportLevel::ReferenceSmoke => {
                     self.dataset.is_none()
@@ -170,9 +186,7 @@ impl ModuleDescriptor {
                         && self.protocol.score_policy == "unscored"
                 }
                 SupportLevel::LocalTask => {
-                    self.dataset.is_none()
-                        && self.harness.is_none()
-                        && self.protocol.score_policy == "task-resolution"
+                    self.dataset.is_none() && self.harness.is_none() && score_policy
                 }
             }
     }
