@@ -11,6 +11,11 @@ fn resource_recovery_preserves_evidence_and_only_quiesces_declared_owners() {
 }
 
 #[test]
+fn interrupted_original_adapters_preserve_partial_work_without_inventing_a_grade() {
+    python_protocol("benchmark_interrupted.py");
+}
+
+#[test]
 fn swebench_catalog_materialization_is_bounded_private_and_reproducible() {
     python_protocol("swebench_catalog.py");
 }

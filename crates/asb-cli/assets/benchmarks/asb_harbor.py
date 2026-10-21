@@ -175,6 +175,7 @@ class HarborTask:
         self.attempt = "asb-" + uuid.uuid4().hex
         self.workspace, self.environment, self.invocation = None, None, None
         self.cancelled = None
+        self.interrupted = False
         self.loop = asyncio.new_event_loop()
         self.journal = None
 
@@ -249,6 +250,7 @@ class HarborTask:
             write_json(self.artifacts / "task.json", self.invocation)
             return self
         except BaseException:
+            self.interrupted = True
             self.__exit__(None, None, None)
             raise
 
@@ -295,9 +297,14 @@ class HarborTask:
 
     @quiet_sdk
     def __exit__(self, *_exception):
+        self.interrupted = self.interrupted or bool(_exception and _exception[0] is not None)
         status = "not_created"
         try:
-            if self.environment is not None:
+            if self.interrupted and self.journal is not None:
+                status = "preservation_failed"
+                self.journal.preserve(self.client)
+                status = "stopped-preserved"
+            elif self.environment is not None:
                 status = "cleanup_failed"
                 # Do not use SDK stop(delete=True): it removes shared local
                 # build images. Remove only this unique Compose project.
@@ -312,6 +319,7 @@ class HarborTask:
                 if self.workspace:
                     self.workspace.container = None
         finally:
+            self.cleanup_status = status
             if hasattr(self,"previous_tempdir"):
                 tempfile.tempdir = self.previous_tempdir
             if self.workspace:

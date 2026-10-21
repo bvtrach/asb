@@ -1989,3 +1989,56 @@ This closes the demonstrated native-gate/default-tape orphan gap, not the
 remaining interrupted submission/evaluation recovery, complete sweep-slot
 reconciliation, population-scale presentation, full-diff review, PR merge,
 exact-main CI or minor-release delivery gates.
+
+### Preserve incomplete environments instead of deleting partial work
+
+Inspection found that controller EOF previously reached the normal adapter
+teardown, which could delete an interrupted task's writable container layer
+and Compose volumes. All five original workload registrations now distinguish
+an explicit successful close from interrupted preparation/execution/evaluation.
+The shared task protocol starts in interrupted state; only a close consumed
+by its operation loop authorizes normal removal. Adapter exception unwinding
+and preparation errors also preserve. Normal completed runs still use their
+original destructive cleanup and require removal acknowledgement.
+
+Each owning adapter preserves under its existing ResourceJournal owner lock.
+The shared quiescence implementation checks the complete durable declaration,
+unchanged owner journal, selected daemon and exact resource labels/names
+before stopping any container. It retains writable layers, volumes, networks,
+owned build tags, submissions and raw evaluator evidence. A private durable
+`interruption.json` identifies preserved incomplete resources, explicitly not
+a grade or permission to retry. A failed/unconfirmed stop cannot publish that
+record or confirm cancellation cleanup. Rust cancellation accepts verified
+stopped-preserved protocol status, but normal finish rejects it; incomplete
+attempts cannot become completed results through that status alone.
+
+New standard-library tests exercise all five registrations, normal/exception
+unwinding, owner mismatch before stop, lock exclusion throughout preservation,
+changed durable journals, unconfirmed stops, malformed/EOF/cancel input and
+failed readiness publication. They require no destructive SDK calls, unchanged
+partial work and existing false grades, and truthful preservation failures.
+The real original-task qualifications passed with actual SDKs and Docker:
+Full/Lite/Verified together in 119.480 seconds, original Terminal-Bench 1.0 in
+18.518 seconds and original Terminal-Bench 2.1 in 12.667 seconds. Each writes
+an unrelated partial file, obtains a real official unresolved grade, preserves
+the attempt, reads the file from the stopped container and checks unchanged
+submission/evaluator bytes. Fixture cleanup validates only its declared owners.
+Artifacts are under the fresh project's `interrupted-original-m31xwvev`,
+`interrupted-original-6xngpyyf`, `interrupted-original-3nnf0wq7`,
+`interrupted-original-b_hqjps4` and `interrupted-original-dwfrp2_y` directories.
+
+The actual task-server/harness qualification passed in 94.173 seconds at
+`official-task-bridge-rjikiv0v` (direct harness signal evidence at
+`official-harness-signal-8u9ysxau`). Normal/oracle completion removes resources;
+EOF, SIGTERM and EOF during official evaluation stop/preserve the task while
+still removing the owned active grader. These tests use synthetic commands or
+known reference patches, never a live LLM, and are not complete-population or
+AI-solving claims. They do not restore lost shell/process state or implement
+recovered grading, outcome import or sweep-slot reconciliation. Those remain
+delivery work together with reporting, final review, merge, main CI and release.
+
+Final source verification passed 442 unit tests, 87 offline CLI tests, all
+sixteen benchmark protocol suites and the remaining guest/diagram/parallel/
+partial/replay/unmeasured checks, strict Clippy and `make build` including
+rustdoc, complete diagrams and completions. Normal mixed original-task,
+package and exact-head hosted qualifications are recorded after completion.

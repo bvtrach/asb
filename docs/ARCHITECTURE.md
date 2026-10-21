@@ -502,6 +502,20 @@ original error and any cleanup failure. Normal completion still requires a
 successful explicit close. Session destruction also attempts bounded owner
 cleanup when a failure between preparation and execution bypasses both paths;
 abrupt process termination still requires a recovery mechanism.
+Only an explicit protocol close authorizes normal destructive teardown.
+EOF, malformed input, failed protocol publication, exception unwinding and
+preparation failure mark an interrupted attempt instead. Each original
+workload adapter quiesces its declared resources under its existing owner lock,
+retaining stopped containers, partial files, volumes, build images, submissions
+and any existing official grades. It never calls normal Compose-down/volume
+deletion or image cleanup on this path. All durable journal/daemon/owner
+checks precede stopping resources. A changed journal or unconfirmed stop is a
+preservation failure, not successful cleanup. `interruption.json` explicitly
+states that preservation is neither grading nor retry permission.
+Cancellation accepts a stopped-preserved acknowledgement and still reports
+the interrupted operation as failed; normal completion requires removal and
+cannot accept that acknowledgement as a completed attempt. A preserved
+environment's filesystem is retained, not its running process/shell state.
 Task controllers now persist a private `resources.json` before creating their
 declared containers, Compose networks and volumes. The journal binds the exact
 names to one attempt, a random ownership label and the Docker daemon identity;
@@ -522,9 +536,9 @@ owned tags with `noprune` and without force; it does not remove shared aliases,
 parent images or build caches. Recovery preserves these images and reports
 their immutable IDs, keeping them available for later inspection/evaluation.
 Read-only outcome reconciliation requires matching image-cleanup records when
-the journal declares build outputs. Interrupted evaluator recovery, native/proxy
-processes, recovered submission grading and sweep-slot reconciliation still
-require integration.
+the journal declares build outputs. Interrupted evaluator recovery, recovered
+submission grading and sweep-slot reconciliation still require integration;
+stopped preservation alone does not supply these missing outcomes.
 Before launching an official workload controller, ASB publishes a private,
 immutable attempt reference under the host workspace's `.asb-attempts/`. It
 contains only the intended task/dataset and project-local artifact location,

@@ -112,7 +112,7 @@ class BridgeQualification(unittest.TestCase):
                 except docker.errors.NotFound:
                     pass
 
-    def test_normal_nonzero_result_eof_and_sigterm_all_clean_their_attempt(self):
+    def test_normal_results_remove_resources_and_interruptions_preserve_work(self):
         from asb_docker import DockerSession
         from asb_swebench import read_task
         import docker.errors
@@ -208,7 +208,7 @@ class BridgeQualification(unittest.TestCase):
                             event = controller.event(timeout=20)
                             seen.append(event)
                             if event["event"] == "closed":
-                                self.assertEqual(event["cleanup"], "removed", event)
+                                self.assertEqual(event["cleanup"], "removed" if mode in ["normal", "oracle"] else "stopped-preserved", event)
                                 break
                         controller.process.wait(timeout=10)
                         if mode in ["normal", "oracle"]:
@@ -221,13 +221,23 @@ class BridgeQualification(unittest.TestCase):
                                 client.containers.get(cancelled_grader)
                         self.assertNotIn("fixture-never-echo", json.dumps(seen))
                         cleanup = json.loads((artifacts / mode / "task-cleanup.json").read_bytes())
-                        self.assertEqual(cleanup["status"], "removed")
+                        self.assertEqual(cleanup["status"], "removed" if mode in ["normal", "oracle"] else "stopped-preserved")
                         attempt = ready["invocation"]["identity"]["attempt_id"]
-                        with self.assertRaises(docker.errors.NotFound):
-                            client.containers.get(attempt)
+                        if mode in ["normal", "oracle"]:
+                            with self.assertRaises(docker.errors.NotFound):
+                                client.containers.get(attempt)
+                        else:
+                            retained = client.containers.get(attempt)
+                            retained.reload()
+                            self.assertIs(retained.attrs["State"]["Running"], False)
+                            self.assertTrue((artifacts / mode / "interruption.json").is_file())
+                            if mode == "evaluation-eof":
+                                self.assertGreater((artifacts / mode / "candidate.patch").stat().st_size, 0)
                         print(f"{mode}: task bridge and owned container stopped", flush=True)
                     finally:
                         controller.close()
+                        from benchmark_live_interrupted import cleanup_fixture
+                        cleanup_fixture(client, artifacts / mode)
 
 
 if __name__ == "__main__":

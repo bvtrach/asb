@@ -19,6 +19,10 @@ def serve(task, source, destination, idle_timeout=900):
     requests = queue.Queue(maxsize=64)
     peer_closed, stop_reader = threading.Event(), threading.Event()
     task.cancelled = peer_closed
+    # Only an explicit close reaching the task loop authorizes destructive
+    # normal teardown. EOF, failed publication, malformed input and signals
+    # retain the attempt for adapter-owned submission/evaluation recovery.
+    task.interrupted = True
 
     def emit(event, **fields):
         destination.write(json.dumps({"event": event, **fields}) + "\n")
@@ -77,6 +81,7 @@ def serve(task, source, destination, idle_timeout=900):
                 request = receive()
                 operation = request.get("op")
                 if operation == "close":
+                    task.interrupted = False
                     break
                 try:
                     if operation in ["execute", "agent"]:
@@ -120,7 +125,7 @@ def serve(task, source, destination, idle_timeout=900):
         stop_reader.set()
         try:
             workspace = getattr(task, "workspace", None)
-            emit("closed", cleanup=getattr(workspace, "cleanup_status", "not_created"))
+            emit("closed", cleanup=getattr(task, "cleanup_status", getattr(workspace, "cleanup_status", "not_created")))
         except (BrokenPipeError, OSError):
             pass
     return status

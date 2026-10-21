@@ -88,6 +88,30 @@ class ProtocolTests(unittest.TestCase):
         self.assertNotIn("sensitive-input-not-for-output", json.dumps(events))
         self.assertEqual(events[1]["reason"], "unknown task protocol operation")
 
+    def test_only_explicit_close_authorizes_normal_teardown(self):
+        class PreservingTask(Task):
+            def __exit__(self, *args):
+                self.workspace.cleanup_status = "stopped-preserved" if self.interrupted else "removed"
+        _, events, task = self.run_protocol([{"op": "close"}], PreservingTask())
+        self.assertFalse(task.interrupted)
+        self.assertEqual(events[-1]["cleanup"], "removed")
+        for content in ["", "not-json\n", '{"op":"cancel"}\n']:
+            task, output = PreservingTask(), io.StringIO()
+            self.assertEqual(serve(task, io.StringIO(content), output), 1)
+            self.assertTrue(task.interrupted)
+            self.assertEqual(json.loads(output.getvalue().splitlines()[-1])["cleanup"], "stopped-preserved")
+            self.assertFalse(task.commands)
+
+    def test_failed_ready_publication_preserves_instead_of_authorizing_deletion(self):
+        class BrokenDestination(io.StringIO):
+            def write(self, _text):
+                raise BrokenPipeError("fixture consumer exited")
+        task = Task()
+        status = serve(task, io.StringIO(""), BrokenDestination())
+        self.assertEqual(status, 1)
+        self.assertTrue(task.interrupted)
+        self.assertFalse(task.commands)
+
     def test_disconnect_while_waiting_for_attachment_acknowledges_cleanup(self):
         read_fd, write_fd = os.pipe()
         source, task = os.fdopen(read_fd, "r"), Task()

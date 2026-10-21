@@ -89,6 +89,58 @@ class ResourceTests(unittest.TestCase):
             ResourceJournal(self.client, self.root, ATTEMPT)
         self.assertFalse(self.client.containers.lookups)
 
+    def test_active_owner_can_preserve_without_releasing_lock_or_removing_resources(self):
+        journal = self.journal()
+        owned = Container(ATTEMPT, journal.declare("containers", ATTEMPT))
+        self.client.containers.values[ATTEMPT] = owned
+        tag = build_image_tag(ATTEMPT, "main")
+        image = Image(tag, journal.declare("images", tag))
+        self.client.images.values[tag] = image
+        original = (self.root / "resources.json").read_bytes()
+        real_stop = owned.stop
+        def stop(timeout):
+            with self.assertRaisesRegex(RecoveryError, "active owner"):
+                quiesce(self.client, self.root)
+            real_stop(timeout)
+        owned.stop = stop
+        result = journal.preserve(self.client)
+        self.assertEqual([item["status"] for item in result["resources"]], ["stopped-preserved", "preserved"])
+        self.assertEqual((self.root / "resources.json").read_bytes(), original)
+        self.assertFalse(self.client.images.removed)
+        self.assertIn(ATTEMPT, self.client.containers.values)
+        record = json.loads((self.root / "interruption.json").read_bytes())
+        self.assertEqual(record["attempt"], ATTEMPT)
+        self.assertEqual(record["scope"], "preserved-incomplete-attempt-not-grade-not-retry")
+        self.assertFalse((self.root / "evaluation.json").exists())
+        journal.close()
+        with self.assertRaisesRegex(RecoveryError, "active resource owner"):
+            journal.preserve(self.client)
+
+    def test_preservation_refuses_changed_journal_before_lookups_or_mutation(self):
+        journal = self.journal()
+        owned = Container(ATTEMPT, journal.declare("containers", ATTEMPT))
+        self.client.containers.values[ATTEMPT] = owned
+        path = self.root / "resources.json"
+        record = json.loads(path.read_bytes())
+        record["token"] = "b" * 32
+        path.write_text(json.dumps(record))
+        with self.assertRaisesRegex(RecoveryError, "changed"):
+            journal.preserve(self.client)
+        self.assertEqual(owned.stops, 0)
+        self.assertFalse(self.client.containers.lookups)
+        self.assertFalse((self.root / "interruption.json").exists())
+
+    def test_unconfirmed_stop_cannot_publish_preserved_interruption(self):
+        journal = self.journal()
+        owned = Container(ATTEMPT, journal.declare("containers", ATTEMPT))
+        self.client.containers.values[ATTEMPT] = owned
+        # Simulate a daemon acknowledging stop but still reporting running.
+        owned.stop = lambda timeout: None
+        with self.assertRaisesRegex(RecoveryError, "stopped state"):
+            journal.preserve(self.client)
+        self.assertFalse((self.root / "interruption.json").exists())
+        self.assertFalse((self.root / "resource-quiescence.json").exists())
+
     def test_quiescence_preserves_every_resource_and_ignores_unrelated_names(self):
         journal = self.journal()
         labels = journal.declare("containers", ATTEMPT)

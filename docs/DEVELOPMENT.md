@@ -191,6 +191,19 @@ installed SWE-bench Python interpreter. This exercises the newly installed SDKs,
 catalogs and client with known repairs from a synthetic provider, without live
 LLM credentials.
 
+`benchmark_live_interrupted.py` checks interrupted teardown against original
+task environments and official false grades. Set `ASB_TEST_SWECATALOG_ROOT`
+and `ASB_TEST_INTERRUPTED_WORKLOADS` (comma-separated original workload IDs),
+then run it with the corresponding installed SDK's Python interpreter. Run
+the three SWE-bench IDs together with the SWE-bench interpreter, and each
+Terminal-Bench version with its own tool interpreter. It verifies stopped
+containers, readable partial files, unchanged submissions/official grades and
+preserved build images, then removes only the positively-owned fixture
+resources. It never invokes an LLM. `benchmark_live_task_server.py` additionally
+checks real EOF, SIGTERM and interruption during official evaluation; normal
+completion still removes resources, while interrupted attempts retain them.
+These are retention/teardown checks, not recovered grading or retry receipts.
+
 See
 [evaluation semantics](EVALUATION.md). Perfetto
 post-processing scopes scheduler counts and series to the benchmark process

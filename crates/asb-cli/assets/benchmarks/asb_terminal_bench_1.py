@@ -92,6 +92,7 @@ class TerminalBenchTask:
         self.attempt = "asb-" + uuid.uuid4().hex
         self.workspace, self.terminal, self.invocation = None, None, None
         self.cancelled = None
+        self.interrupted = False
         self.journal = None
 
     @quiet_sdk
@@ -224,6 +225,7 @@ class TerminalBenchTask:
             write_json(self.artifacts / "task.json", self.invocation)
             return self
         except BaseException:
+            self.interrupted = True
             self.__exit__(None, None, None)
             raise
 
@@ -264,11 +266,16 @@ class TerminalBenchTask:
 
     @quiet_sdk
     def __exit__(self, *_exception):
+        self.interrupted = self.interrupted or bool(_exception and _exception[0] is not None)
         import docker
         import terminal_bench.terminal.terminal as terminal_module
         status = "not_created"
         try:
-            if self.terminal is not None:
+            if self.interrupted and self.journal is not None:
+                status = "preservation_failed"
+                self.journal.preserve(self.client)
+                status = "stopped-preserved"
+            elif self.terminal is not None:
                 status = "cleanup_failed"
                 for session in self.terminal._sessions.values():
                     try:
@@ -287,6 +294,7 @@ class TerminalBenchTask:
                 if self.workspace:
                     self.workspace.container = None
         finally:
+            self.cleanup_status = status
             if self.workspace:
                 self.workspace.cleanup_status = status
             if hasattr(self, "original_client"):

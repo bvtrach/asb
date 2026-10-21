@@ -224,7 +224,7 @@ impl Controller {
 
     /// EOF interrupts active work; continue draining its bounded event stream
     /// until the owner confirms teardown. Cancellation's nonzero child exit
-    /// is expected, but it never substitutes for resource-removal evidence.
+    /// is expected, but it never substitutes for confirmed resource quiescence.
     pub(crate) fn cancel(&mut self, timeout: Duration) -> Result<(), String> {
         let deadline = Instant::now() + timeout;
         self.input.take();
@@ -234,8 +234,11 @@ impl Controller {
             }
             let event = self.receive_raw(deadline)?;
             if event["event"] == "closed" {
-                if !matches!(event["cleanup"].as_str(), Some("removed" | "not_created")) {
-                    return Err("cancelled workload resource cleanup did not confirm removal; inspect private task cleanup artifacts".into());
+                if !matches!(
+                    event["cleanup"].as_str(),
+                    Some("removed" | "not_created" | "stopped-preserved")
+                ) {
+                    return Err("cancelled workload cleanup did not confirm removal or stopped preservation; inspect private task cleanup artifacts".into());
                 }
                 return self.wait_for_exit(deadline, false);
             }
@@ -440,6 +443,23 @@ mod tests {
                 .receive(Instant::now() + Duration::from_secs(3))
                 .unwrap();
             assert!(controller.cancel(Duration::from_secs(3)).is_err());
+        }
+    }
+
+    #[test]
+    fn preserved_interruption_can_finish_cancellation_but_not_normal_completion() {
+        for normal in [false, true] {
+            let mut command = Command::new("python3");
+            command.args(["-u", "-c", "import json,sys\nprint(json.dumps(dict(event='ready')),flush=True)\nsys.stdin.readline()\nprint(json.dumps(dict(event='closed',cleanup='stopped-preserved')),flush=True)\n"]);
+            let mut controller = Controller::spawn(&mut command).unwrap();
+            controller
+                .receive(Instant::now() + Duration::from_secs(3))
+                .unwrap();
+            if normal {
+                assert!(controller.finish(Duration::from_secs(3)).is_err());
+            } else {
+                controller.cancel(Duration::from_secs(3)).unwrap();
+            }
         }
     }
 

@@ -187,6 +187,77 @@ class ResourceJournal:
             os.close(self.directory)
             self.directory = None
 
+    def preserve(self, client):
+        """Quiesce an interrupted attempt under its existing owner lock.
+
+        This is not normal cleanup, a grade, or permission to repeat an agent.
+        Keep the exact names/labels and daemon checks used by public recovery.
+        """
+        if self.lock is None or self.directory is None:
+            raise RecoveryError("interrupted preservation requires its active resource owner")
+        record = read_record(self.directory)
+        if record != self.record:
+            raise RecoveryError("durable resource journal changed during its owner's lifetime")
+        result = quiesce_record(client, self.directory, record)
+        publish(self.directory, "interruption.json", {
+            "schema_version": 1, "attempt": record["attempt"],
+            "scope": "preserved-incomplete-attempt-not-grade-not-retry", "resources": result["resources"],
+        })
+        return result
+
+
+def read_record(directory):
+    descriptor = private_file(directory, "resources.json", os.O_RDONLY)
+    with os.fdopen(descriptor, "rb") as source:
+        content = source.read(1024 * 1024 + 1)
+    if len(content) > 1024 * 1024:
+        raise RecoveryError("resource journal exceeds its size limit")
+    return json.loads(content)
+
+
+def quiesce_record(client, directory, record):
+    if (not isinstance(record, dict) or set(record) != {"schema_version", "attempt", "daemon", "token", "resources"}
+            or record["schema_version"] != 1
+            or not isinstance(record["attempt"], str) or not re.fullmatch(r"asb-[0-9a-f]{32}", record["attempt"])
+            or not isinstance(record["token"], str) or not re.fullmatch(r"[0-9a-f]{32}", record["token"])
+            or record["daemon"] != daemon_identity(client)
+            or not isinstance(record["resources"], list) or len(record["resources"]) > 64):
+        raise RecoveryError("resource journal identity or selected Docker daemon does not match")
+    labels = {"asb.owner":"asb", "asb.attempt":record["attempt"], "asb.recovery":record["token"]}
+    owned, seen = [], set()
+    # Validate the entire population before mutating any resource.
+    for declaration in record["resources"]:
+        if not isinstance(declaration, dict) or set(declaration) != {"kind", "name"}:
+            raise RecoveryError("invalid resource journal declaration")
+        kind, name = declaration["kind"], declaration["name"]
+        if not resource_name(kind,name,record["attempt"]) or (kind,name) in seen:
+            raise RecoveryError("invalid or duplicate attempt resource")
+        seen.add((kind, name))
+        resource = owned_resource(client,declaration,labels)
+        owned.append((declaration, resource))
+    outcomes = []
+    for declaration, resource in owned:
+        status = "absent"
+        if resource is not None:
+            status = "preserved"
+            if declaration["kind"] == "containers":
+                resource.stop(timeout=2)
+                resource.reload()
+                if resource.attrs.get("State", {}).get("Running") is not False:
+                    raise RecoveryError("owned container did not confirm its stopped state")
+                status = "stopped-preserved"
+        outcome = {**declaration,"status":status}
+        if declaration["kind"] == "images" and resource is not None:
+            outcome["image_id"] = resource.id
+        outcomes.append(outcome)
+    result = {"schema_version":1, "attempt":record["attempt"],
+              "scope":"observed-resource-quiescence-not-a-retry-receipt", "resources":outcomes}
+    # A no-op inspection of a normally cleaned-up attempt must not change
+    # its sealed evaluator evidence merely by adding a new report file.
+    if any(resource is not None for _, resource in owned):
+        publish(directory, "resource-quiescence.json", result)
+    return result
+
 
 def quiesce(client, path):
     """Stop declared containers; retain their files, volumes and build images.
@@ -197,53 +268,7 @@ def quiesce(client, path):
     directory, lock = open_directory(path), None
     try:
         lock = lock_directory(directory)
-        descriptor = private_file(directory, "resources.json", os.O_RDONLY)
-        with os.fdopen(descriptor, "rb") as source:
-            content = source.read(1024 * 1024 + 1)
-        if len(content) > 1024 * 1024:
-            raise RecoveryError("resource journal exceeds its size limit")
-        record = json.loads(content)
-        if (not isinstance(record, dict) or set(record) != {"schema_version", "attempt", "daemon", "token", "resources"}
-                or record["schema_version"] != 1
-                or not isinstance(record["attempt"], str) or not re.fullmatch(r"asb-[0-9a-f]{32}", record["attempt"])
-                or not isinstance(record["token"], str) or not re.fullmatch(r"[0-9a-f]{32}", record["token"])
-                or record["daemon"] != daemon_identity(client)
-                or not isinstance(record["resources"], list) or len(record["resources"]) > 64):
-            raise RecoveryError("resource journal identity or selected Docker daemon does not match")
-        labels = {"asb.owner":"asb", "asb.attempt":record["attempt"], "asb.recovery":record["token"]}
-        owned, seen = [], set()
-        # Validate the entire population before mutating any resource.
-        for declaration in record["resources"]:
-            if not isinstance(declaration, dict) or set(declaration) != {"kind", "name"}:
-                raise RecoveryError("invalid resource journal declaration")
-            kind, name = declaration["kind"], declaration["name"]
-            if not resource_name(kind,name,record["attempt"]) or (kind,name) in seen:
-                raise RecoveryError("invalid or duplicate attempt resource")
-            seen.add((kind, name))
-            resource = owned_resource(client,declaration,labels)
-            owned.append((declaration, resource))
-        outcomes = []
-        for declaration, resource in owned:
-            status = "absent"
-            if resource is not None:
-                status = "preserved"
-                if declaration["kind"] == "containers":
-                    resource.stop(timeout=2)
-                    resource.reload()
-                    if resource.attrs.get("State", {}).get("Running") is not False:
-                        raise RecoveryError("owned container did not confirm its stopped state")
-                    status = "stopped-preserved"
-            outcome = {**declaration,"status":status}
-            if declaration["kind"] == "images" and resource is not None:
-                outcome["image_id"] = resource.id
-            outcomes.append(outcome)
-        result = {"schema_version":1, "attempt":record["attempt"],
-                  "scope":"observed-resource-quiescence-not-a-retry-receipt", "resources":outcomes}
-        # A no-op inspection of a normally cleaned-up attempt must not change
-        # its sealed evaluator evidence merely by adding a new report file.
-        if any(resource is not None for _, resource in owned):
-            publish(directory, "resource-quiescence.json", result)
-        return result
+        return quiesce_record(client, directory, read_record(directory))
     finally:
         if lock is not None:
             os.close(lock)

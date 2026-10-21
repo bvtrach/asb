@@ -20,6 +20,7 @@ class SweBenchTask:
         self.row = None
         self.catalog = None
         self.cancelled = None
+        self.interrupted = False
         self.attempt = "asb-" + uuid.uuid4().hex
         self.source_image_tag = None
         self.journal = None
@@ -65,6 +66,7 @@ class SweBenchTask:
             atomic_write(self.artifacts / "task.json", encoded(self.invocation))
             return self
         except BaseException:
+            self.interrupted = True
             self.__exit__(None, None, None)
             raise
 
@@ -96,6 +98,23 @@ class SweBenchTask:
         return submission
 
     def __exit__(self, *_exception):
+        self.interrupted = self.interrupted or bool(_exception and _exception[0] is not None)
+        if self.interrupted and self.journal is not None:
+            status = "preservation_failed"
+            try:
+                self.journal.preserve(self.client)
+                status = "stopped-preserved"
+            finally:
+                self.cleanup_status = status
+                if self.workspace is not None:
+                    self.workspace.cleanup_status = status
+                try:
+                    atomic_write(self.artifacts / "task-cleanup.json", encoded({
+                        "attempt_id": self.attempt, "status": status,
+                    }))
+                finally:
+                    self.journal.close()
+            return
         try:
             if self.workspace is not None:
                 try:
