@@ -14,15 +14,23 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
-Integrated candidate, staged patch **0.2.18**: the independently reviewed
+Integrated candidate, staged patch **0.2.21**: the independently reviewed
 launch-descriptor/one-shot admission repair (`b1a54fde`) is combined with the
-reviewed workload-wizard stack (`cbe3e0ed`), retaining shared benchmark paths,
+reviewed workload-wizard stack (`6af7939b`), retaining shared benchmark paths,
 bounded flamegraph cleanup, host prerequisite consent and adapter-owned
 executable readiness. Adapter package preferences and source readiness coexist
 with the raw-OS launch descriptor; native command configuration and exclusive
-gate admission remain intact. Fresh full offline source and package
-qualification, independent integration review, exact-head hosted CI, PR merge,
-post-merge verification and a patch release remain pending. This staging entry
+gate admission remain intact. The new planning execution budget and recorded
+report-metadata boundaries remain intact as well. The typed comparison pipeline
+retains bounded source snapshots, nullable series, signed bars and complete
+generation publication. Planning, controller caps and module revisions stay
+metadata rather than measurements. Independent integration source review
+approved parent `3259da7e`; its full offline suite passed 1,008 tests followed by
+strict Clippy, formatting and build/docs/diagrams checks. This report integration
+passed 862 library and 25 focused CLI tests plus strict Clippy and formatting.
+Its independent integration review, fresh full qualification, exact-head
+hosted/package CI, PR merge, post-merge verification and patch release remain
+pending. This staging entry
 does not claim delivery or close the other audit repair classes.
 
 ## 1. Endpoint preparation invariants
@@ -257,7 +265,7 @@ typed requests, consumed approvals, one capability probe per sysctl/cgroup setup
 and explicit independent-versus-dependent failure policies. Sysctls retain
 approved interactive fallback; cgroup delegation remains passwordless-only and
 requires separate consent. Offline fake-executor tests and the existing isolated
-fake-sudo fixtures cover both routes. This repair does not repair wizard
+fake-sudo fixtures cover both routes. This repair does not change wizard
 worker ownership or change tracefs lease/installation semantics. Independently
 reviewed PR #279 merged as `76a604bd5ef850e4aa2b29c6cd0dc031a965403b`;
 exact-head ordinary/package CI and both post-merge jobs passed (run
