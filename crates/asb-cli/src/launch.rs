@@ -18,7 +18,7 @@ pub(crate) struct TargetLaunch {
     pub(crate) path: Option<OsString>,
 }
 
-/// Private framing, including explicit client argv[0], not the gate's argv[0].
+/// Private framing, including explicit client `argv[0]`, not the gate's `argv[0]`.
 pub(crate) const FORMAT: &str = "--asb-launch-v1";
 
 pub(crate) struct CommandRoute {
