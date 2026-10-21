@@ -874,6 +874,13 @@ mod tests {
     #[test]
     fn regenerates_comparison_after_a_partial_sweep() {
         let path = temp_file("sweep.toml", "configs = [\"benchmark.toml\"]\n");
+        let root = path.parent().unwrap();
+        std::fs::create_dir(root.join(".asb")).unwrap();
+        std::fs::write(
+            root.join(".asb/project.toml"),
+            toml::to_string(&crate::project::ProjectConfig::default()).unwrap(),
+        )
+        .unwrap();
         let benchmark = path.parent().expect("sweep parent").join("benchmark.toml");
         std::fs::write(
             &benchmark,
@@ -896,5 +903,12 @@ mod tests {
             .expect("parent")
             .join("results/sweep-comparison/report.html");
         assert!(report.is_file(), "automatic comparison report exists");
+        assert_eq!(
+            std::fs::read_dir(root.join(".asb/execution-plans"))
+                .unwrap()
+                .count(),
+            1,
+            "failed execution must retain policy evidence only in its isolated project"
+        );
     }
 }

@@ -2403,6 +2403,12 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("asb-replay-no-cassette-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(root.join(".asb")).unwrap();
+        std::fs::write(
+            root.join(".asb/project.toml"),
+            toml::to_string(&crate::project::ProjectConfig::default()).unwrap(),
+        )
+        .unwrap();
         let config = root.join("benchmark.toml");
         std::fs::write(&config, "agent='pi'\nworkload='bug-fix'\nprovider='not-a-provider'\nmodel='model'\nconcurrency=8\n").unwrap();
         let error = run_with_tape(
@@ -2417,6 +2423,13 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("replay cassette"), "{message}");
         assert!(!message.contains("unsupported provider"), "{message}");
+        assert_eq!(
+            std::fs::read_dir(root.join(".asb/execution-plans"))
+                .unwrap()
+                .count(),
+            8,
+            "each admitted replica must keep its policy in the isolated fixture project"
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
