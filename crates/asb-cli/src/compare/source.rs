@@ -424,6 +424,8 @@ fn load_attempt(
             execution_plan_fingerprint: None,
             module: selection.as_ref().and_then(|s| s.module.clone()),
             benchmark_outcome: None,
+            planning: None,
+            effective_budgets: None,
             result_source: ResultSource::Missing,
             reconciled: false,
             replica_index: None,
@@ -590,7 +592,18 @@ fn load_attempt(
             |outcome| outcome.evaluation.completed(),
         );
     flatten_numbers("", &run_value, &mut metrics)?;
-    metrics.retain(|key, _| !key.starts_with("benchmark_outcome."));
+    metrics.retain(|key, _| {
+        ![
+            "benchmark_outcome.",
+            "module.",
+            "planning.",
+            "effective_budgets.",
+        ]
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+    });
+    let planning = outcomes::recorded_object(&run_value, outcome, "planning")?;
+    let effective_budgets = outcomes::recorded_object(&run_value, outcome, "effective_budgets")?;
     if let Some(outcome) = &benchmark_outcome
         && crate::workloads::resolution_eligible(&workload_evaluation)
         && let crate::workloads::outcome::EvaluationOutcome::Completed { rewards, .. } =
@@ -637,6 +650,8 @@ fn load_attempt(
             configuration: index,
             replica,
         },
+        planning,
+        effective_budgets,
         legacy_evaluation_provenance,
         execution_plan_fingerprint,
         module,

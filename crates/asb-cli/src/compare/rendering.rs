@@ -47,22 +47,10 @@ pub(super) fn render(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
             }
         }
     }
-    let summary = json!({
-        "schema_version": 2,
-        "success_rate_definition": "resolved task attempts / all selected task attempts, including failures; not process exit rate or pass@k; smoke checks excluded",
-        "resolution_groups": resolution_groups,
-        "selection_plan": plan.as_ref().map(|plan| json!({"run_id":plan.run_id,"configuration_match":true,"execution_mode":plan.execution_mode,"respect_record_timings":plan.respect_record_timings,"scheduling":plan.scheduling})),
-        "evaluation_coverage":evaluation_coverage,
-        "population_coverage":population_coverage,
-        "metric_groups": prepared.metric_groups,
-        "input": sweep_path,
-        "input_kind": if single { "benchmark" } else { "sweep" },
-        "sweep": if single { Value::Null } else { json!(sweep_path) },
-        "results_directory": if single { json!(parent) } else { json!(sweep_results) },
-        "comparison_directory": prepared.data.request.comparison_dir,
-        "report": "report.html",
-        "benchmarks": benchmark_data.iter().map(|benchmark| json!({
+    let benchmark_rows = benchmark_data.iter().map(|benchmark| json!({
             "name": benchmark.label,
+            "planning": benchmark.planning,
+            "effective_budgets": benchmark.effective_budgets,
             "module": benchmark.module,
             "legacy_evaluation_provenance": benchmark.legacy_evaluation_provenance,
             "execution_plan_fingerprint": benchmark.execution_plan_fingerprint,
@@ -88,7 +76,22 @@ pub(super) fn render(stage: &Path, prepared: &PreparedReport) -> Result<(), Erro
             "series_rendering": benchmark.series.iter().map(|(name,series)|(name,series.rendering_metadata())).collect::<BTreeMap<_,_>>(),
             "status": benchmark.status,
             "artifacts": benchmark.artifacts,
-        })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>();
+    let summary = json!({
+        "schema_version": 2,
+        "success_rate_definition": "resolved task attempts / all selected task attempts, including failures; not process exit rate or pass@k; smoke checks excluded",
+        "resolution_groups": resolution_groups,
+        "selection_plan": plan.as_ref().map(|plan| json!({"run_id":plan.run_id,"configuration_match":true,"execution_mode":plan.execution_mode,"respect_record_timings":plan.respect_record_timings,"scheduling":plan.scheduling})),
+        "evaluation_coverage":evaluation_coverage,
+        "population_coverage":population_coverage,
+        "metric_groups": prepared.metric_groups,
+        "input": sweep_path,
+        "input_kind": if single { "benchmark" } else { "sweep" },
+        "sweep": if single { Value::Null } else { json!(sweep_path) },
+        "results_directory": if single { json!(parent) } else { json!(sweep_results) },
+        "comparison_directory": prepared.data.request.comparison_dir,
+        "report": "report.html",
+        "benchmarks": benchmark_rows,
         "graphs": graphs,
     });
     let summary_path = comparison_dir.join("comparison.json");

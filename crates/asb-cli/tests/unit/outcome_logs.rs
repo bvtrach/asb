@@ -43,6 +43,38 @@ fn sweep_logs_use_owned_paths_and_never_mix_a_latest_attempt_with_an_old_outcome
         load_sweep(&root, &config).unwrap()[&1].source,
         "task-outcome"
     );
+    for field in ["planning", "effective_budgets"] {
+        let mut logged = summary.clone();
+        logged[field] = json!({"original":true});
+        fs::write(&log, format!("{logged}\n")).unwrap();
+        assert_eq!(
+            load_sweep(&root, &config).unwrap()[&1].summary[field],
+            logged[field]
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        let mut retained = outcome.clone();
+        retained["summary"][field] = json!({"different":true});
+        let retained_bytes = retained.to_string();
+        fs::write(&path, &retained_bytes).unwrap();
+        assert!(
+            load_sweep(&root, &config)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("disagree on recorded")
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), retained_bytes);
+        fs::write(&path, &original).unwrap();
+        logged[field] = json!(3);
+        fs::write(&log, format!("{logged}\n")).unwrap();
+        assert!(
+            load_sweep(&root, &config)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("metadata must be an object")
+        );
+    }
     let mut latest = summary.clone();
     latest["task"]["attempt_id"] = json!("newer-attempt");
     fs::write(&log, format!("{summary}\n{latest}\n")).unwrap();

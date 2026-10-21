@@ -8,6 +8,32 @@ use std::io::Read;
 
 const LIMIT: u64 = 1024 * 1024;
 
+/// Preserve recorded policy metadata, never reconstruct it from today's
+/// registry, configuration or host defaults. Measurements can omit this
+/// metadata when their matching outcome/log retains the original object.
+pub(super) fn recorded_object(
+    measured: &Value,
+    outcome: Option<&Recorded>,
+    field: &str,
+) -> Result<Option<Value>, Error> {
+    let primary = measured.get(field).filter(|value| !value.is_null());
+    let retained = outcome
+        .and_then(|record| record.summary.get(field))
+        .filter(|value| !value.is_null());
+    if primary.zip(retained).is_some_and(|(a, b)| a != b) {
+        return Err(Error::Input(format!(
+            "measurement and outcome disagree on recorded {field}"
+        )));
+    }
+    let value = primary.or(retained);
+    if value.is_some_and(|value| !value.is_object()) {
+        return Err(Error::Input(format!(
+            "recorded {field} metadata must be an object"
+        )));
+    }
+    Ok(value.cloned())
+}
+
 pub(crate) struct Recorded {
     pub path: PathBuf,
     pub summary: Value,
@@ -384,10 +410,15 @@ pub(crate) fn add_sweep_logs(
                 "latest sweep log does not match its replica slot",
             ));
         }
-        if let Some(recorded) = records.get(&slot) {
+        if let Some(recorded) = records.get_mut(&slot) {
             // A newer/different log cannot silently borrow an older outcome's
             // grade or cleanup. Reject conflicting observations before publish.
             recorded.check_measurement(&log.summary)?;
+            for field in ["planning", "effective_budgets"] {
+                if let Some(value) = recorded_object(&log.summary, Some(recorded), field)? {
+                    recorded.summary[field] = value;
+                }
+            }
         } else {
             records.insert(slot, log);
         }
@@ -611,6 +642,137 @@ mod tests {
             )?;
             read_json(&self.root.join("results/sweep-comparison/comparison.json"))
         }
+    }
+
+    #[test]
+    fn policy_metadata_is_not_observed_metrics_with_or_without_measurements() {
+        use crate::workloads::outcome::*;
+        for style in ["unmeasured", "measured", "measured-with-policy", "unknown"] {
+            let fixture = Fixture::new("terminal-bench-2.1", 1);
+            let mut record = fixture.record(1, json!(true), true, true);
+            let mut module = crate::workloads::descriptor("terminal-bench-2.1").unwrap();
+            module.dataset = Some(serde_json::from_value(fixture.dataset.clone()).unwrap());
+            record["summary"]["module"] = json!(module);
+            record["summary"]["benchmark_outcome"] = json!(BenchmarkOutcome {
+                schema_version: 1,
+                execution_success: Some(true),
+                evaluation: EvaluationOutcome::binary(true),
+                cleanup_confirmed: Some(true),
+                evidence: vec![],
+                policy: MetricPolicy::default(),
+                lineage: EvaluationLineage {
+                    execution_attempt: record["summary"]["task"]["attempt_id"]
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                    evaluation_id: "fixture-evaluation".into(),
+                    supersedes: None,
+                },
+            });
+            let planning =
+                json!({"reservation":{"memory_mib":8192},"repetition":{"index":1,"total":2}});
+            let caps = json!({"execution_seconds":900.0});
+            if style != "unknown" {
+                record["summary"]["planning"] = planning.clone();
+                record["summary"]["effective_budgets"] = caps.clone();
+            }
+            fixture.publish(1, &record);
+            if style != "unmeasured" {
+                let directory = fixture.directory().join("measurements");
+                fs::create_dir(&directory).unwrap();
+                let mut measured = record["summary"].clone();
+                if style != "measured-with-policy" {
+                    measured.as_object_mut().unwrap().remove("planning");
+                    measured
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("effective_budgets");
+                }
+                fs::write(directory.join("run.json"), measured.to_string()).unwrap();
+            }
+            let report = fixture.compare().unwrap();
+            let row = &report["benchmarks"][0];
+            assert_eq!(
+                row["planning"],
+                if style == "unknown" {
+                    Value::Null
+                } else {
+                    planning
+                }
+            );
+            assert_eq!(
+                row["effective_budgets"],
+                if style == "unknown" {
+                    Value::Null
+                } else {
+                    caps
+                }
+            );
+            assert_eq!(row["module"]["protocol"]["revision"], 1);
+            let metrics = row["metrics"].as_object().unwrap();
+            assert_eq!(metrics["elapsed_ms"].as_f64(), Some(57.0));
+            assert!(
+                metrics
+                    .iter()
+                    .any(|(key, value)| key.starts_with("benchmark_rewards.")
+                        && value.as_f64() == Some(1.0))
+            );
+            for prefix in [
+                "planning.",
+                "effective_budgets.",
+                "module.",
+                "benchmark_outcome.",
+            ] {
+                assert!(
+                    !metrics.keys().any(|key| key.starts_with(prefix)),
+                    "{style}: {prefix}"
+                );
+            }
+            for name in [
+                "planning.reservation.memory_mib",
+                "planning.repetition.index",
+                "effective_budgets.execution_seconds",
+                "module.protocol.revision",
+            ] {
+                let filename = GraphNames::default().allocate("metric", name);
+                assert!(
+                    !fixture
+                        .root
+                        .join("results/sweep-comparison")
+                        .join(filename)
+                        .exists()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn policy_metadata_conflicts_and_non_objects_fail_without_inventing_defaults() {
+        let record = Recorded {
+            path: "fixture".into(),
+            summary: json!({"planning":{"backend":"native"}}),
+            workload_cleanup: true,
+            proxy_cleanup: true,
+            source: "fixture",
+        };
+        assert!(
+            recorded_object(
+                &json!({"planning":{"backend":"other"}}),
+                Some(&record),
+                "planning"
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("disagree")
+        );
+        assert!(
+            recorded_object(&json!({"effective_budgets":3}), None, "effective_budgets").is_err()
+        );
+        assert!(
+            recorded_object(&json!({}), None, "planning")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

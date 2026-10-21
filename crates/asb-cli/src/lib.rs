@@ -29,6 +29,9 @@ mod selection_names;
 mod suggestions;
 mod sweep;
 mod tape;
+#[cfg(all(test, unix))]
+#[path = "../tests/support/mod.rs"]
+pub(crate) mod test_support;
 mod tools;
 mod tui;
 mod workloads;
