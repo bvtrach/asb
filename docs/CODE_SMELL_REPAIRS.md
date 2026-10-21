@@ -180,6 +180,21 @@ outcomes retain staging and never claim publication definitely occurred.
 Native Windows compilation/runtime remain unqualified. A separately identified
 Windows capture-reader cursor-sharing issue still requires its own follow-up;
 this checkpoint is not whole-class/current-main/full source clearance.
+The subsequent Windows capture correction separates the read description with
+handle-based ReOpenFile before producer admission. It preserves source object,
+read-only access and sharing, clears inheritability and compares the complete
+128-bit file ID when available. It retains the existing meaningful writer-offset
+assertion and source-replacement/frozen-length checks rather than disabling
+Windows tests. Independent review and native Windows qualification are separate;
+Linux policy/source tests do not establish Windows compilation or execution.
+Focused Linux qualification for this follow-up passed: evidence 18,
+measurements 72, collectors 123 (five existing optional skips), and runner phases
+21, including the actual replay publication-entry matrix. The actual ASB build,
+strict workspace/all-target/all-feature Clippy and formatting check passed.
+The binary hash remained
+`1c9ac42d6242e6f95ba8ab1d60f8061dc5040030ff387cceb4119796237d6289`
+across the runner tests. Logs are `target/publication-cursor-*.log`; this is not a
+full-suite or current-main integration qualification.
 
 Completion-observer and checkpoint errors must not erase an already determined
 task grade or implicitly repeat a client. Their current fail-open treatment

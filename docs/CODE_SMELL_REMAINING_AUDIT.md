@@ -133,6 +133,15 @@ semantics elsewhere instead of unconditionally opening directories. Ambiguous
 rename outcomes preserve exact staging without retry or a false success claim.
 Focused Linux policy/fault gates and fresh source review remain required; this
 does not qualify native Windows execution or close the other residuals below.
+Further source inspection found that pinned Windows `FileExt::seek_read`
+updates the shared file cursor, unlike Unix `read_at`; the original universal
+no-writer-seek claim was therefore incorrect. A separate follow-up reopens the
+exact admitted Windows object read-only before producer admission, preserving
+sharing and comparing full file IDs when available. It never refreshes a path
+or substitutes a shared-offset clone. The existing offset assertion remains
+enabled for future native Windows execution, with Linux identity/replacement
+and frozen-length regressions retained. Source review/qualification must not
+be mistaken for an executed Windows test.
 
 Two additional limits remain separate follow-ups, not fixes claimed by this
 publication class:

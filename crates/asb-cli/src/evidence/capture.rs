@@ -4,6 +4,8 @@ use super::*;
 pub(crate) struct Capture {
     path: PathBuf,
     file: File,
+    #[cfg(windows)]
+    reader_file: File,
     metadata: Metadata,
     stopped: Option<Metadata>,
 }
@@ -27,9 +29,14 @@ impl Capture {
             )
         })?;
         let metadata = file.metadata().map_err(|error| error.to_string())?;
+        #[cfg(windows)]
+        let reader_file = independent_windows_reader(&file).map_err(|error| format!(
+            "cannot establish independent admitted capture reader {}: {error}; no producer was admitted", path.display()))?;
         Ok(Self {
             path: path.into(),
             file,
+            #[cfg(windows)]
+            reader_file,
             metadata,
             stopped: None,
         })
@@ -61,7 +68,7 @@ impl Capture {
             .ok_or("raw capture has not reached its stopped boundary")?
             .len();
         Ok(CaptureReader {
-            file: &self.file,
+            file: self.read_source(),
             offset: 0,
             length,
         })
@@ -76,7 +83,7 @@ impl Capture {
             .len();
         let mut bytes = Vec::new();
         CaptureReader {
-            file: &self.file,
+            file: self.read_source(),
             offset: 0,
             length,
         }
@@ -112,12 +119,26 @@ impl Capture {
         let metadata = file
             .metadata()
             .map_err(|error| format!("cannot inspect raw capture {}: {error}", path.display()))?;
+        #[cfg(windows)]
+        let reader_file = independent_windows_reader(&file).map_err(|error| error.to_string())?;
         Ok(Self {
             path: path.into(),
             file,
+            #[cfg(windows)]
+            reader_file,
             stopped: Some(metadata.clone()),
             metadata,
         })
+    }
+    fn read_source(&self) -> &File {
+        #[cfg(windows)]
+        {
+            &self.reader_file
+        }
+        #[cfg(not(windows))]
+        {
+            &self.file
+        }
     }
     pub(crate) fn diagnostic(&self, limit: usize) -> Result<String, String> {
         let mut bytes = Vec::new();
@@ -228,7 +249,96 @@ impl Capture {
     }
 }
 
-/// Independent positional reads never seek a cloned stdio/sampler description.
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WindowsFileId {
+    volume: u64,
+    id: [u8; 16],
+}
+#[cfg(any(windows, test))]
+fn verify_reopened_identity(
+    original: Option<WindowsFileId>,
+    reopened: Option<WindowsFileId>,
+) -> io::Result<()> {
+    match (original, reopened) {
+        (Some(a), Some(b)) if a != b => Err(io::Error::other(
+            "reopened admitted capture identity differs",
+        )),
+        // ReOpenFile itself names the admitted object, not its current path.
+        // If a filesystem cannot expose IDs, do not invent a positive ID proof
+        // or disable otherwise valid handle-based read isolation.
+        _ => Ok(()),
+    }
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn independent_windows_reader(original: &File) -> io::Result<File> {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    #[repr(C)]
+    struct Information {
+        volume: u64,
+        id: [u8; 16],
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn ReOpenFile(
+            original: *mut std::ffi::c_void,
+            access: u32,
+            share: u32,
+            flags: u32,
+        ) -> *mut std::ffi::c_void;
+        fn SetHandleInformation(handle: *mut std::ffi::c_void, mask: u32, flags: u32) -> i32;
+        fn GetFileInformationByHandleEx(
+            handle: *mut std::ffi::c_void,
+            class: i32,
+            information: *mut std::ffi::c_void,
+            length: u32,
+        ) -> i32;
+    }
+    fn identity(file: &File) -> Option<WindowsFileId> {
+        let mut information = std::mem::MaybeUninit::<Information>::uninit();
+        // SAFETY: live borrowed File handle; FileIdInfo=18 fills the ABI struct
+        // on success. Retain the entire 128-bit ID (including ReFS IDs).
+        if unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                18,
+                information.as_mut_ptr().cast(),
+                std::mem::size_of::<Information>() as u32,
+            )
+        } == 0
+        {
+            return None;
+        }
+        let information = unsafe { information.assume_init() };
+        Some(WindowsFileId {
+            volume: information.volume,
+            id: information.id,
+        })
+    }
+    // A new read-only description of the exact admitted object: not try_clone
+    // (which shares the producer cursor), and never a pathname refresh.
+    // Match std's READ|WRITE|DELETE sharing; OPEN_REPARSE_POINT avoids traversal.
+    let handle = unsafe { ReOpenFile(original.as_raw_handle(), 0x8000_0000, 0x7, 0x0020_0000) };
+    if handle.is_null() || handle as isize == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful ReOpenFile transfers a distinct owned handle.
+    let reader = unsafe { File::from_raw_handle(handle) };
+    // HANDLE_FLAG_INHERIT is explicitly cleared before producer admission.
+    if unsafe { SetHandleInformation(reader.as_raw_handle(), 1, 0) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if !reader.metadata()?.is_file() {
+        return Err(io::Error::other("reopened capture is not regular"));
+    }
+    verify_reopened_identity(identity(original), identity(&reader))?;
+    Ok(reader)
+}
+
+/// Unix read_at leaves stdio untouched; Windows seek_read uses its separately
+/// reopened read-only description, never the producer's shared cursor.
 /// The stopped length bounds EOF even if a descendant keeps an output open.
 pub(crate) struct CaptureReader<'a> {
     file: &'a File,
@@ -270,5 +380,76 @@ impl Read for CaptureReader<'_> {
             self.offset += read as u64;
             Ok(read)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reopened_handle_identity_checks_all_128_bits_when_available() {
+        let first = WindowsFileId {
+            volume: 7,
+            id: [0; 16],
+        };
+        assert!(verify_reopened_identity(Some(first), Some(first)).is_ok());
+        let mut high = first;
+        high.id[15] = 1;
+        assert!(verify_reopened_identity(Some(first), Some(high)).is_err());
+        assert!(
+            verify_reopened_identity(Some(first), Some(WindowsFileId { volume: 8, ..first }))
+                .is_err()
+        );
+        // Native ReOpenFile object authority does not become a fabricated ID
+        // proof when the filesystem cannot answer either optional query.
+        for pair in [(None, None), (Some(first), None), (None, Some(first))] {
+            assert!(verify_reopened_identity(pair.0, pair.1).is_ok());
+        }
+    }
+
+    #[test]
+    fn admitted_read_object_survives_name_replacement_before_first_parse() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-capture-read-object-{}",
+            crate::tools::runtime::unique_id()
+        ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("capture");
+        let mut capture = Capture::create(&path).unwrap();
+        let mut writer = capture.writer().unwrap();
+        writer.write_all(b"A=17\n").unwrap();
+        fs::rename(&path, root.join("saved")).unwrap();
+        fs::write(&path, b"A=99\n").unwrap();
+        capture.freeze().unwrap();
+        assert_eq!(capture.startup_diagnostic(3).unwrap(), "A=1");
+        assert_eq!(capture.diagnostic(32).unwrap(), "A=17\n");
+        let mut parsed = String::new();
+        capture
+            .reader()
+            .unwrap()
+            .read_to_string(&mut parsed)
+            .unwrap();
+        assert_eq!(parsed, "A=17\n");
+        assert_eq!(fs::read(&path).unwrap(), b"A=99\n");
+        drop(writer);
+        drop(capture);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reopened_windows_description_is_read_only() {
+        let root = std::env::temp_dir().join(format!(
+            "asb-capture-read-only-{}",
+            crate::tools::runtime::unique_id()
+        ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("capture");
+        let capture = Capture::create(&path).unwrap();
+        assert!((&capture.reader_file).write_all(b"must not write").is_err());
+        assert_eq!(fs::metadata(&path).unwrap().len(), 0);
+        drop(capture);
+        fs::remove_dir_all(root).unwrap();
     }
 }

@@ -481,6 +481,14 @@ file-sync, postcommit confirmation and cleanup tests remain required. Windows
 API declarations/semantics are source-reviewed only: no Windows target compile
 or runtime was performed, and Linux policy tests do not qualify native Windows
 rename behavior or portable directory durability.
+The independent-offset fixture keeps its producer at offset five while full,
+prefix and interleaved frozen readers run; this assertion also remains enabled
+on Windows. An additional cross-platform source-replacement fixture must read
+admitted A=17, never replacement B=99. Shared pure file-ID decisions compare all
+128 bits and preserve unknown-ID semantics. A Windows-only future-native test
+checks the reopened description is read-only. These tests do not constitute
+native Windows execution in the Linux qualification; the ReOpenFile declaration,
+sharing/access/inheritability flags and full ID layout are source-reviewed.
 Human-terminal write/flush failures stop further presentation but finish an
 already-admitted execution, evaluation and explicit cleanup; broken guest-owner
 transport still cancels/preserves. Tests cover both policies. The elapsed clock

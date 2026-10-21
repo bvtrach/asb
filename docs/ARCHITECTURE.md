@@ -415,6 +415,19 @@ This is per-file cooperating-writer ownership, not a multi-file transaction,
 hostile filesystem confinement or arbitrary crash-recovery protocol.
 
 Stopped collectors pin opened regular stdout/stderr captures before processing.
+Their admitted handles precede producer startup. Unix readers use `read_at`;
+Windows `seek_read` updates a cursor, so Windows first uses
+[`ReOpenFile`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-reopenfile)
+on the admitted object to obtain a separate read-only description, never a
+pathname refresh or shared-offset `try_clone`. Its sharing preserves read,
+write and delete access; inheritability is cleared before any producer starts.
+Full volume/128-bit file IDs are compared when both queries are available.
+Unavailable file-ID queries do not fabricate proof or change the native
+object-based reopen into a pathname lookup. Both stopped readers and startup
+diagnostics use that separate read description, preserving the writer cursor.
+This Windows implementation remains source-qualified only, without native
+target compilation/runtime evidence; Unix behavior and conservative non-Unix
+raw deletion policy are unchanged.
 Result publication failure or durability uncertainty skips raw consumption and
 reports the source paths, without skipping sibling exports or final run records.
 Only confirmed collector-result publication permits raw cleanup. Unix device/
