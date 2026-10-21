@@ -14,11 +14,11 @@ import time
 import tomllib
 
 
-def session(binary, root, arguments, keys):
+def session(binary, root, arguments, keys, path="/usr/bin:/bin"):
     pid, master = pty.fork()
     if pid == 0:
         os.chdir(root)
-        environment = {"PATH": "/usr/bin:/bin", "HOME": str(root / "home"),
+        environment = {"PATH": path, "HOME": str(root / "home"),
                        "TERM": "xterm-256color", "NO_COLOR": "1"}
         if "LLVM_PROFILE_FILE" in os.environ:
             environment["LLVM_PROFILE_FILE"] = os.environ["LLVM_PROFILE_FILE"]
@@ -92,6 +92,29 @@ def main():
                 code, transcript = session(binary, root, arguments, key)
                 assert code != 0, transcript
                 assert b"cancelled" in transcript, transcript
+        assert not (root / "invoked-agent").exists()
+
+        # Trigger actual background install/error paths. Every external fetch
+        # or package manager is an inert fixture and cannot forward requests.
+        fixture_bin = root / "fixture-bin"
+        fixture_bin.mkdir()
+        invoked = root / "fixture-installer-invoked"
+        for name in ["curl", "npm", "node", "sudo", "git", "make", "tar"]:
+            tool = fixture_bin / name
+            tool.write_text(f"#!/bin/sh\nprintf '{name}\\n' >> '{invoked}'\nexit 7\n")
+            tool.chmod(0o755)
+        agent.unlink()
+        code, transcript = session(binary, root, ["setup", "tui"], b"pi \x03", str(fixture_bin))
+        assert code != 0, transcript
+        assert invoked.is_file(), "missing agent selection must attempt installation"
+        assert not agent.exists(), "failed package install must not mark agent installed"
+        assert len(list(root.glob("asb-sweep-*.toml"))) == 1, "failed selection must not publish a sweep"
+
+        (root / "workloads/custom.txt").unlink()
+        code, transcript = session(binary, root, ["workload", "tui"],
+                                   b"custom \x03", str(fixture_bin))
+        assert code != 0, transcript
+        assert not (root / "workloads/custom.txt").exists(), "failed source install must not fabricate workload"
         assert not (root / "invoked-agent").exists()
 
 
