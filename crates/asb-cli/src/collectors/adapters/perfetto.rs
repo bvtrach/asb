@@ -1042,44 +1042,24 @@ pub(crate) fn perfetto_scope_sql(pid: u32, trace_id: &str) -> String {
 }
 
 pub(crate) fn perfetto_config(pid: Option<u32>) -> String {
-    perfetto_config_with_schedstats(pid, schedstat_events_available())
-}
-
-fn schedstat_events_available() -> bool {
-    [
-        "sched_stat_iowait",
-        "sched_stat_blocked",
-        "sched_stat_sleep",
-        "sched_stat_runtime",
-    ]
-    .iter()
-    .all(|event| {
-        [
-            "/sys/kernel/tracing/events/sched",
-            "/sys/kernel/debug/tracing/events/sched",
-        ]
-        .iter()
-        .any(|root| Path::new(root).join(event).join("enable").is_file())
-    })
-}
-
-pub(crate) fn perfetto_config_with_schedstats(pid: Option<u32>, schedstats: bool) -> String {
     // Tracebox's bundled schema rejects FtraceConfig.pid_filter. Process
     // scoping is applied during post-processing using ASB lifecycle markers.
     let _ = pid;
-    let mut config = r#"duration_ms: 3600000
+    // Collect only events consumed by scheduler/process-lifetime queries.
+    // Redundant sched_stat events multiply traffic on a busy shared host.
+    r#"duration_ms: 3600000
 write_into_file: true
 file_write_period_ms: 1000
 max_file_size_bytes: 1073741824
-compression_type: COMPRESSION_TYPE_DEFLATE
-buffers { size_kb: 65536 fill_policy: RING_BUFFER }
+compression { zstd { level: 1 } }
+buffers { size_kb: 131072 fill_policy: RING_BUFFER }
 data_sources {
   config {
     name: "linux.ftrace"
     ftrace_config {
       buffer_size_kb: 4096
       buffer_size_lower_bound: true
-      drain_period_ms: 100
+      drain_period_ms: 50
       drain_buffer_percent: 50
       compact_sched { enabled: true }
       ftrace_events: "sched/sched_switch"
@@ -1100,16 +1080,7 @@ data_sources {
   }
 }
 "#
-    .to_owned();
-    if schedstats {
-        let insertion = "      ftrace_events: \"sched/sched_stat_iowait\"\n      ftrace_events: \"sched/sched_stat_blocked\"\n      ftrace_events: \"sched/sched_stat_sleep\"\n      ftrace_events: \"sched/sched_stat_runtime\"\n";
-        config = config.replacen(
-            "      ftrace_events: \"sched/sched_switch\"\n",
-            &format!("      ftrace_events: \"sched/sched_switch\"\n{insertion}"),
-            1,
-        );
-    }
-    config
+    .to_owned()
 }
 
 fn perfetto_instance_config(instance: &str) -> String {
@@ -1199,24 +1170,28 @@ fn perfetto_probe(service: &Service, measurement_dir: &Path) -> Result<bool, Str
 }
 
 #[cfg(test)]
+#[path = "perfetto/coverage_tests.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod marker_tests {
     use super::*;
 
     #[test]
     fn capture_configuration_streams_with_bounded_storage_and_kernel_draining() {
         for config in [
-            perfetto_config_with_schedstats(None, false),
-            perfetto_config_with_schedstats(None, true),
+            perfetto_config(None),
             perfetto_instance_config("asb-fixture-0"),
         ] {
             for field in [
                 "write_into_file: true",
                 "file_write_period_ms: 1000",
                 "max_file_size_bytes: 1073741824",
-                "compression_type: COMPRESSION_TYPE_DEFLATE",
+                "compression { zstd { level: 1 } }",
+                "buffers { size_kb: 131072",
                 "buffer_size_kb: 4096",
                 "buffer_size_lower_bound: true",
-                "drain_period_ms: 100",
+                "drain_period_ms: 50",
                 "drain_buffer_percent: 50",
             ] {
                 assert!(config.contains(field), "missing {field}");
@@ -1225,6 +1200,7 @@ mod marker_tests {
                 !config.contains("output_path:"),
                 "the client must pass its precreated artifact fd"
             );
+            assert!(!config.contains("sched_stat_"));
         }
     }
 

@@ -34,6 +34,10 @@ const DESCRIPTIONS: &[&str] = &[
 // circled glyph so the terminal honors the readiness foreground color.
 const INFO_GLYPH: &str = "ⓘ";
 
+#[cfg(test)]
+#[path = "tui/coverage_tests.rs"]
+mod coverage_tests;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Availability {
     Available,
@@ -1796,6 +1800,10 @@ fn selected_trials(app: &App, choice: &str) -> Result<TrialSelection, Error> {
             .collect(),
     ))
 }
+
+#[cfg(test)]
+#[path = "../tests/unit/tui_generation.rs"]
+mod generation_tests;
 
 #[cfg(test)]
 mod tests {

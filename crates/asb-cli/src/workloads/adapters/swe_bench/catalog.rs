@@ -382,6 +382,10 @@ fn publish_selection(
 }
 
 #[cfg(test)]
+#[path = "catalog/coverage_tests.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::workloads::adapters::WorkloadAdapter;

@@ -297,7 +297,7 @@ impl<const MEMORY: bool> CollectorAdapter for AgentProcesses<MEMORY> {
                 "source": if state.isolated { "execution-namespace-linux-proc-sampling" } else { "linux-proc-sampling" }, "scope": "selected-agent-entry-point-only",
                 "sampling_interval_ms": state.imported.as_ref().map_or_else(measurements::measurement_interval_ms, |sample| sample.sampling_interval_ms),
                 "samples": samples,
-                "limitations": "Sampled lower bound: short-lived processes can be missed. Workers are additional OS processes with the same executable or script entry point, not logical subagents within one process. Tools and the ASB gate are excluded. RSS includes shared pages per matching process, not unique physical memory. Different wrapper entry points are not inferred.",
+                "limitations": "Sampled lower bound: short-lived processes can be missed. New process identities require an observed exec; fork-without-exec workers are unclassified because inherited agent identity cannot distinguish them from pending tool launches. Workers are additional OS processes with the same executable or script entry point, not logical subagents within one process. Tools and the ASB gate are excluded. RSS includes shared pages per matching process, not unique physical memory. Different wrapper entry points are not inferred.",
                 "metrics": metrics
             }),
         )
@@ -548,13 +548,16 @@ fn read_bounded(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
 fn process_memory(proc: &Path) -> Option<(u64, u64)> {
     let stat = String::from_utf8(read_bounded(&proc.join("stat"), 4096).ok()?).ok()?;
     // Field 22 is start time; comm can contain spaces and closing parentheses.
-    let start = stat
-        .rsplit_once(')')?
-        .1
-        .split_whitespace()
-        .nth(19)?
-        .parse()
-        .ok()?;
+    let fields = stat.rsplit_once(')')?.1.split_whitespace();
+    let flags: u64 = fields.clone().nth(6)?.parse().ok()?;
+    // Linux PF_FORKNOEXEC: a newly forked tool still exposes its parent's
+    // executable/argv until exec. Never admit that inherited identity. The
+    // flag clears at exec; the caller then rechecks identity and generation.
+    // Fork-only workers remain an explicitly unclassified lower bound.
+    if flags & 0x40 != 0 {
+        return None;
+    }
+    let start = fields.clone().nth(19)?.parse().ok()?;
     let status = String::from_utf8(read_bounded(&proc.join("status"), 65536).ok()?).ok()?;
     let rss = status
         .lines()
@@ -569,6 +572,93 @@ fn process_memory(proc: &Path) -> Option<(u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[allow(unsafe_code)] // Bounded, async-signal-safe owned-child pre-exec fixture.
+    fn inherited_pre_exec_identity_never_enters_the_worker_census() {
+        use std::io::{Read, Write};
+        use std::os::fd::AsRawFd;
+        use std::os::unix::{net::UnixStream, process::CommandExt};
+        let (mut pid_reader, pid_writer) = UnixStream::pair().unwrap();
+        let (mut release_writer, release_reader) = UnixStream::pair().unwrap();
+        pid_reader
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        release_reader
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let inherited =
+            Identity::resolve(std::env::current_exe().unwrap().to_str().unwrap(), &[]).unwrap();
+        let mut command = std::process::Command::new("/bin/cat");
+        command
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        // Only async-signal-safe syscalls in the owned child's pre-exec hook.
+        unsafe {
+            command.pre_exec(move || {
+                let pid = libc::getpid();
+                if libc::write(
+                    pid_writer.as_raw_fd(),
+                    (&pid as *const libc::pid_t).cast(),
+                    std::mem::size_of_val(&pid),
+                ) != std::mem::size_of_val(&pid) as isize
+                {
+                    return Err(std::io::Error::from_raw_os_error(libc::EIO));
+                }
+                let mut release = 0u8;
+                if libc::read(
+                    release_reader.as_raw_fd(),
+                    (&mut release as *mut u8).cast(),
+                    1,
+                ) != 1
+                {
+                    return Err(std::io::Error::from_raw_os_error(libc::EIO));
+                }
+                Ok(())
+            });
+        }
+        let spawning = std::thread::spawn(move || command.spawn());
+        let mut bytes = [0u8; std::mem::size_of::<libc::pid_t>()];
+        pid_reader.read_exact(&mut bytes).unwrap();
+        let pid = libc::pid_t::from_ne_bytes(bytes) as u32;
+        let root = measurements::ProcessIdentity::read(pid).unwrap();
+        let proc = PathBuf::from(format!("/proc/{pid}"));
+        let mut totals = Totals::default();
+        let before = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert!(
+                inherited.matches_sample(&proc, false),
+                "fixture must expose matching inherited identity"
+            );
+            for _ in 0..5 {
+                totals.sample(root, &inherited);
+            }
+            assert!(totals.seen.is_empty());
+            assert!(totals.admitted.is_empty());
+            assert_eq!(totals.peak_rss_kib, 0);
+        }));
+        release_writer.write_all(&[1]).unwrap();
+        let mut child = spawning.join().unwrap().unwrap();
+        let after = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            totals.sample(root, &inherited);
+            assert!(
+                totals.seen.is_empty(),
+                "tool exec must not retain inherited admission"
+            );
+            let actual = Identity::resolve("/bin/cat", &[]).unwrap();
+            totals.sample(root, &actual);
+            assert_eq!(
+                totals.seen.len(),
+                1,
+                "post-exec selected entry point must still qualify"
+            );
+        }));
+        let _ = child.kill();
+        child.wait().unwrap();
+        before.unwrap();
+        after.unwrap();
+    }
 
     #[test]
     fn prepared_launch_uses_child_path_and_working_directory_for_entry_point_resolution() {

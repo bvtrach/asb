@@ -99,3 +99,7 @@ fn install_perfetto(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<P
     }
     Ok(destination)
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/perfetto_install.rs"]
+mod coverage_tests;

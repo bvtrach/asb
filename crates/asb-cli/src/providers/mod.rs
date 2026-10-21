@@ -505,6 +505,10 @@ fn strip_api_version(value: &str) -> String {
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/provider_boundaries.rs"]
+mod boundary_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{ProviderSpec, configure_tape, read_key_file, spec, tape_upstream};
     use crate::tape::Mode;

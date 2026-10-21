@@ -1,8 +1,10 @@
 //! Distinct tasks plus replicas, real loopback replay, no live clients/providers.
 #![cfg(unix)]
+mod support;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use support::IsolatedEnvironment;
 
 struct Project(PathBuf);
 impl Drop for Project {
@@ -16,13 +18,10 @@ fn asb(root: &Path, arguments: &[&str]) -> Output {
     command
         .args(arguments)
         .current_dir(root)
-        .env_clear()
+        .isolated_env()
         .env("HOME", root)
         .env("ASB_TEST_INPUT", root.join("explicit-input"))
         .env("PATH", std::env::var_os("PATH").unwrap_or_default());
-    if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
-        command.env("LLVM_PROFILE_FILE", profile);
-    }
     command.output().unwrap()
 }
 
@@ -283,7 +282,7 @@ const expected=['first-1','first-2','second'];
                 "--show-output",
             ])
             .current_dir(root)
-            .env_clear()
+            .isolated_env()
             .env("HOME", root)
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .stdout(std::process::Stdio::piped())

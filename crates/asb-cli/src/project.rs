@@ -830,6 +830,10 @@ pub fn resolve(root: &Path, value: &str) -> PathBuf {
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/project_capabilities.rs"]
+mod coverage_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
