@@ -160,6 +160,26 @@ contract. It needs a separate repair class with supported probe/predicate
 parsing, multiline/OR regressions, and preservation of valid process-tree
 profiles; it must not be hidden as a test-only cleanup. Pending.
 
+Custom BPF candidate: PR #268 parses complete multiline blocks and positively
+proves each process predicate, rejecting side effects (including map ++/--),
+OR-true bypasses, reserved membership-map actions and opaque preprocessing.
+Numeric `ASB_PARAM_` tuning replaces the unsupported bpftrace 0.20.2 `-D`
+argument with bounded canonical integer expression tokens. Independent review
+found and fixed accidental binding inside unquoted attachment paths; provider,
+path and symbol fields now remain unchanged. Generic typed per-session state
+retains the exact source validated at preflight, including across path
+replacement or deletion. No shared orchestration branches on BPF identity.
+Custom startup uses the independently reviewed shared `OwnedReaper` dependency
+from PR #259 before admitting a child; readiness failure/unwind has bounded
+caller-side polling and retains uncertain child custody. Offline tests cover
+predicate proof/mutation, multiline/UTF-8/malformed inputs, numeric binding,
+frozen bytes, real child identity/reaping and ownership transfer. The installed
+tool's unprivileged `-e SOURCE -V` check validates actual option routing only,
+not script compilation or privileged attachment. Custom actions remain trusted
+code, and other collector lifecycle paths are not claimed repaired. Exact-head
+independent review, ordinary/package tests, mandatory coverage, hosted checks,
+merge, post-merge verification and release remain required.
+
 Installer inspection found that HTTP downloads write directly to the published
 destination. A failed/truncated or oversized response can replace a usable
 executable with partial bytes while retaining its executable mode. Required

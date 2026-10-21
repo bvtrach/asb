@@ -7,6 +7,7 @@ use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 mod custom_scope;
+mod startup;
 pub(super) struct BpftraceCollector;
 pub(super) static ADAPTER: BpftraceCollector = BpftraceCollector;
 
@@ -236,35 +237,30 @@ impl measurements::Session {
             );
             let stdout_path = self.dir.join(format!("bpftrace-{index}.stdout"));
             let stderr_path = self.dir.join(format!("bpftrace-{index}.stderr"));
-            let mut child = command
+            command
                 .stdout(Stdio::from(
                     File::create(&stdout_path)
                         .map_err(|e| format!("cannot create bpftrace output: {e}"))?,
                 ))
                 .stderr(Stdio::from(File::create(&stderr_path).map_err(|e| {
                     format!("cannot create bpftrace error output: {e}")
-                })?))
-                .spawn()
-                .map_err(|error| {
-                    format!("cannot start bpftrace program {}: {error}", program.path)
-                })?;
+                })?));
+            let mut child = startup::StartupChild::spawn(&mut command, &program.path)?;
             if let Err(error) = wait_for_profile_ready(
-                &mut child,
+                child.child(),
                 &stdout_path,
                 &stderr_path,
                 std::time::Duration::from_secs(30),
             ) {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!(
+                return Err(child.failure(format!(
                     "bpftrace program {} did not become ready: {error}",
                     program.path
-                ));
+                )));
             }
             self.collectors.push(Collector {
                 name: format!("bpftrace-{index}"),
                 adapter: collectors::find("bpftrace").expect("registered collector"),
-                child,
+                child: child.ready(),
                 started: Instant::now(),
                 stdout_path,
                 stderr_path,

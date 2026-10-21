@@ -575,7 +575,13 @@ observed output, not merely execution of `BEGIN`. See the
 This version-specific source evidence is not a substitute for opt-in live
 attachment qualification on a different tool or kernel.
 
-The custom-startup error path currently follows the existing built-in collector
-cleanup contract: kill and reap the owned child. The final wait is not bounded;
-the generic owned-process lifecycle repair must migrate both paths together.
-This change does not qualify termination of a kernel-stuck tracing process.
+Custom startup establishes the shared private `OwnedReaper` before spawning.
+Readiness failure or unwinding kills the owned child and polls against one
+five-second cleanup deadline; uncertain exit transfers custody to that worker
+and preserves the startup error alongside an explicit cleanup diagnostic.
+Readiness success transfers the still-owned child to the collector session.
+Real-child fixtures check failure before spawn, success transfer, pidfd-pinned
+reaping, unrelated sentinel survival, poll/deadline handoff and unwinding.
+This bounds the caller, not a kernel-stuck process's actual exit. Other built-in
+collector startup/normal-stop paths retain their existing lifecycle policies;
+this change does not claim they all have bounded cleanup.
