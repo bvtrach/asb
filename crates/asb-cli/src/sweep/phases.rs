@@ -14,12 +14,13 @@ enum ActiveMode {
     Campaigns(Option<checkpoint::Inputs>),
     Fresh(Option<checkpoint::Inputs>),
     Resumed(checkpoint::Inputs),
+    ReusedCampaigns(checkpoint::Inputs),
 }
 impl ActiveMode {
     fn checkpoint(&self) -> Option<&checkpoint::Inputs> {
         match self {
             // Legacy completion observers must never consume campaign inputs.
-            Self::Campaigns(_) => None,
+            Self::Campaigns(_) | Self::ReusedCampaigns(_) => None,
             Self::Fresh(value) => value.as_ref(),
             Self::Resumed(value) => Some(value),
         }
@@ -28,7 +29,7 @@ impl ActiveMode {
         match self {
             Self::Campaigns(value) => value,
             Self::Fresh(value) => value,
-            Self::Resumed(value) => Some(value),
+            Self::Resumed(value) | Self::ReusedCampaigns(value) => Some(value),
         }
     }
 }
@@ -65,11 +66,6 @@ impl<'a> PreparedSweep<'a> {
             .filter(|v| !v.is_empty())
             .unwrap_or("sweep");
         let mode = options.mode;
-        if options.resume
-            && (options.repeat.is_some() || options.track.is_some() || options.seed.is_some())
-        {
-            return Err(Error::Input("campaign continuation requires saved-slot validation; existing results were not changed".into()));
-        }
         let cassette_root = options.cassette_root;
         let mut plan = plan::build(parent, &sweep)?;
         plan.execution_mode = match mode {
@@ -109,9 +105,10 @@ impl<'a> PreparedSweep<'a> {
             let saved = plan::SweepPlan::load(&results, parent, &sweep)?.ok_or_else(|| {
                 Error::Input("cannot resume: the original sweep plan is missing".into())
             })?;
-            if saved.execution.is_some() {
+            if saved.execution.is_some() && options.reconcile_completed {
                 return Err(Error::Input("campaign continuation requires saved-slot validation; existing results were not changed".into()));
             }
+            campaigns::validate_resume_options(&results, &saved, options)?;
             if saved.execution_mode != plan.execution_mode
                 || saved.respect_record_timings != plan.respect_record_timings
                 || saved.scheduling != plan.scheduling
@@ -177,7 +174,11 @@ impl<'a> PreparedSweep<'a> {
             if options.reconcile_completed {
                 checkpoint.reconcile_completed(parent, &results, &plan)?;
             }
-            let reused = checkpoint.resume_outcomes(parent, &results, &plan)?;
+            let reused = if plan.execution.is_some() {
+                checkpoint.resume_campaign_outcomes(parent, &results, &plan)?
+            } else {
+                checkpoint.resume_outcomes(parent, &results, &plan)?
+            };
             PreparedMode::Resumed {
                 checkpoint: Box::new(checkpoint),
                 reused,
@@ -211,7 +212,12 @@ impl<'a> PreparedSweep<'a> {
         let mut campaigns = None;
         let (mode, reused, initial_warning) = match self.mode {
             PreparedMode::Resumed { checkpoint, reused } => {
-                (ActiveMode::Resumed(*checkpoint), reused, None)
+                let mode = if self.plan.execution.is_some() {
+                    ActiveMode::ReusedCampaigns(*checkpoint)
+                } else {
+                    ActiveMode::Resumed(*checkpoint)
+                };
+                (mode, reused, None)
             }
             PreparedMode::Fresh => {
                 plan::fresh_results(&self.parent, &self.stem, &self.plan)?;
@@ -506,8 +512,13 @@ impl SettledSweep<'_> {
         }
         #[cfg(all(test, unix))]
         tests::before_input_finish(&results);
+        let read_only_reuse = matches!(&mode, ActiveMode::ReusedCampaigns(_));
         if let Some(checkpoint) = mode.into_checkpoint()
-            && let Err(error) = checkpoint.finish()
+            && let Err(error) = if read_only_reuse {
+                checkpoint.verify_stable()
+            } else {
+                checkpoint.finish()
+            }
         {
             // A broken terminal cannot prevent final input settlement or
             // report generation; the original terminal error is retained.

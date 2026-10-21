@@ -411,25 +411,7 @@ impl Inputs {
     }
 
     pub(super) fn finish(mut self) -> Result<(), Error> {
-        if let Some(runtime) = &self.runtime {
-            let paths = match crate::runtime_inputs::discover(&self.snapshotter.python, runtime) {
-                Ok(paths) => paths,
-                Err(error) => {
-                    let _ = self.publish("unavailable", None);
-                    return Err(error);
-                }
-            };
-            self.roots
-                .retain(|root| !root.name.starts_with("runtime-source-"));
-            for (index, path) in paths.into_iter().enumerate() {
-                self.roots
-                    .push(Root::path(format!("runtime-source-{index}"), path));
-            }
-        }
-        match self
-            .snapshotter
-            .fingerprint(&self.roots, &self.context, true, &[])
-        {
+        match self.final_fingerprint() {
             Ok(after) => self.publish(
                 if after.digest == self.initial.digest {
                     "stable"
@@ -443,6 +425,31 @@ impl Inputs {
                 Err(error)
             }
         }
+    }
+
+    /// Completed-only campaign reuse has no newly admitted work to settle.
+    /// Recheck inputs without rewriting the original seal/provenance locators.
+    pub(super) fn verify_stable(mut self) -> Result<(), Error> {
+        if self.final_fingerprint()? != self.initial {
+            return Err(resume_error(
+                "declared inputs changed while reusing completed campaigns",
+            ));
+        }
+        Ok(())
+    }
+
+    fn final_fingerprint(&mut self) -> Result<Fingerprint, Error> {
+        if let Some(runtime) = &self.runtime {
+            let paths = crate::runtime_inputs::discover(&self.snapshotter.python, runtime)?;
+            self.roots
+                .retain(|root| !root.name.starts_with("runtime-source-"));
+            for (index, path) in paths.into_iter().enumerate() {
+                self.roots
+                    .push(Root::path(format!("runtime-source-{index}"), path));
+            }
+        }
+        self.snapshotter
+            .fingerprint(&self.roots, &self.context, true, &[])
     }
 
     fn publish(&self, status: &str, after: Option<&Fingerprint>) -> Result<(), Error> {

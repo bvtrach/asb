@@ -490,8 +490,10 @@ Failures remain optional fresh continuation warnings, not grade gates.
 Layouts share one actual-read byte budget, including growth after metadata
 preflight; comparison uses the same facility. Outcome declarations independently
 bound aggregate encoded bytes and each record before cloning. Measurement
-agreement binds presence-sensitive execution and recording metadata as well as
-the existing grade, policy, task, cohort and disposition fields.
+agreement binds nonnull execution and recording metadata as well as the existing
+grade, policy, task, cohort and disposition fields. Historical missing/null
+optional identities both mean unknown; present campaign identity still must
+match the saved typed slot. Disposition/artifact presence remains exact.
 
 Focused tests cover foreign prepared fields/start identity, native false grades,
 record-mode absent/null proof, aliases, no overwrite and shared read exhaustion.
@@ -502,10 +504,44 @@ test-only; production always dispatches the owning retained-outcome verifier.
 Actual CLI qualification records four attempts, replays four provider-closed,
 then injects one unknown grader result: three peers seal, one recovery-only slot
 remains and exactly twelve total attempts occur, without retries. This is not
-installed remote-SDK qualification or completed modern resume/reconciliation.
+installed remote-SDK qualification or complete modern resume/reconciliation.
 
-Independent continuation review identified a required distinction before modern
-resume can be enabled. A published campaign plan is intended work, not positive
+### Completed-population reuse checkpoint
+
+Fresh settlement and existing receipt verification now share one read-only
+strict candidate builder, including grouped recording proofs. Reuse requires
+every original planned slot to have a strict candidate and a valid immutable
+receipt; it verifies schema, scope, configuration, full execution/selection,
+original input digest, exact derived roots and recomputed fingerprint. Receipts
+are not allowed to supply their own authoritative roots. Metadata admission
+precedes payload proof; actual receipt reads have a separate aggregate budget.
+Unix descriptor-relative traversal rejects symlinked receipt ancestors as well
+as final leaves. No candidate is returned for activation before all configurations
+validate. False grades remain failed completed observations, not retry requests.
+
+The completed-only active state is explicit and excludes legacy completion
+observers. It rechecks input stability without rewriting the original input
+seal or its historical executable locator. Omitted repeat/track/seed/source
+options reuse saved choices; explicitly conflicting options reject before
+activation. An explicit matching cassette root confirms the saved source without
+reopening it. Replay consumes previously staged private inputs, not the original
+public archive. Fresh execution without optional checkpoint support still runs
+and grades normally; missing historical input evidence cannot authorize reuse.
+
+Checkpoint tests include later-configuration receipt identity/root/fingerprint
+mutations, changed output, missing/oversized records and final/parent directory
+aliases. The actual registered-Pi synthetic-client fixture checks completed
+record/replay reuse with unchanged attempts, receipts, input seal and index,
+unchanged provider-call count, matching/conflicting options and unavailable
+public replay ZIP. Its provider is synthetic and it is not installed Pi or
+original remote benchmark qualification. Full current-head gates remain required.
+
+Partial untouched-slot admission, reconciliation, grade import and continued
+recording publication are still pending. Ineligible/missing slots currently
+refuse continuation; this completed-only checkpoint is not full feature delivery.
+
+Independent continuation review identified a required distinction before partial
+modern resume can be enabled. A published campaign plan is intended work, not positive
 proof that a missing slot was never attempted. Initial publication must retain
 an explicit untouched reservation, consumed by the slot's create-new start
 record before workload allocation. Saved starts, allocations, outcomes and

@@ -47,6 +47,17 @@ struct Candidate {
     slot: u64,
     execution: ExecutionIdentity,
     roots: Vec<Root>,
+    summary: Value,
+}
+
+// Constructed only after all common declarations and grouped track proofs
+// pass. Both sealing and verification derive their authority from this view,
+// never from roots or task identities supplied by an existing receipt.
+struct Inspection {
+    layouts: Vec<Layout>,
+    candidates: Vec<Candidate>,
+    records: Vec<Record>,
+    unsettled: Vec<usize>,
 }
 
 struct Record {
@@ -98,6 +109,63 @@ impl Inputs {
         plan: &SweepPlan,
         verify: impl Fn(&crate::workloads::recovery::RetainedOutcomeContext<'_>) -> Result<(), Error>,
     ) -> Result<(), Error> {
+        let Inspection {
+            layouts,
+            candidates,
+            records,
+            unsettled,
+        } = self.inspect_campaigns(parent, results, plan, verify)?;
+        // Finish every read-only validation before the first receipt write.
+        for candidate in candidates {
+            let fingerprint = self.snapshotter.fingerprint(
+                &candidate.roots,
+                &self.campaign_completion_context(&candidate),
+                false,
+                &[],
+            )?;
+            completed::publish(
+                &self.campaign_completion_path(candidate.configuration, candidate.slot),
+                &Receipt {
+                    schema_version: 1,
+                    scope: SCOPE.into(),
+                    configuration: candidate.configuration,
+                    execution: candidate.execution,
+                    input_digest: self.initial.digest.clone(),
+                    roots: candidate.roots,
+                    fingerprint,
+                },
+            )?;
+        }
+        for index in &unsettled {
+            let record = &records[*index];
+            let layout = &layouts[record.configuration];
+            let slot = &layout.plan.slots[record.slot];
+            completed::publish(
+                &self
+                    .directory
+                    .join("campaign-unsettled")
+                    .join(format!("{:06}/{:06}.json", record.configuration, slot.id)),
+                &json!({"schema_version":1,"scope":"unsealed-slot-recovery-required-not-retry-permission",
+                    "configuration":record.configuration,"execution":layout.plan.execution(slot),
+                    "input_digest":self.initial.digest,"outcome":record.path}),
+            )?;
+        }
+        if unsettled.is_empty() {
+            Ok(())
+        } else {
+            Err(resume_error(
+                "some campaign slots require recovery; completed peers were sealed without retry",
+            ))
+        }
+    }
+
+    fn inspect_campaigns(
+        &self,
+        parent: &Path,
+        results: &Path,
+        plan: &SweepPlan,
+        verify: impl Fn(&crate::workloads::recovery::RetainedOutcomeContext<'_>) -> Result<(), Error>,
+    ) -> Result<Inspection, Error> {
         self.verify_campaign_reservations(results, plan)?;
         let mut layouts = plan.read_campaigns(results)?;
         let budget = std::rc::Rc::new(std::cell::Cell::new(256 * 1024 * 1024));
@@ -105,6 +173,36 @@ impl Inputs {
             layout.share_observation_budget(budget.clone());
         }
         preflight(&layouts)?;
+        // Receipt population/type/size is admitted before any recording payload
+        // proof. Missing receipts are not fabricated by this read-only pass.
+        let mut receipt_bytes = 0u64;
+        for (configuration, layout) in layouts.iter().enumerate() {
+            for slot in &layout.plan.slots {
+                let relative = PathBuf::from(format!(
+                    "campaign-completed/{configuration:06}/{:06}.json",
+                    slot.id
+                ));
+                match crate::runner::campaign::reading::inspect_relative(
+                    &self.directory,
+                    &relative,
+                )? {
+                    Some(bytes) if bytes <= 1024 * 1024 => {
+                        receipt_bytes = receipt_bytes
+                            .checked_add(bytes)
+                            .filter(|bytes| *bytes <= 256 * 1024 * 1024)
+                            .ok_or_else(|| {
+                                resume_error("campaign receipt metadata exceeds 256 MiB")
+                            })?;
+                    }
+                    None => (),
+                    _ => {
+                        return Err(resume_error(
+                            "campaign receipt is not a bounded regular file",
+                        ));
+                    }
+                }
+            }
+        }
         let mut records = Vec::new();
         for (configuration, layout) in layouts.iter().enumerate() {
             for (index, slot) in layout.plan.slots.iter().enumerate() {
@@ -184,7 +282,7 @@ impl Inputs {
                     invocation: &parent.join(&plan.entries[record.configuration].reference),
                 },
                 &record.path,
-                evidence,
+                &evidence,
                 compatibility,
                 &verify,
             )?;
@@ -193,59 +291,102 @@ impl Inputs {
                 slot: slot.id,
                 execution: layout.plan.execution(slot),
                 roots,
+                summary: evidence.summary.clone(),
             });
             eligible.insert(index);
         }
         declarations.retain_candidates(&eligible);
         let unsettled = declarations.unsettled().to_vec();
         let _validated = declarations.verify()?;
-        // Finish every read-only validation before the first receipt write.
-        for candidate in candidates {
-            let context = json!({"protocol":"asb-campaign-completion-v1","scope":SCOPE,
-                "input_digest":self.initial.digest,"configuration":candidate.configuration,
-                "execution":candidate.execution});
-            let fingerprint =
-                self.snapshotter
-                    .fingerprint(&candidate.roots, &context, false, &[])?;
-            let path = self
-                .directory
-                .join("campaign-completed")
-                .join(format!("{:06}", candidate.configuration))
-                .join(format!("{:06}.json", candidate.slot));
-            completed::publish(
-                &path,
-                &Receipt {
-                    schema_version: 1,
-                    scope: SCOPE.into(),
-                    configuration: candidate.configuration,
-                    execution: candidate.execution,
-                    input_digest: self.initial.digest.clone(),
-                    roots: candidate.roots,
-                    fingerprint,
-                },
+        Ok(Inspection {
+            layouts,
+            candidates,
+            records,
+            unsettled,
+        })
+    }
+
+    fn campaign_completion_path(&self, configuration: usize, slot: u64) -> PathBuf {
+        self.directory
+            .join("campaign-completed")
+            .join(format!("{configuration:06}/{slot:06}.json"))
+    }
+
+    fn campaign_completion_context(&self, candidate: &Candidate) -> Value {
+        json!({"protocol":"asb-campaign-completion-v1","scope":SCOPE,
+            "input_digest":self.initial.digest,"configuration":candidate.configuration,
+            "execution":candidate.execution})
+    }
+
+    /// Reuse only a completely verified original population. Partial campaign
+    /// admission is a separate transition; neither absence nor an unsealed
+    /// outcome authorizes retry here. All configurations validate before the
+    /// returned summaries can reach execution/presentation.
+    pub(in crate::sweep) fn resume_campaign_outcomes(
+        &self,
+        parent: &Path,
+        results: &Path,
+        plan: &SweepPlan,
+    ) -> Result<crate::sweep::resume::State, Error> {
+        let inspection = self.inspect_campaigns(
+            parent,
+            results,
+            plan,
+            crate::workloads::recovery::verify_retained,
+        )?;
+        if !inspection.unsettled.is_empty()
+            || inspection.candidates.len()
+                != inspection
+                    .layouts
+                    .iter()
+                    .map(|layout| layout.plan.slots.len())
+                    .sum::<usize>()
+        {
+            return Err(resume_error(
+                "campaign continuation requires saved-slot validation; some slots need explicit recovery or untouched-slot admission",
+            ));
+        }
+        let mut remaining = 256 * 1024 * 1024;
+        let mut reused = crate::sweep::resume::State::default();
+        for candidate in inspection.candidates {
+            let path = self.campaign_completion_path(candidate.configuration, candidate.slot);
+            let bytes = crate::runner::campaign::reading::bounded_relative(
+                &self.directory,
+                path.strip_prefix(&self.directory).expect("derived receipt path"),
+                remaining.min(1024 * 1024),
+            )
+                .map_err(|_| resume_error("campaign receipt is missing or unreadable; explicit recovery is required, not retry"))?;
+            remaining -= bytes.len() as u64;
+            let receipt: Receipt = serde_json::from_slice(&bytes)
+                .map_err(|_| resume_error("campaign completion receipt is malformed"))?;
+            if receipt.schema_version != 1
+                || receipt.scope != SCOPE
+                || receipt.configuration != candidate.configuration
+                || receipt.execution != candidate.execution
+                || receipt.input_digest != self.initial.digest
+                || receipt.roots != candidate.roots
+                || !receipt.fingerprint.valid()
+            {
+                return Err(resume_error(
+                    "campaign receipt identity or derived evidence roots differ",
+                ));
+            }
+            let actual = self.snapshotter.fingerprint(
+                &candidate.roots,
+                &self.campaign_completion_context(&candidate),
+                false,
+                &[],
             )?;
+            if actual != receipt.fingerprint {
+                return Err(resume_error("campaign completed evidence changed"));
+            }
+            reused
+                .groups
+                .entry(candidate.configuration)
+                .or_default()
+                .push(candidate.summary);
         }
-        for index in &unsettled {
-            let record = &records[*index];
-            let layout = &layouts[record.configuration];
-            let slot = &layout.plan.slots[record.slot];
-            completed::publish(
-                &self
-                    .directory
-                    .join("campaign-unsettled")
-                    .join(format!("{:06}/{:06}.json", record.configuration, slot.id)),
-                &json!({"schema_version":1,"scope":"unsealed-slot-recovery-required-not-retry-permission",
-                    "configuration":record.configuration,"execution":layout.plan.execution(slot),
-                    "input_digest":self.initial.digest,"outcome":record.path}),
-            )?;
-        }
-        if unsettled.is_empty() {
-            Ok(())
-        } else {
-            Err(resume_error(
-                "some campaign slots require recovery; completed peers were sealed without retry",
-            ))
-        }
+        Ok(reused)
     }
 }
 
@@ -292,7 +433,7 @@ fn preflight(layouts: &[Layout]) -> Result<(), Error> {
 fn slot_roots(
     owner: SlotOwner<'_>,
     path: &Path,
-    evidence: OutcomeEvidence<'_>,
+    evidence: &OutcomeEvidence<'_>,
     compatibility: &crate::cassette::Compatibility,
     verify: &impl Fn(&crate::workloads::recovery::RetainedOutcomeContext<'_>) -> Result<(), Error>,
 ) -> Result<Vec<Root>, Error> {

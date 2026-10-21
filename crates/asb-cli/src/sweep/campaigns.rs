@@ -26,6 +26,65 @@ fn error(reason: &str) -> Error {
     Error::Input(format!("sweep campaign: {reason}"))
 }
 
+/// Resume consumes original private inputs; an explicit source-root argument
+/// may confirm, but never redirect, their persisted source identity. This does
+/// not reopen the archive or require the original public source to still exist.
+pub(super) fn validate_resume_options(
+    results: &Path,
+    plan: &plan::SweepPlan,
+    options: Options<'_>,
+) -> Result<(), Error> {
+    let Some(intent) = &plan.execution else {
+        if options.repeat.is_some() || options.track.is_some() || options.seed.is_some() {
+            return Err(error(
+                "legacy sweep has no saved campaign selection; start a fresh sweep to change repeat/track/seed",
+            ));
+        }
+        return Ok(());
+    };
+    if options.repeat.is_some_and(|repeat| repeat != intent.repeat)
+        || options
+            .track
+            .is_some_and(|track| Some(track) != intent.selector)
+        || options.seed.is_some_and(|seed| Some(seed) != intent.seed)
+    {
+        return Err(error(
+            "repeat, track or seed differs from the saved campaign selection; omit these options to reuse the original plan",
+        ));
+    }
+    let Some(requested) = options.cassette_root else {
+        return Ok(());
+    };
+    for (index, (entry, layout)) in plan
+        .entries
+        .iter()
+        .zip(plan.read_campaigns(results)?)
+        .enumerate()
+    {
+        let original = layout
+            .plan
+            .recording
+            .as_ref()
+            .or(layout.plan.replay_source.as_ref())
+            .or_else(|| layout.plan.replay_inputs.first().map(|input| &input.source))
+            .ok_or_else(|| {
+                error("saved campaign has no cassette source; omit --cassette-root when resuming")
+            })?;
+        let expected = std::path::absolute(
+            requested
+                .join(execution::result_name(index, Path::new(&entry.reference)))
+                .join("cassettes"),
+        )
+        .map_err(crate::io_error)?;
+        if original.parent() != Some(expected.as_path()) {
+            return Err(error(
+                "--cassette-root differs from the saved campaign source; omit it to use the original private inputs",
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(all(test, unix))]
 mod tests;
 

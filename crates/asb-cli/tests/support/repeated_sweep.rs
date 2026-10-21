@@ -135,6 +135,64 @@ fn campaign_input_seals_stay_stable_after_record_publication_and_offline_replay(
         }
     };
     check(false);
+    let assert_reused = |provider: Option<&RecordingProvider>, mode: &str| {
+        let mut paths = vec![
+            project.0.join("attempts.jsonl"),
+            project.0.join("sweep-results/plan.json"),
+            seal_path.clone(),
+        ];
+        for slot in 1..=4 {
+            paths.push(project.0.join(format!(
+                "sweep-results/.checkpoint/campaign-completed/000000/{slot:06}.json"
+            )));
+        }
+        let before: Vec<_> = paths.iter().map(|path| fs::read(path).unwrap()).collect();
+        let rejected = sweep(
+            &project,
+            provider,
+            &[mode, "--resume", "--cassette-root", "other-recordings"],
+        );
+        assert!(!rejected.status.success());
+        assert!(String::from_utf8_lossy(&rejected.stderr).contains("saved campaign source"));
+        for (option, value) in [("--repeat", "3"), ("--seed", "999"), ("--track", "1")] {
+            if mode != "--replay" && option != "--repeat" {
+                continue;
+            }
+            let rejected = sweep(&project, provider, &[mode, "--resume", option, value]);
+            assert!(!rejected.status.success());
+            assert!(String::from_utf8_lossy(&rejected.stderr).contains("saved campaign selection"));
+        }
+        for arguments in [
+            vec![mode, "--resume"],
+            vec![
+                mode,
+                "--resume",
+                "--repeat",
+                "2",
+                "--cassette-root",
+                "recordings",
+            ],
+        ] {
+            let output = sweep(&project, provider, &arguments);
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let rows = records(&output.stdout);
+            assert_eq!(rows.len(), 4);
+            assert!(rows.iter().all(|row| row["reused"] == true));
+        }
+        for (path, bytes) in paths.iter().zip(before) {
+            assert!(
+                fs::read(path).unwrap() == bytes,
+                "historical bytes changed: {}",
+                path.display()
+            );
+        }
+    };
+    assert_reused(Some(&provider), "--record");
     assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 4);
     drop(provider);
     let replayed = sweep(
@@ -157,6 +215,13 @@ fn campaign_input_seals_stay_stable_after_record_publication_and_offline_replay(
         String::from_utf8_lossy(&replayed.stderr)
     );
     check(true);
+    let public_source = project
+        .0
+        .join("recordings/000-benchmark/cassettes/recording.asb.zip");
+    let hidden_source = public_source.with_extension("held-aside");
+    fs::rename(&public_source, &hidden_source).unwrap();
+    assert_reused(None, "--replay");
+    fs::rename(hidden_source, public_source).unwrap();
     assert_eq!(
         records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
         8
@@ -199,6 +264,14 @@ fn campaign_input_seals_stay_stable_after_record_publication_and_offline_replay(
     assert_eq!(
         records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
         12
+    );
+    let rejected = sweep(&project, None, &["--replay", "--resume"]);
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("saved-slot validation"));
+    assert_eq!(
+        records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+        12,
+        "unknown grades are recovery-required, never implicit retries"
     );
 }
 
@@ -516,10 +589,13 @@ fn default_sweep_bundle_survives_history_and_replay_concurrency_changes() {
     );
     let index = project.0.join("sweep-results/plan.json");
     let before = fs::read(&index).unwrap();
+    // This custom-client fixture intentionally has no complete runtime input
+    // closure. Fresh grades/reports work, but absent optional seals cannot be
+    // promoted into permission to skip or retry its historical executions.
     for arguments in [
         vec!["--import-grades"],
         vec!["--replay", "--resume"],
-        vec!["--replay", "--resume", "--repeat", "1"],
+        vec!["--replay", "--resume", "--repeat", "2"],
         vec!["--replay", "--resume", "--reconcile-completed"],
     ] {
         assert!(!sweep(&project, None, &arguments).status.success());

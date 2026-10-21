@@ -321,6 +321,115 @@ fn native_false_grades_seal_without_invented_remote_allocations_or_replacement()
 }
 
 #[test]
+fn existing_campaign_receipts_verify_exact_original_identity_and_derived_evidence() {
+    for case in [
+        "valid",
+        "schema",
+        "scope",
+        "configuration",
+        "campaign",
+        "batch",
+        "slot",
+        "seed",
+        "input",
+        "roots",
+        "fingerprint",
+        "log",
+        "missing",
+        "symlink",
+        "directory-symlink",
+        "root-symlink",
+        "oversized",
+        "unsealed",
+    ] {
+        let (fixture, plan, results, state) = fixture();
+        state.seal_campaigns(&fixture.0, &results, &plan).unwrap();
+        let path = results.join(".checkpoint/campaign-completed/000001/000002.json");
+        let original = fs::read(&path).unwrap();
+        let earlier = results.join(".checkpoint/campaign-completed/000000/000001.json");
+        let earlier_bytes = fs::read(&earlier).unwrap();
+        let mut receipt: Value = serde_json::from_slice(&original).unwrap();
+        let layouts = plan.read_campaigns(&results).unwrap();
+        match case {
+            "schema" => receipt["schema_version"] = json!(2),
+            "scope" => receipt["scope"] = json!("other"),
+            "configuration" => receipt["configuration"] = json!(0),
+            "campaign" => receipt["execution"]["campaign"] = json!("foreign"),
+            "batch" => receipt["execution"]["batch"] = json!(1),
+            "slot" => receipt["execution"]["slot"] = json!(1),
+            "seed" => receipt["execution"]["replay_seed"] = json!(999),
+            "input" => receipt["input_digest"] = json!("f".repeat(64)),
+            "roots" => receipt["roots"][0]["path"] = json!(fixture.0.join("foreign")),
+            "fingerprint" => receipt["fingerprint"]["digest"] = json!("f".repeat(64)),
+            "log" => fs::write(layouts[1].root.join("batch-2/run.jsonl"), "changed").unwrap(),
+            "missing" => fs::remove_file(&path).unwrap(),
+            "symlink" => {
+                fs::remove_file(&path).unwrap();
+                std::os::unix::fs::symlink("absent", &path).unwrap();
+            }
+            "directory-symlink" | "root-symlink" => {
+                let directory = if case == "root-symlink" {
+                    results.join(".checkpoint/campaign-completed")
+                } else {
+                    path.parent().unwrap().to_path_buf()
+                };
+                let target = fixture.0.join("aliased-receipts");
+                fs::rename(&directory, &target).unwrap();
+                std::os::unix::fs::symlink(&target, &directory).unwrap();
+            }
+            "oversized" => fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_len(1024 * 1024 + 1)
+                .unwrap(),
+            "unsealed" => {
+                fs::remove_file(layouts[1].root.join("batch-2/outcomes/1.json")).unwrap();
+            }
+            _ => (),
+        }
+        if !matches!(
+            case,
+            "log"
+                | "missing"
+                | "symlink"
+                | "directory-symlink"
+                | "root-symlink"
+                | "oversized"
+                | "unsealed"
+        ) {
+            fs::write(&path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        }
+        let before = fs::read(results.join("plan.json")).unwrap();
+        let result = state.resume_campaign_outcomes(&fixture.0, &results, &plan);
+        if case == "valid" {
+            let reused = result.unwrap();
+            assert_eq!(reused.groups.len(), 2);
+            for summaries in reused.groups.values() {
+                assert_eq!(summaries.len(), 2);
+                assert!(
+                    summaries
+                        .iter()
+                        .all(|summary| summary["workload_success"] == false)
+                );
+            }
+        } else {
+            assert!(result.is_err(), "{case}");
+        }
+        assert_eq!(
+            fs::read(results.join("plan.json")).unwrap(),
+            before,
+            "{case}"
+        );
+        assert!(
+            !results.join(".checkpoint/campaign-unsettled").exists(),
+            "{case}"
+        );
+        assert_eq!(fs::read(earlier).unwrap(), earlier_bytes, "{case}");
+    }
+}
+
+#[test]
 fn foreign_prepared_or_start_identity_in_later_configuration_seals_nothing() {
     for field in [
         "agent",

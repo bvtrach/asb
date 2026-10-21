@@ -41,6 +41,55 @@ pub(crate) fn bounded(path: &Path, limit: u64) -> Result<Vec<u8>, Error> {
     bounded_file(file, limit)
 }
 
+/// Descriptor-relative metadata/read entry points for private receipt owners.
+/// Unlike final-component O_NOFOLLOW, these also reject aliased ancestors.
+pub(crate) fn inspect_relative(root: &Path, relative: &Path) -> Result<Option<u64>, Error> {
+    let Some(file) = open_relative(root, relative)? else {
+        return Ok(None);
+    };
+    let metadata = file.metadata().map_err(io_error)?;
+    if !metadata.is_file() {
+        return Err(invalid("relative input is not a regular file"));
+    }
+    Ok(Some(metadata.len()))
+}
+
+pub(crate) fn bounded_relative(root: &Path, relative: &Path, limit: u64) -> Result<Vec<u8>, Error> {
+    let file =
+        open_relative(root, relative)?.ok_or_else(|| invalid("relative input is missing"))?;
+    bounded_file(file, limit)
+}
+
+fn open_relative(root: &Path, relative: &Path) -> Result<Option<File>, Error> {
+    #[cfg(unix)]
+    {
+        rooted::open_optional(root, relative)
+    }
+    #[cfg(not(unix))]
+    {
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
+            return Err(invalid("relative input path is not canonical"));
+        }
+        let mut path = root.to_path_buf();
+        for part in relative.components() {
+            path.push(part);
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(invalid("relative input ancestor is aliased"));
+                }
+                Ok(_) => (),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(io_error(error)),
+            }
+        }
+        File::open(path).map(Some).map_err(io_error)
+    }
+}
+
 fn bounded_file(file: File, limit: u64) -> Result<Vec<u8>, Error> {
     let metadata = file.metadata().map_err(io_error)?;
     if !metadata.is_file() || metadata.len() > limit {
@@ -385,9 +434,9 @@ mod rooted {
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::{ffi::OsStrExt, fs::OpenOptionsExt};
 
-    fn child(parent: &File, name: &OsStr, directory: bool) -> Result<File, Error> {
-        let name =
-            CString::new(name.as_bytes()).map_err(|_| invalid("invalid observation component"))?;
+    fn child(parent: &File, name: &OsStr, directory: bool) -> std::io::Result<File> {
+        let name = CString::new(name.as_bytes())
+            .map_err(|_| std::io::Error::other("invalid observation component"))?;
         let flags = libc::O_RDONLY
             | libc::O_NOFOLLOW
             | libc::O_CLOEXEC
@@ -397,12 +446,23 @@ mod rooted {
         // successful openat yields a fresh descriptor owned only by this File.
         let descriptor = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags) };
         if descriptor < 0 {
-            return Err(io_error(std::io::Error::last_os_error()));
+            return Err(std::io::Error::last_os_error());
         }
         Ok(unsafe { File::from_raw_fd(descriptor) })
     }
 
     pub(super) fn open(root: &Path, relative: &Path) -> Result<File, Error> {
+        open_optional(root, relative)?.ok_or_else(|| invalid("observation path is missing"))
+    }
+
+    pub(super) fn open_optional(root: &Path, relative: &Path) -> Result<Option<File>, Error> {
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
+            return Err(invalid("observation path is not relative and canonical"));
+        }
         let mut directory = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -413,9 +473,13 @@ mod rooted {
             let std::path::Component::Normal(name) = part else {
                 return Err(invalid("observation path is not relative and canonical"));
             };
-            let file = child(&directory, name, parts.peek().is_some())?;
+            let file = match child(&directory, name, parts.peek().is_some()) {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(io_error(error)),
+            };
             if parts.peek().is_none() {
-                return Ok(file);
+                return Ok(Some(file));
             }
             directory = file;
         }
