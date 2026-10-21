@@ -663,6 +663,9 @@ fn parse_models(
         .collect::<Vec<_>>();
     models.sort_unstable_by(|left, right| left.id.cmp(&right.id));
     models.dedup_by(|left, right| left.id == right.id);
+    for model in &models {
+        crate::selection_names::validate(&model.id, "model").map_err(Error::Input)?;
+    }
     Ok(models)
 }
 

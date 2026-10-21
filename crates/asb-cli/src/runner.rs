@@ -71,6 +71,9 @@ struct RunResult<'a> {
     steps: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cassette: Option<String>,
+    /// Actual capture directory, including a CLI --measurements override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    measurement_directory: Option<PathBuf>,
     stdout: String,
     stderr: String,
 }
@@ -976,6 +979,11 @@ fn run_mode(
         cassette: tape_cassette
             .as_ref()
             .map(|(_, cassette)| cassette.display().to_string()),
+        measurement_directory: measurement_path
+            .as_ref()
+            .map(std::path::absolute)
+            .transpose()
+            .map_err(io_error)?,
         stdout: bounded(&child.stdout),
         stderr,
     };
@@ -1273,7 +1281,7 @@ fn write_log(
     })
 }
 
-fn resolve_log_path(config_path: &Path, configured_path: &str) -> PathBuf {
+pub(crate) fn resolve_log_path(config_path: &Path, configured_path: &str) -> PathBuf {
     let path = Path::new(configured_path);
     if path.is_absolute() {
         path.to_path_buf()
@@ -2256,6 +2264,7 @@ mod tests {
             },
             steps: Some(2),
             cassette: None,
+            measurement_directory: None,
             stdout: "done".into(),
             stderr: String::new(),
         }

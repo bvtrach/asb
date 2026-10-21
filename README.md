@@ -15,7 +15,7 @@ asb setup tui
 asb setup --agent AGENT --workload WORKLOAD --provider PROVIDER --model MODEL [--trial INSTANCE] [--trial-set FILE] [--workspace DIR] [--output FILE]
 asb run CONFIG [--record|--replay] [--cassette FILE] [--json] [--measurements DIR]
 asb sweep SWEEP.toml [--record|--replay] [--cassette-root DIR] [--respect-record-timings] [--resume] [--json]
-asb compare SWEEP.toml
+asb compare BENCHMARK_OR_SWEEP.toml [--report]
 ```
 
 Before starting each sweep configuration, ASB prints its filename, agent,
@@ -328,7 +328,7 @@ for one run.
 
 `asb sweep` automatically runs the same comparison after all benchmark entries
 finish, including partial sweeps so failed or missing entries remain visible.
-`asb compare SWEEP.toml` can be run at any time to regenerate
+`asb compare BENCHMARK_OR_SWEEP.toml` can be run at any time to regenerate
 `results/<sweep>-comparison/report.html` in
 addition to `comparison.json` and SVG charts. Open the report locally for a
 professional, offline overview: every benchmark row shows its agent, provider,
@@ -336,6 +336,62 @@ model, workload, all numeric measurements, and links to raw run/collector/log
 artifacts. Checkbox filters can enable or disable individual benchmarks,
 agents, providers, models, and workloads without contacting a provider or
 rerunning the sweep.
+
+For a single benchmark, pass the same TOML used by `asb run`. ASB reads the
+latest record from each replica's configured log and the actual measurement
+directory (including `--measurements` overrides recorded by current runs).
+Optional collection is not required: available run metrics are still graphed,
+and unavailable observations remain unknown. Reports are written beside the
+input under `results/<input-stem>-comparison/`. Add `--report` to generate the
+HTML/SVG files and open the HTML in your default browser; ordinary comparison
+and automatic sweep reports never launch a browser.
+
+### Create sweeps without the TUI
+
+Repeat `--agent`, `--provider`, `--model`, `--workload`, `--trial`, `--trial-set`,
+or `--measure` (`--collector` is an alias) in `asb setup` for multi-selection.
+Any repeated selection option produces benchmark files **and** a sweep manifest,
+even when duplicate values reduce to a single combination. For a matrix,
+`--output` names the sweep; its benchmark files go in a new sibling directory.
+Existing sweep files are never overwritten. With no repeated selection and
+only one expanded combination, `--output` still names a normal benchmark file.
+
+```sh
+asb setup --agent codex --agent opencode \
+  --provider openrouter --model openai/gpt-4o-mini \
+  --workload bug-fix --workload feature-addition \
+  --measure system --measure agent-memory --output experiments.toml
+asb sweep experiments.toml
+asb compare --report experiments.toml
+```
+
+Unqualified models apply to all selected providers. For provider-specific
+catalogs use `--model openrouter=MODEL --model ollama=MODEL` together with both
+`--provider` selections. Similarly, `--trial WORKLOAD=INSTANCE` scopes an
+instance to one selected workload. Trial-set files are relative to the project's
+workloads directory and declare their owning workload. When `--trial` is omitted,
+all enabled trials from each selected trial set are included, like the TUI.
+Collector dependencies are included automatically. Concurrency remains one
+replica count per generated benchmark, distinct from the sweep's `--jobs`.
+
+Every selection option also accepts the reserved keyword `all`: `--agent all`,
+`--provider all`, `--model all`, `--workload all`, `--trial all`,
+`--trial-set all`, and `--measure all` (or `--collector all`). This expands to
+the corresponding individual selections and uses the same sweep rules and
+configuration-count limit. Mixing `all` with explicit values selects their
+union without duplicate combinations. No selectable entry may be named `all`;
+ASB rejects that identifier in dynamic catalogs and CI checks built-in registries.
+
+`--model all` queries each selected provider's current tool-capable model
+catalog; `--model openrouter=all` limits expansion to that provider. Discovery
+errors stop setup before writing files, rather than silently using a partial
+or fallback catalog. `--trial WORKLOAD=all` uses that workload's enabled trial
+set, or its installed original instance catalog. Native prompt workloads have
+one implicit task. `--trial-set all` selects matching `*.workload.toml` files
+in the configured workload directory. `--workload all` includes bundled,
+registered external and locally defined workloads; it does not install missing
+workloads or bypass their trial-selection requirements. Paths (`--output`,
+`--workspace`) and the single numeric `--concurrency` are not selection options.
 
 `asb run CONFIG --record` runs the same configuration through ASB's built-in
 local tape proxy and writes a JSONL cassette (by default below `cassettes/`

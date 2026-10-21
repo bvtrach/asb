@@ -104,7 +104,12 @@ impl Recorded {
                 None => "recorded task evaluation unavailable",
             }
         };
-        let mut status = format!("{grade}; optional measurements unavailable (using task outcome)");
+        let source = if self.source == "run-log" {
+            "latest run log"
+        } else {
+            "task outcome"
+        };
+        let mut status = format!("{grade}; optional measurements unavailable (using {source})");
         if let Some(reason) = self.summary["failure_reason"].as_str() {
             status.push_str(&format!("; run failure: {reason}"));
         } else if self.summary["process_success"] == false {
@@ -226,6 +231,92 @@ pub(crate) fn load(directory: &Path, total: usize) -> Result<BTreeMap<usize, Rec
         }
     }
     Ok(outcomes)
+}
+
+/// Ordinary runs append logs and may share an outcome directory with other
+/// benchmarks. Select the last complete record of each configured replica log,
+/// never arbitrary outcome filenames or another benchmark's measurements.
+pub(crate) fn load_run(
+    config_path: &Path,
+    config: &crate::benchmark::BenchmarkConfig,
+) -> Result<BTreeMap<usize, Recorded>, Error> {
+    use std::io::{Seek, SeekFrom};
+    let mut records = BTreeMap::new();
+    for index in 1..=config.concurrency {
+        let selected = crate::runner::replica::configuration(
+            config,
+            Identity {
+                index,
+                total: config.concurrency,
+            },
+        )?;
+        let path = crate::runner::resolve_log_path(config_path, &selected.log_file);
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(invalid(&path, &format!("cannot inspect run log: {error}"))),
+            Ok(metadata) if !metadata.is_file() => {
+                return Err(invalid(
+                    &path,
+                    "run log must be a regular file, not a symlink or pipe",
+                ));
+            }
+            Ok(_) => (),
+        }
+        let mut file = match fs::File::open(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            result => result.map_err(|error| invalid(&path, &error.to_string()))?,
+        };
+        let size = file.metadata().map_err(crate::io_error)?.len();
+        let offset = size.saturating_sub(super::MAX_BYTES);
+        file.seek(SeekFrom::Start(offset))
+            .map_err(crate::io_error)?;
+        let mut tail = Vec::new();
+        file.take(super::MAX_BYTES + 1)
+            .read_to_end(&mut tail)
+            .map_err(crate::io_error)?;
+        if tail.len() as u64 > super::MAX_BYTES {
+            return Err(invalid(
+                &path,
+                "log changed while reading; retry after the run finishes",
+            ));
+        }
+        let line = tail
+            .split(|byte| *byte == b'\n')
+            .rfind(|line| !line.iter().all(u8::is_ascii_whitespace))
+            .ok_or_else(|| invalid(&path, "run log is empty"))?;
+        if offset > 0 && line.len() == tail.len() {
+            return Err(invalid(&path, "latest run log record exceeds 16 MiB"));
+        }
+        let mut summary: Value = serde_json::from_slice(line)
+            .map_err(|error| invalid(&path, &format!("invalid latest run log JSON: {error}")))?;
+        if summary["schema_version"] != 2
+            || !summary["task"].is_object()
+            || summary["process_success"].as_bool().is_none()
+            || (!summary["workload_success"].is_null()
+                && summary["workload_success"].as_bool().is_none())
+        {
+            return Err(invalid(
+                &path,
+                "latest run log lacks a supported task summary",
+            ));
+        }
+        // Logs include client transcripts; reports must never copy them.
+        if let Some(object) = summary.as_object_mut() {
+            object.remove("stdout");
+            object.remove("stderr");
+        }
+        records.insert(
+            index,
+            Recorded {
+                path,
+                summary,
+                workload_cleanup: false,
+                proxy_cleanup: false,
+                source: "run-log",
+            },
+        );
+    }
+    Ok(records)
 }
 
 pub(super) fn add_imports(

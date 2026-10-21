@@ -1,7 +1,6 @@
 //! Interactive, modular setup wizard built with Ratatui.
 
 use crate::benchmark::{BenchmarkConfig, MeasurementConfig};
-use crate::sweep::SweepFile;
 use crate::{Error, agents, install, measurements, models, project, providers, workloads};
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
@@ -64,6 +63,19 @@ struct Pane {
 
 impl Pane {
     fn new(choices: Vec<Choice>) -> Self {
+        let choices = choices
+            .into_iter()
+            .filter(|choice| {
+                let name = choice
+                    .label
+                    .strip_suffix(" [trial set]")
+                    .unwrap_or(&choice.label);
+                crate::selection_names::validate(name, "selection").is_ok()
+                    && choice.model.as_deref().is_none_or(|model| {
+                        crate::selection_names::validate(model, "model").is_ok()
+                    })
+            })
+            .collect::<Vec<_>>();
         Self {
             selected: vec![false; choices.len()],
             sections: vec![None; choices.len()],
@@ -1711,7 +1723,7 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
     {
         stamp = stamp.saturating_add(1);
     }
-    let mut paths = Vec::new();
+    let mut configs = Vec::new();
     let mut index = 0usize;
     for agent in &agents {
         for provider in &providers {
@@ -1722,7 +1734,6 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
                 for (workload, trial_set, trials) in &workloads {
                     for trial in trials {
                         let name = format!("asb-test-{stamp}-{index:03}.toml");
-                        let path = app.root.join(&name);
                         let config = BenchmarkConfig {
                             agent: agent.clone(),
                             workload: workload.clone(),
@@ -1739,30 +1750,21 @@ fn generate_configs(app: &App) -> Result<Generated, Error> {
                                 collectors: measures.clone(),
                             }),
                         };
-                        let text = toml::to_string_pretty(&config).map_err(|error| {
-                            Error::Input(format!("cannot render {name}: {error}"))
-                        })?;
-                        fs::write(&path, text).map_err(|error| {
-                            Error::Io(format!("cannot write {}: {error}", path.display()))
-                        })?;
-                        paths.push(name);
+                        configs.push(config);
                         index += 1;
                     }
                 }
             }
         }
     }
-    if paths.is_empty() {
+    if configs.is_empty() {
         return Err(Error::Input(
             "no compatible provider/model selections were made".into(),
         ));
     }
     let sweep_name = format!("asb-sweep-{stamp}.toml");
     let sweep = app.root.join(&sweep_name);
-    let text = toml::to_string_pretty(&SweepFile { configs: paths })
-        .map_err(|error| Error::Input(format!("cannot render {sweep_name}: {error}")))?;
-    fs::write(&sweep, text)
-        .map_err(|error| Error::Io(format!("cannot write {}: {error}", sweep.display())))?;
+    crate::config::matrix::publish_sweep(&sweep, configs, &mut std::io::sink())?;
     Ok(Generated {
         tests: index,
         sweep,
@@ -1807,6 +1809,21 @@ mod tests {
     use ratatui::style::{Color, Style};
     use std::collections::BTreeSet;
     use std::time::Instant;
+
+    #[test]
+    fn reserved_all_is_never_a_selectable_tui_entry() {
+        let mut reserved_model = choice("provider:all");
+        reserved_model.model = Some("all".into());
+        let pane = Pane::new(vec![
+            choice("all"),
+            choice("all [trial set]"),
+            reserved_model,
+            choice("small"),
+        ]);
+        assert_eq!(pane.choices.len(), 1);
+        assert_eq!(pane.choices[0].label, "small");
+        assert_eq!(pane.selected, [false]);
+    }
 
     fn choice(name: &str) -> Choice {
         Choice {
@@ -2464,22 +2481,14 @@ mod tests {
         app.panes[3].selected[0] = true;
         let generated = generate_configs(&app).expect("configs generated");
         assert_eq!(generated.tests, 1);
-        let test_path = std::fs::read_dir(&root)
-            .expect("test directory")
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .find(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with("asb-test-") && name.ends_with(".toml"))
-            })
-            .expect("generated test config");
+        let manifest = crate::sweep::read_manifest(&generated.sweep).unwrap();
+        let test_path = root.join(&manifest.configs[0]);
         let config_text = std::fs::read_to_string(test_path).expect("generated config");
         let config: crate::benchmark::BenchmarkConfig =
             toml::from_str(&config_text).expect("generated config parses");
         assert_eq!(config.concurrency, 1);
         let sweep = std::fs::read_to_string(&generated.sweep).expect("sweep written");
-        assert!(sweep.contains("asb-test-"));
+        assert!(sweep.contains("benchmark-000.toml"));
         let _ = std::fs::remove_dir_all(root);
     }
 

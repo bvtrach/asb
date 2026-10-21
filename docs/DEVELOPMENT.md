@@ -46,6 +46,13 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+`cargo test --locked --offline --test compare_setup` checks repeated CLI setup
+selections, scoped models/trials, dependency expansion, non-overwriting sweep
+publication, standalone measured/unmeasured reports and an injected browser
+opener. Browser tests do not launch a real GUI or contact a provider.
+Reserved-`all` tests cover complete registry expansion, enabled/original trial
+populations, catalog-name collisions and provider-scoped model discovery using
+only a bounded loopback HTTP fixture with no real provider credentials.
 `cargo test --locked cassette::` exercises the provider-free multi-track backend:
 manifest and compatibility bounds, stable seeded choices, selector edge cases,
 bounded metadata inspection and selective payload corruption checks. The backend

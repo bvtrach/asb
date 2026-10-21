@@ -47,7 +47,15 @@ pub(crate) fn planning_catalog(
     name: &str,
     directory: &Path,
 ) -> Result<Option<PlanningCatalog>, String> {
-    adapters::find(name).map_or(Ok(None), |adapter| adapter.planning_catalog(directory))
+    crate::selection_names::validate(name, "workload")?;
+    let catalog =
+        adapters::find(name).map_or(Ok(None), |adapter| adapter.planning_catalog(directory))?;
+    if let Some(catalog) = &catalog {
+        for task in &catalog.task_ids {
+            crate::selection_names::validate(task, "trial")?;
+        }
+    }
+    Ok(catalog)
 }
 
 pub(crate) fn describe_selection(
@@ -99,6 +107,10 @@ pub(crate) fn prepare_task(
 }
 
 const MAX_PROMPT_BYTES: u64 = 64 * 1024;
+
+pub(crate) fn builtin_names() -> impl Iterator<Item = &'static str> {
+    BUILTIN.iter().map(|(name, _)| *name)
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -894,6 +906,7 @@ fn set_executable_io(path: &Path) -> Result<(), std::io::Error> {
 
 /// Load one workload prompt by name and report the available file names on a miss.
 pub fn load(name: &str, directory: &Path) -> Result<String, String> {
+    crate::selection_names::validate(name, "workload")?;
     let id = name.strip_prefix("original.").unwrap_or(name);
     if id.is_empty()
         || !id
@@ -990,10 +1003,21 @@ pub(crate) fn selected_trial(
 }
 
 pub fn read_trial_set(path: &Path) -> Result<TrialSet, String> {
+    if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+        let name = name
+            .strip_suffix(".workload.toml")
+            .or_else(|| name.strip_suffix(".toml"))
+            .unwrap_or(name);
+        crate::selection_names::validate(name, "trial set")?;
+    }
     let text = fs::read_to_string(path)
         .map_err(|error| format!("cannot read trial set {}: {error}", path.display()))?;
     let config: TrialSet = toml::from_str(&text)
         .map_err(|error| format!("invalid trial set {}: {error}", path.display()))?;
+    crate::selection_names::validate(&config.workload, "workload")?;
+    for trial in &config.trials {
+        crate::selection_names::validate(&trial.id, "trial")?;
+    }
     if config.workload.trim().is_empty() || config.trials.is_empty() {
         return Err(format!(
             "trial set {} must contain a workload and at least one trial",
@@ -1028,10 +1052,15 @@ pub(crate) fn external_adapter_names() -> impl Iterator<Item = &'static str> {
 
 /// Installed dataset tasks replace synthetic defaults; malformed data is an error.
 pub fn installed_trials(name: &str, directory: &Path) -> Result<Vec<Trial>, String> {
-    adapters::find(name).map_or_else(
+    crate::selection_names::validate(name, "workload")?;
+    let trials = adapters::find(name).map_or_else(
         || Ok(trial_ids(name)),
         |adapter| adapter.installed_trials(directory),
-    )
+    )?;
+    for trial in &trials {
+        crate::selection_names::validate(&trial.id, "trial")?;
+    }
+    Ok(trials)
 }
 
 pub fn write_default_trial_set(name: &str, directory: &Path) -> Result<(), std::io::Error> {

@@ -13,6 +13,11 @@ const SETUP_OPTIONS: &[&str] = &[
     "--workload",
     "--provider",
     "--model",
+    "--trial",
+    "--trial-set",
+    "--measure",
+    "--collector",
+    "--concurrency",
     "--workspace",
     "--output",
 ];
@@ -73,7 +78,7 @@ fn generate_bash() -> String {
     simple_case(&mut script, "setup", SETUP_OPTIONS);
     simple_case(&mut script, "run", RUN_OPTIONS);
     simple_case(&mut script, "sweep", SWEEP_OPTIONS);
-    simple_case(&mut script, "compare", &[]);
+    simple_case(&mut script, "compare", &["--report"]);
     nested_case(
         &mut script,
         "provider",
@@ -148,7 +153,7 @@ fn generate_zsh() -> String {
     zsh_simple_case(&mut script, "setup", SETUP_OPTIONS);
     zsh_simple_case(&mut script, "run", RUN_OPTIONS);
     zsh_simple_case(&mut script, "sweep", SWEEP_OPTIONS);
-    zsh_simple_case(&mut script, "compare", &[]);
+    zsh_simple_case(&mut script, "compare", &["--report"]);
     zsh_nested_case(
         &mut script,
         "provider",
