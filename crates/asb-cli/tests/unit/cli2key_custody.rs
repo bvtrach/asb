@@ -6,6 +6,19 @@ use std::fs::File;
 use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd};
 
+// Keep the historical generic custody cases on their original call shape,
+// but exercise the NEW typed production entries and an actual reservation.
+impl Local {
+    fn spawn(&mut self, command: &mut Command, key: bool) -> Result<String, String> {
+        if key {
+            self.spawn_bridge(command)
+        } else {
+            let command = std::mem::replace(command, Command::new("unused-test-command"));
+            self.spawn_proxy(command).map(|_| String::new())
+        }
+    }
+}
+
 thread_local! {
     static READER_FAIL: Cell<bool> = const { Cell::new(false) };
     static AFTER_SPAWN: Cell<u8> = const { Cell::new(0) };
@@ -165,6 +178,7 @@ fn cleanup_stops_reader_even_when_parent_retains_an_open_output_writer() {
     local.readers.push(Reader {
         stop,
         worker: Some(worker),
+        proxy: false,
     });
     // A retained writer prevents EOF, but cooperative cancellation still exits.
     assert!(local.cleanup().is_ok());
@@ -179,7 +193,10 @@ fn ready_marker_cannot_admit_an_already_exited_child() {
             "print('Codex Bridge API key: fixture-secret',flush=True)",
             true,
         ),
-        ("print('ASB cli2key proxy ready',flush=True)", false),
+        (
+            "import socket,sys,json;port=socket.socket(fileno=int(sys.argv[sys.argv.index('--listen-fd')+1])).getsockname()[1];print('ASB cli2key proxy ready '+json.dumps({'schema_version':1,'host':'127.0.0.1','port':port}),flush=True)",
+            false,
+        ),
     ] {
         let mut local = Local::new().unwrap();
         AFTER_SPAWN.set(3);
@@ -226,7 +243,7 @@ fn final_admission_rechecks_bridge_after_independent_proxy_readiness() {
     assert_eq!(unsafe { libc::poll(&mut exited, 1, 2000) }, 1);
     local
         .spawn(
-            &mut command("import time;print('ASB cli2key proxy ready',flush=True);time.sleep(30)"),
+            &mut command("import socket,sys,json,time;listener=socket.socket(fileno=int(sys.argv[sys.argv.index('--listen-fd')+1]));print('ASB cli2key proxy ready '+json.dumps({'schema_version':1,'host':'127.0.0.1','port':listener.getsockname()[1]}),flush=True);time.sleep(30)"),
             false,
         )
         .unwrap();
@@ -258,8 +275,9 @@ fn final_admission_rechecks_bridge_after_independent_proxy_readiness() {
 #[test]
 fn ignored_lifetime_eof_uses_grace_inside_the_shared_cleanup_budget() {
     let mut local = Local::new().unwrap();
-    let mut proxy =
-        command("import time;print('ASB cli2key proxy ready',flush=True);time.sleep(30)");
+    let mut proxy = command(
+        "import socket,sys,json,time;listener=socket.socket(fileno=int(sys.argv[sys.argv.index('--listen-fd')+1]));print('ASB cli2key proxy ready '+json.dumps({'schema_version':1,'host':'127.0.0.1','port':listener.getsockname()[1]}),flush=True);time.sleep(30)",
+    );
     proxy.stdin(Stdio::piped());
     local.spawn(&mut proxy, false).unwrap();
     let pid = local.children[0].id();
@@ -290,7 +308,6 @@ fn embedded_proxy_finish_cancels_and_reaps_its_owned_curl_before_exit() {
     let curl = crate::tools::host_executable(std::path::Path::new("curl")).unwrap();
     let held = TcpListener::bind("127.0.0.1:0").unwrap();
     held.set_nonblocking(true).unwrap();
-    let port = super::super::free_port().unwrap();
     let mut proxy = Command::new(node);
     proxy
         .env_clear()
@@ -305,15 +322,14 @@ fn embedded_proxy_finish_cancels_and_reaps_its_owned_curl_before_exit() {
             "--import",
             "./observe.mjs",
             "proxy.mjs",
-            "--port",
-            &port.to_string(),
             "--upstream",
             "http://127.0.0.1:1/v1",
         ])
         .stdin(Stdio::piped())
         .stderr(Stdio::null());
     let mut local = Local::new().unwrap();
-    local.spawn(&mut proxy, false).unwrap();
+    let address = local.spawn_proxy(proxy).unwrap();
+    let port = address.port();
     let proxy_pid = local.children[0].id();
     let mut request = TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).unwrap();
     request
@@ -364,11 +380,35 @@ fn embedded_proxy_finish_cancels_and_reaps_its_owned_curl_before_exit() {
         .collect::<Vec<_>>();
     assert_eq!(pids.len(), 1, "expected the hop's one directly owned curl");
     let curl_pid = pids[0];
+    let listener_inode = std::fs::read_to_string("/proc/net/tcp")
+        .unwrap()
+        .lines()
+        .find_map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            (fields.get(1) == Some(&format!("0100007F:{port:04X}").as_str())
+                && fields.get(3) == Some(&"0A"))
+            .then(|| fields[9].to_owned())
+        })
+        .expect("owned listening socket not found");
+    let listener_target = format!("socket:[{listener_inode}]");
+    for entry in std::fs::read_dir(format!("/proc/{curl_pid}/fd")).unwrap() {
+        if let Ok(target) = std::fs::read_link(entry.unwrap().path()) {
+            assert_ne!(
+                target.to_string_lossy(),
+                listener_target,
+                "curl inherited the owned listening socket"
+            );
+        }
+    }
     // SAFETY: pin only the observed direct child of the fixture-owned proxy.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, curl_pid, 0) } as i32;
     assert!(fd >= 0);
     let pinned = unsafe { File::from_raw_fd(fd) };
     local.finish().unwrap();
+    assert!(
+        TcpListener::bind(address).is_ok(),
+        "finish retained a parent/Command/socket duplicate"
+    );
     readers_finished();
     assert_eq!(
         std::fs::read_to_string(root.join("exit-status")).unwrap(),
@@ -539,4 +579,131 @@ fn explicit_session_finish_is_once_reports_uncertainty_and_retains_custody() {
         scope.wait_finished();
         readers_finished();
     }
+}
+
+#[test]
+fn owned_proxy_sessions_are_parallel_distinct_and_release_every_parent_reference() {
+    use std::net::{TcpListener, TcpStream};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/cli2key-owned-listeners")
+        .join(crate::workloads::TaskIdentity::local("parallel", None).attempt_id);
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("proxy.mjs"), super::super::BUILTIN_COMPAT_PROXY).unwrap();
+    std::fs::write(root.join("network-fetch.mjs"), super::super::NETWORK_FETCH).unwrap();
+    let root = root.canonicalize().unwrap();
+    let node = crate::tools::host_executable(std::path::Path::new("node")).unwrap();
+    let sentinel = TcpListener::bind("127.0.0.1:0").unwrap();
+    let sentinel_address = sentinel.local_addr().unwrap();
+    let sessions = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let root = &root;
+                let node = &node;
+                scope.spawn(move || {
+                    let mut command = Command::new(node);
+                    command
+                        .env_clear()
+                        .current_dir(root)
+                        .args(["proxy.mjs", "--upstream", "http://127.0.0.1:1/v1"])
+                        .stdin(Stdio::piped())
+                        .stderr(Stdio::null());
+                    let mut local = Local::new().unwrap();
+                    let address = local.spawn_proxy(command).unwrap();
+                    local.confirm_ready().unwrap();
+                    (local, address)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    let addresses: std::collections::BTreeSet<_> =
+        sessions.iter().map(|(_, address)| *address).collect();
+    assert_eq!(addresses.len(), 4);
+    for (local, address) in sessions {
+        assert!(
+            TcpListener::bind(address).is_err(),
+            "session released the reserved socket"
+        );
+        local.finish().unwrap();
+        let reclaimed =
+            TcpListener::bind(address).expect("finished session retained its owned socket");
+        drop(reclaimed);
+        assert!(
+            TcpStream::connect(sentinel_address).is_ok(),
+            "unrelated sentinel listener was closed"
+        );
+    }
+}
+
+#[test]
+fn proxy_ready_faults_and_late_duplicates_reach_admission_or_finish() {
+    for fault in [
+        "wrong-port",
+        "wrong-host",
+        "zero",
+        "malformed",
+        "duplicate",
+        "oversized",
+    ] {
+        let mut local = Local::new().unwrap();
+        let script = format!(
+            r#"import socket,sys,json,threading,os,time
+listener=socket.socket(fileno=int(sys.argv[sys.argv.index('--listen-fd')+1]))
+threading.Thread(target=lambda:(sys.stdin.buffer.read(),os._exit(0)),daemon=True).start()
+ready={{'schema_version':1,'host':'127.0.0.1','port':listener.getsockname()[1]}}
+fault={fault:?}
+if fault=='wrong-port': ready['port']=1 if ready['port']!=1 else 2
+if fault=='wrong-host': ready['host']='0.0.0.0'
+if fault=='zero': ready['port']=0
+line='ASB cli2key proxy ready '+json.dumps(ready)
+if fault=='malformed': line='ASB cli2key proxy ready broken'
+if fault=='oversized': line='ASB cli2key proxy ready '+'x'*5000
+if fault=='duplicate': line+='\n'+line
+print(line,flush=True)
+time.sleep(30)
+"#
+        );
+        let mut command = command(&script);
+        command.stdin(Stdio::piped());
+        let result = local.spawn_proxy(command);
+        assert!(result.is_err(), "accepted {fault}");
+        let pids: Vec<_> = local.children.iter().map(Child::id).collect();
+        drop(local);
+        for pid in pids {
+            assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+        }
+        readers_finished();
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/cli2key-late-ready")
+        .join(crate::workloads::TaskIdentity::local("late", None).attempt_id);
+    std::fs::create_dir_all(&root).unwrap();
+    let mut command = command(
+        r#"import socket,sys,json,threading,os,time
+listener=socket.socket(fileno=int(sys.argv[sys.argv.index('--listen-fd')+1]))
+threading.Thread(target=lambda:(sys.stdin.buffer.read(),os._exit(0)),daemon=True).start()
+line='ASB cli2key proxy ready '+json.dumps({'schema_version':1,'host':'127.0.0.1','port':listener.getsockname()[1]})
+print(line,flush=True)
+while not os.path.exists('release'): time.sleep(.005)
+print(line,flush=True)
+while True: time.sleep(1)
+"#,
+    );
+    command.current_dir(&root).stdin(Stdio::piped());
+    let mut local = Local::new().unwrap();
+    let address = local.spawn_proxy(command).unwrap();
+    local.confirm_ready().unwrap();
+    std::fs::write(root.join("release"), "release").unwrap();
+    let end = Instant::now() + Duration::from_secs(2);
+    while local.proxy.as_ref().unwrap().check().is_ok() {
+        assert!(Instant::now() < end);
+        std::thread::sleep(POLL);
+    }
+    assert!(local.confirm_ready().is_err());
+    assert!(local.finish().unwrap_err().contains("duplicate ready"));
+    assert!(std::net::TcpListener::bind(address).is_ok());
+    readers_finished();
 }

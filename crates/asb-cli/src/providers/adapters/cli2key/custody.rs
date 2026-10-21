@@ -20,6 +20,7 @@ const MAX_LINES: usize = 64;
 struct Reader {
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
+    proxy: bool,
 }
 
 impl Drop for Reader {
@@ -38,6 +39,8 @@ pub(super) struct Local {
     children: Vec<Child>,
     readers: Vec<Reader>,
     reaper: OwnedReaper,
+    proxy: Option<super::proxy::Watch>,
+    reservation: Option<super::proxy::Reservation>,
 }
 
 impl Local {
@@ -46,10 +49,48 @@ impl Local {
             children: Vec::with_capacity(2),
             readers: Vec::with_capacity(2),
             reaper: OwnedReaper::new("cli2key")?,
+            proxy: None,
+            reservation: None,
         })
     }
 
-    pub(super) fn spawn(&mut self, command: &mut Command, key: bool) -> Result<String, String> {
+    pub(super) fn spawn_bridge(&mut self, command: &mut Command) -> Result<String, String> {
+        self.spawn_output(command, None)
+    }
+
+    pub(super) fn spawn_proxy(
+        &mut self,
+        mut command: Command,
+    ) -> Result<std::net::SocketAddrV4, String> {
+        let reservation = super::proxy::Reservation::new()
+            .map_err(|_| "cannot reserve cli2key compatibility listener".to_owned())?;
+        let watch = super::proxy::Watch::new(reservation.address());
+        reservation.configure(&mut command);
+        self.reservation = Some(reservation);
+        self.proxy = Some(watch.clone());
+        let prior_children = self.children.len();
+        let result = self.spawn_output(&mut command, Some(watch.clone()));
+        // Command retains its pre_exec closure, hence an Arc to the parent
+        // listener. Drop it explicitly on BOTH result paths, before finish.
+        drop(command);
+        if result.is_err() && self.children.len() == prior_children {
+            // No child adopted the listener: a reader/allocation/spawn failure
+            // is not an unconfirmed producer or incomplete proxy protocol.
+            self.proxy.take();
+            self.reservation.take();
+        }
+        result?;
+        watch
+            .check()?
+            .ok_or_else(|| "cli2key compatibility proxy has no ready address".into())
+    }
+
+    fn spawn_output(
+        &mut self,
+        command: &mut Command,
+        proxy: Option<super::proxy::Watch>,
+    ) -> Result<String, String> {
+        let key = proxy.is_none();
         let label = if key {
             "cli2key bridge"
         } else {
@@ -71,7 +112,10 @@ impl Local {
         let worker = std::thread::Builder::new()
             .name("asb-cli2key-output".into())
             .spawn(move || {
-                drain_output(&mut input, &stopped, &sender, key);
+                match proxy {
+                    Some(watch) => drain_proxy(&mut input, &stopped, &sender, watch),
+                    None => drain_output(&mut input, &stopped, &sender, true),
+                }
                 #[cfg(all(test, target_os = "linux"))]
                 receipt.store(true, Ordering::Release);
             })
@@ -79,6 +123,7 @@ impl Local {
         self.readers.push(Reader {
             stop,
             worker: Some(worker),
+            proxy: !key,
         });
         command.stdout(Stdio::from(OwnedFd::from(output)));
         match command.spawn() {
@@ -102,6 +147,9 @@ impl Local {
         tests::after_spawn(self.children.last().unwrap().id())?;
         let deadline = Instant::now() + super::STARTUP_TIMEOUT;
         loop {
+            if !key && let Some(watch) = &self.proxy {
+                watch.check()?;
+            }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(format!("{label} did not become ready within 5 seconds"));
@@ -109,6 +157,9 @@ impl Local {
             match receiver.recv_timeout(remaining.min(POLL)) {
                 Ok(result) => {
                     let value = result?;
+                    if !key && let Some(watch) = &self.proxy {
+                        watch.check()?;
+                    }
                     if let Some(status) = self
                         .children
                         .last_mut()
@@ -151,6 +202,9 @@ impl Local {
     /// Observe every required child at the final session admission boundary.
     /// This does not promise that a process cannot exit immediately afterward.
     pub(super) fn confirm_ready(&mut self) -> Result<(), String> {
+        if let Some(watch) = &self.proxy {
+            watch.check()?;
+        }
         for (index, child) in self.children.iter_mut().enumerate() {
             let label = if index == 0 {
                 "bridge"
@@ -209,7 +263,9 @@ impl Local {
             }
         }
         for reader in &self.readers {
-            reader.stop.store(true, Ordering::Release);
+            if !reader.proxy {
+                reader.stop.store(true, Ordering::Release);
+            }
         }
         for reader in &mut self.readers {
             while reader
@@ -223,11 +279,23 @@ impl Local {
             if reader.worker.as_ref().is_some_and(JoinHandle::is_finished) {
                 let _ = reader.worker.take().unwrap().join();
             } else {
+                reader.stop.store(true, Ordering::Release);
                 reasons
                     .push("output reader did not finish before the shared cleanup deadline".into());
             }
         }
         self.readers.clear();
+        if let Some(watch) = self.proxy.take() {
+            if let Err(reason) = watch.check() {
+                reasons.push(reason);
+            }
+            if !watch.ended() {
+                reasons.push("compatibility ready observer settlement was not confirmed".into());
+            }
+        }
+        // Child owns its inherited reference independently if handed to the
+        // reaper. Closing ours is not a claim that an uncertain child stopped.
+        self.reservation.take();
         if !reasons.is_empty() {
             Err(format!(
                 "cli2key cleanup was not confirmed: {}; an owned reaper retains any unconfirmed direct children and stopped readers retain their transports",
@@ -316,6 +384,48 @@ fn drain_output(
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => break,
+        }
+    }
+}
+
+fn drain_proxy(
+    input: &mut UnixStream,
+    stopped: &AtomicBool,
+    sender: &mpsc::SyncSender<Result<String, String>>,
+    watch: super::proxy::Watch,
+) {
+    let mut parser = super::proxy::Parser::new(watch.clone());
+    let mut notified = false;
+    let mut chunk = [0; 2048];
+    while !stopped.load(Ordering::Acquire) {
+        match input.read(&mut chunk) {
+            Ok(0) => {
+                parser.end();
+                break;
+            }
+            Ok(count) => {
+                // Parse the WHOLE turn, not just the first ready line. Sticky
+                // shared faults cannot be lost behind a queued success event.
+                parser.accept(&chunk[..count]);
+                match watch.check() {
+                    Err(error) => {
+                        let _ = sender.try_send(Err(error));
+                    }
+                    Ok(Some(_)) if !notified => {
+                        let _ = sender.try_send(Ok(String::new()));
+                        notified = true;
+                    }
+                    _ => {}
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(POLL)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => {
+                parser.read_failed();
+                break;
+            }
         }
     }
 }

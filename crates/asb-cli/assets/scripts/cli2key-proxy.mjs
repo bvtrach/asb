@@ -23,9 +23,9 @@ const value = (name) => {
   }
   return args[index + 1];
 };
-const port = Number(value("--port"));
+const listenerFd = Number(value("--listen-fd"));
 const upstream = value("--upstream").replace(/\/$/, "");
-if (!Number.isInteger(port) || port < 1 || port > 65535) usage("--port must be a valid TCP port");
+if (!Number.isInteger(listenerFd) || listenerFd < 3) usage("--listen-fd must be an inherited socket descriptor");
 
 function normalizeBody(path, body) {
   if (!body || !path.includes("/responses")) return body;
@@ -87,8 +87,13 @@ server.on("error", (error) => {
   console.error(`asb cli2key proxy: ${error.message}`);
   process.exit(1);
 });
-server.listen(port, "127.0.0.1", () => {
-  console.log("ASB cli2key proxy ready");
+server.listen({ fd: listenerFd }, () => {
+  const address = server.address();
+  if (!address || typeof address === "string" || address.address !== "127.0.0.1" || address.port < 1) {
+    console.error("asb cli2key proxy: invalid inherited listener address");
+    process.exit(1);
+  }
+  console.log(`ASB cli2key proxy ready ${JSON.stringify({schema_version:1,host:address.address,port:address.port})}`);
 });
 const shutdown = async () => {
   if (closing) return;
