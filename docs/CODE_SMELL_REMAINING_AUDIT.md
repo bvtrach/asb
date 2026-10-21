@@ -143,7 +143,7 @@ enabled for future native Windows execution, with Linux identity/replacement
 and frozen-length regressions retained. Source review/qualification must not
 be mistaken for an executed Windows test.
 
-Two additional limits remain separate follow-ups, not fixes claimed by this
+Additional limits remain separate follow-ups, not fixes claimed by this
 publication class:
 
 - `ProcessTreeSnapshot` still ignores producer-side `writeln!`/`write_all`
@@ -151,6 +151,15 @@ publication class:
   establish completeness after a producer write failure. A future sticky
   producer-error observation must suppress partial metrics while preserving
   the independent task grade and cleanup.
+- `ProcessTreeSnapshot` still invokes the sampler through blocking
+  `Command::output()` and joins that worker unconditionally on stop. Its stop
+  flag does not interrupt a blocked command or inherited output pipe. The
+  generic `stop_collector` still invokes external `kill`/`pkill -P` helpers and
+  ends in an unconditional `Child::wait()`. Publication32 changes neither
+  lifetime: it does not establish bounded complete collector quiescence or
+  identity-pinned descendant custody. These need a coherent collector ownership
+  follow-up, not a publication retry or a claim that independent finish attempts
+  can advance past a blocked stop.
 - JSONL append streams and validates the complete historical file into a new
   private stage on every append. Memory is bounded per record, but total
   history length, staging space and owner I/O time are not bounded by the

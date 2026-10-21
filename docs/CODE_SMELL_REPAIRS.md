@@ -31,6 +31,23 @@ post-merge verification and release remain pending. Windows compilation and
 runtime remain unqualified; the non-Unix controller keeps its documented legacy
 blocking transport limitation.
 
+Independent integration source review approved `3906d74a` and the test-only
+resource-field assertions `6204faa8`. Focused offline runtime checks passed
+623 tests with nine explicit optional skips: evidence 18, measurements 72,
+collectors 123, runner 104, workloads 169, comparison 70, layout one, repeated
+CLI 17, benchmark protocol 35 and guest/native-gate 14. Actual ASB SHA-256 stayed
+`2589307f67c98fc72da4280bdc6b88ff68a9e8e93e8e1057a4c62e62fa298200`
+before/after runtime checks. The initial missing-resource-field fixture compile
+failure and subsequent layout tuple Clippy failure remain recorded in
+`target/publication32-evidence.log` and `target/publication32-v2-clippy.log`.
+The reviewed named-layout refinement `4a3b8647` is merged without production
+changes; its fresh layout test, strict workspace/all-target/all-feature Clippy
+and formatting check passed (`target/publication32-layout-*.log`). Full
+qualification remains held pending coordinated disk/cache availability.
+Collector blocking sampler output/join, ignored producer writes and generic
+kill/pkill/wait shutdown remain residuals, not bounded-quiescence claims of this
+publication repair. Native Windows compilation/runtime remain unqualified.
+
 The [full residual requirement/disposition matrix and ordered plan](CODE_SMELL_REMAINING_AUDIT.md)
 records the read-only 21 October comparison of exact main `4224472f` with
 qualified stack `48609d50`, including misreports, completed versus unmerged
