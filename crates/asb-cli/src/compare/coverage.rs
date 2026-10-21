@@ -375,6 +375,8 @@ mod tests {
                 replica: if missing { 2 } else { 1 },
             },
             artifact_sources: BTreeMap::new(),
+            planning: None,
+            effective_budgets: None,
             legacy_evaluation_provenance: None,
             execution_plan_fingerprint: (!missing).then(|| "plan-P".into()),
             module: None,
