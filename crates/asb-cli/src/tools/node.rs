@@ -59,7 +59,10 @@ fn guest_assets(root: &Path) -> Result<Vec<super::GuestAsset>, Error> {
     Ok(super::runtime::guest_archive(root, url, checksum))
 }
 
-fn install(root: &Path, progress: &mut dyn FnMut(u8, &str)) -> Result<PathBuf, Error> {
+fn install(
+    root: &Path,
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
+) -> Result<PathBuf, Error> {
     let (url, hash) = distribution()?;
     super::runtime::archive(
         root,

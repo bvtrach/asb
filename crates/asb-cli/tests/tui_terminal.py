@@ -236,15 +236,21 @@ def main():
             tool.write_text(f"#!/bin/sh\nprintf '{name}\\n' >> '{invoked}'\nexit 7\n")
             tool.chmod(0o755)
         agent.unlink()
-        code, transcript = session(binary, root, ["setup", "tui"], b"pi \x03", str(fixture_bin))
+        # Cancellation can now stop an admitted helper before its first tool
+        # starts. Wait for this fixture's failed attempt before cancelling;
+        # the dedicated custody matrix tests cancellation during live installs.
+        failed_install = [(b"Cannot install", b"\x03", lambda: None)]
+        code, transcript = session(binary, root, ["setup", "tui"], b"pi ",
+                                   str(fixture_bin), failed_install)
         assert code != 0, transcript
         assert invoked.is_file(), "missing agent selection must attempt installation"
         assert not agent.exists(), "failed package install must not mark agent installed"
         assert len(list(root.glob("asb-sweep-*.toml"))) == 1, "failed selection must not publish a sweep"
 
         (root / "workloads/custom.txt").unlink()
+        invoked.unlink()
         code, transcript = session(binary, root, ["workload", "tui"],
-                                   b"custom \x03", str(fixture_bin))
+                                   b"custom ", str(fixture_bin), failed_install)
         assert code != 0, transcript
         assert not (root / "workloads/custom.txt").exists(), "failed source install must not fabricate workload"
         assert not (root / "invoked-agent").exists()
@@ -260,9 +266,12 @@ def main():
         flamegraph.parent.mkdir(parents=True)
         flamegraph.write_text("#!/bin/sh\nexit 99\n")
         flamegraph.chmod(0o755)
+        invoked.unlink(missing_ok=True)
         code, transcript = session(binary, root, ["setup", "tui"],
-            b"pi \tlocal \t \tbug-fix \tflamegraph \x03", str(fixture_bin))
+            b"pi \tlocal \t \tbug-fix \tflamegraph ", str(fixture_bin),
+            [(b"Cannot install required collector", b"\x03", lambda: None)])
         assert code != 0, transcript
+        assert invoked.is_file(), "missing collector dependency must attempt installation"
         assert not (root / ".asb-tools/perf/bin/perf").exists(), "failed dependency must not be marked installed"
         assert len(list(root.glob("asb-sweep-*.toml"))) == 1
 

@@ -13,10 +13,10 @@ pub(super) static ADAPTER: StaticTool = StaticTool::new(
 
 fn post_install(
     executable: &std::path::Path,
-    progress: &mut dyn FnMut(u8, &str),
+    progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
     output: &mut dyn std::io::Write,
 ) -> Result<(), crate::Error> {
-    progress(90, "generating local API key");
+    progress(90, crate::install::ProgressStage::Finalizing);
     let status = std::process::Command::new(executable)
         .args(["key", "refresh"])
         .logged_status()
@@ -45,7 +45,7 @@ mod tests {
                 &mut output,
             )
             .unwrap();
-        assert_eq!(updates, [(90, "generating local API key".to_owned())]);
+        assert_eq!(updates, [(90, crate::install::ProgressStage::Finalizing)]);
         assert!(
             String::from_utf8(output)
                 .unwrap()

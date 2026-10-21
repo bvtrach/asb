@@ -164,6 +164,34 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+`cargo test --locked --offline --test tui_install` exercises the actual ASB
+install helper and real terminal backend with local fake npm/node executables.
+Closing the backend's output pipe forces EPIPE while the input PTY stays open:
+the original drawing error, cleanup diagnostics and restored echo/canonical mode
+are all checked. Ctrl-C, Esc, owner loss and helper loss stop owned slow,
+double-forked TERM-resistant writers; unrelated sentinels survive and no writes
+continue after confirmed cleanup. Successful and failed installs, descriptor
+noninheritance, nonterminal refusal and invoking-binary pathname replacement
+are checked without package downloads, live agents or provider credentials.
+`cargo test --locked --offline --lib install::operation` additionally covers
+fixed protocol validation, nonblocking queue pressure, pre-spawn keeper failure
+and unwinding after actual installer admission. The unwind fixture also breaks
+the real guardian's receipt channel with stderr redirected to `/dev/full`:
+cleanup uncertainty must retain custody without a second panic, and the real
+PTY must regain echo/canonical mode. Actual helper routes verify tool-package,
+workload-validation and collector-dependency phases, with every enum wire code
+round-tripped and unknown/reserved phases rejected. Build the current ASB binary
+first for focused library tests, as for native gate qualification below.
+Receiver-specific fixtures pair the actual `ManagedGate` with owned OS sockets
+to reject duplicate/post-final/malformed records, missing final status despite
+a successful guardian, and success status despite a failed guardian. A flooded
+socket proves a live tick consumes only its 64-frame budget. These deliberate
+sender faults are distinct from the actual-helper/PTY qualification above.
+The owning bpftrace installer fixture holds local fake download/build commands
+under a real gate, verifies the phase and completed-work percentage before
+releasing either command, and never needs an installed host collector.
+Dependency settlement tests run a zero-exit fake installer with missing,
+non-executable and healthy outputs; only refreshed ready files permit selection.
 `cargo test --locked --offline --test tui_terminal` drives the actual current
 binary through a bounded PTY. Workload fixtures use only local fake catalogs:
 advertised Enter finishes, Tab edits, Back discards, saved choices reopen,

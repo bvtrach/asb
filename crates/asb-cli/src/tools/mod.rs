@@ -63,7 +63,7 @@ pub(crate) trait ToolAdapter: Sync {
     fn post_install(
         &self,
         _executable: &Path,
-        _progress: &mut dyn FnMut(u8, &str),
+        _progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
         _output: &mut dyn std::io::Write,
     ) -> Result<(), crate::Error> {
         Ok(())
@@ -82,8 +82,11 @@ pub(crate) trait ToolAdapter: Sync {
     }
 }
 
-type PostInstallHook =
-    fn(&Path, &mut dyn FnMut(u8, &str), &mut dyn std::io::Write) -> Result<(), crate::Error>;
+type PostInstallHook = fn(
+    &Path,
+    &mut dyn FnMut(u8, crate::install::ProgressStage),
+    &mut dyn std::io::Write,
+) -> Result<(), crate::Error>;
 
 #[derive(serde::Serialize)]
 pub(crate) struct GuestAsset {
@@ -169,7 +172,7 @@ impl ToolAdapter for StaticTool {
     fn post_install(
         &self,
         executable: &Path,
-        progress: &mut dyn FnMut(u8, &str),
+        progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
         output: &mut dyn std::io::Write,
     ) -> Result<(), crate::Error> {
         self.post_install

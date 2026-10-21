@@ -11,7 +11,7 @@ pub(super) static ADAPTER: StaticTool = StaticTool::new(
 
 pub(super) fn post_install(
     executable: &std::path::Path,
-    _progress: &mut dyn FnMut(u8, &str),
+    _progress: &mut dyn FnMut(u8, crate::install::ProgressStage),
     _output: &mut dyn std::io::Write,
 ) -> Result<(), crate::Error> {
     let source = crate::install::host_executable("pidstat").map_err(|_| {
