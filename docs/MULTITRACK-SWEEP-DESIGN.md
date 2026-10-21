@@ -149,8 +149,9 @@ spool concurrency bounds separate from campaign presentation counts.
 
 This is not full feature-five readiness: modern continuation/reconciliation
 and grade import explicitly refuse before historical writes instead of falling
-through to legacy receipts. Campaign completion/continuation seals
-and complete source/package/hosted qualification remain required. The preceding
+through to legacy receipts. The later settlement checkpoint adds completion
+sealing; continuation admission and complete source/package/hosted qualification
+remain required. The preceding
 integrated-head regression gate passed 1312 tests with 21 existing ignored and
 zero failures before this fresh-sweep wiring; that evidence does not qualify the
 new implementation by itself.
@@ -463,6 +464,45 @@ grades, verify recording proofs in a batch and exclude growing raw/ZIP outputs
 from immutable roots. Only after all configurations validate may a consuming
 continuation admit positively reserved untouched slots. Any started slot without
 strict settlement must take explicit owned-resource recovery, never a retry.
+
+## Joined per-slot settlement checkpoint
+
+After workers and recording producers join, modern sweeps now declare outcomes
+through the shared strict configuration/selection/grade/cleanup pipeline, then
+bind each candidate to the exact saved execution, original replica identity,
+pre-allocation start/cohort, prepared material and declared output/measurement
+paths. Dataset and replay-protocol fingerprints share the runner's existing
+construction; names and protocol cannot silently differ in non-record modes.
+Original invocation paths, not canonical source-display paths, select project
+authority. Declared remote allocations require matching selection/location,
+workspace remembrance and the owning read-only retained-outcome verifier;
+preparation and actual attempt IDs are deliberately distinct. Native sessions
+need no fabricated remote allocation, but unexpected allocation files validate.
+
+All candidate metadata precedes one grouped immutable recording proof. Record
+mode requires a typed track and producer association; missing/null proof stays
+unsealed. Each positive slot receives a create-new receipt over exact immutable
+outcome/association/start/prepared/output/evaluator roots, never a growing ZIP,
+raw trace or whole batch. Strict-ineligible siblings get explicit recovery-only
+records and cannot suppress independently completed peers or trigger retries.
+Failures remain optional fresh continuation warnings, not grade gates.
+
+Layouts share one actual-read byte budget, including growth after metadata
+preflight; comparison uses the same facility. Outcome declarations independently
+bound aggregate encoded bytes and each record before cloning. Measurement
+agreement binds presence-sensitive execution and recording metadata as well as
+the existing grade, policy, task, cohort and disposition fields.
+
+Focused tests cover foreign prepared fields/start identity, native false grades,
+record-mode absent/null proof, aliases, no overwrite and shared read exhaustion.
+Synthetic remote metadata tests cover original invocation across a foreign
+canonical configuration, distinct preparation/attempt IDs, missing allocation,
+changed remembered reference and foreign closed metadata. Their verifier seam is
+test-only; production always dispatches the owning retained-outcome verifier.
+Actual CLI qualification records four attempts, replays four provider-closed,
+then injects one unknown grader result: three peers seal, one recovery-only slot
+remains and exactly twelve total attempts occur, without retries. This is not
+installed remote-SDK qualification or completed modern resume/reconciliation.
 
 Independent continuation review identified a required distinction before modern
 resume can be enabled. A published campaign plan is intended work, not positive

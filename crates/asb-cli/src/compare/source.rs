@@ -257,7 +257,11 @@ pub(super) fn load(path: &str) -> Result<LoadedReport, Error> {
 
 fn load_campaign_sweep(request: Request) -> Result<LoadedReport, Error> {
     let plan = request.plan.as_ref().expect("campaign sweep plan");
-    let layouts = plan.read_campaigns(&request.sweep_results)?;
+    let mut layouts = plan.read_campaigns(&request.sweep_results)?;
+    let budget = std::rc::Rc::new(std::cell::Cell::new(256 * 1024 * 1024));
+    for layout in &mut layouts {
+        layout.share_observation_budget(budget.clone());
+    }
     let mut primary_bytes = 0u64;
     for layout in &layouts {
         primary_bytes = primary_bytes

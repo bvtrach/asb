@@ -4,6 +4,7 @@ use crate::{Error, runner::repeated::InputCost, sweep::plan::SweepPlan};
 use std::path::Path;
 
 mod reservations;
+mod settled;
 
 pub(super) fn input_roots(results: &Path, plan: &SweepPlan) -> Result<Vec<Root>, Error> {
     // Share the exact index/configuration/selection/capacity binding used by

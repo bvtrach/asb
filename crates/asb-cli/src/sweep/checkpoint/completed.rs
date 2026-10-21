@@ -50,7 +50,7 @@ fn present_value<'de, D: serde::Deserializer<'de>>(
 /// Only this representation may enter completion sealing or continuation.
 /// Raw wire records keep compatibility defaults; construction discharges the
 /// protocol, identity, grade, cleanup and evidence obligations together.
-struct ValidatedOutcome {
+pub(in crate::sweep) struct ValidatedOutcome {
     schema_version: u32,
     task: TaskIdentity,
     summary: Value,
@@ -58,6 +58,29 @@ struct ValidatedOutcome {
     workload_evidence: Vec<PathBuf>,
     proxy_evidence: Vec<PathBuf>,
     outputs: Vec<PathBuf>,
+}
+
+// Metadata validity is deliberately not payload proof or a reusable outcome.
+struct DeclaredOutcome {
+    record: Outcome,
+    task: TaskIdentity,
+}
+
+/// Strict declarations remain non-reusable until their grouped payload proof.
+pub(in crate::sweep) struct OutcomeBatch {
+    declarations: Vec<(usize, DeclaredOutcome)>,
+    unsettled: Vec<usize>,
+}
+
+pub(in crate::sweep) struct OutcomeEvidence<'a> {
+    pub schema_version: u32,
+    pub task: &'a TaskIdentity,
+    pub summary: &'a Value,
+    pub replica: Option<crate::runner::replica::Identity>,
+    pub workload: &'a [PathBuf],
+    pub proxy: &'a [PathBuf],
+    pub outputs: &'a [PathBuf],
+    pub recording: Option<&'a crate::runner::recording::Evidence>,
 }
 
 /// Strict outcome semantics do not depend on a legacy result-directory layout.
@@ -341,9 +364,140 @@ impl ValidatedOutcome {
         record: Outcome,
         expected: impl Into<OutcomeContext<'a>>,
     ) -> Result<Self, Error> {
+        let declaration = DeclaredOutcome::validate(record, expected)?;
+        if let Some(recording) = &declaration.record.recording_track {
+            recording
+                .track
+                .verify(crate::cassette::Limits::default())
+                .map_err(|error| invalid(&error.to_string()))?;
+        }
+        Ok(declaration.finish())
+    }
+}
+
+impl OutcomeBatch {
+    pub(in crate::sweep) fn declare<'a>(
+        requests: impl IntoIterator<Item = (&'a Value, OutcomeContext<'a>)>,
+    ) -> Result<Self, Error> {
+        let mut declarations = Vec::new();
+        let mut unsettled = Vec::new();
+        let mut counter = DeclarationBytes(0);
+        for (index, (value, context)) in requests.into_iter().enumerate() {
+            if index >= 65_533 {
+                return Err(invalid("outcome batch exceeds selected population bound"));
+            }
+            let before = counter.0;
+            serde_json::to_writer(&mut counter, value)
+                .map_err(|_| invalid("outcome declaration bytes exceed 256 MiB"))?;
+            if counter.0 - before > LIMIT {
+                return Err(invalid("individual outcome declaration exceeds 1 MiB"));
+            }
+            let record = serde_json::from_value(value.clone())
+                .map_err(|_| invalid("malformed declared campaign outcome"))?;
+            match DeclaredOutcome::validate(record, context) {
+                Ok(declaration) => declarations.push((index, declaration)),
+                Err(_) => unsettled.push(index),
+            }
+        }
+        Ok(Self {
+            declarations,
+            unsettled,
+        })
+    }
+
+    pub(in crate::sweep) fn unsettled(&self) -> &[usize] {
+        &self.unsettled
+    }
+
+    /// Additional slot/layout policy can remove declarations from proof and
+    /// reuse, never add unchecked declarations or bypass retained proofs.
+    pub(in crate::sweep) fn retain_candidates(&mut self, eligible: &BTreeSet<usize>) {
+        let Self {
+            declarations,
+            unsettled,
+        } = self;
+        declarations.retain(|(index, _)| {
+            if eligible.contains(index) {
+                true
+            } else {
+                unsettled.push(*index);
+                false
+            }
+        });
+        unsettled.sort_unstable();
+    }
+
+    pub(in crate::sweep) fn declarations(
+        &self,
+    ) -> impl Iterator<Item = (usize, OutcomeEvidence<'_>)> {
+        self.declarations
+            .iter()
+            .map(|(index, outcome)| (*index, outcome.evidence()))
+    }
+
+    pub(in crate::sweep) fn verify(self) -> Result<Vec<ValidatedOutcome>, Error> {
+        let tracks: Vec<_> = self
+            .declarations
+            .iter()
+            .filter_map(|(_, declaration)| {
+                declaration
+                    .record
+                    .recording_track
+                    .as_ref()
+                    .map(|recording| recording.track.clone())
+            })
+            .collect();
+        crate::cassette::TrackEvidence::verify_batch(
+            &tracks,
+            crate::cassette::ProofLimits::default(),
+        )
+        .map_err(|error| invalid(&error.to_string()))?;
+        Ok(self
+            .declarations
+            .into_iter()
+            .map(|(_, declaration)| declaration.finish())
+            .collect())
+    }
+}
+
+struct DeclarationBytes(u64);
+impl Write for DeclarationBytes {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0 = self
+            .0
+            .checked_add(bytes.len() as u64)
+            .filter(|bytes| *bytes <= 256 * 1024 * 1024)
+            .ok_or_else(|| std::io::Error::other("outcome declaration budget exhausted"))?;
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl DeclaredOutcome {
+    fn evidence(&self) -> OutcomeEvidence<'_> {
+        OutcomeEvidence {
+            schema_version: self.record.schema_version,
+            task: &self.task,
+            summary: &self.record.summary,
+            replica: self.record.replica,
+            workload: &self.record.workload_evidence,
+            proxy: &self.record.proxy_evidence,
+            outputs: &self.record.outputs,
+            recording: self.record.recording_track.as_ref(),
+        }
+    }
+}
+
+impl DeclaredOutcome {
+    fn validate<'a>(
+        record: Outcome,
+        expected: impl Into<OutcomeContext<'a>>,
+    ) -> Result<Self, Error> {
         let expected = expected.into();
         record.validate_protocol(&expected)?;
-        validate_captures(&record)?;
+        validate_capture_declarations(&record)?;
         record.validate_cohort()?;
         let task = record.validate_identity(&expected)?;
         let structured = crate::workloads::outcome::BenchmarkOutcome::read(&record.summary)
@@ -355,7 +509,12 @@ impl ValidatedOutcome {
             record.validate_structured_cleanup(outcome)?;
         }
         record.validate_evidence(&expected)?;
-        Ok(Self {
+        Ok(Self { record, task })
+    }
+
+    fn finish(self) -> ValidatedOutcome {
+        let Self { record, task } = self;
+        ValidatedOutcome {
             schema_version: record.schema_version,
             task,
             summary: record.summary,
@@ -363,7 +522,7 @@ impl ValidatedOutcome {
             workload_evidence: record.workload_evidence,
             proxy_evidence: record.proxy_evidence,
             outputs: record.outputs,
-        })
+        }
     }
 }
 
@@ -572,7 +731,7 @@ impl Outcome {
     }
 }
 
-fn validate_captures(record: &Outcome) -> Result<(), Error> {
+fn validate_capture_declarations(record: &Outcome) -> Result<(), Error> {
     if record.capture_evidence.len() > 64 {
         return Err(invalid("capture evidence population exceeds its bound"));
     }
@@ -585,7 +744,7 @@ fn validate_captures(record: &Outcome) -> Result<(), Error> {
         {
             return Err(invalid("recording evidence differs from execution summary"));
         }
-        recording.validate_summary(&record.summary, &record.capture_evidence)?;
+        recording.validate_summary_metadata(&record.summary, &record.capture_evidence)?;
     } else if !record.summary["recording"].is_null() {
         return Err(invalid("execution recording has no typed track evidence"));
     }
@@ -607,9 +766,11 @@ fn validate_captures(record: &Outcome) -> Result<(), Error> {
     Ok(())
 }
 
-fn measurement_matches(measured: &Value, summary: &Value) -> bool {
+pub(in crate::sweep) fn measurement_matches(measured: &Value, summary: &Value) -> bool {
     [
         "execution_plan_fingerprint",
+        "execution",
+        "recording",
         "module",
         "benchmark_outcome",
         "replica_index",
@@ -640,7 +801,7 @@ fn measurement_matches(measured: &Value, summary: &Value) -> bool {
     .all(|field| {
         if matches!(
             *field,
-            "workload_resource_disposition" | "workload_artifacts"
+            "workload_resource_disposition" | "workload_artifacts" | "execution" | "recording"
         ) {
             measured.get(*field) == summary.get(*field)
         } else {
@@ -728,6 +889,49 @@ pub(in crate::sweep) fn publish(path: &Path, receipt: &impl Serialize) -> Result
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn batch_declarations_preserve_false_and_nullable_grades_without_unchecked_outcomes() {
+        for fixture in [Fixture::new(false), Fixture::new(true), Fixture::native()] {
+            let values = [fixture.read(0), fixture.read(1)];
+            let requests = || {
+                values
+                    .iter()
+                    .map(|value| (value, OutcomeContext::from(&fixture.entry)))
+            };
+            let batch = OutcomeBatch::declare(requests()).unwrap();
+            assert_eq!(batch.declarations().count(), 2);
+            let validated = batch.verify().unwrap();
+            for (outcome, value) in validated.iter().zip(&values) {
+                assert_eq!(outcome.summary, value["summary"]);
+            }
+            let mut broken = values.clone();
+            broken[1]["proxy_cleanup_confirmed"] = json!(false);
+            let partial = OutcomeBatch::declare(
+                broken
+                    .iter()
+                    .map(|value| (value, OutcomeContext::from(&fixture.entry))),
+            )
+            .unwrap();
+            assert_eq!(partial.unsettled(), &[1]);
+            assert_eq!(partial.verify().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn measurement_agreement_binds_presence_sensitive_campaign_execution_and_recording() {
+        let empty = json!({});
+        for field in ["execution", "recording"] {
+            let mut changed = empty.clone();
+            changed[field] = Value::Null;
+            assert!(!measurement_matches(&changed, &empty));
+            assert!(!measurement_matches(&empty, &changed));
+            assert!(measurement_matches(&changed, &changed));
+            let mut other = changed.clone();
+            other[field] = json!({"changed": true});
+            assert!(!measurement_matches(&changed, &other));
+        }
+    }
+
     #[test]
     fn direct_outcome_context_preserves_strict_legacy_and_native_semantics() {
         for kind in ["legacy-false", "legacy-true", "native"] {

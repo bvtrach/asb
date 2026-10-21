@@ -6,6 +6,7 @@ use std::cell::Cell;
 use std::fs::{self, File, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 const MAX_PLAN_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_REFERENCE_BYTES: u64 = 16 * 1024;
@@ -16,6 +17,7 @@ pub(crate) struct Layout {
     pub plan: Plan,
     pub root: PathBuf,
     remaining: Cell<u64>,
+    shared_remaining: Option<Rc<Cell<u64>>>,
 }
 
 pub(crate) struct ReferencedOutcome {
@@ -55,6 +57,16 @@ fn bounded_file(file: File, limit: u64) -> Result<Vec<u8>, Error> {
 }
 
 impl Layout {
+    pub(crate) fn share_observation_budget(&mut self, remaining: Rc<Cell<u64>>) {
+        self.shared_remaining = Some(remaining);
+    }
+    /// Read a declared metadata leaf through the same confined descriptor and
+    /// observation budget as outcomes. This does not grant resume authority.
+    pub(crate) fn declaration(&self, relative: &Path, limit: u64) -> Result<Value, Error> {
+        serde_json::from_slice(&self.read_observation(&self.root.join(relative), limit)?)
+            .map_err(|_| invalid("malformed campaign declaration"))
+    }
+
     fn replay_file(&self, input: &super::ReplayInput) -> Result<File, Error> {
         #[cfg(unix)]
         let file = rooted::open(&self.root, &input.private)?;
@@ -151,6 +163,7 @@ impl Layout {
             plan,
             root,
             remaining: Cell::new(MAX_OBSERVATION_BYTES),
+            shared_remaining: None,
         };
         Ok(layout)
     }
@@ -201,7 +214,11 @@ impl Layout {
     }
 
     fn read_observation(&self, path: &Path, limit: u64) -> Result<Vec<u8>, Error> {
-        let limit = limit.min(self.remaining.get());
+        let limit = limit.min(self.remaining.get()).min(
+            self.shared_remaining
+                .as_ref()
+                .map_or(u64::MAX, |remaining| remaining.get()),
+        );
         #[cfg(unix)]
         let bytes = {
             let (root, relative) = if let Ok(relative) = path.strip_prefix(&self.root) {
@@ -224,6 +241,9 @@ impl Layout {
         let bytes = bounded(path, limit)?;
         self.remaining
             .set(self.remaining.get() - bytes.len() as u64);
+        if let Some(remaining) = &self.shared_remaining {
+            remaining.set(remaining.get() - bytes.len() as u64);
+        }
         Ok(bytes)
     }
 

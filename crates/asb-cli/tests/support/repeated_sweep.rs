@@ -109,6 +109,30 @@ fn campaign_input_seals_stay_stable_after_record_publication_and_offline_replay(
             .0
             .join("recordings/000-benchmark/cassettes/recording.asb.zip");
         assert!(roots.iter().all(|root| root["path"] != json!(recording)));
+        for slot in 1..=4 {
+            let receipt: Value = serde_json::from_slice(
+                &fs::read(project.0.join(format!(
+                    "sweep-results/.checkpoint/campaign-completed/000000/{slot:06}.json"
+                )))
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(receipt["execution"]["slot"], slot);
+            assert_eq!(receipt["configuration"], 0);
+            assert_eq!(receipt["input_digest"], seal["initial"]["digest"]);
+            assert!(receipt["roots"].as_array().unwrap().iter().all(|root| {
+                root["path"] != json!(recording)
+                    && !root["path"].as_str().unwrap().ends_with(".jsonl.partial")
+            }));
+            assert_eq!(
+                receipt["roots"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|root| root["name"] == "recording-association"),
+                !replay
+            );
+        }
     };
     check(false);
     assert_eq!(provider.calls.load(std::sync::atomic::Ordering::SeqCst), 4);
@@ -136,6 +160,45 @@ fn campaign_input_seals_stay_stable_after_record_publication_and_offline_replay(
     assert_eq!(
         records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
         8
+    );
+    fs::write(
+        project.0.join("grader-error-first"),
+        "one unknown grade, no retry",
+    )
+    .unwrap();
+    let partial = sweep(
+        &project,
+        None,
+        &[
+            "--replay",
+            "--repeat",
+            "2",
+            "--cassette-root",
+            "recordings",
+            "--seed",
+            "73",
+        ],
+    );
+    assert!(!partial.status.success());
+    let sealed = project
+        .0
+        .join("sweep-results/.checkpoint/campaign-completed/000000");
+    assert_eq!(
+        fs::read_dir(sealed).unwrap().count(),
+        3,
+        "{}\n{}",
+        String::from_utf8_lossy(&partial.stdout),
+        String::from_utf8_lossy(&partial.stderr)
+    );
+    assert!(
+        project
+            .0
+            .join("sweep-results/.checkpoint/campaign-unsettled/000000/000001.json")
+            .is_file()
+    );
+    assert_eq!(
+        records(&fs::read(project.0.join("attempts.jsonl")).unwrap()).len(),
+        12
     );
 }
 

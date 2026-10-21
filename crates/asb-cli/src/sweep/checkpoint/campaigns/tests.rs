@@ -5,6 +5,9 @@ use std::{fs, path::PathBuf};
 #[path = "reservations_tests.rs"]
 mod reservations_tests;
 
+#[path = "settlement_tests.rs"]
+mod settlement_tests;
+
 struct Fixture(PathBuf);
 impl Drop for Fixture {
     fn drop(&mut self) {

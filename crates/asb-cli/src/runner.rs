@@ -1,5 +1,6 @@
 //! Live execution of one configured benchmark.
 mod batch;
+pub(crate) use batch::{dataset_fingerprint, replay_protocol_fingerprint};
 pub(crate) mod campaign;
 mod completion;
 pub(crate) mod diagnostics;
@@ -679,14 +680,7 @@ fn run_mode(
                 let material_sha256 = workload_session
                     .initial_material_sha256()
                     .map_err(Error::Run)?;
-                let dataset_sha256 = task
-                    .dataset
-                    .as_ref()
-                    .map(|dataset| {
-                        serde_json::to_vec(dataset).map(|bytes| crate::cassette::digest(&bytes))
-                    })
-                    .transpose()
-                    .map_err(|error| Error::Run(error.to_string()))?;
+                let dataset_sha256 = batch::dataset_fingerprint(task.dataset.as_ref())?;
                 Ok(crate::cassette::Compatibility {
                     agent: config.agent.clone(),
                     provider: config.provider.clone(),
@@ -698,16 +692,10 @@ fn run_mode(
                         workload_session.invocation().input.instructions.as_bytes(),
                     ),
                     material_sha256,
-                    protocol_sha256: Some(crate::cassette::digest(
-                        &serde_json::to_vec(&serde_json::json!({
-                            "contract":"asb-bundled-replay-v1",
-                            "agent_input":agents::REPLAY_INPUT_CONTRACT,
-                            "tape_matching":tape::REPLAY_MATCHING_CONTRACT,
-                            "material_scope":workloads::session::REPLAY_MATERIAL_CONTRACT,
-                            "module":module,"metric_policy":metric_policy
-                        }))
-                        .map_err(|error| Error::Run(error.to_string()))?,
-                    )),
+                    protocol_sha256: Some(batch::replay_protocol_fingerprint(
+                        module.as_ref(),
+                        &metric_policy,
+                    )?),
                 })
             })();
             let ready = identity.and_then(|identity| arrival.ready(identity));

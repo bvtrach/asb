@@ -4,6 +4,30 @@ use crate::{Error, cassette::Compatibility};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+pub(crate) fn dataset_fingerprint(
+    dataset: Option<&crate::workloads::session::DatasetIdentity>,
+) -> Result<Option<String>, Error> {
+    dataset
+        .map(|dataset| serde_json::to_vec(dataset).map(|bytes| crate::cassette::digest(&bytes)))
+        .transpose()
+        .map_err(|error| Error::Run(error.to_string()))
+}
+
+pub(crate) fn replay_protocol_fingerprint(
+    module: Option<&crate::workloads::contracts::ModuleDescriptor>,
+    policy: &crate::workloads::outcome::MetricPolicy,
+) -> Result<String, Error> {
+    serde_json::to_vec(&serde_json::json!({
+        "contract":"asb-bundled-replay-v1",
+        "agent_input":crate::agents::REPLAY_INPUT_CONTRACT,
+        "tape_matching":crate::tape::REPLAY_MATCHING_CONTRACT,
+        "material_scope":crate::workloads::session::REPLAY_MATERIAL_CONTRACT,
+        "module":module,"metric_policy":policy
+    }))
+    .map(|bytes| crate::cassette::digest(&bytes))
+    .map_err(|error| Error::Run(error.to_string()))
+}
+
 pub(crate) struct Gate {
     state: Mutex<State>,
     changed: Condvar,

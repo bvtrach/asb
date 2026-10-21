@@ -28,6 +28,10 @@ pub(crate) struct Evidence {
 }
 
 impl Evidence {
+    pub(crate) fn association_path(&self) -> Result<PathBuf, Error> {
+        association_path(&self.track)
+    }
+
     pub fn validate_summary(
         &self,
         summary: &serde_json::Value,

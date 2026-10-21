@@ -476,6 +476,8 @@ impl SettledSweep<'_> {
         } = self;
         let ActivatedSweep {
             source,
+            parent,
+            plan,
             mode,
             options,
             results,
@@ -483,6 +485,25 @@ impl SettledSweep<'_> {
             _output_lock,
             ..
         } = activated;
+        if let ActiveMode::Campaigns(Some(checkpoint)) = &mode
+            && let Err(error) = checkpoint.seal_campaigns(&parent, &results, &plan)
+        {
+            let presentation = crate::runner::diagnostics::Warning::new(
+                crate::runner::diagnostics::Stage::Group,
+                Path::new(&source),
+                &results.join(".checkpoint/campaign-completed"),
+                &error,
+            )
+            .emit(options.json, output, &warnings);
+            if let Err(error) = presentation {
+                schedule_error = Some(match schedule_error {
+                    Some(primary) => Error::Run(format!(
+                        "{primary}; campaign continuation diagnostic also failed: {error}"
+                    )),
+                    None => error,
+                });
+            }
+        }
         #[cfg(all(test, unix))]
         tests::before_input_finish(&results);
         if let Some(checkpoint) = mode.into_checkpoint()
