@@ -26,6 +26,28 @@ struct InputMetadata {
 }
 
 impl Inspection {
+    pub fn validate(&self) -> Result<(), Error> {
+        for (input, file) in self.inputs.iter().zip(&self.files) {
+            if check_metadata(file)? != input.bytes {
+                return Err(Error::Input(
+                    "legacy replay input length changed before reading".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn input_cost(&self) -> super::InputCost {
+        super::InputCost {
+            inputs: self.inputs.len(),
+            bytes: self.inputs.iter().map(|input| input.bytes).sum(),
+            observed_bytes: self.inputs.iter().map(|input| input.bytes).sum(),
+            files: self.files.len(),
+            directory_bytes: 0,
+            manifest_bytes: 0,
+        }
+    }
+
     pub fn open(
         config_path: &Path,
         config: &BenchmarkConfig,
@@ -87,13 +109,7 @@ impl Inspection {
         #[cfg(test)]
         tests::after_metadata_pass();
         // Validate ALL pinned lengths again before even the first payload read.
-        for (input, file) in self.inputs.iter().zip(&self.files) {
-            if check_metadata(file)? != input.bytes {
-                return Err(Error::Input(
-                    "legacy replay input length changed before reading".into(),
-                ));
-            }
-        }
+        self.validate()?;
         let mut inputs = Vec::new();
         for (index, (input, file)) in self.inputs.into_iter().zip(&mut self.files).enumerate() {
             let (bytes, sha256) = transfer(file, input.bytes, &mut std::io::sink())?;
@@ -116,6 +132,7 @@ impl Inspection {
 }
 
 impl Prepared {
+    #[cfg(test)]
     pub fn open(
         config_path: &Path,
         config: &BenchmarkConfig,
@@ -257,3 +274,8 @@ thread_local! {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(super) fn take_transfer_count() -> usize {
+    TRANSFERS.with(|count| count.replace(0))
+}

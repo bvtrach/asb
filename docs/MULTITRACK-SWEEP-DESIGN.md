@@ -149,8 +149,7 @@ spool concurrency bounds separate from campaign presentation counts.
 
 This is not full feature-five readiness: modern continuation/reconciliation
 and grade import explicitly refuse before historical writes instead of falling
-through to legacy receipts. Aggregate input validation before any legacy hash,
-campaign input/continuation seals
+through to legacy receipts. Campaign input/continuation seals
 and complete source/package/hosted qualification remain required. The preceding
 integrated-head regression gate passed 1312 tests with 21 existing ignored and
 zero failures before this fresh-sweep wiring; that evidence does not qualify the
@@ -193,8 +192,8 @@ Fresh-sweep revision `4499e6ac` completed its full offline suite with 1322 passe
 21 existing ignored and zero failures. Grouped-proof revision `3b10be01` passed
 its complete offline suite with 1335 passed, 21 existing ignored and zero
 failures. Newer main's artifact/raw-custody integration and reservation edits
-require their own complete gates. Modern continuation/reconciliation, global
-pre-hash input validation and final delivery qualification remain unfinished.
+require their own complete gates. Modern continuation/reconciliation and final
+delivery qualification remain unfinished.
 
 ## Recording metadata reservation checkpoint
 
@@ -249,7 +248,38 @@ typed metadata without constructing empty-digest `ReplayInput` values. Each
 observer checks all pinned lengths before its first payload hash. Regressions
 cover late length changes, retained descriptors after pathname replacement and
 the ZIP probe-to-decode replacement window. These are prerequisites, not a
-claim that sweep-wide inspection/budgeting or modern continuation is finished.
+claim that modern continuation is finished.
+
+Sweep-wide admission now retains a typed runner `Inspection` for every selected
+configuration before consuming any into publishable `Prepared` state. Each
+configuration freezes selection from metadata; legacy hashes are observed only
+after all inspections and aggregate costs pass, followed by a whole-population
+pinned-length recheck. An inspection's incomplete internal draft is never
+published or serialized as evidence, and its observing transition supplies real
+digests before normal layout validation and encoding. Standalone runs consume
+the same inspection path without a second implementation of selection.
+
+Global costs independently bound selected inputs (65,533), private selected
+bytes (2 GiB), actual retained descriptors (256), legacy bytes to hash (2 GiB),
+directory snapshots (64 MiB) and manifest metadata (256 MiB). Numeric selection
+charges all retained legacy files and their hash workload, not just the chosen
+track. Conversely, one ZIP with more than 256 selected tracks consumes one
+descriptor, not an artificial track-count quota. These are retained admission
+budgets; constructing the next individually bounded inspection has transient
+overhead before its cost is added. Metadata probing may read a format prefix,
+ZIP indexes and manifests; it does not hash or decompress legacy JSONL payloads.
+
+Actual sweep admission regressions use sparse files to exceed the global legacy
+byte budget across individually valid configurations, 320 files to exceed the
+descriptor budget, and an invalid later source. Both selection routes require
+zero payload observations and unchanged previous index/report/history. A real
+257-track bundle inspection and pure exact/overflow matrices separately qualify
+track-versus-descriptor counting and every cost category.
+
+This checkpoint passed the complete stable-source offline test suite (including
+integration targets and doctests), strict all-target/all-feature Clippy, binary
+build, formatting, Rust documentation and UML generation. It is not final
+feature-five package/install/hosted qualification and does not enable resume.
 
 Extract a reusable runner-owned campaign plan and bounded reader from the
 standalone repeated coordinator. Sweep and compare consume that same contract;

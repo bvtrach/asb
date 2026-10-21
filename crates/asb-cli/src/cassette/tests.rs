@@ -12,6 +12,59 @@ mod publication;
 #[path = "reservation_tests.rs"]
 mod reservation;
 
+#[test]
+fn campaign_inspection_can_select_more_than_256_tracks_from_one_descriptor() {
+    let fixture = Fixture::new();
+    fs::create_dir(fixture.0.join(".asb")).unwrap();
+    fs::write(
+        fixture.0.join(".asb/project.toml"),
+        toml::to_string(&crate::project::ProjectConfig::default()).unwrap(),
+    )
+    .unwrap();
+    let configuration: crate::benchmark::BenchmarkConfig =
+        toml::from_str("agent='pi'\nprovider='local'\nmodel='fixture'\nworkload='bug-fix'\n")
+            .unwrap();
+    let path = fixture.0.join("benchmark.toml");
+    fs::write(&path, toml::to_string(&configuration).unwrap()).unwrap();
+    let names = (1..=257)
+        .map(|id| format!("tracks/{id}.jsonl"))
+        .collect::<Vec<_>>();
+    let payloads = names
+        .iter()
+        .map(|name| (name.as_str(), b"{}\n".as_slice()))
+        .collect::<Vec<_>>();
+    let bundle = fixture.zip(&manifest(257), &payloads);
+    // This is planning/metadata qualification, not material compatibility or a
+    // live replay. A deterministic sample visits all tracks before publication.
+    let inspection = crate::runner::repeated::Inspection::prepare_selected(
+        &path,
+        configuration,
+        4000,
+        crate::runner::RunOptions {
+            mode: Some(crate::tape::Mode::Replay),
+            cassette: Some(bundle.to_str().unwrap()),
+            replay_seed: Some(42),
+            ..Default::default()
+        },
+        None,
+        None,
+    )
+    .unwrap();
+    let cost = inspection.input_cost().unwrap();
+    assert_eq!(cost.inputs, 257);
+    assert_eq!(cost.files, 1);
+    assert_eq!(cost.bytes, 257 * 3);
+    assert_eq!(cost.observed_bytes, 0);
+    assert!(
+        crate::runner::repeated::InputCost::default()
+            .checked_add(cost)
+            .is_ok()
+    );
+    inspection.validate_sources().unwrap();
+    let _prepared = inspection.observe().unwrap();
+    assert!(!fixture.0.join("results").exists());
+}
+
 #[cfg(unix)]
 #[test]
 fn bundle_inspection_decodes_the_probed_descriptor_not_a_replacement_path() {

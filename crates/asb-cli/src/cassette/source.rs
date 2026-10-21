@@ -47,20 +47,61 @@ enum InspectionStorage {
 }
 
 impl SourceInspection {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        if let InspectionStorage::Legacy(candidates) = &self.storage {
+            for (file, _, _, expected) in candidates {
+                let metadata = file.metadata().map_err(io_error)?;
+                if !metadata.is_file() || metadata.len() != *expected {
+                    return Err(Error(
+                        "legacy cassette length changed after inspection".into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn manifest(&self) -> Option<&Manifest> {
+        match &self.storage {
+            InspectionStorage::Bundle(archive) => Some(archive.manifest()),
+            InspectionStorage::Legacy(_) => None,
+        }
+    }
+
+    pub(crate) fn legacy_bytes(&self, id: u64) -> Option<u64> {
+        match &self.storage {
+            InspectionStorage::Legacy(files) => files
+                .iter()
+                .find(|(_, _, track, _)| *track == id)
+                .map(|(_, _, _, bytes)| *bytes),
+            InspectionStorage::Bundle(_) => None,
+        }
+    }
+
+    /// Retained descriptors, directory snapshot bytes and manifest bytes. These
+    /// are metadata costs; the fourth value is the bounded legacy hash workload.
+    pub(crate) fn retained_cost(&self) -> (usize, u64, u64, u64) {
+        match &self.storage {
+            InspectionStorage::Bundle(archive) => {
+                let (directory, manifest) = archive.metadata_bytes();
+                (1, directory, manifest, 0)
+            }
+            InspectionStorage::Legacy(files) => (
+                files.len(),
+                0,
+                0,
+                files.iter().map(|(_, _, _, bytes)| bytes).sum(),
+            ),
+        }
+    }
+
     pub(crate) fn observe(self) -> Result<Source, Error> {
+        self.validate()?;
         let storage = match self.storage {
             InspectionStorage::Bundle(archive) => Storage::Bundle(archive),
             InspectionStorage::Legacy(candidates) => {
                 // Revalidate every pinned declaration before the first hash.
                 // Never refresh a source through its possibly replaced name.
-                for (file, _, _, expected) in &candidates {
-                    let metadata = file.metadata().map_err(io_error)?;
-                    if !metadata.is_file() || metadata.len() != *expected {
-                        return Err(Error(
-                            "legacy cassette length changed after inspection".into(),
-                        ));
-                    }
-                }
                 let mut tracks = Vec::new();
                 let mut files = Vec::new();
                 let mut remaining = self.limits.max_total_bytes;
@@ -308,7 +349,7 @@ thread_local! {
 }
 
 #[cfg(test)]
-pub(super) fn take_observation_count() -> usize {
+pub(crate) fn take_observation_count() -> usize {
     OBSERVATIONS.with(|count| count.replace(0))
 }
 

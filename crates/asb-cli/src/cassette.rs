@@ -18,6 +18,9 @@ pub use journal::{
 pub use selection::{Metric, SelectionPlan, Selector};
 use serde::{Deserialize, Serialize};
 pub use serialization::CompatibilityShape;
+pub(crate) use source::SourceInspection;
+#[cfg(test)]
+pub(crate) use source::take_observation_count;
 pub use source::{LegacyTrack, Source};
 use std::fmt;
 

@@ -17,6 +17,11 @@ use std::sync::{Arc, Mutex};
 const MAX_PLAN_BYTES: usize = 16 * 1024 * 1024;
 const MAX_OUTCOME_BYTES: u64 = 1024 * 1024;
 
+#[cfg(test)]
+pub(crate) fn take_legacy_observation_count() -> usize {
+    legacy::take_transfer_count()
+}
+
 #[derive(Clone, Serialize)]
 pub(crate) struct BatchIdentity {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,6 +86,71 @@ pub(crate) struct Prepared {
     replay: Option<PreparedReplay>,
 }
 
+/// Metadata-only planning owner. Its plan is deliberately not publishable until
+/// the consuming observation step supplies genuine legacy input digests.
+pub(crate) struct Inspection {
+    config_path: PathBuf,
+    options: ActivationOptions,
+    parent: PathBuf,
+    root: PathBuf,
+    plan: Plan,
+    replay: Option<InspectedReplay>,
+}
+
+enum InspectedReplay {
+    Selected(Box<replay::Inspection>),
+    Legacy(legacy::Inspection),
+}
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct InputCost {
+    pub inputs: usize,
+    pub bytes: u64,
+    pub observed_bytes: u64,
+    pub files: usize,
+    pub directory_bytes: u64,
+    pub manifest_bytes: u64,
+}
+
+impl InputCost {
+    pub(crate) fn checked_add(self, next: Self) -> Result<Self, Error> {
+        let invalid =
+            |reason: &str| Error::Input(format!("sweep replay input admission: {reason}"));
+        Ok(Self {
+            inputs: self
+                .inputs
+                .checked_add(next.inputs)
+                .filter(|value| *value <= MAX_EXECUTIONS as usize)
+                .ok_or_else(|| invalid("selected inputs exceed execution population"))?,
+            bytes: self
+                .bytes
+                .checked_add(next.bytes)
+                .filter(|value| *value <= 2 * 1024 * 1024 * 1024)
+                .ok_or_else(|| invalid("private replay inputs exceed aggregate 2 GiB"))?,
+            observed_bytes: self
+                .observed_bytes
+                .checked_add(next.observed_bytes)
+                .filter(|value| *value <= 2 * 1024 * 1024 * 1024)
+                .ok_or_else(|| invalid("legacy observations exceed aggregate 2 GiB"))?,
+            files: self
+                .files
+                .checked_add(next.files)
+                .filter(|value| *value <= 256)
+                .ok_or_else(|| invalid("retained replay descriptors exceed 256"))?,
+            directory_bytes: self
+                .directory_bytes
+                .checked_add(next.directory_bytes)
+                .filter(|value| *value <= 64 * 1024 * 1024)
+                .ok_or_else(|| invalid("archive directories exceed aggregate 64 MiB"))?,
+            manifest_bytes: self
+                .manifest_bytes
+                .checked_add(next.manifest_bytes)
+                .filter(|value| *value <= 256 * 1024 * 1024)
+                .ok_or_else(|| invalid("archive manifests exceed aggregate 256 MiB"))?,
+        })
+    }
+}
+
 enum PreparedReplay {
     Selected(Box<replay::Prepared>),
     Legacy(legacy::Prepared),
@@ -103,7 +173,18 @@ impl Prepared {
         options: RunOptions<'_>,
         campaign_parent: Option<&Path>,
     ) -> Result<Self, Error> {
-        Self::prepare_selected(config_path, config, repeat, options, campaign_parent, None)
+        Inspection::prepare_selected(config_path, config, repeat, options, campaign_parent, None)?
+            .observe()
+    }
+}
+
+impl Inspection {
+    pub(crate) fn validate_sources(&self) -> Result<(), Error> {
+        match &self.replay {
+            Some(InspectedReplay::Selected(selected)) => selected.validate(),
+            Some(InspectedReplay::Legacy(legacy)) => legacy.validate(),
+            None => Ok(()),
+        }
     }
 
     pub(crate) fn prepare_selected(
@@ -166,19 +247,18 @@ impl Prepared {
                     .and_then(|path| std::path::absolute(path).map_err(io_error))
             })
             .transpose()?;
-        let (replay, replay_inputs) =
-            match replay::Prepared::open(config_path, &config, options, repeat)? {
-                Some(selected) => {
-                    let inputs = selected.inputs(&mut slots)?;
-                    (Some(PreparedReplay::Selected(Box::new(selected))), inputs)
-                }
-                None if options.mode == Some(crate::tape::Mode::Replay) => {
-                    let (legacy, inputs) =
-                        legacy::Prepared::open(config_path, &config, options, &mut slots)?;
-                    (Some(PreparedReplay::Legacy(legacy)), inputs)
-                }
-                None => (None, Vec::new()),
-            };
+        let replay = match replay::Inspection::open(config_path, &config, options, repeat)? {
+            Some(selected) => Some(InspectedReplay::Selected(Box::new(selected))),
+            None if options.mode == Some(crate::tape::Mode::Replay) => {
+                Some(InspectedReplay::Legacy(legacy::Inspection::open(
+                    config_path,
+                    &config,
+                    options,
+                    &mut slots,
+                )?))
+            }
+            None => None,
+        };
         let parent = campaign_parent
             .map(|path| std::path::absolute(path).map_err(io_error))
             .transpose()?
@@ -232,8 +312,8 @@ impl Prepared {
                 super::campaign::MeasurementStorage::Campaign
             }),
             replay_selection: replay.as_ref().and_then(|replay| match replay {
-                PreparedReplay::Selected(selected) => selected.selection.clone(),
-                PreparedReplay::Legacy(_) => None,
+                InspectedReplay::Selected(selected) => selected.selection.clone(),
+                InspectedReplay::Legacy(_) => None,
             }),
             recording: recording_destination.clone(),
             admission,
@@ -254,12 +334,10 @@ impl Prepared {
             },
             respect_record_timings: options.respect_record_timings,
             measurement_root: measurement_root.clone(),
-            replay_inputs,
+            replay_inputs: Vec::new(),
             slots,
         };
         plan.recording_reservation = plan.recording_capacity()?;
-        plan.validate_layout()?;
-        let bytes = encode(&plan)?;
         Ok(Self {
             // Anchor the invocation without following its final symlink: its
             // project authority can differ from the canonical source location.
@@ -273,11 +351,51 @@ impl Prepared {
             parent,
             root,
             plan,
-            bytes,
             replay,
         })
     }
 
+    pub(crate) fn input_cost(&self) -> Result<InputCost, Error> {
+        match &self.replay {
+            Some(InspectedReplay::Selected(selected)) => selected.input_cost(),
+            Some(InspectedReplay::Legacy(legacy)) => Ok(legacy.input_cost()),
+            None => Ok(InputCost::default()),
+        }
+    }
+
+    pub(crate) fn recording_reservation(&self) -> Option<&crate::cassette::RecordingReservation> {
+        self.plan.recording_reservation.as_ref()
+    }
+
+    pub(crate) fn observe(mut self) -> Result<Prepared, Error> {
+        let replay = match self.replay {
+            Some(InspectedReplay::Selected(selected)) => {
+                let selected = selected.observe()?;
+                self.plan.replay_inputs = selected.inputs(&mut self.plan.slots)?;
+                Some(PreparedReplay::Selected(Box::new(selected)))
+            }
+            Some(InspectedReplay::Legacy(legacy)) => {
+                let (legacy, inputs) = legacy.observe()?;
+                self.plan.replay_inputs = inputs;
+                Some(PreparedReplay::Legacy(legacy))
+            }
+            None => None,
+        };
+        self.plan.validate_layout()?;
+        let bytes = encode(&self.plan)?;
+        Ok(Prepared {
+            config_path: self.config_path,
+            options: self.options,
+            parent: self.parent,
+            root: self.root,
+            plan: self.plan,
+            bytes,
+            replay,
+        })
+    }
+}
+
+impl Prepared {
     pub(crate) fn reference(&self, results: &Path) -> Result<super::campaign::Reference, Error> {
         let results = std::path::absolute(results).map_err(io_error)?;
         Ok(super::campaign::Reference {
@@ -291,21 +409,6 @@ impl Prepared {
             bytes: self.bytes.len() as u64,
             sha256: crate::cassette::digest(&self.bytes),
         })
-    }
-
-    pub(crate) fn input_cost(&self) -> (usize, u64) {
-        (
-            self.plan.replay_inputs.len(),
-            self.plan
-                .replay_inputs
-                .iter()
-                .map(|input| input.bytes)
-                .sum(),
-        )
-    }
-
-    pub(crate) fn recording_reservation(&self) -> Option<&crate::cassette::RecordingReservation> {
-        self.plan.recording_reservation.as_ref()
     }
 
     /// Open source handles remain pinned; only their durable display locations
@@ -909,6 +1012,52 @@ pub(super) fn publish_bytes(path: &Path, bytes: &[u8]) -> Result<(), Error> {
 mod tests {
     use super::super::replica::CompletionObserver;
     use super::*;
+
+    #[test]
+    fn input_admission_has_independent_exact_and_overflow_limits() {
+        let maximum = InputCost {
+            inputs: MAX_EXECUTIONS as usize,
+            bytes: 2 * 1024 * 1024 * 1024,
+            observed_bytes: 2 * 1024 * 1024 * 1024,
+            files: 256,
+            directory_bytes: 64 * 1024 * 1024,
+            manifest_bytes: 256 * 1024 * 1024,
+        };
+        assert!(InputCost::default().checked_add(maximum).is_ok());
+        // Track count is not a descriptor count: one archive may provide every
+        // bounded selected input, rather than an artificial 256-track limit.
+        assert!(
+            InputCost::default()
+                .checked_add(InputCost {
+                    inputs: MAX_EXECUTIONS as usize,
+                    files: 1,
+                    ..Default::default()
+                })
+                .is_ok()
+        );
+        for field in 0..6 {
+            let mut one = InputCost::default();
+            match field {
+                0 => one.inputs = 1,
+                1 => one.bytes = 1,
+                2 => one.observed_bytes = 1,
+                3 => one.files = 1,
+                4 => one.directory_bytes = 1,
+                _ => one.manifest_bytes = 1,
+            }
+            assert!(maximum.checked_add(one).is_err());
+            let mut overflow = InputCost::default();
+            match field {
+                0 => overflow.inputs = usize::MAX,
+                1 => overflow.bytes = u64::MAX,
+                2 => overflow.observed_bytes = u64::MAX,
+                3 => overflow.files = usize::MAX,
+                4 => overflow.directory_bytes = u64::MAX,
+                _ => overflow.manifest_bytes = u64::MAX,
+            }
+            assert!(overflow.checked_add(one).is_err());
+        }
+    }
 
     fn planning_fixture() -> (PathBuf, BenchmarkConfig, PathBuf) {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))

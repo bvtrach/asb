@@ -1,6 +1,6 @@
 //! Run-owned whole-track selection and private JSONL staging; no proxy changes.
 use super::{Plan, ReplayInput, Slot, path_text, private_directory, publish_bytes};
-use crate::cassette::{Compatibility, Limits, SelectionPlan, Selector, Source};
+use crate::cassette::{Compatibility, Limits, SelectionPlan, Selector, Source, SourceInspection};
 use crate::{Error, benchmark::BenchmarkConfig, runner::RunOptions};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -25,7 +25,19 @@ pub(super) struct Prepared {
     pub compatibility: Option<Compatibility>,
 }
 
-impl Prepared {
+pub(super) struct Inspection {
+    source: SourceInspection,
+    path: PathBuf,
+    chosen: Vec<u64>,
+    pub selection: Option<SelectionPlan>,
+    pub compatibility: Option<Compatibility>,
+}
+
+impl Inspection {
+    pub fn validate(&self) -> Result<(), Error> {
+        self.source.validate().map_err(input_error)
+    }
+
     pub fn open(
         config_path: &Path,
         config: &BenchmarkConfig,
@@ -42,7 +54,7 @@ impl Prepared {
         {
             return Ok(None);
         }
-        let source = Source::open(&path, Limits::default()).map_err(input_error)?;
+        let source = Source::inspect(&path, Limits::default()).map_err(input_error)?;
         let (chosen, selection, compatibility) = if let Some(manifest) = source.manifest() {
             // Selection is precomputed once in slot order, never by worker arrival.
             let seed = options.replay_seed.unwrap_or_else(generated_seed);
@@ -70,7 +82,7 @@ impl Prepared {
             let Some(Selector::Id(id)) = options.track else {
                 return Err(Error::Input("legacy JSONL supports numeric --track only; statistic observations are unknown".into()));
             };
-            if !source.legacy_tracks().iter().any(|track| track.id == id) {
+            if source.legacy_bytes(id).is_none() {
                 return Err(Error::Input(format!(
                     "legacy cassette track {id} does not exist"
                 )));
@@ -90,6 +102,47 @@ impl Prepared {
         }))
     }
 
+    pub fn input_cost(&self) -> Result<super::InputCost, Error> {
+        let ids: std::collections::BTreeSet<_> = self.chosen.iter().copied().collect();
+        let mut bytes = 0u64;
+        for id in &ids {
+            let size = if let Some(manifest) = self.source.manifest() {
+                manifest.track(*id).map_err(input_error)?.bytes
+            } else {
+                self.source
+                    .legacy_bytes(*id)
+                    .ok_or_else(|| Error::Input("selected legacy metadata is missing".into()))?
+            };
+            bytes = bytes
+                .checked_add(size)
+                .filter(|bytes| *bytes <= Limits::default().max_total_bytes)
+                .ok_or_else(|| {
+                    Error::Input("selected replay inputs exceed aggregate byte budget".into())
+                })?;
+        }
+        let (files, directory_bytes, manifest_bytes, observed_bytes) = self.source.retained_cost();
+        Ok(super::InputCost {
+            inputs: ids.len(),
+            bytes,
+            files,
+            directory_bytes,
+            manifest_bytes,
+            observed_bytes,
+        })
+    }
+
+    pub fn observe(self) -> Result<Prepared, Error> {
+        Ok(Prepared {
+            source: self.source.observe().map_err(input_error)?,
+            path: self.path,
+            chosen: self.chosen,
+            selection: self.selection,
+            compatibility: self.compatibility,
+        })
+    }
+}
+
+impl Prepared {
     pub fn inputs(&self, slots: &mut [Slot]) -> Result<Vec<ReplayInput>, Error> {
         if slots.len() != self.chosen.len() {
             return Err(Error::Input(

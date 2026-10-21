@@ -26,6 +26,9 @@ fn error(reason: &str) -> Error {
     Error::Input(format!("sweep campaign: {reason}"))
 }
 
+#[cfg(all(test, unix))]
+mod tests;
+
 pub(super) fn prepare(
     parent: &Path,
     results: &Path,
@@ -112,10 +115,8 @@ pub(super) fn prepare(
             u64::from_str_radix(&digest[..16], 16).expect("canonical digest prefix")
         })
     });
-    let mut entries = Vec::new();
-    let mut input_bytes = 0u64;
-    let mut input_count = 0usize;
-    let mut plan_bytes = 0u64;
+    let mut inspections = Vec::new();
+    let mut cost = runner::repeated::InputCost::default();
     let mut recording_reservation = crate::cassette::RecordingReservation::default();
     for (index, ((entry, source), bundle)) in plan
         .entries
@@ -127,7 +128,7 @@ pub(super) fn prepare(
         let campaign_parent = results
             .join(execution::result_name(index, Path::new(&entry.reference)))
             .join("campaigns");
-        let mut prepared = runner::repeated::Prepared::prepare_selected(
+        let inspected = runner::repeated::Inspection::prepare_selected(
             &parent.join(&entry.reference),
             entry.configuration.clone(),
             repeat,
@@ -145,7 +146,7 @@ pub(super) fn prepare(
             Some(&campaign_parent),
             Some(&entry.selection),
         )?;
-        if let Some(capacity) = prepared.recording_reservation() {
+        if let Some(capacity) = inspected.recording_reservation() {
             recording_reservation = recording_reservation
                 .checked_add(capacity)
                 .map_err(|failure| error(&failure.to_string()))?;
@@ -153,17 +154,20 @@ pub(super) fn prepare(
                 .validate(crate::cassette::ProofLimits::default())
                 .map_err(|failure| error(&failure.to_string()))?;
         }
+        cost = cost.checked_add(inspected.input_cost()?)?;
+        inspections.push(inspected);
+    }
+    // No legacy hash occurs until every source's metadata and the complete
+    // retained-descriptor/selected-byte budgets have passed admission.
+    for inspected in &inspections {
+        inspected.validate_sources()?;
+    }
+    let mut entries = Vec::new();
+    let mut plan_bytes = 0u64;
+    for (entry, inspected) in plan.entries.iter_mut().zip(inspections) {
+        let mut prepared = inspected.observe()?;
         prepared.preserve_source_locations(results, preserved)?;
         let reference = prepared.reference(results)?;
-        let (count, bytes) = prepared.input_cost();
-        input_count = input_count
-            .checked_add(count)
-            .filter(|count| *count <= 256)
-            .ok_or_else(|| error("retained replay input population exceeds 256"))?;
-        input_bytes = input_bytes
-            .checked_add(bytes)
-            .filter(|bytes| *bytes <= 2 * 1024 * 1024 * 1024)
-            .ok_or_else(|| error("private replay inputs exceed aggregate 2 GiB"))?;
         plan_bytes = plan_bytes
             .checked_add(reference.bytes)
             .filter(|bytes| *bytes <= plan::MAX_PLAN_BYTES as u64)
