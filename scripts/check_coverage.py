@@ -16,17 +16,21 @@ def dependency_path_regex(metadata):
     """Exclude only Cargo-identified registry/git packages, not local code."""
     members = set(metadata["workspace_members"])
     roots = set()
+    protected = set()
     for package in metadata["packages"]:
         source = package["source"]
-        if package["id"] in members or source is None:
-            continue
-        if not source.startswith(("registry+", "git+")):
-            raise ValueError("unsupported Cargo dependency source")
         manifest = Path(package["manifest_path"])
         if not manifest.is_absolute():
             raise ValueError("Cargo manifest path must be absolute")
         root = manifest.parent
+        if package["id"] in members or source is None:
+            protected.update((root, root.resolve()))
+            continue
+        if not source.startswith(("registry+", "git+")):
+            raise ValueError("unsupported Cargo dependency source")
         roots.update((str(root), str(root.resolve())))
+    if any(path.is_relative_to(root) for path in protected for root in roots):
+        raise ValueError("dependency exclusion would hide workspace or local package sources")
     return "|".join("^" + re.escape(root) + "/" for root in sorted(roots)) or "a^"
 
 

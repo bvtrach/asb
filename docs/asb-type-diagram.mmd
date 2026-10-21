@@ -673,6 +673,7 @@ classDiagram
         +connection: Connection
         +runtime_dir: &'a Path
         +run_dir: &'a Path
+        +unsupported_endpoint(agent: &str) Error
     }
     class C083["agents::StaticAdapter"] {
         -id: &'static str
@@ -2485,6 +2486,7 @@ classDiagram
     C081 --> C084
     C081 --> C152
     C082 --> C014
+    C082 ..> C021
     C083 --> C048
     C085 --> C029
     C085 --> C093

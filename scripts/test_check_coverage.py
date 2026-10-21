@@ -24,7 +24,7 @@ def aggregate(covered=90, count=100):
 def metadata(root):
     return {"workspace_members": ["workspace"], "packages": [
         {"id": "cached", "source": "registry+fixture", "manifest_path": str(root / "Cargo.toml")},
-        {"id": "workspace", "source": None, "manifest_path": str(root / "workspace/Cargo.toml")},
+        {"id": "workspace", "source": None, "manifest_path": "/workspace/Cargo.toml"},
         {"id": "local", "source": None, "manifest_path": "/local/Cargo.toml"},
     ]}
 
@@ -33,14 +33,28 @@ class CoverageGateTests(unittest.TestCase):
     def test_dependency_paths_follow_custom_cargo_home_without_excluding_product(self):
         for home in ("/fixture/.cargo/registry/src/pkg", "/fixture/cache.with+[characters] cargo/git/checkouts/pkg"):
             value = metadata(Path(home))
-            # Workspace and path dependencies must remain even in a cache tree.
-            value["packages"][1]["manifest_path"] = "/workspace/Cargo.toml"
             pattern = dependency_path_regex(value)
             self.assertIsNotNone(re.search(pattern, home + "/src/lib.rs"))
             for path in ("/workspace/src/main.rs", "/local/src/lib.rs",
                          "/product/.cargo/src/main.rs", "/product/src/main.rs",
                          home + "-other/src/lib.rs"):
                 self.assertIsNone(re.search(pattern, path), path)
+
+    def test_nested_workspace_and_local_paths_fail_closed_including_symlinks(self):
+        target = Path(__file__).resolve().parent.parent / "target"
+        target.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="coverage-overlap-", dir=target) as name:
+            cached = Path(name) / "cached"
+            nested = cached / "nested"
+            nested.mkdir(parents=True)
+            alias = Path(name) / "alias"
+            alias.symlink_to(nested, target_is_directory=True)
+            for package_index in (1, 2):
+                for location in (nested, alias):
+                    value = metadata(cached)
+                    value["packages"][package_index]["manifest_path"] = str(location / "Cargo.toml")
+                    with self.assertRaisesRegex(ValueError, "hide workspace or local"):
+                        dependency_path_regex(value)
 
     def test_dependency_discovery_rejects_invalid_metadata(self):
         for source, path in (("unknown+fixture", "/fixture/Cargo.toml"),
