@@ -4,8 +4,6 @@
 
 use std::ffi::OsString;
 use std::io;
-use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
 use std::process::Command;
 
 #[cfg(target_os = "linux")]
@@ -42,94 +40,17 @@ pub(crate) fn executable() -> io::Result<std::path::PathBuf> {
     std::env::current_exe()
 }
 
-#[cfg(all(unix, any(test, not(target_os = "linux"))))]
-pub(crate) fn install(
-    command: &mut Command,
-    gate_executable: &Path,
-    target: &str,
-    args: &[String],
-) {
-    install_with_receipt(command, gate_executable, target, args, None);
-}
-
-fn install_with_receipt(
-    command: &mut Command,
-    gate_executable: &Path,
-    target: &str,
-    args: &[String],
-    receipt_fd: Option<i32>,
-) {
+#[cfg(target_os = "linux")]
+fn install_receipt(command: &mut Command, receipt_fd: i32) {
     use std::os::unix::process::CommandExt;
-    let gate_executable = gate_executable.to_owned();
-    let target = target.to_owned();
-    let args = args.to_owned();
-    #[cfg(target_os = "linux")]
     command.env("ASB_GATE_OWNER_PID", std::process::id().to_string());
-    let environment_changes = command
-        .get_envs()
-        .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
-        .collect::<Vec<_>>();
     unsafe {
         command.pre_exec(move || {
-            if let Some(fd) = receipt_fd {
-                let flags = libc::fcntl(fd, libc::F_GETFD);
-                if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
+            let flags = libc::fcntl(receipt_fd, libc::F_GETFD);
+            if flags < 0 || libc::fcntl(receipt_fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                return Err(io::Error::last_os_error());
             }
-            let mut values = vec![
-                gate_executable.as_os_str().to_owned(),
-                OsString::from("__asb-gate"),
-                OsString::from(&target),
-            ];
-            values.extend(args.iter().map(OsString::from));
-            let c_values = values
-                .iter()
-                .map(|value| {
-                    std::ffi::CString::new(value.as_os_str().as_bytes()).map_err(|_| {
-                        io::Error::new(io::ErrorKind::InvalidInput, "gate argument contains NUL")
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let mut pointers = c_values
-                .iter()
-                .map(|value| value.as_ptr())
-                .collect::<Vec<_>>();
-            pointers.push(std::ptr::null());
-            let mut environment = std::env::vars_os().collect::<Vec<_>>();
-            for (key, value) in &environment_changes {
-                environment.retain(|(existing, _)| existing != key);
-                if let Some(value) = value {
-                    environment.push((key.clone(), value.clone()));
-                }
-            }
-            let c_environment = environment
-                .iter()
-                .map(|(key, value)| {
-                    std::ffi::CString::new(
-                        [
-                            key.as_os_str().as_bytes(),
-                            b"=",
-                            value.as_os_str().as_bytes(),
-                        ]
-                        .concat(),
-                    )
-                    .map_err(|_| {
-                        io::Error::new(io::ErrorKind::InvalidInput, "gate environment contains NUL")
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let mut environment_pointers = c_environment
-                .iter()
-                .map(|value| value.as_ptr())
-                .collect::<Vec<_>>();
-            environment_pointers.push(std::ptr::null());
-            libc::execve(
-                c_values[0].as_ptr(),
-                pointers.as_ptr(),
-                environment_pointers.as_ptr(),
-            );
-            Err(io::Error::last_os_error())
+            Ok(())
         });
     }
 }
@@ -202,6 +123,18 @@ pub(crate) fn cancel_gate(child: &mut std::process::Child) -> io::Result<std::pr
 
 #[cfg(unix)]
 pub(crate) fn run_gate(args: &[OsString]) -> std::process::ExitCode {
+    let (args, arg0) = if args
+        .first()
+        .is_some_and(|value| value == crate::launch::FORMAT)
+    {
+        match args.get(1).and_then(|value| value.to_str()) {
+            Some("0") => (&args[2..], None),
+            Some("1") if args.len() >= 4 => (&args[3..], Some(&args[2])),
+            _ => return std::process::ExitCode::from(2),
+        }
+    } else {
+        (args, None)
+    };
     let Some((program, target_args)) = args.split_first() else {
         return std::process::ExitCode::from(2);
     };
@@ -246,11 +179,11 @@ pub(crate) fn run_gate(args: &[OsString]) -> std::process::ExitCode {
                 "native gate owner exited before client execution",
             ));
         }
-        let mut child = Command::new(program).args(target_args).spawn()?;
+        let mut child = target_command(program, target_args, arg0).spawn()?;
         owner.wait(&mut child)
     })();
     #[cfg(not(target_os = "linux"))]
-    let status = Command::new(program).args(target_args).status();
+    let status = target_command(program, target_args, arg0).status();
     #[cfg(target_os = "linux")]
     owner.stop_waker();
     #[cfg(target_os = "linux")]
@@ -281,6 +214,22 @@ pub(crate) fn run_gate(args: &[OsString]) -> std::process::ExitCode {
         return std::process::ExitCode::from(2);
     }
     std::process::ExitCode::from(code)
+}
+
+#[cfg(unix)]
+fn target_command(
+    program: &std::ffi::OsStr,
+    args: &[OsString],
+    arg0: Option<&OsString>,
+) -> Command {
+    let mut launch = crate::launch::ProcessLaunch::new(program);
+    for arg in args {
+        launch.arg(arg);
+    }
+    if let Some(arg0) = arg0 {
+        launch.arg0(arg0);
+    }
+    launch.direct()
 }
 
 /// Keep descendants that daemonize or outlive an intermediate helper attached

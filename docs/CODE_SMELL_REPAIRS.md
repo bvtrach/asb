@@ -168,6 +168,24 @@ intent, although no current production caller uses that method; do not claim
 an observed credential leak. Tests must preserve explicit environment removal,
 clearing, non-UTF8 arguments/environment, I/O, owner death and descendant cleanup.
 
+Separate launch-descriptor candidate (not yet merged/released): the adapter
+returns an OS-string client executable/prefix/explicit argv[0] descriptor;
+native preparation constructs the gate command once before all configuration.
+The same actual `Command` retains standard-library environment clearing,
+removals/overrides, cwd, I/O, credentials and process settings. No getter-based
+rebuild or private `Command` layout is used. The post-fork ASB callback only
+adjusts the private receipt FD with async-signal-safe `fcntl` and captures an
+OS error; allocation, environment enumeration and manual exec argument arrays
+are gone. A typed target view keeps collectors separate from gate framing;
+bare unprovable PATH identities remain unavailable. The private ASBGATE2 ABI
+refuses the prior valid ASBGATE1 Hello before resume. Offline actual-binary
+fixtures cover clear/remove/override, child-only PATH, cwd/I/O, raw executable,
+argument and environment bytes, explicit client argv[0], current UID/GID,
+an owned process group, an existing async-safe callback and launch failures.
+This does not expand the separate runtime-fingerprint JSON wire to arbitrary
+filesystem byte encodings or fix output-reader memory/wait limits. Full
+independent review and fresh ordinary/package CI remain required.
+
 Independent review additionally found that wizard installation workers are
 detached: a draw error can return while an installer still mutates project
 files. Shared progress handling must own worker completion/cancellation, with

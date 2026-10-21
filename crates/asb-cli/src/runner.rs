@@ -979,40 +979,27 @@ fn instrument_phase<T>(
 /// interface, including failures after the execution span has begun.
 fn run_measured_agent(
     command: &mut Command,
-    program: &str,
-    target_args: Option<&[String]>,
+    target: &crate::launch::TargetLaunch,
+    gated: bool,
     mut session: Option<&mut measurements::Session>,
     show_output: bool,
     output: &mut dyn Write,
 ) -> Result<MeasuredOutput, Error> {
     let started = Instant::now();
     if let Some(session) = session.as_deref_mut() {
-        session.agent_launch_prepared(command);
+        session.agent_launch_prepared(target);
     }
-    let mut gated = false;
     #[cfg(target_os = "linux")]
     let mut admission = None;
-    #[cfg(unix)]
-    if (session.is_some() || cfg!(target_os = "linux"))
-        && let Some(target_args) = target_args
-        && gate_target_available(program)
-    {
-        let executable = crate::process_gate::executable()
-            .map_err(|error| Error::Run(format!("cannot resolve ASB process gate: {error}")))?;
-        #[cfg(target_os = "linux")]
-        {
-            admission = Some(
-                crate::process_gate::Admission::new(command, &executable, program, target_args)
-                    .map_err(|error| {
-                        Error::Run(format!(
-                            "cannot establish ASB process gate custody: {error}"
-                        ))
-                    })?,
-            );
-        }
-        #[cfg(not(target_os = "linux"))]
-        crate::process_gate::install(command, &executable, program, target_args);
-        gated = true;
+    #[cfg(target_os = "linux")]
+    if gated {
+        admission = Some(
+            crate::process_gate::Admission::new(command).map_err(|error| {
+                Error::Run(format!(
+                    "cannot establish ASB process gate custody: {error}"
+                ))
+            })?,
+        );
     }
     let mut child = {
         let mut emit = |event| {
@@ -1034,7 +1021,10 @@ fn run_measured_agent(
         let child = match spawned {
             Ok(child) => child,
             Err(error) => {
-                let mut primary = format!("could not start {program}: {error}");
+                let mut primary = format!(
+                    "could not start {}: {error}",
+                    target.program.to_string_lossy()
+                );
                 for event in [
                     LifecycleEvent::AgentExecuteEnd,
                     LifecycleEvent::AgentSpawnFailed,
@@ -1110,7 +1100,10 @@ fn run_measured_agent(
             })
         }
         Err(error) => {
-            let mut primary = format!("could not wait for {program}: {error}");
+            let mut primary = format!(
+                "could not wait for {}: {error}",
+                target.program.to_string_lossy()
+            );
             if let Some(secondary) = issues.collector_failure() {
                 primary.push_str(&format!("; {secondary}"));
             }
@@ -1120,10 +1113,12 @@ fn run_measured_agent(
 }
 
 #[cfg(unix)]
-fn gate_target_available(program: &str) -> bool {
+fn gate_target_available(program: impl AsRef<std::ffi::OsStr>) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let program = program.as_ref();
     let path = Path::new(program);
     if !path.is_file() {
-        return !program.contains('/');
+        return !program.as_bytes().contains(&b'/');
     }
     let Ok(bytes) = std::fs::read(path) else {
         return false;
@@ -1859,10 +1854,11 @@ mod tests {
         session.test_attach_failure = fail_attach;
         let marker = dir.join("marker");
         session.set_test_marker(&marker);
+        let target = crate::launch::TargetLaunch::direct(command);
         let _ = super::run_measured_agent(
             command,
-            "fixture",
-            None,
+            &target,
+            false,
             Some(&mut session),
             false,
             &mut Vec::new(),
@@ -2089,10 +2085,11 @@ mod tests {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
         let execution_started = std::time::Instant::now();
+        let target = crate::launch::TargetLaunch::direct(&command);
         let output = super::run_measured_agent(
             &mut command,
-            "sh",
-            None,
+            &target,
+            false,
             Some(&mut session),
             false,
             &mut Vec::new(),

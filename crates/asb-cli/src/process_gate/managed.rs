@@ -4,7 +4,6 @@ use crate::process_cleanup::OwnedReaper;
 use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus};
 use std::time::{Duration, Instant};
 
@@ -19,17 +18,12 @@ pub(crate) struct Admission {
 }
 
 impl Admission {
-    pub(crate) fn new(
-        command: &mut Command,
-        executable: &Path,
-        target: &str,
-        args: &[String],
-    ) -> io::Result<Self> {
+    pub(crate) fn new(command: &mut Command) -> io::Result<Self> {
         let keeper = OwnedReaper::new("asb-gate-custody").map_err(io::Error::other)?;
         let (receiver, writer) = Receiver::pair()?;
         let fd = writer.as_raw_fd();
         command.env(receipt::ENV_FD, fd.to_string());
-        super::install_with_receipt(command, executable, target, args, Some(fd));
+        super::install_receipt(command, fd);
         Ok(Self {
             receiver,
             writer,

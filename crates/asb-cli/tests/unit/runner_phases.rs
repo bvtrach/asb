@@ -192,10 +192,11 @@ fn required_prelaunch_lifecycle_errors_admit_no_client_process() {
             .env_clear()
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        let target = crate::launch::TargetLaunch::direct(&command);
         let error = run_measured_agent(
             &mut command,
-            "/bin/sh",
-            None,
+            &target,
+            false,
             Some(&mut session),
             false,
             &mut Vec::new(),
@@ -228,10 +229,12 @@ fn spawn_and_wait_errors_remain_primary_when_failure_markers_also_fail() {
             Command::new("/bin/true")
         };
         // Deliberately leave pipes absent in the wait-failure case.
+        let mut target = crate::launch::TargetLaunch::direct(&command);
+        target.program = "fixture".into();
         let error = run_measured_agent(
             &mut command,
-            "fixture",
-            None,
+            &target,
+            false,
             Some(&mut session),
             false,
             &mut Vec::new(),
@@ -413,10 +416,11 @@ fn actual_native_duration_excludes_slow_execution_end_collector_hook() {
         .stderr(Stdio::piped())
         .env_clear();
     let started = Instant::now();
+    let target = crate::launch::TargetLaunch::direct(&command);
     let output = run_measured_agent(
         &mut command,
-        "/bin/true",
-        None,
+        &target,
+        false,
         Some(&mut session),
         false,
         &mut Vec::new(),
@@ -460,8 +464,9 @@ fn broken_native_terminal_retains_capture_and_finishes_already_admitted_work() {
             .env_clear()
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        let target = crate::launch::TargetLaunch::direct(&command);
         let measured =
-            run_measured_agent(&mut command, "/bin/sh", None, None, true, &mut writer).unwrap();
+            run_measured_agent(&mut command, &target, false, None, true, &mut writer).unwrap();
         assert_eq!(
             writer.writes, 1,
             "never retry a broken terminal for every chunk/stream"
@@ -510,10 +515,11 @@ fn native_postexecution_event_failure_retains_actual_child_output_and_grade() {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .env_clear();
+        let target = crate::launch::TargetLaunch::direct(&command);
         let measured = run_measured_agent(
             &mut command,
-            "/bin/sh",
-            None,
+            &target,
+            false,
             Some(&mut session),
             false,
             &mut Vec::new(),

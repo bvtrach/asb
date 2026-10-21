@@ -9,6 +9,7 @@ mod completion;
 mod config;
 mod endpoint;
 mod install;
+mod launch;
 mod measurements;
 mod models;
 mod output_lock;
