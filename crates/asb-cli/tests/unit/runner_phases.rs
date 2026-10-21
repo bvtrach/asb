@@ -1070,6 +1070,28 @@ fn full_runner_entry_observer_warning_is_redacted_and_broken_warning_writer_keep
     isolated_full_entry_cases(&["observer-failure", "observer-warning-writer"]);
 }
 
+#[test]
+fn full_runner_entry_explicit_provider_finish_preserves_grades_and_primary_failures() {
+    isolated_full_entry_cases(&[
+        "provider-true-failed-finish",
+        "provider-false-failed-finish",
+        "provider-client-failed-finish",
+        "provider-early-failed-finish",
+        "provider-success",
+        "provider-native-failed-finish",
+        "provider-native-success",
+    ]);
+}
+
+#[test]
+fn repeated_provider_finish_uncertainty_stops_batches_without_losing_grades() {
+    isolated_full_entry_cases(&[
+        "provider-repeat-failed-finish",
+        "provider-repeat-grader-failed-finish",
+        "provider-repeat-grader-success",
+    ]);
+}
+
 fn isolated_full_entry_cases(cases: &[&str]) {
     use support::IsolatedEnvironment;
     let executable = std::env::current_exe().unwrap();
@@ -1093,6 +1115,166 @@ fn isolated_full_entry_cases(cases: &[&str]) {
             String::from_utf8_lossy(&child.stderr)
         );
     }
+}
+
+#[test]
+fn early_provider_teardown_notifies_material_peers_before_waiting_for_cleanup() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let gate = super::super::batch::Gate::new(2, None, Duration::from_secs(10)).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (sent, received) = std::sync::mpsc::channel();
+    struct Provider {
+        received: std::sync::mpsc::Receiver<()>,
+        calls: Arc<AtomicUsize>,
+    }
+    impl providers::ProviderSession for Provider {
+        fn api_key(&self) -> &str {
+            "fixture"
+        }
+        fn base_url(&self) -> &str {
+            "http://127.0.0.1:1"
+        }
+        fn finish(&mut self) -> Result<(), Error> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.received
+                .recv_timeout(Duration::from_secs(2))
+                .expect("peer must observe abort before provider teardown waits");
+            Err(Error::Run("fixture slow provider cleanup failure".into()))
+        }
+    }
+    std::thread::scope(|scope| {
+        let mut arrival = Some(
+            gate.register(replica::Identity { index: 1, total: 2 })
+                .unwrap(),
+        );
+        let mut peer = gate
+            .register(replica::Identity { index: 2, total: 2 })
+            .unwrap();
+        let handle = scope.spawn(move || {
+            let identity = crate::cassette::Compatibility {
+                agent: "fixture".into(),
+                provider: "fixture".into(),
+                model: "fixture".into(),
+                workload: "fixture".into(),
+                task: "fixture".into(),
+                dataset_sha256: None,
+                prompt_sha256: "a".repeat(64),
+                material_sha256: "b".repeat(64),
+            };
+            assert!(
+                peer.ready(identity)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("early fixture")
+            );
+            sent.send(()).unwrap();
+        });
+        let mut provider: Option<Box<dyn providers::ProviderSession>> = Some(Box::new(Provider {
+            received,
+            calls: calls.clone(),
+        }));
+        let result = super::super::finish_provider_attempt(
+            Err(Error::Io("early fixture output failure".into())),
+            &mut arrival,
+            &mut provider,
+        );
+        assert!(
+            matches!(&result, Err(Error::Io(reason)) if reason.contains("early fixture") && reason.contains("provider cleanup failed"))
+        );
+        assert!(provider.is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        handle.join().unwrap();
+    });
+}
+
+fn repeated_provider_finish_child(
+    case: &str,
+    root: &Path,
+    config_path: &Path,
+    config: BenchmarkConfig,
+    cassette: &Path,
+) {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let failed_finish = case.ends_with("failed-finish");
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = calls.clone();
+    let _scope = entry_test_support::SharedProviderScope::new(
+        root,
+        Arc::new(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            if failed_finish {
+                Err(Error::Run(
+                    "fixture shared provider cleanup uncertain".into(),
+                ))
+            } else {
+                Ok(())
+            }
+        }),
+    );
+    let mut output = Vec::new();
+    let result = super::super::repeated::run(
+        config_path,
+        config,
+        2,
+        RunOptions {
+            json: true,
+            mode: Some(tape::Mode::Replay),
+            cassette: Some(cassette.to_str().unwrap()),
+            ..Default::default()
+        },
+        &mut output,
+        &Mutex::new(BTreeSet::new()),
+    );
+    assert!(
+        result.is_err(),
+        "negative grade or cleanup failure must fail"
+    );
+    if failed_finish {
+        assert!(
+            result
+                .as_ref()
+                .unwrap_err()
+                .to_string()
+                .contains("provider cleanup")
+        );
+    }
+    let rows: Vec<serde_json::Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let summaries: Vec<_> = rows
+        .iter()
+        .filter(|row| row.get("task").is_some())
+        .collect();
+    let expected = if failed_finish { 2 } else { 4 };
+    assert_eq!(summaries.len(), expected, "{rows:?}");
+    assert_eq!(calls.load(Ordering::SeqCst), expected);
+    for row in summaries {
+        assert_eq!(row["process_success"], true);
+        assert_eq!(row["workload_success"], !case.contains("repeat-grader"));
+        assert_eq!(
+            row["benchmark_outcome"]["cleanup_confirmed"],
+            !failed_finish
+        );
+        if failed_finish {
+            assert_eq!(row["execution"]["batch"], 1);
+        }
+    }
+    let campaign = PathBuf::from(rows[0]["path"].as_str().unwrap())
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    assert_eq!(campaign.join("batch-2").exists(), !failed_finish);
+    let final_record: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(campaign.join("finished.json")).unwrap()).unwrap();
+    assert_eq!(final_record["stopped"], failed_finish);
 }
 
 fn full_entry_child(case: &str) {
@@ -1124,6 +1306,7 @@ fn full_entry_child(case: &str) {
             }
         }
     }
+    let provider_case = case.starts_with("provider-");
     let fixture = Fixture::new();
     let root = fixture.0.canonicalize().unwrap();
     let project = project::ProjectConfig {
@@ -1150,9 +1333,34 @@ fn full_entry_child(case: &str) {
     let body = serde_json::json!({"model":"fixture","tools":[{"type":"function","function":{"name":"fixture","parameters":{"type":"object"}}}],"messages":[]});
     let row = serde_json::json!({"request":{"method":"POST","url":"/v1/chat/completions","body":body.to_string()},"response":{"status":200,"headers":{"content-type":"application/json"},"body":"{}"}});
     std::fs::write(&cassette, format!("{row}\n")).unwrap();
-    let config: BenchmarkConfig = toml::from_str("agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='repository-navigation'\nworkspace='workspace'\nlog_file='run.jsonl'\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n").unwrap();
+    if provider_case {
+        let node = crate::tools::host_executable(Path::new("node")).unwrap();
+        let answer = if case == "provider-false-failed-finish" || case.contains("repeat-grader") {
+            "incorrect"
+        } else {
+            "src/cli.py src/registry.py lookup"
+        };
+        let response = serde_json::json!({"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":answer}]}]});
+        let exit = if case == "provider-client-failed-finish" {
+            7
+        } else {
+            0
+        };
+        std::fs::write(&agent, format!("#!{}\nfetch(process.env.OPENAI_BASE_URL+'/chat/completions',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({body})}}).then(async r=>{{if(!r.ok)throw new Error('fixture request failed');await r.text();console.log(JSON.stringify({response}));process.exitCode={exit};}}).catch(()=>{{process.exitCode=9;}});\n", node.display())).unwrap();
+    }
+    if case == "provider-early-failed-finish" {
+        std::fs::write(root.join("workspace"), "blocking fixture file").unwrap();
+    }
+    let mut config: BenchmarkConfig = toml::from_str("agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='repository-navigation'\nworkspace='workspace'\nlog_file='run.jsonl'\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n").unwrap();
+    if case.starts_with("provider-repeat-") {
+        config.concurrency = 2;
+    }
     let config_path = root.join("benchmark.toml");
     std::fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
+    if case.starts_with("provider-repeat-") {
+        repeated_provider_finish_child(case, &root, &config_path, config, &cassette);
+        return;
+    }
     let blocked_log = case.starts_with("blocked-log");
     if blocked_log {
         std::fs::create_dir(root.join("run.jsonl")).unwrap();
@@ -1170,7 +1378,16 @@ fn full_entry_child(case: &str) {
     } else {
         LifecycleEvent::RunFinishing
     };
-    let _scope = entry_test_support::Scope::new(&root, event, calls.clone());
+    let _scope = if provider_case {
+        entry_test_support::Scope::provider(
+            &root,
+            calls.clone(),
+            !case.ends_with("success"),
+            case.contains("native"),
+        )
+    } else {
+        entry_test_support::Scope::new(&root, event, calls.clone())
+    };
     let observer = Observer {
         started: AtomicUsize::new(0),
         completed: AtomicUsize::new(0),
@@ -1210,22 +1427,176 @@ fn full_entry_child(case: &str) {
         writes: 0,
         failures: 0,
     };
+    let cohort = measurements::ExecutionCohort {
+        id: workloads::TaskIdentity::local("execution-cohort", None).attempt_id,
+        selected_replicas: 1,
+        admitted_slots: vec![1],
+    };
     let options = RunOptions {
         json: true,
         mode: Some(tape::Mode::Replay),
         cassette: Some(cassette.to_str().unwrap()),
         on_completion: Some(&observer),
+        execution_cohort: provider_case.then_some(&cohort),
         ..Default::default()
     };
-    let error = run_mode(
+    let result = run_mode(
         &config_path,
         config,
         options,
         &mut output,
         &Mutex::new(BTreeSet::new()),
-    )
-    .unwrap_err()
-    .to_string();
+    );
+    if provider_case {
+        let error = result.err().map(|error| error.to_string());
+        assert_eq!(error.is_none(), case.ends_with("success"), "{error:?}");
+        assert_eq!(
+            calls
+                .borrow()
+                .iter()
+                .filter(|call| **call == "provider-finish")
+                .count(),
+            1
+        );
+        assert!(!calls.borrow().contains(&"provider-fallback"));
+        if case == "provider-early-failed-finish" {
+            let error = error.unwrap();
+            assert!(error.starts_with("cannot create workspace"), "{error}");
+            assert!(error.contains("fixture provider cleanup uncertain"));
+            assert_eq!(calls.borrow().as_slice(), ["provider-finish"]);
+            assert!(!counter.exists());
+            assert!(!root.join(".asb-completions").exists());
+            return;
+        }
+        assert_eq!(
+            calls.borrow().as_slice(),
+            ["evaluate", "finish", "provider-finish"]
+        );
+        assert_eq!(
+            observer.completed.load(Ordering::SeqCst),
+            usize::from(case.ends_with("success"))
+        );
+        assert_eq!(
+            root.join(".asb-completions").exists(),
+            case.ends_with("success")
+        );
+        let log: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("run.jsonl")).unwrap()).unwrap();
+        let summary: serde_json::Value = serde_json::from_slice(&output.bytes).unwrap();
+        let measured: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(root.join("measurements/run.json")).unwrap())
+                .unwrap();
+        let plan: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(log["execution_plan"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(plan["policy"], log["planning"]);
+        assert_eq!(plan["effective_controller_caps"], log["effective_budgets"]);
+        assert!(!plan["task"].is_null());
+        for record in [&log, &summary] {
+            assert_eq!(record["planning"], log["planning"]);
+            assert_eq!(record["effective_budgets"], log["effective_budgets"]);
+            assert_eq!(record["execution_plan"], log["execution_plan"]);
+        }
+        for record in [&log, &summary, &measured] {
+            assert_eq!(
+                record["execution_plan_fingerprint"],
+                log["execution_plan_fingerprint"]
+            );
+            assert!(
+                record["execution_plan_fingerprint"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("asb-protocol-v1:")
+            );
+            if case.contains("native") {
+                assert!(record["workload_success"].is_null());
+                assert!(record["success_rate"].is_null());
+                assert_eq!(
+                    record["benchmark_outcome"]["evaluation"]["status"],
+                    "completed"
+                );
+                assert!(record["benchmark_outcome"]["evaluation"]["resolution"].is_null());
+                assert_eq!(
+                    record["benchmark_outcome"]["evaluation"]["rewards"]["accuracy"],
+                    0.5
+                );
+            } else {
+                assert_eq!(
+                    record["workload_success"],
+                    case != "provider-false-failed-finish"
+                );
+            }
+            assert_eq!(
+                record["benchmark_outcome"]["cleanup_confirmed"],
+                case.ends_with("success")
+            );
+            assert_eq!(
+                record["benchmark_outcome"]["execution_success"],
+                case != "provider-client-failed-finish"
+            );
+            assert_eq!(
+                record["process_success"],
+                case != "provider-client-failed-finish"
+            );
+        }
+        if case.contains("native") {
+            // Render the actual attempt's saved measurement/log contract. A
+            // completed numeric reward must retain independent cleanup facts.
+            let report =
+                crate::compare::generate(config_path.to_str().unwrap(), &mut Vec::new()).unwrap();
+            let comparison: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(report.with_file_name("comparison.json")).unwrap(),
+            )
+            .unwrap();
+            let row = &comparison["benchmarks"][0];
+            assert_eq!(
+                row["benchmark_outcome"]["evaluation"]["rewards"]["accuracy"],
+                0.5
+            );
+            assert!(row["benchmark_outcome"]["evaluation"]["resolution"].is_null());
+            assert_eq!(row["benchmark_outcome"]["execution_success"], true);
+            assert_eq!(
+                row["benchmark_outcome"]["cleanup_confirmed"],
+                case.ends_with("success")
+            );
+            let html = std::fs::read_to_string(report).unwrap();
+            if case.ends_with("success") {
+                assert_eq!(row["status"], "completed");
+                assert!(!html.contains("fixture provider cleanup uncertain"));
+                assert!(!row["status"].as_str().unwrap().contains("failed"));
+            } else {
+                assert!(
+                    row["status"]
+                        .as_str()
+                        .unwrap()
+                        .contains("fixture provider cleanup uncertain")
+                );
+                assert!(html.contains("fixture provider cleanup uncertain"));
+            }
+        }
+        if let Some(error) = error {
+            assert!(
+                error.contains("fixture provider cleanup uncertain"),
+                "{error}"
+            );
+            if case == "provider-client-failed-finish" {
+                assert_eq!(summary["failure_kind"], "agent_failure");
+                assert!(
+                    error
+                        .find(summary["failure_reason"].as_str().unwrap())
+                        .unwrap()
+                        < error.find("provider cleanup failed").unwrap()
+                );
+            } else if case == "provider-false-failed-finish" {
+                assert_eq!(summary["failure_kind"], "workload_check_failed");
+            } else {
+                assert_eq!(summary["failure_kind"], "provider_cleanup_error");
+            }
+        }
+        return;
+    }
+    let error = result.unwrap_err().to_string();
     assert!(
         error.contains("replay consumed 0 of 1"),
         "primary proxy validation must not be replaced: {error}"

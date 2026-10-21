@@ -276,6 +276,89 @@ and repair before claiming all chart families faithfully display negatives.
 The custom BPF scope validator is also a small function (about sixty lines),
 not the reported 533; its confirmed correctness defect is tracked below.
 
+cli2key startup/session candidate, staged patch **0.2.23** after checkpoint
+**0.2.22**: explicit external versus local ownership
+keeps the shared fallibly pre-established `OwnedReaper` through successful
+session transfer. Both children enter immediate custody; each nonblocking
+output worker is created fallibly before its child. Readiness has byte, line,
+message, channel and time bounds, followed by deliberate drain/discard for the
+session lifetime. One cleanup deadline covers both children/readers; uncertain
+children transfer to the existing worker, and startup errors retain cleanup
+diagnostics. Finished readers alone are joined; stopped workers retain their
+transport until they exit. Offline fixtures check limits, silence, creation
+failure, both spawn error/unwind boundaries, pinned direct-child reaping,
+deadline/poll-error handoff, retained output writers and sentinel survival.
+External endpoint/key behavior and two-listener concurrent authenticated
+requests retain their regressions. This repairs provider-owned direct-child
+custody and readiness, not other provider/collector lifecycle paths, arbitrary
+descendants or crash recovery. Independent review and delivery remain pending.
+The shared provider-session interface now includes an explicit default no-op
+finish contract. cli2key consumes its local owner exactly once and reports
+uncertainty; generic model discovery always finishes after fetch/parse, while
+the runner closes after grading/workload cleanup and before publication.
+Provider cleanup failure is ancillary to client/grading failure, preserves the
+official grade and prevents a continuation receipt. An early-error envelope
+also finishes after preparation/execution errors. Private replay-only full-entry
+fixtures and loopback catalog fixtures verify success, independent true/false
+grades, client/preparation/fetch/parse failures and finish uncertainty without
+duplicate cleanup or retry. Worker receipts distinguish cooperative reader exit
+from releasing an unfinished handle after the caller's shared deadline.
+Independent review rejected the initial candidate's last-child-only readiness
+observation: the required bridge could exit while the compatibility hop was
+starting. Final admission now checks every owned child, with a deterministic
+two-child/pinned-identity regression. Self-review also retained the embedded
+hop's cooperative outbound cleanup: stdin lifetime EOF starts shutdown, which
+observes declared curl close events before success. Its at-most-two-second
+grace consumes the existing shared five-second budget before direct-child
+escalation. Real embedded-hop/held-loopback/curl and ignored-EOF fixtures verify
+both paths; forced or unsuccessful cooperative exit reports uncertainty.
+Follow-up review found that incoming-body collection previously escaped the
+proxy handler's error envelope. The complete handler now catches body/URL/
+forwarding errors, checks closing before forwarding and avoids late 502 writes
+to aborted/destroyed responses. Actual partial-POST abort/shutdown fixtures
+retain a sibling request and require cooperative exit/reaping. A full-suite
+concurrent-proxy startup exit remains under investigation with bounded fixture
+stderr; a passing isolated rerun is not claimed as its diagnosis.
+Independent source review approved `bdf219d4`; root separately passed its 18
+cli2key library tests, two provider-finish matrix entries (including five actual
+runner cases and loopback catalog cases), and four actual CLI regressions.
+The signed `ad5ce506` integration retains the structured native outcome/report
+pipeline and bounded model transport from **0.2.19**; root semantic review
+approved its generic finish/native cleanup wiring. Seven actual runner
+finish cases now include completed numeric rewards with null resolution:
+provider uncertainty preserves those rewards, legacy grades and execution
+success, sets structured cleanup confirmation false and withholds receipts.
+The approved structured checkpoint constructor from `3fa5239c` (**0.2.20**)
+is retained without restoring Boolean-only native outcome requirements.
+Final integrated source review, full stable-binary qualification, package and
+hosted CI, merge and release remain pending. The earlier `93babfdd` full-suite
+proxy-startup failure remains unattributed; bounded fixture stderr and 100
+passing fresh concurrency fixtures are diagnostic evidence, not proof of its
+cause or repair. No live-provider qualification is claimed.
+Follow-up reporting review found that a healthy-native compatibility exception
+also hid recorded cleanup failures. It now applies only without a recorded
+failure kind/reason or explicit cleanup failure; unknown cleanup alone does not
+invent a failure. Reports generated from the actual native finish fixtures
+retain the numeric reward/null resolution and disclose provider uncertainty in
+both row status and HTML, while healthy native completion stays completed.
+Root source review approved `f7b7bb9d`; that immutable pre-planning integration
+passed the full offline suite (1,033 passed, 21 optional skips), strict Clippy,
+formatting and sequential build/documentation gates with unchanged binary bytes
+through the suite. The provisional **0.2.21** integration now also includes
+the exact planning/report checkpoint `c893de62`: admission policy, controller
+budgets, persisted policy/task plans and computed protocol fingerprints remain
+upstream-owned, while explicit provider finish still precedes publication and
+gates cleanup confirmation and receipts. Actual finish fixtures verify saved
+plan/policy/budget consistency and fingerprint propagation alongside native
+reward preservation. That planning integration, `fbd0d69d`, subsequently
+received independent source approval and passed 1,049 offline tests, strict
+Clippy, formatting and sequential build/docs checks with stable executable
+bytes. The current **0.2.23** candidate also retains the approved report and
+checkpoint integration `1fb8c542`, including declared planning metadata outside
+measurement charts; provider, runner and model-discovery source is unchanged
+from `fbd0d69d`. Fresh current-integration qualification and independent review
+remain pending, along with package/hosted CI, merge and release.
+
 ## 6. Shared implementation and lifecycle policies
 
 Review repeated sudo consent/probes, three wizard progress-worker patterns,

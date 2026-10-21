@@ -106,9 +106,10 @@ while True: time.sleep(0.1)
         ),
         (
             "node",
-            r#"import os,sys,time
+            r#"import os,sys,time,threading
 from pathlib import Path
 Path('proxy.pid').write_text(str(os.getpid()))
+threading.Thread(target=lambda: (sys.stdin.buffer.read(), os._exit(0)),daemon=True).start()
 case=os.environ['ASB_COVERAGE_BRIDGE_CASE']
 if case=='proxy-closed': sys.exit(0)
 if case=='proxy-noise':
