@@ -116,7 +116,7 @@ release-head qualification and delivery remain pending. Main `398c36cc` removed
 the hosted coverage gate and the user explicitly confirmed keeping that removal;
 local measurements are optional diagnostics, not a required hosted check.
 
-Flamegraph cleanup candidate: the perf-script/stack-collapse/render pipeline
+Flamegraph cleanup candidate, staged patch **0.2.14**: the perf-script/stack-collapse/render pipeline
 owns every directly spawned stage. A failure, timeout or unwind signals all
 remaining stages before polling against one shared cleanup deadline, preserving
 the original error and retaining unconfirmed children in the shared private
