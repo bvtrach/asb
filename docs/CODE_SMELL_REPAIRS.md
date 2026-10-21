@@ -14,7 +14,7 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
-Integrated candidate, staged patch **0.2.21**: the independently reviewed
+Integrated repair, released patch **0.2.21**: the independently reviewed
 launch-descriptor/one-shot admission repair (`b1a54fde`) is combined with the
 reviewed workload-wizard stack (`6af7939b`), retaining shared benchmark paths,
 bounded flamegraph cleanup, host prerequisite consent and adapter-owned
@@ -32,9 +32,9 @@ approved report integration `1fb9bdf1` passed 1,036 full offline tests with
 Actual main ancestry through launch repair PR #286 changes only this ledger,
 not that qualified production/test tree. Exact-head hosted/package CI passed;
 PR #285 merged as `b236ae9fb6aae3789d5623e6d0c9c357a0654a0f`.
-Post-merge verification (run `39640745540`) and the **0.2.21** release remain
-pending. This staging entry
-does not claim delivery or close the other audit repair classes.
+Both post-merge jobs passed in run `39640745540`; **v0.2.21** was released
+from that exact commit with a GitHub-verified signed tag (verification `valid`).
+This delivery does not close the other audit repair classes.
 
 ## 1. Endpoint preparation invariants
 
@@ -264,8 +264,14 @@ qualified disposition/report-metadata and delivery-ledger checkpoint `a0dea95b`.
 Declared planning, controller caps and module revisions remain recorded metadata
 outside observed charts; typed sweep modes, output admission stops, spool
 ownership, native outcomes and continuation obligations remain intact. Fresh
-integration source review, full qualification, exact-head ordinary/package CI,
-merge, post-merge verification and release remain pending.
+integration source review independently approved `e8ca48ad`. Its full offline
+all-target/all-feature suite passed 1,077 tests across 20 groups, with 21 explicit
+optional skips and no failures. Strict Clippy, formatting, sequential offline
+build, private documentation, pinned AutoUML 0.7.2, function-flow diagrams and
+shell completions passed. The actual executable SHA-256 remained
+`25ad2738aa4261810672403085bef3a424a0495e517db43017e48bb9e1e41fb7`
+before and after the full suite and build. Exact-head ordinary/package hosted
+CI, merge, post-merge verification and release remain pending.
 
 Checkpoint candidate, staged patch **0.2.22**: completion group/replica sealing, partial continuation
 and retained-outcome reconciliation now consume a private validated outcome
@@ -284,9 +290,11 @@ allocated unit fixture, not claimed as original-runtime qualification. Independe
 source review approved `9d0c6f3f`; a separate execution passed all 23 checkpoint
 tests and both public CLI tests. The worker's stable-binary full qualification
 passed 933 tests with 20 explicit optional skips, followed sequentially by fmt
-and strict Clippy, with unchanged executable hashes. Integrated-version and
-ordinary/package hosted CI, merge and post-merge release verification remain
-pending. This does not close other structural items.
+and strict Clippy, with unchanged executable hashes. PR #287 merged as
+`4224472f5fccb3a5651593fff8fbfd8f0b557a60` after exact-head hosted checks.
+At this ledger update, post-merge run `39642527007` is still in progress;
+**0.2.22** release verification remains pending. This does not close other
+structural items.
 
 Runner repair, released patch **0.2.10**: private consuming admission,
 preparation, execution-evidence, proxy-settlement, evaluation and finalization
