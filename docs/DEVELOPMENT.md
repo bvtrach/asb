@@ -46,6 +46,10 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+Perf-stat regression fixtures process a complete synthetic file larger than
+the diagnostic cap, retain missing-interval timestamps and hybrid CPU counter
+totals, and reject invalid or excessive input without publishing partial totals.
+They need neither perf permissions nor a live agent/provider.
 `cargo test --locked --offline --test compare_setup` checks repeated CLI setup
 selections, scoped models/trials, dependency expansion, non-overwriting sweep
 publication, standalone measured/unmeasured reports and an injected browser
@@ -77,6 +81,12 @@ The agent-process sampler regression launches a bounded local Node fixture,
 changes its process title and checks two seconds of continued sampling, an
 unrelated Node process and the original process's exit. It uses no provider,
 agent package, container or privileged collector.
+The deterministic pre-exec regression holds an owned child before exec using
+a bounded pipe handshake. Matching inherited identity must not enter the
+historical worker census or RSS total; executing the selected entry point
+still qualifies. The existing concurrent Node fixture retains exact worker
+counts and unrelated-script/tool exclusions. Fork-only workers remain an
+explicitly unclassified lower bound, not a guessed count.
 Run `asb run` with credentials only as an explicit local
 smoke/benchmark operation.
 
@@ -176,8 +186,8 @@ ordinary CI: service fixtures use local Unix sockets and mock daemons, check
 creator-thread exit, owner-process death, failed-client isolation, lease lifetime,
 and bounded log draining. Actual overlapping captures remain an opt-in local
 qualification; mock ownership tests do not prove real scheduler coverage.
-The ignored `live_perfetto_streaming_preserves_markers_beyond_the_old_ring_capacity`
-test writes fixed, non-secret marker pressure beyond the old 64 MiB service
+The ignored `live_perfetto_streaming_preserves_markers_beyond_the_service_ring_capacity`
+test writes fixed, non-secret marker pressure beyond the configured 128 MiB service
 buffer, then requires complete, loss-free capture and scoped agent measurements.
 The ordinary offline coverage fixtures reject missing/duplicate boundaries,
 data loss and malformed processor output. The ignored
