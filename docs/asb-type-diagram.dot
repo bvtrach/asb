@@ -134,6 +134,7 @@ digraph ASB_Rust_UML {
         "asb-cli_src_Options" [label="{Options|+json: bool\l+show_output: bool\l+mode: Option\<crate::tape::Mode\>\l+respect_record_timings: bool\l+cassette_root: Option\<&'a Path\>\l+jobs: usize\l+max_active_attempts: Option\<usize\>\l+resume: bool\l+reconcile_completed: bool\l+import_grades: bool\l|+default() Self\l}", shape=record];
         "asb-cli_src_OutputLock" [label="{OutputLock|-file: File\l|+acquire(path: &Path, busy: &str) cassette_Result\<Self, String\>\l+cloned_descriptor() File\l}", shape=record];
         "asb-cli_src_OwnedChild" [label="{OwnedChild||+stop() cassette_Result\<std::process::ExitStatus\>\l+deref() workloads_Target\l+deref_mut() workloads_Target\l}", shape=record];
+        "asb-cli_src_OwnedReaper" [label="{OwnedReaper||+new(label: &str) cassette_Result\<Self, String\>\l+adopt(child: Child) void\l}", shape=record];
         "asb-cli_src_ProcessAccounting" [label="{ProcessAccounting|-first: ProcessSample\l-latest: ProcessSample\l-initialized: bool\l|+update(sample: ProcessSample) void\l+delta(self) ProcessSample\l}", shape=record];
         "asb-cli_src_ProcessIdentity" [label="{ProcessIdentity|+pid: u32\l+start_time_ticks: u64\l|+read(pid: u32) Option\<Self\>\l+read_at(proc: &Path, pid: u32) Option\<Self\>\l+record_at(proc: &Path, pid: u32) Option\<(Self, u32)\>\l+matches(self) bool\l+matches_at(self, proc: &Path) bool\l+in_tree(self, root: Self) bool\l+in_tree_at(self, root: Self, proc: &Path) bool\l}", shape=record];
         "asb-cli_src_ProcessSample" [label="{ProcessSample|-user_ticks: u64\l-system_ticks: u64\l-io_delay_ticks: u64\l-runqueue_ns: u64\l}", shape=record];
@@ -145,6 +146,7 @@ digraph ASB_Rust_UML {
         "asb-cli_src_Session" [label="{Session|-adapters: Vec\<&'static dyn collectors::CollectorAdapter\>\l-namespace_only: bool\l-dir: PathBuf\l-tool_dir: Option\<PathBuf\>\l-cgroup_parent: Option\<PathBuf\>\l-started_unix_ms: u128\l-collectors: Vec\<Collector\>\l-stopped_collectors: Vec\<StoppedCollector\>\l-states: BTreeMap\<TypeId, Box\<dyn Any\>\>\l-shared_artifacts: BTreeMap\<collectors::SharedArtifact, PathBuf\>\l-run_started: bool\l-run_failed: bool\l-run_finishing: bool\l-lifecycle_started: Instant\l-lifecycle: Vec\<LifecycleRecord\>\l-test_attach_failure: bool\l-trace_id: String\l-sudo_collectors: BTreeSet\<String\>\l-component_starts: BTreeMap\<String, Instant\>\l-component_timings: BTreeMap\<String, ComponentTiming\>\l-process_sampler: Option\<ProcessSampler\>\l-process_identity: Option\<ProcessIdentity\>\l-process_tree_snapshots: Vec\<ProcessTreeSnapshot\>\l-clock_ticks_per_second: Option\<u64\>\l|+started_unix_ms() u128\l+start_with_collectors(dir: &Path, selected: &[String], tool_dir: Option\<&Path\>) cassette_Result\<Self, String\>\l+start_with_collectors_and_parent(dir: &Path, selected: &[String], tool_dir: Option\<&Path\>, cgroup_parent: Option\<&Path\>) cassette_Result\<Self, String\>\l+start_in_execution_namespace(dir: &Path, selected: &[String]) cassette_Result\<Self, String\>\l+start_with_adapters(dir: &Path, selected: &[String], tool_dir: Option\<&Path\>, cgroup_parent: Option\<&Path\>, adapters: Vec\<&'static dyn collectors::CollectorAdapter\>, namespace_only: bool) cassette_Result\<Self, String\>\l+event(event: LifecycleEvent) cassette_Result\<(), String\>\l+record_component_event(event: LifecycleEvent) void\l+finish_component(name: &str, now: Instant) void\l+start_process_sampler(pid: u32) void\l+stop_process_sampler() void\l+write_component_measurements() cassette_Result\<(), String\>\l+record_cpu_accounting(user_usec: u64, system_usec: u64, source: &str) void\l+sampled_cpu_accounting() Option\<(f64, f64)\>\l+suppress_unobserved_sampled_cpu() void\l+cgroup_parent() Option\<&Path\>\l+trace_id() &str\l+state() Rc\<RefCell\<T\>\>\l+set_artifact(kind: SharedArtifact, path: PathBuf) void\l+artifact(kind: SharedArtifact) Option\<&Path\>\l+agent_launch_prepared(command: &Command) void\l+execution_namespace_collectors() Vec\<String\>\l+export_execution_namespace_state() cassette_Result\<BTreeMap\<String, serde_json::Value\>, String\>\l+import_execution_namespace_state(values: &BTreeMap\<String, serde_json::Value\>) cassette_Result\<(), String\>\l+measurement_target() Option\<ProcessIdentity\>\l+attach_pid(pid: u32) cassette_Result\<(), String\>\l+attach_isolated_pid(pid: u32, start_time_ticks: u64) cassette_Result\<(), String\>\l+finish(self, measurement: RunMeasurement\<'a\>) cassette_Result\<(), String\>\l+stop_collector_processes(execution_only: bool) cassette_Result\<(), String\>\l+process_stopped_collectors() cassette_Result\<(), String\>\l+start_tree_snapshot(name: &str, enabled: bool, executable: &Path, pid: u32, arguments: TreeSnapshotArguments) cassette_Result\<(), String\>\l+command(name: &str) Command\l+executable(name: &str) PathBuf\l+stop_process_tree_snapshots() void\l}", shape=record];
         "asb-cli_src_SetupArgs" [label="{SetupArgs|-mode: Option\<SetupMode\>\l-agent: Vec\<String\>\l-workload: Vec\<String\>\l-trial: Vec\<String\>\l-trial_set: Vec\<String\>\l-provider: Vec\<String\>\l-model: Vec\<String\>\l-measure: Vec\<String\>\l-concurrency: Option\<usize\>\l-workspace: Option\<String\>\l-output: Option\<String\>\l}", shape=record];
         "asb-cli_src_SetupOptions" [label="{SetupOptions|+agent: Vec\<String\>\l+workload: Vec\<String\>\l+trial: Vec\<String\>\l+trial_set: Vec\<String\>\l+provider: Vec\<String\>\l+model: Vec\<String\>\l+measure: Vec\<String\>\l+concurrency: Option\<usize\>\l+workspace: Option\<String\>\l+output: Option\<String\>\l}", shape=record];
+        "asb-cli_src_State" [label="{State|-children: Vec\<Child\>\l-closed: bool\l}", shape=record];
         "asb-cli_src_Statistics" [label="{Statistics|+tokens: Option\<u64\>\l+duration_ms: Option\<u64\>\l+requests: Option\<u64\>\l+steps: Option\<u64\>\l}", shape=record];
         "asb-cli_src_StoppedCollector" [label="{StoppedCollector|-collector: Collector\l-status: ExitStatus\l-elapsed_ms: u128\l}", shape=record];
         "asb-cli_src_Support" [label="{Support|+interface: Interface\l+authentication: &'static [Authentication]\l}", shape=record];
@@ -215,6 +217,8 @@ digraph ASB_Rust_UML {
         "coverage_tests_asb-cli_src_Write" [label="{coverage_tests_Write||+write() cassette_Result\<usize\>\l+flush() cassette_Result\<()\>\l}", shape=record];
         "marker_tests_asb-cli_src_collectors_adapters_BadFile" [label="{marker_tests_collectors_adapters_BadFile}", shape=record];
         "marker_tests_asb-cli_src_collectors_adapters_Write" [label="{marker_tests_collectors_adapters_Write||+write() cassette_Result\<usize\>\l+flush() cassette_Result\<()\>\l}", shape=record];
+        "test_support_asb-cli_src_Drop" [label="{test_support_Drop||+drop() void\l}", shape=record];
+        "test_support_asb-cli_src_Scope" [label="{test_support_Scope||+new() Self\l+wait_finished() void\l+count() usize\l}", shape=record];
         "tests_asb-cli_src_Broken" [label="{tests_Broken}", shape=record];
         "tests_asb-cli_src_Capture" [label="{tests_Capture|-bytes: Vec\<u8\>\l-flushed: bool\l}", shape=record];
         "tests_asb-cli_src_ChildGuard" [label="{tests_ChildGuard|-child: Child\l-group: bool\l}", shape=record];
@@ -263,10 +267,18 @@ digraph ASB_Rust_UML {
         style="rounded,dashed";
         "asb-cli_src_BundleSpec" [label="{BundleSpec|-archive: &'static str\l-marker: &'static str\l-prompt: &'static str\l}", shape=record];
         "asb-cli_src_ExternalWorkload" [label="{ExternalWorkload|-name: &'static str\l-source: &'static str\l}", shape=record];
-        "asb-cli_src_LoggedStatus" [label="{LoggedStatus||+logged_status() cassette_Result\<ExitStatus\>\l}", shape=record];
+        "asb-cli_src_LoggedStatus" [label="{LoggedStatus||+logged_status() cassette_Result\<ExitStatus\>\l+logged_spawn() cassette_Result\<std::process::Child\>\l}", shape=record];
         "asb-cli_src_Recipe" [label="{Recipe||+runtime_inputs(self, root: &Path) Vec\<crate::runtime_inputs::Dependency\>\l+guest_runtimes(self) &'static [&'static str]\l}", shape=record];
+        "asb-cli_src_install_DownloadChild" [label="{install_DownloadChild|-child: Option\<std::process::Child\>\l-reaper: OwnedReaper\l|+spawn(command: &mut Command, label: &str, dependency: Option\<&str\>) cassette_Result\<Self, Error\>\l+child() Child\l+cleanup() cassette_Result\<(), Error\>\l+finish(result: cassette_Result\<T, Error\>) cassette_Result\<T, Error\>\l}", shape=record];
         "asb-cli_src_install_Drop" [label="{install_Drop||+drop() void\l}", shape=record];
         "asb-cli_src_install_Fixture" [label="{install_Fixture||+new() Self\l+script(name: &str, contents: &str) PathBuf\l+run(case: &str) void\l}", shape=record];
+        "asb-cli_src_install_Options" [label="{install_Options|+kind: &'a str\l+limit: u64\l+checksum: Option\<&'a str\>\l+executable: bool\l}", shape=record];
+        "asb-cli_src_install_Staging" [label="{install_Staging|-directory: PathBuf\l-file: PathBuf\l|+new(destination: &Path) cassette_Result\<Self, Error\>\l}", shape=record];
+        "asb-cli_src_install_source_Admission" [label="{install_source_Admission|-pid: u32\l-identity: File\l}", shape=record];
+        "asb-cli_src_install_source_Drop" [label="{install_source_Drop||+drop() void\l}", shape=record];
+        "asb-cli_src_install_source_Fixture" [label="{install_source_Fixture||+new() Self\l+write_executable(path: &str, bytes: &[u8]) void\l+command(case: &str) Command\l+run(case: &str) void\l}", shape=record];
+        "asb-cli_src_install_source_Observer" [label="{install_source_Observer||+new() Self\l+assert_reaped(count: usize) void\l}", shape=record];
+        "asb-cli_src_install_source_Sentinel" [label="{install_source_Sentinel}", shape=record];
     }
 
     subgraph "cluster_measurements" {
@@ -484,6 +496,7 @@ digraph ASB_Rust_UML {
     "asb-cli_src_OutputLock" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
     "asb-cli_src_OwnedChild" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
     "asb-cli_src_OwnedChild" -> "asb-cli_src_workloads_Target" [arrowhead="vee", style="dashed"];
+    "asb-cli_src_OwnedReaper" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
     "asb-cli_src_Pane" -> "asb-cli_src_Choice" [arrowhead="vee"];
     "asb-cli_src_ProcessAccounting" -> "asb-cli_src_ProcessSample" [arrowhead="vee", style="dashed"];
     "asb-cli_src_ProcessAccounting" -> "asb-cli_src_ProcessSample" [arrowhead="vee"];
@@ -596,6 +609,11 @@ digraph ASB_Rust_UML {
     "asb-cli_src_compare_PopulationCoverage" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
     "asb-cli_src_compare_Recorded" -> "asb-cli_src_Error" [arrowhead="vee", style="dashed"];
     "asb-cli_src_compare_Recorded" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
+    "asb-cli_src_install_DownloadChild" -> "asb-cli_src_Error" [arrowhead="vee", style="dashed"];
+    "asb-cli_src_install_DownloadChild" -> "asb-cli_src_OwnedReaper" [arrowhead="vee"];
+    "asb-cli_src_install_DownloadChild" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
+    "asb-cli_src_install_Staging" -> "asb-cli_src_Error" [arrowhead="vee", style="dashed"];
+    "asb-cli_src_install_Staging" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
     "asb-cli_src_measurements_CollectorAdapter" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
     "asb-cli_src_measurements_Fixture" -> "asb-cli_src_Session" [arrowhead="vee", style="dashed"];
     "asb-cli_src_process_gate_DescendantScope" -> "asb-cli_src_cassette_Result" [arrowhead="vee", style="dashed"];
