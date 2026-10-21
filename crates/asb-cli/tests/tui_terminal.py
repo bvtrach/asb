@@ -1,9 +1,11 @@
 """Real bounded PTY fixture. No live provider, tool installation or agent run."""
 import errno
+import codecs
 import fcntl
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import signal
 import struct
@@ -14,7 +16,46 @@ import time
 import tomllib
 
 
-def session(binary, root, arguments, keys, path="/usr/bin:/bin"):
+class Screen:
+    """Read Ratatui's cursor-addressed screen, including partial ANSI chunks."""
+    def __init__(self):
+        self.rows = [[" "] * 120 for _ in range(40)]
+        self.row = self.column = 0
+        self.pending = ""
+        self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
+
+    def feed(self, chunk):
+        self.pending += self.decoder.decode(chunk)
+        while self.pending:
+            if self.pending == "\x1b":
+                return
+            if self.pending.startswith("\x1b["):
+                match = re.match(r"\x1b\[([0-?]*)([ -/]*)([@-~])", self.pending)
+                if not match:
+                    return
+                parameters, _, command = match.groups()
+                values = [int(value or "0") for value in parameters.split(";")] if re.fullmatch(r"[0-9;]*", parameters) else []
+                if command in ["H", "f"]:
+                    self.row = (values[0] or 1) - 1 if values else 0
+                    self.column = (values[1] or 1) - 1 if len(values) > 1 else 0
+                elif command == "J" and values == [2]:
+                    self.rows = [[" "] * 120 for _ in range(40)]
+                self.pending = self.pending[match.end():]
+                continue
+            char, self.pending = self.pending[0], self.pending[1:]
+            if char == "\r":
+                self.column = 0
+            elif char == "\n":
+                self.row += 1
+            elif char >= " " and self.row < 40 and self.column < 120:
+                self.rows[self.row][self.column] = char
+                self.column += 1
+
+    def contains(self, text):
+        return text.decode() in "\n".join("".join(row) for row in self.rows)
+
+
+def session(binary, root, arguments, keys, path="/usr/bin:/bin", checkpoints=()):
     pid, master = pty.fork()
     if pid == 0:
         os.chdir(root)
@@ -27,6 +68,9 @@ def session(binary, root, arguments, keys, path="/usr/bin:/bin"):
     deadline = time.monotonic() + 15
     sent = False
     status = None
+    screen = Screen()
+    pending = iter(checkpoints)
+    checkpoint = next(pending, None)
     try:
         fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
         while time.monotonic() < deadline:
@@ -38,23 +82,111 @@ def session(binary, root, arguments, keys, path="/usr/bin:/bin"):
                         raise
                     chunk = b""
                 transcript.extend(chunk)
+                screen.feed(chunk)
                 if not sent and b"ASB" in transcript and b"Space" in transcript:
                     os.write(master, keys)
                     sent = True
+                elif sent and checkpoint and screen.contains(checkpoint[0]):
+                    _, next_keys, inspect = checkpoint
+                    inspect()
+                    os.write(master, next_keys)
+                    checkpoint = next(pending, None)
             found, value = os.waitpid(pid, os.WNOHANG)
             if found:
                 status = value
                 break
         assert status is not None, f"TUI exceeded bounded deadline: {bytes(transcript[-3000:])!r}"
         assert sent, f"TUI did not draw its landing screen: {bytes(transcript)!r}"
+        assert checkpoint is None, f"TUI exited before checkpoint: {checkpoint[0]!r}"
         assert b"\x1b[?1049h" in transcript, "must enter alternate screen"
         assert b"\x1b[?1049l" in transcript, "must restore alternate screen"
+        flags = termios.tcgetattr(master)[3]
+        assert flags & termios.ICANON and flags & termios.ECHO, "must restore canonical input and echo"
         return os.waitstatus_to_exitcode(status), bytes(transcript)
     finally:
         if status is None:
             os.kill(pid, signal.SIGKILL)
             os.waitpid(pid, 0)
         os.close(master)
+
+
+def workload_sessions(binary, parent, path):
+    """Advertised finish/edit/back keys only; check disk while the TUI is alive."""
+    for scenario in ["finish", "edit", "back", "multiple", "deselect", "reselect",
+                     "cancel-saved", "cancel-edit", "cancel-existing", "missing-subset"]:
+        root = parent / scenario
+        for directory in [".asb", "home", "workloads/alpha/source", "workloads/beta/source"]:
+            (root / directory).mkdir(parents=True)
+        (root / ".asb/project.toml").write_text("tools_dir='.asb-tools'\nworkloads_dir='workloads'\nworkspace_dir='workspace'\n")
+        for workload in ["alpha", "beta"]:
+            (root / f"workloads/{workload}.txt").write_text("Offline task, never executed.\n")
+        prior = root / "workloads/alpha.workload.toml"
+        prior_bytes = b"workload='alpha'\n[[trials]]\nid='extended'\ndescription='Existing selection'\n"
+        if scenario == "cancel-existing":
+            prior.write_bytes(prior_bytes)
+
+        def unpublished():
+            paths = list((root / "workloads").glob("*.workload.toml"))
+            if scenario == "cancel-existing":
+                assert paths == [prior] and prior.read_bytes() == prior_bytes, scenario
+            else:
+                assert not paths, scenario
+
+        saved = b"trials saved in memory"
+        editing = b"Choose enabled trials for alpha"
+        start = b"alpha \r \r"  # select workload, open, select smoke, save
+        checkpoints = [(saved, b"\r", unpublished)]
+        expected = {"alpha": ["smoke"]}
+        if scenario == "edit":
+            start = b"alpha \r \x1b[B \r"  # smoke + standard
+            checkpoints = [(saved, b"\t", unpublished),
+                           (editing, b" \r\r", unpublished)]
+            expected = {"alpha": ["standard"]}
+        elif scenario == "back":
+            checkpoints = [(saved, b"\t", unpublished),
+                           (editing, b" \x1b[Z\r\r\r", unpublished)]
+        elif scenario in ["multiple", "deselect", "reselect", "missing-subset"]:
+            # A search/move resumes browsing; deleting the alpha filter reaches beta.
+            checkpoints = [(saved, b"\x7f" * 5 + b"beta ", unpublished)]
+            if scenario == "missing-subset":
+                # Alpha's saved subset cannot authorize publication of unconfigured beta.
+                checkpoints += [(b"Enter/Tab opens", b"\x7f" * 4 + b"alpha\r\r\r", unpublished),
+                                (b"Save trials for every selected workload", b"\x03", unpublished)]
+                expected = {}
+            else:
+                checkpoints += [(b"Enter/Tab opens", b"\r \r", unpublished)]
+                if scenario == "multiple":
+                    checkpoints += [(saved, b"\r", unpublished)]
+                    expected = {"alpha": ["smoke"], "beta": ["smoke"]}
+                else:
+                    # Deselect alpha after both have saved drafts, then re-open beta.
+                    checkpoints += [(saved, b"\x7f" * 4 + b"alpha ", unpublished),
+                                    (b"Unsaved edits discarded", b"\x7f" * 5 + b"beta\r\r", unpublished)]
+                    if scenario == "deselect":
+                        checkpoints += [(saved, b"\r", unpublished)]
+                        expected = {"beta": ["smoke"]}
+                    else:
+                        # Re-select alpha: its prior smoke choice must be restored.
+                        checkpoints += [(saved, b"\x7f" * 4 + b"alpha \r\r\r", unpublished)]
+                        expected = {"alpha": ["smoke"], "beta": ["smoke"]}
+        elif scenario in ["cancel-saved", "cancel-existing"]:
+            checkpoints = [(saved, b"\x03", unpublished)]
+            expected = {}
+        elif scenario == "cancel-edit":
+            start = b"alpha \r "
+            checkpoints = [(editing, b"\x03", unpublished)]
+            expected = {}
+        code, transcript = session(binary, root, ["workload", "tui"], start, path, checkpoints)
+        assert (code == 0) == bool(expected), (scenario, transcript)
+        if scenario == "cancel-existing":
+            unpublished()
+            continue
+        paths = list((root / "workloads").glob("*.workload.toml"))
+        assert {item.name for item in paths} == {f"{name}.workload.toml" for name in expected}, scenario
+        for name, ids in expected.items():
+            config = tomllib.loads((root / f"workloads/{name}.workload.toml").read_text())
+            assert config["workload"] == name, scenario
+            assert [trial["id"] for trial in config["trials"]] == ids, (scenario, config)
 
 
 def main():
@@ -134,15 +266,7 @@ def main():
         assert not (root / ".asb-tools/perf/bin/perf").exists(), "failed dependency must not be marked installed"
         assert len(list(root.glob("asb-sweep-*.toml"))) == 1
 
-        # Exercise the workload trial tree and actual persisted subset. The
-        # extra back-navigation is harmless when the finish action exits first.
-        (root / "workloads/custom.txt").write_text("Offline custom task.\n")
-        code, transcript = session(binary, root, ["workload", "tui"],
-            b"custom \t \t\t\x1b[Z\t", str(fixture_bin))
-        assert code == 0, transcript
-        selection = tomllib.loads((root / "workloads/custom.workload.toml").read_text())
-        assert selection["workload"] == "custom"
-        assert [trial["id"] for trial in selection["trials"]] == ["smoke"]
+        workload_sessions(binary, root, str(fixture_bin))
         assert not (root / "invoked-agent").exists()
 
 

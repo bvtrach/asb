@@ -47,6 +47,13 @@ prevent the fast-forward, and no stash is automatically discarded.
 
 These checks are offline: replay tests start the embedded tape proxy and test
 clients on loopback, but CI never starts a real agent, bridge, or live provider.
+`cargo test --locked --offline --test tui_terminal` drives the actual current
+binary through a bounded PTY. Workload fixtures use only local fake catalogs:
+advertised Enter finishes, Tab edits, Back discards, saved choices reopen,
+edits replace subsets, and deselected workloads are excluded. Checkpoints
+inspect disk before finish and cancellation, then verify exact published
+subsets and terminal echo/canonical-mode restoration. No agent/provider runs
+or host changes are needed.
 `cargo test --locked --offline --lib executables::tests` installs local shell
 fixtures through every registered agent/tool source-install route, then checks
 readiness and actually executes the selected fixture. Isolated subprocess
