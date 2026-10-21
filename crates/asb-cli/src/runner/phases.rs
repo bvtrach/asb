@@ -330,6 +330,62 @@ mod tests;
 #[path = "../../tests/unit/runner_entry_support.rs"]
 pub(super) mod entry_test_support;
 
+/// Log publication and measurement publication are independent post-grade
+/// obligations. Failure of either prevents a completion receipt, not grading.
+pub(super) enum LogPublication {
+    Confirmed,
+    Failed(Error),
+}
+impl LogPublication {
+    pub fn publish(config_path: &Path, configured_path: &str, result: &RunResult<'_>) -> Self {
+        match write_log(config_path, configured_path, result) {
+            Ok(()) => Self::Confirmed,
+            Err(error) => Self::Failed(error),
+        }
+    }
+    pub fn confirmed(&self) -> bool {
+        matches!(self, Self::Confirmed)
+    }
+    pub fn into_error(self) -> Option<Error> {
+        match self {
+            Self::Confirmed => None,
+            Self::Failed(error) => Some(Error::Run(format!(
+                "run log publication failed after task evaluation: {error}; inspect the configured log directory and saved measurements; do not repeat the agent to repair reporting"
+            ))),
+        }
+    }
+}
+
+pub(super) fn final_outcome(
+    primary: Option<(&'static str, String)>,
+    log: LogPublication,
+    measurements: MeasurementCompletion,
+) -> Result<(), Error> {
+    let mut errors = Vec::new();
+    if let Some((_, reason)) = primary {
+        errors.push(Error::Run(reason));
+    }
+    errors.extend(log.into_error());
+    errors.extend(measurements.into_error());
+    let mut errors = errors.into_iter();
+    let Some(primary) = errors.next() else {
+        return Ok(());
+    };
+    let secondary: Vec<_> = errors.collect();
+    if secondary.is_empty() {
+        Err(primary)
+    } else {
+        Err(Error::Run(format!(
+            "{primary}; {}",
+            secondary
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
+        )))
+    }
+}
+
 pub(super) enum MeasurementCompletion {
     Confirmed,
     Incomplete(Vec<String>),

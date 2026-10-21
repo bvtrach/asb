@@ -425,7 +425,7 @@ struct CollectorResult {
     /// Bounded samples emitted by collectors that support interval output.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     series: BTreeMap<String, Vec<f64>>,
-    /// Timestamp in milliseconds for each Perfetto series sample.
+    /// Timestamp in milliseconds for each adapter's observed series sample.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     series_timestamps: BTreeMap<String, Vec<f64>>,
 }
@@ -1003,6 +1003,7 @@ impl Session {
                 status: &status,
                 stdout: &stdout,
                 stderr: &stderr,
+                stdout_path: &collector.stdout_path,
                 stderr_path: &collector.stderr_path,
             };
             let data = match collector.adapter.process(self, &context) {
@@ -2328,8 +2329,8 @@ mod tests {
         assert_eq!(metrics["perf.context_switches"], 8.0);
         assert_eq!(metrics["perf.cpu_migrations"], 2.0);
         assert_eq!(metrics["perf.page_faults"], 4.0);
-        assert_eq!(metrics["perf.cycles"], 1234.0);
-        assert_eq!(metrics["perf.instructions"], 567.0);
+        assert_eq!(metrics["perf.observed_cycles_count"], 1234.0);
+        assert_eq!(metrics["perf.observed_instructions_count"], 567.0);
         let series = parse_perf_stat_series(
             "0.000,12.34,msec,task-clock,100.00,\n1.000,20.00,msec,task-clock,100.00,\n0.000,8,,context-switches,100.00,\n",
         );

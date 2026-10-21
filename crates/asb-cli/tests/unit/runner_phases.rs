@@ -577,6 +577,54 @@ fn result() -> RunResult<'static> {
 }
 
 #[test]
+fn postgrade_log_publication_is_independent_and_diagnostics_keep_primary_order() {
+    let fixture = Fixture::new();
+    let config = fixture.0.join("benchmark.toml");
+    let result = result();
+    let before = serde_json::to_vec(&result).unwrap();
+    let published = LogPublication::publish(&config, "nested/run.jsonl", &result);
+    assert!(published.confirmed());
+    assert!(final_outcome(None, published, MeasurementCompletion::Confirmed).is_ok());
+    let logged: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(fixture.0.join("nested/run.jsonl")).unwrap())
+            .unwrap();
+    assert_eq!(logged["workload_success"], true);
+    std::fs::create_dir(fixture.0.join("blocked.jsonl")).unwrap();
+    for primary in [None, Some(("run_error", "original proxy failure".into()))] {
+        let failed = LogPublication::publish(&config, "blocked.jsonl", &result);
+        assert!(!failed.confirmed());
+        let error = final_outcome(
+            primary.clone(),
+            failed,
+            MeasurementCompletion::Incomplete(vec!["measurement write failure".into()]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("cannot open log file"));
+        assert!(error.contains(fixture.0.join("blocked.jsonl").to_str().unwrap()));
+        assert!(error.contains("measurement write failure"));
+        if primary.is_some() {
+            assert!(
+                error.find("original proxy failure").unwrap()
+                    < error.find("run log publication failed").unwrap()
+            );
+        }
+        assert!(
+            error.find("run log publication failed").unwrap()
+                < error.find("measurement finalization failed").unwrap()
+        );
+    }
+    let failed = LogPublication::publish(&config, "blocked.jsonl", &result);
+    assert!(
+        final_outcome(None, failed, MeasurementCompletion::Confirmed)
+            .unwrap_err()
+            .to_string()
+            .contains("run log publication failed after task evaluation")
+    );
+    assert_eq!(serde_json::to_vec(&result).unwrap(), before);
+}
+
+#[test]
 fn final_measurement_errors_preserve_grade_and_disallow_completion_receipts() {
     for fault in [
         "run-failed",
@@ -640,6 +688,25 @@ fn full_runner_entry_keeps_real_fixture_grade_and_primary_error_after_lifecycle_
         full_entry_child(&case);
         return;
     }
+    isolated_full_entry_cases(&[
+        "execution-end",
+        "run-finishing",
+        "blocked-log",
+        "blocked-log-and-measurements",
+    ]);
+}
+
+#[test]
+fn full_runner_entry_keeps_grade_and_publication_errors_when_result_writer_also_breaks() {
+    isolated_full_entry_cases(&["blocked-log-broken-output"]);
+}
+
+#[test]
+fn full_runner_entry_observer_warning_is_redacted_and_broken_warning_writer_keeps_primary() {
+    isolated_full_entry_cases(&["observer-failure", "observer-warning-writer"]);
+}
+
+fn isolated_full_entry_cases(cases: &[&str]) {
     use support::IsolatedEnvironment;
     let executable = std::env::current_exe().unwrap();
     let runtime = executable.parent().unwrap().parent().unwrap().join("asb");
@@ -647,11 +714,11 @@ fn full_runner_entry_keeps_real_fixture_grade_and_primary_error_after_lifecycle_
         runtime.is_file(),
         "build the actual ASB binary before this full-entry test"
     );
-    for case in ["execution-end", "run-finishing"] {
+    for case in cases {
         let child = Command::new(&executable)
             .args(["--exact", "runner::phases::tests::full_runner_entry_keeps_real_fixture_grade_and_primary_error_after_lifecycle_failure", "--nocapture"])
             .isolated_env()
-            .env(CASE, case)
+            .env("ASB_RUNNER_ENTRY_TEST_CASE", case)
             .env("PATH", std::env::var_os("PATH").unwrap())
             .env("ASB_RUNTIME_EXECUTABLE", &runtime)
             .output().unwrap();
@@ -670,6 +737,7 @@ fn full_entry_child(case: &str) {
     struct Observer {
         started: AtomicUsize,
         completed: AtomicUsize,
+        fail: bool,
     }
     impl replica::CompletionObserver for Observer {
         fn starting(
@@ -683,7 +751,13 @@ fn full_entry_child(case: &str) {
         fn completed(&self, _: replica::Identity, record: &Path) -> Result<(), Error> {
             assert!(record.is_file());
             self.completed.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            if self.fail {
+                Err(Error::Io(
+                    "private-observer-secret-must-not-be-exposed".into(),
+                ))
+            } else {
+                Ok(())
+            }
         }
     }
     let fixture = Fixture::new();
@@ -715,8 +789,19 @@ fn full_entry_child(case: &str) {
     let config: BenchmarkConfig = toml::from_str("agent='pi'\nprovider='openrouter'\nmodel='fixture'\nworkload='repository-navigation'\nworkspace='workspace'\nlog_file='run.jsonl'\n[measurements]\nenabled=true\ndirectory='measurements'\ncollectors=[]\n").unwrap();
     let config_path = root.join("benchmark.toml");
     std::fs::write(&config_path, toml::to_string(&config).unwrap()).unwrap();
+    let blocked_log = case.starts_with("blocked-log");
+    if blocked_log {
+        std::fs::create_dir(root.join("run.jsonl")).unwrap();
+    }
     let calls = Rc::new(RefCell::new(Vec::new()));
-    let event = if case == "execution-end" {
+    let event = if matches!(
+        case,
+        "execution-end"
+            | "blocked-log"
+            | "blocked-log-broken-output"
+            | "observer-failure"
+            | "observer-warning-writer"
+    ) {
         LifecycleEvent::AgentExecuteEnd
     } else {
         LifecycleEvent::RunFinishing
@@ -725,8 +810,42 @@ fn full_entry_child(case: &str) {
     let observer = Observer {
         started: AtomicUsize::new(0),
         completed: AtomicUsize::new(0),
+        fail: case.starts_with("observer-"),
     };
-    let mut output = Vec::new();
+    struct Presentation {
+        bytes: Vec<u8>,
+        fail_result: bool,
+        fail_warning: bool,
+        summary_done: bool,
+        writes: usize,
+        failures: usize,
+    }
+    impl Write for Presentation {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.writes += 1;
+            if self.fail_result || (self.fail_warning && self.summary_done) {
+                self.failures += 1;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "combined fixture presentation closed",
+                ));
+            }
+            self.bytes.extend_from_slice(bytes);
+            self.summary_done |= bytes.contains(&b'\n');
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut output = Presentation {
+        bytes: Vec::new(),
+        fail_result: case == "blocked-log-broken-output",
+        fail_warning: case == "observer-warning-writer",
+        summary_done: false,
+        writes: 0,
+        failures: 0,
+    };
     let options = RunOptions {
         json: true,
         mode: Some(tape::Mode::Replay),
@@ -747,25 +866,81 @@ fn full_entry_child(case: &str) {
         error.contains("replay consumed 0 of 1"),
         "primary proxy validation must not be replaced: {error}"
     );
-    if case == "run-finishing" {
+    if matches!(case, "run-finishing" | "blocked-log-and-measurements") {
         assert!(
             error.contains("measurement finalization failed after task evaluation"),
             "secondary finalization diagnostic must remain available: {error}"
         );
     }
+    if blocked_log {
+        assert!(
+            error.contains("run log publication failed after task evaluation"),
+            "{error}"
+        );
+        assert!(error.contains("cannot open log file"), "{error}");
+        assert!(
+            error.contains(root.join("run.jsonl").to_str().unwrap()),
+            "{error}"
+        );
+        assert!(
+            error.find("replay consumed 0 of 1").unwrap()
+                < error.find("run log publication failed").unwrap(),
+            "primary error must precede ancillary publication failure: {error}"
+        );
+        if case == "blocked-log-and-measurements" {
+            assert!(
+                error.find("run log publication failed").unwrap()
+                    < error.find("measurement finalization failed").unwrap(),
+                "both independent publication failures must be retained: {error}"
+            );
+        }
+    }
+    if matches!(
+        case,
+        "blocked-log-broken-output" | "observer-warning-writer"
+    ) {
+        assert!(
+            error.contains("combined fixture presentation closed"),
+            "{error}"
+        );
+        assert!(
+            error.contains("result or continuation diagnostic output also failed"),
+            "{error}"
+        );
+        assert_eq!(
+            output.failures, 1,
+            "never repeat output after the writer fails"
+        );
+        if case == "blocked-log-broken-output" {
+            assert_eq!(output.writes, 1);
+            assert!(output.bytes.is_empty());
+            assert!(
+                error.find("run log publication failed").unwrap()
+                    < error
+                        .find("result or continuation diagnostic output also failed")
+                        .unwrap()
+            );
+        }
+    }
     assert_eq!(std::fs::read_to_string(counter).unwrap(), "called\n");
     assert_eq!(calls.borrow().as_slice(), ["evaluate", "finish"]);
     assert_eq!(observer.started.load(Ordering::SeqCst), 1);
-    let complete = case == "execution-end";
+    let complete = case == "execution-end" || observer.fail;
     assert_eq!(
         observer.completed.load(Ordering::SeqCst),
         usize::from(complete)
     );
     assert_eq!(root.join(".asb-completions").exists(), complete);
-    let log: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(root.join("run.jsonl")).unwrap()).unwrap();
-    let summary: serde_json::Value = serde_json::from_slice(&output).unwrap();
-    for value in [&log, &summary] {
+    let log: Option<serde_json::Value> = (!blocked_log)
+        .then(|| serde_json::from_slice(&std::fs::read(root.join("run.jsonl")).unwrap()).unwrap());
+    let lines: Vec<serde_json::Value> = std::str::from_utf8(&output.bytes)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let summary = lines.iter().find(|line| line.get("event").is_none());
+    assert_eq!(summary.is_some(), case != "blocked-log-broken-output");
+    for value in log.iter().chain(summary) {
         assert_eq!(
             value["workload_success"], true,
             "real bundled evaluator grade is independent of proxy/collector failure"
@@ -778,5 +953,47 @@ fn full_entry_child(case: &str) {
         serde_json::from_slice(&std::fs::read(root.join("measurements/run.json")).unwrap())
             .unwrap();
     assert_eq!(measured["workload_success"], true);
-    assert_eq!(measured["failure_reason"], log["failure_reason"]);
+    assert_eq!(measured["process_success"], true);
+    assert_eq!(measured["success_rate"], 1.0);
+    assert!(
+        error.starts_with(measured["failure_reason"].as_str().unwrap()),
+        "original primary must remain the returned error prefix: {error}"
+    );
+    if let Some(summary) = summary {
+        assert_eq!(measured["failure_reason"], summary["failure_reason"]);
+    }
+    let warnings: Vec<_> = lines
+        .iter()
+        .filter(|line| line["event"] == "continuation_warning")
+        .collect();
+    if case == "observer-failure" {
+        assert_eq!(
+            lines.len(),
+            2,
+            "one unchanged summary then one typed warning"
+        );
+        assert!(lines[0].get("event").is_none());
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0]["code"], "replica_receipt_unavailable");
+        assert_eq!(warnings[0]["path_role"], "source_outcome");
+        let source = Path::new(warnings[0]["path"].as_str().unwrap());
+        assert!(source.is_file());
+        assert_eq!(
+            source.parent(),
+            Some(root.join(".asb-completions").as_path())
+        );
+    } else {
+        assert!(warnings.is_empty());
+    }
+    assert!(!error.contains("private-observer-secret-must-not-be-exposed"));
+    assert!(
+        !String::from_utf8_lossy(&output.bytes)
+            .contains("private-observer-secret-must-not-be-exposed")
+    );
+    if blocked_log {
+        assert!(
+            root.join("run.jsonl").is_dir(),
+            "never replace the blocking user directory"
+        );
+    }
 }

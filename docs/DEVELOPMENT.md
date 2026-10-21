@@ -21,12 +21,13 @@ make uml
 
 `make rust-doc` runs `cargo doc --locked --no-deps --document-private-items`,
 because the CLI implementation modules are intentionally private. `make uml`
-installs the pinned AutoUML release under `target/tools/`, regenerates
-`docs/asb-type-diagram.mmd`, normalizes AutoUML's source-path identifiers into
-stable logical names, and renders `docs/asb-type-diagram.svg`. The normalized
-diagram explicitly shows trait implementation edges and never publishes local
-paths or branch names. It supplements the maintained architecture overview;
-review both when changing public or private type relationships.
+installs the pinned AutoUML release under `target/tools/`, generates the local
+type-diagram sources and renderings, and leaves those derived files ignored.
+`make flows` generates local dataflow and control-flow diagrams; `make
+interactive` adds the local HTML renderings. These diagrams explicitly show
+source relationships but never publish local paths or branch names. They
+supplement the maintained architecture overview and should be regenerated when
+reviewing public or private type relationships.
 
 Function-level dataflow/control diagrams use Graphviz's packed `osage` layout.
 This keeps module boxes and every directed call/label, including cross-module
@@ -70,6 +71,12 @@ Perf-stat regression fixtures process a complete synthetic file larger than
 the diagnostic cap, retain missing-interval timestamps and hybrid CPU counter
 totals, and reject invalid or excessive input without publishing partial totals.
 They need neither perf permissions nor a live agent/provider.
+CPU/I/O and BPF adapter fixtures likewise place final samples/cumulative maps
+beyond 256 KiB, pass unrelated diagnostic strings and require full-file means,
+series and final values. Shared output tests reject incomplete, oversized,
+invalid-UTF-8 and nonfinite data and enforce the processed JSON budget without
+allocating a second serialized buffer. These are offline fixtures, not native
+BPF clock-series qualification.
 `cargo test --locked --offline --test compare_setup` checks repeated CLI setup
 selections, scoped models/trials, dependency expansion, non-overwriting sweep
 publication, standalone measured/unmeasured reports and an injected browser
@@ -87,12 +94,38 @@ and rejects every undeclared pair before configuration or command mutation.
 These are protocol-only fixtures: no agent/provider is executed. See the
 [independently checked repair ledger](CODE_SMELL_REPAIRS.md) for the broader
 code-smell audit and remaining delivery classes.
+Continuation metadata is optional for a fresh grade, not optional for reuse.
+If an outcome, replica/group receipt or initial/final input seal cannot be
+published, human output identifies the missing evidence without changing the
+grade or retrying a client. JSONL instead emits a separate schema-1 object with
+`event: "continuation_warning"`, a stable `code`, display path, explicit
+`path_role` (`destination`, or `source_outcome` when an observer cannot report
+its receipt destination), safe reason and
+explicit remediation. Consumers must distinguish these events from schema-2
+benchmark summaries (`task`, `process_success`, `workload_success`); unchanged
+successful publication adds no event. Arbitrary helper/observer text is not
+printed. Identical stage/configuration/cause warnings are emitted once across
+replicas; different causes remain distinct. A writer failure is reported without
+discarding an existing benchmark failure. Existing sealed logs and grade
+records are never rewritten to add these presentation diagnostics. Missing
+starts/seals may not be reconstructable: preserve results and use explicit
+continuation/reconciliation only when its normal checks permit it.
+`cargo test --offline --locked --test completion_diagnostics` uses actual blocked
+publication paths, a private catalog-command fixture and a local synthetic
+client, not a provider, installed agent package or workload container. It checks
+both grades, client failures, concurrent deduplication, broken writers and
+conservative resume without another client invocation.
 Report identity regressions cover literal dots/brackets versus nested paths,
 empty/backslash keys, Unicode and colliding/long graph filenames, case-insensitive
 aliases, repeated configuration stems and deterministic regeneration. Numeric
 paths escape object-key separators; use `comparison.json`'s graph list rather
 than constructing filenames for unusual metric names. Conflicting collector
 identities fail explicitly instead of silently replacing a prior observation.
+Shell completions are generated from the actual Clap command schema using a
+pinned compatible `clap_complete`. Tests enumerate every public command/flag
+for both shells, execute Bash completions in every command context, and check
+writer errors and the internal helper's separate/equals argument forms.
+Registry suggestions affect only the completion clone, not custom tool parsing.
 `cargo test --locked cassette::` exercises the provider-free multi-track backend:
 manifest and compatibility bounds, stable seeded choices, selector edge cases,
 bounded metadata inspection, selective corruption checks and durable publication.
@@ -143,6 +176,13 @@ evidence files remain intact. Workspace coverage objects and raw profiles are
 cleaned while dependency compilation caches are retained. This also prevents
 obsolete test-binary maps from distorting totals after version or feature changes.
 No live provider, real agent installation, or privileged collector is necessary.
+The production map excludes only registry/git package directories identified by
+locked offline host-filtered Cargo metadata (including relocated/symlinked caches).
+Unbuilt cross-target packages need not be downloaded for native coverage. Workspace
+and local path-package sources stay in the denominator; no product module is excluded.
+Missing-project capability fixtures test the same private initialized-file guard
+used by production, and ancestor discovery uses an owned fixture parent/child.
+They never assume TMPDIR has no real ancestor project or pass one to host setup.
 
 Token accounting has synthetic, provider-free regression fixtures for all
 registered agent families, plus replay CLI checks for JSON, logs, and
@@ -209,9 +249,12 @@ For a focused library-only invocation, run `cargo build --locked --offline`
 first: the full-entry regression executes the actual ASB binary beside the
 test executable as its native process gate. Ordinary full `cargo test` builds
 that binary as part of its CLI integration targets. The full-entry fixture
-runs two isolated attempts through the real bundled grader, saved logs,
+runs isolated attempts through the real bundled grader, saved logs,
 measurements and completion policy; the larger outcome matrix tests consuming
 phase transitions with synthetic execution evidence, not full benchmark runs.
+Its real blocked-log-directory cases retain JSON and measurement grades,
+evaluate/finish exactly once, preserve primary and ancillary diagnostics and
+publish no completion receipt. Existing directories are never overwritten.
 They exercise independent client exit/grade/cleanup outcomes, failing lifecycle
 markers before and after execution, actual child-output retention, native and
 guest terminal-answer policy, incomplete recording/replay, explicit preservation

@@ -1,8 +1,9 @@
 # Architecture
 
-The maintained overview below explains ASB's runtime boundaries. It is
-supplemented—not replaced—by the generated [Rust type diagram](asb-type-diagram.mmd)
-and its [SVG rendering](asb-type-diagram.svg). Regenerate both with `make uml`.
+The maintained overview below explains ASB's runtime boundaries. It can be
+supplemented—not replaced—by generated Rust type, dataflow, and control-flow
+diagrams. Generate them locally with `make uml`, `make flows`, or
+`make interactive`; the derived files are intentionally not tracked.
 Private implementation items are documented by `make rust-doc` under `target/doc/`.
 
 ASB is deliberately split into a small CLI and a file-backed workload directory:
@@ -83,14 +84,36 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   under a machine-readable `metrics` object plus bounded `series` arrays.
   Process rows in the same observation are summed, not plotted as extra time
   points. `series_timestamps` uses monotonic observation-completion offsets;
+  CPU/I/O and BPF processing reads complete stopped stdout files, not their
+  256 KiB diagnostic prefix. Input is bounded to 16 MiB; truncated final lines,
+  invalid UTF-8, nonfinite parsed values or processed data above a 12 MiB
+  serialized budget fail the collector without prefix measurements. The
+  processed budget reserves worst-case sixfold JSON diagnostic escaping and
+  outer fields beneath comparison's 16 MiB
+  result limit. Temporary full output is removed after processing on either
+  success or failure; an optional collector error never erases an official grade.
   historical files fall back to pidstat clock offsets with midnight handling.
-  Average and child-summary rows are excluded. `perf stat` uses the same
+  Average and child-summary rows are excluded. CPU/I/O observations use the
+  millisecond series timestamp contract (both monotonic pidstat markers and
+  legacy clock offsets are converted from seconds before reporting).
+  `perf stat` uses the same
   interval contract. Perf scalar counters sum the emitted interval deltas,
   rather than reporting only the final interval. Unsupported counters remain
   absent, not zero. Parsing streams the complete stopped perf-stat file before
   deleting it; the separate 256 KiB diagnostic prefix never supplies totals.
   Original per-counter timestamps preserve missing intervals, and hybrid CPU
   core/atom hardware counters are summed at the same observed timestamp.
+  Perf's seconds are converted to the shared millisecond timestamp contract.
+  Perf-stat runs with `--no-scale`: hardware metrics are explicitly named
+  `perf.observed_cycles_count` and `perf.observed_instructions_count`, not
+  estimated whole-run totals. Unavailable intervals or multiplexing may omit
+  observations. `perf-stat-quality.json` retains each original PMU/event's
+  observed value, known runtime, running-percentage range and unavailable or
+  unknown-quality row counts. Missing observations remain null, not zero.
+  Running percentages are not CPU utilization, and rounded values (including
+  0.00%) are never inverted to reconstruct unscaled counts. Linux documents
+  [separate hybrid-PMU scaling](https://raw.githubusercontent.com/torvalds/linux/v6.12/tools/perf/Documentation/intel-hybrid.txt),
+  which makes naive sums of scaled core/atom estimates misleading.
   Limits of 256 MiB input, 16 KiB per line and 100,000 points per metric fail
   the collector without publishing partial counters. Malformed/nonfinite
   counters and inconsistent timestamps likewise fail rather than invent data.
@@ -100,7 +123,10 @@ ASB is deliberately split into a small CLI and a file-backed workload directory:
   series with at least two points and expose the same hover, zoom, pan, reset,
   and enlarge controls as bar charts. Built-in BPFTrace profiles remain
   bounded cumulative one-second snapshots and final aggregates (custom
-  interval programs may add series), while Perfetto retains its timestamped
+  interval programs may add series). Their legacy arrays have no measured
+  timestamps and are sample-indexed, not qualified aligned clock series;
+  sparse per-CPU maps must not be assumed synchronized by array index.
+  Perfetto retains its timestamped
   trace. Process-attached collector processes stop at the agent-execution
   boundary (also on run failure), before grading. Report processing/export
   stays after workload evaluation; an optional processor failure becomes a
@@ -261,6 +287,11 @@ broken presentation stops writes while already-admitted work completes; losing
 the owner transport still cancels/preserves. A final measurement-publication
 error leaves the immutable task outcome available and prevents a completion
 receipt, so an incomplete measurement cannot silently authorize continuation.
+Run-log publication is a separate typed obligation: a failed log write never
+skips final measurement publication or hides the grade from terminal rendering.
+Both log and measurement publication must be confirmed before a completion
+record/observer receipt is permitted. Original run failures precede ancillary
+log/measurement diagnostics; repairing reporting does not repeat the agent.
 
 `WorkloadAdapter` creates a distinct mutable `WorkloadSession` for each
 attempt. The session owns its task invocation, prepared workspace, initial

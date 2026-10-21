@@ -165,11 +165,16 @@ pub(super) fn run(
         }
         drop(sender);
         for event in receiver {
-            if failure.is_none()
+            // Even a broken terminal must not hide outcomes of admitted work.
+            // Stop new admission, but deliver every finished result while
+            // joining the owned workers. Never replace the first output error.
+            if (failure.is_none() || matches!(event, Event::Finished(..)))
                 && let Err(error) = observe(event)
             {
                 queue.stop();
-                failure = Some(error);
+                if failure.is_none() {
+                    failure = Some(error);
+                }
             }
         }
         for handle in handles {
@@ -281,7 +286,8 @@ mod tests {
         let weights = vec![1; 100];
         let entered = AtomicUsize::new(0);
         let exited = AtomicUsize::new(0);
-        let mut observations = 0;
+        let mut started = 0;
+        let mut finished = 0;
         let error = run(
             Scheduling::new(2, Some(2), &weights).unwrap(),
             &weights,
@@ -291,19 +297,63 @@ mod tests {
                 exited.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             },
-            |_| {
-                observations += 1;
+            |event| {
+                match event {
+                    Event::Started(_) => started += 1,
+                    Event::Finished(_, _) => finished += 1,
+                }
                 Err(Error::Io("synthetic broken terminal".into()))
             },
         )
         .unwrap_err();
         assert!(error.to_string().contains("synthetic broken terminal"));
-        assert_eq!(observations, 1);
+        assert_eq!(started, 1, "no presentation starts after output failure");
+        assert_eq!(finished, exited.load(Ordering::SeqCst));
         assert_eq!(
             entered.load(Ordering::SeqCst),
             exited.load(Ordering::SeqCst)
         );
         assert!(entered.load(Ordering::SeqCst) < weights.len());
+    }
+
+    #[test]
+    fn failed_output_still_delivers_every_admitted_failure_and_retains_first_error() {
+        let admitted = (Mutex::new(0), Condvar::new());
+        let mut failures = Vec::new();
+        let error = run(
+            Scheduling::new(2, Some(2), &[1, 1]).unwrap(),
+            &[1, 1],
+            |index| {
+                let mut count = admitted.0.lock().unwrap();
+                *count += 1;
+                admitted.1.notify_all();
+                let (_count, timeout) = admitted
+                    .1
+                    .wait_timeout_while(count, Duration::from_secs(5), |count| *count < 2)
+                    .unwrap();
+                assert!(!timeout.timed_out(), "both owned tasks must be admitted");
+                Err(Error::Run(format!("owned failure {index}")))
+            },
+            |event| {
+                if let Event::Finished(index, result) = event {
+                    failures.push((index, result.unwrap_err().to_string()));
+                    return Err(Error::Io(format!("output failure {index}")));
+                }
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(failures.len(), 2);
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("output failure {}", failures[0].0))
+        );
+        failures.sort();
+        assert_eq!(
+            failures,
+            vec![(0, "owned failure 0".into()), (1, "owned failure 1".into())]
+        );
     }
 
     #[test]
