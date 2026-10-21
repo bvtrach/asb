@@ -9,6 +9,7 @@ mod compare;
 mod completion;
 mod config;
 mod endpoint;
+mod executables;
 mod install;
 mod measurements;
 mod models;
