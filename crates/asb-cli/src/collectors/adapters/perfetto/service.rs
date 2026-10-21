@@ -36,9 +36,8 @@ struct Daemons {
 }
 
 impl Service {
-    pub fn acquire(executable: &Path, measurements: &Path) -> Result<Arc<Self>, String> {
-        let (root, _) = crate::project::load(measurements).map_err(|e| e.to_string())?;
-        let root = root.canonicalize().map_err(|e| e.to_string())?;
+    pub fn acquire(executable: &Path, project_root: &Path) -> Result<Arc<Self>, String> {
+        let root = project_root.canonicalize().map_err(|e| e.to_string())?;
         let mut services = SERVICES
             .get_or_init(|| Mutex::new(BTreeMap::new()))
             .lock()

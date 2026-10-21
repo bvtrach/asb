@@ -78,8 +78,18 @@ impl Recorded {
             "failure_reason",
             "workload_failure",
             "adapter_smoke_success",
+            "workload_resource_disposition",
+            "workload_artifacts",
         ] {
-            if self.summary[field] != measured[field] {
+            let agrees = if matches!(
+                field,
+                "workload_resource_disposition" | "workload_artifacts"
+            ) {
+                self.summary.get(field) == measured.get(field)
+            } else {
+                self.summary[field] == measured[field]
+            };
+            if !agrees {
                 return Err(invalid(
                     &self.path,
                     &format!(
@@ -153,6 +163,9 @@ impl Recorded {
         }
         if !self.workload_cleanup || !self.proxy_cleanup {
             status.push_str("; owned-resource cleanup not confirmed");
+        }
+        if self.summary["workload_resource_disposition"] == "stopped-preserved" {
+            status.push_str("; workload resources stopped and preserved, not removed");
         }
         status
     }
@@ -242,6 +255,20 @@ pub(crate) fn load(directory: &Path, total: usize) -> Result<BTreeMap<usize, Rec
             return Err(invalid(
                 &path,
                 "outcome identity or result fields are malformed",
+            ));
+        }
+        if !crate::workloads::ResourceDisposition::matches_record(
+            raw.get("workload_resource_disposition"),
+            raw["workload_cleanup_confirmed"] == true,
+            summary,
+        ) {
+            return Err(invalid(
+                &path,
+                if raw["workload_cleanup_confirmed"] == false {
+                    "outcome workload or proxy cleanup is unconfirmed; resource disposition contradicts cleanup"
+                } else {
+                    "outcome resource disposition contradicts cleanup confirmation"
+                },
             ));
         }
         if outcomes
@@ -476,6 +503,31 @@ mod log_boundary_tests;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn measurements_preserve_settlement_and_artifact_agreement() {
+        let mut record = super::Recorded {
+            path: std::path::PathBuf::from("outcome.json"),
+            summary: serde_json::json!({}),
+            workload_cleanup: true,
+            proxy_cleanup: true,
+            source: "task-outcome",
+        };
+        assert!(record.check_measurement(&serde_json::json!({})).is_ok());
+        record.summary = serde_json::json!({
+            "workload_resource_disposition":"stopped-preserved",
+            "workload_artifacts":["/owned/attempt"]});
+        assert!(record.check_measurement(&record.summary).is_ok());
+        for field in ["workload_resource_disposition", "workload_artifacts"] {
+            let mut measured = record.summary.clone();
+            measured.as_object_mut().unwrap().remove(field);
+            assert!(record.check_measurement(&measured).is_err());
+            measured[field] = serde_json::Value::Null;
+            assert!(record.check_measurement(&measured).is_err());
+        }
+        let mut measured = record.summary.clone();
+        measured["workload_resource_disposition"] = serde_json::json!("removed");
+        assert!(record.check_measurement(&measured).is_err());
+    }
     use super::*;
 
     struct Fixture {
@@ -1158,6 +1210,39 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("duplicate actual attempt")
+        );
+    }
+
+    #[test]
+    fn settlement_diagnostics_distinguish_unconfirmed_cleanup_from_valid_unknown_state() {
+        let fixture = Fixture::new("swe-bench-lite", 1);
+        let mut record = fixture.record(1, json!(true), true, true);
+        record["workload_resource_disposition"] = json!("removed");
+        record["summary"]["workload_resource_disposition"] = json!("removed");
+        fixture.publish(1, &record);
+        assert!(load(&fixture.directory(), 1).is_ok());
+        record["workload_cleanup_confirmed"] = json!(false);
+        fixture.publish(1, &record);
+        assert!(
+            load(&fixture.directory(), 1)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("outcome workload or proxy cleanup is unconfirmed")
+        );
+        record["workload_resource_disposition"] = Value::Null;
+        record["summary"]["workload_resource_disposition"] = Value::Null;
+        fixture.publish(1, &record);
+        let observed = load(&fixture.directory(), 1).unwrap();
+        assert!(!observed[&1].workload_cleanup);
+        record["workload_cleanup_confirmed"] = json!(true);
+        fixture.publish(1, &record);
+        assert!(
+            load(&fixture.directory(), 1)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("resource disposition contradicts cleanup confirmation")
         );
     }
 

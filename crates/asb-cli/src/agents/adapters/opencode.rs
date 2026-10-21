@@ -15,7 +15,12 @@ pub(super) static ADAPTER: StaticAdapter = StaticAdapter::new(
     command,
     prepare_adapter,
 )
-.with_output_usage(output_usage);
+.with_output_usage(output_usage)
+.with_state_environment_vars(&[
+    "OPENCODE_CONFIG_CONTENT",
+    "OPENCODE_CONFIG",
+    "OPENCODE_CONFIG_DIR",
+]);
 
 fn output_usage(stdout: &str, stderr: &str, _: bool) -> crate::measurements::TokenUsage {
     let mut sum = crate::measurements::TokenUsage::default();

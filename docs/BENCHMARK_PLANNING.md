@@ -33,6 +33,27 @@ extra executions: select each repeated configuration explicitly. Its replicas
 are still controlled by `concurrency`; sweep `jobs` bounds concurrent distinct
 configurations and `max_active_attempts` bounds their summed replica counts.
 
+For automatic fresh execution use `asb run CONFIG --repeat N`. This creates N
+sequential batches of the configured concurrent replicas and derives each batch's
+planning repetition index/total. A nondefault manual `planning.repetition`
+cannot be combined with `--repeat`; it fails before campaign publication.
+Every execution retains the resolved policy, effective controller caps and
+persisted task policy. Batch indices share a protocol fingerprint, while a
+different repeat total, replica concurrency or shared admission policy separates
+the cohort. The manually labelled and automatically orchestrated protocols are
+also distinct even when their numeric repetition identities happen to match.
+
+The fixed batch-admission policy is recorded before allocation in the campaign
+plan and in every execution identity. Its material rendezvous has a 1800-second
+deadline from gate construction; the separate 1800-second launch rendezvous arms
+once at the first post-material slot registration, covering preparation and
+readiness of all clients. Both caps come from the same typed policy used to
+construct the gates. These shared admission deadlines are not configurable
+per-agent bootstrap caps, do not restart for late siblings and do not claim
+hard-real-time interruption of every SDK call. The separate
+`agent_preparation_seconds` option remains unsupported and its effective value
+remains unknown; execution caps remain independent and begin at actual launch.
+
 For resource admission, a sweep manifest can additionally contain:
 
 ```toml

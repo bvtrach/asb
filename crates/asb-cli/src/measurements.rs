@@ -389,6 +389,8 @@ pub struct RunMeasurement<'a> {
     pub success: bool,
     pub process_success: bool,
     pub workload_success: Option<bool>,
+    pub workload_resource_disposition: Option<crate::workloads::ResourceDisposition>,
+    pub workload_artifacts: &'a [PathBuf],
     pub failure_kind: Option<&'a str>,
     pub failure_reason: Option<&'a str>,
     pub success_rate: Option<f64>,
@@ -468,6 +470,7 @@ pub struct Session {
     adapters: Vec<&'static dyn collectors::CollectorAdapter>,
     namespace_only: bool,
     pub(crate) dir: PathBuf,
+    pub(crate) project_root: Option<PathBuf>,
     pub(crate) tool_dir: Option<PathBuf>,
     pub(crate) cgroup_parent: Option<PathBuf>,
     started_unix_ms: u128,
@@ -536,30 +539,23 @@ impl Session {
         selected: &[String],
         tool_dir: Option<&Path>,
     ) -> Result<Self, String> {
-        Self::start_with_collectors_and_parent(dir, selected, tool_dir, None)
-    }
-
-    /// Start collectors with an optional project-initialized delegated cgroup.
-    #[cfg(test)]
-    pub fn start_with_collectors_and_parent(
-        dir: &Path,
-        selected: &[String],
-        tool_dir: Option<&Path>,
-        cgroup_parent: Option<&Path>,
-    ) -> Result<Self, String> {
+        let project_root = crate::project::load(dir).ok().map(|(root, _)| root);
         Self::start_with_adapters(
             dir,
             selected,
             tool_dir,
-            cgroup_parent,
+            None,
             collectors::all().to_vec(),
             false,
+            project_root.as_deref(),
         )
     }
 
     /// Use exactly the negotiated adapter set. Later environment changes cannot
     /// activate an adapter omitted from the saved plan.
+    /// Project authority is explicit; output paths never select capabilities.
     pub(crate) fn start_with_resolved_collectors_and_parent(
+        project_root: &Path,
         dir: &Path,
         selected: &[String],
         active: &[String],
@@ -572,7 +568,15 @@ impl Session {
                 collectors::find(name).ok_or_else(|| format!("unknown resolved collector {name}"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        Self::start_with_adapters(dir, selected, tool_dir, cgroup_parent, adapters, false)
+        Self::start_with_adapters(
+            dir,
+            selected,
+            tool_dir,
+            cgroup_parent,
+            adapters,
+            false,
+            Some(project_root),
+        )
     }
 
     pub(crate) fn start_in_execution_namespace(
@@ -595,7 +599,7 @@ impl Session {
             }
             adapters.push(adapter);
         }
-        Self::start_with_adapters(dir, selected, None, None, adapters, true)
+        Self::start_with_adapters(dir, selected, None, None, adapters, true, None)
     }
 
     fn start_with_adapters(
@@ -605,6 +609,7 @@ impl Session {
         cgroup_parent: Option<&Path>,
         adapters: Vec<&'static dyn collectors::CollectorAdapter>,
         namespace_only: bool,
+        project_root: Option<&Path>,
     ) -> Result<Self, String> {
         let selected = collectors::expand_dependencies(selected);
         let selected = selected.as_slice();
@@ -618,12 +623,14 @@ impl Session {
         check_measurement_directory(dir)?;
         // Privilege and tracefs checks must complete before any agent process
         // is prepared. This prevents a partially measured benchmark run.
-        let (sudo_collectors, states) = preflight_collectors(dir, selected, tool_dir, &adapters)?;
+        let (sudo_collectors, states) =
+            preflight_collectors(project_root, dir, selected, tool_dir, &adapters)?;
         let started_unix_ms = unix_ms();
         let mut session = Self {
             adapters,
             namespace_only,
             dir: dir.to_path_buf(),
+            project_root: project_root.map(Path::to_path_buf),
             tool_dir: tool_dir.map(Path::to_path_buf),
             cgroup_parent: cgroup_parent.map(Path::to_path_buf),
             started_unix_ms,
@@ -1385,6 +1392,7 @@ pub(crate) fn env_true(name: &str) -> bool {
 /// non-interactive sudo. Perf is intentionally not granted a sudoers rule:
 /// its kernel policy has a narrower, user-applied repair path below.
 fn preflight_collectors(
+    project_root: Option<&Path>,
     measurement_dir: &Path,
     selected: &[String],
     tool_dir: Option<&Path>,
@@ -1393,6 +1401,7 @@ fn preflight_collectors(
     let mut sudo_collectors = BTreeSet::new();
     let mut states = collectors::CollectorStates::default();
     let mut context = collectors::PreflightContext {
+        project_root,
         measurement_dir,
         selected,
         tool_dir,
@@ -2000,6 +2009,8 @@ mod tests {
             ))
             .unwrap();
         let run = RunMeasurement {
+            workload_resource_disposition: None,
+            workload_artifacts: &[],
             execution_plan_fingerprint: None,
             module: None,
             benchmark_outcome: None,

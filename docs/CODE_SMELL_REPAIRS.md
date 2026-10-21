@@ -14,6 +14,14 @@ informational, not a substitute for meaningful offline regressions. Required
 functional CI, independent review, exact-head validation and patch releases
 still apply to each repair class.
 
+Current selection-identity integration is staged as **0.2.26** after independent
+main feature PR #250 consumed version 0.2.25 at
+`f48953476265e1f77373bb8623f65224c32cb047`. Its source merge was conflict-free;
+the TUI choice-key, named-pane and concurrency changes remain the repair scope.
+Earlier 1,066-test evidence predates that feature and does not qualify this new
+combined tree. Fresh independent integration review and full offline checks,
+exact-head hosted/package CI, merge, post-merge checks and release are pending.
+
 Integrated repair, released patch **0.2.21**: the independently reviewed
 launch-descriptor/one-shot admission repair (`b1a54fde`) is combined with the
 reviewed workload-wizard stack (`6af7939b`), retaining shared benchmark paths,
