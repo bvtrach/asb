@@ -9,8 +9,26 @@ Existing tests replace entries before function entry, not in that gap.
 This first source checkpoint adds a test-only per-thread replacement seam after
 the last original identity check and proposes actual regular-file, symlink and
 parent-directory replacement regressions. The seam does not exist in production
-and has no environment or installed CLI surface. No production repair, executed
-red/green result, full qualification, PR or release is claimed yet.
+and has no environment or installed CLI surface. The observed-red checkpoint
+below is later evidence; no production repair, green result, full qualification,
+PR or release is claimed yet.
+
+## Observed red
+
+At signed source `248bf2ab`, the actual offline-built libtest exercised all
+three replacements before asserting. It exited 101: zero passed, one failed,
+zero ignored, in 0.03 seconds. Each variant actually removed the foreign
+pathname and returned `Ok(())`: regular file, symlink and replaced parent
+directory. Thus this is a reproduced ownership bug, not only a hypothetical
+race or a failure to return a diagnostic. All data belonged to private fixtures;
+no live producer, provider, external process or user file was involved.
+
+The libtest SHA-256 stayed unchanged around the run:
+`2c1c8eab1aef2fa03d9c1cd8e2761e84b84a412fdcc1728783be5fb0bd4c5849`.
+Evidence is retained in `target/recording-raw-red.log`,
+`target/recording-raw-red-build-final.log` and matching before/after hash files.
+The initial source-only checkpoint/build remain preserved separately; only the
+final test actually exercised all three cases. Independent review is next.
 
 Required repair: keep archive publication, immutable track association and
 observed producer cleanup prerequisites. Pin the producer namespace and original
