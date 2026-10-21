@@ -6,6 +6,8 @@ tracepoint:sched:sched_migrate_task /@asb_tree[args->pid]/ {
 
 // Emit a cumulative sample every second; the final map is still printed on exit.
 interval:s:1 {
+  printf("ASB_BPFTRACE_SNAPSHOT %llu\n", nsecs(monotonic));
   print(@asb_cpu_migrations);
   print(@asb_cpu_migration_destination);
+  printf("ASB_BPFTRACE_SNAPSHOT_END\n");
 }

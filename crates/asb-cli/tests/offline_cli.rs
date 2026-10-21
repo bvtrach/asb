@@ -1134,6 +1134,7 @@ async function main() {
       if (result.status!==0) throw new Error('offline CPU child failed');
     }
   }
+  if (behavior === 'bpf-clock') await new Promise(resolve => setTimeout(resolve, 3600));
   if (behavior === 'replica-barrier') {
     const root = process.env.ASB_FIXTURE_BARRIER;
     fs.mkdirSync(root, {recursive:true});
@@ -1421,13 +1422,16 @@ fn live_bpftrace_socket_profile_captures_replay_and_generates_graphs() {
         "tapes/000-benchmark/cassettes/benchmark-pi-bug-fix-test-model.jsonl",
         &std::fs::read_to_string(project.0.join("tape.jsonl")).unwrap(),
     );
-    let result = project.command(&[
-        "sweep",
-        "suite.toml",
-        "--replay",
-        "--cassette-root",
-        "tapes",
-    ]);
+    let result = project.command_with_env(
+        &[
+            "sweep",
+            "suite.toml",
+            "--replay",
+            "--cassette-root",
+            "tapes",
+        ],
+        &[("ASB_FIXTURE_BEHAVIOR", "bpf-clock")],
+    );
     expect_success(&result);
     let measurements = project.0.join("suite-results/000-benchmark/measurements");
     let json: serde_json::Value = serde_json::from_slice(
@@ -1440,6 +1444,28 @@ fn live_bpftrace_socket_profile_captures_replay_and_generates_graphs() {
             .unwrap_or(0.0)
             > 0.0,
         "{json}"
+    );
+    let metric = "bpftrace.socket-operations.socket_calls";
+    let values = json["series"][metric]
+        .as_array()
+        .expect("timestamped native samples");
+    let timestamps = json["series_timestamps"][metric].as_array().unwrap();
+    assert!(values.len() >= 2, "{json}");
+    assert_eq!(values.len(), timestamps.len());
+    assert!(
+        timestamps
+            .windows(2)
+            .all(|pair| pair[1].as_f64().unwrap() > pair[0].as_f64().unwrap())
+    );
+    assert!(timestamps[0].as_f64().unwrap() >= 0.0);
+    let run: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(measurements.join("run.json")).unwrap()).unwrap();
+    assert!(
+        timestamps.last().unwrap().as_f64().unwrap() <= run["elapsed_ms"].as_f64().unwrap() + 100.0
+    );
+    println!(
+        "{}",
+        serde_json::json!({"native_bpf_clock_series":metric,"observations":values.len(),"timestamps_ms":timestamps,"final_count":json["metrics"][metric]})
     );
     let comparison = project.0.join("results/suite-comparison");
     let report: serde_json::Value =

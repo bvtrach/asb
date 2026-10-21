@@ -154,7 +154,11 @@ fn process_hook_exports_profile_results_without_attaching_a_collector() {
     let result = ADAPTER.process(&mut session, &context).unwrap();
     assert_eq!(result.status, "completed");
     assert_eq!(result.metrics["bpftrace.custom.events"], 7.0);
-    assert_eq!(result.series["bpftrace.custom.events"], [2.0, 7.0]);
+    assert!(
+        result.series.is_empty(),
+        "untimed custom output retains scalar aggregates without guessed timestamps"
+    );
+    assert!(result.timestamps.is_empty());
     assert!(fixture.0.join("bpftrace-custom.svg").is_file());
     let failed = std::process::ExitStatus::from_raw(2 << 8);
     let context = ProcessContext {
@@ -169,6 +173,54 @@ fn process_hook_exports_profile_results_without_attaching_a_collector() {
     assert_eq!(result.status, "failed");
     assert!(result.metrics.is_empty());
     assert!(result.series.is_empty());
+}
+
+#[test]
+#[cfg(unix)]
+fn complete_output_frames_preserve_tail_samples_and_execution_relative_clocks() {
+    use std::os::unix::process::ExitStatusExt;
+    let fixture = Fixture::new();
+    let mut session =
+        measurements::Session::start_in_execution_namespace(&fixture.0, &["agent-memory".into()])
+            .unwrap();
+    {
+        let state = session.state::<BpftraceState>();
+        let mut state = state.borrow_mut();
+        state.execution_start_ns = Some(1_000_000_000);
+        state.execution_end_ns = Some(5_000_000_000);
+    }
+    let mut output =
+        "ASB_BPFTRACE_SNAPSHOT 2000000000\n@asb_events: 2\nASB_BPFTRACE_SNAPSHOT_END\n".to_owned();
+    output.push_str(&"# ignored filler\n".repeat(20000));
+    output.push_str("ASB_BPFTRACE_SNAPSHOT 4000000000\n@asb_events: 900\nASB_BPFTRACE_SNAPSHOT_END\n@asb_events: 999\n");
+    assert!(output.len() > 256 * 1024);
+    let stdout_path = fixture.0.join("full.stdout");
+    fs::write(&stdout_path, output).unwrap();
+    let status = std::process::ExitStatus::from_raw(0);
+    let result = ADAPTER
+        .process(
+            &mut session,
+            &ProcessContext {
+                name: "bpftrace-custom",
+                status: &status,
+                stdout: "not measurement input",
+                stderr: "",
+                stdout_path: &stdout_path,
+                stderr_path: &fixture.0.join("stderr"),
+            },
+        )
+        .unwrap();
+    assert_eq!(result.metrics["bpftrace.custom.events"], 999.0);
+    assert_eq!(result.series["bpftrace.custom.events"], [2.0, 900.0]);
+    assert_eq!(
+        result.timestamps["bpftrace.custom.events"],
+        [1000.0, 3000.0]
+    );
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&fs::read(fixture.0.join("bpftrace-custom-timing.json")).unwrap())
+            .unwrap();
+    assert_eq!(metadata["complete_groups"], 2);
+    assert_eq!(metadata["timing_status"], "timestamped snapshots");
 }
 
 /// Each environment configuration belongs to a separate single-test subprocess;
