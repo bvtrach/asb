@@ -18,7 +18,7 @@ Integrated candidate, staged patch **0.2.29**: independently source-approved
 bounded capture `823f5081` is combined with newly qualified sweep checkpoint
 `1657ae18`, preserving repeated native/official execution, fresh preparation,
 resource/artifact contracts and typed sweep/disposition ownership. Independent
-integration source review and fresh full qualification remain pending. Focused
+integration source review approved `8dabf284`. Focused
 offline checks passed 335 tests with five explicit optional skips: 103 runner,
 70 comparison, 74 sweep, one shared-isolation test and 87 tests across nine
 actual CLI/protocol targets. The actual binary was built first; strict
@@ -30,6 +30,15 @@ The unmeasured true/false/native reporting regressions retain resource/artifact
 fields and recorded planning/cap metadata without authorizing continuation.
 The private native fixture remains test-only, not new SDK qualification. The older
 qualification below is historical, not evidence for this new combined tree.
+The fresh all-target/all-feature offline suite at reviewed `8dabf284` passed
+1,193 tests with zero failures and 21 explicit optional skips across 22 targets.
+Strict Clippy, formatting and sequential build/private Rust docs/pinned AutoUML
+0.7.2/flows/interactive views/bash and zsh completions passed. Actual executable
+SHA-256 stayed unchanged before/after tests and final build:
+`3acc60d2381d4f6037159d1a7c41fb5f6ae6d0ed2b9acd64183de388934d59a6`.
+Exact-head hosted/package CI, main-ancestry publication review, merge, post-merge
+verification and release remain pending. This does not qualify optional skipped
+host/provider tests, runtime discovery, or the remaining overall audit.
 
 Prior pre-main integration qualification: independently source-approved
 bounded capture/reporting repair `823f5081` is combined with qualified sweep
