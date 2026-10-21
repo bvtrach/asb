@@ -1,5 +1,11 @@
 # Step 2: Python SDK harness extraction
 
+Reference download URLs and source-bundle metadata are also owned by the
+registered workload adapters. The installer consumes registry hooks instead
+of a parallel benchmark table or a Terminal-Bench name switch. Regression tests
+bind the complete ordered catalog, source URL digest and legacy bundle metadata,
+so moving ownership cannot silently change installation inputs.
+
 `asb_harness.py` owns the infrastructure shared by the original Terminal-Bench
 and Harbor adapters: SDK stdout redirection, private JSON output, durable
 create-new verifier-start records, and original Docker network capture,
