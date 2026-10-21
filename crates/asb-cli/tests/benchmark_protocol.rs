@@ -1,6 +1,11 @@
 //! Provider-free tests of the upstream workload protocol's pure data layer.
 
 #[test]
+fn routed_runtime_preserves_explicit_settings_and_requires_owned_topology() {
+    python_protocol("benchmark_material_network_runtime.py");
+}
+
+#[test]
 fn owned_bridge_identity_checks_explicit_intent_before_normalizing_automatic_allocation() {
     python_protocol("benchmark_material_network_identity.py");
 }

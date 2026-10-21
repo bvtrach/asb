@@ -387,8 +387,8 @@ rewrite workload data or provider requests. Two freshly created internal-bridge
 fixtures qualify equal canonical topology despite unequal raw identities.
 The service receipt now explicitly records service-level MAC intent; old receipts
 without that evidence cannot authorize automatic MAC normalization. This pure
-component is embedded and tested, but runtime configuration/generated-file
-composition must still consume it before routed environments are enabled.
+component is embedded and tested. The runtime integration below consumes it;
+whole-environment qualification remains separate from pure canonicalizer tests.
 
 Runtime integration must use the same whole-environment composer for verified
 single-service routed tasks, not only multi-service tasks. It must bind the
@@ -399,6 +399,38 @@ ExtraHosts, static addresses, literal aliases, comments and resolver contents
 remain distinct. Legacy aggregate NetworkSettings fields and sandbox identity
 need explicit coverage or refusal, not silent omission. Config/HostConfig fields
 outside already modeled mounts and network identity remain content-bound.
+
+The implemented composer now performs exact network observation and intent
+validation before staging helpers and during every whole-environment snapshot.
+Routed single-service receipts take this composer too, without a root-only
+fallback. Private raw network state remains part of before/after round witnesses;
+canonical topology and endpoint/runtime settings enter the material identity.
+Sandbox IDs and their expected Docker namespace paths become per-service tags
+only after identity/path checks; distinct private services cannot share either.
+Deprecated aggregate network fields must jointly identify one verified endpoint,
+not independently match different networks. Unsupported secondary/legacy
+dependencies are refused. Other inspected runtime fields remain bound.
+
+Generated addresses are tagged only on the exact own generated hostname/FQDN
+line in `/etc/hosts`. Explicit ExtraHosts names and addresses, static endpoint
+addresses on any network, explicit aliases/hostnames, comments, unknown lines
+and resolver contents stay literal. ExtraHosts protection is applied after
+generated alias construction so a generated-looking explicit name cannot be
+accidentally reauthorized. The owned cached-image qualification has separate
+internal, non-internal/default-route and single-service bridge cases. Successful
+fixtures verify ownership before cleanup and absence afterward; failure stops
+and preserves the owned resources. These material checks start no agent,
+provider or evaluator and do not establish original-catalog-wide coverage.
+
+All three exact-code owned bridge cases passed together in 263.666 seconds with
+the selected ASB helper binary unchanged before and after qualification. They
+cover two-service internal and non-internal/default-route bridges, single-service
+dispatch, fresh-attempt equality, shared-versus-independent storage, mutation
+visibility, repeat observation and verified owned-resource cleanup. The source
+suite passed 725 tests (zero failures, 20 explicit opt-in tests ignored), with
+formatting, strict Clippy, build, private Rustdocs, diagrams and checkout tests.
+This evidence is scoped to the reviewed integration increment; current-main
+refactor/coverage integration and remaining delivery tracks still require gates.
 
 ### Owned network-none environment composer
 

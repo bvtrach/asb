@@ -1,7 +1,7 @@
 """Whole-environment observation for explicitly covered owned service sets.
 
-This first composer covers network-none environments. Routed/external networks
-and unobservable cross-service bind aliases are refused, never downgraded.
+Owned default-IPAM local bridges and network-none environments are modeled.
+External networks and unobservable cross-service bind aliases are refused.
 """
 import time
 from types import SimpleNamespace
@@ -13,6 +13,9 @@ from asb_material_mounts import plan, storage_groups, targets
 from asb_material_runtime import configuration, normalize, read_files
 from asb_material_services import resolve
 from asb_material_root import RUNTIME, prepare
+from asb_material_networks import observe as observe_networks
+from asb_material_network_identity import canonicalize
+from asb_material_network_runtime import validate_sandboxes
 
 
 def capture(task, definition, exclusions, binary, deadline):
@@ -22,11 +25,20 @@ def capture(task, definition, exclusions, binary, deadline):
         if time.monotonic() >= deadline or (task.cancelled is not None and task.cancelled.is_set()):
             raise MaterialError("prepared environment observation was cancelled or timed out")
     receipt,resources,primary = resolve(task,deadline)
-    if receipt["networks"]:
-        raise MaterialError("prepared environment networks require explicit topology coverage")
+    def network_snapshot(live):
+        if not receipt["networks"]:
+            return None,{}
+        raw = observe_networks(task,deadline)
+        if (raw["services"] != {role:resource.id for role,resource in live.items()}
+                or raw["service_intent"] != receipt["services"]):
+            raise MaterialError("prepared network service authority changed during observation")
+        public,addresses = canonicalize(raw)
+        validate_sandboxes({role:resource.attrs for role,resource in live.items()})
+        return (raw,public),addresses
+    network,_addresses = network_snapshot(resources)
     # Refuse unsupported runtime before any helper is staged.
     for role,resource in resources.items():
-        configuration(resource.attrs,role,receipt["services"][role])
+        configuration(resource.attrs,role,receipt["services"][role],network)
     contexts = getattr(task,"_material_service_contexts",None)
     if contexts is None:
         contexts = {}
@@ -56,6 +68,7 @@ def capture(task, definition, exclusions, binary, deadline):
         if current != receipt or current_primary != primary or any(
                 resource.id != contexts[role].identity for role,resource in live.items()):
             raise MaterialError("prepared service set changed during environment observation")
+        network,addresses = network_snapshot(live)
         volume_attributes = {}
         for item in receipt["volumes"].values():
             check()
@@ -70,13 +83,13 @@ def capture(task, definition, exclusions, binary, deadline):
         for role,resource in live.items():
             check()
             attrs = resource.attrs
-            runtime = configuration(attrs,role,receipt["services"][role])
+            runtime = configuration(attrs,role,receipt["services"][role],network)
             mounts = targets(attrs,RUNTIME)
             binds = verify_binds(task.journal,resource) if any(item["Type"] == "bind" for item in mounts) else {}
             topology = plan(attrs,binds,volume_attributes,RUNTIME)
             raw_files = read_files([*command,"exec","-i",resource.id,RUNTIME+"/asb","__asb-material","--runtime-files"],
                 budget,deadline=min(deadline,time.monotonic()+30),cancelled=task.cancelled)
-            files = normalize(raw_files,role,attrs,receipt["services"][role],role_names)
+            files = normalize(raw_files,role,attrs,receipt["services"][role],role_names,addresses.get(role))
             canonical_mounts = topology["mounts"]
             for actual,mount in zip(mounts,canonical_mounts):
                 target,kind = actual["Destination"],actual["Type"]
@@ -107,6 +120,9 @@ def capture(task, definition, exclusions, binary, deadline):
                     raise MaterialError("disjoint service binds require global inode coverage")
         groups,aliases = storage_groups(source_list,names)
         state = {"services":public,"storage":dict(zip(names,groups)),"aliases":aliases}
+        if network is not None:
+            state["networks"] = network[1]
+        private = {"services":private,"networks":network[0] if network is not None else None}
         canonical_digest({"state":state,"private":private},"asb-private-environment-snapshot-v1")
         return state,private
 
@@ -126,5 +142,5 @@ def capture(task, definition, exclusions, binary, deadline):
         raise MaterialError("prepared environment changed between complete service rounds")
     check()
     return {"schema_version":1,"scope":"prepared-workload-material-v1",
-        "sha256":canonical_digest({"scope":"owned-network-none-environment-v1",
+        "sha256":canonical_digest({"scope":"owned-bridge-environment-v1" if receipt["networks"] else "owned-network-none-environment-v1",
             "definition":definition,"primary":primary,"observation":rounds[0]},"asb-prepared-workload-material-v1")}

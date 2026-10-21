@@ -44,6 +44,10 @@ pub(crate) fn publish_asset(path: &std::path::Path, source: &str) -> Result<(), 
 pub(crate) fn publish_support(root: &std::path::Path) -> Result<(), crate::Error> {
     for (name, source) in [
         (
+            "asb_material_network_runtime.py",
+            include_str!("../../assets/benchmarks/asb_material_network_runtime.py"),
+        ),
+        (
             "asb_material_network_identity.py",
             include_str!("../../assets/benchmarks/asb_material_network_identity.py"),
         ),

@@ -103,7 +103,7 @@ def capture_task(task, definition, exclusions=(), deadline=None, binary=None):
     if binary is not None and getattr(journal,"material_services",None) is not None:
         from asb_material_services import resolve
         _receipt, services, _primary = resolve(task,deadline)
-        if len(services) != 1:
+        if len(services) != 1 or _receipt["networks"]:
             from asb_material_environment import capture
             return capture(task,definition,exclusions,binary,deadline)
     if len(containers) != 1:

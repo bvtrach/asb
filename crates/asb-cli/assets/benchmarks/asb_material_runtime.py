@@ -50,15 +50,31 @@ def generated_hostname(attributes, declaration):
         and isinstance(value,str) and value == identity[:12])
 
 
-def normalize(files, role, attributes, declaration, role_names):
+def normalize(files, role, attributes, declaration, role_names, addresses=None):
     """Tag exact generated hostname tokens; preserve literal text and comments."""
     generated = generated_hostname(attributes,declaration)
     hostname = attributes.get("Config",{}).get("Hostname")
     aliases = {name:{"owned_container":owner} for name,owner in role_names.items()}
+    protected_names,protected_addresses = set(),set()
     for item in attributes.get("HostConfig",{}).get("ExtraHosts") or []:
         if not isinstance(item,str):
             raise MaterialError("prepared explicit host mapping is invalid")
-        aliases.pop(item.split(":",1)[0],None)
+        name,separator,address = item.partition(":")
+        protected_names.add(name)
+        if separator:
+            try:
+                protected_addresses.add(str(ipaddress.ip_address(address)))
+            except ValueError:
+                pass
+    for endpoint in attributes.get("NetworkSettings",{}).get("Networks",{}).values():
+        for key in ["IPv4Address","IPv6Address"]:
+            address = (endpoint.get("IPAMConfig") or {}).get(key)
+            if address:
+                protected_addresses.add(str(ipaddress.ip_address(address)))
+    intent = declaration.get("networks")
+    if isinstance(intent,dict):
+        for attachment in intent.values():
+            protected_names.update((attachment or {}).get("aliases") or [])
     if generated:
         aliases[hostname] = {"generated_hostname":role}
         domain = attributes.get("Config",{}).get("Domainname")
@@ -66,6 +82,12 @@ def normalize(files, role, attributes, declaration, role_names):
             aliases[hostname+"."+domain] = {"generated_hostname":role,"domain":domain}
     else:
         aliases.pop(hostname,None)
+    for name in protected_names:
+        aliases.pop(name,None)
+    own_names = {hostname}
+    domain = attributes.get("Config",{}).get("Domainname")
+    if domain:
+        own_names.add(hostname+"."+domain)
     result = []
     for item in files:
         value = copy.deepcopy(item)
@@ -85,10 +107,18 @@ def normalize(files, role, attributes, declaration, role_names):
                     lines.append({"literal":line})
                     continue
                 tokens = re.split(r"([ \t\r\n]+)",body)
-                # The address itself is always literal in this network-none slice.
                 first = next(index for index,token in enumerate(tokens) if token and not token.isspace())
-                lines.append({"tokens":[aliases.get(token,{"literal":token}) if index > first and not token.isspace()
-                    else {"literal":token} for index,token in enumerate(tokens)],"comment":separator+comment})
+                selected = [aliases.get(token,{"literal":token}) if index > first and not token.isspace()
+                    else {"literal":token} for index,token in enumerate(tokens)]
+                address = str(ipaddress.ip_address(words[0]))
+                # Only Docker's own generated-hostname line is eligible. User
+                # aliases, static endpoint IPs, ExtraHosts and arbitrary lines
+                # are not rewritten even when an address happens to coincide.
+                if (addresses and generated and address in addresses and address not in protected_addresses
+                        and hostname in words[1:] and set(words[1:]) <= own_names
+                        and not set(words[1:]) & protected_names):
+                    selected[first] = copy.deepcopy(addresses[address])
+                lines.append({"tokens":selected,"comment":separator+comment})
             value["content"] = lines
         else:
             value["content"] = {"literal":text}
@@ -96,10 +126,11 @@ def normalize(files, role, attributes, declaration, role_names):
     return result
 
 
-def configuration(attributes, role, declaration):
+def configuration(attributes, role, declaration, network=None):
     """Retain inspected runtime fields; refuse uncovered external dependencies."""
     config,host = attributes.get("Config"),attributes.get("HostConfig")
-    if not isinstance(config,dict) or not isinstance(host,dict) or host.get("NetworkMode") != "none":
+    if (not isinstance(config,dict) or not isinstance(host,dict)
+            or (network is None and host.get("NetworkMode") != "none")):
         raise MaterialError("prepared environment network mode needs explicit topology coverage")
     for key in ["PidMode","IpcMode","UTSMode","UsernsMode","CgroupnsMode"]:
         if host.get(key) not in [None,"","private"]:
@@ -109,9 +140,9 @@ def configuration(attributes, role, declaration):
         if host.get(key):
             raise MaterialError("prepared environment has uncovered external devices, ports or dependencies")
     networks = attributes.get("NetworkSettings",{}).get("Networks")
-    if not isinstance(networks,dict) or set(networks)-{"none"}:
+    if not isinstance(networks,dict) or (network is None and set(networks)-{"none"}):
         raise MaterialError("prepared environment has undeclared network endpoints")
-    for endpoint in networks.values():
+    for endpoint in networks.values() if network is None else []:
         if not isinstance(endpoint,dict) or any(endpoint.get(key) for key in [
                 "IPAddress","GlobalIPv6Address","Gateway","IPv6Gateway"]):
             raise MaterialError("prepared network-none environment unexpectedly has routed addresses")
@@ -124,5 +155,8 @@ def configuration(attributes, role, declaration):
     for key in ["Binds","Mounts","Tmpfs"]:
         options.pop(key,None)
     value = {"config":selected,"host":options,"network":{"mode":"none"}}
+    if network is not None:
+        from asb_material_network_runtime import integrate
+        value = integrate(value,attributes,role,network)
     canonical_digest(value,"asb-private-runtime-configuration-v1")
     return value

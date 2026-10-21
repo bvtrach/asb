@@ -22,6 +22,18 @@ sys.path.insert(0,str(Path(__file__).parents[1]/"assets/benchmarks"))
     "ASB_TEST_BENCHMARK_ASB","ASB_TEST_SWECATALOG_ROOT"]),"requires explicit cached Docker fixture opt-in")
 class EnvironmentQualification(unittest.TestCase):
     def test_two_service_rounds_normalize_only_generated_identity_and_bind_shared_storage(self):
+        self.qualify()
+
+    def test_two_service_owned_bridge_rounds_normalize_only_generated_runtime(self):
+        self.qualify(networked=True)
+
+    def test_single_service_owned_bridge_uses_complete_environment_observation(self):
+        self.qualify(networked=True,single=True)
+
+    def test_two_service_routed_bridge_binds_default_routes(self):
+        self.qualify(networked=True,internal=False)
+
+    def qualify(self,networked=False,single=False,internal=True):
         from docker.types import Mount
         from asb_docker import DockerSession
         from asb_material import capture_task
@@ -32,31 +44,41 @@ class EnvironmentQualification(unittest.TestCase):
         observations = []
         with DockerSession() as client:
             image = client.images.get(os.environ["ASB_TEST_MATERIAL_IMAGE"])
-            for index,shared in enumerate([True,True,False]):
+            for index,shared in enumerate([True,True] if single else [True,True,False]):
                 directory = artifacts/f"attempt-{index+1}"
                 directory.mkdir(mode=0o700)
                 attempt = "asb-"+uuid.uuid4().hex
                 journal = ResourceJournal(client,directory,attempt)
-                containers,volumes = {},{}
+                containers,volumes,network = {},{},None
                 success = False
                 try:
                     volume_roles = ["data"] if shared else ["left","right"]
                     config = {"services":{"main":{"container_name":attempt},
                         "database":{"container_name":attempt+"-database"}},
                         "volumes":{role:{"name":attempt+"-"+role} for role in volume_roles}}
+                    if single:
+                        config["services"].pop("database")
+                    if networked:
+                        config["networks"] = {"private":{"name":attempt+"-private","driver":"bridge","internal":internal}}
+                        for service in config["services"].values():
+                            service["networks"] = {"private":None}
                     journal.compose(config)
+                    if networked:
+                        network = client.networks.create(config["networks"]["private"]["name"],
+                            driver="bridge",internal=internal,labels=journal.labels)
                     for role,item in config["volumes"].items():
                         volumes[role] = client.volumes.create(name=item["name"],labels=journal.labels)
                     for number,(role,item) in enumerate(sorted(config["services"].items())):
                         volume = volumes["data" if shared else volume_roles[number]]
                         containers[role] = client.containers.run(image.id,["sleep","infinity"],detach=True,
-                            name=item["container_name"],labels=journal.labels,network_mode="none",
+                            name=item["container_name"],labels=journal.labels,
+                            **({"network":network.name} if networked else {"network_mode":"none"}),
                             mem_limit="1g",pids_limit=64,mounts=[Mount("/data",volume.name,type="volume")])
                         containers[role].reload()
                     task = SimpleNamespace(client=client,journal=journal,artifacts=directory,cancelled=threading.Event(),
                         workspace=SimpleNamespace(container=containers["main"],workdir="/"))
                     def observe():
-                        return capture_task(task,{"fixture":"two-service-network-none"},
+                        return capture_task(task,{"fixture":"two-service-bridge" if networked else "two-service-network-none"},
                             binary=os.environ["ASB_TEST_BENCHMARK_ASB"],deadline=time.monotonic()+420)
                     first = observe()
                     observations.append(first)
@@ -83,11 +105,19 @@ class EnvironmentQualification(unittest.TestCase):
                             if owned is not None:
                                 owned.remove()
                                 self.assertIsNone(owned_resource(client,declaration,journal.labels))
+                        if network is not None:
+                            declaration = {"kind":"networks","name":network.name}
+                            owned = owned_resource(client,declaration,journal.labels)
+                            if owned is not None:
+                                owned.remove()
+                                self.assertIsNone(owned_resource(client,declaration,journal.labels))
                     journal.close()
         self.assertEqual(observations[0],observations[1],"fresh generated names/IDs must normalize equally")
-        self.assertNotEqual(observations[0],observations[2],"independent equal-content volumes must differ")
+        if not single:
+            self.assertNotEqual(observations[0],observations[2],"independent equal-content volumes must differ")
         (artifacts/"qualification.json").write_text(json.dumps({"observations":observations,
-            "scope":"two-services-network-none-shared-versus-independent-volumes",
+            "services":1 if single else 2,"networked":networked,"internal":internal if networked else None,
+            "scope":"owned-environment-material",
             "agent_started":False,"provider_called":False,"evaluator_started":False},sort_keys=True)+"\n")
 
 
